@@ -55,6 +55,38 @@ __all__ = [
 ]
 
 
+# Rust VEX Engine (optional, requires rustylib with vex-engine feature)
+try:
+    from .rust_vex import RustVEXMixin, RustVEXEngineWrapper, RUST_ENGINE_AVAILABLE
+
+    class UberEngineRust(
+        SimEngineFailure,
+        SimEngineSyscall,
+        HooksMixin,
+        TrackActionsMixin,
+        SimInspectMixin,
+        HeavyResilienceMixin,
+        RustVEXMixin,
+    ):
+        """
+        Execution engine using the Rust-based VEX interpreter.
+
+        This engine provides the same functionality as UberEngine but uses
+        a Rust backend for VEX execution, which can be faster for fork-heavy
+        workloads due to O(1) state copying.
+
+        Falls back to Python VEX execution if the Rust engine cannot handle
+        a particular execution scenario.
+        """
+
+    __all__.extend(["RustVEXMixin", "RustVEXEngineWrapper", "UberEngineRust", "RUST_ENGINE_AVAILABLE"])
+
+except ImportError:
+    # Rust engine not available
+    RUST_ENGINE_AVAILABLE = False
+    __all__.append("RUST_ENGINE_AVAILABLE")
+
+
 try:
     from .pcode import HeavyPcodeMixin
 

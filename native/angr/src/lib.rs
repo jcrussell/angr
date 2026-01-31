@@ -1,6 +1,24 @@
+// Conditional compilation for fuzzer module (requires optional deps)
+#[cfg(feature = "fuzzer")]
 pub mod fuzzer;
+#[cfg(feature = "fuzzer")]
 pub mod icicle;
+
 pub mod segmentlist;
+
+// VEX Engine modules (requires vex-engine feature, enabled by default)
+#[cfg(feature = "vex-engine")]
+pub mod arch;
+#[cfg(feature = "vex-engine")]
+pub mod engine;
+#[cfg(feature = "vex-engine")]
+pub mod interpreter;
+#[cfg(feature = "vex-engine")]
+pub mod memory;
+#[cfg(feature = "vex-engine")]
+pub mod symbolic;
+#[cfg(feature = "vex-engine")]
+pub mod vex;
 
 use pyo3::prelude::*;
 
@@ -24,8 +42,14 @@ fn import_submodule<'py>(
 
 #[pymodule]
 fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    import_submodule(m.py(), m, "angr.rustylib", "fuzzer", fuzzer::fuzzer)?;
-    import_submodule(m.py(), m, "angr.rustylib", "icicle", icicle::icicle)?;
+    // Fuzzer modules (optional)
+    #[cfg(feature = "fuzzer")]
+    {
+        import_submodule(m.py(), m, "angr.rustylib", "fuzzer", fuzzer::fuzzer)?;
+        import_submodule(m.py(), m, "angr.rustylib", "icicle", icicle::icicle)?;
+    }
+
+    // Segmentlist (always available)
     import_submodule(
         m.py(),
         m,
@@ -33,8 +57,12 @@ fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "segmentlist",
         segmentlist::segmentlist,
     )?;
-
     m.add_class::<segmentlist::Segment>()?;
     m.add_class::<segmentlist::SegmentList>()?;
+
+    // VEX Engine module
+    #[cfg(feature = "vex-engine")]
+    import_submodule(m.py(), m, "angr.rustylib", "vex_engine", engine::vex_engine)?;
+
     Ok(())
 }

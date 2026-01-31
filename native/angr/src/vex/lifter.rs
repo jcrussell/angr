@@ -1,0 +1,317 @@
+//! VEX IR lifting interface.
+//!
+//! This module provides the interface for lifting machine code to VEX IR.
+//! It can use either:
+//! - pyvex via Python FFI (temporary, for compatibility)
+//! - libvex-rs (native, future)
+
+use std::collections::HashMap;
+
+use super::ir::{
+    Endness, IRConst, IRExpr, IROp, IRStmt, IRType, IRSB, JumpKind, TypeEnv, VexArch,
+};
+
+/// Errors from VEX lifting.
+#[derive(Debug, Clone)]
+pub enum LiftError {
+    /// Invalid architecture.
+    InvalidArch(String),
+    /// Failed to lift the given bytes.
+    LiftFailed { addr: u64, reason: String },
+    /// Invalid instruction.
+    InvalidInstruction { addr: u64 },
+    /// Unsupported feature.
+    Unsupported(String),
+}
+
+impl std::fmt::Display for LiftError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LiftError::InvalidArch(arch) => write!(f, "invalid architecture: {}", arch),
+            LiftError::LiftFailed { addr, reason } => {
+                write!(f, "lift failed at 0x{:x}: {}", addr, reason)
+            }
+            LiftError::InvalidInstruction { addr } => {
+                write!(f, "invalid instruction at 0x{:x}", addr)
+            }
+            LiftError::Unsupported(msg) => write!(f, "unsupported: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for LiftError {}
+
+/// VEX lifter trait.
+///
+/// This trait abstracts over different VEX lifting backends.
+pub trait VEXLifter {
+    /// Lift bytes at the given address to VEX IR.
+    fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError>;
+
+    /// Lift a single instruction.
+    fn lift_insn(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
+        // Default implementation: lift with max_bytes = bytes.len()
+        // but only return the first instruction
+        let irsb = self.lift(bytes, addr, arch)?;
+
+        // Find the first IMark after the initial one
+        let mut found_first = false;
+        let mut stmts = Vec::new();
+
+        for stmt in &irsb.statements {
+            if let IRStmt::IMark { .. } = stmt {
+                if found_first {
+                    break;
+                }
+                found_first = true;
+            }
+            stmts.push(stmt.clone());
+        }
+
+        let mut result = IRSB::new(addr, arch);
+        result.statements = stmts;
+        result.next = irsb.next.clone();
+        result.jumpkind = irsb.jumpkind;
+        result.offsIP = irsb.offsIP;
+        result.tyenv = irsb.tyenv.clone();
+
+        Ok(result)
+    }
+}
+
+/// Native VEX lifter (using embedded test data for now).
+///
+/// In a full implementation, this would use libvex-rs or similar
+/// to lift machine code to VEX IR.
+pub struct NativeVEXLifter {
+    /// Cached lifted blocks.
+    cache: parking_lot::RwLock<HashMap<(u64, VexArch), IRSB>>,
+}
+
+impl NativeVEXLifter {
+    /// Create a new native VEX lifter.
+    pub fn new() -> Self {
+        NativeVEXLifter {
+            cache: parking_lot::RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Pre-populate the cache with a lifted block.
+    pub fn add_block(&self, irsb: IRSB) {
+        let key = (irsb.addr, irsb.arch);
+        self.cache.write().insert(key, irsb);
+    }
+}
+
+impl Default for NativeVEXLifter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VEXLifter for NativeVEXLifter {
+    fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
+        // Check cache first
+        if let Some(irsb) = self.cache.read().get(&(addr, arch)) {
+            return Ok(irsb.clone());
+        }
+
+        // For now, return an error for unknown code
+        // In a full implementation, we would call libvex here
+        Err(LiftError::Unsupported(
+            "native lifting not yet implemented; use pyvex FFI".to_string(),
+        ))
+    }
+}
+
+/// Builder for creating VEX IR programmatically (for testing).
+pub struct IRSBBuilder {
+    irsb: IRSB,
+    next_tmp: u32,
+}
+
+impl IRSBBuilder {
+    /// Create a new builder for a block at the given address.
+    pub fn new(addr: u64, arch: VexArch) -> Self {
+        IRSBBuilder {
+            irsb: IRSB::new(addr, arch),
+            next_tmp: 0,
+        }
+    }
+
+    /// Add an IMark statement.
+    pub fn imark(&mut self, addr: u64, len: u32) -> &mut Self {
+        self.irsb.statements.push(IRStmt::IMark {
+            addr,
+            len,
+            delta: 0,
+        });
+        self
+    }
+
+    /// Allocate a new temporary variable.
+    pub fn new_tmp(&mut self, ty: IRType) -> u32 {
+        let tmp = self.next_tmp;
+        self.next_tmp += 1;
+        self.irsb.tyenv.types.push(ty);
+        tmp
+    }
+
+    /// Add a WrTmp statement.
+    pub fn wrtmp(&mut self, tmp: u32, data: IRExpr) -> &mut Self {
+        self.irsb.statements.push(IRStmt::WrTmp { tmp, data });
+        self
+    }
+
+    /// Add a Put statement.
+    pub fn put(&mut self, offset: u32, data: IRExpr) -> &mut Self {
+        self.irsb.statements.push(IRStmt::Put { offset, data });
+        self
+    }
+
+    /// Add a Store statement.
+    pub fn store(&mut self, addr: IRExpr, data: IRExpr, endness: Endness) -> &mut Self {
+        self.irsb
+            .statements
+            .push(IRStmt::Store { addr, data, endness });
+        self
+    }
+
+    /// Add an Exit statement.
+    pub fn exit(&mut self, guard: IRExpr, dst: u64, jk: JumpKind) -> &mut Self {
+        self.irsb.statements.push(IRStmt::Exit {
+            guard,
+            dst,
+            jk,
+            offsIP: self.irsb.offsIP,
+        });
+        self
+    }
+
+    /// Set the default exit.
+    pub fn next(&mut self, expr: IRExpr, jk: JumpKind) -> &mut Self {
+        self.irsb.next = expr;
+        self.irsb.jumpkind = jk;
+        self
+    }
+
+    /// Set the IP offset.
+    pub fn offs_ip(&mut self, offset: u32) -> &mut Self {
+        self.irsb.offsIP = offset;
+        self
+    }
+
+    /// Build the IRSB.
+    pub fn build(self) -> IRSB {
+        self.irsb
+    }
+}
+
+// Helper functions for creating expressions
+impl IRExpr {
+    /// Create a constant U64 expression.
+    pub fn const_u64(value: u64) -> Self {
+        IRExpr::Const(IRConst::U64(value))
+    }
+
+    /// Create a constant U32 expression.
+    pub fn const_u32(value: u32) -> Self {
+        IRExpr::Const(IRConst::U32(value))
+    }
+
+    /// Create a constant U8 expression.
+    pub fn const_u8(value: u8) -> Self {
+        IRExpr::Const(IRConst::U8(value))
+    }
+
+    /// Create a constant U1 (boolean) expression.
+    pub fn const_bool(value: bool) -> Self {
+        IRExpr::Const(IRConst::U1(value))
+    }
+
+    /// Create a RdTmp expression.
+    pub fn tmp(n: u32) -> Self {
+        IRExpr::RdTmp(n)
+    }
+
+    /// Create a Get expression.
+    pub fn get(offset: u32, ty: IRType) -> Self {
+        IRExpr::Get { offset, ty }
+    }
+
+    /// Create a Load expression.
+    pub fn load(addr: IRExpr, ty: IRType, endness: Endness) -> Self {
+        IRExpr::Load {
+            addr: Box::new(addr),
+            ty,
+            endness,
+        }
+    }
+
+    /// Create a binary operation expression.
+    pub fn binop(op: IROp, left: IRExpr, right: IRExpr) -> Self {
+        IRExpr::Binop {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
+    /// Create a unary operation expression.
+    pub fn unop(op: IROp, arg: IRExpr) -> Self {
+        IRExpr::Unop {
+            op,
+            arg: Box::new(arg),
+        }
+    }
+
+    /// Create an ITE expression.
+    pub fn ite(cond: IRExpr, iftrue: IRExpr, iffalse: IRExpr) -> Self {
+        IRExpr::ITE {
+            cond: Box::new(cond),
+            iftrue: Box::new(iftrue),
+            iffalse: Box::new(iffalse),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_irsb_builder() {
+        let mut builder = IRSBBuilder::new(0x1000, VexArch::AMD64);
+        builder.offs_ip(184); // AMD64 RIP offset
+
+        // mov rax, 42
+        builder.imark(0x1000, 5);
+        let t0 = builder.new_tmp(IRType::I64);
+        builder.wrtmp(t0, IRExpr::const_u64(42));
+        builder.put(16, IRExpr::tmp(t0)); // RAX offset
+
+        // Set next instruction
+        builder.next(IRExpr::const_u64(0x1005), JumpKind::Boring);
+
+        let irsb = builder.build();
+        assert_eq!(irsb.addr, 0x1000);
+        assert_eq!(irsb.num_instructions(), 1);
+        assert_eq!(irsb.statements.len(), 3); // IMark + WrTmp + Put
+    }
+
+    #[test]
+    fn test_ir_expr_helpers() {
+        let expr = IRExpr::binop(
+            IROp::Add(IRType::I64),
+            IRExpr::get(16, IRType::I64),
+            IRExpr::const_u64(1),
+        );
+
+        match expr {
+            IRExpr::Binop { op, left, right } => {
+                assert!(matches!(op, IROp::Add(IRType::I64)));
+            }
+            _ => panic!("expected Binop"),
+        }
+    }
+}
