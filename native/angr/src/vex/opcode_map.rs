@@ -197,6 +197,12 @@ fn parse_comparison(op_str: &str) -> Option<IROp> {
         "Iop_CmpNE32" => Some(IROp::CmpNE(IRType::I32)),
         "Iop_CmpNE64" => Some(IROp::CmpNE(IRType::I64)),
 
+        // ExpCmp ("expensive" comparisons - same semantics as regular comparisons)
+        "Iop_ExpCmpNE8" => Some(IROp::CmpNE(IRType::I8)),
+        "Iop_ExpCmpNE16" => Some(IROp::CmpNE(IRType::I16)),
+        "Iop_ExpCmpNE32" => Some(IROp::CmpNE(IRType::I32)),
+        "Iop_ExpCmpNE64" => Some(IROp::CmpNE(IRType::I64)),
+
         // CmpLT (signed)
         "Iop_CmpLT32S" => Some(IROp::CmpLT(IRType::I32)),
         "Iop_CmpLT64S" => Some(IROp::CmpLT(IRType::I64)),
