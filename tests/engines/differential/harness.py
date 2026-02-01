@@ -4,21 +4,8 @@ Core differential test harness for comparing Rust and Python VEX engines.
 Provides TestCase dataclass and DifferentialHarness for running shellcode
 on both engines and comparing final states.
 
-IMPORTANT LIMITATION: The Rust VEX engine currently does not execute actual
-VEX operations. The `step()` method only processes block structure (IMark,
-exits) but does not modify registers based on instruction semantics. This
-means:
-
-- Register values remain unchanged after step()
-- The PC advances according to block exit, not instruction execution
-- Memory is not modified by instructions
-
-The differential harness will work correctly once the Rust engine implements
-VEX operation execution. Until then, tests using this harness will show
-divergences because Rust returns the initial register values while Python
-returns the computed values.
-
-See: angr/engines/rust_vex.py for the TODO comment about IRSB passing.
+The harness uses execute_code() to lift shellcode with pyvex and execute it
+in the Rust VEX interpreter.
 """
 from __future__ import annotations
 
@@ -166,9 +153,9 @@ class DifferentialHarness:
             for reg, value in test.initial_regs.items():
                 engine.set_register(reg, value)
 
-            # Set PC and execute
+            # Set PC and execute - use execute_code to lift and run
             engine.pc = self.CODE_BASE
-            engine.step()
+            engine.execute_code(test.shellcode)
 
             # Collect results
             result_regs = {}
