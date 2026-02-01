@@ -4,11 +4,7 @@ Tier 2 Regression Tests: 1000 seeded differential tests.
 More comprehensive tests for PR validation.
 Target runtime: ~10-20 seconds.
 
-IMPORTANT: These tests are currently expected to fail because the Rust VEX
-engine does not yet execute actual VEX operations. The tests will pass once
-the Rust engine implements VEX operation execution.
-
-See: tests/engines/differential/test_minimal.py for details on current limitations.
+See: tests/engines/differential/test_minimal.py for details on the differential testing approach.
 """
 from __future__ import annotations
 
@@ -40,7 +36,6 @@ except ImportError:
 pytestmark = [
     pytest.mark.rust_engine,
     pytest.mark.slow,
-    pytest.mark.xfail(reason="Rust VEX engine does not yet execute VEX operations", strict=False)
 ]
 
 # Report output directory
