@@ -195,6 +195,25 @@ impl<'ctx> RegisterFile<'ctx> {
         self.put(offset, value);
     }
 
+    /// Copy concrete register values from a byte slice.
+    ///
+    /// This is used to initialize the register file from external state.
+    pub fn copy_from_bytes(&mut self, bytes: &[u8]) {
+        let len = std::cmp::min(bytes.len(), self.data.len());
+        self.data[..len].copy_from_slice(&bytes[..len]);
+        // Clear symbolic overlays since we're replacing with concrete values
+        self.symbolic.clear();
+    }
+
+    /// Copy concrete register values to a byte slice.
+    ///
+    /// This is used to extract the register state after execution.
+    /// Note: symbolic values are converted to their concrete value (0 if unknown).
+    pub fn copy_to_bytes(&self, bytes: &mut [u8]) {
+        let len = std::cmp::min(bytes.len(), self.data.len());
+        bytes[..len].copy_from_slice(&self.data[..len]);
+    }
+
     /// Fork the register file for path splitting.
     pub fn fork(&self) -> RegisterFile<'ctx> {
         RegisterFile {

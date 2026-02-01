@@ -4,19 +4,17 @@ Minimal differential tests for Rust vs Python VEX engines.
 These are the simplest possible tests to verify the differential testing
 framework works correctly. Start here before running larger test suites.
 
-IMPORTANT: The Rust VEX engine currently only supports block structure (IMark,
-exit) but not actual VEX operations. The `step()` method executes the block
-structure but doesn't execute the actual instructions. This means differential
-testing at the instruction level is not yet possible.
+The Rust VEX engine now supports:
+- Block navigation (PC advances correctly)
+- Register read/write
+- Memory read/write
+- IRSB serialization from pyvex to Rust
+- VEX operation execution (ADD, SUB, MUL, XOR, SHL, MOV, etc.)
 
-Current Status:
-- Block navigation works (PC advances correctly)
-- Register read/write works
-- Memory read/write works
-- Actual instruction execution: NOT YET IMPLEMENTED
-
-Tests in this file are marked as xfail until the Rust engine supports
-actual VEX operation execution.
+The tests use `execute_code()` which:
+1. Lifts code with pyvex
+2. Serializes the IRSB to JSON
+3. Passes it to the Rust engine for execution
 """
 from __future__ import annotations
 
@@ -33,11 +31,9 @@ import angr
 
 pytestmark = pytest.mark.rust_engine
 
-# Mark for tests that require full VEX execution (not yet implemented)
-rust_vex_execution = pytest.mark.xfail(
-    reason="Rust VEX engine does not yet execute actual VEX operations",
-    strict=False  # Don't fail if it unexpectedly passes (future fix)
-)
+# Mark for tests that require full VEX execution
+# These tests now pass thanks to the IRSB pipeline implementation
+rust_vex_execution = pytest.mark.rust_engine
 
 
 @pytest.fixture
@@ -57,13 +53,13 @@ class TestMinimalDifferential:
         code = bytes([0x01, 0xD8])
         code_base = 0x1000
 
-        # Rust execution
+        # Rust execution - using proper IRSB pipeline
         rust = RustVEXEngineWrapper("x86")
         rust.map_memory_data(code_base, code)
         rust.set_register("eax", 5)
         rust.set_register("ebx", 3)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)  # Use execute_code which lifts with pyvex
         rust_eax = rust.get_register("eax")
 
         # Python execution
@@ -86,13 +82,13 @@ class TestMinimalDifferential:
         code = bytes([0x29, 0xD8])
         code_base = 0x1000
 
-        # Rust execution
+        # Rust execution - using proper IRSB pipeline
         rust = RustVEXEngineWrapper("x86")
         rust.map_memory_data(code_base, code)
         rust.set_register("eax", 10)
         rust.set_register("ebx", 3)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
 
         # Python execution
@@ -121,7 +117,7 @@ class TestMinimalDifferential:
         rust.set_register("eax", 0xFF00FF00)
         rust.set_register("ebx", 0x0F0F0F0F)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
 
         # Python execution
@@ -152,7 +148,7 @@ class TestMinimalDifferential:
         rust.set_register("ebx", 200)
         rust.set_register("edx", 0)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
         rust_edx = rust.get_register("edx")
 
@@ -186,7 +182,7 @@ class TestMinimalDifferential:
         rust.set_register("eax", 0)
         rust.set_register("ebx", 0xDEADBEEF)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
 
         # Python execution
@@ -215,7 +211,7 @@ class TestMinimalDifferential:
         rust.set_register("eax", 1)
         rust.set_register("ecx", 4)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
 
         # Python execution
@@ -249,7 +245,7 @@ class TestMinimalEdgeCases:
         rust.set_register("eax", 0xFFFFFFFF)
         rust.set_register("ebx", 1)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
 
         # Python execution
@@ -278,7 +274,7 @@ class TestMinimalEdgeCases:
         rust.set_register("eax", 0)
         rust.set_register("ebx", 1)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
 
         # Python execution
@@ -308,7 +304,7 @@ class TestMinimalEdgeCases:
         rust.set_register("ebx", 0x10000000)
         rust.set_register("edx", 0)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_eax = rust.get_register("eax")
         rust_edx = rust.get_register("edx")
 
@@ -348,7 +344,7 @@ class TestMinimalAMD64:
         rust.set_register("rax", 0x100000000)
         rust.set_register("rbx", 0x200000000)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_rax = rust.get_register("rax")
 
         # Python execution
@@ -378,7 +374,7 @@ class TestMinimalAMD64:
         rust.set_register("rax", 0xFFFFFFFFFFFFFFFF)
         rust.set_register("rbx", 0x0F0F0F0F0F0F0F0F)
         rust.pc = code_base
-        rust.step()
+        rust.execute_code(code)
         rust_rax = rust.get_register("rax")
 
         # Python execution

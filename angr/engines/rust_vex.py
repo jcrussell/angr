@@ -7,6 +7,7 @@ engine protocol while delegating execution to Rust.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,7 @@ from angr import errors
 if TYPE_CHECKING:
     import angr
     from angr.sim_state import SimState
+    import pyvex
 
 l = logging.getLogger(__name__)
 
@@ -48,6 +50,339 @@ def _arch_name_to_rust(arch_name: str) -> str:
         "MIPS64": "mips64",
     }
     return mapping.get(arch_name.upper(), arch_name.lower())
+
+
+def _serialize_irsb(irsb: "pyvex.IRSB") -> str:
+    """
+    Serialize a pyvex IRSB to JSON for the Rust engine.
+
+    This converts pyvex's IRSB structure to a JSON format that matches
+    the Rust pyvex_bridge deserialization format.
+    """
+    return json.dumps(_irsb_to_dict(irsb))
+
+
+def _irsb_to_dict(irsb: "pyvex.IRSB") -> dict:
+    """Convert pyvex IRSB to dictionary format."""
+    return {
+        "addr": irsb.addr,
+        "arch": irsb.arch.name,
+        "statements": [_stmt_to_dict(s) for s in irsb.statements],
+        "next": _expr_to_dict(irsb.next),
+        "jumpkind": irsb.jumpkind,
+        "offsIP": irsb.offsIP,
+        "tyenv": _tyenv_to_dict(irsb.tyenv),
+    }
+
+
+def _tyenv_to_dict(tyenv) -> dict:
+    """Convert type environment to dictionary."""
+    types = []
+    for i in range(tyenv.types_used):
+        ty = tyenv.lookup(i)
+        types.append(ty if ty else "Ity_I64")
+    return {"types": types}
+
+
+def _stmt_to_dict(stmt) -> dict:
+    """Convert a pyvex statement to dictionary."""
+    import pyvex
+
+    if isinstance(stmt, pyvex.stmt.NoOp):
+        return {"tag": "Ist_NoOp"}
+
+    elif isinstance(stmt, pyvex.stmt.IMark):
+        return {
+            "tag": "Ist_IMark",
+            "addr": stmt.addr,
+            "len": stmt.len,
+            "delta": stmt.delta,
+        }
+
+    elif isinstance(stmt, pyvex.stmt.AbiHint):
+        return {
+            "tag": "Ist_AbiHint",
+            "base": _expr_to_dict(stmt.base),
+            "len": stmt.len,
+            "nia": _expr_to_dict(stmt.nia),
+        }
+
+    elif isinstance(stmt, pyvex.stmt.Put):
+        return {
+            "tag": "Ist_Put",
+            "offset": stmt.offset,
+            "data": _expr_to_dict(stmt.data),
+        }
+
+    elif isinstance(stmt, pyvex.stmt.PutI):
+        return {
+            "tag": "Ist_PutI",
+            "descr": _regarray_to_dict(stmt.descr),
+            "ix": _expr_to_dict(stmt.ix),
+            "bias": stmt.bias,
+            "data": _expr_to_dict(stmt.data),
+        }
+
+    elif isinstance(stmt, pyvex.stmt.WrTmp):
+        return {
+            "tag": "Ist_WrTmp",
+            "tmp": stmt.tmp,
+            "data": _expr_to_dict(stmt.data),
+        }
+
+    elif isinstance(stmt, pyvex.stmt.Store):
+        return {
+            "tag": "Ist_Store",
+            "addr": _expr_to_dict(stmt.addr),
+            "data": _expr_to_dict(stmt.data),
+            "end": stmt.end,
+        }
+
+    elif isinstance(stmt, pyvex.stmt.StoreG):
+        return {
+            "tag": "Ist_StoreG",
+            "addr": _expr_to_dict(stmt.addr),
+            "data": _expr_to_dict(stmt.data),
+            "guard": _expr_to_dict(stmt.guard),
+            "end": stmt.end,
+        }
+
+    elif isinstance(stmt, pyvex.stmt.LoadG):
+        return {
+            "tag": "Ist_LoadG",
+            "dst": stmt.dst,
+            "addr": _expr_to_dict(stmt.addr),
+            "alt": _expr_to_dict(stmt.alt),
+            "guard": _expr_to_dict(stmt.guard),
+            "cvt": stmt.cvt,
+            "end": stmt.end,
+        }
+
+    elif isinstance(stmt, pyvex.stmt.CAS):
+        result = {
+            "tag": "Ist_CAS",
+            "oldHi": stmt.oldHi,
+            "oldLo": stmt.oldLo,
+            "addr": _expr_to_dict(stmt.addr),
+            "expdLo": _expr_to_dict(stmt.expdLo),
+            "dataLo": _expr_to_dict(stmt.dataLo),
+            "end": stmt.end,
+        }
+        if stmt.expdHi is not None:
+            result["expdHi"] = _expr_to_dict(stmt.expdHi)
+        if stmt.dataHi is not None:
+            result["dataHi"] = _expr_to_dict(stmt.dataHi)
+        return result
+
+    elif isinstance(stmt, pyvex.stmt.LLSC):
+        result = {
+            "tag": "Ist_LLSC",
+            "result": stmt.result,
+            "addr": _expr_to_dict(stmt.addr),
+            "end": stmt.end,
+        }
+        if stmt.storedata is not None:
+            result["storedata"] = _expr_to_dict(stmt.storedata)
+        return result
+
+    elif isinstance(stmt, pyvex.stmt.MBE):
+        return {
+            "tag": "Ist_MBE",
+            "event": stmt.event,
+        }
+
+    elif isinstance(stmt, pyvex.stmt.Dirty):
+        result = {
+            "tag": "Ist_Dirty",
+            "cee": _callee_to_dict(stmt.cee),
+            "tmp": stmt.tmp,
+            "mFx": stmt.mFx,
+            "mSize": stmt.mSize,
+            "nFxState": stmt.nFxState,
+            "args": [_expr_to_dict(a) for a in stmt.args],
+        }
+        if stmt.guard is not None:
+            result["guard"] = _expr_to_dict(stmt.guard)
+        if stmt.mAddr is not None:
+            result["mAddr"] = _expr_to_dict(stmt.mAddr)
+        return result
+
+    elif isinstance(stmt, pyvex.stmt.Exit):
+        return {
+            "tag": "Ist_Exit",
+            "guard": _expr_to_dict(stmt.guard),
+            "dst": _const_to_dict(stmt.dst),
+            "jk": stmt.jumpkind,
+            "offsIP": stmt.offsIP,
+        }
+
+    else:
+        # Fallback for unknown statement types
+        l.warning("Unknown pyvex statement type: %s", type(stmt).__name__)
+        return {"tag": "Ist_NoOp"}
+
+
+def _expr_to_dict(expr) -> dict:
+    """Convert a pyvex expression to dictionary."""
+    import pyvex
+
+    if isinstance(expr, pyvex.expr.Const):
+        return {
+            "tag": "Iex_Const",
+            "con": _const_to_dict(expr.con),
+        }
+
+    elif isinstance(expr, pyvex.expr.RdTmp):
+        return {
+            "tag": "Iex_RdTmp",
+            "tmp": expr.tmp,
+        }
+
+    elif isinstance(expr, pyvex.expr.Get):
+        return {
+            "tag": "Iex_Get",
+            "offset": expr.offset,
+            "ty": expr.ty,
+        }
+
+    elif isinstance(expr, pyvex.expr.GetI):
+        return {
+            "tag": "Iex_GetI",
+            "descr": _regarray_to_dict(expr.descr),
+            "ix": _expr_to_dict(expr.ix),
+            "bias": expr.bias,
+        }
+
+    elif isinstance(expr, pyvex.expr.Load):
+        return {
+            "tag": "Iex_Load",
+            "addr": _expr_to_dict(expr.addr),
+            "ty": expr.ty,
+            "end": expr.end,
+        }
+
+    elif isinstance(expr, pyvex.expr.Unop):
+        return {
+            "tag": "Iex_Unop",
+            "op": expr.op,
+            "arg": _expr_to_dict(expr.args[0]),
+        }
+
+    elif isinstance(expr, pyvex.expr.Binop):
+        return {
+            "tag": "Iex_Binop",
+            "op": expr.op,
+            "args": [_expr_to_dict(expr.args[0]), _expr_to_dict(expr.args[1])],
+        }
+
+    elif isinstance(expr, pyvex.expr.Triop):
+        return {
+            "tag": "Iex_Triop",
+            "op": expr.op,
+            "args": [
+                _expr_to_dict(expr.args[0]),
+                _expr_to_dict(expr.args[1]),
+                _expr_to_dict(expr.args[2]),
+            ],
+        }
+
+    elif isinstance(expr, pyvex.expr.Qop):
+        return {
+            "tag": "Iex_Qop",
+            "op": expr.op,
+            "args": [
+                _expr_to_dict(expr.args[0]),
+                _expr_to_dict(expr.args[1]),
+                _expr_to_dict(expr.args[2]),
+                _expr_to_dict(expr.args[3]),
+            ],
+        }
+
+    elif isinstance(expr, pyvex.expr.ITE):
+        return {
+            "tag": "Iex_ITE",
+            "cond": _expr_to_dict(expr.cond),
+            "iftrue": _expr_to_dict(expr.iftrue),
+            "iffalse": _expr_to_dict(expr.iffalse),
+        }
+
+    elif isinstance(expr, pyvex.expr.CCall):
+        return {
+            "tag": "Iex_CCall",
+            "cee": _callee_to_dict(expr.cee),
+            "retty": expr.retty,
+            "args": [_expr_to_dict(a) for a in expr.args],
+        }
+
+    elif isinstance(expr, pyvex.expr.VECRET):
+        return {"tag": "Iex_VECRET"}
+
+    elif isinstance(expr, pyvex.expr.GSPTR):
+        return {"tag": "Iex_GSPTR"}
+
+    else:
+        # Fallback - treat as a constant 0
+        l.warning("Unknown pyvex expression type: %s", type(expr).__name__)
+        return {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0}}
+
+
+def _const_to_dict(con) -> dict:
+    """Convert a pyvex constant to dictionary."""
+    import pyvex
+
+    # pyvex constants have a value attribute and a type
+    # The tag is based on the size/type
+    if hasattr(con, 'value'):
+        value = con.value
+    else:
+        value = 0
+
+    # Determine the constant type from the pyvex constant
+    type_name = type(con).__name__
+
+    if "U1" in type_name or (hasattr(con, 'type') and "I1" in str(con.type)):
+        return {"tag": "Ico_U1", "value": bool(value)}
+    elif "U8" in type_name or (hasattr(con, 'size') and con.size == 8):
+        return {"tag": "Ico_U8", "value": value & 0xFF}
+    elif "U16" in type_name or (hasattr(con, 'size') and con.size == 16):
+        return {"tag": "Ico_U16", "value": value & 0xFFFF}
+    elif "U32" in type_name or (hasattr(con, 'size') and con.size == 32):
+        return {"tag": "Ico_U32", "value": value & 0xFFFFFFFF}
+    elif "U64" in type_name or (hasattr(con, 'size') and con.size == 64):
+        return {"tag": "Ico_U64", "value": value & 0xFFFFFFFFFFFFFFFF}
+    elif "F32" in type_name:
+        return {"tag": "Ico_F32", "value": float(value)}
+    elif "F64" in type_name:
+        return {"tag": "Ico_F64", "value": float(value)}
+    elif "V128" in type_name:
+        return {"tag": "Ico_V128", "value": value}
+    elif "V256" in type_name:
+        # V256 is stored as 4 x u64
+        if isinstance(value, (list, tuple)) and len(value) == 4:
+            return {"tag": "Ico_V256", "value": list(value)}
+        else:
+            return {"tag": "Ico_V256", "value": [value & ((1 << 64) - 1), 0, 0, 0]}
+    else:
+        # Default to U64
+        return {"tag": "Ico_U64", "value": int(value) & 0xFFFFFFFFFFFFFFFF}
+
+
+def _regarray_to_dict(descr) -> dict:
+    """Convert a pyvex register array descriptor to dictionary."""
+    return {
+        "base": descr.base,
+        "elemTy": descr.elemTy,
+        "nElems": descr.nElems,
+    }
+
+
+def _callee_to_dict(cee) -> dict:
+    """Convert a pyvex callee to dictionary."""
+    return {
+        "name": cee.name if hasattr(cee, 'name') else "",
+        "addr": cee.addr if hasattr(cee, 'addr') else 0,
+        "mcx_mask": cee.mcx_mask if hasattr(cee, 'mcx_mask') else 0,
+    }
 
 
 class RustVEXMixin(SuccessorsEngine, VEXLifter):
@@ -354,17 +689,17 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         successors.artifacts["irsb_size"] = irsb.size
         successors.artifacts["irsb_direct_next"] = irsb.direct_next
 
-        # For now, we fall back to Python VEX for actual execution
-        # The Rust engine needs proper IRSB serialization to execute
-        # TODO: Implement proper IRSB passing to Rust
-
-        # Attempt Rust execution
+        # Serialize IRSB and execute in Rust
         try:
-            event = self._rust_engine.step()
+            irsb_json = _serialize_irsb(irsb)
+            event = self._rust_engine.execute_irsb_json(irsb_json)
 
-            if event.event_type == "need_lift":
-                # Rust doesn't have this block - fall back to Python
-                l.debug("Rust engine needs block at 0x%x, falling back to Python", addr)
+            # Handle the execution event
+            needs_more = self._handle_rust_execution_event(event, state, successors)
+
+            if needs_more:
+                # Rust engine returned need_lift or similar - fall back to Python
+                l.debug("Rust engine needs more processing at 0x%x, falling back to Python", addr)
                 return super().process_successors(
                     successors,
                     irsb=irsb,
@@ -375,12 +710,7 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                     **kwargs,
                 )
 
-            # Handle the execution event
-            needs_more = self._handle_rust_execution_event(event, state, successors)
-
-            if not needs_more:
-                successors.processed = True
-                return
+            successors.processed = True
 
         except Exception as e:
             l.warning("Rust VEX execution failed: %s, falling back to Python", e)
@@ -393,8 +723,6 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 size=size,
                 **kwargs,
             )
-
-        successors.processed = True
 
 
 class RustVEXEngineWrapper:
@@ -448,6 +776,47 @@ class RustVEXEngineWrapper:
 
     def step(self) -> ExecutionEvent:
         return self._engine.step()
+
+    def execute_irsb_json(self, irsb_json: str) -> ExecutionEvent:
+        """Execute a serialized IRSB JSON string."""
+        return self._engine.execute_irsb_json(irsb_json)
+
+    def execute_code(self, code: bytes, arch_name: str = None) -> ExecutionEvent:
+        """
+        Lift code with pyvex and execute in Rust.
+
+        This is a convenience method that handles the full pipeline:
+        1. Lift code with pyvex
+        2. Serialize IRSB to JSON
+        3. Execute in Rust
+        """
+        import pyvex
+        import archinfo
+
+        # Get architecture
+        if arch_name is None:
+            arch_name = self._engine.arch
+
+        arch_mapping = {
+            "x86": archinfo.ArchX86,
+            "amd64": archinfo.ArchAMD64,
+            "arm": archinfo.ArchARM,
+            "arm64": archinfo.ArchAArch64,
+            "mips32": archinfo.ArchMIPS32,
+            "mips64": archinfo.ArchMIPS64,
+        }
+        arch_cls = arch_mapping.get(arch_name.lower())
+        if arch_cls is None:
+            raise ValueError(f"Unsupported architecture: {arch_name}")
+
+        arch = arch_cls()
+
+        # Lift with pyvex
+        irsb = pyvex.lift(code, self._engine.pc, arch)
+
+        # Serialize and execute
+        irsb_json = _serialize_irsb(irsb)
+        return self._engine.execute_irsb_json(irsb_json)
 
     def fork(self) -> "RustVEXEngineWrapper":
         wrapper = object.__new__(RustVEXEngineWrapper)

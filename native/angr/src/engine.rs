@@ -13,7 +13,7 @@ use crate::arch::arch_from_name;
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
 use crate::memory::Permission;
 use crate::symbolic::SymContext;
-use crate::vex::{VexArch, IRSB};
+use crate::vex::{deserialize_irsb, VexArch, IRSB};
 
 /// Execution event returned to Python.
 #[pyclass]
@@ -413,6 +413,24 @@ impl RustVEXEngine {
         })
     }
 
+    /// Execute an IRSB from JSON (serialized pyvex IRSB).
+    ///
+    /// This is the main entry point for executing lifted code from Python.
+    /// The IRSB is deserialized from JSON and executed directly.
+    pub fn execute_irsb_json(&mut self, irsb_json: &str) -> PyResult<ExecutionEvent> {
+        // Deserialize the IRSB
+        let irsb = deserialize_irsb(irsb_json).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to deserialize IRSB: {}", e))
+        })?;
+
+        // Cache it for potential re-execution
+        let addr = irsb.addr;
+        self.block_cache.insert(addr, irsb.clone());
+
+        // Execute the block
+        self.execute_cached_block(irsb)
+    }
+
     /// Fork the engine state.
     pub fn fork(&self) -> PyResult<Self> {
         Ok(RustVEXEngine {
@@ -469,11 +487,8 @@ impl RustVEXEngine {
         // Create interpreter
         let mut interp = VEXInterpreter::new(self.vex_arch, &ctx);
 
-        // Set up registers
-        for (i, &byte) in self.registers.iter().enumerate() {
-            // Write bytes directly to interpreter registers
-            // This is a simplified approach - in practice we'd use proper register file
-        }
+        // Copy registers from engine to interpreter
+        interp.registers.copy_from_bytes(&self.registers);
 
         // Set up memory
         for (addr, size, perms, data) in &self.memory_regions {
@@ -498,7 +513,10 @@ impl RustVEXEngine {
             Ok(result) => {
                 // Update our state from interpreter
                 self.pc = interp.get_pc();
-                // TODO: sync registers and memory back
+
+                // Sync registers back from interpreter to engine
+                interp.registers.copy_to_bytes(&mut self.registers);
+
                 Ok(ExecutionEvent::from_result(result))
             }
             Err(e) => Ok(ExecutionEvent::error(format!("{}", e))),

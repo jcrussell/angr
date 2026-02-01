@@ -67,6 +67,14 @@ impl VEXOps {
                 Ok(arg.truncate(to.bits(), ctx))
             }
 
+            // Extraction (unary form - low_bit is encoded in opcode)
+            IROp::Extract { from, to, low_bit } => {
+                debug_assert_eq!(arg.width(), from.bits());
+                let hi = low_bit as u32 + to.bits() - 1;
+                let lo = low_bit as u32;
+                Ok(arg.extract(hi, lo, ctx))
+            }
+
             // Float operations
             IROp::FNeg(ty) => Self::float_neg(arg, ty, ctx),
             IROp::FAbs(ty) => Self::float_abs(arg, ty, ctx),
