@@ -185,9 +185,9 @@ impl Arch for AMD64 {
             "cc_dep1" => Some(offsets::CC_DEP1),
             "cc_dep2" => Some(offsets::CC_DEP2),
             "cc_ndep" => Some(offsets::CC_NDEP),
-            "dflag" => Some(offsets::DFLAG),
-            "acflag" => Some(offsets::ACFLAG),
-            "idflag" => Some(offsets::IDFLAG),
+            "d" | "dflag" => Some(offsets::DFLAG),
+            "ac" | "acflag" => Some(offsets::ACFLAG),
+            "id" | "idflag" => Some(offsets::IDFLAG),
 
             // Segments
             "fs" | "fs_const" => Some(offsets::FS_CONST),
@@ -244,7 +244,7 @@ impl Arch for AMD64 {
             }
 
             // Flags thunks (64-bit)
-            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" | "dflag" | "acflag" | "idflag" => Some(8),
+            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" | "d" | "dflag" | "ac" | "acflag" | "id" | "idflag" => Some(8),
 
             // Segments (64-bit)
             "fs" | "fs_const" | "gs" | "gs_const" => Some(8),

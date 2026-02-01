@@ -138,9 +138,9 @@ impl Arch for X86 {
             "cc_dep1" => Some(offsets::CC_DEP1),
             "cc_dep2" => Some(offsets::CC_DEP2),
             "cc_ndep" => Some(offsets::CC_NDEP),
-            "dflag" => Some(offsets::DFLAG),
-            "idflag" => Some(offsets::IDFLAG),
-            "acflag" => Some(offsets::ACFLAG),
+            "d" | "dflag" => Some(offsets::DFLAG),
+            "id" | "idflag" => Some(offsets::IDFLAG),
+            "ac" | "acflag" => Some(offsets::ACFLAG),
 
             // Segments
             "cs" => Some(offsets::CS),
@@ -187,7 +187,7 @@ impl Arch for X86 {
             "al" | "cl" | "dl" | "bl" | "ah" | "ch" | "dh" | "bh" => Some(1),
 
             // Flags thunks (32-bit)
-            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" | "dflag" | "idflag" | "acflag" => Some(4),
+            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" | "d" | "dflag" | "id" | "idflag" | "ac" | "acflag" => Some(4),
 
             // Segments (16-bit selectors, 32-bit bases)
             "cs" | "ds" | "es" | "fs" | "gs" | "ss" => Some(2),
