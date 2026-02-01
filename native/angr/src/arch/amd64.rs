@@ -46,36 +46,36 @@ mod offsets {
     pub const FS_CONST: u32 = 208;
     pub const GS_CONST: u32 = 216;
 
-    // SSE control
-    pub const SSEROUND: u32 = 224;
+    // SSE control (per archinfo)
+    pub const SSEROUND: u32 = 216;
 
-    // XMM registers (128-bit each, 16 bytes)
-    pub const XMM0: u32 = 256;
-    pub const XMM1: u32 = 272;
+    // XMM registers (128-bit each, 16 bytes) - offsets per archinfo
+    pub const XMM0: u32 = 224;
+    pub const XMM1: u32 = 256;
     pub const XMM2: u32 = 288;
-    pub const XMM3: u32 = 304;
-    pub const XMM4: u32 = 320;
-    pub const XMM5: u32 = 336;
-    pub const XMM6: u32 = 352;
-    pub const XMM7: u32 = 368;
-    pub const XMM8: u32 = 384;
-    pub const XMM9: u32 = 400;
-    pub const XMM10: u32 = 416;
-    pub const XMM11: u32 = 432;
-    pub const XMM12: u32 = 448;
-    pub const XMM13: u32 = 464;
-    pub const XMM14: u32 = 480;
-    pub const XMM15: u32 = 496;
+    pub const XMM3: u32 = 320;
+    pub const XMM4: u32 = 352;
+    pub const XMM5: u32 = 384;
+    pub const XMM6: u32 = 416;
+    pub const XMM7: u32 = 448;
+    pub const XMM8: u32 = 480;
+    pub const XMM9: u32 = 512;
+    pub const XMM10: u32 = 544;
+    pub const XMM11: u32 = 576;
+    pub const XMM12: u32 = 608;
+    pub const XMM13: u32 = 640;
+    pub const XMM14: u32 = 672;
+    pub const XMM15: u32 = 704;
 
-    // FPU/MMX state
-    pub const FPREG: u32 = 512; // 8 x 80-bit FP registers
-    pub const FPTAG: u32 = 576;
-    pub const FPROUND: u32 = 584;
-    pub const FC3210: u32 = 592;
-    pub const FTOP: u32 = 600;
+    // FPU state (per archinfo)
+    pub const FTOP: u32 = 896;
+    pub const FPREG: u32 = 904; // 8 x 80-bit FP registers
+    pub const FPTAG: u32 = 968;
+    pub const FPROUND: u32 = 976;
+    pub const FC3210: u32 = 984;
 
     // Total guest state size
-    pub const GUEST_STATE_SIZE: usize = 720;
+    pub const GUEST_STATE_SIZE: usize = 992;
 }
 
 impl Arch for AMD64 {

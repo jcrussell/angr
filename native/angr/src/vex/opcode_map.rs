@@ -416,6 +416,16 @@ fn parse_float(op_str: &str) -> Option<IROp> {
         "Iop_SqrtF32" => Some(IROp::FSqrt(IRType::F32)),
         "Iop_SqrtF64" => Some(IROp::FSqrt(IRType::F64)),
 
+        // Scalar-in-vector float ops (SSE scalar: ADDSS, SUBSS, MULSS, DIVSS, etc.)
+        "Iop_Add32F0x4" => Some(IROp::VFAddS { elem: IRType::F32 }),
+        "Iop_Add64F0x2" => Some(IROp::VFAddS { elem: IRType::F64 }),
+        "Iop_Sub32F0x4" => Some(IROp::VFSubS { elem: IRType::F32 }),
+        "Iop_Sub64F0x2" => Some(IROp::VFSubS { elem: IRType::F64 }),
+        "Iop_Mul32F0x4" => Some(IROp::VFMulS { elem: IRType::F32 }),
+        "Iop_Mul64F0x2" => Some(IROp::VFMulS { elem: IRType::F64 }),
+        "Iop_Div32F0x4" => Some(IROp::VFDivS { elem: IRType::F32 }),
+        "Iop_Div64F0x2" => Some(IROp::VFDivS { elem: IRType::F64 }),
+
         // FP comparisons
         "Iop_CmpEQ32F0x4" | "Iop_CmpF32" => Some(IROp::FCmpEQ(IRType::F32)),
         "Iop_CmpEQ64F0x2" | "Iop_CmpF64" => Some(IROp::FCmpEQ(IRType::F64)),

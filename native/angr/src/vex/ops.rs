@@ -301,6 +301,12 @@ impl VEXOps {
             IROp::FCmpLT(ty) => Self::float_cmp_lt(left, right, ty, ctx),
             IROp::FCmpLE(ty) => Self::float_cmp_le(left, right, ty, ctx),
 
+            // Scalar-in-vector float operations (SSE scalar ops)
+            IROp::VFAddS { elem } => Self::vec_float_scalar_op(left, right, elem, "add", ctx),
+            IROp::VFSubS { elem } => Self::vec_float_scalar_op(left, right, elem, "sub", ctx),
+            IROp::VFMulS { elem } => Self::vec_float_scalar_op(left, right, elem, "mul", ctx),
+            IROp::VFDivS { elem } => Self::vec_float_scalar_op(left, right, elem, "div", ctx),
+
             // Vector bitwise
             IROp::VAnd(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
@@ -905,6 +911,63 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
+    /// Scalar float operation in vector (SSE scalar ops like ADDSS, DIVSS).
+    /// Operates on element 0 only, passes through other elements from left operand.
+    fn vec_float_scalar_op<'ctx>(
+        left: RustBV<'ctx>,
+        right: RustBV<'ctx>,
+        elem: IRType,
+        op: &str,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        debug_assert_eq!(left.width(), 128);
+        debug_assert_eq!(right.width(), 128);
+
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let result = match elem {
+                IRType::F32 => {
+                    // Extract element 0 (lowest 32 bits)
+                    let l0 = f32::from_bits(l as u32);
+                    let r0 = f32::from_bits(r as u32);
+
+                    // Perform operation on element 0
+                    let res0 = match op {
+                        "add" => l0 + r0,
+                        "sub" => l0 - r0,
+                        "mul" => l0 * r0,
+                        "div" => l0 / r0,
+                        _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_scalar_{}", op))),
+                    };
+
+                    // Keep upper 96 bits from left, replace lower 32 bits with result
+                    let upper = l & !0xFFFFFFFFu128;
+                    upper | (res0.to_bits() as u128)
+                }
+                IRType::F64 => {
+                    // Extract element 0 (lowest 64 bits)
+                    let l0 = f64::from_bits(l as u64);
+                    let r0 = f64::from_bits(r as u64);
+
+                    // Perform operation on element 0
+                    let res0 = match op {
+                        "add" => l0 + r0,
+                        "sub" => l0 - r0,
+                        "mul" => l0 * r0,
+                        "div" => l0 / r0,
+                        _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_scalar_{}", op))),
+                    };
+
+                    // Keep upper 64 bits from left, replace lower 64 bits with result
+                    let upper = l & !0xFFFFFFFFFFFFFFFFu128;
+                    upper | (res0.to_bits() as u128)
+                }
+                _ => return Err(OpError::InvalidFloatType(elem)),
+            };
+            return Ok(RustBV::concrete(result, 128));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
     fn float_cmp_eq<'ctx>(
         left: RustBV<'ctx>,
         right: RustBV<'ctx>,
@@ -1402,5 +1465,45 @@ mod tests {
         // PopCount
         let pop = VEXOps::unop(IROp::PopCount(IRType::I16), a, &ctx).unwrap();
         assert_eq!(pop.as_u64(), Some(4)); // 4 bits set
+    }
+
+    #[test]
+    fn test_vec_float_scalar_add() {
+        let ctx = SymContext::new_mock();
+
+        // SSE scalar add: ADDSS xmm0, xmm1
+        // xmm0 = [4.0f, 0, 0, 0], xmm1 = [2.0f, 0, 0, 0]
+        // Result: xmm0 = [6.0f, 0, 0, 0]
+        let f4_bits = 4.0f32.to_bits() as u128;
+        let f2_bits = 2.0f32.to_bits() as u128;
+
+        let xmm0 = RustBV::concrete(f4_bits, 128);
+        let xmm1 = RustBV::concrete(f2_bits, 128);
+
+        let result = VEXOps::binop(IROp::VFAddS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let result_val = result.as_u128().unwrap();
+        let result_f32 = f32::from_bits((result_val & 0xFFFFFFFF) as u32);
+
+        assert!((result_f32 - 6.0).abs() < 0.0001, "Expected 6.0, got {}", result_f32);
+    }
+
+    #[test]
+    fn test_vec_float_scalar_div() {
+        let ctx = SymContext::new_mock();
+
+        // SSE scalar div: DIVSS xmm0, xmm1
+        // xmm0 = [6.0f, 0, 0, 0], xmm1 = [2.0f, 0, 0, 0]
+        // Result: xmm0 = [3.0f, 0, 0, 0]
+        let f6_bits = 6.0f32.to_bits() as u128;
+        let f2_bits = 2.0f32.to_bits() as u128;
+
+        let xmm0 = RustBV::concrete(f6_bits, 128);
+        let xmm1 = RustBV::concrete(f2_bits, 128);
+
+        let result = VEXOps::binop(IROp::VFDivS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let result_val = result.as_u128().unwrap();
+        let result_f32 = f32::from_bits((result_val & 0xFFFFFFFF) as u32);
+
+        assert!((result_f32 - 3.0).abs() < 0.0001, "Expected 3.0, got {}", result_f32);
     }
 }

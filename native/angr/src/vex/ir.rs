@@ -602,6 +602,19 @@ pub enum IROp {
     RoundF64toInt,
 
     // =========================================================================
+    // Scalar-in-vector float operations (SSE scalar ops)
+    // These operate on element 0 only, passing through other elements.
+    // =========================================================================
+    /// Scalar float add in vector (e.g., Add32F0x4 for ADDSS)
+    VFAddS { elem: IRType },
+    /// Scalar float sub in vector (e.g., Sub32F0x4 for SUBSS)
+    VFSubS { elem: IRType },
+    /// Scalar float mul in vector (e.g., Mul32F0x4 for MULSS)
+    VFMulS { elem: IRType },
+    /// Scalar float div in vector (e.g., Div32F0x4 for DIVSS)
+    VFDivS { elem: IRType },
+
+    // =========================================================================
     // SIMD / Vector operations (parameterized)
     // =========================================================================
     /// Vector add: (element_type, num_elements)
@@ -733,6 +746,11 @@ impl IROp {
             | IROp::FSqrt(t) => Some(*t),
 
             IROp::FCmpEQ(_) | IROp::FCmpLT(_) | IROp::FCmpLE(_) => Some(IRType::I1),
+
+            // Scalar-in-vector float ops return V128
+            IROp::VFAddS { elem } | IROp::VFSubS { elem } | IROp::VFMulS { elem } | IROp::VFDivS { elem } => {
+                Some(IRType::V128)
+            }
 
             // Float conversions
             IROp::F32toF64 => Some(IRType::F64),

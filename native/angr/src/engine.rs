@@ -269,7 +269,8 @@ impl RustVEXEngine {
     }
 
     /// Get a register value.
-    pub fn get_register(&self, name: &str) -> PyResult<u64> {
+    /// Returns u128 to handle XMM and other large registers (Python BigInt handles this).
+    pub fn get_register(&self, name: &str) -> PyResult<u128> {
         let arch = arch_from_name(&self.arch_name).unwrap();
         let offset = arch.register_offset(name).ok_or_else(|| {
             PyValueError::new_err(format!("unknown register: {}", name))
@@ -282,15 +283,16 @@ impl RustVEXEngine {
             return Err(PyValueError::new_err("register out of bounds"));
         }
 
-        let mut value: u64 = 0;
+        let mut value: u128 = 0;
         for i in 0..size {
-            value |= (self.registers[offset + i] as u64) << (i * 8);
+            value |= (self.registers[offset + i] as u128) << (i * 8);
         }
         Ok(value)
     }
 
     /// Set a register value.
-    pub fn set_register(&mut self, name: &str, value: u64) -> PyResult<()> {
+    /// Accepts u128 to handle XMM and other large registers (Python BigInt handles this).
+    pub fn set_register(&mut self, name: &str, value: u128) -> PyResult<()> {
         let arch = arch_from_name(&self.arch_name).unwrap();
         let offset = arch.register_offset(name).ok_or_else(|| {
             PyValueError::new_err(format!("unknown register: {}", name))
