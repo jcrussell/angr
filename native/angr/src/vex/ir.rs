@@ -613,6 +613,16 @@ pub enum IROp {
     VFMulS { elem: IRType },
     /// Scalar float div in vector (e.g., Div32F0x4 for DIVSS)
     VFDivS { elem: IRType },
+    /// Scalar float sqrt in vector (e.g., Sqrt32F0x4 for SQRTSS)
+    VFSqrtS { elem: IRType },
+    /// Scalar float max in vector (e.g., Max32F0x4 for MAXSS)
+    VFMaxS { elem: IRType },
+    /// Scalar float min in vector (e.g., Min32F0x4 for MINSS)
+    VFMinS { elem: IRType },
+    /// Set low 32 bits of V128 (used by SSE scalar ops)
+    SetV128lo32,
+    /// Set low 64 bits of V128
+    SetV128lo64,
 
     // =========================================================================
     // SIMD / Vector operations (parameterized)
@@ -748,9 +758,13 @@ impl IROp {
             IROp::FCmpEQ(_) | IROp::FCmpLT(_) | IROp::FCmpLE(_) => Some(IRType::I1),
 
             // Scalar-in-vector float ops return V128
-            IROp::VFAddS { elem } | IROp::VFSubS { elem } | IROp::VFMulS { elem } | IROp::VFDivS { elem } => {
+            IROp::VFAddS { elem } | IROp::VFSubS { elem } | IROp::VFMulS { elem } | IROp::VFDivS { elem }
+            | IROp::VFSqrtS { elem } | IROp::VFMaxS { elem } | IROp::VFMinS { elem } => {
                 Some(IRType::V128)
             }
+
+            // SetV128lo ops return V128
+            IROp::SetV128lo32 | IROp::SetV128lo64 => Some(IRType::V128),
 
             // Float conversions
             IROp::F32toF64 => Some(IRType::F64),

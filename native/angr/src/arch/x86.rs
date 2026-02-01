@@ -10,9 +10,10 @@ use crate::vex::VexArch;
 #[derive(Debug, Clone, Copy)]
 pub struct X86;
 
-// x86 VEX guest state offsets (from VEX/pub/libvex_guest_x86.h)
-// These match the VexGuestX86State structure layout.
+// x86 VEX guest state offsets (from archinfo.ArchX86)
+// These match pyvex's register layout for compatibility.
 mod offsets {
+    // General purpose registers
     pub const EAX: u32 = 8;
     pub const ECX: u32 = 12;
     pub const EDX: u32 = 16;
@@ -22,52 +23,53 @@ mod offsets {
     pub const ESI: u32 = 32;
     pub const EDI: u32 = 36;
 
-    // Flags
+    // Flags thunks
     pub const CC_OP: u32 = 40;
     pub const CC_DEP1: u32 = 44;
     pub const CC_DEP2: u32 = 48;
     pub const CC_NDEP: u32 = 52;
 
-    // Other
+    // Other flags
     pub const DFLAG: u32 = 56;
     pub const IDFLAG: u32 = 60;
     pub const ACFLAG: u32 = 64;
     pub const EIP: u32 = 68;
 
-    // Segment selectors
-    pub const CS: u32 = 72;
-    pub const DS: u32 = 74;
-    pub const ES: u32 = 76;
-    pub const FS: u32 = 78;
-    pub const GS: u32 = 80;
-    pub const SS: u32 = 82;
-
-    // Segment base addresses
-    pub const LDT: u32 = 84;
-    pub const GDT: u32 = 88;
-    pub const FS_CONST: u32 = 92;
-    pub const GS_CONST: u32 = 96;
+    // FPU registers (before SSE in archinfo layout)
+    pub const FPREG: u32 = 72;
+    pub const FPTAG: u32 = 136;
+    pub const FPROUND: u32 = 144;
+    pub const FC3210: u32 = 148;
+    pub const FTOP: u32 = 152;
 
     // SSE
-    pub const SSEROUND: u32 = 100;
-    pub const XMM0: u32 = 112;
-    pub const XMM1: u32 = 128;
-    pub const XMM2: u32 = 144;
-    pub const XMM3: u32 = 160;
-    pub const XMM4: u32 = 176;
-    pub const XMM5: u32 = 192;
-    pub const XMM6: u32 = 208;
-    pub const XMM7: u32 = 224;
+    pub const SSEROUND: u32 = 156;
+    pub const XMM0: u32 = 160;
+    pub const XMM1: u32 = 176;
+    pub const XMM2: u32 = 192;
+    pub const XMM3: u32 = 208;
+    pub const XMM4: u32 = 224;
+    pub const XMM5: u32 = 240;
+    pub const XMM6: u32 = 256;
+    pub const XMM7: u32 = 272;
 
-    // FPU
-    pub const FPREG: u32 = 240;
-    pub const FPTAG: u32 = 304;
-    pub const FPROUND: u32 = 312;
-    pub const FC3210: u32 = 316;
-    pub const FTOP: u32 = 320;
+    // Segment selectors (after XMM registers)
+    pub const CS: u32 = 288;
+    pub const DS: u32 = 290;
+    pub const ES: u32 = 292;
+    pub const FS: u32 = 294;
+    pub const GS: u32 = 296;
+    pub const SS: u32 = 298;
 
-    // Total guest state size
-    pub const GUEST_STATE_SIZE: usize = 340;
+    // Segment base addresses
+    pub const LDT: u32 = 304;
+    pub const GDT: u32 = 312;
+    // Note: fs_const/gs_const not in archinfo for x86, using placeholders
+    pub const FS_CONST: u32 = 320;
+    pub const GS_CONST: u32 = 324;
+
+    // Total guest state size (must cover all registers)
+    pub const GUEST_STATE_SIZE: usize = 344;
 }
 
 impl Arch for X86 {

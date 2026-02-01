@@ -16,6 +16,15 @@ from .divergence import DivergenceTracker, DivergenceCategory
 from .generators.arithmetic import generate_add_tests, generate_sub_tests, generate_mul_tests
 from .generators.bitwise import generate_and_tests, generate_or_tests, generate_xor_tests, generate_shift_tests
 from .generators.memory import generate_mov_tests, generate_movzx_tests, generate_lea_tests
+from .generators.floating_point import (
+    generate_addss_tests, generate_subss_tests, generate_mulss_tests, generate_divss_tests,
+    generate_cvtsi2ss_tests, generate_cvtss2si_tests, float_to_xmm,
+)
+from .generators.comparison import generate_cmp_setz_tests, generate_test_setz_tests
+from .generators.bit_manipulation import generate_popcnt_tests, generate_bsf_tests
+from .generators.vector_simd import generate_paddb_tests, generate_psubb_tests, generate_pand_tests
+from .generators.advanced_arithmetic import generate_adc_tests, generate_shld_tests
+from .generators.fp_extended import generate_sqrtsd_tests, generate_maxss_tests, generate_cvtsd2ss_tests
 
 # Import Rust engine availability
 try:
@@ -174,6 +183,228 @@ class TestTier1Memory:
                 tracker.record_from_comparison(result)
 
 
+class TestTier1FloatingPoint:
+    """Tier 1 tests for floating point operations."""
+
+    def test_addss_batch(self, harness, tracker):
+        """Run 5 ADDSS (scalar single FP add) instruction tests."""
+        tests = list(generate_addss_tests(count=5, base_seed=0xF1A00001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_subss_batch(self, harness, tracker):
+        """Run 5 SUBSS (scalar single FP subtract) instruction tests."""
+        tests = list(generate_subss_tests(count=5, base_seed=0xF1500001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_mulss_batch(self, harness, tracker):
+        """Run 5 MULSS (scalar single FP multiply) instruction tests."""
+        tests = list(generate_mulss_tests(count=5, base_seed=0xF1B00001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_divss_batch(self, harness, tracker):
+        """Run 5 DIVSS (scalar single FP divide) instruction tests."""
+        tests = list(generate_divss_tests(count=5, base_seed=0xF1D00001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_cvtsi2ss_batch(self, harness, tracker):
+        """Run 5 CVTSI2SS (int to float) instruction tests."""
+        tests = list(generate_cvtsi2ss_tests(count=5, base_seed=0xF1C00001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_cvtss2si_batch(self, harness, tracker):
+        """Run 5 CVTSS2SI (float to int) instruction tests."""
+        tests = list(generate_cvtss2si_tests(count=5, base_seed=0xF1200001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+
+class TestTier1Comparison:
+    """Tier 1 tests for comparison instructions (CMP, TEST, SETcc)."""
+
+    def test_cmp_setz_batch(self, harness, tracker):
+        """Run 10 CMP + SETZ instruction tests."""
+        tests = list(generate_cmp_setz_tests(count=10, base_seed=0xC0100001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_test_setz_batch(self, harness, tracker):
+        """Run 10 TEST + SETZ instruction tests."""
+        tests = list(generate_test_setz_tests(count=10, base_seed=0xC0200001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+
+class TestTier1BitManipulation:
+    """Tier 1 tests for bit manipulation instructions."""
+
+    def test_popcnt_batch(self, harness, tracker):
+        """Run 10 POPCNT instruction tests."""
+        tests = list(generate_popcnt_tests(count=10, base_seed=0xB1100001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_bsf_batch(self, harness, tracker):
+        """Run 10 BSF instruction tests."""
+        tests = list(generate_bsf_tests(count=10, base_seed=0xB1200001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+
+class TestTier1VectorSIMD:
+    """Tier 1 tests for vector SIMD instructions."""
+
+    def test_paddb_batch(self, harness, tracker):
+        """Run 10 PADDB instruction tests."""
+        tests = list(generate_paddb_tests(count=10, base_seed=0xD0100001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_psubb_batch(self, harness, tracker):
+        """Run 10 PSUBB instruction tests."""
+        tests = list(generate_psubb_tests(count=10, base_seed=0xD0200001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_pand_batch(self, harness, tracker):
+        """Run 10 PAND instruction tests."""
+        tests = list(generate_pand_tests(count=10, base_seed=0xD0300001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+
+class TestTier1AdvancedArithmetic:
+    """Tier 1 tests for advanced arithmetic instructions."""
+
+    def test_adc_batch(self, harness, tracker):
+        """Run 10 ADC instruction tests."""
+        tests = list(generate_adc_tests(count=10, base_seed=0xA0100001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_shld_batch(self, harness, tracker):
+        """Run 10 SHLD instruction tests."""
+        tests = list(generate_shld_tests(count=10, base_seed=0xA0200001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+
+class TestTier1FPExtended:
+    """Tier 1 tests for extended floating point instructions."""
+
+    def test_sqrtsd_batch(self, harness, tracker):
+        """Run 5 SQRTSD instruction tests."""
+        tests = list(generate_sqrtsd_tests(count=5, base_seed=0xF3100001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_maxss_batch(self, harness, tracker):
+        """Run 5 MAXSS instruction tests."""
+        tests = list(generate_maxss_tests(count=5, base_seed=0xF3200001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+    def test_cvtsd2ss_batch(self, harness, tracker):
+        """Run 5 CVTSD2SS instruction tests."""
+        tests = list(generate_cvtsd2ss_tests(count=5, base_seed=0xF3300001))
+
+        for test in tests:
+            result = harness.compare(test)
+            if result.match:
+                tracker.record_pass()
+            else:
+                tracker.record_from_comparison(result)
+
+
 class TestTier1Summary:
     """Generate summary report after all Tier 1 tests."""
 
@@ -258,3 +489,55 @@ def test_shl_specific_seeds(seed, eax, ecx):
 
     result = harness.compare(test)
     assert result.match, f"SHL diverged: {result.register_diffs}"
+
+
+@pytest.mark.parametrize("seed,f1,f2", [
+    (0xF0000001, 0.0, 0.0),
+    (0xF0000002, 1.0, 1.0),
+    (0xF0000003, 4.0, 2.0),
+    (0xF0000004, -1.0, 1.0),
+    (0xF0000005, 3.14159265, 2.71828182),
+])
+def test_addss_specific_seeds(seed, f1, f2):
+    """Test ADDSS with specific seed values for reproducibility."""
+    if not RUST_ENGINE_AVAILABLE:
+        pytest.skip("Rust VEX engine not available")
+
+    harness = DifferentialHarness(arch="x86")
+    test = DifferentialTestCase(
+        name=f"addss_seed_{seed:08x}",
+        shellcode=bytes([0xF3, 0x0F, 0x58, 0xC1]),  # addss xmm0, xmm1
+        initial_regs={"xmm0": float_to_xmm(f1), "xmm1": float_to_xmm(f2)},
+        compare_regs=["xmm0"],
+        seed=seed,
+        arch="x86",
+    )
+
+    result = harness.compare(test)
+    assert result.match, f"ADDSS diverged: {result.register_diffs}"
+
+
+@pytest.mark.parametrize("seed,f1,f2", [
+    (0xF1000001, 1.0, 1.0),
+    (0xF1000002, 4.0, 2.0),
+    (0xF1000003, 10.0, 3.0),
+    (0xF1000004, 100.0, 10.0),
+    (0xF1000005, 1.0, 0.5),
+])
+def test_divss_specific_seeds(seed, f1, f2):
+    """Test DIVSS with specific seed values for reproducibility."""
+    if not RUST_ENGINE_AVAILABLE:
+        pytest.skip("Rust VEX engine not available")
+
+    harness = DifferentialHarness(arch="x86")
+    test = DifferentialTestCase(
+        name=f"divss_seed_{seed:08x}",
+        shellcode=bytes([0xF3, 0x0F, 0x5E, 0xC1]),  # divss xmm0, xmm1
+        initial_regs={"xmm0": float_to_xmm(f1), "xmm1": float_to_xmm(f2)},
+        compare_regs=["xmm0"],
+        seed=seed,
+        arch="x86",
+    )
+
+    result = harness.compare(test)
+    assert result.match, f"DIVSS diverged: {result.register_diffs}"

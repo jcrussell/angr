@@ -120,6 +120,9 @@ impl VEXOps {
                 }
             }
 
+            // Scalar-in-vector sqrt (SQRTSS/SQRTSD)
+            IROp::VFSqrtS { elem } => Self::vec_float_scalar_sqrt(arg, elem, ctx),
+
             _ => Err(OpError::NotUnary(op)),
         }
     }
@@ -348,6 +351,53 @@ impl VEXOps {
 
             // Raw opcode
             IROp::Raw(code) => Err(OpError::RawOpcode(code)),
+
+            // Float conversions that take a rounding mode as the first argument
+            // The rounding mode (left) is ignored for now - we use default rounding
+            IROp::F64toF32 => {
+                // left = rounding mode (ignored), right = F64 value
+                Self::f64_to_f32(right, ctx)
+            }
+            IROp::F32toI32S => {
+                // left = rounding mode (ignored), right = F32 value
+                Self::f32_to_i32s(right, ctx)
+            }
+            IROp::F64toI32S => {
+                // left = rounding mode (ignored), right = F64 value
+                Self::f64_to_i32s(right, ctx)
+            }
+            IROp::F32toI64S => {
+                Self::f32_to_i64s(right, ctx)
+            }
+            IROp::F64toI64S => {
+                Self::f64_to_i64s(right, ctx)
+            }
+            IROp::F32toI32U => {
+                Self::f32_to_i32u(right, ctx)
+            }
+            IROp::F64toI32U => {
+                Self::f64_to_i32u(right, ctx)
+            }
+            IROp::F32toI64U => {
+                Self::f32_to_i64u(right, ctx)
+            }
+            IROp::F64toI64U => {
+                Self::f64_to_i64u(right, ctx)
+            }
+
+            // Scalar-in-vector max/min
+            IROp::VFMaxS { elem } => Self::vec_float_scalar_max(left, right, elem, ctx),
+            IROp::VFMinS { elem } => Self::vec_float_scalar_min(left, right, elem, ctx),
+
+            // SetV128lo: set low bits of V128
+            IROp::SetV128lo32 => {
+                // left = V128, right = I32 value to put in low 32 bits
+                Self::set_v128_lo32(left, right, ctx)
+            }
+            IROp::SetV128lo64 => {
+                // left = V128, right = I64 value to put in low 64 bits
+                Self::set_v128_lo64(left, right, ctx)
+            }
 
             _ => Err(OpError::NotBinary(op)),
         }
@@ -966,6 +1016,143 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, 128));
         }
         Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    /// Scalar sqrt in vector (SQRTSS/SQRTSD).
+    fn vec_float_scalar_sqrt<'ctx>(
+        arg: RustBV<'ctx>,
+        elem: IRType,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        debug_assert_eq!(arg.width(), 128);
+
+        if let Some(v) = arg.as_u128() {
+            let result = match elem {
+                IRType::F32 => {
+                    let val = f32::from_bits(v as u32);
+                    let res = val.sqrt();
+                    // Keep upper 96 bits, replace lower 32 bits with result
+                    let upper = v & !0xFFFFFFFFu128;
+                    upper | (res.to_bits() as u128)
+                }
+                IRType::F64 => {
+                    let val = f64::from_bits(v as u64);
+                    let res = val.sqrt();
+                    // Keep upper 64 bits, replace lower 64 bits with result
+                    let upper = v & !0xFFFFFFFFFFFFFFFFu128;
+                    upper | (res.to_bits() as u128)
+                }
+                _ => return Err(OpError::InvalidFloatType(elem)),
+            };
+            return Ok(RustBV::concrete(result, 128));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    /// Scalar max in vector (MAXSS/MAXSD).
+    fn vec_float_scalar_max<'ctx>(
+        left: RustBV<'ctx>,
+        right: RustBV<'ctx>,
+        elem: IRType,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        debug_assert_eq!(left.width(), 128);
+        debug_assert_eq!(right.width(), 128);
+
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let result = match elem {
+                IRType::F32 => {
+                    let l0 = f32::from_bits(l as u32);
+                    let r0 = f32::from_bits(r as u32);
+                    let res0 = if l0 > r0 { l0 } else { r0 };
+                    let upper = l & !0xFFFFFFFFu128;
+                    upper | (res0.to_bits() as u128)
+                }
+                IRType::F64 => {
+                    let l0 = f64::from_bits(l as u64);
+                    let r0 = f64::from_bits(r as u64);
+                    let res0 = if l0 > r0 { l0 } else { r0 };
+                    let upper = l & !0xFFFFFFFFFFFFFFFFu128;
+                    upper | (res0.to_bits() as u128)
+                }
+                _ => return Err(OpError::InvalidFloatType(elem)),
+            };
+            return Ok(RustBV::concrete(result, 128));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    /// Scalar min in vector (MINSS/MINSD).
+    fn vec_float_scalar_min<'ctx>(
+        left: RustBV<'ctx>,
+        right: RustBV<'ctx>,
+        elem: IRType,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        debug_assert_eq!(left.width(), 128);
+        debug_assert_eq!(right.width(), 128);
+
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let result = match elem {
+                IRType::F32 => {
+                    let l0 = f32::from_bits(l as u32);
+                    let r0 = f32::from_bits(r as u32);
+                    let res0 = if l0 < r0 { l0 } else { r0 };
+                    let upper = l & !0xFFFFFFFFu128;
+                    upper | (res0.to_bits() as u128)
+                }
+                IRType::F64 => {
+                    let l0 = f64::from_bits(l as u64);
+                    let r0 = f64::from_bits(r as u64);
+                    let res0 = if l0 < r0 { l0 } else { r0 };
+                    let upper = l & !0xFFFFFFFFFFFFFFFFu128;
+                    upper | (res0.to_bits() as u128)
+                }
+                _ => return Err(OpError::InvalidFloatType(elem)),
+            };
+            return Ok(RustBV::concrete(result, 128));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    /// Set low 32 bits of V128.
+    fn set_v128_lo32<'ctx>(
+        vec: RustBV<'ctx>,
+        val: RustBV<'ctx>,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        debug_assert_eq!(vec.width(), 128);
+        debug_assert_eq!(val.width(), 32);
+
+        if let (Some(v), Some(lo)) = (vec.as_u128(), val.as_u128()) {
+            let upper = v & !0xFFFFFFFFu128;
+            let result = upper | (lo & 0xFFFFFFFF);
+            return Ok(RustBV::concrete(result, 128));
+        }
+        // For symbolic, concatenate upper 96 bits with the value
+        let upper = vec.extract(127, 32, ctx);
+        let result = upper.concat(&val, ctx);
+        Ok(result)
+    }
+
+    /// Set low 64 bits of V128.
+    fn set_v128_lo64<'ctx>(
+        vec: RustBV<'ctx>,
+        val: RustBV<'ctx>,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        debug_assert_eq!(vec.width(), 128);
+        debug_assert_eq!(val.width(), 64);
+
+        if let (Some(v), Some(lo)) = (vec.as_u128(), val.as_u128()) {
+            let upper = v & !0xFFFFFFFFFFFFFFFFu128;
+            let result = upper | (lo & 0xFFFFFFFFFFFFFFFF);
+            return Ok(RustBV::concrete(result, 128));
+        }
+        // For symbolic, concatenate upper 64 bits with the value
+        let upper = vec.extract(127, 64, ctx);
+        let result = upper.concat(&val, ctx);
+        Ok(result)
     }
 
     fn float_cmp_eq<'ctx>(

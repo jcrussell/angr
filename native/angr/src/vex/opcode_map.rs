@@ -425,6 +425,16 @@ fn parse_float(op_str: &str) -> Option<IROp> {
         "Iop_Mul64F0x2" => Some(IROp::VFMulS { elem: IRType::F64 }),
         "Iop_Div32F0x4" => Some(IROp::VFDivS { elem: IRType::F32 }),
         "Iop_Div64F0x2" => Some(IROp::VFDivS { elem: IRType::F64 }),
+        "Iop_Sqrt32F0x4" => Some(IROp::VFSqrtS { elem: IRType::F32 }),
+        "Iop_Sqrt64F0x2" => Some(IROp::VFSqrtS { elem: IRType::F64 }),
+        "Iop_Max32F0x4" => Some(IROp::VFMaxS { elem: IRType::F32 }),
+        "Iop_Max64F0x2" => Some(IROp::VFMaxS { elem: IRType::F64 }),
+        "Iop_Min32F0x4" => Some(IROp::VFMinS { elem: IRType::F32 }),
+        "Iop_Min64F0x2" => Some(IROp::VFMinS { elem: IRType::F64 }),
+
+        // SetV128lo operations
+        "Iop_SetV128lo32" => Some(IROp::SetV128lo32),
+        "Iop_SetV128lo64" => Some(IROp::SetV128lo64),
 
         // FP comparisons
         "Iop_CmpEQ32F0x4" | "Iop_CmpF32" => Some(IROp::FCmpEQ(IRType::F32)),

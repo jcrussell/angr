@@ -754,4 +754,49 @@ mod tests {
         assert!(matches!(parse_arch("AARCH64"), Ok(VexArch::ARM64)));
         assert!(parse_arch("invalid").is_err());
     }
+
+    #[test]
+    fn test_addss_irsb_parsing() {
+        // This is the exact JSON from ADDSS xmm0, xmm1 (f3 0f 58 c1)
+        let json = r#"{
+            "addr": 4096,
+            "arch": "X86",
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                {"tag": "Ist_WrTmp", "tmp": 1, "data": {"tag": "Iex_Get", "offset": 176, "ty": "Ity_V128"}},
+                {"tag": "Ist_WrTmp", "tmp": 2, "data": {"tag": "Iex_Get", "offset": 160, "ty": "Ity_V128"}},
+                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                    "tag": "Iex_Binop",
+                    "op": "Iop_Add32F0x4",
+                    "args": [
+                        {"tag": "Iex_RdTmp", "tmp": 2},
+                        {"tag": "Iex_RdTmp", "tmp": 1}
+                    ]
+                }},
+                {"tag": "Ist_Put", "offset": 160, "data": {"tag": "Iex_RdTmp", "tmp": 0}}
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U32", "value": 4100}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": 68,
+            "tyenv": {"types": ["Ity_V128", "Ity_V128", "Ity_V128", "Ity_I32"]}
+        }"#;
+
+        let irsb = deserialize_irsb(json).unwrap();
+        assert_eq!(irsb.addr, 4096);
+        assert_eq!(irsb.statements.len(), 5);
+        assert!(matches!(irsb.arch, VexArch::X86));
+
+        // Check that the binop is VFAddS
+        if let IRStmt::WrTmp { tmp, data } = &irsb.statements[3] {
+            assert_eq!(*tmp, 0);
+            if let IRExpr::Binop { op, left, right } = data {
+                println!("Parsed opcode: {:?}", op);
+                assert!(matches!(op, IROp::VFAddS { elem: IRType::F32 }), "Expected VFAddS{{F32}}, got {:?}", op);
+            } else {
+                panic!("Expected Binop expression");
+            }
+        } else {
+            panic!("Expected WrTmp statement");
+        }
+    }
 }

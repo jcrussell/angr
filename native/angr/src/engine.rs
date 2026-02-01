@@ -578,4 +578,65 @@ mod tests {
             assert_eq!(data, vec![1, 2, 3, 4]);
         });
     }
+
+    #[test]
+    fn test_x86_addss_full_flow() {
+        // This tests the full execute_irsb_json flow for x86 ADDSS
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|_py| {
+            let mut engine = RustVEXEngine::new("x86").unwrap();
+
+            // Set XMM0 = 1.0f, XMM1 = 2.0f
+            let f1_bits = 1.0f32.to_bits() as u128;
+            let f2_bits = 2.0f32.to_bits() as u128;
+            engine.set_register("xmm0", f1_bits).unwrap();
+            engine.set_register("xmm1", f2_bits).unwrap();
+
+            println!("Before: xmm0 = 0x{:x}", engine.get_register("xmm0").unwrap());
+            println!("Before: xmm1 = 0x{:x}", engine.get_register("xmm1").unwrap());
+            println!("Engine registers size: {}", engine.registers.len());
+
+            // Map memory for the instruction
+            engine.map_memory(0x1000, 0x1000, 7);
+            engine.map_memory_data(0x1000, &[0xf3, 0x0f, 0x58, 0xc1], 7);  // ADDSS xmm0, xmm1
+
+            // Set PC
+            engine.pc = 0x1000;
+
+            // ADDSS xmm0, xmm1 VEX IR JSON
+            let irsb_json = r#"{
+                "addr": 4096,
+                "arch": "X86",
+                "statements": [
+                    {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                    {"tag": "Ist_WrTmp", "tmp": 1, "data": {"tag": "Iex_Get", "offset": 176, "ty": "Ity_V128"}},
+                    {"tag": "Ist_WrTmp", "tmp": 2, "data": {"tag": "Iex_Get", "offset": 160, "ty": "Ity_V128"}},
+                    {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                        "tag": "Iex_Binop",
+                        "op": "Iop_Add32F0x4",
+                        "args": [
+                            {"tag": "Iex_RdTmp", "tmp": 2},
+                            {"tag": "Iex_RdTmp", "tmp": 1}
+                        ]
+                    }},
+                    {"tag": "Ist_Put", "offset": 160, "data": {"tag": "Iex_RdTmp", "tmp": 0}}
+                ],
+                "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U32", "value": 4100}},
+                "jumpkind": "Ijk_Boring",
+                "offsIP": 68,
+                "tyenv": {"types": ["Ity_V128", "Ity_V128", "Ity_V128", "Ity_I32"]}
+            }"#;
+
+            // Execute
+            let result = engine.execute_irsb_json(irsb_json).unwrap();
+            println!("Result: event_type={}, error={:?}", result.event_type, result.error);
+
+            // Check result
+            let xmm0_after = engine.get_register("xmm0").unwrap();
+            println!("After: xmm0 = 0x{:x}", xmm0_after);
+
+            let expected = 3.0f32.to_bits() as u128;
+            assert_eq!(xmm0_after & 0xFFFFFFFF, expected, "ADDSS should produce 3.0f");
+        });
+    }
 }

@@ -694,4 +694,84 @@ mod tests {
         let rax = interp.registers.get(16, 8, &ctx);
         assert_eq!(rax.as_u64(), Some(0x12345678));
     }
+
+    #[test]
+    fn test_sse_addss() {
+        // Test ADDSS: xmm0 = xmm0 + xmm1 (scalar float add)
+        // XMM0: 1.0f, XMM1: 2.0f, Result: 3.0f
+        let ctx = SymContext::new_mock();
+        let mut interp = VEXInterpreter::new(VexArch::X86, &ctx);
+
+        // X86 offsets: XMM0 = 160, XMM1 = 176
+        let xmm0_offset = 160u32;
+        let xmm1_offset = 176u32;
+
+        // Set XMM0 = 1.0f (as 128-bit value with 1.0f in low 32 bits)
+        let f1_bits = 1.0f32.to_bits() as u128;
+        interp.registers.put(xmm0_offset, RustBV::concrete(f1_bits, 128));
+
+        // Set XMM1 = 2.0f
+        let f2_bits = 2.0f32.to_bits() as u128;
+        interp.registers.put(xmm1_offset, RustBV::concrete(f2_bits, 128));
+
+        // Build IRSB for ADDSS:
+        // t1 = GET:V128(176)  ; xmm1
+        // t2 = GET:V128(160)  ; xmm0
+        // t0 = Add32F0x4(t2, t1)
+        // PUT(160) = t0
+        let mut builder = IRSBBuilder::new(0x1000, VexArch::X86);
+        builder.offs_ip(68);  // EIP offset for x86
+        builder.imark(0x1000, 4);
+
+        // t1 = GET:V128(xmm1)
+        let t1 = builder.new_tmp(IRType::V128);
+        builder.wrtmp(t1, IRExpr::get(xmm1_offset, IRType::V128));
+
+        // t2 = GET:V128(xmm0)
+        let t2 = builder.new_tmp(IRType::V128);
+        builder.wrtmp(t2, IRExpr::get(xmm0_offset, IRType::V128));
+
+        // t0 = VFAddS{F32}(t2, t1)
+        let t0 = builder.new_tmp(IRType::V128);
+        builder.wrtmp(
+            t0,
+            IRExpr::binop(
+                IROp::VFAddS { elem: IRType::F32 },
+                IRExpr::tmp(t2),
+                IRExpr::tmp(t1),
+            ),
+        );
+
+        // PUT(xmm0) = t0
+        builder.put(xmm0_offset, IRExpr::tmp(t0));
+
+        // Next: 0x1004
+        builder.next(IRExpr::const_u32(0x1004), JumpKind::Boring);
+
+        let irsb = builder.build();
+
+        // Print IRSB for debugging
+        println!("IRSB: {:?}", irsb);
+
+        // Print initial register values
+        let xmm0_before = interp.registers.get(xmm0_offset, 16, &ctx);
+        let xmm1_before = interp.registers.get(xmm1_offset, 16, &ctx);
+        println!("XMM0 before: {:?}", xmm0_before.as_u128());
+        println!("XMM1 before: {:?}", xmm1_before.as_u128());
+
+        // Execute
+        let result = interp.execute_block(&irsb);
+        println!("Execution result: {:?}", result);
+
+        // Check XMM0 = 3.0f
+        let xmm0_after = interp.registers.get(xmm0_offset, 16, &ctx);
+        println!("XMM0 after: {:?}", xmm0_after.as_u128());
+
+        let expected = 3.0f32.to_bits() as u128;
+        let actual = xmm0_after.as_u128().unwrap() & 0xFFFFFFFF;
+        println!("Expected low 32 bits: 0x{:08x}", expected);
+        println!("Actual low 32 bits: 0x{:08x}", actual);
+
+        assert_eq!(actual, expected, "ADDSS: expected 3.0f, got different value");
+    }
 }
