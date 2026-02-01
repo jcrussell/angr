@@ -82,8 +82,9 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
         "Iop_DivU32" => Some(IROp::DivU(IRType::I32)),
         "Iop_DivU64" => Some(IROp::DivU(IRType::I64)),
 
-        // ModS (signed modulo) - VEX doesn't have direct Mod ops, uses DivMod
-        // ModU (unsigned modulo)
+        // DivMod - combined division and modulo
+        "Iop_DivModU64to32" => Some(IROp::DivModU64to32),
+        "Iop_DivModS64to32" => Some(IROp::DivModS64to32),
 
         // Neg
         "Iop_Neg8" => Some(IROp::Neg(IRType::I8)),

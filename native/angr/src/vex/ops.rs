@@ -186,6 +186,10 @@ impl VEXOps {
             // High half of multiplication
             IROp::MulHi { ty, signed } => Self::mul_hi(left, right, ty, signed, ctx),
 
+            // DivMod: 64-bit / 32-bit -> 64-bit (low=quotient, high=remainder)
+            IROp::DivModU64to32 => Self::divmod_64_to_32(left, right, false, ctx),
+            IROp::DivModS64to32 => Self::divmod_64_to_32(left, right, true, ctx),
+
             // Bitwise
             IROp::And(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
@@ -427,6 +431,51 @@ impl VEXOps {
 
         // Extract high half
         Ok(product.extract(double_width - 1, width, ctx))
+    }
+
+    /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit result.
+    /// Low 32 bits = quotient, High 32 bits = remainder.
+    fn divmod_64_to_32<'ctx>(
+        dividend: RustBV<'ctx>,
+        divisor: RustBV<'ctx>,
+        signed: bool,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        debug_assert_eq!(dividend.width(), 64);
+        debug_assert_eq!(divisor.width(), 32);
+
+        // For concrete values, compute directly
+        if let (Some(dvd), Some(dvs)) = (dividend.as_u128(), divisor.as_u128()) {
+            let dvd = dvd as u64;
+            let dvs = dvs as u32;
+
+            if dvs == 0 {
+                // Division by zero - return 0 (caller should have checked)
+                return Ok(RustBV::concrete(0, 64));
+            }
+
+            let (quotient, remainder) = if signed {
+                // Signed division
+                let dvd_signed = dvd as i64;
+                let dvs_signed = dvs as i32 as i64;
+                let q = (dvd_signed / dvs_signed) as u32;
+                let r = (dvd_signed % dvs_signed) as u32;
+                (q, r)
+            } else {
+                // Unsigned division
+                let q = (dvd / dvs as u64) as u32;
+                let r = (dvd % dvs as u64) as u32;
+                (q, r)
+            };
+
+            // Pack: low 32 bits = quotient, high 32 bits = remainder
+            let result = (quotient as u64) | ((remainder as u64) << 32);
+            return Ok(RustBV::concrete(result as u128, 64));
+        }
+
+        // For symbolic values, we'd need to implement symbolic division
+        // For now, fall back to concrete evaluation if possible
+        Err(OpError::UnsupportedVectorOp("symbolic DivMod".to_string()))
     }
 
     /// Vector element-wise binary operation.
