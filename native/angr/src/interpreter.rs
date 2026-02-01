@@ -389,11 +389,11 @@ impl<'ctx> VEXInterpreter<'ctx> {
             }
 
             IRExpr::CCall { cee, retty, args } => {
-                // Clean helper calls - would need to emulate the helper
-                Err(ExecutionError::Unsupported(format!(
-                    "CCall to {}",
-                    cee.name
-                )))
+                // Clean helper calls - return zero for now.
+                // This allows flag calculations (x86g_calculate_eflags_*) to
+                // not block execution, though the result will be imprecise.
+                // TODO: Implement common helpers like x86g_calculate_eflags_*.
+                Ok(RustBV::concrete(0, retty.bits()))
             }
 
             IRExpr::VECRET | IRExpr::GSPTR => {
