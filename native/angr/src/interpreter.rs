@@ -6,6 +6,7 @@
 use crate::arch::{arch_from_vex, RegisterFile};
 use crate::memory::{MemoryError, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
+use crate::vex::ccall;
 use crate::vex::ir::{IRConst, IRExpr, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
 use crate::vex::ops::{OpError, VEXOps};
 
@@ -389,10 +390,19 @@ impl<'ctx> VEXInterpreter<'ctx> {
             }
 
             IRExpr::CCall { cee, retty, args } => {
-                // Clean helper calls - return zero for now.
-                // This allows flag calculations (x86g_calculate_eflags_*) to
-                // not block execution, though the result will be imprecise.
-                // TODO: Implement common helpers like x86g_calculate_eflags_*.
+                // Evaluate all arguments first
+                let mut arg_vals = Vec::with_capacity(args.len());
+                for arg in args {
+                    arg_vals.push(self.eval_expr(arg, tyenv)?);
+                }
+
+                // Try to handle the clean call
+                if let Some(result) = ccall::handle_ccall(&cee.name, &arg_vals, retty.bits()) {
+                    return Ok(result);
+                }
+
+                // Fallback: return zero for unhandled calls
+                // This allows execution to continue, though results may be imprecise.
                 Ok(RustBV::concrete(0, retty.bits()))
             }
 

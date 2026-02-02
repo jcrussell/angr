@@ -5,7 +5,9 @@
 //! - VEX operation implementations
 //! - VEX lifting interface
 //! - pyvex IRSB serialization/deserialization
+//! - Clean call (CCall) implementations for flag calculations
 
+pub mod ccall;
 pub mod ir;
 mod lifter;
 pub mod opcode_map;

@@ -206,8 +206,13 @@ class DifferentialHarness:
             for reg, value in test.initial_regs.items():
                 setattr(state.regs, reg, value)
 
-            # Execute one instruction
-            succ = state.step(num_inst=1)
+            # Execute all instructions in the shellcode
+            # Count instructions by counting IMark statements in the lifted IRSB
+            import pyvex
+            irsb = pyvex.lift(test.shellcode, self.CODE_BASE, state.arch)
+            num_inst = irsb.instructions
+
+            succ = state.step(num_inst=num_inst)
 
             if not succ.successors:
                 return ExecutionResult(
