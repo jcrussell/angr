@@ -241,6 +241,7 @@ class ReportGenerator:
         self.rust_results: list[CriterionResult] = []
         self.python_results: list[dict[str, Any]] = []
         self.binary_results: list[dict[str, Any]] = []
+        self.examples_results: list[dict[str, Any]] = []
         self.system_info: dict[str, str] = {}
 
     def load_criterion_results(self, criterion_dir: str | Path):
@@ -268,6 +269,14 @@ class ReportGenerator:
             elif isinstance(r, dict):
                 self.binary_results.append(r)
 
+    def load_examples_results(self, comparisons: list):
+        """Load angr-examples benchmark results."""
+        for r in comparisons:
+            if hasattr(r, "to_dict"):
+                self.examples_results.append(r.to_dict())
+            elif isinstance(r, dict):
+                self.examples_results.append(r)
+
     def collect_system_info(self):
         """Collect system information."""
         self.system_info = get_system_info()
@@ -294,6 +303,10 @@ class ReportGenerator:
         # Binary Benchmarks
         if self.binary_results:
             lines.extend(self._generate_binary_benchmarks())
+
+        # angr-examples Benchmarks
+        if self.examples_results:
+            lines.extend(self._generate_examples_benchmarks())
 
         # Methodology
         lines.extend(self._generate_methodology())
@@ -350,7 +363,24 @@ class ReportGenerator:
                 lines.append(f"- Register operations average **{avg_reg:.1f}x** speedup")
 
             lines.append("")
-        else:
+
+        # Include angr-examples summary if available
+        if self.examples_results:
+            ex_speedups = [
+                r.get("speedup") for r in self.examples_results
+                if r.get("speedup") is not None
+            ]
+            if ex_speedups:
+                avg_ex_speedup = sum(ex_speedups) / len(ex_speedups)
+                lines.extend([
+                    "### angr-examples Performance",
+                    "",
+                    f"- **Examples with speedup data**: {len(ex_speedups)}",
+                    f"- **Average speedup on real examples**: {avg_ex_speedup:.2f}x",
+                    "",
+                ])
+
+        if not speedups and not self.examples_results:
             lines.extend([
                 "No comparison data available.",
                 "",
@@ -510,9 +540,96 @@ class ReportGenerator:
 
         return lines
 
+    def _generate_examples_benchmarks(self) -> list[str]:
+        """Generate angr-examples benchmarks section."""
+        lines = [
+            "## angr-examples Benchmarks",
+            "",
+            "Comparison of Rust vs Python VEX engine on real-world CTF challenges",
+            "from the [angr-examples](https://github.com/angr/angr-examples) repository.",
+            "",
+        ]
+
+        if not self.examples_results:
+            lines.extend(["No angr-examples results available.", ""])
+            return lines
+
+        # Count successes
+        total = len(self.examples_results)
+        python_success = sum(1 for r in self.examples_results if r.get("python_success"))
+        rust_success = sum(1 for r in self.examples_results if r.get("rust_success"))
+        both_success = sum(
+            1 for r in self.examples_results
+            if r.get("python_success") and r.get("rust_success")
+        )
+
+        lines.extend([
+            "### Summary",
+            "",
+            f"- **Total examples**: {total}",
+            f"- **Python success**: {python_success}/{total} ({100*python_success/total:.1f}%)",
+            f"- **Rust success**: {rust_success}/{total} ({100*rust_success/total:.1f}%)",
+            f"- **Both succeed**: {both_success}/{total} ({100*both_success/total:.1f}%)",
+            "",
+        ])
+
+        # Speedup statistics
+        speedups = [
+            r.get("speedup") for r in self.examples_results
+            if r.get("speedup") is not None
+        ]
+        if speedups:
+            avg_speedup = sum(speedups) / len(speedups)
+            lines.extend([
+                "### Speedup Statistics",
+                "",
+                f"- **Average**: {avg_speedup:.2f}x",
+                f"- **Minimum**: {min(speedups):.2f}x",
+                f"- **Maximum**: {max(speedups):.2f}x",
+                "",
+            ])
+
+        # Comparison table
+        lines.extend([
+            "### Comparison Table",
+            "",
+            "| Example | Python Time | Python Status | Rust Time | Rust Status | Speedup |",
+            "|---------|-------------|---------------|-----------|-------------|---------|",
+        ])
+
+        for r in sorted(self.examples_results, key=lambda x: x.get("example_name", "")):
+            name = r.get("example_name", "unknown")
+            py_time = r.get("python_time_s")
+            py_success = r.get("python_success", False)
+            py_err = r.get("python_error")
+            rust_time = r.get("rust_time_s")
+            rust_success = r.get("rust_success", False)
+            rust_err = r.get("rust_error")
+            speedup = r.get("speedup")
+
+            # Format values
+            py_time_str = f"{py_time:.2f}s" if py_time else "N/A"
+            py_status = "\u2713" if py_success else f"\u2717"
+            if py_err and not py_success:
+                py_status += f" ({py_err[:15]}...)" if len(py_err) > 15 else f" ({py_err})"
+
+            rust_time_str = f"{rust_time:.2f}s" if rust_time else "N/A"
+            rust_status = "\u2713" if rust_success else f"\u2717"
+            if rust_err and not rust_success:
+                rust_status += f" ({rust_err[:15]}...)" if len(rust_err) > 15 else f" ({rust_err})"
+
+            speedup_str = f"{speedup:.1f}x" if speedup else "-"
+
+            lines.append(
+                f"| {name} | {py_time_str} | {py_status} | {rust_time_str} | {rust_status} | {speedup_str} |"
+            )
+
+        lines.append("")
+        return lines
+
     def _generate_methodology(self) -> list[str]:
         """Generate methodology section."""
-        return [
+        lines = [
             "## Methodology",
             "",
             "### Rust Benchmarks (Criterion)",
@@ -536,6 +653,21 @@ class ReportGenerator:
             "- **Extra metrics**: CFG node/edge counts, state counts, etc.",
             "",
         ]
+
+        if self.examples_results:
+            lines.extend([
+                "### angr-examples Benchmarks",
+                "",
+                "- **Source**: [angr-examples repository](https://github.com/angr/angr-examples)",
+                "- **Isolation**: Each example runs in a separate subprocess",
+                "- **Timeout**: 120 seconds per example (30 seconds in quick mode)",
+                "- **Engine switching**: Python engine uses default UberEngine,",
+                "  Rust engine patches simulation_manager to use UberEngineRust",
+                "- **Metrics**: Success/failure status, execution time, speedup ratio",
+                "",
+            ])
+
+        return lines
 
     def _generate_conclusions(self) -> list[str]:
         """Generate conclusions section."""
@@ -659,6 +791,7 @@ class ReportGenerator:
             "rust_results": [r.to_dict() for r in self.rust_results],
             "python_results": self.python_results,
             "binary_results": self.binary_results,
+            "examples_results": self.examples_results,
             "generated": datetime.now().isoformat(),
         }
 

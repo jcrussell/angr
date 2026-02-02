@@ -6,7 +6,8 @@ This script orchestrates the complete benchmark suite:
 1. Run Rust Criterion benchmarks (if cargo available)
 2. Run Python synthetic benchmarks
 3. Run Python binary benchmarks
-4. Generate consolidated report
+4. Run angr-examples benchmarks (if --angr-examples specified)
+5. Generate consolidated report
 
 Usage:
     python tests/benchmarks/run_benchmarks.py [options]
@@ -15,6 +16,8 @@ Options:
     --skip-rust       Skip Rust Criterion benchmarks
     --skip-python     Skip Python synthetic benchmarks
     --skip-binaries   Skip binary benchmarks
+    --angr-examples   Run angr-examples benchmarks
+    --examples-dir    Path to angr-examples/examples directory
     --quick           Run with reduced iterations for quick testing
     --output PATH     Output directory for reports (default: tests/)
     --verbose         Verbose output
@@ -180,11 +183,84 @@ def run_binary_benchmarks(quick: bool = False) -> list:
         return []
 
 
+def run_angr_examples_benchmarks(
+    examples_dir: Path | None,
+    output_dir: Path,
+    quick: bool = False,
+    verbose: bool = False,
+) -> tuple[list, list]:
+    """Run angr-examples benchmarks."""
+    print_section("Running angr-examples Benchmarks")
+
+    try:
+        from bench_angr_examples import (
+            AngrExampleRunner,
+            find_examples_dir,
+            generate_report,
+        )
+
+        # Find examples directory
+        if examples_dir is None:
+            examples_dir = find_examples_dir()
+            if examples_dir is None:
+                print("  [SKIP] angr-examples directory not found")
+                print("  Specify --examples-dir or clone angr-examples repository")
+                return [], []
+
+        print(f"  Examples directory: {examples_dir}")
+
+        # Create runner
+        runner = AngrExampleRunner(examples_dir, verbose=verbose)
+        examples = runner.discover_examples()
+        print(f"  Discovered {len(examples)} examples")
+
+        # Adjust timeout for quick mode
+        timeout = 30 if quick else 120
+
+        # Progress callback
+        def progress(name: str, engine: str, status: str):
+            if verbose:
+                print(f"    {name} ({engine}): {status}")
+            elif status in ("success", "failed", "timeout", "unsupported"):
+                symbol = {
+                    "success": ".",
+                    "failed": "F",
+                    "timeout": "T",
+                    "unsupported": "S",
+                }.get(status, "?")
+                print(symbol, end="", flush=True)
+
+        print("  Running benchmarks", end="" if not verbose else "\n")
+
+        results, comparisons = runner.run_all_examples(
+            timeout_per_example=timeout,
+            progress_callback=progress,
+        )
+
+        if not verbose:
+            print()  # Newline after progress dots
+
+        # Generate angr-examples specific report
+        generate_report(comparisons, results, output_dir)
+
+        success_count = sum(1 for r in results if r.success)
+        print(f"  [OK] {len(results)} example runs completed ({success_count} successful)")
+
+        return results, comparisons
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to run angr-examples benchmarks: {e}")
+        import traceback
+        traceback.print_exc()
+        return [], []
+
+
 def generate_report(
     output_dir: Path,
     native_dir: Path,
     python_results: list,
     binary_results: list,
+    examples_comparisons: list | None = None,
 ) -> bool:
     """Generate consolidated benchmark report."""
     print_section("Generating Report")
@@ -210,6 +286,11 @@ def generate_report(
         # Add binary results
         generator.load_binary_results(binary_results)
         print(f"  Loaded {len(binary_results)} binary benchmark results")
+
+        # Add angr-examples results
+        if examples_comparisons:
+            generator.load_examples_results(examples_comparisons)
+            print(f"  Loaded {len(examples_comparisons)} angr-examples comparisons")
 
         # Generate markdown report
         report_path = output_dir / "benchmark_report.md"
@@ -286,6 +367,17 @@ def main():
         action="store_true",
         help="Verbose output",
     )
+    parser.add_argument(
+        "--angr-examples",
+        action="store_true",
+        help="Run angr-examples benchmarks",
+    )
+    parser.add_argument(
+        "--examples-dir",
+        type=Path,
+        default=None,
+        help="Path to angr-examples/examples directory",
+    )
 
     args = parser.parse_args()
 
@@ -311,6 +403,8 @@ def main():
     # Run benchmarks
     python_results = []
     binary_results = []
+    examples_results = []
+    examples_comparisons = []
 
     # Step 1: Rust Criterion benchmarks
     if not args.skip_rust:
@@ -324,8 +418,17 @@ def main():
     if not args.skip_binaries:
         binary_results = run_binary_benchmarks(args.quick)
 
-    # Step 4: Generate report
-    generate_report(output_dir, native_dir, python_results, binary_results)
+    # Step 4: angr-examples benchmarks (optional)
+    if args.angr_examples:
+        examples_results, examples_comparisons = run_angr_examples_benchmarks(
+            args.examples_dir,
+            output_dir,
+            args.quick,
+            args.verbose,
+        )
+
+    # Step 5: Generate report
+    generate_report(output_dir, native_dir, python_results, binary_results, examples_comparisons)
 
     # Summary
     elapsed = time.perf_counter() - start_time
