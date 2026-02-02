@@ -34,3 +34,9 @@ dist
 docs/_build
 uv.lock
 target/
+
+# Benchmark results (scaffolding is committed, results are not)
+tests/benchmark_report.md
+tests/benchmark_data.json
+tests/binary_benchmark_report.md
+tests/engines/differential/reports/
