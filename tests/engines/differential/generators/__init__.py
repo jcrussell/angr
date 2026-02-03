@@ -46,6 +46,41 @@ from .fp_extended import (
     generate_maxss_tests, generate_minss_tests, generate_maxsd_tests, generate_minsd_tests,
 )
 
+# New generators for extended coverage
+from .divmod import (
+    generate_div64to32_unsigned_tests, generate_div64to32_signed_tests,
+    generate_div128to64_unsigned_tests,
+)
+from .mulhi import (
+    generate_mulhi_unsigned_tests, generate_mulhi_signed_tests,
+    generate_mulhi_unsigned_64_tests, generate_mulhi_signed_64_tests,
+)
+from .vector_shift import (
+    generate_psllw_tests, generate_psrlw_tests, generate_psraw_tests,
+    generate_pslld_tests, generate_psrld_tests, generate_psrad_tests,
+    generate_psllq_tests, generate_psrlq_tests,
+    generate_pslldq_tests, generate_psrldq_tests,
+)
+from .vector_misc import (
+    generate_movd_to_xmm_tests, generate_movq_to_xmm_tests,
+    generate_punpcklbw_tests, generate_punpckhbw_tests,
+    generate_punpcklwd_tests, generate_punpckhwd_tests,
+    generate_punpckldq_tests, generate_punpckhdq_tests,
+    generate_punpcklqdq_tests, generate_punpckhqdq_tests,
+    generate_pshufd_tests, generate_pshufhw_tests, generate_pshuflw_tests,
+)
+from .fp_rounding import (
+    generate_roundss_tests, generate_roundsd_tests,
+    generate_roundps_tests, generate_roundpd_tests,
+    generate_floorss_tests, generate_ceilss_tests, generate_truncss_tests,
+    generate_floorsd_tests, generate_ceilsd_tests, generate_truncsd_tests,
+)
+from .crypto import (
+    generate_pclmulqdq_lqlq_tests, generate_pclmulqdq_hqhq_tests, generate_pclmulqdq_mixed_tests,
+    generate_crc32_32_tests, generate_crc32_8_tests, generate_crc32_16_tests,
+    generate_crc32_64_tests,
+)
+
 __all__ = [
     # Arithmetic
     "generate_add_tests",
@@ -135,4 +170,65 @@ __all__ = [
     "generate_minss_tests",
     "generate_maxsd_tests",
     "generate_minsd_tests",
+
+    # --- NEW GENERATORS ---
+
+    # DivMod64to32 (64-bit division)
+    "generate_div64to32_unsigned_tests",
+    "generate_div64to32_signed_tests",
+    "generate_div128to64_unsigned_tests",
+
+    # MulHi (high multiplication)
+    "generate_mulhi_unsigned_tests",
+    "generate_mulhi_signed_tests",
+    "generate_mulhi_unsigned_64_tests",
+    "generate_mulhi_signed_64_tests",
+
+    # Vector shifts (VShlN, VShrN, VSarN)
+    "generate_psllw_tests",
+    "generate_psrlw_tests",
+    "generate_psraw_tests",
+    "generate_pslld_tests",
+    "generate_psrld_tests",
+    "generate_psrad_tests",
+    "generate_psllq_tests",
+    "generate_psrlq_tests",
+    "generate_pslldq_tests",
+    "generate_psrldq_tests",
+
+    # Vector misc (SetV128, interleave, shuffle)
+    "generate_movd_to_xmm_tests",
+    "generate_movq_to_xmm_tests",
+    "generate_punpcklbw_tests",
+    "generate_punpckhbw_tests",
+    "generate_punpcklwd_tests",
+    "generate_punpckhwd_tests",
+    "generate_punpckldq_tests",
+    "generate_punpckhdq_tests",
+    "generate_punpcklqdq_tests",
+    "generate_punpckhqdq_tests",
+    "generate_pshufd_tests",
+    "generate_pshufhw_tests",
+    "generate_pshuflw_tests",
+
+    # FP rounding (ROUNDSS, ROUNDSD, etc.)
+    "generate_roundss_tests",
+    "generate_roundsd_tests",
+    "generate_roundps_tests",
+    "generate_roundpd_tests",
+    "generate_floorss_tests",
+    "generate_ceilss_tests",
+    "generate_truncss_tests",
+    "generate_floorsd_tests",
+    "generate_ceilsd_tests",
+    "generate_truncsd_tests",
+
+    # Crypto (PCLMULQDQ, CRC32)
+    "generate_pclmulqdq_lqlq_tests",
+    "generate_pclmulqdq_hqhq_tests",
+    "generate_pclmulqdq_mixed_tests",
+    "generate_crc32_32_tests",
+    "generate_crc32_8_tests",
+    "generate_crc32_16_tests",
+    "generate_crc32_64_tests",
 ]
