@@ -633,6 +633,8 @@ pub enum IROp {
     VSub { elem: IRType, count: u8 },
     /// Vector mul
     VMul { elem: IRType, count: u8 },
+    /// Vector multiply keeping low half (PMULLD)
+    VMulLo { elem: IRType, count: u8 },
     /// Vector and
     VAnd(IRType), // V128 or V256
     /// Vector or
@@ -789,6 +791,7 @@ impl IROp {
             IROp::VAdd { .. }
             | IROp::VSub { .. }
             | IROp::VMul { .. }
+            | IROp::VMulLo { .. }
             | IROp::VShlN { .. }
             | IROp::VShrN { .. }
             | IROp::VSarN { .. }

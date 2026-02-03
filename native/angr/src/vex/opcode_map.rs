@@ -388,6 +388,8 @@ fn parse_conversion(op_str: &str) -> Option<IROp> {
         "Iop_Clz64" => Some(IROp::Clz(IRType::I64)),
         "Iop_Ctz32" => Some(IROp::Ctz(IRType::I32)),
         "Iop_Ctz64" => Some(IROp::Ctz(IRType::I64)),
+        "Iop_PopCount8" => Some(IROp::PopCount(IRType::I8)),
+        "Iop_PopCount16" => Some(IROp::PopCount(IRType::I16)),
         "Iop_PopCount32" => Some(IROp::PopCount(IRType::I32)),
         "Iop_PopCount64" => Some(IROp::PopCount(IRType::I64)),
 
@@ -613,6 +615,12 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
             count: 2,
         }),
         "Iop_Mul32x4" => Some(IROp::VMul {
+            elem: IRType::I32,
+            count: 4,
+        }),
+
+        // Vector multiply keeping low half (PMULLD - SSE4.1)
+        "Iop_MullS32x4" => Some(IROp::VMulLo {
             elem: IRType::I32,
             count: 4,
         }),

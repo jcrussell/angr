@@ -340,6 +340,7 @@ impl VEXOps {
             IROp::VAdd { elem, count } => Self::vec_binop(left, right, elem, count, "add", ctx),
             IROp::VSub { elem, count } => Self::vec_binop(left, right, elem, count, "sub", ctx),
             IROp::VMul { elem, count } => Self::vec_binop(left, right, elem, count, "mul", ctx),
+            IROp::VMulLo { elem, count } => Self::vec_mul_lo(left, right, elem, count, ctx),
 
             // Vector compare operations
             IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
@@ -353,36 +354,36 @@ impl VEXOps {
             IROp::Raw(code) => Err(OpError::RawOpcode(code)),
 
             // Float conversions that take a rounding mode as the first argument
-            // The rounding mode (left) is ignored for now - we use default rounding
+            // VEX rounding modes: 0=nearest, 1=down, 2=up, 3=zero (truncate)
             IROp::F64toF32 => {
-                // left = rounding mode (ignored), right = F64 value
-                Self::f64_to_f32(right, ctx)
+                // left = rounding mode, right = F64 value
+                Self::f64_to_f32_rm(left, right, ctx)
             }
             IROp::F32toI32S => {
-                // left = rounding mode (ignored), right = F32 value
-                Self::f32_to_i32s(right, ctx)
+                // left = rounding mode, right = F32 value
+                Self::f32_to_i32s_rm(left, right, ctx)
             }
             IROp::F64toI32S => {
-                // left = rounding mode (ignored), right = F64 value
-                Self::f64_to_i32s(right, ctx)
+                // left = rounding mode, right = F64 value
+                Self::f64_to_i32s_rm(left, right, ctx)
             }
             IROp::F32toI64S => {
-                Self::f32_to_i64s(right, ctx)
+                Self::f32_to_i64s_rm(left, right, ctx)
             }
             IROp::F64toI64S => {
-                Self::f64_to_i64s(right, ctx)
+                Self::f64_to_i64s_rm(left, right, ctx)
             }
             IROp::F32toI32U => {
-                Self::f32_to_i32u(right, ctx)
+                Self::f32_to_i32u_rm(left, right, ctx)
             }
             IROp::F64toI32U => {
-                Self::f64_to_i32u(right, ctx)
+                Self::f64_to_i32u_rm(left, right, ctx)
             }
             IROp::F32toI64U => {
-                Self::f32_to_i64u(right, ctx)
+                Self::f32_to_i64u_rm(left, right, ctx)
             }
             IROp::F64toI64U => {
-                Self::f64_to_i64u(right, ctx)
+                Self::f64_to_i64u_rm(left, right, ctx)
             }
 
             // Scalar-in-vector max/min
@@ -591,6 +592,87 @@ impl VEXOps {
                 _ => return Err(OpError::UnsupportedVectorOp(op.to_string())),
             };
 
+            elements.push(res_elem);
+        }
+
+        // Concatenate from high to low
+        let mut result = elements.pop().unwrap();
+        while let Some(elem) = elements.pop() {
+            result = result.concat(&elem, ctx);
+        }
+
+        Ok(result)
+    }
+
+    /// Vector multiply keeping low half (PMULLD).
+    /// Performs signed widening multiply on each element pair, keeping only the low bits.
+    fn vec_mul_lo<'ctx>(
+        left: RustBV<'ctx>,
+        right: RustBV<'ctx>,
+        elem: IRType,
+        count: u8,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+
+        // For concrete values, compute directly
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let mut result: u128 = 0;
+            let mask = (1u128 << elem_width) - 1;
+
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+
+                let l_elem = (l >> lo) & mask;
+                let r_elem = (r >> lo) & mask;
+
+                // Sign-extend to perform signed multiply
+                let l_signed = if elem_width == 32 {
+                    (l_elem as u32 as i32 as i64) as u64
+                } else if elem_width == 16 {
+                    (l_elem as u16 as i16 as i32) as u32 as u64
+                } else if elem_width == 8 {
+                    (l_elem as u8 as i8 as i16) as u16 as u64
+                } else {
+                    l_elem as u64
+                };
+
+                let r_signed = if elem_width == 32 {
+                    (r_elem as u32 as i32 as i64) as u64
+                } else if elem_width == 16 {
+                    (r_elem as u16 as i16 as i32) as u32 as u64
+                } else if elem_width == 8 {
+                    (r_elem as u8 as i8 as i16) as u16 as u64
+                } else {
+                    r_elem as u64
+                };
+
+                // Multiply and keep low bits
+                let product = l_signed.wrapping_mul(r_signed);
+                let res_elem = (product as u128) & mask;
+
+                result |= res_elem << lo;
+            }
+
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        // For symbolic values, fall back to element-wise
+        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+
+            let l_elem = left.extract(hi, lo, ctx);
+            let r_elem = right.extract(hi, lo, ctx);
+
+            // For symbolic, just do regular multiply (low bits are the same for signed/unsigned)
+            let res_elem = l_elem.mul(&r_elem, ctx);
             elements.push(res_elem);
         }
 
@@ -1297,7 +1379,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
-            let result = (f as i32) as u32;
+            let rounded = Self::round_ties_to_even_f32(f);
+            let result = (rounded as i32) as u32;
             return Ok(RustBV::concrete(result as u128, 32));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1309,7 +1392,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
-            let result = (f as i32) as u32;
+            let rounded = Self::round_ties_to_even_f64(f);
+            let result = (rounded as i32) as u32;
             return Ok(RustBV::concrete(result as u128, 32));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1321,7 +1405,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
-            let result = f as i64 as u64;
+            let rounded = Self::round_ties_to_even_f64(f);
+            let result = rounded as i64 as u64;
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1393,7 +1478,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
-            let result = f as i64 as u64;
+            let rounded = Self::round_ties_to_even_f32(f);
+            let result = rounded as i64 as u64;
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1405,7 +1491,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
-            let result = f as u32;
+            let rounded = Self::round_ties_to_even_f32(f);
+            let result = rounded as u32;
             return Ok(RustBV::concrete(result as u128, 32));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1417,7 +1504,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
-            let result = f as u32;
+            let rounded = Self::round_ties_to_even_f64(f);
+            let result = rounded as u32;
             return Ok(RustBV::concrete(result as u128, 32));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1429,7 +1517,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
-            let result = f as u64;
+            let rounded = Self::round_ties_to_even_f32(f);
+            let result = rounded as u64;
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1441,7 +1530,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
-            let result = f as u64;
+            let rounded = Self::round_ties_to_even_f64(f);
+            let result = rounded as u64;
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1453,7 +1543,8 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
-            let result = f.round().to_bits();
+            let rounded = Self::round_ties_to_even_f32(f);
+            let result = rounded.to_bits();
             return Ok(RustBV::concrete(result as u128, 32));
         }
         Err(OpError::SymbolicFloatUnsupported)
@@ -1465,7 +1556,197 @@ impl VEXOps {
     ) -> Result<RustBV<'ctx>, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
-            let result = f.round().to_bits();
+            let rounded = Self::round_ties_to_even_f64(f);
+            let result = rounded.to_bits();
+            return Ok(RustBV::concrete(result as u128, 64));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    // =========================================================================
+    // Rounding-mode aware float-to-int conversions
+    // VEX rounding modes: 0=nearest, 1=down(-inf), 2=up(+inf), 3=zero(truncate)
+    // =========================================================================
+
+    /// Round f32 to nearest integer, ties to even (banker's rounding)
+    fn round_ties_to_even_f32(f: f32) -> f32 {
+        let rounded = f.round();
+        // Check if we're exactly at a .5 case
+        let frac = f - f.trunc();
+        if frac.abs() == 0.5 {
+            // Ties to even: round to the nearest even number
+            let truncated = f.trunc();
+            if (truncated as i32) % 2 == 0 {
+                truncated
+            } else {
+                rounded
+            }
+        } else {
+            rounded
+        }
+    }
+
+    /// Round f64 to nearest integer, ties to even (banker's rounding)
+    fn round_ties_to_even_f64(f: f64) -> f64 {
+        let rounded = f.round();
+        // Check if we're exactly at a .5 case
+        let frac = f - f.trunc();
+        if frac.abs() == 0.5 {
+            // Ties to even: round to the nearest even number
+            let truncated = f.trunc();
+            if (truncated as i64) % 2 == 0 {
+                truncated
+            } else {
+                rounded
+            }
+        } else {
+            rounded
+        }
+    }
+
+    /// Apply rounding mode to f32 value
+    fn apply_rounding_f32(f: f32, rm: u32) -> f32 {
+        match rm & 0x3 {
+            0 => Self::round_ties_to_even_f32(f),  // nearest, ties to even (banker's rounding)
+            1 => f.floor(),    // toward negative infinity
+            2 => f.ceil(),     // toward positive infinity
+            3 => f.trunc(),    // toward zero (truncate)
+            _ => Self::round_ties_to_even_f32(f),  // default to nearest
+        }
+    }
+
+    /// Apply rounding mode to f64 value
+    fn apply_rounding_f64(f: f64, rm: u32) -> f64 {
+        match rm & 0x3 {
+            0 => Self::round_ties_to_even_f64(f),  // nearest, ties to even (banker's rounding)
+            1 => f.floor(),    // toward negative infinity
+            2 => f.ceil(),     // toward positive infinity
+            3 => f.trunc(),    // toward zero (truncate)
+            _ => Self::round_ties_to_even_f64(f),  // default to nearest
+        }
+    }
+
+    fn f64_to_f32_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f64::from_bits(v as u64);
+            // Note: f64 to f32 rounding is complex - for now use direct cast
+            let result = (f as f32).to_bits();
+            return Ok(RustBV::concrete(result as u128, 32));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f32_to_i32s_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f32::from_bits(v as u32);
+            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
+            let result = (rounded as i32) as u32;
+            return Ok(RustBV::concrete(result as u128, 32));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f64_to_i32s_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f64::from_bits(v as u64);
+            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
+            let result = (rounded as i32) as u32;
+            return Ok(RustBV::concrete(result as u128, 32));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f32_to_i64s_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f32::from_bits(v as u32);
+            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
+            let result = (rounded as i64) as u64;
+            return Ok(RustBV::concrete(result as u128, 64));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f64_to_i64s_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f64::from_bits(v as u64);
+            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
+            let result = (rounded as i64) as u64;
+            return Ok(RustBV::concrete(result as u128, 64));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f32_to_i32u_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f32::from_bits(v as u32);
+            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
+            let result = rounded as u32;
+            return Ok(RustBV::concrete(result as u128, 32));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f64_to_i32u_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f64::from_bits(v as u64);
+            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
+            let result = rounded as u32;
+            return Ok(RustBV::concrete(result as u128, 32));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f32_to_i64u_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f32::from_bits(v as u32);
+            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
+            let result = rounded as u64;
+            return Ok(RustBV::concrete(result as u128, 64));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    fn f64_to_i64u_rm<'ctx>(
+        rm: RustBV<'ctx>,
+        arg: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let f = f64::from_bits(v as u64);
+            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
+            let result = rounded as u64;
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Err(OpError::SymbolicFloatUnsupported)

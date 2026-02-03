@@ -110,6 +110,36 @@ class DifferentialHarness:
     # Default code base address for shellcode
     CODE_BASE = 0x1000
 
+    # Register widths by name prefix/suffix (in bits)
+    REG_WIDTHS = {
+        # x86/amd64 GPRs
+        "al": 8, "ah": 8, "bl": 8, "bh": 8, "cl": 8, "ch": 8, "dl": 8, "dh": 8,
+        "ax": 16, "bx": 16, "cx": 16, "dx": 16, "si": 16, "di": 16, "bp": 16, "sp": 16,
+        "eax": 32, "ebx": 32, "ecx": 32, "edx": 32, "esi": 32, "edi": 32, "ebp": 32, "esp": 32,
+        "rax": 64, "rbx": 64, "rcx": 64, "rdx": 64, "rsi": 64, "rdi": 64, "rbp": 64, "rsp": 64,
+        "r8": 64, "r9": 64, "r10": 64, "r11": 64, "r12": 64, "r13": 64, "r14": 64, "r15": 64,
+        "r8d": 32, "r9d": 32, "r10d": 32, "r11d": 32, "r12d": 32, "r13d": 32, "r14d": 32, "r15d": 32,
+        # XMM registers (128-bit but typically compared as 32/64 low bits)
+        "xmm0": 128, "xmm1": 128, "xmm2": 128, "xmm3": 128,
+        "xmm4": 128, "xmm5": 128, "xmm6": 128, "xmm7": 128,
+    }
+
+    @staticmethod
+    def _to_unsigned(value: int, width: int) -> int:
+        """Convert signed value to unsigned representation for given bit width."""
+        if value >= 0:
+            return value
+        # Convert negative to 2's complement unsigned
+        return value + (1 << width)
+
+    def _reg_width(self, reg: str) -> int:
+        """Get the bit width of a register."""
+        reg_lower = reg.lower()
+        if reg_lower in self.REG_WIDTHS:
+            return self.REG_WIDTHS[reg_lower]
+        # Default to 32-bit for x86, 64-bit for amd64
+        return 64 if self.arch == "amd64" else 32
+
     def __init__(self, arch: str = "x86"):
         """
         Initialize the harness for a given architecture.
@@ -149,9 +179,11 @@ class DifferentialHarness:
                 engine.map_memory(page_addr, 0x2000)
                 engine.write_memory(addr, data)
 
-            # Set initial registers
+            # Set initial registers (convert negative to unsigned 2's complement)
             for reg, value in test.initial_regs.items():
-                engine.set_register(reg, value)
+                width = self._reg_width(reg)
+                unsigned_value = self._to_unsigned(value, width)
+                engine.set_register(reg, unsigned_value)
 
             # Set PC and execute - use execute_code to lift and run
             engine.pc = self.CODE_BASE
