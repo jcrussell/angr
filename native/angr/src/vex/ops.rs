@@ -441,6 +441,7 @@ impl VEXOps {
     // =========================================================================
 
     /// Widening multiply.
+    #[inline]
     fn widening_mul<'ctx>(
         left: RustBV<'ctx>,
         right: RustBV<'ctx>,
@@ -468,6 +469,7 @@ impl VEXOps {
     }
 
     /// High half of multiplication.
+    #[inline]
     fn mul_hi<'ctx>(
         left: RustBV<'ctx>,
         right: RustBV<'ctx>,
@@ -1249,6 +1251,7 @@ impl VEXOps {
 
     /// Scalar float operation in vector (SSE scalar ops like ADDSS, DIVSS).
     /// Operates on element 0 only, passes through other elements from left operand.
+    #[inline]
     fn vec_float_scalar_op<'ctx>(
         left: RustBV<'ctx>,
         right: RustBV<'ctx>,

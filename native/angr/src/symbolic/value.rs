@@ -106,6 +106,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// Create a concrete bitvector from a value.
+    #[inline]
     pub fn concrete(value: u128, width: u32) -> Self {
         let mask = if width >= 128 {
             u128::MAX
@@ -119,6 +120,7 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Create a concrete bitvector from a u64.
+    #[inline]
     pub fn from_u64(value: u64, width: u32) -> Self {
         Self::concrete(value as u128, width)
     }
@@ -129,6 +131,7 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Create a zero bitvector.
+    #[inline]
     pub fn zero(width: u32) -> Self {
         RustBV::Concrete { value: 0, width }
     }
@@ -172,6 +175,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// Get the width in bits.
+    #[inline]
     pub fn width(&self) -> u32 {
         match self {
             RustBV::Concrete { width, .. } => *width,
@@ -181,16 +185,19 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Check if this value is concrete.
+    #[inline]
     pub fn is_concrete(&self) -> bool {
         matches!(self, RustBV::Concrete { .. })
     }
 
     /// Check if this value is symbolic.
+    #[inline]
     pub fn is_symbolic(&self) -> bool {
         matches!(self, RustBV::Symbolic { .. } | RustBV::Constrained { .. })
     }
 
     /// Try to get the concrete value.
+    #[inline]
     pub fn as_u128(&self) -> Option<u128> {
         match self {
             RustBV::Concrete { value, .. } => Some(*value),
@@ -200,16 +207,19 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Get the concrete value, panicking if symbolic.
+    #[inline]
     pub fn to_u128(&self) -> u128 {
         self.as_u128().expect("value is symbolic")
     }
 
     /// Try to get the concrete value as u64.
+    #[inline]
     pub fn as_u64(&self) -> Option<u64> {
         self.as_u128().map(|v| v as u64)
     }
 
     /// Get the concrete value as u64, panicking if symbolic or too wide.
+    #[inline]
     pub fn to_u64(&self) -> u64 {
         self.as_u64().expect("value is symbolic or too wide")
     }

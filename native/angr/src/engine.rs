@@ -4,7 +4,9 @@
 //! allowing it to be used as an alternative engine in angr.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
+use lru::LruCache;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -143,7 +145,7 @@ pub struct RustVEXEngine {
     /// VEX architecture.
     vex_arch: VexArch,
     /// Block cache.
-    block_cache: HashMap<u64, IRSB>,
+    block_cache: LruCache<u64, IRSB>,
     /// Hook addresses.
     hooks: std::collections::HashSet<u64>,
     /// State data (serializable part).
@@ -172,7 +174,7 @@ impl RustVEXEngine {
         Ok(RustVEXEngine {
             arch_name: arch.to_string(),
             vex_arch,
-            block_cache: HashMap::new(),
+            block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()),
             hooks: std::collections::HashSet::new(),
             registers: vec![0u8; state_size],
             pc: 0,
@@ -330,7 +332,7 @@ impl RustVEXEngine {
         // Create a new IRSB and store it in a temporary location
         // We'll build it up and then finalize it
         let irsb = IRSB::new(addr, self.vex_arch);
-        self.block_cache.insert(addr, irsb);
+        self.block_cache.put(addr, irsb);
         Ok(())
     }
 
@@ -383,7 +385,7 @@ impl RustVEXEngine {
 
     /// Check if a block exists in the cache.
     pub fn has_block(&self, addr: u64) -> bool {
-        self.block_cache.contains_key(&addr)
+        self.block_cache.contains(&addr)
     }
 
     /// Clear the block cache.
@@ -399,7 +401,7 @@ impl RustVEXEngine {
     /// Execute one block and return the execution event.
     pub fn step(&mut self) -> PyResult<ExecutionEvent> {
         // Check if we have a cached block at PC
-        if let Some(irsb) = self.block_cache.get(&self.pc) {
+        if let Some(irsb) = self.block_cache.peek(&self.pc) {
             return self.execute_cached_block(irsb.clone());
         }
 
@@ -427,7 +429,7 @@ impl RustVEXEngine {
 
         // Cache it for potential re-execution
         let addr = irsb.addr;
-        self.block_cache.insert(addr, irsb.clone());
+        self.block_cache.put(addr, irsb.clone());
 
         // Execute the block
         self.execute_cached_block(irsb)
@@ -438,7 +440,8 @@ impl RustVEXEngine {
         Ok(RustVEXEngine {
             arch_name: self.arch_name.clone(),
             vex_arch: self.vex_arch,
-            block_cache: self.block_cache.clone(),
+            // New cache for forked state - they may have different access patterns
+            block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()),
             hooks: self.hooks.clone(),
             registers: self.registers.clone(),
             pc: self.pc,
