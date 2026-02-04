@@ -12,7 +12,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::arch::arch_from_name;
+use crate::callbacks::{LoopExecutionEvent, PythonCallbacks, RunResult};
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
+use crate::interpreter_cb::CallbackInterpreter;
 use crate::memory::Permission;
 use crate::symbolic::SymContext;
 use crate::vex::{deserialize_irsb, VexArch, IRSB};
@@ -156,6 +158,12 @@ pub struct RustVEXEngine {
     memory_regions: Vec<(u64, u64, u8, Vec<u8>)>,
     /// Symbolic objects (would need proper serialization).
     symbolic_count: u64,
+    /// Cached hooks set for quick comparison (optimization).
+    hooks_version: u64,
+    /// Memory mapping version for detecting changes (optimization).
+    memory_version: u64,
+    /// Python callbacks for memory/hook/syscall handling.
+    callbacks: Option<PythonCallbacks>,
 }
 
 #[pymethods]
@@ -180,6 +188,9 @@ impl RustVEXEngine {
             pc: 0,
             memory_regions: Vec::new(),
             symbolic_count: 0,
+            hooks_version: 0,
+            memory_version: 0,
+            callbacks: None,
         })
     }
 
@@ -203,12 +214,37 @@ impl RustVEXEngine {
 
     /// Add a hook at the given address.
     pub fn add_hook(&mut self, addr: u64) {
-        self.hooks.insert(addr);
+        if self.hooks.insert(addr) {
+            self.hooks_version += 1;
+        }
     }
 
     /// Remove a hook at the given address.
     pub fn remove_hook(&mut self, addr: u64) {
-        self.hooks.remove(&addr);
+        if self.hooks.remove(&addr) {
+            self.hooks_version += 1;
+        }
+    }
+
+    /// Add multiple hooks at once (optimization).
+    pub fn add_hooks(&mut self, addrs: Vec<u64>) {
+        let mut changed = false;
+        for addr in addrs {
+            if self.hooks.insert(addr) {
+                changed = true;
+            }
+        }
+        if changed {
+            self.hooks_version += 1;
+        }
+    }
+
+    /// Clear all hooks.
+    pub fn clear_hooks(&mut self) {
+        if !self.hooks.is_empty() {
+            self.hooks.clear();
+            self.hooks_version += 1;
+        }
     }
 
     /// Check if an address is hooked.
@@ -220,6 +256,7 @@ impl RustVEXEngine {
     #[pyo3(signature = (addr, size, permissions=7))]
     pub fn map_memory(&mut self, addr: u64, size: u64, permissions: u8) {
         self.memory_regions.push((addr, size, permissions, vec![]));
+        self.memory_version += 1;
     }
 
     /// Map memory with initial data.
@@ -227,6 +264,15 @@ impl RustVEXEngine {
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: u8) {
         self.memory_regions
             .push((addr, data.len() as u64, permissions, data.to_vec()));
+        self.memory_version += 1;
+    }
+
+    /// Clear all memory mappings.
+    pub fn clear_memory(&mut self) {
+        if !self.memory_regions.is_empty() {
+            self.memory_regions.clear();
+            self.memory_version += 1;
+        }
     }
 
     /// Read memory.
@@ -327,6 +373,41 @@ impl RustVEXEngine {
         Ok(dict)
     }
 
+    /// Get the entire register file as bytes (bulk transfer optimization).
+    pub fn get_all_registers_raw(&self) -> Vec<u8> {
+        self.registers.clone()
+    }
+
+    /// Set the entire register file from bytes (bulk transfer optimization).
+    pub fn set_all_registers(&mut self, data: &[u8]) -> PyResult<()> {
+        if data.len() != self.registers.len() {
+            return Err(PyValueError::new_err(format!(
+                "register data size mismatch: expected {}, got {}",
+                self.registers.len(),
+                data.len()
+            )));
+        }
+        self.registers.copy_from_slice(data);
+        Ok(())
+    }
+
+    /// Get the size of the register file in bytes.
+    pub fn register_file_size(&self) -> usize {
+        self.registers.len()
+    }
+
+    /// Get the offset of a register by name (for bulk transfer).
+    pub fn get_register_offset(&self, name: &str) -> Option<u32> {
+        let arch = arch_from_name(&self.arch_name)?;
+        arch.register_offset(name)
+    }
+
+    /// Get the size of a register by name.
+    pub fn get_register_size(&self, name: &str) -> Option<u32> {
+        let arch = arch_from_name(&self.arch_name)?;
+        arch.register_size(name)
+    }
+
     /// Start building a new IRSB at the given address.
     pub fn start_block(&mut self, addr: u64) -> PyResult<()> {
         // Create a new IRSB and store it in a temporary location
@@ -417,6 +498,84 @@ impl RustVEXEngine {
         })
     }
 
+    /// Set the Python callbacks for memory/hook/syscall handling.
+    ///
+    /// This enables the callback-based execution model where Rust calls
+    /// back into Python for memory access and event handling.
+    pub fn set_callbacks(&mut self, callbacks: PythonCallbacks) {
+        self.callbacks = Some(callbacks);
+    }
+
+    /// Clear the Python callbacks.
+    pub fn clear_callbacks(&mut self) {
+        self.callbacks = None;
+    }
+
+    /// Check if callbacks are set.
+    pub fn has_callbacks(&self) -> bool {
+        self.callbacks.is_some()
+    }
+
+    /// Run the execution loop until an event requires Python handling.
+    ///
+    /// This is the main entry point for the callback-based execution model.
+    /// It runs multiple blocks in a loop, using Python callbacks for memory
+    /// access, until it hits a condition that requires Python-side handling
+    /// (hook, syscall, symbolic branch, max blocks, etc.).
+    ///
+    /// Args:
+    ///     max_blocks: Maximum number of blocks to execute before returning.
+    ///
+    /// Returns:
+    ///     LoopExecutionEvent describing why execution stopped.
+    #[pyo3(signature = (max_blocks=100))]
+    pub fn run_loop(&mut self, py: Python<'_>, max_blocks: u32) -> PyResult<LoopExecutionEvent> {
+        // Ensure callbacks are set
+        let callbacks = self.callbacks.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("callbacks not set - call set_callbacks() first")
+        })?;
+
+        // Check if callbacks are ready
+        if !callbacks.is_ready() {
+            return Err(PyRuntimeError::new_err(
+                "callbacks not ready - ensure memory_load, memory_store, and lift_block are set",
+            ));
+        }
+
+        // Create the callback-aware interpreter
+        let ctx = SymContext::new_mock();
+        let mut interp = CallbackInterpreter::new(self.vex_arch, &ctx);
+
+        // Copy registers from engine to interpreter
+        interp.registers.copy_from_bytes(&self.registers);
+
+        // Set PC
+        interp.set_pc(self.pc);
+
+        // Set up hooks
+        for &addr in &self.hooks {
+            interp.add_hook(addr);
+        }
+
+        // Run the execution loop
+        let (result, blocks_executed) = interp.run_until_event(py, callbacks, max_blocks);
+
+        // Update engine state from interpreter
+        self.pc = interp.get_pc();
+        interp.registers.copy_to_bytes(&mut self.registers);
+
+        // Convert to Python event
+        Ok(LoopExecutionEvent::from_run_result(result, blocks_executed))
+    }
+
+    /// Run a single block with callbacks and return the event.
+    ///
+    /// This is like run_loop but only executes one block. Useful for
+    /// step-by-step debugging or when you want finer control.
+    pub fn step_with_callbacks(&mut self, py: Python<'_>) -> PyResult<LoopExecutionEvent> {
+        self.run_loop(py, 1)
+    }
+
     /// Execute an IRSB from JSON (serialized pyvex IRSB).
     ///
     /// This is the main entry point for executing lifted code from Python.
@@ -447,6 +606,10 @@ impl RustVEXEngine {
             pc: self.pc,
             memory_regions: self.memory_regions.clone(),
             symbolic_count: self.symbolic_count,
+            hooks_version: self.hooks_version,
+            memory_version: self.memory_version,
+            // Callbacks are shared (Python objects are reference-counted)
+            callbacks: self.callbacks.clone(),
         })
     }
 
@@ -480,6 +643,9 @@ impl RustVEXEngine {
         dict.set_item("hooks", self.hooks.len())?;
         dict.set_item("memory_regions", self.memory_regions.len())?;
         dict.set_item("symbolic_count", self.symbolic_count)?;
+        dict.set_item("register_file_size", self.registers.len())?;
+        dict.set_item("hooks_version", self.hooks_version)?;
+        dict.set_item("memory_version", self.memory_version)?;
         Ok(dict)
     }
 }
@@ -534,6 +700,8 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustVEXEngine>()?;
     m.add_class::<ExecutionEvent>()?;
     m.add_class::<StateSnapshot>()?;
+    m.add_class::<PythonCallbacks>()?;
+    m.add_class::<LoopExecutionEvent>()?;
     Ok(())
 }
 

@@ -59,6 +59,11 @@ __all__ = [
 try:
     from .rust_vex import RustVEXMixin, RustVEXEngineWrapper, RUST_ENGINE_AVAILABLE
 
+    # UberEngineRust is similar to UberEngine but includes RustVEXMixin for
+    # potential future use. Currently, HeavyVEXMixin handles all VEX execution
+    # because it comes before RustVEXMixin in the MRO (via TrackActionsMixin).
+    #
+    # To enable Rust VEX execution, use RustVEXEngine directly via the wrapper.
     class UberEngineRust(
         SimEngineFailure,
         SimEngineSyscall,
@@ -66,17 +71,15 @@ try:
         TrackActionsMixin,
         SimInspectMixin,
         HeavyResilienceMixin,
-        RustVEXMixin,
+        RustVEXMixin,  # Not used in MRO due to HeavyVEXMixin from TrackActionsMixin
     ):
         """
-        Execution engine using the Rust-based VEX interpreter.
+        Execution engine that includes both Python and Rust VEX capabilities.
 
-        This engine provides the same functionality as UberEngine but uses
-        a Rust backend for VEX execution, which can be faster for fork-heavy
-        workloads due to O(1) state copying.
+        Currently uses Python VEX execution (HeavyVEXMixin via TrackActionsMixin).
+        The RustVEXMixin is included for direct access via the rust_engine property.
 
-        Falls back to Python VEX execution if the Rust engine cannot handle
-        a particular execution scenario.
+        For pure Rust execution, use RustVEXEngineWrapper directly.
         """
 
     __all__.extend(["RustVEXMixin", "RustVEXEngineWrapper", "UberEngineRust", "RUST_ENGINE_AVAILABLE"])

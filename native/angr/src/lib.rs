@@ -10,9 +10,15 @@ pub mod segmentlist;
 #[cfg(feature = "vex-engine")]
 pub mod arch;
 #[cfg(feature = "vex-engine")]
+pub mod callbacks;
+#[cfg(feature = "vex-engine")]
+pub mod claripy_bridge;
+#[cfg(feature = "vex-engine")]
 pub mod engine;
 #[cfg(feature = "vex-engine")]
 pub mod interpreter;
+#[cfg(feature = "vex-engine")]
+pub mod interpreter_cb;
 #[cfg(feature = "vex-engine")]
 pub mod memory;
 #[cfg(feature = "vex-engine")]

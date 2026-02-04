@@ -9,14 +9,74 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import claripy
+
+
+# Profiling stats - can be enabled for performance analysis
+class RustVEXProfiler:
+    """Collects timing statistics for Rust VEX engine operations."""
+
+    def __init__(self):
+        self.enabled = False
+        self.reset()
+
+    def reset(self):
+        self.serialize_time = 0.0
+        self.execute_time = 0.0
+        self.sync_to_rust_time = 0.0
+        self.sync_from_rust_time = 0.0
+        self.lift_time = 0.0
+        self.block_count = 0
+        self.total_time = 0.0
+
+    def report(self) -> dict:
+        """Return profiling statistics as a dictionary."""
+        if self.block_count == 0:
+            return {"blocks": 0}
+        return {
+            "blocks": self.block_count,
+            "total_time_ms": self.total_time * 1000,
+            "serialize_time_ms": self.serialize_time * 1000,
+            "execute_time_ms": self.execute_time * 1000,
+            "sync_to_rust_time_ms": self.sync_to_rust_time * 1000,
+            "sync_from_rust_time_ms": self.sync_from_rust_time * 1000,
+            "lift_time_ms": self.lift_time * 1000,
+            "avg_per_block_us": (self.total_time / self.block_count) * 1e6,
+            "avg_serialize_us": (self.serialize_time / self.block_count) * 1e6,
+            "avg_execute_us": (self.execute_time / self.block_count) * 1e6,
+            "breakdown_pct": {
+                "serialize": (self.serialize_time / self.total_time * 100) if self.total_time > 0 else 0,
+                "execute": (self.execute_time / self.total_time * 100) if self.total_time > 0 else 0,
+                "sync_to_rust": (self.sync_to_rust_time / self.total_time * 100) if self.total_time > 0 else 0,
+                "sync_from_rust": (self.sync_from_rust_time / self.total_time * 100) if self.total_time > 0 else 0,
+                "lift": (self.lift_time / self.total_time * 100) if self.total_time > 0 else 0,
+            }
+        }
+
+
+# Global profiler instance
+_profiler = RustVEXProfiler()
 
 from angr.engines.successors import SuccessorsEngine, SimSuccessors
 from angr.engines.vex.lifter import VEXLifter
 from angr import sim_options as o
 from angr import errors
+
+
+def enable_profiling(enabled: bool = True) -> None:
+    """Enable or disable profiling for the Rust VEX engine."""
+    _profiler.enabled = enabled
+    if enabled:
+        _profiler.reset()
+
+
+def get_profiler() -> RustVEXProfiler:
+    """Get the global profiler instance."""
+    return _profiler
+
 
 if TYPE_CHECKING:
     import angr
@@ -28,13 +88,20 @@ l = logging.getLogger(__name__)
 
 # Import the Rust VEX engine
 try:
-    from angr.rustylib.vex_engine import RustVEXEngine, ExecutionEvent
+    from angr.rustylib.vex_engine import (
+        RustVEXEngine,
+        ExecutionEvent,
+        PythonCallbacks,
+        LoopExecutionEvent,
+    )
     RUST_ENGINE_AVAILABLE = True
 except ImportError:
     l.warning("Rust VEX engine not available - rustylib not compiled with vex-engine feature")
     RUST_ENGINE_AVAILABLE = False
     RustVEXEngine = None
     ExecutionEvent = None
+    PythonCallbacks = None
+    LoopExecutionEvent = None
 
 
 def _arch_name_to_rust(arch_name: str) -> str:
@@ -385,6 +452,215 @@ def _callee_to_dict(cee) -> dict:
     }
 
 
+class RustVEXCallbacks:
+    """
+    Provides Python callbacks to the Rust VEX execution engine.
+
+    This class bridges angr's memory model and SimProcedures to the Rust
+    engine, allowing Rust to handle the execution loop while Python handles
+    memory access and hooks.
+    """
+
+    def __init__(self, state: "SimState", project: "angr.Project", lifter: "VEXLifter"):
+        """
+        Initialize the callbacks.
+
+        Args:
+            state: The SimState to operate on.
+            project: The angr Project.
+            lifter: The VEXLifter for lifting blocks.
+        """
+        self.state = state
+        self.project = project
+        self.lifter = lifter
+        self._lifted_blocks = {}  # Cache of lifted blocks
+
+    def memory_load(self, addr: int, size: int) -> tuple[bytes, bool, Any]:
+        """
+        Load from angr's memory model.
+
+        Args:
+            addr: Address to load from.
+            size: Number of bytes to load.
+
+        Returns:
+            Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_none).
+        """
+        try:
+            val = self.state.memory.load(addr, size, endness='Iend_LE')
+            is_sym = val.symbolic
+
+            # Get concrete value
+            if is_sym:
+                concrete = self.state.solver.eval(val)
+            else:
+                concrete = self.state.solver.eval(val)
+
+            concrete_bytes = concrete.to_bytes(size, 'little')
+
+            if is_sym:
+                return (concrete_bytes, True, val)
+            else:
+                return (concrete_bytes, False, None)
+        except Exception as e:
+            l.warning("Memory load failed at 0x%x: %s", addr, e)
+            # Return zeros on error
+            return (bytes(size), False, None)
+
+    def memory_store(self, addr: int, data: bytes) -> None:
+        """
+        Store to angr's memory model.
+
+        Args:
+            addr: Address to store to.
+            data: Bytes to store.
+        """
+        try:
+            size = len(data)
+            value = int.from_bytes(data, 'little')
+            bv = claripy.BVV(value, size * 8)
+            self.state.memory.store(addr, bv, endness='Iend_LE')
+        except Exception as e:
+            l.warning("Memory store failed at 0x%x: %s", addr, e)
+
+    def on_hook(self, addr: int) -> int:
+        """
+        Execute a hook at the given address.
+
+        Args:
+            addr: Address of the hook.
+
+        Returns:
+            New PC after hook execution.
+        """
+        try:
+            # Check if there's a SimProcedure at this address
+            if self.project._sim_procedures and addr in self.project._sim_procedures:
+                proc_info = self.project._sim_procedures[addr]
+                # For now, return the address to let Python handle it
+                # TODO: Actually execute the SimProcedure
+                return addr
+
+            # No hook found, just return the address
+            return addr
+        except Exception as e:
+            l.warning("Hook execution failed at 0x%x: %s", addr, e)
+            return addr
+
+    def on_syscall(self, num: int) -> None:
+        """
+        Handle a syscall.
+
+        Args:
+            num: Syscall number.
+        """
+        try:
+            # Syscall handling is done at the SimOS level
+            # For now, just log it - actual handling is done in Python
+            l.debug("Syscall %d at PC 0x%x", num, self.state.solver.eval(self.state.ip))
+        except Exception as e:
+            l.warning("Syscall handling failed for syscall %d: %s", num, e)
+
+    def lift_block(self, addr: int) -> str:
+        """
+        Lift a block at the given address via pyvex.
+
+        Args:
+            addr: Address to lift from.
+
+        Returns:
+            IRSB serialized as JSON string.
+        """
+        try:
+            # Check cache first
+            if addr in self._lifted_blocks:
+                return self._lifted_blocks[addr]
+
+            # Lift the block
+            irsb = self.lifter.lift_vex(
+                addr=addr,
+                state=self.state,
+            )
+
+            # Serialize to JSON
+            irsb_json = _serialize_irsb(irsb)
+
+            # Cache it
+            self._lifted_blocks[addr] = irsb_json
+
+            return irsb_json
+        except Exception as e:
+            l.warning("Block lifting failed at 0x%x: %s", addr, e)
+            raise
+
+    def get_register(self, offset: int, size: int) -> tuple[bytes, bool, Any]:
+        """
+        Get a register value from angr's state.
+
+        Args:
+            offset: Register offset.
+            size: Size in bytes.
+
+        Returns:
+            Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_none).
+        """
+        try:
+            val = self.state.registers.load(offset, size=size)
+            is_sym = val.symbolic
+
+            if is_sym:
+                concrete = self.state.solver.eval(val)
+            else:
+                concrete = self.state.solver.eval(val)
+
+            concrete_bytes = concrete.to_bytes(size, 'little')
+
+            if is_sym:
+                return (concrete_bytes, True, val)
+            else:
+                return (concrete_bytes, False, None)
+        except Exception as e:
+            l.warning("Register read failed at offset %d: %s", offset, e)
+            return (bytes(size), False, None)
+
+    def put_register(self, offset: int, data: bytes) -> None:
+        """
+        Set a register value in angr's state.
+
+        Args:
+            offset: Register offset.
+            data: Bytes to store.
+        """
+        try:
+            size = len(data)
+            value = int.from_bytes(data, 'little')
+            bv = claripy.BVV(value, size * 8)
+            self.state.registers.store(offset, bv)
+        except Exception as e:
+            l.warning("Register write failed at offset %d: %s", offset, e)
+
+    def setup_rust_callbacks(self) -> "PythonCallbacks":
+        """
+        Create and configure a Rust PythonCallbacks object.
+
+        Returns:
+            Configured PythonCallbacks instance.
+        """
+        if PythonCallbacks is None:
+            raise ImportError("PythonCallbacks not available")
+
+        rust_cbs = PythonCallbacks()
+        rust_cbs.set_memory_load(self.memory_load)
+        rust_cbs.set_memory_store(self.memory_store)
+        rust_cbs.set_on_hook(self.on_hook)
+        rust_cbs.set_on_syscall(self.on_syscall)
+        rust_cbs.set_lift_block(self.lift_block)
+        rust_cbs.set_get_register(self.get_register)
+        rust_cbs.set_put_register(self.put_register)
+
+        return rust_cbs
+
+
 class RustVEXMixin(SuccessorsEngine, VEXLifter):
     """
     Execution engine mixin that uses Rust-based VEX interpreter.
@@ -428,8 +704,7 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Synchronize angr SimState to Rust engine.
 
-        This copies register values and mapped memory from the SimState
-        to the Rust engine's internal state.
+        This copies register values from the SimState to the Rust engine.
         """
         if self._rust_engine is None:
             return
@@ -440,7 +715,13 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         pc = state.solver.eval(state.ip)
         engine.pc = pc
 
-        # Sync key registers based on architecture
+        # Sync key registers
+        self._sync_registers_individual(state, engine)
+
+        self._rust_engine_synced = True
+
+    def _sync_registers_individual(self, state: SimState, engine) -> None:
+        """Sync registers individually (fallback path)."""
         key_registers = self._get_key_registers(state.arch)
         for reg_name in key_registers:
             try:
@@ -457,8 +738,6 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 pass
             except Exception:
                 pass
-
-        self._rust_engine_synced = True
 
     def _get_key_registers(self, arch) -> list[str]:
         """Get the key registers to sync for an architecture."""
@@ -649,6 +928,10 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 **kwargs,
             )
 
+        # Start profiling if enabled
+        if _profiler.enabled:
+            block_start = time.perf_counter()
+
         # Mark this as a Rust VEX execution
         successors.sort = "RUST_VEX"
         successors.description = "Rust VEX"
@@ -668,10 +951,16 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 self._rust_engine.add_hook(hook_addr)
 
         # Sync state to Rust engine
+        if _profiler.enabled:
+            t0 = time.perf_counter()
         self._sync_state_to_rust(state)
+        if _profiler.enabled:
+            _profiler.sync_to_rust_time += time.perf_counter() - t0
 
         # Lift the block if not provided
         if irsb is None:
+            if _profiler.enabled:
+                t0 = time.perf_counter()
             irsb = self.lift_vex(
                 insn_bytes=insn_bytes,
                 addr=addr,
@@ -683,6 +972,8 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 opt_level=opt_level,
                 strict_block_end=strict_block_end,
             )
+            if _profiler.enabled:
+                _profiler.lift_time += time.perf_counter() - t0
 
         # Store IRSB in artifacts
         successors.artifacts["irsb"] = irsb
@@ -691,11 +982,22 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         # Serialize IRSB and execute in Rust
         try:
+            if _profiler.enabled:
+                t0 = time.perf_counter()
             irsb_json = _serialize_irsb(irsb)
+            if _profiler.enabled:
+                _profiler.serialize_time += time.perf_counter() - t0
+                t0 = time.perf_counter()
             event = self._rust_engine.execute_irsb_json(irsb_json)
+            if _profiler.enabled:
+                _profiler.execute_time += time.perf_counter() - t0
 
             # Handle the execution event
+            if _profiler.enabled:
+                t0 = time.perf_counter()
             needs_more = self._handle_rust_execution_event(event, state, successors)
+            if _profiler.enabled:
+                _profiler.sync_from_rust_time += time.perf_counter() - t0
 
             if needs_more:
                 # Rust engine returned need_lift or similar - fall back to Python
@@ -712,6 +1014,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
             successors.processed = True
 
+            # Update profiler stats
+            if _profiler.enabled:
+                _profiler.block_count += 1
+                _profiler.total_time += time.perf_counter() - block_start
+
         except Exception as e:
             l.warning("Rust VEX execution failed: %s, falling back to Python", e)
             return super().process_successors(
@@ -723,6 +1030,207 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 size=size,
                 **kwargs,
             )
+
+    def process_successors_loop(
+        self,
+        successors: SimSuccessors,
+        max_blocks: int = 100,
+        **kwargs,
+    ):
+        """
+        Process successors using the callback-based execution loop.
+
+        This method uses Rust for the execution loop with Python callbacks
+        for memory access, hooks, and syscalls. It can execute multiple
+        blocks before returning to Python.
+
+        Args:
+            successors: SimSuccessors to populate.
+            max_blocks: Maximum blocks to execute before returning.
+            **kwargs: Additional arguments (ignored for now).
+        """
+        if not self.rust_engine_available:
+            l.warning("Rust engine not available, falling back to single-step")
+            return self.process_successors(successors, **kwargs)
+
+        if not isinstance(successors.addr, int):
+            l.warning("Non-concrete address, falling back to single-step")
+            return self.process_successors(successors, **kwargs)
+
+        if PythonCallbacks is None:
+            l.warning("PythonCallbacks not available, falling back to single-step")
+            return self.process_successors(successors, **kwargs)
+
+        # Start profiling if enabled
+        if _profiler.enabled:
+            loop_start = time.perf_counter()
+
+        # Mark this as a Rust VEX loop execution
+        successors.sort = "RUST_VEX_LOOP"
+        successors.description = "Rust VEX Loop"
+
+        addr = successors.addr
+        state = self.state
+
+        # Setup state scratch
+        state.history.recent_block_count = 1
+        state.scratch.guard = claripy.true()
+        state.scratch.sim_procedure = None
+        state.scratch.bbl_addr = addr
+
+        # Create callback object
+        cbs = RustVEXCallbacks(state, self.project, self)
+
+        try:
+            # Setup Rust callbacks
+            rust_cbs = cbs.setup_rust_callbacks()
+
+            # Set callbacks on engine
+            self._rust_engine.set_callbacks(rust_cbs)
+
+            # Sync hooks to Rust engine
+            if state.project is not None:
+                for hook_addr in state.project._sim_procedures:
+                    self._rust_engine.add_hook(hook_addr)
+
+            # Sync state to Rust engine
+            if _profiler.enabled:
+                t0 = time.perf_counter()
+            self._sync_state_to_rust(state)
+            if _profiler.enabled:
+                _profiler.sync_to_rust_time += time.perf_counter() - t0
+
+            # Run the execution loop
+            if _profiler.enabled:
+                t0 = time.perf_counter()
+            event = self._rust_engine.run_loop(max_blocks)
+            if _profiler.enabled:
+                _profiler.execute_time += time.perf_counter() - t0
+
+            # Handle the result
+            if _profiler.enabled:
+                t0 = time.perf_counter()
+            self._handle_loop_execution_event(event, state, successors)
+            if _profiler.enabled:
+                _profiler.sync_from_rust_time += time.perf_counter() - t0
+
+            successors.processed = True
+
+            # Update profiler stats
+            if _profiler.enabled:
+                _profiler.block_count += event.blocks_executed
+                _profiler.total_time += time.perf_counter() - loop_start
+
+        except Exception as e:
+            l.warning("Rust VEX loop execution failed: %s, falling back", e)
+            # Clear callbacks and fall back to single-step
+            self._rust_engine.clear_callbacks()
+            return self.process_successors(successors, **kwargs)
+        finally:
+            # Always clear callbacks after use
+            self._rust_engine.clear_callbacks()
+
+    def _handle_loop_execution_event(
+        self,
+        event: "LoopExecutionEvent",
+        state: "SimState",
+        successors: SimSuccessors,
+    ) -> None:
+        """
+        Handle an execution event from the Rust run_loop.
+
+        Args:
+            event: The LoopExecutionEvent from Rust.
+            state: The SimState being executed.
+            successors: SimSuccessors to populate.
+        """
+        event_type = event.event_type
+
+        # First, sync state from Rust
+        self._sync_state_from_rust(state)
+
+        if event_type == "max_blocks":
+            # Reached max blocks - create a successor to continue
+            next_addr = event.pc
+            state.ip = next_addr
+            successors.add_successor(
+                state,
+                next_addr,
+                claripy.true(),
+                "Ijk_Boring",
+            )
+
+        elif event_type == "block_end":
+            # Normal block end
+            next_addr = event.pc
+            jumpkind = event.jumpkind or "Ijk_Boring"
+            state.ip = next_addr
+            successors.add_successor(
+                state,
+                next_addr,
+                claripy.true(),
+                jumpkind,
+            )
+
+        elif event_type == "hook":
+            # Hook hit - let Python handle via HooksMixin
+            hook_addr = event.addr
+            state.ip = hook_addr
+            successors.add_successor(
+                state,
+                hook_addr,
+                claripy.true(),
+                "Ijk_NoHook",
+            )
+
+        elif event_type == "syscall":
+            # Syscall - return for Python handling
+            jumpkind = event.jumpkind or "Ijk_Sys_syscall"
+            successors.add_successor(
+                state,
+                state.ip,
+                claripy.true(),
+                jumpkind,
+            )
+
+        elif event_type == "symbolic_branch":
+            # Symbolic branch - fork states
+            true_target = event.true_target
+            false_target = event.false_target
+
+            # Create true branch successor
+            true_state = state.copy()
+            true_state.ip = true_target
+            successors.add_successor(
+                true_state,
+                true_target,
+                claripy.true(),  # TODO: track actual condition
+                "Ijk_Boring",
+            )
+
+            # Create false branch successor
+            false_state = state.copy()
+            false_state.ip = false_target
+            successors.add_successor(
+                false_state,
+                false_target,
+                claripy.true(),
+                "Ijk_Boring",
+            )
+
+        elif event_type == "need_lift":
+            # Need to lift a block - shouldn't happen with callbacks
+            l.warning("Unexpected need_lift event at 0x%x", event.addr)
+            raise errors.SimEngineError(f"Unexpected need_lift at 0x{event.addr:x}")
+
+        elif event_type == "error":
+            # Error during execution
+            error_msg = event.error or "Unknown error"
+            raise errors.SimEngineError(f"Rust VEX engine error: {error_msg}")
+
+        else:
+            l.warning("Unknown loop execution event type: %s", event_type)
+            raise errors.SimEngineError(f"Unknown event type: {event_type}")
 
 
 class RustVEXEngineWrapper:
@@ -837,6 +1345,10 @@ RustVEX = RustVEXMixin
 __all__ = [
     "RustVEXMixin",
     "RustVEXEngineWrapper",
+    "RustVEXCallbacks",
     "RustVEX",
     "RUST_ENGINE_AVAILABLE",
+    "enable_profiling",
+    "get_profiler",
+    "RustVEXProfiler",
 ]
