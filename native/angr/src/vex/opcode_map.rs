@@ -157,7 +157,7 @@ fn parse_bitwise(op_str: &str) -> Option<IROp> {
     }
 }
 
-/// Parse shift operations: Shl, Shr, Sar
+/// Parse shift operations: Shl, Shr, Sar (scalar and vector)
 fn parse_shift(op_str: &str) -> Option<IROp> {
     match op_str {
         // Shl (logical left shift)
@@ -177,6 +177,32 @@ fn parse_shift(op_str: &str) -> Option<IROp> {
         "Iop_Sar16" => Some(IROp::Sar(IRType::I16)),
         "Iop_Sar32" => Some(IROp::Sar(IRType::I32)),
         "Iop_Sar64" => Some(IROp::Sar(IRType::I64)),
+
+        // Vector shift left by immediate (ShlN) - count is parsed at runtime
+        "Iop_ShlN8x8" => Some(IROp::VShlN { elem: IRType::I8, count: 8 }),
+        "Iop_ShlN8x16" => Some(IROp::VShlN { elem: IRType::I8, count: 16 }),
+        "Iop_ShlN16x4" => Some(IROp::VShlN { elem: IRType::I16, count: 4 }),
+        "Iop_ShlN16x8" => Some(IROp::VShlN { elem: IRType::I16, count: 8 }),
+        "Iop_ShlN32x2" => Some(IROp::VShlN { elem: IRType::I32, count: 2 }),
+        "Iop_ShlN32x4" => Some(IROp::VShlN { elem: IRType::I32, count: 4 }),
+        "Iop_ShlN64x2" => Some(IROp::VShlN { elem: IRType::I64, count: 2 }),
+
+        // Vector shift right logical by immediate (ShrN)
+        "Iop_ShrN8x8" => Some(IROp::VShrN { elem: IRType::I8, count: 8 }),
+        "Iop_ShrN8x16" => Some(IROp::VShrN { elem: IRType::I8, count: 16 }),
+        "Iop_ShrN16x4" => Some(IROp::VShrN { elem: IRType::I16, count: 4 }),
+        "Iop_ShrN16x8" => Some(IROp::VShrN { elem: IRType::I16, count: 8 }),
+        "Iop_ShrN32x2" => Some(IROp::VShrN { elem: IRType::I32, count: 2 }),
+        "Iop_ShrN32x4" => Some(IROp::VShrN { elem: IRType::I32, count: 4 }),
+        "Iop_ShrN64x2" => Some(IROp::VShrN { elem: IRType::I64, count: 2 }),
+
+        // Vector shift right arithmetic by immediate (SarN)
+        "Iop_SarN8x8" => Some(IROp::VSarN { elem: IRType::I8, count: 8 }),
+        "Iop_SarN8x16" => Some(IROp::VSarN { elem: IRType::I8, count: 16 }),
+        "Iop_SarN16x4" => Some(IROp::VSarN { elem: IRType::I16, count: 4 }),
+        "Iop_SarN16x8" => Some(IROp::VSarN { elem: IRType::I16, count: 8 }),
+        "Iop_SarN32x2" => Some(IROp::VSarN { elem: IRType::I32, count: 2 }),
+        "Iop_SarN32x4" => Some(IROp::VSarN { elem: IRType::I32, count: 4 }),
 
         _ => None,
     }
@@ -380,6 +406,7 @@ fn parse_conversion(op_str: &str) -> Option<IROp> {
         // Concatenation
         "Iop_32HLto64" => Some(IROp::Concat { ty: IRType::I64 }),
         "Iop_64HLto128" => Some(IROp::Concat { ty: IRType::I128 }),
+        "Iop_64HLtoV128" => Some(IROp::Concat { ty: IRType::V128 }),
         "Iop_16HLto32" => Some(IROp::Concat { ty: IRType::I32 }),
         "Iop_8HLto16" => Some(IROp::Concat { ty: IRType::I16 }),
 
@@ -720,6 +747,10 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         }),
         "Iop_64UtoV128" => Some(IROp::ZeroExtend {
             from: IRType::I64,
+            to: IRType::V128,
+        }),
+        "Iop_32UtoV128" => Some(IROp::ZeroExtend {
+            from: IRType::I32,
             to: IRType::V128,
         }),
         "Iop_SetV128lo64" => Some(IROp::Reinterpret {

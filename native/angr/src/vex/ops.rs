@@ -99,8 +99,6 @@ impl VEXOps {
             IROp::F64toI32U => Self::f64_to_i32u(arg, ctx),
             IROp::F32toI64U => Self::f32_to_i64u(arg, ctx),
             IROp::F64toI64U => Self::f64_to_i64u(arg, ctx),
-            IROp::RoundF32toInt => Self::round_f32_to_int(arg, ctx),
-            IROp::RoundF64toInt => Self::round_f64_to_int(arg, ctx),
 
             // Vector not
             IROp::VNot(ty) => {
@@ -304,6 +302,10 @@ impl VEXOps {
             IROp::FCmpLT(ty) => Self::float_cmp_lt(left, right, ty, ctx),
             IROp::FCmpLE(ty) => Self::float_cmp_le(left, right, ty, ctx),
 
+            // Float rounding with mode (left = rounding mode, right = value)
+            IROp::RoundF32toInt => Self::round_f32_to_int_with_mode(left, right, ctx),
+            IROp::RoundF64toInt => Self::round_f64_to_int_with_mode(left, right, ctx),
+
             // Scalar-in-vector float operations (SSE scalar ops)
             IROp::VFAddS { elem } => Self::vec_float_scalar_op(left, right, elem, "add", ctx),
             IROp::VFSubS { elem } => Self::vec_float_scalar_op(left, right, elem, "sub", ctx),
@@ -349,6 +351,11 @@ impl VEXOps {
             // Vector interleave
             IROp::VInterleaveLO { elem } => Self::vec_interleave_lo(left, right, elem, ctx),
             IROp::VInterleaveHI { elem } => Self::vec_interleave_hi(left, right, elem, ctx),
+
+            // Vector shifts by immediate
+            IROp::VShlN { elem, count } => Self::vec_shl_n(left, right, elem, count, ctx),
+            IROp::VShrN { elem, count } => Self::vec_shr_n(left, right, elem, count, ctx),
+            IROp::VSarN { elem, count } => Self::vec_sar_n(left, right, elem, count, ctx),
 
             // Raw opcode
             IROp::Raw(code) => Err(OpError::RawOpcode(code)),
@@ -797,8 +804,9 @@ impl VEXOps {
                 let l_elem = (l >> src_lo) & elem_mask;
                 let r_elem = (r >> src_lo) & elem_mask;
 
-                result |= l_elem << dst_lo;
-                result |= r_elem << (dst_lo + elem_width);
+                // VEX InterleaveLO: right goes to even positions, left to odd
+                result |= r_elem << dst_lo;
+                result |= l_elem << (dst_lo + elem_width);
             }
 
             return Ok(RustBV::concrete(result, total_width));
@@ -814,8 +822,9 @@ impl VEXOps {
             let l_elem = left.extract(src_hi, src_lo, ctx);
             let r_elem = right.extract(src_hi, src_lo, ctx);
 
-            elements.push(l_elem);
+            // VEX InterleaveLO: right goes to even positions, left to odd
             elements.push(r_elem);
+            elements.push(l_elem);
         }
 
         // Concatenate from high to low
@@ -851,8 +860,9 @@ impl VEXOps {
                 let l_elem = (l >> src_lo) & elem_mask;
                 let r_elem = (r >> src_lo) & elem_mask;
 
-                result |= l_elem << dst_lo;
-                result |= r_elem << (dst_lo + elem_width);
+                // VEX InterleaveHI: right goes to even positions, left to odd
+                result |= r_elem << dst_lo;
+                result |= l_elem << (dst_lo + elem_width);
             }
 
             return Ok(RustBV::concrete(result, total_width));
@@ -868,8 +878,9 @@ impl VEXOps {
             let l_elem = left.extract(src_hi, src_lo, ctx);
             let r_elem = right.extract(src_hi, src_lo, ctx);
 
-            elements.push(l_elem);
+            // VEX InterleaveHI: right goes to even positions, left to odd
             elements.push(r_elem);
+            elements.push(l_elem);
         }
 
         // Concatenate from high to low
@@ -877,6 +888,199 @@ impl VEXOps {
         let mut result = elements.pop().unwrap();
         while let Some(elem) = elements.pop() {
             result = elem.concat(&result, ctx);
+        }
+
+        Ok(result)
+    }
+
+    // =========================================================================
+    // Vector Shift Operations (by immediate)
+    // =========================================================================
+
+    /// Vector shift left by immediate.
+    fn vec_shl_n<'ctx>(
+        vec: RustBV<'ctx>,
+        shift_amt: RustBV<'ctx>,
+        elem: IRType,
+        count: u8,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+
+        debug_assert_eq!(vec.width(), total_width);
+
+        // Get the shift amount (usually 8-bit immediate)
+        let shift = match shift_amt.as_u128() {
+            Some(s) => s as u32,
+            None => return Err(OpError::UnsupportedVectorOp("symbolic shift amount".to_string())),
+        };
+
+        // If shift >= element width, result is all zeros
+        if shift >= elem_width {
+            return Ok(RustBV::concrete(0, total_width));
+        }
+
+        if let Some(v) = vec.as_u128() {
+            let mut result: u128 = 0;
+            let elem_mask = (1u128 << elem_width) - 1;
+
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let elem_val = (v >> lo) & elem_mask;
+                let shifted = (elem_val << shift) & elem_mask;
+                result |= shifted << lo;
+            }
+
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        // Symbolic case - do element-wise
+        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let shift_bv = RustBV::concrete(shift as u128, elem_width);
+
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let elem_val = vec.extract(hi, lo, ctx);
+            let shifted = elem_val.shl(&shift_bv, ctx);
+            elements.push(shifted);
+        }
+
+        let mut result = elements.pop().unwrap();
+        while let Some(elem) = elements.pop() {
+            result = result.concat(&elem, ctx);
+        }
+
+        Ok(result)
+    }
+
+    /// Vector shift right logical by immediate.
+    fn vec_shr_n<'ctx>(
+        vec: RustBV<'ctx>,
+        shift_amt: RustBV<'ctx>,
+        elem: IRType,
+        count: u8,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+
+        debug_assert_eq!(vec.width(), total_width);
+
+        let shift = match shift_amt.as_u128() {
+            Some(s) => s as u32,
+            None => return Err(OpError::UnsupportedVectorOp("symbolic shift amount".to_string())),
+        };
+
+        // If shift >= element width, result is all zeros
+        if shift >= elem_width {
+            return Ok(RustBV::concrete(0, total_width));
+        }
+
+        if let Some(v) = vec.as_u128() {
+            let mut result: u128 = 0;
+            let elem_mask = (1u128 << elem_width) - 1;
+
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let elem_val = (v >> lo) & elem_mask;
+                let shifted = elem_val >> shift;
+                result |= shifted << lo;
+            }
+
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        // Symbolic case
+        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let shift_bv = RustBV::concrete(shift as u128, elem_width);
+
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let elem_val = vec.extract(hi, lo, ctx);
+            let shifted = elem_val.lshr(&shift_bv, ctx);
+            elements.push(shifted);
+        }
+
+        let mut result = elements.pop().unwrap();
+        while let Some(elem) = elements.pop() {
+            result = result.concat(&elem, ctx);
+        }
+
+        Ok(result)
+    }
+
+    /// Vector shift right arithmetic by immediate.
+    fn vec_sar_n<'ctx>(
+        vec: RustBV<'ctx>,
+        shift_amt: RustBV<'ctx>,
+        elem: IRType,
+        count: u8,
+        ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+
+        debug_assert_eq!(vec.width(), total_width);
+
+        let shift = match shift_amt.as_u128() {
+            Some(s) => s as u32,
+            None => return Err(OpError::UnsupportedVectorOp("symbolic shift amount".to_string())),
+        };
+
+        if let Some(v) = vec.as_u128() {
+            let mut result: u128 = 0;
+            let elem_mask = (1u128 << elem_width) - 1;
+            let sign_bit = 1u128 << (elem_width - 1);
+
+            for i in 0..count {
+                let lo = (i as u32) * elem_width;
+                let elem_val = (v >> lo) & elem_mask;
+
+                // Arithmetic shift - preserve sign
+                let shifted = if shift >= elem_width {
+                    // Shift >= width: result is all sign bits
+                    if elem_val & sign_bit != 0 {
+                        elem_mask  // All 1s
+                    } else {
+                        0  // All 0s
+                    }
+                } else {
+                    // Check if negative (sign bit set)
+                    if elem_val & sign_bit != 0 {
+                        // Negative: shift and fill with 1s
+                        let shifted_val = elem_val >> shift;
+                        let fill_mask = (elem_mask << (elem_width - shift)) & elem_mask;
+                        (shifted_val | fill_mask) & elem_mask
+                    } else {
+                        // Positive: simple logical shift
+                        elem_val >> shift
+                    }
+                };
+
+                result |= shifted << lo;
+            }
+
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        // Symbolic case
+        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let shift_bv = RustBV::concrete(shift as u128, elem_width);
+
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let elem_val = vec.extract(hi, lo, ctx);
+            let shifted = elem_val.ashr(&shift_bv, ctx);
+            elements.push(shifted);
+        }
+
+        let mut result = elements.pop().unwrap();
+        while let Some(elem) = elements.pop() {
+            result = result.concat(&elem, ctx);
         }
 
         Ok(result)
@@ -1558,6 +1762,55 @@ impl VEXOps {
             let f = f64::from_bits(v as u64);
             let rounded = Self::round_ties_to_even_f64(f);
             let result = rounded.to_bits();
+            return Ok(RustBV::concrete(result as u128, 64));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    /// Round F32 to integer using specified rounding mode (binop version).
+    /// left = rounding mode (U32), right = value (F32)
+    /// VEX rounding modes: 0=nearest, 1=down(-inf), 2=up(+inf), 3=zero(truncate)
+    fn round_f32_to_int_with_mode<'ctx>(
+        mode: RustBV<'ctx>,
+        value: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
+            let f = f32::from_bits(v as u32);
+            let rounded = match m & 0x3 {
+                0 => Self::round_ties_to_even_f32(f),  // nearest, ties to even
+                1 => f.floor(),                        // toward -infinity
+                2 => f.ceil(),                         // toward +infinity
+                3 => f.trunc(),                        // toward zero
+                _ => Self::round_ties_to_even_f32(f),  // default to nearest
+            };
+            // Normalize -0.0 to +0.0 to match Python VEX behavior
+            let normalized = if rounded == 0.0 { 0.0f32 } else { rounded };
+            let result = normalized.to_bits();
+            return Ok(RustBV::concrete(result as u128, 32));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    /// Round F64 to integer using specified rounding mode (binop version).
+    /// left = rounding mode (U32), right = value (F64)
+    fn round_f64_to_int_with_mode<'ctx>(
+        mode: RustBV<'ctx>,
+        value: RustBV<'ctx>,
+        _ctx: &'ctx SymContext<'ctx>,
+    ) -> Result<RustBV<'ctx>, OpError> {
+        if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
+            let f = f64::from_bits(v as u64);
+            let rounded = match m & 0x3 {
+                0 => Self::round_ties_to_even_f64(f),  // nearest, ties to even
+                1 => f.floor(),                        // toward -infinity
+                2 => f.ceil(),                         // toward +infinity
+                3 => f.trunc(),                        // toward zero
+                _ => Self::round_ties_to_even_f64(f),  // default to nearest
+            };
+            // Normalize -0.0 to +0.0 to match Python VEX behavior
+            let normalized = if rounded == 0.0 { 0.0f64 } else { rounded };
+            let result = normalized.to_bits();
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Err(OpError::SymbolicFloatUnsupported)
