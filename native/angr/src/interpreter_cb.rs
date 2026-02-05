@@ -66,14 +66,14 @@ impl std::fmt::Display for CbExecutionError {
 impl std::error::Error for CbExecutionError {}
 
 /// Result of executing a single statement.
-enum StmtResult<'ctx> {
+enum StmtResult {
     /// Continue to next statement.
     Continue,
     /// Exit the block early.
     Exit { target: u64, jumpkind: JumpKind },
     /// Symbolic branch detected - need to fork.
     SymbolicBranch {
-        condition: RustBV<'ctx>,
+        condition: RustBV,
         true_target: u64,
         false_target: u64,
     },
@@ -104,13 +104,13 @@ pub enum BlockResult {
 ///
 /// This interpreter uses Python callbacks for memory and register access,
 /// allowing it to work with angr's symbolic memory model.
-pub struct CallbackInterpreter<'ctx> {
+pub struct CallbackInterpreter<'a> {
     /// Register file (local cache, synced via callbacks).
-    pub registers: RegisterFile<'ctx>,
+    pub registers: RegisterFile,
     /// Temporary variables for current block.
-    temps: Vec<Option<RustBV<'ctx>>>,
+    temps: Vec<Option<RustBV>>,
     /// Solver context.
-    ctx: &'ctx SymContext<'ctx>,
+    ctx: &'a SymContext,
     /// Current program counter.
     pub pc: u64,
     /// Current instruction address (within block).
@@ -125,9 +125,9 @@ pub struct CallbackInterpreter<'ctx> {
     use_memory_callbacks: bool,
 }
 
-impl<'ctx> CallbackInterpreter<'ctx> {
+impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
-    pub fn new(arch: VexArch, ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
         let arch_box = arch_from_vex(arch);
 
         CallbackInterpreter {
@@ -144,7 +144,7 @@ impl<'ctx> CallbackInterpreter<'ctx> {
     }
 
     /// Get the solver context.
-    pub fn context(&self) -> &'ctx SymContext<'ctx> {
+    pub fn context(&self) -> &SymContext {
         self.ctx
     }
 
@@ -383,7 +383,7 @@ impl<'ctx> CallbackInterpreter<'ctx> {
         callbacks: &PythonCallbacks,
         stmt: &IRStmt,
         irsb: &IRSB,
-    ) -> Result<StmtResult<'ctx>, CbExecutionError> {
+    ) -> Result<StmtResult, CbExecutionError> {
         match stmt {
             IRStmt::NoOp => Ok(StmtResult::Continue),
 
@@ -491,7 +491,7 @@ impl<'ctx> CallbackInterpreter<'ctx> {
         callbacks: &PythonCallbacks,
         expr: &IRExpr,
         tyenv: &TypeEnv,
-    ) -> Result<RustBV<'ctx>, CbExecutionError> {
+    ) -> Result<RustBV, CbExecutionError> {
         match expr {
             IRExpr::Const(c) => Ok(self.eval_const(c)),
 
@@ -595,7 +595,7 @@ impl<'ctx> CallbackInterpreter<'ctx> {
     }
 
     /// Evaluate an IR constant.
-    fn eval_const(&self, c: &IRConst) -> RustBV<'ctx> {
+    fn eval_const(&self, c: &IRConst) -> RustBV {
         match c {
             IRConst::U1(v) => RustBV::concrete(*v as u128, 1),
             IRConst::U8(v) => RustBV::concrete(*v as u128, 8),
@@ -645,7 +645,7 @@ impl<'ctx> CallbackInterpreter<'ctx> {
         &self,
         expr: &IRExpr,
         tyenv: &TypeEnv,
-    ) -> Result<RustBV<'ctx>, CbExecutionError> {
+    ) -> Result<RustBV, CbExecutionError> {
         match expr {
             IRExpr::Const(c) => Ok(self.eval_const(c)),
             IRExpr::RdTmp(tmp) => {
@@ -699,7 +699,7 @@ impl<'ctx> CallbackInterpreter<'ctx> {
     }
 
     /// Fork the interpreter state.
-    pub fn fork(&self) -> CallbackInterpreter<'ctx> {
+    pub fn fork(&self) -> CallbackInterpreter<'a> {
         CallbackInterpreter {
             registers: self.registers.fork(),
             temps: self.temps.clone(),
@@ -732,7 +732,7 @@ fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
 }
 
 /// Convert bytes (little-endian) to a RustBV.
-fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV<'static> {
+fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
     let mut value: u128 = 0;
     for (i, &byte) in bytes.iter().enumerate() {
         if i * 8 >= width as usize {

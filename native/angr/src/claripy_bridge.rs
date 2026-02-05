@@ -44,11 +44,11 @@ impl From<PyErr> for BridgeError {
 ///
 /// This recursively converts the claripy expression tree to RustBV operations.
 /// Supports: BVV, BVS, arithmetic, bitwise, comparison, and extension ops.
-pub fn claripy_to_rustbv<'ctx>(
+pub fn claripy_to_rustbv(
     py: Python<'_>,
     ast: &Bound<'_, PyAny>,
-    ctx: &'ctx SymContext<'ctx>,
-) -> Result<RustBV<'ctx>, BridgeError> {
+    ctx: &SymContext,
+) -> Result<RustBV, BridgeError> {
     // Get the operation name
     let op: String = ast.getattr("op")?.extract()?;
     let args = ast.getattr("args")?;
@@ -430,9 +430,9 @@ pub fn claripy_to_rustbv<'ctx>(
 /// Convert a RustBV back to a claripy AST.
 ///
 /// This is used when returning symbolic results to Python.
-pub fn rustbv_to_claripy<'ctx>(
+pub fn rustbv_to_claripy(
     py: Python<'_>,
-    bv: &RustBV<'ctx>,
+    bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,
 ) -> PyResult<PyObject> {
     match bv {
@@ -493,7 +493,6 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
     }
 
     // For larger values, use Python's int.to_bytes
-    let py = obj.py();
     let bit_length: usize = obj
         .call_method0("bit_length")?
         .extract()
@@ -515,10 +514,10 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
 }
 
 /// Byte-reverse a RustBV value.
-fn reverse_bytes<'ctx>(
-    bv: &RustBV<'ctx>,
-    ctx: &'ctx SymContext<'ctx>,
-) -> Result<RustBV<'ctx>, BridgeError> {
+fn reverse_bytes(
+    bv: &RustBV,
+    ctx: &SymContext,
+) -> Result<RustBV, BridgeError> {
     let width = bv.width();
     if width % 8 != 0 {
         return Err(BridgeError::InvalidArgs(

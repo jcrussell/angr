@@ -245,11 +245,11 @@ impl MemoryPage {
 /// - O(1) forking via CoW
 /// - Mixed concrete/symbolic storage
 /// - Endianness-aware loads and stores
-pub struct SymbolicMemory<'ctx> {
+pub struct SymbolicMemory {
     /// Pages indexed by page number (addr >> 12).
     pages: OrdMap<u64, MemoryPage>,
     /// Symbolic objects (for values that span multiple bytes).
-    symbolic_objects: HashMap<u64, RustBV<'ctx>>,
+    symbolic_objects: HashMap<u64, RustBV>,
     /// Next symbolic object ID.
     next_sym_id: u64,
     /// Default permissions for new pages.
@@ -258,7 +258,7 @@ pub struct SymbolicMemory<'ctx> {
     endness: Endness,
 }
 
-impl<'ctx> SymbolicMemory<'ctx> {
+impl SymbolicMemory {
     /// Create a new empty memory.
     pub fn new(endness: Endness) -> Self {
         SymbolicMemory {
@@ -335,10 +335,10 @@ impl<'ctx> SymbolicMemory<'ctx> {
     /// Load bytes from memory as a RustBV.
     pub fn load(
         &self,
-        addr: RustBV<'ctx>,
+        addr: RustBV,
         size: u32,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, MemoryError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
         // For symbolic addresses, we need to concretize or fork
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
@@ -363,8 +363,8 @@ impl<'ctx> SymbolicMemory<'ctx> {
         &self,
         addr: u64,
         size: u32,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, MemoryError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
         let mut bytes = Vec::with_capacity(size as usize);
         let mut has_symbolic = false;
 
@@ -429,9 +429,9 @@ impl<'ctx> SymbolicMemory<'ctx> {
     /// Store a value to memory.
     pub fn store(
         &mut self,
-        addr: RustBV<'ctx>,
-        value: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         // For symbolic addresses, we need to concretize
         let concrete_addr = match addr.as_u64() {
@@ -455,7 +455,7 @@ impl<'ctx> SymbolicMemory<'ctx> {
     pub fn store_concrete(
         &mut self,
         addr: u64,
-        value: RustBV<'ctx>,
+        value: RustBV,
     ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
 
@@ -549,7 +549,7 @@ impl<'ctx> SymbolicMemory<'ctx> {
     }
 }
 
-impl<'ctx> Clone for SymbolicMemory<'ctx> {
+impl Clone for SymbolicMemory {
     fn clone(&self) -> Self {
         self.fork()
     }

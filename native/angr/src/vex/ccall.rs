@@ -858,11 +858,11 @@ fn calculate_eflags_all_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64
 /// Handle a CCall expression.
 ///
 /// Returns Some(result) if the call was handled, None if not supported.
-pub fn handle_ccall<'ctx>(
+pub fn handle_ccall(
     name: &str,
-    args: &[RustBV<'ctx>],
+    args: &[RustBV],
     ret_bits: u32,
-) -> Option<RustBV<'ctx>> {
+) -> Option<RustBV> {
     // Check for x86g_calculate_condition or amd64g_calculate_condition
     if name == "amd64g_calculate_condition" || name == "x86g_calculate_condition" {
         // Args: cond, cc_op, cc_dep1, cc_dep2, cc_ndep

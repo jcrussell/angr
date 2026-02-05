@@ -19,11 +19,11 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a unary operation.
-    pub fn unop<'ctx>(
+    pub fn unop(
         op: IROp,
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         match op {
             IROp::Not(ty) => {
                 debug_assert_eq!(arg.width(), ty.bits());
@@ -130,12 +130,12 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a binary operation.
-    pub fn binop<'ctx>(
+    pub fn binop(
         op: IROp,
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         match op {
             // Arithmetic
             IROp::Add(ty) => {
@@ -416,13 +416,13 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a ternary operation (for ITE, etc.).
-    pub fn ternop<'ctx>(
+    pub fn ternop(
         op: IROp,
-        arg1: RustBV<'ctx>,
-        arg2: RustBV<'ctx>,
-        arg3: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        arg1: RustBV,
+        arg2: RustBV,
+        arg3: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         match op {
             // Extraction takes (value, start_bit_as_u8, length_as_u8)
             // Note: This is for cases where extract is done as a ternary op
@@ -442,13 +442,13 @@ impl VEXOps {
 
     /// Widening multiply.
     #[inline]
-    fn widening_mul<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn widening_mul(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
         signed: bool,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let in_width = ty.bits();
         let out_width = in_width * 2;
 
@@ -470,13 +470,13 @@ impl VEXOps {
 
     /// High half of multiplication.
     #[inline]
-    fn mul_hi<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn mul_hi(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
         signed: bool,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let width = ty.bits();
         let double_width = width * 2;
 
@@ -501,12 +501,12 @@ impl VEXOps {
 
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit result.
     /// Low 32 bits = quotient, High 32 bits = remainder.
-    fn divmod_64_to_32<'ctx>(
-        dividend: RustBV<'ctx>,
-        divisor: RustBV<'ctx>,
+    fn divmod_64_to_32(
+        dividend: RustBV,
+        divisor: RustBV,
         signed: bool,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         debug_assert_eq!(dividend.width(), 64);
         debug_assert_eq!(divisor.width(), 32);
 
@@ -545,14 +545,14 @@ impl VEXOps {
     }
 
     /// Vector element-wise binary operation.
-    fn vec_binop<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_binop(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
         count: u8,
         op: &str,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
@@ -585,7 +585,7 @@ impl VEXOps {
         }
 
         // For symbolic, we need to extract, operate, and concatenate
-        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
 
         for i in 0..count {
             let lo = (i as u32) * elem_width;
@@ -615,13 +615,13 @@ impl VEXOps {
 
     /// Vector multiply keeping low half (PMULLD).
     /// Performs signed widening multiply on each element pair, keeping only the low bits.
-    fn vec_mul_lo<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_mul_lo(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
@@ -671,7 +671,7 @@ impl VEXOps {
         }
 
         // For symbolic values, fall back to element-wise
-        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
 
         for i in 0..count {
             let lo = (i as u32) * elem_width;
@@ -699,14 +699,14 @@ impl VEXOps {
     // =========================================================================
 
     /// Vector element-wise comparison.
-    fn vec_cmp<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_cmp(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
         count: u8,
         op: &str,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
@@ -754,7 +754,7 @@ impl VEXOps {
         }
 
         // For symbolic, fall back to element-wise
-        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
 
         for i in 0..count {
             let lo = (i as u32) * elem_width;
@@ -784,12 +784,12 @@ impl VEXOps {
     }
 
     /// Vector interleave low halves.
-    fn vec_interleave_lo<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_interleave_lo(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = left.width();
         let count = total_width / elem_width;
@@ -815,7 +815,7 @@ impl VEXOps {
         }
 
         // Symbolic case
-        let mut elements: Vec<RustBV<'ctx>> = Vec::new();
+        let mut elements: Vec<RustBV> = Vec::new();
 
         for i in 0..half_count {
             let src_lo = (i as u32) * elem_width;
@@ -840,12 +840,12 @@ impl VEXOps {
     }
 
     /// Vector interleave high halves.
-    fn vec_interleave_hi<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_interleave_hi(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = left.width();
         let count = total_width / elem_width;
@@ -871,7 +871,7 @@ impl VEXOps {
         }
 
         // Symbolic case
-        let mut elements: Vec<RustBV<'ctx>> = Vec::new();
+        let mut elements: Vec<RustBV> = Vec::new();
 
         for i in 0..half_count {
             let src_lo = ((half_count + i) as u32) * elem_width;
@@ -900,13 +900,13 @@ impl VEXOps {
     // =========================================================================
 
     /// Vector shift left by immediate.
-    fn vec_shl_n<'ctx>(
-        vec: RustBV<'ctx>,
-        shift_amt: RustBV<'ctx>,
+    fn vec_shl_n(
+        vec: RustBV,
+        shift_amt: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
@@ -938,7 +938,7 @@ impl VEXOps {
         }
 
         // Symbolic case - do element-wise
-        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
         let shift_bv = RustBV::concrete(shift as u128, elem_width);
 
         for i in 0..count {
@@ -958,13 +958,13 @@ impl VEXOps {
     }
 
     /// Vector shift right logical by immediate.
-    fn vec_shr_n<'ctx>(
-        vec: RustBV<'ctx>,
-        shift_amt: RustBV<'ctx>,
+    fn vec_shr_n(
+        vec: RustBV,
+        shift_amt: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
@@ -995,7 +995,7 @@ impl VEXOps {
         }
 
         // Symbolic case
-        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
         let shift_bv = RustBV::concrete(shift as u128, elem_width);
 
         for i in 0..count {
@@ -1015,13 +1015,13 @@ impl VEXOps {
     }
 
     /// Vector shift right arithmetic by immediate.
-    fn vec_sar_n<'ctx>(
-        vec: RustBV<'ctx>,
-        shift_amt: RustBV<'ctx>,
+    fn vec_sar_n(
+        vec: RustBV,
+        shift_amt: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
@@ -1069,7 +1069,7 @@ impl VEXOps {
         }
 
         // Symbolic case
-        let mut elements: Vec<RustBV<'ctx>> = Vec::with_capacity(count as usize);
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
         let shift_bv = RustBV::concrete(shift as u128, elem_width);
 
         for i in 0..count {
@@ -1092,11 +1092,11 @@ impl VEXOps {
     // Float Operations (using bit manipulation for now)
     // =========================================================================
 
-    fn float_neg<'ctx>(
-        arg: RustBV<'ctx>,
+    fn float_neg(
+        arg: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         // Flip the sign bit
         let sign_bit = match ty {
             IRType::F32 => 31,
@@ -1108,11 +1108,11 @@ impl VEXOps {
         Ok(arg.xor(&mask, ctx))
     }
 
-    fn float_abs<'ctx>(
-        arg: RustBV<'ctx>,
+    fn float_abs(
+        arg: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         // Clear the sign bit
         let mask = match ty {
             IRType::F32 => RustBV::concrete(0x7FFFFFFF, 32),
@@ -1123,11 +1123,11 @@ impl VEXOps {
         Ok(arg.and(&mask, ctx))
     }
 
-    fn float_sqrt<'ctx>(
-        arg: RustBV<'ctx>,
+    fn float_sqrt(
+        arg: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         // For concrete values, compute directly
         if let Some(v) = arg.as_u128() {
             let result = match ty {
@@ -1149,12 +1149,12 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn float_add<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn float_add(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
@@ -1174,12 +1174,12 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn float_sub<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn float_sub(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
@@ -1199,12 +1199,12 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn float_mul<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn float_mul(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
@@ -1224,12 +1224,12 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn float_div<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn float_div(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
@@ -1252,13 +1252,13 @@ impl VEXOps {
     /// Scalar float operation in vector (SSE scalar ops like ADDSS, DIVSS).
     /// Operates on element 0 only, passes through other elements from left operand.
     #[inline]
-    fn vec_float_scalar_op<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_float_scalar_op(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
         op: &str,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
 
@@ -1308,11 +1308,11 @@ impl VEXOps {
     }
 
     /// Scalar sqrt in vector (SQRTSS/SQRTSD).
-    fn vec_float_scalar_sqrt<'ctx>(
-        arg: RustBV<'ctx>,
+    fn vec_float_scalar_sqrt(
+        arg: RustBV,
         elem: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         debug_assert_eq!(arg.width(), 128);
 
         if let Some(v) = arg.as_u128() {
@@ -1339,12 +1339,12 @@ impl VEXOps {
     }
 
     /// Scalar max in vector (MAXSS/MAXSD).
-    fn vec_float_scalar_max<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_float_scalar_max(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
 
@@ -1372,12 +1372,12 @@ impl VEXOps {
     }
 
     /// Scalar min in vector (MINSS/MINSD).
-    fn vec_float_scalar_min<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn vec_float_scalar_min(
+        left: RustBV,
+        right: RustBV,
         elem: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
 
@@ -1405,11 +1405,11 @@ impl VEXOps {
     }
 
     /// Set low 32 bits of V128.
-    fn set_v128_lo32<'ctx>(
-        vec: RustBV<'ctx>,
-        val: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn set_v128_lo32(
+        vec: RustBV,
+        val: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         debug_assert_eq!(vec.width(), 128);
         debug_assert_eq!(val.width(), 32);
 
@@ -1425,11 +1425,11 @@ impl VEXOps {
     }
 
     /// Set low 64 bits of V128.
-    fn set_v128_lo64<'ctx>(
-        vec: RustBV<'ctx>,
-        val: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn set_v128_lo64(
+        vec: RustBV,
+        val: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         debug_assert_eq!(vec.width(), 128);
         debug_assert_eq!(val.width(), 64);
 
@@ -1444,12 +1444,12 @@ impl VEXOps {
         Ok(result)
     }
 
-    fn float_cmp_eq<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn float_cmp_eq(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
@@ -1469,12 +1469,12 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn float_cmp_lt<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn float_cmp_lt(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
@@ -1494,12 +1494,12 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn float_cmp_le<'ctx>(
-        left: RustBV<'ctx>,
-        right: RustBV<'ctx>,
+    fn float_cmp_le(
+        left: RustBV,
+        right: RustBV,
         ty: IRType,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
                 IRType::F32 => {
@@ -1520,10 +1520,10 @@ impl VEXOps {
     }
 
     // Float conversions for concrete values
-    fn f32_to_f64<'ctx>(
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_f64(
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
             let result = (f as f64).to_bits();
@@ -1532,10 +1532,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_f32<'ctx>(
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_f32(
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
             let result = (f as f32).to_bits();
@@ -1544,10 +1544,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i32s_to_f32<'ctx>(
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i32s_to_f32(
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as i32;
             let result = (i as f32).to_bits();
@@ -1556,10 +1556,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i32s_to_f64<'ctx>(
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i32s_to_f64(
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as i32;
             let result = (i as f64).to_bits();
@@ -1568,10 +1568,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i64s_to_f64<'ctx>(
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i64s_to_f64(
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as i64;
             let result = (i as f64).to_bits();
@@ -1580,10 +1580,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i32s<'ctx>(
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i32s(
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
             let rounded = Self::round_ties_to_even_f32(f);
@@ -1593,10 +1593,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i32s<'ctx>(
-        arg: RustBV<'ctx>,
-        ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i32s(
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
             let rounded = Self::round_ties_to_even_f64(f);
@@ -1606,10 +1606,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i64s<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i64s(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
             let rounded = Self::round_ties_to_even_f64(f);
@@ -1619,10 +1619,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i64s_to_f32<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i64s_to_f32(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as i64;
             let result = (i as f32).to_bits();
@@ -1631,10 +1631,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i32u_to_f32<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i32u_to_f32(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as u32;
             let result = (i as f32).to_bits();
@@ -1643,10 +1643,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i32u_to_f64<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i32u_to_f64(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as u32;
             let result = (i as f64).to_bits();
@@ -1655,10 +1655,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i64u_to_f32<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i64u_to_f32(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as u64;
             let result = (i as f32).to_bits();
@@ -1667,10 +1667,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i64u_to_f64<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn i64u_to_f64(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let i = v as u64;
             let result = (i as f64).to_bits();
@@ -1679,10 +1679,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i64s<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i64s(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
             let rounded = Self::round_ties_to_even_f32(f);
@@ -1692,10 +1692,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i32u<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i32u(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
             let rounded = Self::round_ties_to_even_f32(f);
@@ -1705,10 +1705,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i32u<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i32u(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
             let rounded = Self::round_ties_to_even_f64(f);
@@ -1718,10 +1718,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i64u<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i64u(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
             let rounded = Self::round_ties_to_even_f32(f);
@@ -1731,10 +1731,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i64u<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i64u(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
             let rounded = Self::round_ties_to_even_f64(f);
@@ -1744,10 +1744,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn round_f32_to_int<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn round_f32_to_int(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f32::from_bits(v as u32);
             let rounded = Self::round_ties_to_even_f32(f);
@@ -1757,10 +1757,10 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn round_f64_to_int<'ctx>(
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn round_f64_to_int(
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
             let f = f64::from_bits(v as u64);
             let rounded = Self::round_ties_to_even_f64(f);
@@ -1773,11 +1773,11 @@ impl VEXOps {
     /// Round F32 to integer using specified rounding mode (binop version).
     /// left = rounding mode (U32), right = value (F32)
     /// VEX rounding modes: 0=nearest, 1=down(-inf), 2=up(+inf), 3=zero(truncate)
-    fn round_f32_to_int_with_mode<'ctx>(
-        mode: RustBV<'ctx>,
-        value: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn round_f32_to_int_with_mode(
+        mode: RustBV,
+        value: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f32::from_bits(v as u32);
             let rounded = match m & 0x3 {
@@ -1797,11 +1797,11 @@ impl VEXOps {
 
     /// Round F64 to integer using specified rounding mode (binop version).
     /// left = rounding mode (U32), right = value (F64)
-    fn round_f64_to_int_with_mode<'ctx>(
-        mode: RustBV<'ctx>,
-        value: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn round_f64_to_int_with_mode(
+        mode: RustBV,
+        value: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f64::from_bits(v as u64);
             let rounded = match m & 0x3 {
@@ -1882,11 +1882,11 @@ impl VEXOps {
         }
     }
 
-    fn f64_to_f32_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_f32_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f64::from_bits(v as u64);
             // Note: f64 to f32 rounding is complex - for now use direct cast
@@ -1896,11 +1896,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i32s_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i32s_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f32::from_bits(v as u32);
             let rounded = Self::apply_rounding_f32(f, rm_val as u32);
@@ -1910,11 +1910,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i32s_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i32s_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f64::from_bits(v as u64);
             let rounded = Self::apply_rounding_f64(f, rm_val as u32);
@@ -1924,11 +1924,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i64s_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i64s_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f32::from_bits(v as u32);
             let rounded = Self::apply_rounding_f32(f, rm_val as u32);
@@ -1938,11 +1938,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i64s_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i64s_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f64::from_bits(v as u64);
             let rounded = Self::apply_rounding_f64(f, rm_val as u32);
@@ -1952,11 +1952,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i32u_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i32u_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f32::from_bits(v as u32);
             let rounded = Self::apply_rounding_f32(f, rm_val as u32);
@@ -1966,11 +1966,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i32u_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i32u_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f64::from_bits(v as u64);
             let rounded = Self::apply_rounding_f64(f, rm_val as u32);
@@ -1980,11 +1980,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i64u_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f32_to_i64u_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f32::from_bits(v as u32);
             let rounded = Self::apply_rounding_f32(f, rm_val as u32);
@@ -1994,11 +1994,11 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_i64u_rm<'ctx>(
-        rm: RustBV<'ctx>,
-        arg: RustBV<'ctx>,
-        _ctx: &'ctx SymContext<'ctx>,
-    ) -> Result<RustBV<'ctx>, OpError> {
+    fn f64_to_i64u_rm(
+        rm: RustBV,
+        arg: RustBV,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             let f = f64::from_bits(v as u64);
             let rounded = Self::apply_rounding_f64(f, rm_val as u32);

@@ -64,8 +64,11 @@ pub enum Signedness {
 ///
 /// This is the core value type for the VEX execution engine. All register
 /// and memory values are represented as `RustBV`.
+///
+/// With z3-rs 0.19+, the Z3 context is thread-local, so we don't need
+/// lifetime parameters on the Z3 AST.
 #[derive(Clone)]
-pub enum RustBV<'ctx> {
+pub enum RustBV {
     /// A known concrete value.
     Concrete {
         /// The value, masked to `width` bits.
@@ -81,11 +84,9 @@ pub enum RustBV<'ctx> {
         width: u32,
         /// Name (for debugging).
         name: String,
-        /// Phantom data for lifetime.
-        _ctx: std::marker::PhantomData<&'ctx ()>,
         /// Z3 AST when z3 feature is enabled.
         #[cfg(feature = "vex-engine-z3")]
-        ast: z3::ast::BV<'ctx>,
+        ast: z3::ast::BV,
     },
     /// Optimization: a symbolic value with a known concrete value.
     Constrained {
@@ -95,12 +96,10 @@ pub enum RustBV<'ctx> {
         value: u128,
         /// Width in bits.
         width: u32,
-        /// Phantom data for lifetime.
-        _ctx: std::marker::PhantomData<&'ctx ()>,
     },
 }
 
-impl<'ctx> RustBV<'ctx> {
+impl RustBV {
     // =========================================================================
     // Constructors
     // =========================================================================
@@ -147,7 +146,7 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Create a symbolic bitvector variable.
-    pub fn symbolic(ctx: &'ctx SymContext<'ctx>, name: &str, width: u32) -> Self {
+    pub fn symbolic(ctx: &SymContext, name: &str, width: u32) -> Self {
         let id = ctx.next_id();
         #[cfg(feature = "vex-engine-z3")]
         {
@@ -155,8 +154,7 @@ impl<'ctx> RustBV<'ctx> {
                 id,
                 width,
                 name: name.to_string(),
-                _ctx: std::marker::PhantomData,
-                ast: z3::ast::BV::new_const(ctx.z3_ctx(), name, width),
+                ast: z3::ast::BV::new_const(name, width),
             }
         }
         #[cfg(not(feature = "vex-engine-z3"))]
@@ -165,7 +163,6 @@ impl<'ctx> RustBV<'ctx> {
                 id,
                 width,
                 name: name.to_string(),
-                _ctx: std::marker::PhantomData,
             }
         }
     }
@@ -229,7 +226,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// Add two bitvectors.
-    pub fn add(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn add(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), self.width()),
@@ -239,16 +236,15 @@ impl<'ctx> RustBV<'ctx> {
                     id: _ctx.next_id(),
                     width: self.width(),
                     name: "add_result".to_string(),
-                    _ctx: std::marker::PhantomData,
                     #[cfg(feature = "vex-engine-z3")]
-                    ast: self.to_z3_ast(_ctx).bvadd(&other.to_z3_ast(_ctx)),
+                    ast: self.to_z3_ast().bvadd(&other.to_z3_ast()),
                 }
             }
         }
     }
 
     /// Subtract two bitvectors.
-    pub fn sub(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn sub(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), self.width()),
@@ -256,15 +252,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "sub_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvsub(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvsub(&other.to_z3_ast()),
             },
         }
     }
 
     /// Multiply two bitvectors.
-    pub fn mul(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn mul(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), self.width()),
@@ -272,15 +267,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "mul_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvmul(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvmul(&other.to_z3_ast()),
             },
         }
     }
 
     /// Unsigned division.
-    pub fn udiv(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn udiv(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -294,15 +288,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "udiv_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvudiv(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvudiv(&other.to_z3_ast()),
             },
         }
     }
 
     /// Signed division.
-    pub fn sdiv(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn sdiv(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -318,15 +311,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "sdiv_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvsdiv(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvsdiv(&other.to_z3_ast()),
             },
         }
     }
 
     /// Unsigned remainder.
-    pub fn urem(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn urem(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -340,15 +332,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "urem_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvurem(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvurem(&other.to_z3_ast()),
             },
         }
     }
 
     /// Signed remainder.
-    pub fn srem(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn srem(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -364,24 +355,22 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "srem_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvsrem(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvsrem(&other.to_z3_ast()),
             },
         }
     }
 
     /// Negate (two's complement).
-    pub fn neg(&self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn neg(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
             None => RustBV::Symbolic {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "neg_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvneg(),
+                ast: self.to_z3_ast().bvneg(),
             },
         }
     }
@@ -391,7 +380,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// Bitwise AND.
-    pub fn and(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn and(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a & b, self.width()),
@@ -399,15 +388,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "and_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvand(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvand(&other.to_z3_ast()),
             },
         }
     }
 
     /// Bitwise OR.
-    pub fn or(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn or(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a | b, self.width()),
@@ -415,15 +403,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "or_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvor(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvor(&other.to_z3_ast()),
             },
         }
     }
 
     /// Bitwise XOR.
-    pub fn xor(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn xor(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a ^ b, self.width()),
@@ -431,24 +418,22 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "xor_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvxor(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvxor(&other.to_z3_ast()),
             },
         }
     }
 
     /// Bitwise NOT.
-    pub fn not(&self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn not(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(!v, self.width()),
             None => RustBV::Symbolic {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "not_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvnot(),
+                ast: self.to_z3_ast().bvnot(),
             },
         }
     }
@@ -458,7 +443,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// Logical shift left.
-    pub fn shl(&self, amount: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn shl(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -469,15 +454,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "shl_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvshl(&amount.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvshl(&amount.to_z3_ast()),
             },
         }
     }
 
     /// Logical shift right.
-    pub fn lshr(&self, amount: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn lshr(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -488,15 +472,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "lshr_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvlshr(&amount.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvlshr(&amount.to_z3_ast()),
             },
         }
     }
 
     /// Arithmetic shift right (sign-extending).
-    pub fn ashr(&self, amount: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn ashr(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -508,15 +491,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "ashr_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvashr(&amount.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvashr(&amount.to_z3_ast()),
             },
         }
     }
 
     /// Rotate left.
-    pub fn rotl(&self, amount: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn rotl(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -529,15 +511,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "rotl_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvrotl(&amount.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvrotl(&amount.to_z3_ast()),
             },
         }
     }
 
     /// Rotate right.
-    pub fn rotr(&self, amount: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn rotr(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -550,9 +531,8 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "rotr_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).bvrotr(&amount.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().bvrotr(&amount.to_z3_ast()),
             },
         }
     }
@@ -562,7 +542,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// Equality comparison (returns 1-bit result).
-    pub fn eq(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn eq(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a == b { 1 } else { 0 }, 1),
@@ -570,14 +550,13 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: 1,
                 name: "eq_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    let ctx = _ctx.z3_ctx();
-                    let eq = self.to_z3_ast(_ctx)._eq(&other.to_z3_ast(_ctx));
+                    use z3::ast::Ast;
+                    let eq = self.to_z3_ast()._eq(&other.to_z3_ast());
                     eq.ite(
-                        &z3::ast::BV::from_u64(ctx, 1, 1),
-                        &z3::ast::BV::from_u64(ctx, 0, 1),
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
                     )
                 },
             },
@@ -585,13 +564,13 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Inequality comparison (returns 1-bit result).
-    pub fn ne(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn ne(&self, other: &Self, _ctx: &SymContext) -> Self {
         let eq_result = self.eq(other, _ctx);
         eq_result.not(_ctx)
     }
 
     /// Unsigned less-than comparison.
-    pub fn ult(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn ult(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a < b { 1 } else { 0 }, 1),
@@ -599,14 +578,13 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: 1,
                 name: "ult_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    let ctx = _ctx.z3_ctx();
-                    let lt = self.to_z3_ast(_ctx).bvult(&other.to_z3_ast(_ctx));
+                    // Use direct bvult method from z3-rs 0.19+
+                    let lt = self.to_z3_ast().bvult(&other.to_z3_ast());
                     lt.ite(
-                        &z3::ast::BV::from_u64(ctx, 1, 1),
-                        &z3::ast::BV::from_u64(ctx, 0, 1),
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
                     )
                 },
             },
@@ -614,7 +592,7 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Unsigned less-than-or-equal comparison.
-    pub fn ule(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn ule(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a <= b { 1 } else { 0 }, 1),
@@ -622,14 +600,13 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: 1,
                 name: "ule_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    let ctx = _ctx.z3_ctx();
-                    let le = self.to_z3_ast(_ctx).bvule(&other.to_z3_ast(_ctx));
+                    // Use direct bvule method from z3-rs 0.19+
+                    let le = self.to_z3_ast().bvule(&other.to_z3_ast());
                     le.ite(
-                        &z3::ast::BV::from_u64(ctx, 1, 1),
-                        &z3::ast::BV::from_u64(ctx, 0, 1),
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
                     )
                 },
             },
@@ -637,17 +614,17 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Unsigned greater-than comparison.
-    pub fn ugt(&self, other: &Self, ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn ugt(&self, other: &Self, ctx: &SymContext) -> Self {
         other.ult(self, ctx)
     }
 
     /// Unsigned greater-than-or-equal comparison.
-    pub fn uge(&self, other: &Self, ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn uge(&self, other: &Self, ctx: &SymContext) -> Self {
         other.ule(self, ctx)
     }
 
     /// Signed less-than comparison.
-    pub fn slt(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn slt(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -659,14 +636,13 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: 1,
                 name: "slt_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    let ctx = _ctx.z3_ctx();
-                    let lt = self.to_z3_ast(_ctx).bvslt(&other.to_z3_ast(_ctx));
+                    // Use direct bvslt method from z3-rs 0.19+
+                    let lt = self.to_z3_ast().bvslt(&other.to_z3_ast());
                     lt.ite(
-                        &z3::ast::BV::from_u64(ctx, 1, 1),
-                        &z3::ast::BV::from_u64(ctx, 0, 1),
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
                     )
                 },
             },
@@ -674,7 +650,7 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Signed less-than-or-equal comparison.
-    pub fn sle(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn sle(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -686,14 +662,13 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: 1,
                 name: "sle_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    let ctx = _ctx.z3_ctx();
-                    let le = self.to_z3_ast(_ctx).bvsle(&other.to_z3_ast(_ctx));
+                    // Use direct bvsle method from z3-rs 0.19+
+                    let le = self.to_z3_ast().bvsle(&other.to_z3_ast());
                     le.ite(
-                        &z3::ast::BV::from_u64(ctx, 1, 1),
-                        &z3::ast::BV::from_u64(ctx, 0, 1),
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
                     )
                 },
             },
@@ -701,12 +676,12 @@ impl<'ctx> RustBV<'ctx> {
     }
 
     /// Signed greater-than comparison.
-    pub fn sgt(&self, other: &Self, ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn sgt(&self, other: &Self, ctx: &SymContext) -> Self {
         other.slt(self, ctx)
     }
 
     /// Signed greater-than-or-equal comparison.
-    pub fn sge(&self, other: &Self, ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn sge(&self, other: &Self, ctx: &SymContext) -> Self {
         other.sle(self, ctx)
     }
 
@@ -715,7 +690,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// Zero-extend to a wider width.
-    pub fn zero_extend(&self, to_width: u32, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn zero_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width >= self.width());
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
@@ -723,15 +698,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: to_width,
                 name: "zext_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).zero_ext(to_width - self.width()),
+                ast: self.to_z3_ast().zero_ext(to_width - self.width()),
             },
         }
     }
 
     /// Sign-extend to a wider width.
-    pub fn sign_extend(&self, to_width: u32, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn sign_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width >= self.width());
         match self.as_u128() {
             Some(v) => {
@@ -742,15 +716,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: to_width,
                 name: "sext_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).sign_ext(to_width - self.width()),
+                ast: self.to_z3_ast().sign_ext(to_width - self.width()),
             },
         }
     }
 
     /// Truncate to a narrower width.
-    pub fn truncate(&self, to_width: u32, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn truncate(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width <= self.width());
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
@@ -758,15 +731,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: to_width,
                 name: "trunc_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).extract(to_width - 1, 0),
+                ast: self.to_z3_ast().extract(to_width - 1, 0),
             },
         }
     }
 
     /// Extract bits [high:low] (inclusive).
-    pub fn extract(&self, high: u32, low: u32, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn extract(&self, high: u32, low: u32, _ctx: &SymContext) -> Self {
         debug_assert!(high >= low);
         debug_assert!(high < self.width());
         let result_width = high - low + 1;
@@ -779,15 +751,14 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: result_width,
                 name: "extract_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).extract(high, low),
+                ast: self.to_z3_ast().extract(high, low),
             },
         }
     }
 
     /// Concatenate two bitvectors (self becomes high bits).
-    pub fn concat(&self, other: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn concat(&self, other: &Self, _ctx: &SymContext) -> Self {
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
             (Some(hi), Some(lo)) => {
@@ -798,9 +769,8 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: result_width,
                 name: "concat_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast(_ctx).concat(&other.to_z3_ast(_ctx)),
+                ast: self.to_z3_ast().concat(&other.to_z3_ast()),
             },
         }
     }
@@ -810,7 +780,7 @@ impl<'ctx> RustBV<'ctx> {
     // =========================================================================
 
     /// If-then-else: returns `then_val` if `self` is non-zero, else `else_val`.
-    pub fn ite(&self, then_val: &Self, else_val: &Self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn ite(&self, then_val: &Self, else_val: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(then_val.width(), else_val.width());
         match self.as_u128() {
             Some(v) => {
@@ -824,22 +794,21 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: then_val.width(),
                 name: "ite_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    let ctx = _ctx.z3_ctx();
+                    use z3::ast::Ast;
                     let cond = self
-                        .to_z3_ast(_ctx)
-                        ._eq(&z3::ast::BV::from_u64(ctx, 0, self.width()))
+                        .to_z3_ast()
+                        ._eq(&z3::ast::BV::from_u64(0, self.width()))
                         .not();
-                    cond.ite(&then_val.to_z3_ast(_ctx), &else_val.to_z3_ast(_ctx))
+                    cond.ite(&then_val.to_z3_ast(), &else_val.to_z3_ast())
                 },
             },
         }
     }
 
     /// Count leading zeros.
-    pub fn clz(&self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn clz(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
                 let leading = if v == 0 {
@@ -853,19 +822,18 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "clz_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     // Build CLZ symbolically - this is complex
                     // For now, just return a symbolic value
-                    z3::ast::BV::new_const(_ctx.z3_ctx(), "clz", self.width())
+                    z3::ast::BV::new_const("clz", self.width())
                 },
             },
         }
     }
 
     /// Count trailing zeros.
-    pub fn ctz(&self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn ctz(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
                 let trailing = if v == 0 {
@@ -879,24 +847,22 @@ impl<'ctx> RustBV<'ctx> {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "ctz_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: z3::ast::BV::new_const(_ctx.z3_ctx(), "ctz", self.width()),
+                ast: z3::ast::BV::new_const("ctz", self.width()),
             },
         }
     }
 
     /// Population count (number of set bits).
-    pub fn popcount(&self, _ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn popcount(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(v.count_ones() as u128, self.width()),
             None => RustBV::Symbolic {
                 id: _ctx.next_id(),
                 width: self.width(),
                 name: "popcount_result".to_string(),
-                _ctx: std::marker::PhantomData,
                 #[cfg(feature = "vex-engine-z3")]
-                ast: z3::ast::BV::new_const(_ctx.z3_ctx(), "popcount", self.width()),
+                ast: z3::ast::BV::new_const("popcount", self.width()),
             },
         }
     }
@@ -905,26 +871,30 @@ impl<'ctx> RustBV<'ctx> {
     // Z3 Integration (when feature is enabled)
     // =========================================================================
 
+    /// Convert this RustBV to a Z3 AST.
+    ///
+    /// With z3-rs 0.19+, the context is thread-local so we don't need
+    /// to pass it explicitly.
     #[cfg(feature = "vex-engine-z3")]
-    fn to_z3_ast(&self, ctx: &'ctx SymContext<'ctx>) -> z3::ast::BV<'ctx> {
+    pub fn to_z3_ast(&self) -> z3::ast::BV {
         use z3::ast::Ast;
         match self {
             RustBV::Concrete { value, width } => {
                 if *width <= 64 {
-                    z3::ast::BV::from_u64(ctx.z3_ctx(), *value as u64, *width)
+                    z3::ast::BV::from_u64(*value as u64, *width)
                 } else {
-                    let lo = z3::ast::BV::from_u64(ctx.z3_ctx(), *value as u64, 64);
-                    let hi = z3::ast::BV::from_u64(ctx.z3_ctx(), (*value >> 64) as u64, *width - 64);
+                    let lo = z3::ast::BV::from_u64(*value as u64, 64);
+                    let hi = z3::ast::BV::from_u64((*value >> 64) as u64, *width - 64);
                     hi.concat(&lo)
                 }
             }
             RustBV::Symbolic { ast, .. } => ast.clone(),
             RustBV::Constrained { value, width, .. } => {
                 if *width <= 64 {
-                    z3::ast::BV::from_u64(ctx.z3_ctx(), *value as u64, *width)
+                    z3::ast::BV::from_u64(*value as u64, *width)
                 } else {
-                    let lo = z3::ast::BV::from_u64(ctx.z3_ctx(), *value as u64, 64);
-                    let hi = z3::ast::BV::from_u64(ctx.z3_ctx(), (*value >> 64) as u64, *width - 64);
+                    let lo = z3::ast::BV::from_u64(*value as u64, 64);
+                    let hi = z3::ast::BV::from_u64((*value >> 64) as u64, *width - 64);
                     hi.concat(&lo)
                 }
             }
@@ -969,7 +939,7 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
 // Trait Implementations
 // =============================================================================
 
-impl fmt::Debug for RustBV<'_> {
+impl fmt::Debug for RustBV {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RustBV::Concrete { value, width } => {
@@ -985,7 +955,7 @@ impl fmt::Debug for RustBV<'_> {
     }
 }
 
-impl fmt::Display for RustBV<'_> {
+impl fmt::Display for RustBV {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RustBV::Concrete { value, width } => {
@@ -1001,7 +971,7 @@ impl fmt::Display for RustBV<'_> {
     }
 }
 
-impl PartialEq for RustBV<'_> {
+impl PartialEq for RustBV {
     fn eq(&self, other: &Self) -> bool {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => a == b && self.width() == other.width(),

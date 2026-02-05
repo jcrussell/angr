@@ -87,14 +87,14 @@ impl std::fmt::Display for ExecutionError {
 impl std::error::Error for ExecutionError {}
 
 /// Result of executing a single statement.
-enum StmtResult<'ctx> {
+enum StmtResult {
     /// Continue to next statement.
     Continue,
     /// Exit the block early.
     Exit { target: u64, jumpkind: JumpKind },
     /// Symbolic branch detected.
     SymbolicBranch {
-        condition: RustBV<'ctx>,
+        condition: RustBV,
         true_target: u64,
         false_target: u64,
     },
@@ -103,15 +103,15 @@ enum StmtResult<'ctx> {
 /// VEX IR interpreter.
 ///
 /// This is the core execution engine that interprets VEX IR blocks.
-pub struct VEXInterpreter<'ctx> {
+pub struct VEXInterpreter<'a> {
     /// Register file.
-    pub registers: RegisterFile<'ctx>,
+    pub registers: RegisterFile,
     /// Memory.
-    pub memory: SymbolicMemory<'ctx>,
+    pub memory: SymbolicMemory,
     /// Temporary variables for current block.
-    temps: Vec<Option<RustBV<'ctx>>>,
+    temps: Vec<Option<RustBV>>,
     /// Solver context.
-    ctx: &'ctx SymContext<'ctx>,
+    ctx: &'a SymContext,
     /// Current program counter.
     pub pc: u64,
     /// Current instruction address (within block).
@@ -120,9 +120,9 @@ pub struct VEXInterpreter<'ctx> {
     hook_addrs: std::collections::HashSet<u64>,
 }
 
-impl<'ctx> VEXInterpreter<'ctx> {
+impl<'a> VEXInterpreter<'a> {
     /// Create a new interpreter for the given architecture.
-    pub fn new(arch: VexArch, ctx: &'ctx SymContext<'ctx>) -> Self {
+    pub fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
         let arch_box = arch_from_vex(arch);
         let endness = arch.endness();
 
@@ -138,7 +138,7 @@ impl<'ctx> VEXInterpreter<'ctx> {
     }
 
     /// Get the solver context.
-    pub fn context(&self) -> &'ctx SymContext<'ctx> {
+    pub fn context(&self) -> &'a SymContext {
         self.ctx
     }
 
@@ -205,7 +205,7 @@ impl<'ctx> VEXInterpreter<'ctx> {
         &mut self,
         stmt: &IRStmt,
         irsb: &IRSB,
-    ) -> Result<StmtResult<'ctx>, ExecutionError> {
+    ) -> Result<StmtResult, ExecutionError> {
         match stmt {
             IRStmt::NoOp => Ok(StmtResult::Continue),
 
@@ -335,7 +335,7 @@ impl<'ctx> VEXInterpreter<'ctx> {
         &self,
         expr: &IRExpr,
         tyenv: &TypeEnv,
-    ) -> Result<RustBV<'ctx>, ExecutionError> {
+    ) -> Result<RustBV, ExecutionError> {
         match expr {
             IRExpr::Const(c) => Ok(self.eval_const(c)),
 
@@ -413,7 +413,7 @@ impl<'ctx> VEXInterpreter<'ctx> {
     }
 
     /// Evaluate an IR constant.
-    fn eval_const(&self, c: &IRConst) -> RustBV<'ctx> {
+    fn eval_const(&self, c: &IRConst) -> RustBV {
         match c {
             IRConst::U1(v) => RustBV::concrete(*v as u128, 1),
             IRConst::U8(v) => RustBV::concrete(*v as u128, 8),
@@ -475,7 +475,7 @@ impl<'ctx> VEXInterpreter<'ctx> {
     }
 
     /// Fork the interpreter state.
-    pub fn fork(&self) -> VEXInterpreter<'ctx> {
+    pub fn fork(&self) -> VEXInterpreter<'a> {
         VEXInterpreter {
             registers: self.registers.fork(),
             memory: self.memory.fork(),

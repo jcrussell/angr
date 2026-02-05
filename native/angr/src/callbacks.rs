@@ -11,7 +11,7 @@ use crate::symbolic::{RustBV, SymContext};
 
 /// Result of a memory load callback.
 #[derive(Debug, Clone)]
-pub struct MemoryLoadResult<'ctx> {
+pub struct MemoryLoadResult {
     /// The concrete bytes loaded.
     pub data: Vec<u8>,
     /// Whether the value is symbolic (has an associated AST).
@@ -19,7 +19,7 @@ pub struct MemoryLoadResult<'ctx> {
     /// The symbolic AST (if symbolic). This is a Python object reference.
     pub symbolic_ast: Option<PyObject>,
     /// The RustBV representation for the engine.
-    pub value: RustBV<'ctx>,
+    pub value: RustBV,
 }
 
 /// Result of running the execution loop.

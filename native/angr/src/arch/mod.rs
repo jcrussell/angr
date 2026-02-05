@@ -73,16 +73,16 @@ pub trait Arch: Send + Sync {
 }
 
 /// Register file for storing register values.
-pub struct RegisterFile<'ctx> {
+pub struct RegisterFile {
     /// Raw storage (byte-addressable).
     data: Vec<u8>,
     /// Symbolic overlays (offset -> value).
-    symbolic: std::collections::HashMap<u32, RustBV<'ctx>>,
+    symbolic: std::collections::HashMap<u32, RustBV>,
     /// Architecture information.
     arch: Box<dyn Arch>,
 }
 
-impl<'ctx> RegisterFile<'ctx> {
+impl RegisterFile {
     /// Create a new register file for the given architecture.
     pub fn new(arch: Box<dyn Arch>) -> Self {
         let size = arch.state_size();
@@ -99,7 +99,7 @@ impl<'ctx> RegisterFile<'ctx> {
     }
 
     /// Read a register value by offset and size.
-    pub fn get(&self, offset: u32, size: u32, ctx: &'ctx crate::symbolic::SymContext<'ctx>) -> RustBV<'ctx> {
+    pub fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
         // Check for symbolic value first
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
@@ -124,7 +124,7 @@ impl<'ctx> RegisterFile<'ctx> {
     }
 
     /// Write a register value by offset.
-    pub fn put(&mut self, offset: u32, value: RustBV<'ctx>) {
+    pub fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;
 
         // If symbolic, store in symbolic map
@@ -149,14 +149,14 @@ impl<'ctx> RegisterFile<'ctx> {
     }
 
     /// Read a register by name.
-    pub fn get_reg(&self, name: &str, ctx: &'ctx crate::symbolic::SymContext<'ctx>) -> Option<RustBV<'ctx>> {
+    pub fn get_reg(&self, name: &str, ctx: &crate::symbolic::SymContext) -> Option<RustBV> {
         let offset = self.arch.register_offset(name)?;
         let size = self.arch.register_size(name)?;
         Some(self.get(offset, size, ctx))
     }
 
     /// Write a register by name.
-    pub fn put_reg(&mut self, name: &str, value: RustBV<'ctx>) -> bool {
+    pub fn put_reg(&mut self, name: &str, value: RustBV) -> bool {
         if let (Some(offset), Some(size)) = (
             self.arch.register_offset(name),
             self.arch.register_size(name),
@@ -170,27 +170,27 @@ impl<'ctx> RegisterFile<'ctx> {
     }
 
     /// Get the instruction pointer.
-    pub fn get_ip(&self, ctx: &'ctx crate::symbolic::SymContext<'ctx>) -> RustBV<'ctx> {
+    pub fn get_ip(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
         let offset = self.arch.ip_offset();
         let size = self.arch.bytes();
         self.get(offset, size, ctx)
     }
 
     /// Set the instruction pointer.
-    pub fn set_ip(&mut self, value: RustBV<'ctx>) {
+    pub fn set_ip(&mut self, value: RustBV) {
         let offset = self.arch.ip_offset();
         self.put(offset, value);
     }
 
     /// Get the stack pointer.
-    pub fn get_sp(&self, ctx: &'ctx crate::symbolic::SymContext<'ctx>) -> RustBV<'ctx> {
+    pub fn get_sp(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
         let offset = self.arch.sp_offset();
         let size = self.arch.bytes();
         self.get(offset, size, ctx)
     }
 
     /// Set the stack pointer.
-    pub fn set_sp(&mut self, value: RustBV<'ctx>) {
+    pub fn set_sp(&mut self, value: RustBV) {
         let offset = self.arch.sp_offset();
         self.put(offset, value);
     }
@@ -215,7 +215,7 @@ impl<'ctx> RegisterFile<'ctx> {
     }
 
     /// Fork the register file for path splitting.
-    pub fn fork(&self) -> RegisterFile<'ctx> {
+    pub fn fork(&self) -> RegisterFile {
         RegisterFile {
             data: self.data.clone(),
             symbolic: self.symbolic.clone(),
