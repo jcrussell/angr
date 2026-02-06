@@ -12,10 +12,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::arch::arch_from_name;
-use crate::callbacks::{LoopExecutionEvent, PythonCallbacks, RunResult};
+use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks, RunResult};
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
 use crate::interpreter_cb::CallbackInterpreter;
 use crate::memory::Permission;
+use crate::solver::RustSolverContext;
 use crate::symbolic::SymContext;
 use crate::vex::{deserialize_irsb, VexArch, IRSB};
 
@@ -164,6 +165,8 @@ pub struct RustVEXEngine {
     memory_version: u64,
     /// Python callbacks for memory/hook/syscall handling.
     callbacks: Option<PythonCallbacks>,
+    /// Execution configuration for deferred forks.
+    execution_config: ExecutionConfig,
 }
 
 #[pymethods]
@@ -191,7 +194,35 @@ impl RustVEXEngine {
             hooks_version: 0,
             memory_version: 0,
             callbacks: None,
+            execution_config: ExecutionConfig::default(),
         })
+    }
+
+    /// Get the execution configuration.
+    #[getter]
+    pub fn execution_config(&self) -> ExecutionConfig {
+        self.execution_config.clone()
+    }
+
+    /// Set the execution configuration.
+    #[setter]
+    pub fn set_execution_config(&mut self, config: ExecutionConfig) {
+        self.execution_config = config;
+    }
+
+    /// Enable or disable deferred forks.
+    pub fn set_use_deferred_forks(&mut self, enabled: bool) {
+        self.execution_config.use_deferred_forks = enabled;
+    }
+
+    /// Set the maximum number of deferred forks before returning to Python.
+    pub fn set_max_deferred_forks(&mut self, max: u32) {
+        self.execution_config.max_deferred_forks = max;
+    }
+
+    /// Set the branch policy for symbolic branches.
+    pub fn set_branch_policy(&mut self, policy: BranchPolicy) {
+        self.execution_config.branch_policy = policy;
     }
 
     /// Get the architecture name.
@@ -527,7 +558,8 @@ impl RustVEXEngine {
     ///     max_blocks: Maximum number of blocks to execute before returning.
     ///
     /// Returns:
-    ///     LoopExecutionEvent describing why execution stopped.
+    ///     LoopExecutionEvent describing why execution stopped, including any
+    ///     deferred forks collected during execution.
     #[pyo3(signature = (max_blocks=100))]
     pub fn run_loop(&mut self, py: Python<'_>, max_blocks: u32) -> PyResult<LoopExecutionEvent> {
         // Ensure callbacks are set
@@ -542,9 +574,13 @@ impl RustVEXEngine {
             ));
         }
 
-        // Create the callback-aware interpreter
+        // Create the callback-aware interpreter with config
         let ctx = SymContext::new_mock();
-        let mut interp = CallbackInterpreter::new(self.vex_arch, &ctx);
+        let mut interp = CallbackInterpreter::with_config(
+            self.vex_arch,
+            &ctx,
+            self.execution_config.clone(),
+        );
 
         // Copy registers from engine to interpreter
         interp.registers.copy_from_bytes(&self.registers);
@@ -558,14 +594,14 @@ impl RustVEXEngine {
         }
 
         // Run the execution loop
-        let (result, blocks_executed) = interp.run_until_event(py, callbacks, max_blocks);
+        let (result, blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, max_blocks);
 
         // Update engine state from interpreter
         self.pc = interp.get_pc();
         interp.registers.copy_to_bytes(&mut self.registers);
 
-        // Convert to Python event
-        Ok(LoopExecutionEvent::from_run_result(result, blocks_executed))
+        // Convert to Python event with deferred forks
+        Ok(LoopExecutionEvent::from_run_result_with_forks(result, blocks_executed, deferred_forks))
     }
 
     /// Run a single block with callbacks and return the event.
@@ -610,6 +646,8 @@ impl RustVEXEngine {
             memory_version: self.memory_version,
             // Callbacks are shared (Python objects are reference-counted)
             callbacks: self.callbacks.clone(),
+            // Copy execution config
+            execution_config: self.execution_config.clone(),
         })
     }
 
@@ -702,6 +740,11 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<StateSnapshot>()?;
     m.add_class::<PythonCallbacks>()?;
     m.add_class::<LoopExecutionEvent>()?;
+    m.add_class::<RustSolverContext>()?;
+    // Deferred fork types
+    m.add_class::<DeferredFork>()?;
+    m.add_class::<BranchPolicy>()?;
+    m.add_class::<ExecutionConfig>()?;
     Ok(())
 }
 

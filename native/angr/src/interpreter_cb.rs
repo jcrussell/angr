@@ -11,7 +11,7 @@ use lru::LruCache;
 use pyo3::prelude::*;
 
 use crate::arch::{arch_from_vex, RegisterFile};
-use crate::callbacks::{PythonCallbacks, RunResult};
+use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ccall;
@@ -123,11 +123,25 @@ pub struct CallbackInterpreter<'a> {
     block_cache: LruCache<u64, IRSB>,
     /// Whether to use callbacks for memory (vs local registers).
     use_memory_callbacks: bool,
+    /// Deferred forks collected during execution.
+    /// Each fork represents a branch where we took one path and deferred the other.
+    deferred_forks: Vec<DeferredFork>,
+    /// Execution configuration.
+    config: ExecutionConfig,
+    /// Counter for alternating branch policy.
+    branch_counter: u64,
+    /// Next condition ID for tracking branch conditions.
+    next_condition_id: u64,
 }
 
 impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
     pub fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
+        Self::with_config(arch, ctx, ExecutionConfig::default())
+    }
+
+    /// Create a new callback-aware interpreter with custom config.
+    pub fn with_config(arch: VexArch, ctx: &'a SymContext, config: ExecutionConfig) -> Self {
         let arch_box = arch_from_vex(arch);
 
         CallbackInterpreter {
@@ -140,7 +154,48 @@ impl<'a> CallbackInterpreter<'a> {
             arch,
             block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()),
             use_memory_callbacks: true,
+            deferred_forks: Vec::new(),
+            config,
+            branch_counter: 0,
+            next_condition_id: 0,
         }
+    }
+
+    /// Get the execution configuration.
+    pub fn config(&self) -> &ExecutionConfig {
+        &self.config
+    }
+
+    /// Set the execution configuration.
+    pub fn set_config(&mut self, config: ExecutionConfig) {
+        self.config = config;
+    }
+
+    /// Get the deferred forks collected during execution.
+    pub fn deferred_forks(&self) -> &[DeferredFork] {
+        &self.deferred_forks
+    }
+
+    /// Take the deferred forks, leaving an empty vector.
+    pub fn take_deferred_forks(&mut self) -> Vec<DeferredFork> {
+        std::mem::take(&mut self.deferred_forks)
+    }
+
+    /// Clear the deferred forks.
+    pub fn clear_deferred_forks(&mut self) {
+        self.deferred_forks.clear();
+    }
+
+    /// Get the number of deferred forks.
+    pub fn num_deferred_forks(&self) -> usize {
+        self.deferred_forks.len()
+    }
+
+    /// Get the next condition ID.
+    fn next_cond_id(&mut self) -> u64 {
+        let id = self.next_condition_id;
+        self.next_condition_id += 1;
+        id
     }
 
     /// Get the solver context.
@@ -207,30 +262,46 @@ impl<'a> CallbackInterpreter<'a> {
     /// This is the main entry point for the callback-based execution model.
     /// It runs blocks in a loop, using Python callbacks for memory access,
     /// until it hits a condition that requires Python-side handling.
+    ///
+    /// Returns a tuple of (result, blocks_executed, deferred_forks).
     pub fn run_until_event(
         &mut self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         max_blocks: u32,
-    ) -> (RunResult, u32) {
+    ) -> (RunResult, u32, Vec<DeferredFork>) {
         let mut blocks_executed = 0u32;
+
+        // Clear any previous deferred forks
+        self.deferred_forks.clear();
 
         for _ in 0..max_blocks {
             // Check for hook at current PC
             if self.is_hooked(self.pc) {
-                return (RunResult::Hook { addr: self.pc }, blocks_executed);
+                let forks = self.take_deferred_forks();
+                return (RunResult::Hook { addr: self.pc }, blocks_executed, forks);
+            }
+
+            // Check if we've hit the deferred forks limit
+            if self.config.use_deferred_forks
+                && self.deferred_forks.len() >= self.config.max_deferred_forks as usize
+            {
+                let forks = self.take_deferred_forks();
+                return (RunResult::MaxDeferredForks { pc: self.pc }, blocks_executed, forks);
             }
 
             // Try to get or lift the block
             let irsb = match self.get_or_lift_block(py, callbacks, self.pc) {
                 Ok(irsb) => irsb,
                 Err(e) => {
+                    let forks = self.take_deferred_forks();
                     return (
                         RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
                         },
                         blocks_executed,
+                        forks,
                     );
                 }
             };
@@ -250,24 +321,29 @@ impl<'a> CallbackInterpreter<'a> {
                             // Return for jumpkinds that need Python handling
                             if jumpkind.is_syscall() {
                                 let syscall_num = self.get_syscall_num();
+                                let forks = self.take_deferred_forks();
                                 return (
                                     RunResult::Syscall {
                                         num: syscall_num,
                                         pc: next_addr,
                                     },
                                     blocks_executed,
+                                    forks,
                                 );
                             }
                             // For Call/Ret, we might want to return for SimProcedures
                             if self.is_hooked(next_addr) {
-                                return (RunResult::Hook { addr: next_addr }, blocks_executed);
+                                let forks = self.take_deferred_forks();
+                                return (RunResult::Hook { addr: next_addr }, blocks_executed, forks);
                             }
                             // Otherwise, continue execution
                         }
                         BlockResult::Syscall { num } => {
+                            let forks = self.take_deferred_forks();
                             return (
                                 RunResult::Syscall { num, pc: self.pc },
                                 blocks_executed,
+                                forks,
                             );
                         }
                         BlockResult::SymbolicBranch {
@@ -275,6 +351,7 @@ impl<'a> CallbackInterpreter<'a> {
                             true_target,
                             false_target,
                         } => {
+                            let forks = self.take_deferred_forks();
                             return (
                                 RunResult::SymbolicBranch {
                                     condition_id,
@@ -282,36 +359,43 @@ impl<'a> CallbackInterpreter<'a> {
                                     false_target,
                                 },
                                 blocks_executed,
+                                forks,
                             );
                         }
                         BlockResult::Hook { addr } => {
-                            return (RunResult::Hook { addr }, blocks_executed);
+                            let forks = self.take_deferred_forks();
+                            return (RunResult::Hook { addr }, blocks_executed, forks);
                         }
                         BlockResult::Error { message } => {
+                            let forks = self.take_deferred_forks();
                             return (
                                 RunResult::Error {
                                     message,
                                     addr: self.pc,
                                 },
                                 blocks_executed,
+                                forks,
                             );
                         }
                     }
                 }
                 Err(e) => {
+                    let forks = self.take_deferred_forks();
                     return (
                         RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
                         },
                         blocks_executed,
+                        forks,
                     );
                 }
             }
         }
 
         // Reached max blocks
-        (RunResult::MaxBlocks { pc: self.pc }, blocks_executed)
+        let forks = self.take_deferred_forks();
+        (RunResult::MaxBlocks { pc: self.pc }, blocks_executed, forks)
     }
 
     /// Get or lift a block at the given address.
@@ -455,13 +539,69 @@ impl<'a> CallbackInterpreter<'a> {
                 let can_be_false = self.ctx.can_be_false(&guard_val);
 
                 if can_be_true && can_be_false {
-                    // Need to fork
+                    // Both paths are feasible - decide how to handle
                     let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
-                    return Ok(StmtResult::SymbolicBranch {
-                        condition: guard_val,
-                        true_target: *dst,
-                        false_target: fallthrough,
-                    });
+
+                    // Check if deferred forks are enabled and we haven't hit the limit
+                    if self.config.use_deferred_forks
+                        && self.deferred_forks.len() < self.config.max_deferred_forks as usize
+                    {
+                        // Choose which path to take based on policy
+                        let take_true = match self.config.branch_policy {
+                            BranchPolicy::TakeTrue => true,
+                            BranchPolicy::TakeFalse => false,
+                            BranchPolicy::TakeFallthrough => {
+                                // Take the path that continues to the next instruction
+                                // (false/fallthrough for Exit statements since Exit goes to dst on true)
+                                false
+                            }
+                            BranchPolicy::Alternate => {
+                                self.branch_counter += 1;
+                                self.branch_counter % 2 == 1
+                            }
+                        };
+
+                        // Get a condition ID for this branch
+                        let condition_id = self.next_cond_id();
+
+                        if take_true {
+                            // Take the exit (true branch), defer the fallthrough
+                            self.deferred_forks.push(DeferredFork {
+                                branch_addr: self.current_insn_addr,
+                                path_taken: true,
+                                unexplored_target: fallthrough,
+                                condition_id,
+                            });
+
+                            // Add constraint that condition is true
+                            self.ctx.assume_true(&guard_val);
+
+                            return Ok(StmtResult::Exit {
+                                target: *dst,
+                                jumpkind: *jk,
+                            });
+                        } else {
+                            // Take fallthrough (false branch), defer the exit
+                            self.deferred_forks.push(DeferredFork {
+                                branch_addr: self.current_insn_addr,
+                                path_taken: false,
+                                unexplored_target: *dst,
+                                condition_id,
+                            });
+
+                            // Add constraint that condition is false
+                            self.ctx.assume_false(&guard_val);
+
+                            return Ok(StmtResult::Continue);
+                        }
+                    } else {
+                        // Deferred forks disabled or limit reached - return to Python
+                        return Ok(StmtResult::SymbolicBranch {
+                            condition: guard_val,
+                            true_target: *dst,
+                            false_target: fallthrough,
+                        });
+                    }
                 } else if can_be_true {
                     return Ok(StmtResult::Exit {
                         target: *dst,
@@ -710,6 +850,10 @@ impl<'a> CallbackInterpreter<'a> {
             arch: self.arch,
             block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()), // Fresh cache for fork
             use_memory_callbacks: self.use_memory_callbacks,
+            deferred_forks: Vec::new(), // Fresh deferred forks for fork
+            config: self.config.clone(),
+            branch_counter: self.branch_counter,
+            next_condition_id: self.next_condition_id,
         }
     }
 }

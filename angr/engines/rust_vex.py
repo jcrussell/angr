@@ -93,6 +93,9 @@ try:
         ExecutionEvent,
         PythonCallbacks,
         LoopExecutionEvent,
+        ExecutionConfig,
+        BranchPolicy,
+        DeferredFork,
     )
     RUST_ENGINE_AVAILABLE = True
 except ImportError:
@@ -681,8 +684,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
     _rust_engine: RustVEXEngine | None = None
     _rust_engine_synced: bool = False
 
-    def __init__(self, project: angr.Project):
+    def __init__(self, project: angr.Project, use_deferred_forks: bool = True, max_deferred_forks: int = 50):
         super().__init__(project)
+
+        self._use_deferred_forks = use_deferred_forks
+        self._max_deferred_forks = max_deferred_forks
 
         if not RUST_ENGINE_AVAILABLE:
             l.warning("RustVEXMixin initialized but Rust engine not available")
@@ -691,9 +697,39 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             rust_arch = _arch_name_to_rust(project.arch.name)
             try:
                 self._rust_engine = RustVEXEngine(rust_arch)
+                # Configure deferred forks
+                self._rust_engine.set_use_deferred_forks(use_deferred_forks)
+                self._rust_engine.set_max_deferred_forks(max_deferred_forks)
+                self._rust_engine.set_branch_policy(BranchPolicy.take_true())
             except ValueError as e:
                 l.warning("Failed to create Rust VEX engine for %s: %s", rust_arch, e)
                 self._rust_engine = None
+
+    def configure_deferred_forks(self, enabled: bool = True, max_forks: int = 50, policy: str = "take_true"):
+        """
+        Configure deferred fork behavior.
+
+        Args:
+            enabled: Whether to use deferred forks (default True).
+            max_forks: Maximum deferred forks before returning to Python (default 50).
+            policy: Branch policy - "take_true", "take_false", "take_fallthrough", or "alternate".
+        """
+        if self._rust_engine is None:
+            return
+
+        self._use_deferred_forks = enabled
+        self._max_deferred_forks = max_forks
+        self._rust_engine.set_use_deferred_forks(enabled)
+        self._rust_engine.set_max_deferred_forks(max_forks)
+
+        policy_map = {
+            "take_true": BranchPolicy.take_true(),
+            "take_false": BranchPolicy.take_false(),
+            "take_fallthrough": BranchPolicy.take_fallthrough(),
+            "alternate": BranchPolicy.alternate(),
+        }
+        if policy in policy_map:
+            self._rust_engine.set_branch_policy(policy_map[policy])
 
     @property
     def rust_engine_available(self) -> bool:
@@ -1160,6 +1196,18 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 "Ijk_Boring",
             )
 
+        elif event_type == "max_deferred_forks":
+            # Reached max deferred forks limit - create successor for current state
+            # and handle deferred forks below
+            next_addr = event.pc
+            state.ip = next_addr
+            successors.add_successor(
+                state,
+                next_addr,
+                claripy.true(),
+                "Ijk_Boring",
+            )
+
         elif event_type == "block_end":
             # Normal block end
             next_addr = event.pc
@@ -1231,6 +1279,28 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         else:
             l.warning("Unknown loop execution event type: %s", event_type)
             raise errors.SimEngineError(f"Unknown event type: {event_type}")
+
+        # Process deferred forks - create additional successors for unexplored paths
+        # These are branches where Rust took one path and deferred the other
+        if hasattr(event, 'deferred_forks') and event.deferred_forks:
+            l.debug("Processing %d deferred forks", len(event.deferred_forks))
+            for fork in event.deferred_forks:
+                # Create a state for the unexplored branch
+                fork_state = state.copy()
+                fork_state.ip = fork.unexplored_target
+
+                # Add constraint for the unexplored path
+                # If we took true, the unexplored path has NOT(condition)
+                # If we took false, the unexplored path has the condition
+                # Note: Without full constraint tracking, we can't add the actual constraint
+                # but we can still schedule the unexplored path for execution
+
+                successors.add_successor(
+                    fork_state,
+                    fork.unexplored_target,
+                    claripy.true(),  # TODO: track actual negated condition
+                    "Ijk_Boring",
+                )
 
 
 class RustVEXEngineWrapper:

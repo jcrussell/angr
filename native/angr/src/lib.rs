@@ -22,6 +22,8 @@ pub mod interpreter_cb;
 #[cfg(feature = "vex-engine")]
 pub mod memory;
 #[cfg(feature = "vex-engine")]
+pub mod solver;
+#[cfg(feature = "vex-engine")]
 pub mod symbolic;
 #[cfg(feature = "vex-engine")]
 pub mod vex;

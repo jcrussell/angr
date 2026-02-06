@@ -7,7 +7,142 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
 
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
+
+/// A branch that was taken but has an unexplored alternative.
+///
+/// When the Rust engine encounters a symbolic branch where both paths are
+/// feasible, it picks one path to continue executing and records the other
+/// as a deferred fork. Python can later create states for these unexplored
+/// branches and schedule them for execution.
+#[pyclass]
+#[derive(Debug, Clone)]
+pub struct DeferredFork {
+    /// Address where the branch occurred.
+    #[pyo3(get)]
+    pub branch_addr: u64,
+    /// The path we took (true = took true branch, false = took false branch).
+    #[pyo3(get)]
+    pub path_taken: bool,
+    /// Address of the unexplored path.
+    #[pyo3(get)]
+    pub unexplored_target: u64,
+    /// Condition ID for constraint tracking.
+    /// Python can use this to reconstruct the branch condition.
+    #[pyo3(get)]
+    pub condition_id: u64,
+}
+
+#[pymethods]
+impl DeferredFork {
+    /// Create a new deferred fork.
+    #[new]
+    pub fn new(branch_addr: u64, path_taken: bool, unexplored_target: u64, condition_id: u64) -> Self {
+        DeferredFork {
+            branch_addr,
+            path_taken,
+            unexplored_target,
+            condition_id,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DeferredFork(branch_addr=0x{:x}, path_taken={}, unexplored=0x{:x})",
+            self.branch_addr, self.path_taken, self.unexplored_target
+        )
+    }
+}
+
+/// Policy for choosing which branch to take when both paths are feasible.
+#[pyclass]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BranchPolicy {
+    /// Always take the true branch (default).
+    #[default]
+    TakeTrue,
+    /// Always take the false branch.
+    TakeFalse,
+    /// Take the branch that continues to the next instruction (fall-through).
+    TakeFallthrough,
+    /// Alternate between true and false branches.
+    Alternate,
+}
+
+#[pymethods]
+impl BranchPolicy {
+    /// Create the TakeTrue policy.
+    #[staticmethod]
+    pub fn take_true() -> Self {
+        BranchPolicy::TakeTrue
+    }
+
+    /// Create the TakeFalse policy.
+    #[staticmethod]
+    pub fn take_false() -> Self {
+        BranchPolicy::TakeFalse
+    }
+
+    /// Create the TakeFallthrough policy.
+    #[staticmethod]
+    pub fn take_fallthrough() -> Self {
+        BranchPolicy::TakeFallthrough
+    }
+
+    /// Create the Alternate policy.
+    #[staticmethod]
+    pub fn alternate() -> Self {
+        BranchPolicy::Alternate
+    }
+}
+
+/// Configuration for the execution loop with deferred forks.
+#[pyclass]
+#[derive(Debug, Clone)]
+pub struct ExecutionConfig {
+    /// Maximum deferred forks before returning to Python.
+    /// When this limit is reached, execution returns to Python even if
+    /// max_blocks hasn't been hit.
+    #[pyo3(get, set)]
+    pub max_deferred_forks: u32,
+    /// Branch selection policy.
+    #[pyo3(get, set)]
+    pub branch_policy: BranchPolicy,
+    /// Whether to use deferred forks (if false, returns immediately on symbolic branch).
+    #[pyo3(get, set)]
+    pub use_deferred_forks: bool,
+}
+
+#[pymethods]
+impl ExecutionConfig {
+    /// Create a new execution config with default values.
+    #[new]
+    #[pyo3(signature = (max_deferred_forks=100, use_deferred_forks=true))]
+    pub fn py_new(max_deferred_forks: u32, use_deferred_forks: bool) -> Self {
+        ExecutionConfig {
+            max_deferred_forks,
+            branch_policy: BranchPolicy::TakeTrue,
+            use_deferred_forks,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ExecutionConfig(max_deferred_forks={}, use_deferred_forks={}, policy={:?})",
+            self.max_deferred_forks, self.use_deferred_forks, self.branch_policy
+        )
+    }
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        ExecutionConfig {
+            max_deferred_forks: 100,
+            branch_policy: BranchPolicy::TakeTrue,
+            use_deferred_forks: true,
+        }
+    }
+}
 
 /// Result of a memory load callback.
 #[derive(Debug, Clone)]
@@ -32,6 +167,7 @@ pub enum RunResult {
     /// Syscall encountered - need Python to handle.
     Syscall { num: u64, pc: u64 },
     /// Symbolic branch - need Python to fork states.
+    /// This is returned when use_deferred_forks is false or max_deferred_forks is reached.
     SymbolicBranch {
         condition_id: u64,
         true_target: u64,
@@ -43,6 +179,8 @@ pub enum RunResult {
     Error { message: String, addr: u64 },
     /// Need to lift a block at the given address.
     NeedLift { addr: u64 },
+    /// Reached max deferred forks limit - return to Python with accumulated forks.
+    MaxDeferredForks { pc: u64 },
 }
 
 /// Python callback holder for the Rust VEX engine.
@@ -292,7 +430,7 @@ impl PythonCallbacks {
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct LoopExecutionEvent {
-    /// Type of event: "max_blocks", "hook", "syscall", "symbolic_branch", "block_end", "error", "need_lift"
+    /// Type of event: "max_blocks", "hook", "syscall", "symbolic_branch", "block_end", "error", "need_lift", "max_deferred_forks"
     #[pyo3(get)]
     pub event_type: String,
     /// Current/next PC address.
@@ -319,10 +457,19 @@ pub struct LoopExecutionEvent {
     /// Number of blocks executed this loop.
     #[pyo3(get)]
     pub blocks_executed: u32,
+    /// Deferred forks collected during execution.
+    /// Each fork represents a branch where we took one path and deferred the other.
+    #[pyo3(get)]
+    pub deferred_forks: Vec<DeferredFork>,
 }
 
 impl LoopExecutionEvent {
-    pub fn from_run_result(result: RunResult, blocks_executed: u32) -> Self {
+    /// Create an event from a run result with deferred forks.
+    pub fn from_run_result_with_forks(
+        result: RunResult,
+        blocks_executed: u32,
+        deferred_forks: Vec<DeferredFork>,
+    ) -> Self {
         match result {
             RunResult::MaxBlocks { pc } => LoopExecutionEvent {
                 event_type: "max_blocks".to_string(),
@@ -334,6 +481,7 @@ impl LoopExecutionEvent {
                 jumpkind: None,
                 error: None,
                 blocks_executed,
+                deferred_forks,
             },
             RunResult::Hook { addr } => LoopExecutionEvent {
                 event_type: "hook".to_string(),
@@ -345,6 +493,7 @@ impl LoopExecutionEvent {
                 jumpkind: None,
                 error: None,
                 blocks_executed,
+                deferred_forks,
             },
             RunResult::Syscall { num, pc } => LoopExecutionEvent {
                 event_type: "syscall".to_string(),
@@ -356,6 +505,7 @@ impl LoopExecutionEvent {
                 jumpkind: Some("Ijk_Sys_syscall".to_string()),
                 error: None,
                 blocks_executed,
+                deferred_forks,
             },
             RunResult::SymbolicBranch {
                 true_target,
@@ -371,6 +521,7 @@ impl LoopExecutionEvent {
                 jumpkind: None,
                 error: None,
                 blocks_executed,
+                deferred_forks,
             },
             RunResult::BlockEnd { next_addr, jumpkind } => LoopExecutionEvent {
                 event_type: "block_end".to_string(),
@@ -382,6 +533,7 @@ impl LoopExecutionEvent {
                 jumpkind: Some(jumpkind),
                 error: None,
                 blocks_executed,
+                deferred_forks,
             },
             RunResult::Error { message, addr } => LoopExecutionEvent {
                 event_type: "error".to_string(),
@@ -393,6 +545,7 @@ impl LoopExecutionEvent {
                 jumpkind: None,
                 error: Some(message),
                 blocks_executed,
+                deferred_forks,
             },
             RunResult::NeedLift { addr } => LoopExecutionEvent {
                 event_type: "need_lift".to_string(),
@@ -404,8 +557,26 @@ impl LoopExecutionEvent {
                 jumpkind: None,
                 error: None,
                 blocks_executed,
+                deferred_forks,
+            },
+            RunResult::MaxDeferredForks { pc } => LoopExecutionEvent {
+                event_type: "max_deferred_forks".to_string(),
+                pc: Some(pc),
+                addr: None,
+                syscall_num: None,
+                true_target: None,
+                false_target: None,
+                jumpkind: None,
+                error: None,
+                blocks_executed,
+                deferred_forks,
             },
         }
+    }
+
+    /// Create an event from a run result (backward compatibility, no deferred forks).
+    pub fn from_run_result(result: RunResult, blocks_executed: u32) -> Self {
+        Self::from_run_result_with_forks(result, blocks_executed, Vec::new())
     }
 }
 
