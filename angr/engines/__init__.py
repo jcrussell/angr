@@ -59,27 +59,44 @@ __all__ = [
 try:
     from .rust_vex import RustVEXMixin, RustVEXEngineWrapper, RUST_ENGINE_AVAILABLE
 
-    # UberEngineRust is similar to UberEngine but includes RustVEXMixin for
-    # potential future use. Currently, HeavyVEXMixin handles all VEX execution
-    # because it comes before RustVEXMixin in the MRO (via TrackActionsMixin).
+    # UberEngineRust uses RustVEXMixin for VEX execution when available.
+    # RustVEXMixin comes before TrackActionsMixin in the MRO so Rust execution
+    # is tried first. When Rust can't handle execution (symbolic addresses, etc.),
+    # it falls back to HeavyVEXMixin via the super() chain.
     #
-    # To enable Rust VEX execution, use RustVEXEngine directly via the wrapper.
+    # Enable RUST_VEX_LOOP sim_option for multi-block execution with deferred forks.
     class UberEngineRust(
         SimEngineFailure,
         SimEngineSyscall,
         HooksMixin,
-        TrackActionsMixin,
+        RustVEXMixin,  # First: try Rust VEX execution
+        TrackActionsMixin,  # Fallback: Python VEX via HeavyVEXMixin
         SimInspectMixin,
         HeavyResilienceMixin,
-        RustVEXMixin,  # Not used in MRO due to HeavyVEXMixin from TrackActionsMixin
     ):
         """
-        Execution engine that includes both Python and Rust VEX capabilities.
+        Execution engine that uses Rust VEX execution with Python fallback.
 
-        Currently uses Python VEX execution (HeavyVEXMixin via TrackActionsMixin).
-        The RustVEXMixin is included for direct access via the rust_engine property.
+        RustVEXMixin.process_successors() is called first due to MRO ordering.
+        When Rust can't handle execution (symbolic addresses, unsupported ops),
+        it falls back to HeavyVEXMixin via TrackActionsMixin.
 
-        For pure Rust execution, use RustVEXEngineWrapper directly.
+        For multi-block execution with deferred forks, add RUST_VEX_LOOP to
+        state.options. This enables process_successors_loop() for reduced
+        Python/Rust round trips.
+
+        Example:
+            import angr
+            from angr import sim_options as o
+
+            proj = angr.Project("/path/to/binary", auto_load_libs=False)
+            state = proj.factory.entry_state(add_options={o.RUST_VEX_LOOP})
+
+            from angr.engines import UberEngineRust
+            engine = UberEngineRust(proj)
+            engine.configure_deferred_forks(enabled=True, max_forks=50)
+
+            successors = engine.process(state)
         """
 
     __all__.extend(["RustVEXMixin", "RustVEXEngineWrapper", "UberEngineRust", "RUST_ENGINE_AVAILABLE"])

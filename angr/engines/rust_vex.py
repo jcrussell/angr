@@ -736,6 +736,72 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """Check if the Rust engine is available and initialized."""
         return self._rust_engine is not None
 
+    def process(self, state, **kwargs):
+        """
+        Override to enable loop execution when RUST_VEX_LOOP option is set.
+
+        When the RUST_VEX_LOOP sim_option is enabled and prerequisites are met,
+        this uses process_successors_loop() for multi-block execution with
+        deferred forks. Otherwise, falls back to standard single-block execution.
+        """
+        # Check if loop execution is enabled and prerequisites are met
+        if (o.RUST_VEX_LOOP in state.options
+            and self.rust_engine_available
+            and isinstance(state.addr, int)):
+            # Use loop execution path with deferred forks
+            return self._process_with_loop(state, **kwargs)
+        # Fall back to standard execution
+        return super().process(state, **kwargs)
+
+    def _process_with_loop(self, state, max_blocks=100, **kwargs):
+        """
+        Execute using process_successors_loop for multi-block execution.
+
+        This method performs the standard process() setup and then delegates
+        to process_successors_loop() for Rust-based multi-block execution
+        with deferred fork support.
+
+        Args:
+            state: The SimState to execute.
+            max_blocks: Maximum blocks to execute before returning (default 100).
+            **kwargs: Additional arguments passed to process_successors_loop.
+
+        Returns:
+            SimSuccessors containing all execution results.
+        """
+        inline = kwargs.pop("inline", False)
+        force_addr = kwargs.pop("force_addr", None)
+
+        ip = state._ip
+        if force_addr is not None:
+            addr = force_addr
+        elif isinstance(ip, claripy.ast.BV):
+            addr = state.solver.eval(ip)
+        else:
+            addr = ip
+
+        # Copy state if needed
+        if not inline and o.COPY_STATES in state.options:
+            new_state = state.copy()
+        else:
+            new_state = state
+        old_state = state
+        del state
+        self.state = new_state
+
+        # Setup history
+        new_state.register_plugin("history", old_state.history.make_child())
+        new_state.history.recent_bbl_addrs.append(addr)
+
+        # Create successors object
+        self.successors = SimSuccessors(addr, old_state)
+
+        # Call process_successors_loop instead of process_successors
+        self.process_successors_loop(self.successors, max_blocks=max_blocks, **kwargs)
+
+        self.successors._finalize()
+        return self.successors
+
     def _sync_state_to_rust(self, state: SimState) -> None:
         """
         Synchronize angr SimState to Rust engine.

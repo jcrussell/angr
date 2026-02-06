@@ -274,6 +274,14 @@ ALLOW_SEND_FAILURES = "ALLOW_SEND_FAILURES"
 # Use hybrid solver
 HYBRID_SOLVER = "HYBRID_SOLVER"
 
+# Use Rust-native Z3 solver (RustSimSolver)
+RUST_SOLVER = "RUST_SOLVER"
+
+# Enable multi-block Rust VEX execution with deferred forks.
+# When enabled, RustVEXMixin.process() uses process_successors_loop() for
+# reduced Python/Rust round trips during symbolic execution.
+RUST_VEX_LOOP = "RUST_VEX_LOOP"
+
 # This tells the hybrid solver to use the approximate backend first. The exact backend will be used
 # only if the number of possible approximate solutions is greater than what was request by user.
 # Note, that this option will only take effect if a hybrid solver used.
