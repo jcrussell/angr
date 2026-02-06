@@ -593,6 +593,13 @@ impl RustVEXEngine {
             interp.add_hook(addr);
         }
 
+        // Copy concrete memory regions for fast local access
+        for (base, _size, _perms, data) in &self.memory_regions {
+            if !data.is_empty() {
+                interp.add_concrete_memory(*base, data.clone());
+            }
+        }
+
         // Run the execution loop
         let (result, blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, max_blocks);
 

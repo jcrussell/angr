@@ -493,9 +493,13 @@ class RustVEXCallbacks:
             val = self.state.memory.load(addr, size, endness='Iend_LE')
             is_sym = val.symbolic
 
-            # Get concrete value
-            if is_sym:
-                concrete = self.state.solver.eval(val)
+            # FAST PATH: Extract concrete value directly without solver
+            if not is_sym:
+                if val.op == 'BVV':
+                    concrete = val.args[0]
+                else:
+                    # Fallback for other concrete representations
+                    concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
 
@@ -611,8 +615,13 @@ class RustVEXCallbacks:
             val = self.state.registers.load(offset, size=size)
             is_sym = val.symbolic
 
-            if is_sym:
-                concrete = self.state.solver.eval(val)
+            # FAST PATH: Extract concrete value directly without solver
+            if not is_sym:
+                if val.op == 'BVV':
+                    concrete = val.args[0]
+                else:
+                    # Fallback for other concrete representations
+                    concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
 
@@ -689,6 +698,7 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         self._use_deferred_forks = use_deferred_forks
         self._max_deferred_forks = max_deferred_forks
+        self._concrete_memory_synced = False
 
         if not RUST_ENGINE_AVAILABLE:
             l.warning("RustVEXMixin initialized but Rust engine not available")
@@ -701,6 +711,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 self._rust_engine.set_use_deferred_forks(use_deferred_forks)
                 self._rust_engine.set_max_deferred_forks(max_deferred_forks)
                 self._rust_engine.set_branch_policy(BranchPolicy.take_true())
+                # Sync concrete memory regions for fast access
+                regions = self._sync_concrete_memory_to_rust()
+                self._concrete_memory_synced = True
+                if regions > 0:
+                    l.debug("Synced %d concrete memory regions to Rust engine", regions)
             except ValueError as e:
                 l.warning("Failed to create Rust VEX engine for %s: %s", rust_arch, e)
                 self._rust_engine = None
@@ -730,6 +745,58 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         }
         if policy in policy_map:
             self._rust_engine.set_branch_policy(policy_map[policy])
+
+    def _sync_concrete_memory_to_rust(self) -> int:
+        """
+        Map binary's concrete memory regions to Rust engine for fast access.
+
+        This maps read-only sections (like .text, .rodata) directly to Rust,
+        allowing memory loads from these regions to skip the Python callback
+        entirely.
+
+        Returns:
+            Number of regions mapped.
+        """
+        if not self.rust_engine_available:
+            return 0
+
+        regions_mapped = 0
+
+        # Clear any existing memory mappings
+        self._rust_engine.clear_memory()
+
+        # Map binary sections that are readable but not writable
+        for obj in self.project.loader.all_objects:
+            # Map segments from the loader's memory
+            for segment in obj.segments:
+                # Only map readable, non-writable segments (code/rodata)
+                if segment.is_readable and not segment.is_writable:
+                    try:
+                        # Load the data from the loader's memory
+                        data = self.project.loader.memory.load(
+                            segment.vaddr,
+                            segment.memsize
+                        )
+                        # Map to Rust engine (permissions: R-X = 5)
+                        perms = 4  # R--
+                        if segment.is_executable:
+                            perms |= 1  # R-X
+                        self._rust_engine.map_memory_data(
+                            segment.vaddr,
+                            bytes(data),
+                            perms
+                        )
+                        regions_mapped += 1
+                        l.debug(
+                            "Mapped segment 0x%x-0x%x (%d bytes) to Rust",
+                            segment.vaddr,
+                            segment.vaddr + segment.memsize,
+                            segment.memsize
+                        )
+                    except Exception as e:
+                        l.debug("Failed to map segment at 0x%x: %s", segment.vaddr, e)
+
+        return regions_mapped
 
     @property
     def rust_engine_available(self) -> bool:
@@ -834,7 +901,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
                 reg_val = state.registers.load(offset, size=size)
                 if not reg_val.symbolic:
-                    concrete_val = state.solver.eval(reg_val)
+                    # FAST PATH: Extract concrete value directly without solver
+                    if reg_val.op == 'BVV':
+                        concrete_val = reg_val.args[0]
+                    else:
+                        concrete_val = state.solver.eval(reg_val)
                     engine.set_register(reg_name, concrete_val)
             except (KeyError, AttributeError, errors.SimValueError):
                 pass

@@ -100,6 +100,38 @@ pub enum BlockResult {
     BlockEnd { next_addr: u64, jumpkind: JumpKind },
 }
 
+/// A concrete memory region cached locally in Rust.
+#[derive(Clone)]
+pub struct ConcreteMemoryRegion {
+    /// Base address of the region.
+    pub base: u64,
+    /// Size of the region in bytes.
+    pub size: u64,
+    /// The concrete data.
+    pub data: Vec<u8>,
+}
+
+impl ConcreteMemoryRegion {
+    /// Check if this region contains the given address range.
+    #[inline]
+    pub fn contains(&self, addr: u64, size: u64) -> bool {
+        addr >= self.base && addr + size <= self.base + self.size
+    }
+
+    /// Read bytes from this region. Returns None if out of bounds.
+    #[inline]
+    pub fn read(&self, addr: u64, size: usize) -> Option<&[u8]> {
+        if addr < self.base {
+            return None;
+        }
+        let offset = (addr - self.base) as usize;
+        if offset + size > self.data.len() {
+            return None;
+        }
+        Some(&self.data[offset..offset + size])
+    }
+}
+
 /// Callback-aware VEX IR interpreter.
 ///
 /// This interpreter uses Python callbacks for memory and register access,
@@ -132,6 +164,9 @@ pub struct CallbackInterpreter<'a> {
     branch_counter: u64,
     /// Next condition ID for tracking branch conditions.
     next_condition_id: u64,
+    /// Concrete memory regions cached locally for fast access.
+    /// These are read-only regions (e.g., binary .text/.rodata sections).
+    concrete_memory: Vec<ConcreteMemoryRegion>,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -158,7 +193,34 @@ impl<'a> CallbackInterpreter<'a> {
             config,
             branch_counter: 0,
             next_condition_id: 0,
+            concrete_memory: Vec::new(),
         }
+    }
+
+    /// Add a concrete memory region for fast local access.
+    ///
+    /// This allows the interpreter to read from binary sections (e.g., .text, .rodata)
+    /// without going through Python callbacks, significantly improving performance.
+    pub fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
+        let size = data.len() as u64;
+        self.concrete_memory.push(ConcreteMemoryRegion { base, size, data });
+    }
+
+    /// Clear all concrete memory regions.
+    pub fn clear_concrete_memory(&mut self) {
+        self.concrete_memory.clear();
+    }
+
+    /// Try to read from concrete memory cache.
+    /// Returns Some(data) if the address range is fully contained in a cached region.
+    #[inline]
+    fn try_read_concrete_memory(&self, addr: u64, size: usize) -> Option<&[u8]> {
+        for region in &self.concrete_memory {
+            if let Some(data) = region.read(addr, size) {
+                return Some(data);
+            }
+        }
+        None
     }
 
     /// Get the execution configuration.
@@ -650,12 +712,17 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRExpr::Load { addr, ty, .. } => {
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
-                let size = ty.bytes();
+                let size = ty.bytes() as usize;
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
-                    // Load via callback
+                    // FAST PATH: Check if address is in Rust-cached concrete memory
+                    if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+                        return Ok(bytes_to_bv(data, (size * 8) as u32));
+                    }
+
+                    // SLOW PATH: Fall back to Python callback
                     let (data, is_symbolic, symbolic_ast) = callbacks
-                        .call_memory_load(py, addr_concrete, size)
+                        .call_memory_load(py, addr_concrete, size as u32)
                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
                     if is_symbolic {
@@ -676,11 +743,11 @@ impl<'a> CallbackInterpreter<'a> {
                         Ok(RustBV::symbolic(
                             self.ctx,
                             &format!("mem_{:x}_{}", addr_concrete, size),
-                            size * 8,
+                            (size * 8) as u32,
                         ))
                     } else {
                         // Convert bytes to concrete value
-                        Ok(bytes_to_bv(&data, size * 8))
+                        Ok(bytes_to_bv(&data, (size * 8) as u32))
                     }
                 } else {
                     Err(CbExecutionError::Unsupported(
@@ -854,6 +921,7 @@ impl<'a> CallbackInterpreter<'a> {
             config: self.config.clone(),
             branch_counter: self.branch_counter,
             next_condition_id: self.next_condition_id,
+            concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
         }
     }
 }
