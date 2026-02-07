@@ -810,12 +810,61 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         When the RUST_VEX_LOOP sim_option is enabled and prerequisites are met,
         this uses process_successors_loop() for multi-block execution with
         deferred forks. Otherwise, falls back to standard single-block execution.
+
+        IMPORTANT: We must check for hooks/syscalls BEFORE using the loop path,
+        since the loop path bypasses the normal MRO chain that handles these.
         """
         # Check if loop execution is enabled and prerequisites are met
         if (o.RUST_VEX_LOOP in state.options
             and self.rust_engine_available
             and isinstance(state.addr, int)):
-            # Use loop execution path with deferred forks
+
+            # Check for hooks at the current address BEFORE using loop path
+            # This is necessary because the loop path bypasses HooksMixin
+            addr = state.addr
+
+            # Check the CURRENT history's jumpkind (not parent).
+            # If it's Ijk_NoHook, a hook was just executed at this address.
+            # For length=0 hooks, the PC doesn't advance, so we need to execute
+            # the actual instruction at this address.
+            #
+            # Note: We check state.history.jumpkind (not parent) because that's
+            # the jumpkind of the execution that CREATED this state.
+            current_jumpkind = None
+            if state.history:
+                current_jumpkind = state.history.jumpkind
+
+            if current_jumpkind == "Ijk_NoHook":
+                # A hook was just executed. Temporarily remove it to prevent
+                # re-triggering, then execute the instruction via Python VEX.
+                hook_proc = None
+                if state.project is not None and addr in state.project._sim_procedures:
+                    hook_proc = state.project._sim_procedures.pop(addr)
+                    # Also remove from Rust engine's internal hook set
+                    if self._rust_engine is not None:
+                        self._rust_engine.remove_hook(addr)
+                try:
+                    # Execute without the hook (falls back to Python VEX)
+                    return super().process(state, **kwargs)
+                finally:
+                    # Restore the hook
+                    if hook_proc is not None:
+                        state.project._sim_procedures[addr] = hook_proc
+                        if self._rust_engine is not None:
+                            self._rust_engine.add_hook(addr)
+
+            if state.project is not None:
+                # Check if there's a hook at this address
+                if addr in state.project._sim_procedures:
+                    # Hook exists - use normal execution path to handle it
+                    return super().process(state, **kwargs)
+
+            # Check for syscall jumpkind
+            if current_jumpkind and current_jumpkind.startswith("Ijk_Sys"):
+                # Syscall - use normal execution path
+                return super().process(state, **kwargs)
+
+            # No hook or syscall - use loop execution path with deferred forks
             return self._process_with_loop(state, **kwargs)
         # Fall back to standard execution
         return super().process(state, **kwargs)
@@ -1034,12 +1083,14 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             # Hook address hit - return to Python for handling
             self._sync_state_from_rust(state)
 
-            # The hook will be handled by HooksMixin
+            # The hook will be handled by HooksMixin on the next step
+            # IMPORTANT: Use Ijk_Boring (not Ijk_NoHook) so HooksMixin will
+            # check and execute the hook. Ijk_NoHook tells HooksMixin to SKIP.
             successors.add_successor(
                 state,
                 event.next_addr,
                 claripy.true(),
-                "Ijk_NoHook",  # Special jumpkind to signal hook needed
+                "Ijk_Boring",  # Changed from Ijk_NoHook
             )
             return False
 
@@ -1358,14 +1409,17 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             )
 
         elif event_type == "hook":
-            # Hook hit - let Python handle via HooksMixin
+            # Hook hit - return to Python to let HooksMixin execute it
+            # IMPORTANT: Use Ijk_Boring (not Ijk_NoHook) so HooksMixin will
+            # check and execute the hook. Ijk_NoHook tells HooksMixin to SKIP
+            # the hook, which is the opposite of what we want here.
             hook_addr = event.addr
             state.ip = hook_addr
             successors.add_successor(
                 state,
                 hook_addr,
                 claripy.true(),
-                "Ijk_NoHook",
+                "Ijk_Boring",  # Changed from Ijk_NoHook
             )
 
         elif event_type == "syscall":
