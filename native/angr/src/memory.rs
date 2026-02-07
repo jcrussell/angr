@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use im::OrdMap;
 
+use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
@@ -527,6 +528,146 @@ impl SymbolicMemory {
         Ok(())
     }
 
+    /// Load from a symbolic address with concretization support.
+    ///
+    /// This method handles symbolic addresses by:
+    /// 1. Trying to concretize the address to a single value (fast path)
+    /// 2. Building an ITE chain for multiple possible addresses
+    /// 3. Returning an error if the address range is too large
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to load from
+    /// * `size` - Number of bytes to load
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer configuration
+    ///
+    /// # Returns
+    /// The loaded value as a RustBV, or a MemoryError if loading fails.
+    pub fn load_symbolic(
+        &self,
+        addr: RustBV,
+        size: u32,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<RustBV, MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            return self.load_concrete(concrete_addr, size, ctx);
+        }
+
+        // Try to concretize the address
+        match concretizer.concretize(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.load_concrete(concrete_addr, size, ctx)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // Build ITE chain: If(addr==a0, mem[a0], If(addr==a1, mem[a1], ...))
+                let first_addr = addrs[0];
+                let mut result = self.load_concrete(first_addr, size, ctx)?;
+
+                for &candidate in &addrs[1..] {
+                    // Build condition: addr == candidate
+                    let addr_const = RustBV::concrete(candidate as u128, addr.width());
+                    let cond = addr.eq(&addr_const, ctx);
+
+                    // Load value at candidate address
+                    let val = self.load_concrete(candidate, size, ctx)?;
+
+                    // Build ITE: if (addr == candidate) then val else result
+                    result = cond.ite(&val, &result, ctx);
+                }
+
+                Ok(result)
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress {
+                    description: reason,
+                })
+            }
+        }
+    }
+
+    /// Store to a symbolic address with concretization support.
+    ///
+    /// This method handles symbolic addresses by:
+    /// 1. Trying to concretize the address to a single value (fast path)
+    /// 2. Performing conditional stores for multiple possible addresses
+    /// 3. Returning an error if the address range is too large
+    ///
+    /// For multiple addresses, each candidate gets a conditional store:
+    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to store to
+    /// * `value` - The value to store
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer configuration
+    ///
+    /// # Returns
+    /// Ok(()) on success, or a MemoryError if storing fails.
+    pub fn store_symbolic(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<(), MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            return self.store_concrete(concrete_addr, value);
+        }
+
+        // Try to concretize the address
+        match concretizer.concretize(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete(concrete_addr, value)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // For each candidate address, perform a conditional store:
+                // mem[candidate] = If(addr == candidate, new_value, mem[candidate])
+                let size = value.width() / 8;
+
+                for &candidate in &addrs {
+                    // Build condition: addr == candidate
+                    let addr_const = RustBV::concrete(candidate as u128, addr.width());
+                    let cond = addr.eq(&addr_const, ctx);
+
+                    // Load current value at candidate address
+                    let current = self.load_concrete(candidate, size, ctx)?;
+
+                    // Build conditional value
+                    let conditional_value = cond.ite(&value, &current, ctx);
+
+                    // Store the conditional value
+                    self.store_concrete(candidate, conditional_value)?;
+                }
+
+                Ok(())
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress {
+                    description: reason,
+                })
+            }
+        }
+    }
+
     /// Fork the memory (O(1) via CoW).
     pub fn fork(&self) -> Self {
         SymbolicMemory {
@@ -645,5 +786,37 @@ mod tests {
 
         let byte100 = mem.load_concrete(0x1064, 1, &ctx).unwrap();
         assert_eq!(byte100.as_u64(), Some(100));
+    }
+
+    #[test]
+    fn test_symbolic_load_concrete_fast_path() {
+        let ctx = SymContext::new_mock();
+        let concretizer = AddressConcretizer::new();
+
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+        mem.store_concrete(0x1000, RustBV::concrete(0x12345678, 32)).unwrap();
+
+        // Load with concrete address should work
+        let addr = RustBV::concrete(0x1000, 64);
+        let loaded = mem.load_symbolic(addr, 4, &ctx, &concretizer).unwrap();
+        assert_eq!(loaded.as_u64(), Some(0x12345678));
+    }
+
+    #[test]
+    fn test_symbolic_store_concrete_fast_path() {
+        let ctx = SymContext::new_mock();
+        let concretizer = AddressConcretizer::new();
+
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+
+        // Store with concrete address should work
+        let addr = RustBV::concrete(0x1000, 64);
+        let value = RustBV::concrete(0xDEADBEEF, 32);
+        mem.store_symbolic(addr, value, &ctx, &concretizer).unwrap();
+
+        let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
+        assert_eq!(loaded.as_u64(), Some(0xDEADBEEF));
     }
 }

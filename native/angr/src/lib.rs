@@ -14,6 +14,8 @@ pub mod callbacks;
 #[cfg(feature = "vex-engine")]
 pub mod claripy_bridge;
 #[cfg(feature = "vex-engine")]
+pub mod concretize;
+#[cfg(feature = "vex-engine")]
 pub mod engine;
 #[cfg(feature = "vex-engine")]
 pub mod interpreter;

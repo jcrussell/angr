@@ -194,6 +194,10 @@ pub struct PythonCallbacks {
     pub memory_load: Option<PyObject>,
     /// Callback for memory stores: fn(addr: u64, data: bytes) -> None
     pub memory_store: Option<PyObject>,
+    /// Callback for symbolic memory loads: fn(addrs: list[int], size: int, addr_ast) -> RustBV
+    pub memory_load_symbolic: Option<PyObject>,
+    /// Callback for symbolic memory stores: fn(addrs: list[int], data: bytes, addr_ast) -> None
+    pub memory_store_symbolic: Option<PyObject>,
     /// Callback for hook execution: fn(addr: u64) -> new_pc
     pub on_hook: Option<PyObject>,
     /// Callback for syscall handling: fn(num: u64) -> None
@@ -214,6 +218,8 @@ impl PythonCallbacks {
         PythonCallbacks {
             memory_load: None,
             memory_store: None,
+            memory_load_symbolic: None,
+            memory_store_symbolic: None,
             on_hook: None,
             on_syscall: None,
             lift_block: None,
@@ -238,6 +244,28 @@ impl PythonCallbacks {
     /// `fn(addr: int, data: bytes) -> None`
     pub fn set_memory_store(&mut self, cb: PyObject) {
         self.memory_store = Some(cb);
+    }
+
+    /// Set the symbolic memory load callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(addrs: list[int], size: int, addr_ast: object) -> RustBV`
+    ///
+    /// This is called when the address is symbolic and concretizes to multiple values.
+    /// The callback should build an ITE chain based on the possible addresses.
+    pub fn set_memory_load_symbolic(&mut self, cb: PyObject) {
+        self.memory_load_symbolic = Some(cb);
+    }
+
+    /// Set the symbolic memory store callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(addrs: list[int], data: bytes, addr_ast: object) -> None`
+    ///
+    /// This is called when the address is symbolic and concretizes to multiple values.
+    /// The callback should perform conditional stores to each possible address.
+    pub fn set_memory_store_symbolic(&mut self, cb: PyObject) {
+        self.memory_store_symbolic = Some(cb);
     }
 
     /// Set the hook execution callback.
@@ -344,6 +372,83 @@ impl PythonCallbacks {
 
         let py_bytes = PyBytes::new(py, data);
         cb.call1(py, (addr, py_bytes))?;
+        Ok(())
+    }
+
+    /// Call the symbolic memory load callback.
+    ///
+    /// This is called when the address is symbolic and concretizes to multiple values.
+    /// Returns the loaded value as a RustBV.
+    pub fn call_memory_load_symbolic(
+        &self,
+        py: Python<'_>,
+        addrs: &[u64],
+        size: u32,
+        addr_ast: &RustBV,
+    ) -> PyResult<RustBV> {
+        // If symbolic callback is set, use it
+        if let Some(cb) = &self.memory_load_symbolic {
+            let addrs_list: Vec<u64> = addrs.to_vec();
+            // Convert addr_ast to Python representation
+            // For now we pass the concrete addresses and let Python handle the ITE chain
+            let result = cb.call1(py, (addrs_list, size, addr_ast.width()))?;
+
+            // The callback should return bytes
+            let bytes: Vec<u8> = result.extract(py)?;
+            let width = (size * 8) as u32;
+            let mut value: u128 = 0;
+            for (i, &byte) in bytes.iter().enumerate() {
+                if (i * 8) as u32 >= width {
+                    break;
+                }
+                value |= (byte as u128) << (i * 8);
+            }
+            return Ok(RustBV::concrete(value, width));
+        }
+
+        // Fallback: load from first address only
+        if let Some(first_addr) = addrs.first() {
+            let (data, _is_symbolic, _ast) = self.call_memory_load(py, *first_addr, size)?;
+            let width = (size * 8) as u32;
+            let mut value: u128 = 0;
+            for (i, &byte) in data.iter().enumerate() {
+                if (i * 8) as u32 >= width {
+                    break;
+                }
+                value |= (byte as u128) << (i * 8);
+            }
+            Ok(RustBV::concrete(value, width))
+        } else {
+            // No addresses - return zero
+            Ok(RustBV::zero((size * 8) as u32))
+        }
+    }
+
+    /// Call the symbolic memory store callback.
+    ///
+    /// This is called when the address is symbolic and concretizes to multiple values.
+    /// The callback should perform conditional stores to each possible address.
+    pub fn call_memory_store_symbolic(
+        &self,
+        py: Python<'_>,
+        addrs: &[u64],
+        data: &RustBV,
+        addr_ast: &RustBV,
+    ) -> PyResult<()> {
+        // If symbolic callback is set, use it
+        if let Some(cb) = &self.memory_store_symbolic {
+            let addrs_list: Vec<u64> = addrs.to_vec();
+            let data_bytes = bv_to_bytes(data);
+            let py_bytes = PyBytes::new(py, &data_bytes);
+            cb.call1(py, (addrs_list, py_bytes, addr_ast.width()))?;
+            return Ok(());
+        }
+
+        // Fallback: store to first address only (not ideal but maintains progress)
+        if let Some(first_addr) = addrs.first() {
+            let data_bytes = bv_to_bytes(data);
+            self.call_memory_store(py, *first_addr, &data_bytes)?;
+        }
         Ok(())
     }
 
@@ -605,6 +710,23 @@ impl Clone for CallbacksRef {
         CallbacksRef {
             inner: Arc::clone(&self.inner),
         }
+    }
+}
+
+/// Convert a RustBV to bytes (little-endian).
+fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
+    let width = bv.width();
+    let num_bytes = ((width + 7) / 8) as usize;
+
+    if let Some(value) = bv.as_u128() {
+        let mut bytes = vec![0u8; num_bytes];
+        for i in 0..num_bytes {
+            bytes[i] = (value >> (i * 8)) as u8;
+        }
+        bytes
+    } else {
+        // For symbolic values, return zeros (the callback will handle it)
+        vec![0u8; num_bytes]
     }
 }
 

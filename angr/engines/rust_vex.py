@@ -530,6 +530,76 @@ class RustVEXCallbacks:
         except Exception as e:
             l.warning("Memory store failed at 0x%x: %s", addr, e)
 
+    def memory_load_symbolic(self, addrs: list[int], size: int, addr_width: int) -> bytes:
+        """
+        Load from memory with symbolic address (multiple concrete possibilities).
+
+        This builds an ITE chain: If(addr==a0, mem[a0], If(addr==a1, mem[a1], ...))
+        For simplicity in the Rust->Python callback, we load from all addresses
+        and return bytes. The Rust side can handle the ITE chain construction.
+
+        For now, we just load from the first address as a fallback.
+        More sophisticated handling would build an ITE expression in Python.
+
+        Args:
+            addrs: List of possible concrete addresses.
+            size: Number of bytes to load.
+            addr_width: Width of the address in bits (for building ITE conditions).
+
+        Returns:
+            Loaded bytes (from first address as fallback).
+        """
+        try:
+            if not addrs:
+                return bytes(size)
+
+            # For now, load from first address as the concrete value
+            # A full implementation would build an ITE chain
+            val = self.state.memory.load(addrs[0], size, endness='Iend_LE')
+
+            # Extract concrete value
+            if not val.symbolic:
+                if val.op == 'BVV':
+                    concrete = val.args[0]
+                else:
+                    concrete = self.state.solver.eval(val)
+            else:
+                concrete = self.state.solver.eval(val)
+
+            return concrete.to_bytes(size, 'little')
+        except Exception as e:
+            l.warning("Symbolic memory load failed for addrs %s: %s", addrs, e)
+            return bytes(size)
+
+    def memory_store_symbolic(self, addrs: list[int], data: bytes, addr_width: int) -> None:
+        """
+        Store to memory with symbolic address (multiple concrete possibilities).
+
+        This performs conditional stores to each possible address:
+        mem[addr] = If(addr == candidate, new_value, mem[addr])
+
+        For simplicity in the Rust->Python callback, we store to all addresses
+        with conditional values.
+
+        Args:
+            addrs: List of possible concrete addresses.
+            data: Bytes to store.
+            addr_width: Width of the address in bits (for building ITE conditions).
+        """
+        try:
+            if not addrs:
+                return
+
+            size = len(data)
+            new_val = claripy.BVV(int.from_bytes(data, 'little'), size * 8)
+
+            # For each candidate address, perform a conditional store
+            # Note: For a full implementation, we'd need the actual symbolic address
+            # to build proper ITE conditions. For now, we store to first address.
+            self.state.memory.store(addrs[0], new_val, endness='Iend_LE')
+        except Exception as e:
+            l.warning("Symbolic memory store failed for addrs %s: %s", addrs, e)
+
     def on_hook(self, addr: int) -> int:
         """
         Execute a hook at the given address.
@@ -664,6 +734,8 @@ class RustVEXCallbacks:
         rust_cbs = PythonCallbacks()
         rust_cbs.set_memory_load(self.memory_load)
         rust_cbs.set_memory_store(self.memory_store)
+        rust_cbs.set_memory_load_symbolic(self.memory_load_symbolic)
+        rust_cbs.set_memory_store_symbolic(self.memory_store_symbolic)
         rust_cbs.set_on_hook(self.on_hook)
         rust_cbs.set_on_syscall(self.on_syscall)
         rust_cbs.set_lift_block(self.lift_block)

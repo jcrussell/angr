@@ -418,6 +418,24 @@ impl SymContext {
         result
     }
 
+    /// Get the range [min, max] of possible values for a bitvector.
+    ///
+    /// Returns None if the constraints are unsatisfiable or evaluation fails.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn range(&self, bv: &RustBV) -> Option<(u128, u128)> {
+        let min = self.min(bv, false)?;
+        let max = self.max(bv, false)?;
+        Some((min, max))
+    }
+
+    /// Get up to n concrete solutions for a bitvector.
+    ///
+    /// This is a convenience wrapper around eval_upto.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn solutions(&self, bv: &RustBV, n: usize) -> Vec<u128> {
+        self.eval_upto(bv, n)
+    }
+
     /// Check if a specific value is a valid solution for a bitvector.
     #[cfg(feature = "vex-engine-z3")]
     pub fn solution(&self, bv: &RustBV, value: u128) -> bool {
@@ -523,6 +541,23 @@ impl SymContext {
     pub fn solution(&self, bv: &RustBV, value: u128) -> bool {
         // Without Z3, can only check concrete values
         bv.as_u128().map(|v| v == value).unwrap_or(true)
+    }
+
+    /// Get the range [min, max] of possible values for a bitvector.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn range(&self, bv: &RustBV) -> Option<(u128, u128)> {
+        // Without Z3, can only return range for concrete values
+        bv.as_u128().map(|v| (v, v))
+    }
+
+    /// Get up to n concrete solutions for a bitvector.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn solutions(&self, bv: &RustBV, n: usize) -> Vec<u128> {
+        if n == 0 {
+            return vec![];
+        }
+        // Without Z3, can only return concrete values
+        bv.as_u128().map(|v| vec![v]).unwrap_or_default()
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]

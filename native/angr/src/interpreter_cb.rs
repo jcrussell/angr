@@ -13,6 +13,7 @@ use pyo3::prelude::*;
 use crate::arch::{arch_from_vex, RegisterFile};
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast};
+use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ccall;
 use crate::vex::ir::{IRConst, IRExpr, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
@@ -167,6 +168,8 @@ pub struct CallbackInterpreter<'a> {
     /// Concrete memory regions cached locally for fast access.
     /// These are read-only regions (e.g., binary .text/.rodata sections).
     concrete_memory: Vec<ConcreteMemoryRegion>,
+    /// Address concretizer for handling symbolic addresses.
+    concretizer: AddressConcretizer,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -194,7 +197,18 @@ impl<'a> CallbackInterpreter<'a> {
             branch_counter: 0,
             next_condition_id: 0,
             concrete_memory: Vec::new(),
+            concretizer: AddressConcretizer::new(),
         }
+    }
+
+    /// Get the address concretizer.
+    pub fn concretizer(&self) -> &AddressConcretizer {
+        &self.concretizer
+    }
+
+    /// Set custom concretizer settings.
+    pub fn set_concretizer(&mut self, concretizer: AddressConcretizer) {
+        self.concretizer = concretizer;
     }
 
     /// Add a concrete memory region for fast local access.
@@ -221,6 +235,45 @@ impl<'a> CallbackInterpreter<'a> {
             }
         }
         None
+    }
+
+    /// Load from memory via Python callback.
+    /// This handles the common case of loading from a concrete address.
+    fn load_from_callback(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        let (data, is_symbolic, symbolic_ast) = callbacks
+            .call_memory_load(py, addr_concrete, size as u32)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        if is_symbolic {
+            // Try to convert claripy AST to RustBV
+            if let Some(ast_obj) = symbolic_ast {
+                let ast = ast_obj.bind(py);
+                if is_claripy_ast(&ast) {
+                    match claripy_to_rustbv(py, &ast, self.ctx) {
+                        Ok(bv) => return Ok(bv),
+                        Err(_e) => {
+                            // Fall back to creating a fresh symbolic value
+                            // (claripy conversion can fail for complex/unsupported ops)
+                        }
+                    }
+                }
+            }
+            // Fallback: create a fresh symbolic value
+            Ok(RustBV::symbolic(
+                self.ctx,
+                &format!("mem_{:x}_{}", addr_concrete, size),
+                (size * 8) as u32,
+            ))
+        } else {
+            // Convert bytes to concrete value
+            Ok(bytes_to_bv(&data, (size * 8) as u32))
+        }
     }
 
     /// Get the execution configuration.
@@ -567,16 +620,41 @@ impl<'a> CallbackInterpreter<'a> {
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
 
-                // Store via callback
+                // Store via callback - handle symbolic addresses
                 if let Some(addr_concrete) = addr_val.as_u64() {
+                    // Fast path: concrete address
                     let data_bytes = bv_to_bytes(&data_val);
                     callbacks
                         .call_memory_store(py, addr_concrete, &data_bytes)
                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                 } else {
-                    return Err(CbExecutionError::Unsupported(
-                        "symbolic store address".to_string(),
-                    ));
+                    // Symbolic address - try to concretize
+                    match self.concretizer.concretize(&addr_val, self.ctx) {
+                        ConcretizationResult::Single(addr_concrete) => {
+                            let data_bytes = bv_to_bytes(&data_val);
+                            callbacks
+                                .call_memory_store(py, addr_concrete, &data_bytes)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        }
+                        ConcretizationResult::Multiple(addrs) => {
+                            // Delegate to Python for conditional stores
+                            callbacks
+                                .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        }
+                        ConcretizationResult::TooLarge { min, max, .. } => {
+                            return Err(CbExecutionError::Unsupported(format!(
+                                "symbolic store address range too large: 0x{:x} - 0x{:x}",
+                                min, max
+                            )));
+                        }
+                        ConcretizationResult::Failed(reason) => {
+                            return Err(CbExecutionError::Unsupported(format!(
+                                "symbolic store address: {}",
+                                reason
+                            )));
+                        }
+                    }
                 }
 
                 Ok(StmtResult::Continue)
@@ -721,38 +799,36 @@ impl<'a> CallbackInterpreter<'a> {
                     }
 
                     // SLOW PATH: Fall back to Python callback
-                    let (data, is_symbolic, symbolic_ast) = callbacks
-                        .call_memory_load(py, addr_concrete, size as u32)
-                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-
-                    if is_symbolic {
-                        // Try to convert claripy AST to RustBV
-                        if let Some(ast_obj) = symbolic_ast {
-                            let ast = ast_obj.bind(py);
-                            if is_claripy_ast(&ast) {
-                                match claripy_to_rustbv(py, &ast, self.ctx) {
-                                    Ok(bv) => return Ok(bv),
-                                    Err(_e) => {
-                                        // Fall back to creating a fresh symbolic value
-                                        // (claripy conversion can fail for complex/unsupported ops)
-                                    }
-                                }
-                            }
-                        }
-                        // Fallback: create a fresh symbolic value
-                        Ok(RustBV::symbolic(
-                            self.ctx,
-                            &format!("mem_{:x}_{}", addr_concrete, size),
-                            (size * 8) as u32,
-                        ))
-                    } else {
-                        // Convert bytes to concrete value
-                        Ok(bytes_to_bv(&data, (size * 8) as u32))
-                    }
+                    self.load_from_callback(py, callbacks, addr_concrete, size)
                 } else {
-                    Err(CbExecutionError::Unsupported(
-                        "symbolic load address".to_string(),
-                    ))
+                    // Symbolic address - try to concretize
+                    match self.concretizer.concretize(&addr_val, self.ctx) {
+                        ConcretizationResult::Single(addr_concrete) => {
+                            // Check cached concrete memory first
+                            if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+                                return Ok(bytes_to_bv(data, (size * 8) as u32));
+                            }
+                            self.load_from_callback(py, callbacks, addr_concrete, size)
+                        }
+                        ConcretizationResult::Multiple(addrs) => {
+                            // Delegate to Python for symbolic load with ITE chain
+                            callbacks
+                                .call_memory_load_symbolic(py, &addrs, size as u32, &addr_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                        }
+                        ConcretizationResult::TooLarge { min, max, .. } => {
+                            Err(CbExecutionError::Unsupported(format!(
+                                "symbolic load address range too large: 0x{:x} - 0x{:x}",
+                                min, max
+                            )))
+                        }
+                        ConcretizationResult::Failed(reason) => {
+                            Err(CbExecutionError::Unsupported(format!(
+                                "symbolic load address: {}",
+                                reason
+                            )))
+                        }
+                    }
                 }
             }
 
@@ -922,6 +998,7 @@ impl<'a> CallbackInterpreter<'a> {
             branch_counter: self.branch_counter,
             next_condition_id: self.next_condition_id,
             concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
+            concretizer: self.concretizer.clone(), // Share concretizer settings
         }
     }
 }
