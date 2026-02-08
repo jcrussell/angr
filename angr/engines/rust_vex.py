@@ -478,6 +478,22 @@ class RustVEXCallbacks:
         self.lifter = lifter
         self._lifted_blocks = {}  # Cache of lifted blocks
 
+        # Callback invocation counters for profiling
+        self.memory_load_count = 0
+        self.memory_store_count = 0
+        self.register_get_count = 0
+        self.register_put_count = 0
+        self.lift_block_count = 0
+        self.hook_count = 0
+        self.syscall_count = 0
+
+        # Timing accumulators (seconds)
+        self.memory_load_time = 0.0
+        self.memory_store_time = 0.0
+        self.register_get_time = 0.0
+        self.register_put_time = 0.0
+        self.lift_block_time = 0.0
+
     def memory_load(self, addr: int, size: int) -> tuple[bytes, bool, Any]:
         """
         Load from angr's memory model.
@@ -489,6 +505,9 @@ class RustVEXCallbacks:
         Returns:
             Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_none).
         """
+        self.memory_load_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
         try:
             val = self.state.memory.load(addr, size, endness='Iend_LE')
             is_sym = val.symbolic
@@ -506,11 +525,16 @@ class RustVEXCallbacks:
             concrete_bytes = concrete.to_bytes(size, 'little')
 
             if is_sym:
-                return (concrete_bytes, True, val)
+                result = (concrete_bytes, True, val)
             else:
-                return (concrete_bytes, False, None)
+                result = (concrete_bytes, False, None)
+            if _profiler.enabled:
+                self.memory_load_time += time.perf_counter() - t0
+            return result
         except Exception as e:
             l.warning("Memory load failed at 0x%x: %s", addr, e)
+            if _profiler.enabled:
+                self.memory_load_time += time.perf_counter() - t0
             # Return zeros on error
             return (bytes(size), False, None)
 
@@ -522,6 +546,9 @@ class RustVEXCallbacks:
             addr: Address to store to.
             data: Bytes to store.
         """
+        self.memory_store_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
         try:
             size = len(data)
             value = int.from_bytes(data, 'little')
@@ -529,6 +556,9 @@ class RustVEXCallbacks:
             self.state.memory.store(addr, bv, endness='Iend_LE')
         except Exception as e:
             l.warning("Memory store failed at 0x%x: %s", addr, e)
+        finally:
+            if _profiler.enabled:
+                self.memory_store_time += time.perf_counter() - t0
 
     def memory_load_symbolic(self, addrs: list[int], size: int, addr_width: int) -> bytes:
         """
@@ -610,6 +640,7 @@ class RustVEXCallbacks:
         Returns:
             New PC after hook execution.
         """
+        self.hook_count += 1
         try:
             # Check if there's a SimProcedure at this address
             if self.project._sim_procedures and addr in self.project._sim_procedures:
@@ -631,6 +662,7 @@ class RustVEXCallbacks:
         Args:
             num: Syscall number.
         """
+        self.syscall_count += 1
         try:
             # Syscall handling is done at the SimOS level
             # For now, just log it - actual handling is done in Python
@@ -648,9 +680,14 @@ class RustVEXCallbacks:
         Returns:
             IRSB serialized as JSON string.
         """
+        self.lift_block_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
         try:
             # Check cache first
             if addr in self._lifted_blocks:
+                if _profiler.enabled:
+                    self.lift_block_time += time.perf_counter() - t0
                 return self._lifted_blocks[addr]
 
             # Lift the block
@@ -665,9 +702,13 @@ class RustVEXCallbacks:
             # Cache it
             self._lifted_blocks[addr] = irsb_json
 
+            if _profiler.enabled:
+                self.lift_block_time += time.perf_counter() - t0
             return irsb_json
         except Exception as e:
             l.warning("Block lifting failed at 0x%x: %s", addr, e)
+            if _profiler.enabled:
+                self.lift_block_time += time.perf_counter() - t0
             raise
 
     def get_register(self, offset: int, size: int) -> tuple[bytes, bool, Any]:
@@ -681,6 +722,9 @@ class RustVEXCallbacks:
         Returns:
             Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_none).
         """
+        self.register_get_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
         try:
             val = self.state.registers.load(offset, size=size)
             is_sym = val.symbolic
@@ -698,11 +742,16 @@ class RustVEXCallbacks:
             concrete_bytes = concrete.to_bytes(size, 'little')
 
             if is_sym:
-                return (concrete_bytes, True, val)
+                result = (concrete_bytes, True, val)
             else:
-                return (concrete_bytes, False, None)
+                result = (concrete_bytes, False, None)
+            if _profiler.enabled:
+                self.register_get_time += time.perf_counter() - t0
+            return result
         except Exception as e:
             l.warning("Register read failed at offset %d: %s", offset, e)
+            if _profiler.enabled:
+                self.register_get_time += time.perf_counter() - t0
             return (bytes(size), False, None)
 
     def put_register(self, offset: int, data: bytes) -> None:
@@ -713,6 +762,9 @@ class RustVEXCallbacks:
             offset: Register offset.
             data: Bytes to store.
         """
+        self.register_put_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
         try:
             size = len(data)
             value = int.from_bytes(data, 'little')
@@ -720,6 +772,36 @@ class RustVEXCallbacks:
             self.state.registers.store(offset, bv)
         except Exception as e:
             l.warning("Register write failed at offset %d: %s", offset, e)
+        finally:
+            if _profiler.enabled:
+                self.register_put_time += time.perf_counter() - t0
+
+    def get_stats(self) -> dict:
+        """
+        Get callback invocation statistics.
+
+        Returns:
+            Dictionary with callback counts and timing information.
+        """
+        return {
+            "memory_load_count": self.memory_load_count,
+            "memory_store_count": self.memory_store_count,
+            "register_get_count": self.register_get_count,
+            "register_put_count": self.register_put_count,
+            "lift_block_count": self.lift_block_count,
+            "hook_count": self.hook_count,
+            "syscall_count": self.syscall_count,
+            "memory_load_time_ms": self.memory_load_time * 1000,
+            "memory_store_time_ms": self.memory_store_time * 1000,
+            "register_get_time_ms": self.register_get_time * 1000,
+            "register_put_time_ms": self.register_put_time * 1000,
+            "lift_block_time_ms": self.lift_block_time * 1000,
+            "total_callback_time_ms": (
+                self.memory_load_time + self.memory_store_time +
+                self.register_get_time + self.register_put_time +
+                self.lift_block_time
+            ) * 1000,
+        }
 
     def setup_rust_callbacks(self) -> "PythonCallbacks":
         """
@@ -771,6 +853,7 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         self._use_deferred_forks = use_deferred_forks
         self._max_deferred_forks = max_deferred_forks
         self._concrete_memory_synced = False
+        self._last_callbacks: RustVEXCallbacks | None = None
 
         if not RUST_ENGINE_AVAILABLE:
             l.warning("RustVEXMixin initialized but Rust engine not available")
@@ -817,6 +900,17 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         }
         if policy in policy_map:
             self._rust_engine.set_branch_policy(policy_map[policy])
+
+    def get_callback_stats(self) -> dict | None:
+        """
+        Get callback invocation statistics from the last execution.
+
+        Returns:
+            Dictionary with callback counts and timing, or None if no callbacks were used.
+        """
+        if self._last_callbacks is not None:
+            return self._last_callbacks.get_stats()
+        return None
 
     def _sync_concrete_memory_to_rust(self) -> int:
         """
@@ -1376,6 +1470,7 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         # Create callback object
         cbs = RustVEXCallbacks(state, self.project, self)
+        self._last_callbacks = cbs  # Save for profiling access
 
         try:
             # Setup Rust callbacks
