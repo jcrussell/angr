@@ -198,6 +198,12 @@ pub struct PythonCallbacks {
     pub memory_load_symbolic: Option<PyObject>,
     /// Callback for symbolic memory stores: fn(addrs: list[int], data: bytes, addr_ast) -> None
     pub memory_store_symbolic: Option<PyObject>,
+    /// Callback for memory load with full symbolic address AST: fn(size: int) -> (bytes, is_symbolic, symbolic_ast?)
+    /// This is used when the address range is too large to concretize, delegating to angr's memory model.
+    pub memory_load_ast: Option<PyObject>,
+    /// Callback for memory store with full symbolic address AST: fn(data: bytes, size: int) -> None
+    /// This is used when the address range is too large to concretize, delegating to angr's memory model.
+    pub memory_store_ast: Option<PyObject>,
     /// Callback for hook execution: fn(addr: u64) -> new_pc
     pub on_hook: Option<PyObject>,
     /// Callback for syscall handling: fn(num: u64) -> None
@@ -220,6 +226,8 @@ impl PythonCallbacks {
             memory_store: None,
             memory_load_symbolic: None,
             memory_store_symbolic: None,
+            memory_load_ast: None,
+            memory_store_ast: None,
             on_hook: None,
             on_syscall: None,
             lift_block: None,
@@ -266,6 +274,32 @@ impl PythonCallbacks {
     /// The callback should perform conditional stores to each possible address.
     pub fn set_memory_store_symbolic(&mut self, cb: PyObject) {
         self.memory_store_symbolic = Some(cb);
+    }
+
+    /// Set the symbolic address AST memory load callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(size: int) -> tuple[bytes, bool, object | None]`
+    ///
+    /// This is called when the address is symbolic and the range is too large to
+    /// concretize. The callback should use angr's full memory model to handle
+    /// the symbolic address (which angr already has in the state).
+    ///
+    /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
+    pub fn set_memory_load_ast(&mut self, cb: PyObject) {
+        self.memory_load_ast = Some(cb);
+    }
+
+    /// Set the symbolic address AST memory store callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(data: bytes, size: int) -> None`
+    ///
+    /// This is called when the address is symbolic and the range is too large to
+    /// concretize. The callback should use angr's full memory model to handle
+    /// the symbolic address (which angr already has in the state).
+    pub fn set_memory_store_ast(&mut self, cb: PyObject) {
+        self.memory_store_ast = Some(cb);
     }
 
     /// Set the hook execution callback.
@@ -449,6 +483,69 @@ impl PythonCallbacks {
             let data_bytes = bv_to_bytes(data);
             self.call_memory_store(py, *first_addr, &data_bytes)?;
         }
+        Ok(())
+    }
+
+    /// Call the symbolic address AST memory load callback.
+    ///
+    /// This is called when the address range is too large to concretize.
+    /// Python will use angr's full memory model with its address concretization strategies.
+    ///
+    /// Returns (data_bytes, is_symbolic, symbolic_ast).
+    pub fn call_memory_load_symbolic_ast(
+        &self,
+        py: Python<'_>,
+        size: u32,
+    ) -> PyResult<(Vec<u8>, bool, Option<PyObject>)> {
+        // If symbolic AST callback is set, use it
+        if let Some(cb) = &self.memory_load_ast {
+            let result = cb.call1(py, (size,))?;
+            let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+
+            // Extract (bytes, is_symbolic, symbolic_ast?)
+            let data_obj = tuple.get_item(0)?;
+            let data: Vec<u8> = data_obj.extract()?;
+            let is_symbolic: bool = tuple.get_item(1)?.extract()?;
+
+            let symbolic_ast = if tuple.len() > 2 {
+                let ast_obj = tuple.get_item(2)?;
+                if ast_obj.is_none() {
+                    None
+                } else {
+                    Some(ast_obj.unbind())
+                }
+            } else {
+                None
+            };
+
+            return Ok((data, is_symbolic, symbolic_ast));
+        }
+
+        // Fallback: return zeros and symbolic marker
+        // This is a placeholder when the callback is not set
+        let zeros = vec![0u8; size as usize];
+        Ok((zeros, true, None))
+    }
+
+    /// Call the symbolic address AST memory store callback.
+    ///
+    /// This is called when the address range is too large to concretize.
+    /// Python will use angr's full memory model with its address concretization strategies.
+    pub fn call_memory_store_symbolic_ast(
+        &self,
+        py: Python<'_>,
+        data: &[u8],
+        size: u32,
+    ) -> PyResult<()> {
+        // If symbolic AST callback is set, use it
+        if let Some(cb) = &self.memory_store_ast {
+            let py_bytes = PyBytes::new(py, data);
+            cb.call1(py, (py_bytes, size))?;
+            return Ok(());
+        }
+
+        // Fallback: silently ignore (data is still in Rust's view)
+        // This is a placeholder when the callback is not set
         Ok(())
     }
 

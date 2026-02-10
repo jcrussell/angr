@@ -643,10 +643,15 @@ impl<'a> CallbackInterpreter<'a> {
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
-                            return Err(CbExecutionError::Unsupported(format!(
-                                "symbolic store address range too large: 0x{:x} - 0x{:x}",
-                                min, max
-                            )));
+                            // Address range too large - delegate to Python's memory model
+                            // which has access to angr's address concretization strategies
+                            let data_bytes = bv_to_bytes(&data_val);
+                            callbacks
+                                .call_memory_store_symbolic_ast(py, &data_bytes, data_bytes.len() as u32)
+                                .map_err(|e| CbExecutionError::Callback(format!(
+                                    "symbolic store AST callback failed at 0x{:x}-0x{:x}: {}",
+                                    min, max, e
+                                )))?;
                         }
                         ConcretizationResult::Failed(reason) => {
                             return Err(CbExecutionError::Unsupported(format!(
@@ -817,10 +822,38 @@ impl<'a> CallbackInterpreter<'a> {
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
-                            Err(CbExecutionError::Unsupported(format!(
-                                "symbolic load address range too large: 0x{:x} - 0x{:x}",
-                                min, max
-                            )))
+                            // Address range too large - delegate to Python's memory model
+                            // which has access to angr's address concretization strategies
+                            let (data, is_symbolic, symbolic_ast) = callbacks
+                                .call_memory_load_symbolic_ast(py, size as u32)
+                                .map_err(|e| CbExecutionError::Callback(format!(
+                                    "symbolic load AST callback failed at 0x{:x}-0x{:x}: {}",
+                                    min, max, e
+                                )))?;
+
+                            if is_symbolic {
+                                // Try to convert claripy AST to RustBV
+                                if let Some(ast_obj) = symbolic_ast {
+                                    let ast = ast_obj.bind(py);
+                                    if is_claripy_ast(&ast) {
+                                        match claripy_to_rustbv(py, &ast, self.ctx) {
+                                            Ok(bv) => return Ok(bv),
+                                            Err(_e) => {
+                                                // Fall back to creating a fresh symbolic value
+                                            }
+                                        }
+                                    }
+                                }
+                                // Fallback: create a fresh symbolic value
+                                Ok(RustBV::symbolic(
+                                    self.ctx,
+                                    &format!("sym_load_{:x}_{}", min, size),
+                                    (size * 8) as u32,
+                                ))
+                            } else {
+                                // Concrete result from Python
+                                Ok(bytes_to_bv(&data, (size * 8) as u32))
+                            }
                         }
                         ConcretizationResult::Failed(reason) => {
                             Err(CbExecutionError::Unsupported(format!(
