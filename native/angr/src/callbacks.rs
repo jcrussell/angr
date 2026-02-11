@@ -194,6 +194,9 @@ pub struct PythonCallbacks {
     pub memory_load: Option<PyObject>,
     /// Callback for memory stores: fn(addr: u64, data: bytes) -> None
     pub memory_store: Option<PyObject>,
+    /// Callback for batched memory stores: fn(stores: list[tuple[int, bytes]]) -> None
+    /// This is more efficient than individual stores when multiple stores can be batched.
+    pub memory_store_batch: Option<PyObject>,
     /// Callback for symbolic memory loads: fn(addrs: list[int], size: int, addr_ast) -> RustBV
     pub memory_load_symbolic: Option<PyObject>,
     /// Callback for symbolic memory stores: fn(addrs: list[int], data: bytes, addr_ast) -> None
@@ -224,6 +227,7 @@ impl PythonCallbacks {
         PythonCallbacks {
             memory_load: None,
             memory_store: None,
+            memory_store_batch: None,
             memory_load_symbolic: None,
             memory_store_symbolic: None,
             memory_load_ast: None,
@@ -252,6 +256,17 @@ impl PythonCallbacks {
     /// `fn(addr: int, data: bytes) -> None`
     pub fn set_memory_store(&mut self, cb: PyObject) {
         self.memory_store = Some(cb);
+    }
+
+    /// Set the batched memory store callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(stores: list[tuple[int, bytes]]) -> None`
+    ///
+    /// This is called with a batch of stores for efficiency. Each element is
+    /// a (address, data) tuple. If not set, falls back to individual stores.
+    pub fn set_memory_store_batch(&mut self, cb: PyObject) {
+        self.memory_store_batch = Some(cb);
     }
 
     /// Set the symbolic memory load callback.
@@ -406,6 +421,37 @@ impl PythonCallbacks {
 
         let py_bytes = PyBytes::new(py, data);
         cb.call1(py, (addr, py_bytes))?;
+        Ok(())
+    }
+
+    /// Call the batched memory store callback.
+    ///
+    /// This sends multiple stores in a single callback for efficiency.
+    /// Falls back to individual stores if batch callback is not set.
+    pub fn call_memory_store_batch(
+        &self,
+        py: Python<'_>,
+        stores: &[(u64, Vec<u8>)],
+    ) -> PyResult<()> {
+        if stores.is_empty() {
+            return Ok(());
+        }
+
+        // Try batch callback first
+        if let Some(cb) = &self.memory_store_batch {
+            // Convert stores to Python list of tuples
+            let py_stores: Vec<(u64, Py<PyBytes>)> = stores
+                .iter()
+                .map(|(addr, data)| (*addr, PyBytes::new(py, data).unbind()))
+                .collect();
+            cb.call1(py, (py_stores,))?;
+            return Ok(());
+        }
+
+        // Fallback: call individual stores
+        for (addr, data) in stores {
+            self.call_memory_store(py, *addr, data)?;
+        }
         Ok(())
     }
 

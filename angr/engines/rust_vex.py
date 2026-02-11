@@ -496,6 +496,7 @@ class RustVEXCallbacks:
         # Callback invocation counters for profiling
         self.memory_load_count = 0
         self.memory_store_count = 0
+        self.memory_store_batch_count = 0
         self.register_get_count = 0
         self.register_put_count = 0
         self.lift_block_count = 0
@@ -505,6 +506,7 @@ class RustVEXCallbacks:
         # Timing accumulators (seconds)
         self.memory_load_time = 0.0
         self.memory_store_time = 0.0
+        self.memory_store_batch_time = 0.0
         self.register_get_time = 0.0
         self.register_put_time = 0.0
         self.lift_block_time = 0.0
@@ -576,6 +578,34 @@ class RustVEXCallbacks:
         finally:
             if _profiler.enabled:
                 self.memory_store_time += time.perf_counter() - t0
+
+    def memory_store_batch(self, stores: list[tuple[int, bytes]]) -> None:
+        """
+        Store multiple memory values in a single batch callback.
+
+        This is more efficient than individual store callbacks because it
+        reduces FFI overhead - multiple stores are handled in a single
+        Python callback invocation.
+
+        Args:
+            stores: List of (address, data) tuples to store.
+        """
+        self.memory_store_batch_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
+        try:
+            for addr, data in stores:
+                size = len(data)
+                value = int.from_bytes(data, 'little')
+                bits = size * 8
+                # Use cached zero BVV for common zero stores
+                bv = _get_zero_bvv(bits) if value == 0 else claripy.BVV(value, bits)
+                self.state.memory.store(addr, bv, endness='Iend_LE')
+        except Exception as e:
+            l.warning("Batch memory store failed: %s", e)
+        finally:
+            if _profiler.enabled:
+                self.memory_store_batch_time += time.perf_counter() - t0
 
     def memory_load_symbolic(self, addrs: list[int], size: int, addr_width: int) -> bytes:
         """
@@ -877,6 +907,7 @@ class RustVEXCallbacks:
         return {
             "memory_load_count": self.memory_load_count,
             "memory_store_count": self.memory_store_count,
+            "memory_store_batch_count": self.memory_store_batch_count,
             "register_get_count": self.register_get_count,
             "register_put_count": self.register_put_count,
             "lift_block_count": self.lift_block_count,
@@ -884,11 +915,13 @@ class RustVEXCallbacks:
             "syscall_count": self.syscall_count,
             "memory_load_time_ms": self.memory_load_time * 1000,
             "memory_store_time_ms": self.memory_store_time * 1000,
+            "memory_store_batch_time_ms": self.memory_store_batch_time * 1000,
             "register_get_time_ms": self.register_get_time * 1000,
             "register_put_time_ms": self.register_put_time * 1000,
             "lift_block_time_ms": self.lift_block_time * 1000,
             "total_callback_time_ms": (
                 self.memory_load_time + self.memory_store_time +
+                self.memory_store_batch_time +
                 self.register_get_time + self.register_put_time +
                 self.lift_block_time
             ) * 1000,
@@ -907,6 +940,7 @@ class RustVEXCallbacks:
         rust_cbs = PythonCallbacks()
         rust_cbs.set_memory_load(self.memory_load)
         rust_cbs.set_memory_store(self.memory_store)
+        rust_cbs.set_memory_store_batch(self.memory_store_batch)
         rust_cbs.set_memory_load_symbolic(self.memory_load_symbolic)
         rust_cbs.set_memory_store_symbolic(self.memory_store_symbolic)
         rust_cbs.set_memory_load_ast(self.memory_load_ast)
@@ -1303,6 +1337,23 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             except Exception:
                 pass
 
+    def _get_register_size_at_offset(self, arch, offset: int) -> int:
+        """Get the size of register at given offset.
+
+        Args:
+            arch: The architecture object.
+            offset: Register offset.
+
+        Returns:
+            Size in bytes (default to arch word size if not found).
+        """
+        # Check if offset matches a known register
+        for reg_name, reg_info in arch.registers.items():
+            if reg_info[0] == offset:
+                return reg_info[1]
+        # Default to architecture word size
+        return arch.bytes
+
     def _get_key_registers(self, arch) -> list[str]:
         """Get the key registers to sync for an architecture."""
         arch_name = arch.name.upper()
@@ -1330,7 +1381,8 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Synchronize Rust engine state back to angr SimState.
 
-        This copies register values from the Rust engine back to the SimState.
+        This copies only MODIFIED register values from the Rust engine back
+        to the SimState, using dirty register tracking for efficiency.
         """
         if self._rust_engine is None:
             return
@@ -1340,13 +1392,24 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Sync PC
         state.ip = engine.pc
 
-        # Sync registers back
-        regs = engine.get_registers()
-        for reg_name, value in regs.items():
+        # Get only the dirty register offsets (registers modified during Rust execution)
+        dirty_offsets = engine.get_dirty_register_offsets()
+
+        if not dirty_offsets:
+            # No registers modified - nothing to sync
+            return
+
+        # Sync only dirty registers
+        for offset in dirty_offsets:
             try:
-                state.registers.store(reg_name, claripy.BVV(value, state.arch.bits))
-            except (KeyError, AttributeError):
-                pass
+                size = self._get_register_size_at_offset(state.arch, offset)
+                value = engine.get_register_by_offset(offset, size)
+                state.registers.store(offset, claripy.BVV(value, size * 8))
+            except Exception as e:
+                l.debug("Failed to sync register at offset %d: %s", offset, e)
+
+        # Clear dirty tracking for next execution
+        engine.clear_dirty_registers()
 
     def _handle_rust_execution_event(
         self,

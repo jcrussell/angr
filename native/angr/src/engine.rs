@@ -157,6 +157,8 @@ pub struct RustVEXEngine {
     pc: u64,
     /// Mapped memory regions: (addr, size, permissions, data).
     memory_regions: Vec<(u64, u64, u8, Vec<u8>)>,
+    /// Dirty pages (page-aligned addresses that have been written to).
+    dirty_pages: std::collections::HashSet<u64>,
     /// Symbolic objects (would need proper serialization).
     symbolic_count: u64,
     /// Cached hooks set for quick comparison (optimization).
@@ -167,6 +169,9 @@ pub struct RustVEXEngine {
     callbacks: Option<PythonCallbacks>,
     /// Execution configuration for deferred forks.
     execution_config: ExecutionConfig,
+    /// Bitset tracking which register offsets have been modified.
+    /// Each bit represents a 4-byte aligned offset (offset / 4).
+    dirty_registers: u128,
 }
 
 #[pymethods]
@@ -190,11 +195,13 @@ impl RustVEXEngine {
             registers: vec![0u8; state_size],
             pc: 0,
             memory_regions: Vec::new(),
+            dirty_pages: std::collections::HashSet::new(),
             symbolic_count: 0,
             hooks_version: 0,
             memory_version: 0,
             callbacks: None,
             execution_config: ExecutionConfig::default(),
+            dirty_registers: 0,
         })
     }
 
@@ -338,6 +345,17 @@ impl RustVEXEngine {
                 }
 
                 region_data[offset..offset + data.len()].copy_from_slice(data);
+
+                // Track dirty pages (4KB page alignment)
+                let page_size: u64 = 0x1000;
+                let start_page = addr & !(page_size - 1);
+                let end_addr = addr + data.len() as u64;
+                let mut page = start_page;
+                while page < end_addr {
+                    self.dirty_pages.insert(page);
+                    page += page_size;
+                }
+
                 return Ok(());
             }
         }
@@ -345,6 +363,17 @@ impl RustVEXEngine {
             "address 0x{:x} not mapped",
             addr
         )))
+    }
+
+    /// Get the list of dirty page addresses (pages that have been written to).
+    /// Returns page-aligned addresses (4KB alignment).
+    pub fn get_dirty_pages(&self) -> Vec<u64> {
+        self.dirty_pages.iter().copied().collect()
+    }
+
+    /// Clear the dirty pages set.
+    pub fn clear_dirty_pages(&mut self) {
+        self.dirty_pages.clear();
     }
 
     /// Get a register value.
@@ -437,6 +466,44 @@ impl RustVEXEngine {
     pub fn get_register_size(&self, name: &str) -> Option<u32> {
         let arch = arch_from_name(&self.arch_name)?;
         arch.register_size(name)
+    }
+
+    /// Get list of dirty register offsets (registers modified since last clear).
+    /// Returns a list of offsets that were written to during Rust execution.
+    /// Each offset is 4-byte aligned.
+    pub fn get_dirty_register_offsets(&self) -> Vec<u32> {
+        let mut offsets = Vec::new();
+        for bit in 0..128u32 {
+            if (self.dirty_registers & (1u128 << bit)) != 0 {
+                offsets.push(bit * 4);
+            }
+        }
+        offsets
+    }
+
+    /// Clear dirty register tracking (called after sync to Python).
+    pub fn clear_dirty_registers(&mut self) {
+        self.dirty_registers = 0;
+    }
+
+    /// Get a register value by offset (not by name).
+    /// This is used for syncing specific registers back to Python.
+    pub fn get_register_by_offset(&self, offset: u32, size: u32) -> PyResult<u128> {
+        let offset = offset as usize;
+        let size = size as usize;
+
+        if offset + size > self.registers.len() {
+            return Err(PyValueError::new_err(format!(
+                "register offset {} + size {} exceeds register file size {}",
+                offset, size, self.registers.len()
+            )));
+        }
+
+        let mut value: u128 = 0;
+        for i in 0..size {
+            value |= (self.registers[offset + i] as u128) << (i * 8);
+        }
+        Ok(value)
     }
 
     /// Start building a new IRSB at the given address.
@@ -607,6 +674,9 @@ impl RustVEXEngine {
         self.pc = interp.get_pc();
         interp.registers.copy_to_bytes(&mut self.registers);
 
+        // Copy dirty register tracking from interpreter
+        self.dirty_registers = interp.dirty_registers();
+
         // Convert to Python event with deferred forks
         Ok(LoopExecutionEvent::from_run_result_with_forks(result, blocks_executed, deferred_forks))
     }
@@ -648,6 +718,7 @@ impl RustVEXEngine {
             registers: self.registers.clone(),
             pc: self.pc,
             memory_regions: self.memory_regions.clone(),
+            dirty_pages: self.dirty_pages.clone(),
             symbolic_count: self.symbolic_count,
             hooks_version: self.hooks_version,
             memory_version: self.memory_version,
@@ -655,6 +726,8 @@ impl RustVEXEngine {
             callbacks: self.callbacks.clone(),
             // Copy execution config
             execution_config: self.execution_config.clone(),
+            // Start with clean dirty tracking for fork
+            dirty_registers: 0,
         })
     }
 

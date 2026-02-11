@@ -170,6 +170,15 @@ pub struct CallbackInterpreter<'a> {
     concrete_memory: Vec<ConcreteMemoryRegion>,
     /// Address concretizer for handling symbolic addresses.
     concretizer: AddressConcretizer,
+    /// Bitset tracking which register offsets have been modified.
+    /// Each bit represents a 4-byte aligned offset (offset / 4).
+    /// A u128 covers 512 bytes of register space (128 * 4 = 512).
+    dirty_registers: u128,
+    /// Pending concrete stores to batch for efficiency.
+    /// Each entry is (address, data_bytes).
+    pending_stores: Vec<(u64, Vec<u8>)>,
+    /// Maximum pending stores before auto-flush.
+    max_pending_stores: usize,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -198,6 +207,9 @@ impl<'a> CallbackInterpreter<'a> {
             next_condition_id: 0,
             concrete_memory: Vec::new(),
             concretizer: AddressConcretizer::new(),
+            dirty_registers: 0,
+            pending_stores: Vec::with_capacity(64),
+            max_pending_stores: 64,
         }
     }
 
@@ -316,6 +328,50 @@ impl<'a> CallbackInterpreter<'a> {
     /// Get the solver context.
     pub fn context(&self) -> &SymContext {
         self.ctx
+    }
+
+    /// Get list of dirty register offsets (registers modified since last clear).
+    /// Returns offsets in 4-byte granularity.
+    pub fn get_dirty_register_offsets(&self) -> Vec<u32> {
+        let mut offsets = Vec::new();
+        for bit in 0..128u32 {
+            if (self.dirty_registers & (1u128 << bit)) != 0 {
+                offsets.push(bit * 4);
+            }
+        }
+        offsets
+    }
+
+    /// Get the raw dirty register bitset.
+    pub fn dirty_registers(&self) -> u128 {
+        self.dirty_registers
+    }
+
+    /// Clear dirty register tracking (called after sync).
+    pub fn clear_dirty_registers(&mut self) {
+        self.dirty_registers = 0;
+    }
+
+    /// Flush pending stores to Python via batch callback.
+    ///
+    /// This sends all buffered stores in a single callback, reducing
+    /// FFI overhead compared to individual store callbacks.
+    fn flush_stores(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+    ) -> Result<(), CbExecutionError> {
+        if self.pending_stores.is_empty() {
+            return Ok(());
+        }
+
+        // Try batch callback first, fall back to individual stores
+        callbacks
+            .call_memory_store_batch(py, &self.pending_stores)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        self.pending_stores.clear();
+        Ok(())
     }
 
     /// Set the program counter.
@@ -555,6 +611,8 @@ impl<'a> CallbackInterpreter<'a> {
             match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {
                 StmtResult::Continue => continue,
                 StmtResult::Exit { target, jumpkind } => {
+                    // Flush pending stores before returning
+                    self.flush_stores(py, callbacks)?;
                     return Ok(self.handle_exit(target, jumpkind));
                 }
                 StmtResult::SymbolicBranch {
@@ -562,6 +620,8 @@ impl<'a> CallbackInterpreter<'a> {
                     true_target,
                     false_target,
                 } => {
+                    // Flush pending stores before returning
+                    self.flush_stores(py, callbacks)?;
                     return Ok(BlockResult::SymbolicBranch {
                         condition_id: 0, // TODO: proper condition tracking
                         true_target,
@@ -570,6 +630,9 @@ impl<'a> CallbackInterpreter<'a> {
                 }
             }
         }
+
+        // Flush pending stores at block end
+        self.flush_stores(py, callbacks)?;
 
         // Handle default exit
         self.handle_default_exit(irsb)
@@ -603,6 +666,13 @@ impl<'a> CallbackInterpreter<'a> {
             IRStmt::Put { offset, data } => {
                 let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                 self.registers.put(*offset, value);
+
+                // Mark register as dirty (4-byte granularity)
+                let bit_index = (*offset / 4) as u32;
+                if bit_index < 128 {
+                    self.dirty_registers |= 1u128 << bit_index;
+                }
+
                 Ok(StmtResult::Continue)
             }
 
@@ -622,12 +692,19 @@ impl<'a> CallbackInterpreter<'a> {
 
                 // Store via callback - handle symbolic addresses
                 if let Some(addr_concrete) = addr_val.as_u64() {
-                    // Fast path: concrete address
+                    // Fast path: concrete address - buffer for batch processing
                     let data_bytes = bv_to_bytes(&data_val);
-                    callbacks
-                        .call_memory_store(py, addr_concrete, &data_bytes)
-                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+                    // Buffer the store instead of immediate callback
+                    self.pending_stores.push((addr_concrete, data_bytes));
+
+                    // Auto-flush if buffer is full
+                    if self.pending_stores.len() >= self.max_pending_stores {
+                        self.flush_stores(py, callbacks)?;
+                    }
                 } else {
+                    // Symbolic address - flush buffer first, then handle specially
+                    self.flush_stores(py, callbacks)?;
                     // Symbolic address - try to concretize
                     match self.concretizer.concretize(&addr_val, self.ctx) {
                         ConcretizationResult::Single(addr_concrete) => {
@@ -1032,6 +1109,9 @@ impl<'a> CallbackInterpreter<'a> {
             next_condition_id: self.next_condition_id,
             concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
             concretizer: self.concretizer.clone(), // Share concretizer settings
+            dirty_registers: 0, // Fresh dirty tracking for fork
+            pending_stores: Vec::with_capacity(64), // Fresh store buffer for fork
+            max_pending_stores: self.max_pending_stores,
         }
     }
 }
