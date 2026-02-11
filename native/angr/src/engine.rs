@@ -15,10 +15,10 @@ use crate::arch::arch_from_name;
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks, RunResult};
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
 use crate::interpreter_cb::CallbackInterpreter;
-use crate::memory::Permission;
+use crate::memory::{Permission, SymbolicMemory, PAGE_SIZE};
 use crate::solver::RustSolverContext;
 use crate::symbolic::SymContext;
-use crate::vex::{deserialize_irsb, VexArch, IRSB};
+use crate::vex::{deserialize_irsb, Endness, VexArch, IRSB};
 
 /// Execution event returned to Python.
 #[pyclass]
@@ -141,7 +141,10 @@ impl StateSnapshot {
 /// Rust VEX execution engine.
 ///
 /// This is the main Python-facing class that provides VEX-based execution.
-#[pyclass]
+///
+/// Note: This uses `unsendable` because SymbolicMemory contains z3 AST types
+/// (RustBV) which are not Send-safe due to z3's internal Rc/NonNull usage.
+#[pyclass(unsendable)]
 pub struct RustVEXEngine {
     /// Architecture name.
     arch_name: String,
@@ -172,6 +175,11 @@ pub struct RustVEXEngine {
     /// Bitset tracking which register offsets have been modified.
     /// Each bit represents a 4-byte aligned offset (offset / 4).
     dirty_registers: u128,
+    /// Rust-native symbolic memory model.
+    /// When Some, memory operations use this instead of Python callbacks.
+    symbolic_memory: Option<SymbolicMemory>,
+    /// Whether to use Rust-native memory (vs Python callbacks).
+    use_rust_memory: bool,
 }
 
 #[pymethods]
@@ -202,6 +210,8 @@ impl RustVEXEngine {
             callbacks: None,
             execution_config: ExecutionConfig::default(),
             dirty_registers: 0,
+            symbolic_memory: None,
+            use_rust_memory: false,
         })
     }
 
@@ -667,6 +677,13 @@ impl RustVEXEngine {
             }
         }
 
+        // Pass Rust memory to interpreter if enabled
+        if self.use_rust_memory {
+            if let Some(mem) = self.symbolic_memory.take() {
+                interp.set_rust_memory(mem);
+            }
+        }
+
         // Run the execution loop
         let (result, blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, max_blocks);
 
@@ -676,6 +693,11 @@ impl RustVEXEngine {
 
         // Copy dirty register tracking from interpreter
         self.dirty_registers = interp.dirty_registers();
+
+        // Recover Rust memory from interpreter
+        if let Some(mem) = interp.take_rust_memory() {
+            self.symbolic_memory = Some(mem);
+        }
 
         // Convert to Python event with deferred forks
         Ok(LoopExecutionEvent::from_run_result_with_forks(result, blocks_executed, deferred_forks))
@@ -728,6 +750,9 @@ impl RustVEXEngine {
             execution_config: self.execution_config.clone(),
             // Start with clean dirty tracking for fork
             dirty_registers: 0,
+            // Fork symbolic memory with O(1) CoW
+            symbolic_memory: self.symbolic_memory.as_ref().map(|m| m.fork()),
+            use_rust_memory: self.use_rust_memory,
         })
     }
 
@@ -764,6 +789,183 @@ impl RustVEXEngine {
         dict.set_item("register_file_size", self.registers.len())?;
         dict.set_item("hooks_version", self.hooks_version)?;
         dict.set_item("memory_version", self.memory_version)?;
+        dict.set_item("rust_memory_enabled", self.use_rust_memory)?;
+        if let Some(ref mem) = self.symbolic_memory {
+            dict.set_item("rust_memory_pages", mem.page_count())?;
+            dict.set_item("rust_memory_dirty_pages", mem.get_dirty_pages().len())?;
+        }
+        Ok(dict)
+    }
+
+    // ======================================================================
+    // Rust-native Memory Model APIs
+    // ======================================================================
+
+    /// Create a new Rust-native symbolic memory model.
+    ///
+    /// This creates a fresh SymbolicMemory that can be used instead of
+    /// Python callbacks for memory operations, providing significant
+    /// performance improvements.
+    ///
+    /// Args:
+    ///     little_endian: If True, use little-endian byte order (default True).
+    #[pyo3(signature = (little_endian=true))]
+    pub fn create_rust_memory(&mut self, little_endian: bool) -> PyResult<()> {
+        let endness = if little_endian { Endness::Little } else { Endness::Big };
+        self.symbolic_memory = Some(SymbolicMemory::new(endness));
+        Ok(())
+    }
+
+    /// Enable Rust-native memory mode.
+    ///
+    /// When enabled, memory operations will try to use Rust SymbolicMemory
+    /// first, falling back to Python callbacks only for unmapped regions.
+    pub fn enable_rust_memory(&mut self) {
+        self.use_rust_memory = true;
+    }
+
+    /// Disable Rust-native memory mode.
+    pub fn disable_rust_memory(&mut self) {
+        self.use_rust_memory = false;
+    }
+
+    /// Check if Rust-native memory is enabled.
+    pub fn is_rust_memory_enabled(&self) -> bool {
+        self.use_rust_memory && self.symbolic_memory.is_some()
+    }
+
+    /// Map a memory region in Rust memory.
+    ///
+    /// Args:
+    ///     addr: Base address to map (will be page-aligned).
+    ///     size: Size of region to map.
+    ///     permissions: Permission bits (R=4, W=2, X=1).
+    #[pyo3(signature = (addr, size, permissions=7))]
+    pub fn map_rust_memory(&mut self, addr: u64, size: u64, permissions: u8) -> PyResult<()> {
+        if let Some(ref mut mem) = self.symbolic_memory {
+            mem.map(addr, size, Permission::from_bits(permissions));
+            Ok(())
+        } else {
+            Err(PyValueError::new_err("Rust memory not created - call create_rust_memory() first"))
+        }
+    }
+
+    /// Map memory with initial data in Rust memory.
+    ///
+    /// Args:
+    ///     addr: Base address to map.
+    ///     data: Initial data bytes.
+    ///     permissions: Permission bits (R=4, W=2, X=1).
+    #[pyo3(signature = (addr, data, permissions=7))]
+    pub fn map_rust_memory_data(&mut self, addr: u64, data: &[u8], permissions: u8) -> PyResult<()> {
+        if let Some(ref mut mem) = self.symbolic_memory {
+            mem.map_data(addr, data, Permission::from_bits(permissions));
+            Ok(())
+        } else {
+            Err(PyValueError::new_err("Rust memory not created - call create_rust_memory() first"))
+        }
+    }
+
+    /// Store a concrete value in Rust memory.
+    ///
+    /// Args:
+    ///     addr: Address to store at.
+    ///     data: Bytes to store (little-endian).
+    pub fn store_rust_memory(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
+        use crate::symbolic::RustBV;
+
+        if let Some(ref mut mem) = self.symbolic_memory {
+            let bits = (data.len() * 8) as u32;
+            let mut value: u128 = 0;
+            for (i, &byte) in data.iter().enumerate() {
+                value |= (byte as u128) << (i * 8);
+            }
+            let bv = RustBV::concrete(value, bits);
+            mem.store_concrete(addr, bv)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        } else {
+            Err(PyValueError::new_err("Rust memory not created"))
+        }
+    }
+
+    /// Load a concrete value from Rust memory.
+    ///
+    /// Args:
+    ///     addr: Address to load from.
+    ///     size: Number of bytes to load.
+    ///
+    /// Returns:
+    ///     Bytes in little-endian order.
+    pub fn load_rust_memory(&self, addr: u64, size: u64) -> PyResult<Vec<u8>> {
+        use crate::symbolic::SymContext;
+
+        if let Some(ref mem) = self.symbolic_memory {
+            let ctx = SymContext::new_mock();
+            let bv = mem.load_concrete(addr, size as u32, &ctx)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+            // Convert to bytes
+            let value = bv.to_u128();
+            let mut bytes = Vec::with_capacity(size as usize);
+            for i in 0..size {
+                bytes.push((value >> (i * 8)) as u8);
+            }
+            Ok(bytes)
+        } else {
+            Err(PyValueError::new_err("Rust memory not created"))
+        }
+    }
+
+    /// Get list of dirty page addresses in Rust memory.
+    ///
+    /// Returns page-aligned addresses for pages that have been
+    /// modified since the last clear.
+    pub fn get_rust_memory_dirty_pages(&self) -> Vec<u64> {
+        if let Some(ref mem) = self.symbolic_memory {
+            mem.get_dirty_page_addrs()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Clear dirty page tracking in Rust memory.
+    pub fn clear_rust_memory_dirty_pages(&mut self) {
+        if let Some(ref mut mem) = self.symbolic_memory {
+            mem.clear_dirty_pages();
+        }
+    }
+
+    /// Get data for a specific page in Rust memory.
+    ///
+    /// Args:
+    ///     page_addr: Page-aligned address.
+    ///
+    /// Returns:
+    ///     Tuple of (data_bytes, permissions) or None if not mapped.
+    pub fn get_rust_memory_page(&self, page_addr: u64) -> Option<(Vec<u8>, u8)> {
+        let page_num = page_addr >> 12;
+        if let Some(ref mem) = self.symbolic_memory {
+            mem.get_page_data(page_num)
+        } else {
+            None
+        }
+    }
+
+    /// Get statistics about Rust memory.
+    pub fn rust_memory_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("enabled", self.use_rust_memory)?;
+
+        if let Some(ref mem) = self.symbolic_memory {
+            dict.set_item("page_count", mem.page_count())?;
+            dict.set_item("mapped_bytes", mem.mapped_size())?;
+            dict.set_item("dirty_pages", mem.get_dirty_pages().len())?;
+        } else {
+            dict.set_item("page_count", 0)?;
+            dict.set_item("mapped_bytes", 0)?;
+            dict.set_item("dirty_pages", 0)?;
+        }
+
         Ok(dict)
     }
 }

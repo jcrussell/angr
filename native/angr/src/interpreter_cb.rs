@@ -14,11 +14,12 @@ use crate::arch::{arch_from_vex, RegisterFile};
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::memory::{MemoryError, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ccall;
 use crate::vex::ir::{IRConst, IRExpr, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
 use crate::vex::ops::{OpError, VEXOps};
-use crate::vex::deserialize_irsb;
+use crate::vex::{deserialize_irsb, Endness};
 
 /// Errors during callback-based VEX execution.
 #[derive(Debug, Clone)]
@@ -137,6 +138,10 @@ impl ConcreteMemoryRegion {
 ///
 /// This interpreter uses Python callbacks for memory and register access,
 /// allowing it to work with angr's symbolic memory model.
+///
+/// When `use_rust_memory` is true, the interpreter uses `rust_memory` for
+/// memory operations, falling back to Python callbacks only for unmapped pages.
+/// This provides significant performance improvement for memory-intensive code.
 pub struct CallbackInterpreter<'a> {
     /// Register file (local cache, synced via callbacks).
     pub registers: RegisterFile,
@@ -179,6 +184,12 @@ pub struct CallbackInterpreter<'a> {
     pending_stores: Vec<(u64, Vec<u8>)>,
     /// Maximum pending stores before auto-flush.
     max_pending_stores: usize,
+    /// Rust-native symbolic memory (replaces Python callbacks when enabled).
+    /// When Some, memory operations try Rust first before falling back to callbacks.
+    rust_memory: Option<SymbolicMemory>,
+    /// Whether to use Rust-native memory (vs Python callbacks).
+    /// When true and rust_memory is Some, memory ops use Rust directly.
+    use_rust_memory: bool,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -210,6 +221,8 @@ impl<'a> CallbackInterpreter<'a> {
             dirty_registers: 0,
             pending_stores: Vec::with_capacity(64),
             max_pending_stores: 64,
+            rust_memory: None,
+            use_rust_memory: false,
         }
     }
 
@@ -690,6 +703,24 @@ impl<'a> CallbackInterpreter<'a> {
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
 
+                // Try Rust-native memory first if enabled
+                if self.use_rust_memory {
+                    if let Some(ref mut rust_mem) = self.rust_memory {
+                        match rust_mem.store_symbolic(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
+                            Ok(()) => return Ok(StmtResult::Continue),
+                            Err(MemoryError::Unmapped { .. }) => {
+                                // Fall through to Python callback for unmapped pages
+                            }
+                            Err(MemoryError::SymbolicAddress { .. }) => {
+                                // Fall through - Python has better symbolic handling
+                            }
+                            Err(e) => {
+                                return Err(CbExecutionError::Memory(e.to_string()));
+                            }
+                        }
+                    }
+                }
+
                 // Store via callback - handle symbolic addresses
                 if let Some(addr_concrete) = addr_val.as_u64() {
                     // Fast path: concrete address - buffer for batch processing
@@ -873,6 +904,24 @@ impl<'a> CallbackInterpreter<'a> {
             IRExpr::Load { addr, ty, .. } => {
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
                 let size = ty.bytes() as usize;
+
+                // Try Rust-native memory first if enabled
+                if self.use_rust_memory {
+                    if let Some(ref rust_mem) = self.rust_memory {
+                        match rust_mem.load_symbolic(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                            Ok(value) => return Ok(value),
+                            Err(MemoryError::Unmapped { .. }) => {
+                                // Fall through to Python callback for unmapped pages
+                            }
+                            Err(MemoryError::SymbolicAddress { .. }) => {
+                                // Fall through - Python has better symbolic handling
+                            }
+                            Err(e) => {
+                                return Err(CbExecutionError::Memory(e.to_string()));
+                            }
+                        }
+                    }
+                }
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
                     // FAST PATH: Check if address is in Rust-cached concrete memory
@@ -1112,7 +1161,45 @@ impl<'a> CallbackInterpreter<'a> {
             dirty_registers: 0, // Fresh dirty tracking for fork
             pending_stores: Vec::with_capacity(64), // Fresh store buffer for fork
             max_pending_stores: self.max_pending_stores,
+            // Fork Rust memory with O(1) CoW
+            rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),
+            use_rust_memory: self.use_rust_memory,
         }
+    }
+
+    /// Enable Rust-native memory mode.
+    ///
+    /// When enabled, memory operations will try to use the Rust SymbolicMemory
+    /// first, falling back to Python callbacks only for unmapped regions.
+    /// This can significantly improve performance for memory-intensive code.
+    pub fn enable_rust_memory(&mut self, endness: Endness) {
+        self.rust_memory = Some(SymbolicMemory::new(endness));
+        self.use_rust_memory = true;
+    }
+
+    /// Disable Rust-native memory mode.
+    pub fn disable_rust_memory(&mut self) {
+        self.use_rust_memory = false;
+    }
+
+    /// Get mutable reference to Rust memory (for initialization).
+    pub fn rust_memory_mut(&mut self) -> Option<&mut SymbolicMemory> {
+        self.rust_memory.as_mut()
+    }
+
+    /// Get reference to Rust memory.
+    pub fn rust_memory(&self) -> Option<&SymbolicMemory> {
+        self.rust_memory.as_ref()
+    }
+
+    /// Set the Rust memory instance.
+    pub fn set_rust_memory(&mut self, memory: SymbolicMemory) {
+        self.rust_memory = Some(memory);
+    }
+
+    /// Take the Rust memory instance (for transferring to engine).
+    pub fn take_rust_memory(&mut self) -> Option<SymbolicMemory> {
+        self.rust_memory.take()
     }
 }
 

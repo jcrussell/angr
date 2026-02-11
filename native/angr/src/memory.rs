@@ -5,7 +5,7 @@
 //! - Mixed concrete/symbolic value storage
 //! - Efficient symbolic address handling
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use im::OrdMap;
@@ -246,6 +246,7 @@ impl MemoryPage {
 /// - O(1) forking via CoW
 /// - Mixed concrete/symbolic storage
 /// - Endianness-aware loads and stores
+/// - Dirty page tracking for efficient sync
 pub struct SymbolicMemory {
     /// Pages indexed by page number (addr >> 12).
     pages: OrdMap<u64, MemoryPage>,
@@ -257,6 +258,9 @@ pub struct SymbolicMemory {
     default_permissions: Permission,
     /// Endianness for this memory.
     endness: Endness,
+    /// Pages that have been modified since last clear.
+    /// Stores page numbers (addr >> 12) for efficient tracking.
+    dirty_pages: HashSet<u64>,
 }
 
 impl SymbolicMemory {
@@ -268,6 +272,7 @@ impl SymbolicMemory {
             next_sym_id: 0,
             default_permissions: Permission::RWX,
             endness,
+            dirty_pages: HashSet::new(),
         }
     }
 
@@ -486,6 +491,8 @@ impl SymbolicMemory {
                     let mut page = page.clone();
                     page.mark_symbolic(offset, 1);
                     self.pages.insert(page_num, page);
+                    // Mark page as dirty
+                    self.dirty_pages.insert(page_num);
                 }
             }
             return Ok(());
@@ -516,6 +523,8 @@ impl SymbolicMemory {
                 let mut page = page.clone();
                 page.store_concrete(page_offset, &remaining[..bytes_in_page]);
                 self.pages.insert(page_num, page);
+                // Mark page as dirty
+                self.dirty_pages.insert(page_num);
             }
 
             remaining = &remaining[bytes_in_page..];
@@ -676,6 +685,7 @@ impl SymbolicMemory {
             next_sym_id: self.next_sym_id,
             default_permissions: self.default_permissions,
             endness: self.endness,
+            dirty_pages: HashSet::new(), // Fresh dirty tracking for fork
         }
     }
 
@@ -687,6 +697,39 @@ impl SymbolicMemory {
     /// Get total mapped size in bytes.
     pub fn mapped_size(&self) -> u64 {
         self.pages.len() as u64 * PAGE_SIZE
+    }
+
+    /// Get list of dirty page numbers (pages modified since last clear).
+    pub fn get_dirty_pages(&self) -> Vec<u64> {
+        self.dirty_pages.iter().copied().collect()
+    }
+
+    /// Get list of dirty page addresses (page-aligned addresses).
+    pub fn get_dirty_page_addrs(&self) -> Vec<u64> {
+        self.dirty_pages.iter().map(|&pn| pn << 12).collect()
+    }
+
+    /// Clear dirty page tracking (called after sync to Python).
+    pub fn clear_dirty_pages(&mut self) {
+        self.dirty_pages.clear();
+    }
+
+    /// Check if a page is dirty.
+    pub fn is_page_dirty(&self, page_num: u64) -> bool {
+        self.dirty_pages.contains(&page_num)
+    }
+
+    /// Get page data for syncing to Python.
+    /// Returns (data, permissions) for the page, or None if not mapped.
+    pub fn get_page_data(&self, page_num: u64) -> Option<(Vec<u8>, u8)> {
+        self.pages.get(&page_num).map(|p| {
+            (p.load_concrete(0, PAGE_SIZE as u16), p.permissions().to_bits())
+        })
+    }
+
+    /// Get the pages OrdMap for iteration.
+    pub fn pages(&self) -> &OrdMap<u64, MemoryPage> {
+        &self.pages
     }
 }
 
