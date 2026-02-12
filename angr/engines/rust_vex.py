@@ -497,6 +497,7 @@ class RustVEXCallbacks:
         self.memory_load_count = 0
         self.memory_store_count = 0
         self.memory_store_batch_count = 0
+        self.memory_load_batch_count = 0
         self.register_get_count = 0
         self.register_put_count = 0
         self.lift_block_count = 0
@@ -507,6 +508,7 @@ class RustVEXCallbacks:
         self.memory_load_time = 0.0
         self.memory_store_time = 0.0
         self.memory_store_batch_time = 0.0
+        self.memory_load_batch_time = 0.0
         self.register_get_time = 0.0
         self.register_put_time = 0.0
         self.lift_block_time = 0.0
@@ -606,6 +608,56 @@ class RustVEXCallbacks:
         finally:
             if _profiler.enabled:
                 self.memory_store_batch_time += time.perf_counter() - t0
+
+    def memory_load_batch(self, loads: list[tuple[int, int]]) -> list[tuple[bytes, bool, Any]]:
+        """
+        Load multiple memory values in a single batch callback.
+
+        This is more efficient than individual load callbacks because it
+        reduces FFI overhead - multiple loads are handled in a single
+        Python callback invocation.
+
+        Args:
+            loads: List of (address, size) tuples to load.
+
+        Returns:
+            List of (concrete_bytes, is_symbolic, symbolic_ast_or_none) tuples.
+        """
+        self.memory_load_batch_count += 1
+        self.memory_load_count += len(loads)  # Track individual loads too
+        if _profiler.enabled:
+            t0 = time.perf_counter()
+
+        results = []
+        try:
+            for addr, size in loads:
+                try:
+                    val = self.state.memory.load(addr, size, endness='Iend_LE')
+                    is_sym = val.symbolic
+
+                    # FAST PATH: Extract concrete value directly without solver
+                    if not is_sym:
+                        if val.op == 'BVV':
+                            concrete = val.args[0]
+                        else:
+                            concrete = self.state.solver.eval(val)
+                    else:
+                        concrete = self.state.solver.eval(val)
+
+                    concrete_bytes = concrete.to_bytes(size, 'little')
+
+                    if is_sym:
+                        results.append((concrete_bytes, True, val))
+                    else:
+                        results.append((concrete_bytes, False, None))
+                except Exception as e:
+                    l.warning("Batch memory load failed at 0x%x: %s", addr, e)
+                    results.append((bytes(size), False, None))
+        finally:
+            if _profiler.enabled:
+                self.memory_load_batch_time += time.perf_counter() - t0
+
+        return results
 
     def memory_load_symbolic(self, addrs: list[int], size: int, addr_width: int) -> bytes:
         """
@@ -908,6 +960,7 @@ class RustVEXCallbacks:
             "memory_load_count": self.memory_load_count,
             "memory_store_count": self.memory_store_count,
             "memory_store_batch_count": self.memory_store_batch_count,
+            "memory_load_batch_count": self.memory_load_batch_count,
             "register_get_count": self.register_get_count,
             "register_put_count": self.register_put_count,
             "lift_block_count": self.lift_block_count,
@@ -916,12 +969,13 @@ class RustVEXCallbacks:
             "memory_load_time_ms": self.memory_load_time * 1000,
             "memory_store_time_ms": self.memory_store_time * 1000,
             "memory_store_batch_time_ms": self.memory_store_batch_time * 1000,
+            "memory_load_batch_time_ms": self.memory_load_batch_time * 1000,
             "register_get_time_ms": self.register_get_time * 1000,
             "register_put_time_ms": self.register_put_time * 1000,
             "lift_block_time_ms": self.lift_block_time * 1000,
             "total_callback_time_ms": (
                 self.memory_load_time + self.memory_store_time +
-                self.memory_store_batch_time +
+                self.memory_store_batch_time + self.memory_load_batch_time +
                 self.register_get_time + self.register_put_time +
                 self.lift_block_time
             ) * 1000,
@@ -941,6 +995,7 @@ class RustVEXCallbacks:
         rust_cbs.set_memory_load(self.memory_load)
         rust_cbs.set_memory_store(self.memory_store)
         rust_cbs.set_memory_store_batch(self.memory_store_batch)
+        rust_cbs.set_memory_load_batch(self.memory_load_batch)
         rust_cbs.set_memory_load_symbolic(self.memory_load_symbolic)
         rust_cbs.set_memory_store_symbolic(self.memory_store_symbolic)
         rust_cbs.set_memory_load_ast(self.memory_load_ast)

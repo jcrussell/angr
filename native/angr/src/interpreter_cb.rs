@@ -4,7 +4,7 @@
 //! local SymbolicMemory. It can run multiple blocks in a loop, returning
 //! to Python only when an event requires Python handling.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
@@ -134,6 +134,15 @@ impl ConcreteMemoryRegion {
     }
 }
 
+/// Cached result of a prefetched memory load.
+#[derive(Clone)]
+pub struct PrefetchedLoad {
+    /// The loaded bitvector value.
+    pub value: RustBV,
+    /// Whether the value is symbolic.
+    pub is_symbolic: bool,
+}
+
 /// Callback-aware VEX IR interpreter.
 ///
 /// This interpreter uses Python callbacks for memory and register access,
@@ -190,6 +199,12 @@ pub struct CallbackInterpreter<'a> {
     /// Whether to use Rust-native memory (vs Python callbacks).
     /// When true and rust_memory is Some, memory ops use Rust directly.
     use_rust_memory: bool,
+    /// Prefetch cache for batched memory loads.
+    /// Key is (address, size), value is the prefetched result.
+    /// This is populated at block start and used during Load expression evaluation.
+    load_prefetch_cache: HashMap<(u64, usize), PrefetchedLoad>,
+    /// Whether load prefetching is enabled.
+    use_load_prefetch: bool,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -223,6 +238,8 @@ impl<'a> CallbackInterpreter<'a> {
             max_pending_stores: 256,
             rust_memory: None,
             use_rust_memory: false,
+            load_prefetch_cache: HashMap::new(),
+            use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
         }
     }
 
@@ -619,6 +636,9 @@ impl<'a> CallbackInterpreter<'a> {
         self.temps = vec![None; irsb.tyenv.types.len()];
         self.current_insn_addr = irsb.addr;
 
+        // Prefetch loads for this block (reduces individual FFI calls)
+        self.prefetch_loads_for_block(py, callbacks, irsb)?;
+
         // Execute statements
         for stmt in &irsb.statements {
             match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {
@@ -702,12 +722,22 @@ impl<'a> CallbackInterpreter<'a> {
             IRStmt::Store { addr, data, .. } => {
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let data_size = ((data_val.width() + 7) / 8) as usize;
 
                 // Try Rust-native memory first if enabled
                 if self.use_rust_memory {
                     if let Some(ref mut rust_mem) = self.rust_memory {
                         match rust_mem.store_symbolic(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
-                            Ok(()) => return Ok(StmtResult::Continue),
+                            Ok(()) => {
+                                // Invalidate prefetch cache for this address
+                                if let Some(addr_concrete) = addr_val.as_u64() {
+                                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                                } else {
+                                    // Symbolic address - clear entire cache
+                                    self.load_prefetch_cache.clear();
+                                }
+                                return Ok(StmtResult::Continue);
+                            }
                             Err(MemoryError::Unmapped { .. }) => {
                                 // Fall through to Python callback for unmapped pages
                             }
@@ -726,6 +756,9 @@ impl<'a> CallbackInterpreter<'a> {
                     // Fast path: concrete address - buffer for batch processing
                     let data_bytes = bv_to_bytes(&data_val);
 
+                    // Invalidate prefetch cache for this address
+                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+
                     // Buffer the store instead of immediate callback
                     self.pending_stores.push((addr_concrete, data_bytes));
 
@@ -734,6 +767,8 @@ impl<'a> CallbackInterpreter<'a> {
                         self.flush_stores(py, callbacks)?;
                     }
                 } else {
+                    // Symbolic address - clear entire prefetch cache
+                    self.load_prefetch_cache.clear();
                     // Symbolic address - flush buffer first, then handle specially
                     self.flush_stores(py, callbacks)?;
                     // Symbolic address - try to concretize
@@ -924,7 +959,12 @@ impl<'a> CallbackInterpreter<'a> {
                 }
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
-                    // FAST PATH: Check if address is in Rust-cached concrete memory
+                    // FAST PATH 1: Check prefetch cache (batch-loaded values)
+                    if let Some(prefetched) = self.load_prefetch_cache.get(&(addr_concrete, size)) {
+                        return Ok(prefetched.value.clone());
+                    }
+
+                    // FAST PATH 2: Check if address is in Rust-cached concrete memory
                     if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
                         return Ok(bytes_to_bv(data, (size * 8) as u32));
                     }
@@ -1164,6 +1204,8 @@ impl<'a> CallbackInterpreter<'a> {
             // Fork Rust memory with O(1) CoW
             rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),
             use_rust_memory: self.use_rust_memory,
+            load_prefetch_cache: HashMap::new(), // Fresh prefetch cache for fork
+            use_load_prefetch: self.use_load_prefetch,
         }
     }
 
@@ -1200,6 +1242,219 @@ impl<'a> CallbackInterpreter<'a> {
     /// Take the Rust memory instance (for transferring to engine).
     pub fn take_rust_memory(&mut self) -> Option<SymbolicMemory> {
         self.rust_memory.take()
+    }
+
+    /// Enable or disable load prefetching.
+    pub fn set_load_prefetch(&mut self, enabled: bool) {
+        self.use_load_prefetch = enabled;
+    }
+
+    /// Clear the load prefetch cache.
+    ///
+    /// This should be called after stores to invalidate potentially stale values.
+    pub fn clear_prefetch_cache(&mut self) {
+        self.load_prefetch_cache.clear();
+    }
+
+    /// Check if a load result is in the prefetch cache.
+    #[inline]
+    pub fn get_prefetched_load(&self, addr: u64, size: usize) -> Option<&PrefetchedLoad> {
+        self.load_prefetch_cache.get(&(addr, size))
+    }
+
+    /// Scan an IRSB for Load expressions with concrete addresses.
+    ///
+    /// This collects (address, size) pairs for loads that can be prefetched.
+    /// Only loads with concrete addresses (computed from temps/constants) are collected.
+    fn scan_loads_in_irsb(&self, irsb: &IRSB) -> Vec<(u64, usize)> {
+        let mut loads = Vec::new();
+
+        for stmt in &irsb.statements {
+            self.scan_loads_in_stmt(stmt, irsb, &mut loads);
+        }
+
+        // Also scan the next expression
+        self.scan_loads_in_expr(&irsb.next, irsb, &mut loads);
+
+        loads
+    }
+
+    /// Scan a statement for Load expressions.
+    fn scan_loads_in_stmt(&self, stmt: &IRStmt, irsb: &IRSB, loads: &mut Vec<(u64, usize)>) {
+        match stmt {
+            IRStmt::WrTmp { data, .. } => {
+                self.scan_loads_in_expr(data, irsb, loads);
+            }
+            IRStmt::Put { data, .. } => {
+                self.scan_loads_in_expr(data, irsb, loads);
+            }
+            IRStmt::Store { addr, data, .. } => {
+                self.scan_loads_in_expr(addr, irsb, loads);
+                self.scan_loads_in_expr(data, irsb, loads);
+            }
+            IRStmt::Exit { guard, .. } => {
+                self.scan_loads_in_expr(guard, irsb, loads);
+            }
+            _ => {}
+        }
+    }
+
+    /// Scan an expression for Load expressions.
+    fn scan_loads_in_expr(&self, expr: &IRExpr, irsb: &IRSB, loads: &mut Vec<(u64, usize)>) {
+        match expr {
+            IRExpr::Load { addr, ty, .. } => {
+                let size = ty.bytes() as usize;
+                // Try to evaluate the address to a concrete value
+                if let Some(addr_val) = self.try_eval_expr_concrete(addr, &irsb.tyenv) {
+                    // Check if this address is NOT already in cached concrete memory
+                    // (no point prefetching what we can already read locally)
+                    if self.try_read_concrete_memory(addr_val, size).is_none() {
+                        loads.push((addr_val, size));
+                    }
+                }
+                // Also scan the address expression itself
+                self.scan_loads_in_expr(addr, irsb, loads);
+            }
+            IRExpr::Unop { arg, .. } => {
+                self.scan_loads_in_expr(arg, irsb, loads);
+            }
+            IRExpr::Binop { left, right, .. } => {
+                self.scan_loads_in_expr(left, irsb, loads);
+                self.scan_loads_in_expr(right, irsb, loads);
+            }
+            IRExpr::ITE { cond, iftrue, iffalse, .. } => {
+                self.scan_loads_in_expr(cond, irsb, loads);
+                self.scan_loads_in_expr(iftrue, irsb, loads);
+                self.scan_loads_in_expr(iffalse, irsb, loads);
+            }
+            IRExpr::CCall { args, .. } => {
+                for arg in args {
+                    self.scan_loads_in_expr(arg, irsb, loads);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Try to evaluate an expression to a concrete u64 value (for prefetching).
+    ///
+    /// This is a simplified evaluation that only handles constants and simple
+    /// operations. It doesn't evaluate temps since we're scanning before execution.
+    fn try_eval_expr_concrete(&self, expr: &IRExpr, _tyenv: &TypeEnv) -> Option<u64> {
+        match expr {
+            IRExpr::Const(c) => {
+                match c {
+                    IRConst::U8(v) => Some(*v as u64),
+                    IRConst::U16(v) => Some(*v as u64),
+                    IRConst::U32(v) => Some(*v as u64),
+                    IRConst::U64(v) => Some(*v),
+                    _ => None,
+                }
+            }
+            IRExpr::Get { offset, ty } => {
+                // Try to get a concrete register value
+                let size = ty.bytes();
+                let reg_val = self.registers.get(*offset, size, self.ctx);
+                reg_val.as_u64()
+            }
+            // For more complex expressions (binops, etc.), we could evaluate them
+            // but for simplicity we skip them - they'll be handled by the regular path
+            _ => None,
+        }
+    }
+
+    /// Prefetch loads for a block using batch callback.
+    ///
+    /// This scans the IRSB for Load expressions with concrete addresses,
+    /// batches them into a single callback, and populates the prefetch cache.
+    fn prefetch_loads_for_block(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        irsb: &IRSB,
+    ) -> Result<(), CbExecutionError> {
+        if !self.use_load_prefetch {
+            return Ok(());
+        }
+
+        // Clear previous prefetch cache
+        self.load_prefetch_cache.clear();
+
+        // Scan for loads
+        let loads = self.scan_loads_in_irsb(irsb);
+
+        if loads.is_empty() {
+            return Ok(());
+        }
+
+        // Deduplicate loads (same address+size only needs to be fetched once)
+        let mut unique_loads: Vec<(u64, usize)> = Vec::with_capacity(loads.len());
+        let mut seen: HashSet<(u64, usize)> = HashSet::new();
+        for load in loads {
+            if seen.insert(load) {
+                unique_loads.push(load);
+            }
+        }
+
+        // Convert to callback format: (addr, size as u32)
+        let callback_loads: Vec<(u64, u32)> = unique_loads
+            .iter()
+            .map(|&(addr, size)| (addr, size as u32))
+            .collect();
+
+        // Call batch callback
+        let results = callbacks
+            .call_memory_load_batch(py, &callback_loads)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        // Populate prefetch cache
+        for (i, (addr, size)) in unique_loads.iter().enumerate() {
+            if let Some((data, is_symbolic, symbolic_ast)) = results.get(i) {
+                let value = if *is_symbolic {
+                    // Try to convert claripy AST to RustBV
+                    if let Some(ast_obj) = symbolic_ast {
+                        let ast = ast_obj.bind(py);
+                        if is_claripy_ast(&ast) {
+                            match claripy_to_rustbv(py, &ast, self.ctx) {
+                                Ok(bv) => bv,
+                                Err(_) => {
+                                    // Fallback to fresh symbolic
+                                    RustBV::symbolic(
+                                        self.ctx,
+                                        &format!("prefetch_{:x}_{}", addr, size),
+                                        (size * 8) as u32,
+                                    )
+                                }
+                            }
+                        } else {
+                            RustBV::symbolic(
+                                self.ctx,
+                                &format!("prefetch_{:x}_{}", addr, size),
+                                (size * 8) as u32,
+                            )
+                        }
+                    } else {
+                        RustBV::symbolic(
+                            self.ctx,
+                            &format!("prefetch_{:x}_{}", addr, size),
+                            (size * 8) as u32,
+                        )
+                    }
+                } else {
+                    bytes_to_bv(data, (size * 8) as u32)
+                };
+
+                self.load_prefetch_cache.insert(
+                    (*addr, *size),
+                    PrefetchedLoad {
+                        value,
+                        is_symbolic: *is_symbolic,
+                    },
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 

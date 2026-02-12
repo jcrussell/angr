@@ -197,6 +197,10 @@ pub struct PythonCallbacks {
     /// Callback for batched memory stores: fn(stores: list[tuple[int, bytes]]) -> None
     /// This is more efficient than individual stores when multiple stores can be batched.
     pub memory_store_batch: Option<PyObject>,
+    /// Callback for batched memory loads: fn(loads: list[tuple[int, int]]) -> list[tuple[bytes, bool, object | None]]
+    /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
+    /// This is more efficient than individual loads when multiple loads can be batched.
+    pub memory_load_batch: Option<PyObject>,
     /// Callback for symbolic memory loads: fn(addrs: list[int], size: int, addr_ast) -> RustBV
     pub memory_load_symbolic: Option<PyObject>,
     /// Callback for symbolic memory stores: fn(addrs: list[int], data: bytes, addr_ast) -> None
@@ -228,6 +232,7 @@ impl PythonCallbacks {
             memory_load: None,
             memory_store: None,
             memory_store_batch: None,
+            memory_load_batch: None,
             memory_load_symbolic: None,
             memory_store_symbolic: None,
             memory_load_ast: None,
@@ -267,6 +272,18 @@ impl PythonCallbacks {
     /// a (address, data) tuple. If not set, falls back to individual stores.
     pub fn set_memory_store_batch(&mut self, cb: PyObject) {
         self.memory_store_batch = Some(cb);
+    }
+
+    /// Set the batched memory load callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(loads: list[tuple[int, int]]) -> list[tuple[bytes, bool, object | None]]`
+    ///
+    /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
+    /// This is called with a batch of loads for efficiency, reducing FFI overhead.
+    /// If not set, falls back to individual loads.
+    pub fn set_memory_load_batch(&mut self, cb: PyObject) {
+        self.memory_load_batch = Some(cb);
     }
 
     /// Set the symbolic memory load callback.
@@ -453,6 +470,66 @@ impl PythonCallbacks {
             self.call_memory_store(py, *addr, data)?;
         }
         Ok(())
+    }
+
+    /// Call the batched memory load callback.
+    ///
+    /// This sends multiple load requests in a single callback for efficiency.
+    /// Falls back to individual loads if batch callback is not set.
+    ///
+    /// Returns a vector of (data_bytes, is_symbolic, symbolic_ast) tuples,
+    /// one for each load request.
+    pub fn call_memory_load_batch(
+        &self,
+        py: Python<'_>,
+        loads: &[(u64, u32)],  // (address, size) pairs
+    ) -> PyResult<Vec<(Vec<u8>, bool, Option<PyObject>)>> {
+        if loads.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Try batch callback first
+        if let Some(cb) = &self.memory_load_batch {
+            // Convert loads to Python list of tuples
+            let py_loads: Vec<(u64, u32)> = loads.to_vec();
+            let result = cb.call1(py, (py_loads,))?;
+
+            // Parse the result list
+            let result_list = result.downcast_bound::<pyo3::types::PyList>(py)?;
+            let mut results = Vec::with_capacity(loads.len());
+
+            for item in result_list.iter() {
+                let tuple = item.downcast::<pyo3::types::PyTuple>()?;
+
+                // Extract (bytes, is_symbolic, symbolic_ast?)
+                let data_obj = tuple.get_item(0)?;
+                let data: Vec<u8> = data_obj.extract()?;
+                let is_symbolic: bool = tuple.get_item(1)?.extract()?;
+
+                let symbolic_ast = if tuple.len() > 2 {
+                    let ast_obj = tuple.get_item(2)?;
+                    if ast_obj.is_none() {
+                        None
+                    } else {
+                        Some(ast_obj.unbind())
+                    }
+                } else {
+                    None
+                };
+
+                results.push((data, is_symbolic, symbolic_ast));
+            }
+
+            return Ok(results);
+        }
+
+        // Fallback: call individual loads
+        let mut results = Vec::with_capacity(loads.len());
+        for &(addr, size) in loads {
+            let (data, is_sym, ast) = self.call_memory_load(py, addr, size)?;
+            results.push((data, is_sym, ast));
+        }
+        Ok(results)
     }
 
     /// Call the symbolic memory load callback.
