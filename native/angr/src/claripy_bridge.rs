@@ -3,10 +3,27 @@
 //! This module provides bidirectional conversion between Python claripy ASTs
 //! and Rust RustBV values, enabling native symbolic execution in Rust.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::symbolic::{RustBV, SymContext};
+
+/// Thread-local cache for AST conversions.
+/// Key is the Python object ID (pointer), value is the converted RustBV.
+thread_local! {
+    static AST_CACHE: RefCell<HashMap<isize, RustBV>> = RefCell::new(HashMap::with_capacity(256));
+}
+
+/// Clear the AST conversion cache.
+/// Call this at block boundaries or when the constraint set changes significantly.
+pub fn clear_ast_cache() {
+    AST_CACHE.with(|cache| {
+        cache.borrow_mut().clear();
+    });
+}
 
 /// Error type for claripy bridge operations.
 #[derive(Debug, Clone)]
@@ -44,16 +61,26 @@ impl From<PyErr> for BridgeError {
 ///
 /// This recursively converts the claripy expression tree to RustBV operations.
 /// Supports: BVV, BVS, arithmetic, bitwise, comparison, and extension ops.
+/// Uses thread-local caching to avoid redundant conversions.
 pub fn claripy_to_rustbv(
     py: Python<'_>,
     ast: &Bound<'_, PyAny>,
     ctx: &SymContext,
 ) -> Result<RustBV, BridgeError> {
+    // Check cache first using Python object ID
+    let ast_id = ast.as_ptr() as isize;
+    let cached = AST_CACHE.with(|cache| {
+        cache.borrow().get(&ast_id).cloned()
+    });
+    if let Some(cached_bv) = cached {
+        return Ok(cached_bv);
+    }
+
     // Get the operation name
     let op: String = ast.getattr("op")?.extract()?;
     let args = ast.getattr("args")?;
 
-    match op.as_str() {
+    let result = match op.as_str() {
         // Concrete bitvector value
         "BVV" => {
             let args_tuple = args
@@ -424,7 +451,16 @@ pub fn claripy_to_rustbv(
         }
 
         _ => Err(BridgeError::UnsupportedOp(op)),
+    };
+
+    // Cache successful results
+    if let Ok(ref bv) = result {
+        AST_CACHE.with(|cache| {
+            cache.borrow_mut().insert(ast_id, bv.clone());
+        });
     }
+
+    result
 }
 
 /// Convert a RustBV back to a claripy AST.

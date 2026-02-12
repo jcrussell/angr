@@ -210,7 +210,7 @@ impl<'a> CallbackInterpreter<'a> {
             current_insn_addr: 0,
             hook_addrs: HashSet::new(),
             arch,
-            block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()),
+            block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()),
             use_memory_callbacks: true,
             deferred_forks: Vec::new(),
             config,
@@ -219,8 +219,8 @@ impl<'a> CallbackInterpreter<'a> {
             concrete_memory: Vec::new(),
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
-            pending_stores: Vec::with_capacity(64),
-            max_pending_stores: 64,
+            pending_stores: Vec::with_capacity(256),
+            max_pending_stores: 256,
             rust_memory: None,
             use_rust_memory: false,
         }
@@ -1150,7 +1150,7 @@ impl<'a> CallbackInterpreter<'a> {
             current_insn_addr: self.current_insn_addr,
             hook_addrs: self.hook_addrs.clone(),
             arch: self.arch,
-            block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()), // Fresh cache for fork
+            block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()), // Fresh cache for fork
             use_memory_callbacks: self.use_memory_callbacks,
             deferred_forks: Vec::new(), // Fresh deferred forks for fork
             config: self.config.clone(),
@@ -1159,7 +1159,7 @@ impl<'a> CallbackInterpreter<'a> {
             concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
             concretizer: self.concretizer.clone(), // Share concretizer settings
             dirty_registers: 0, // Fresh dirty tracking for fork
-            pending_stores: Vec::with_capacity(64), // Fresh store buffer for fork
+            pending_stores: Vec::with_capacity(256), // Fresh store buffer for fork
             max_pending_stores: self.max_pending_stores,
             // Fork Rust memory with O(1) CoW
             rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),

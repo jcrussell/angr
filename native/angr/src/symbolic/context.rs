@@ -5,6 +5,7 @@
 //! - Constraint tracking (when Z3 is available)
 //! - Satisfiability checking (when Z3 is available)
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -31,6 +32,12 @@ pub struct SymContext {
     // Z3-specific fields (when feature is enabled)
     #[cfg(feature = "vex-engine-z3")]
     solver: Mutex<z3::Solver>,
+    /// Cached SAT result, invalidated on constraint addition.
+    #[cfg(feature = "vex-engine-z3")]
+    sat_cache: Cell<Option<bool>>,
+    /// Cached Z3 model, invalidated on constraint addition.
+    #[cfg(feature = "vex-engine-z3")]
+    model_cache: RefCell<Option<z3::Model>>,
 }
 
 impl SymContext {
@@ -61,6 +68,8 @@ impl SymContext {
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
             solver: Mutex::new(z3::Solver::new()),
+            sat_cache: Cell::new(None),
+            model_cache: RefCell::new(None),
         }
     }
 
@@ -105,6 +114,9 @@ impl SymContext {
     pub fn add_constraint(&self, constraint: z3::ast::Bool) {
         self.solver.lock().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
+        // Invalidate caches - constraint set has changed
+        self.sat_cache.set(None);
+        *self.model_cache.borrow_mut() = None;
     }
 
     /// Add a constraint that the bitvector equals a specific value.
@@ -152,7 +164,14 @@ impl SymContext {
     /// Check if the current constraints are satisfiable.
     #[cfg(feature = "vex-engine-z3")]
     pub fn is_sat(&self) -> bool {
-        matches!(self.solver.lock().check(), z3::SatResult::Sat)
+        // Check cache first
+        if let Some(cached) = self.sat_cache.get() {
+            return cached;
+        }
+        // Perform actual SAT check
+        let result = matches!(self.solver.lock().check(), z3::SatResult::Sat);
+        self.sat_cache.set(Some(result));
+        result
     }
 
     /// Check if a bitvector condition can be true.
@@ -204,10 +223,23 @@ impl SymContext {
         if !self.is_sat() {
             return None;
         }
+        // Try to use cached model first
+        {
+            let cache = self.model_cache.borrow();
+            if let Some(ref model) = *cache {
+                let ast = bv.to_z3_ast();
+                if let Some(result) = model.eval(&ast, true) {
+                    return Self::extract_bv_value(&result);
+                }
+            }
+        }
+        // Get fresh model and cache it
         let model = self.solver.lock().get_model()?;
         let ast = bv.to_z3_ast();
         let result = model.eval(&ast, true)?;
-        Self::extract_bv_value(&result)
+        let value = Self::extract_bv_value(&result);
+        *self.model_cache.borrow_mut() = Some(model);
+        value
     }
 
     /// Extract a u128 value from a Z3 BV result.
@@ -284,7 +316,19 @@ impl SymContext {
         results
     }
 
-    /// Get the minimum value of a bitvector.
+    /// Create a Z3 BV constant from a u128 value.
+    #[cfg(feature = "vex-engine-z3")]
+    fn make_bv_const(value: u128, width: u32) -> z3::ast::BV {
+        if width <= 64 {
+            z3::ast::BV::from_u64(value as u64, width)
+        } else {
+            let lo = z3::ast::BV::from_u64(value as u64, 64);
+            let hi = z3::ast::BV::from_u64((value >> 64) as u64, width - 64);
+            hi.concat(&lo)
+        }
+    }
+
+    /// Get the minimum value of a bitvector using binary search (O(log N)).
     #[cfg(feature = "vex-engine-z3")]
     pub fn min(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         use z3::ast::Ast;
@@ -301,57 +345,85 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
-        // Hold lock for entire operation to avoid lifetime issues
+        // Get initial value from solver
         let solver = self.solver.lock();
         solver.push();
 
-        let mut result = None;
-
-        // Keep constraining to find minimum
-        loop {
-            match solver.check() {
-                z3::SatResult::Sat => {
-                    if let Some(model) = solver.get_model() {
-                        if let Some(eval_result) = model.eval(&ast, true) {
-                            if let Some(value) = Self::extract_bv_value(&eval_result) {
-                                result = Some(value);
-                                // Constrain to be strictly less
-                                let val_ast = if width <= 64 {
-                                    z3::ast::BV::from_u64(value as u64, width)
-                                } else {
-                                    let lo = z3::ast::BV::from_u64(value as u64, 64);
-                                    let hi = z3::ast::BV::from_u64(
-                                        (value >> 64) as u64,
-                                        width - 64,
-                                    );
-                                    hi.concat(&lo)
-                                };
-                                // Use direct comparison methods from z3-rs 0.19+
-                                let constraint = if signed {
-                                    ast.bvslt(&val_ast)
-                                } else {
-                                    ast.bvult(&val_ast)
-                                };
-                                solver.assert(&constraint);
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
+        let initial_value = match solver.check() {
+            z3::SatResult::Sat => {
+                if let Some(model) = solver.get_model() {
+                    if let Some(eval_result) = model.eval(&ast, true) {
+                        Self::extract_bv_value(&eval_result)
                     } else {
-                        break;
+                        solver.pop(1);
+                        return None;
                     }
+                } else {
+                    solver.pop(1);
+                    return None;
                 }
-                _ => break,
+            }
+            _ => {
+                solver.pop(1);
+                return None;
+            }
+        };
+
+        let mut hi = match initial_value {
+            Some(v) => v,
+            None => {
+                solver.pop(1);
+                return None;
+            }
+        };
+
+        // For signed, the minimum is the most negative value (0x8000... for the width)
+        // For unsigned, the minimum is 0
+        let mut lo: u128 = if signed {
+            // Most negative value for signed interpretation
+            1u128 << (width - 1)
+        } else {
+            0
+        };
+
+        // If initial value is already the minimum possible, we're done
+        if lo == hi {
+            solver.pop(1);
+            return Some(lo);
+        }
+
+        // Binary search for minimum value
+        // We want to find the smallest value that is SAT
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+
+            // Check if bv can be <= mid
+            solver.push();
+            let mid_ast = Self::make_bv_const(mid, width);
+            let constraint = if signed {
+                ast.bvsle(&mid_ast)
+            } else {
+                ast.bvule(&mid_ast)
+            };
+            solver.assert(&constraint);
+
+            let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
+            solver.pop(1);
+
+            if can_be_le_mid {
+                // There's a satisfying value <= mid, search lower half
+                hi = mid;
+            } else {
+                // No satisfying value <= mid, search upper half
+                lo = mid + 1;
             }
         }
 
         solver.pop(1);
-        result
+        Some(lo)
     }
 
-    /// Get the maximum value of a bitvector.
+    /// Get the maximum value of a bitvector using binary search (O(log N)).
     #[cfg(feature = "vex-engine-z3")]
     pub fn max(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         use z3::ast::Ast;
@@ -368,54 +440,90 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
-        // Hold lock for entire operation to avoid lifetime issues
+        // Get initial value from solver
         let solver = self.solver.lock();
         solver.push();
 
-        let mut result = None;
-
-        // Keep constraining to find maximum
-        loop {
-            match solver.check() {
-                z3::SatResult::Sat => {
-                    if let Some(model) = solver.get_model() {
-                        if let Some(eval_result) = model.eval(&ast, true) {
-                            if let Some(value) = Self::extract_bv_value(&eval_result) {
-                                result = Some(value);
-                                // Constrain to be strictly greater
-                                let val_ast = if width <= 64 {
-                                    z3::ast::BV::from_u64(value as u64, width)
-                                } else {
-                                    let lo = z3::ast::BV::from_u64(value as u64, 64);
-                                    let hi = z3::ast::BV::from_u64(
-                                        (value >> 64) as u64,
-                                        width - 64,
-                                    );
-                                    hi.concat(&lo)
-                                };
-                                // Use direct comparison methods from z3-rs 0.19+
-                                let constraint = if signed {
-                                    ast.bvsgt(&val_ast)
-                                } else {
-                                    ast.bvugt(&val_ast)
-                                };
-                                solver.assert(&constraint);
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
+        let initial_value = match solver.check() {
+            z3::SatResult::Sat => {
+                if let Some(model) = solver.get_model() {
+                    if let Some(eval_result) = model.eval(&ast, true) {
+                        Self::extract_bv_value(&eval_result)
                     } else {
-                        break;
+                        solver.pop(1);
+                        return None;
                     }
+                } else {
+                    solver.pop(1);
+                    return None;
                 }
-                _ => break,
+            }
+            _ => {
+                solver.pop(1);
+                return None;
+            }
+        };
+
+        let mut lo = match initial_value {
+            Some(v) => v,
+            None => {
+                solver.pop(1);
+                return None;
+            }
+        };
+
+        // For signed, the maximum is 0x7FFF... (most positive value)
+        // For unsigned, the maximum is 2^width - 1
+        let max_possible: u128 = if signed {
+            // Most positive value for signed interpretation
+            (1u128 << (width - 1)) - 1
+        } else {
+            // Maximum unsigned value
+            if width >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << width) - 1
+            }
+        };
+
+        let mut hi = max_possible;
+
+        // If initial value is already the maximum possible, we're done
+        if lo == hi {
+            solver.pop(1);
+            return Some(hi);
+        }
+
+        // Binary search for maximum value
+        // We want to find the largest value that is SAT
+        while lo < hi {
+            // Use ceiling division to avoid infinite loop when lo + 1 == hi
+            let mid = lo + (hi - lo + 1) / 2;
+
+            // Check if bv can be >= mid
+            solver.push();
+            let mid_ast = Self::make_bv_const(mid, width);
+            let constraint = if signed {
+                ast.bvsge(&mid_ast)
+            } else {
+                ast.bvuge(&mid_ast)
+            };
+            solver.assert(&constraint);
+
+            let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
+            solver.pop(1);
+
+            if can_be_ge_mid {
+                // There's a satisfying value >= mid, search upper half
+                lo = mid;
+            } else {
+                // No satisfying value >= mid, search lower half
+                hi = mid - 1;
             }
         }
 
         solver.pop(1);
-        result
+        Some(lo)
     }
 
     /// Get the range [min, max] of possible values for a bitvector.
@@ -583,6 +691,8 @@ impl SymContext {
             constraint_count: AtomicUsize::new(0),  // Start fresh - caller must re-add constraints
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             solver: Mutex::new(z3::Solver::new()),
+            sat_cache: Cell::new(None),    // Fresh cache for fork
+            model_cache: RefCell::new(None), // Fresh cache for fork
         }
     }
 
