@@ -486,7 +486,7 @@ class KeyedRegion:
             if prev_offset is not None:
                 if start <= prev_offset < end:
                     return True
-                prev_item = self._storage[prev_offset][0]
+                prev_item = self._storage[prev_offset]
                 prev_item_size = prev_item.size if prev_item.size is not None else 1
                 if start < prev_offset + prev_item_size < end:
                     return True
@@ -497,7 +497,7 @@ class KeyedRegion:
                 prev_offset = None
 
             if prev_offset is not None:
-                prev_item = self._storage[prev_offset][0]
+                prev_item = self._storage[prev_offset]
                 prev_item_size = prev_item.size if prev_item.size is not None else 1
                 if prev_offset <= start < prev_offset + prev_item_size:
                     return True
