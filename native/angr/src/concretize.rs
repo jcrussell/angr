@@ -114,6 +114,10 @@ impl AddressConcretizer {
         let (min, max) = match ctx.range(addr) {
             Some((min, max)) => (min as u64, max as u64),
             None => {
+                // Fallback: try to get any single solution when range fails
+                if let Some(single) = ctx.eval(addr) {
+                    return ConcretizationResult::Single(single as u64);
+                }
                 return ConcretizationResult::Failed(
                     "could not determine address range".to_string()
                 );
@@ -139,7 +143,13 @@ impl AddressConcretizer {
         let solutions = ctx.solutions(addr, self.max_solutions);
 
         match solutions.len() {
-            0 => ConcretizationResult::Failed("no solutions found".to_string()),
+            0 => {
+                // Fallback: try single eval when enumeration fails
+                if let Some(single) = ctx.eval(addr) {
+                    return ConcretizationResult::Single(single as u64);
+                }
+                ConcretizationResult::Failed("no solutions found".to_string())
+            }
             1 => ConcretizationResult::Single(solutions[0] as u64),
             _ => {
                 // Convert to u64 and sort for deterministic ITE chain ordering
