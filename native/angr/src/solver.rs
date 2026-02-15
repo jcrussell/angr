@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use crate::claripy_bridge::{claripy_to_rustbv, BridgeError};
-use crate::symbolic::SymContext;
+use crate::symbolic::{RustBV, SymContext};
 
 /// Convert a BridgeError to a PyErr.
 impl From<BridgeError> for PyErr {
@@ -53,21 +53,24 @@ impl RustSolverContext {
 
     /// Add a constraint from a claripy AST.
     ///
-    /// The AST must be a 1-bit bitvector (boolean).
+    /// The constraint should be a 1-bit (boolean) value. For wider values,
+    /// we interpret them as "value != 0" to maintain compatibility with
+    /// claripy's flexible constraint handling.
     pub fn add_constraint_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
         let bv = claripy_to_rustbv(py, ast, &self.inner.sym_ctx)?;
 
-        // For boolean constraints, the BV should be 1-bit
-        if bv.width() != 1 {
-            return Err(PyRuntimeError::new_err(format!(
-                "constraint must be a 1-bit value, got {} bits",
-                bv.width()
-            )));
-        }
-
         #[cfg(feature = "vex-engine-z3")]
         {
-            self.inner.sym_ctx.assume_true(&bv);
+            if bv.width() == 1 {
+                // Standard boolean constraint
+                self.inner.sym_ctx.assume_true(&bv);
+            } else {
+                // For wider values, interpret as "value != 0"
+                // This is consistent with how claripy handles such constraints
+                let zero = RustBV::concrete(0, bv.width());
+                let neq = bv.ne(&zero, &self.inner.sym_ctx);
+                self.inner.sym_ctx.assume_true(&neq);
+            }
         }
 
         Ok(())
@@ -192,6 +195,53 @@ impl RustSolverContext {
         }
     }
 
+    /// Pop solver state multiple times.
+    ///
+    /// This is used for deferred fork processing to restore solver state
+    /// to before specific branch constraints were added.
+    pub fn pop_to_level(&self, target_level: u32, current_level: u32) {
+        let pops = current_level.saturating_sub(target_level);
+        for _ in 0..pops {
+            self.inner.sym_ctx.pop();
+        }
+    }
+
+    /// Add a constraint that a 1-bit value is true.
+    ///
+    /// Used for applying branch constraints during fork processing.
+    pub fn assume_true_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
+        let bv = claripy_to_rustbv(py, ast, &self.inner.sym_ctx)?;
+        if bv.width() != 1 {
+            return Err(PyRuntimeError::new_err(format!(
+                "constraint must be a 1-bit value, got {} bits",
+                bv.width()
+            )));
+        }
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            self.inner.sym_ctx.assume_true(&bv);
+        }
+        Ok(())
+    }
+
+    /// Add a constraint that a 1-bit value is false.
+    ///
+    /// Used for applying negated branch constraints during fork processing.
+    pub fn assume_false_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
+        let bv = claripy_to_rustbv(py, ast, &self.inner.sym_ctx)?;
+        if bv.width() != 1 {
+            return Err(PyRuntimeError::new_err(format!(
+                "constraint must be a 1-bit value, got {} bits",
+                bv.width()
+            )));
+        }
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            self.inner.sym_ctx.assume_false(&bv);
+        }
+        Ok(())
+    }
+
     /// Get the number of constraints.
     pub fn num_constraints(&self) -> usize {
         self.inner.sym_ctx.num_constraints()
@@ -214,6 +264,16 @@ impl RustSolverContext {
 impl Default for RustSolverContext {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl RustSolverContext {
+    /// Get a reference to the inner SymContext.
+    ///
+    /// This is used by the Rust VEX engine to share the solver context,
+    /// ensuring branch constraints are properly tracked during execution.
+    pub fn sym_context(&self) -> &SymContext {
+        &self.inner.sym_ctx
     }
 }
 

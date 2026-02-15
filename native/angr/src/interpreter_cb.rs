@@ -179,6 +179,9 @@ pub struct CallbackInterpreter<'a> {
     branch_counter: u64,
     /// Next condition ID for tracking branch conditions.
     next_condition_id: u64,
+    /// Current solver push level for constraint tracking.
+    /// Incremented when we push before adding a branch constraint.
+    push_level: u32,
     /// Concrete memory regions cached locally for fast access.
     /// These are read-only regions (e.g., binary .text/.rodata sections).
     concrete_memory: Vec<ConcreteMemoryRegion>,
@@ -231,6 +234,7 @@ impl<'a> CallbackInterpreter<'a> {
             config,
             branch_counter: 0,
             next_condition_id: 0,
+            push_level: 0,
             concrete_memory: Vec::new(),
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
@@ -353,6 +357,11 @@ impl<'a> CallbackInterpreter<'a> {
         let id = self.next_condition_id;
         self.next_condition_id += 1;
         id
+    }
+
+    /// Get the current solver push level.
+    pub fn push_level(&self) -> u32 {
+        self.push_level
     }
 
     /// Get the solver context.
@@ -852,6 +861,15 @@ impl<'a> CallbackInterpreter<'a> {
                         // Get a condition ID for this branch
                         let condition_id = self.next_cond_id();
 
+                        // Save current push level before adding constraint
+                        // This allows proper constraint handling for forks
+                        let fork_push_level = self.push_level;
+
+                        // Push solver state before adding branch constraint
+                        // This creates a checkpoint we can restore for fork processing
+                        self.ctx.push();
+                        self.push_level += 1;
+
                         if take_true {
                             // Take the exit (true branch), defer the fallthrough
                             self.deferred_forks.push(DeferredFork {
@@ -859,6 +877,8 @@ impl<'a> CallbackInterpreter<'a> {
                                 path_taken: true,
                                 unexplored_target: fallthrough,
                                 condition_id,
+                                push_level: fork_push_level,
+                                condition_ast: None, // TODO: store claripy AST if available
                             });
 
                             // Add constraint that condition is true
@@ -875,6 +895,8 @@ impl<'a> CallbackInterpreter<'a> {
                                 path_taken: false,
                                 unexplored_target: *dst,
                                 condition_id,
+                                push_level: fork_push_level,
+                                condition_ast: None, // TODO: store claripy AST if available
                             });
 
                             // Add constraint that condition is false
@@ -1196,6 +1218,7 @@ impl<'a> CallbackInterpreter<'a> {
             config: self.config.clone(),
             branch_counter: self.branch_counter,
             next_condition_id: self.next_condition_id,
+            push_level: self.push_level, // Inherit push level for forked interpreter
             concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
             concretizer: self.concretizer.clone(), // Share concretizer settings
             dirty_registers: 0, // Fresh dirty tracking for fork

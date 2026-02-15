@@ -13,11 +13,12 @@ use pyo3::types::PyDict;
 
 use crate::arch::arch_from_name;
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks, RunResult};
+use crate::claripy_bridge::claripy_to_rustbv;
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
 use crate::interpreter_cb::CallbackInterpreter;
 use crate::memory::{Permission, SymbolicMemory, PAGE_SIZE};
 use crate::solver::RustSolverContext;
-use crate::symbolic::SymContext;
+use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{deserialize_irsb, Endness, VexArch, IRSB};
 
 /// Execution event returned to Python.
@@ -180,6 +181,9 @@ pub struct RustVEXEngine {
     symbolic_memory: Option<SymbolicMemory>,
     /// Whether to use Rust-native memory (vs Python callbacks).
     use_rust_memory: bool,
+    /// Symbolic register values (offset -> RustBV).
+    /// These override the concrete `registers` storage for symbolic values.
+    symbolic_registers: HashMap<u32, RustBV>,
 }
 
 #[pymethods]
@@ -212,6 +216,7 @@ impl RustVEXEngine {
             dirty_registers: 0,
             symbolic_memory: None,
             use_rust_memory: false,
+            symbolic_registers: HashMap::new(),
         })
     }
 
@@ -516,6 +521,51 @@ impl RustVEXEngine {
         Ok(value)
     }
 
+    /// Set a symbolic register value from a claripy AST.
+    ///
+    /// This allows Python to pass symbolic register values to the Rust engine.
+    /// The AST is converted to a RustBV and stored for use during execution.
+    ///
+    /// Args:
+    ///     offset: Register offset in the register file.
+    ///     ast: A claripy AST representing the symbolic value.
+    ///
+    /// Note: Requires a solver context to be available during run_loop
+    /// for the symbolic value to be properly used.
+    pub fn set_symbolic_register(
+        &mut self,
+        py: Python<'_>,
+        offset: u32,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        // Create a temporary context for AST conversion
+        // The actual execution will use the solver context passed to run_loop
+        let ctx = SymContext::new_mock();
+
+        let bv = claripy_to_rustbv(py, ast, &ctx)
+            .map_err(|e| PyValueError::new_err(format!("failed to convert AST: {}", e)))?;
+
+        self.symbolic_registers.insert(offset, bv);
+        Ok(())
+    }
+
+    /// Clear all symbolic register values.
+    ///
+    /// This should be called when registers are synced with fresh concrete values.
+    pub fn clear_symbolic_registers(&mut self) {
+        self.symbolic_registers.clear();
+    }
+
+    /// Check if a register has a symbolic value.
+    pub fn has_symbolic_register(&self, offset: u32) -> bool {
+        self.symbolic_registers.contains_key(&offset)
+    }
+
+    /// Get the number of symbolic registers.
+    pub fn symbolic_register_count(&self) -> usize {
+        self.symbolic_registers.len()
+    }
+
     /// Start building a new IRSB at the given address.
     pub fn start_block(&mut self, addr: u64) -> PyResult<()> {
         // Create a new IRSB and store it in a temporary location
@@ -633,12 +683,20 @@ impl RustVEXEngine {
     ///
     /// Args:
     ///     max_blocks: Maximum number of blocks to execute before returning.
+    ///     solver_ctx: Optional RustSolverContext to use for constraint solving.
+    ///                 When provided, the engine shares this context with the solver,
+    ///                 ensuring branch constraints are properly tracked.
     ///
     /// Returns:
     ///     LoopExecutionEvent describing why execution stopped, including any
     ///     deferred forks collected during execution.
-    #[pyo3(signature = (max_blocks=100))]
-    pub fn run_loop(&mut self, py: Python<'_>, max_blocks: u32) -> PyResult<LoopExecutionEvent> {
+    #[pyo3(signature = (max_blocks=100, solver_ctx=None))]
+    pub fn run_loop(
+        &mut self,
+        py: Python<'_>,
+        max_blocks: u32,
+        solver_ctx: Option<&RustSolverContext>,
+    ) -> PyResult<LoopExecutionEvent> {
         // Ensure callbacks are set
         let callbacks = self.callbacks.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("callbacks not set - call set_callbacks() first")
@@ -651,16 +709,31 @@ impl RustVEXEngine {
             ));
         }
 
+        // Use provided solver context or create a mock one.
+        // When solver_ctx is provided, constraints from branch decisions are
+        // automatically added to the shared solver context.
+        let default_ctx;
+        let ctx: &SymContext = if let Some(solver) = solver_ctx {
+            solver.sym_context()
+        } else {
+            default_ctx = SymContext::new_mock();
+            &default_ctx
+        };
+
         // Create the callback-aware interpreter with config
-        let ctx = SymContext::new_mock();
         let mut interp = CallbackInterpreter::with_config(
             self.vex_arch,
-            &ctx,
+            ctx,
             self.execution_config.clone(),
         );
 
         // Copy registers from engine to interpreter
         interp.registers.copy_from_bytes(&self.registers);
+
+        // Copy symbolic registers to interpreter
+        for (&offset, bv) in &self.symbolic_registers {
+            interp.registers.put(offset, bv.clone());
+        }
 
         // Set PC
         interp.set_pc(self.pc);
@@ -699,8 +772,11 @@ impl RustVEXEngine {
             self.symbolic_memory = Some(mem);
         }
 
-        // Convert to Python event with deferred forks
-        Ok(LoopExecutionEvent::from_run_result_with_forks(result, blocks_executed, deferred_forks))
+        // Get the current push level for constraint tracking
+        let push_level = interp.push_level();
+
+        // Convert to Python event with deferred forks and push level
+        Ok(LoopExecutionEvent::from_run_result_with_forks(result, blocks_executed, deferred_forks, push_level))
     }
 
     /// Run a single block with callbacks and return the event.
@@ -708,7 +784,7 @@ impl RustVEXEngine {
     /// This is like run_loop but only executes one block. Useful for
     /// step-by-step debugging or when you want finer control.
     pub fn step_with_callbacks(&mut self, py: Python<'_>) -> PyResult<LoopExecutionEvent> {
-        self.run_loop(py, 1)
+        self.run_loop(py, 1, None)
     }
 
     /// Execute an IRSB from JSON (serialized pyvex IRSB).
@@ -753,6 +829,8 @@ impl RustVEXEngine {
             // Fork symbolic memory with O(1) CoW
             symbolic_memory: self.symbolic_memory.as_ref().map(|m| m.fork()),
             use_rust_memory: self.use_rust_memory,
+            // Clone symbolic registers for fork
+            symbolic_registers: self.symbolic_registers.clone(),
         })
     }
 
@@ -790,6 +868,7 @@ impl RustVEXEngine {
         dict.set_item("hooks_version", self.hooks_version)?;
         dict.set_item("memory_version", self.memory_version)?;
         dict.set_item("rust_memory_enabled", self.use_rust_memory)?;
+        dict.set_item("symbolic_registers", self.symbolic_registers.len())?;
         if let Some(ref mem) = self.symbolic_memory {
             dict.set_item("rust_memory_pages", mem.page_count())?;
             dict.set_item("rust_memory_dirty_pages", mem.get_dirty_pages().len())?;

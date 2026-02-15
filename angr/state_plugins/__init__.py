@@ -28,6 +28,13 @@ from .javavm_classloader import SimJavaVmClassloader
 from .symbolizer import SimSymbolizer
 from .debug_variables import SimDebugVariable, SimDebugVariablePlugin
 
+# Optional Rust solver (requires vex-engine-z3 feature)
+try:
+    from .rust_solver import RustSimSolver, RUST_SOLVER_AVAILABLE
+except ImportError:
+    RustSimSolver = None
+    RUST_SOLVER_AVAILABLE = False
+
 __all__ = (
     "BP_AFTER",
     "BP_BEFORE",
@@ -41,6 +48,8 @@ __all__ = (
     "PTChunkIterator",
     "PosixDevFS",
     "PosixProcFS",
+    "RUST_SOLVER_AVAILABLE",
+    "RustSimSolver",
     "SimAction",
     "SimActionConstraint",
     "SimActionData",

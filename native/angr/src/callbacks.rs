@@ -31,25 +31,44 @@ pub struct DeferredFork {
     /// Python can use this to reconstruct the branch condition.
     #[pyo3(get)]
     pub condition_id: u64,
+    /// Solver push level before this branch constraint was added.
+    /// Used for proper constraint handling during fork processing.
+    #[pyo3(get)]
+    pub push_level: u32,
+    /// The branch condition as a claripy AST (if available).
+    /// This is the original condition - path_taken indicates which path
+    /// was explored. For the fork, we need the opposite constraint.
+    #[pyo3(get)]
+    pub condition_ast: Option<PyObject>,
 }
 
 #[pymethods]
 impl DeferredFork {
     /// Create a new deferred fork.
     #[new]
-    pub fn new(branch_addr: u64, path_taken: bool, unexplored_target: u64, condition_id: u64) -> Self {
+    #[pyo3(signature = (branch_addr, path_taken, unexplored_target, condition_id, push_level=0, condition_ast=None))]
+    pub fn new(
+        branch_addr: u64,
+        path_taken: bool,
+        unexplored_target: u64,
+        condition_id: u64,
+        push_level: u32,
+        condition_ast: Option<PyObject>,
+    ) -> Self {
         DeferredFork {
             branch_addr,
             path_taken,
             unexplored_target,
             condition_id,
+            push_level,
+            condition_ast,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "DeferredFork(branch_addr=0x{:x}, path_taken={}, unexplored=0x{:x})",
-            self.branch_addr, self.path_taken, self.unexplored_target
+            "DeferredFork(branch_addr=0x{:x}, path_taken={}, unexplored=0x{:x}, push_level={})",
+            self.branch_addr, self.path_taken, self.unexplored_target, self.push_level
         )
     }
 }
@@ -786,14 +805,19 @@ pub struct LoopExecutionEvent {
     /// Each fork represents a branch where we took one path and deferred the other.
     #[pyo3(get)]
     pub deferred_forks: Vec<DeferredFork>,
+    /// Current solver push level after execution.
+    /// Used for proper constraint handling during fork processing.
+    #[pyo3(get)]
+    pub push_level: u32,
 }
 
 impl LoopExecutionEvent {
-    /// Create an event from a run result with deferred forks.
+    /// Create an event from a run result with deferred forks and push level.
     pub fn from_run_result_with_forks(
         result: RunResult,
         blocks_executed: u32,
         deferred_forks: Vec<DeferredFork>,
+        push_level: u32,
     ) -> Self {
         match result {
             RunResult::MaxBlocks { pc } => LoopExecutionEvent {
@@ -807,6 +831,7 @@ impl LoopExecutionEvent {
                 error: None,
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
             RunResult::Hook { addr } => LoopExecutionEvent {
                 event_type: "hook".to_string(),
@@ -819,6 +844,7 @@ impl LoopExecutionEvent {
                 error: None,
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
             RunResult::Syscall { num, pc } => LoopExecutionEvent {
                 event_type: "syscall".to_string(),
@@ -831,6 +857,7 @@ impl LoopExecutionEvent {
                 error: None,
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
             RunResult::SymbolicBranch {
                 true_target,
@@ -847,6 +874,7 @@ impl LoopExecutionEvent {
                 error: None,
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
             RunResult::BlockEnd { next_addr, jumpkind } => LoopExecutionEvent {
                 event_type: "block_end".to_string(),
@@ -859,6 +887,7 @@ impl LoopExecutionEvent {
                 error: None,
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
             RunResult::Error { message, addr } => LoopExecutionEvent {
                 event_type: "error".to_string(),
@@ -871,6 +900,7 @@ impl LoopExecutionEvent {
                 error: Some(message),
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
             RunResult::NeedLift { addr } => LoopExecutionEvent {
                 event_type: "need_lift".to_string(),
@@ -883,6 +913,7 @@ impl LoopExecutionEvent {
                 error: None,
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
             RunResult::MaxDeferredForks { pc } => LoopExecutionEvent {
                 event_type: "max_deferred_forks".to_string(),
@@ -895,13 +926,14 @@ impl LoopExecutionEvent {
                 error: None,
                 blocks_executed,
                 deferred_forks,
+                push_level,
             },
         }
     }
 
     /// Create an event from a run result (backward compatibility, no deferred forks).
     pub fn from_run_result(result: RunResult, blocks_executed: u32) -> Self {
-        Self::from_run_result_with_forks(result, blocks_executed, Vec::new())
+        Self::from_run_result_with_forks(result, blocks_executed, Vec::new(), 0)
     }
 }
 

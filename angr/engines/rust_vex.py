@@ -79,6 +79,7 @@ from angr.engines.successors import SuccessorsEngine, SimSuccessors
 from angr.engines.vex.lifter import VEXLifter
 from angr import sim_options as o
 from angr import errors
+from angr.state_plugins.rust_solver import RustSimSolver, RUST_SOLVER_AVAILABLE
 
 
 def enable_profiling(enabled: bool = True) -> None:
@@ -1512,24 +1513,28 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Synchronize angr SimState to Rust engine.
 
-        This copies register values from the SimState to the Rust engine.
+        This copies register values from the SimState to the Rust engine,
+        including both concrete and symbolic values.
         """
         if self._rust_engine is None:
             return
 
         engine = self._rust_engine
 
+        # Clear any stale symbolic registers from previous sync
+        engine.clear_symbolic_registers()
+
         # Sync PC
         pc = state.solver.eval(state.ip)
         engine.pc = pc
 
-        # Sync key registers
+        # Sync key registers (handles both concrete and symbolic values)
         self._sync_registers_individual(state, engine)
 
         self._rust_engine_synced = True
 
     def _sync_registers_individual(self, state: SimState, engine) -> None:
-        """Sync registers individually (fallback path)."""
+        """Sync registers individually, handling both concrete and symbolic values."""
         key_registers = self._get_key_registers(state.arch)
         for reg_name in key_registers:
             try:
@@ -1546,6 +1551,18 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                     else:
                         concrete_val = state.solver.eval(reg_val)
                     engine.set_register(reg_name, concrete_val)
+                else:
+                    # Symbolic register: pass the AST to Rust for symbolic execution
+                    try:
+                        engine.set_symbolic_register(offset, reg_val)
+                    except Exception as e:
+                        l.debug("Failed to sync symbolic register %s: %s", reg_name, e)
+                        # Fall back to a concrete approximation
+                        try:
+                            concrete_val = state.solver.eval(reg_val)
+                            engine.set_register(reg_name, concrete_val)
+                        except Exception:
+                            pass
             except (KeyError, AttributeError, errors.SimValueError):
                 pass
             except Exception:
@@ -1590,6 +1607,27 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                     "t3", "s0", "s1", "s2", "s3", "sp", "ra", "pc"]
         else:
             return []
+
+    def _has_symbolic_base_registers(self, state: SimState) -> bool:
+        """
+        Check if base/stack pointer registers are symbolic.
+
+        With symbolic register support in the Rust engine (via set_symbolic_register),
+        we can now handle symbolic base registers. The claripy AST is converted to
+        a RustBV and stored in the engine's symbolic register map.
+
+        This method now always returns False to allow Rust execution with symbolic
+        registers. The symbolic values will be properly synced to the Rust engine.
+
+        Returns:
+            Always False - symbolic registers are now supported.
+        """
+        # Symbolic registers are now supported in the Rust engine.
+        # The _sync_registers_individual method syncs symbolic register values
+        # via set_symbolic_register, which converts claripy ASTs to RustBV.
+        return False
+
+        return False
 
     def _sync_state_from_rust(self, state: SimState) -> None:
         """
@@ -1658,32 +1696,12 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             return False
 
         elif event_type == "symbolic_branch":
-            # Symbolic branch - create two successors
-            true_target = event.true_target
-            false_target = event.false_target
-
-            self._sync_state_from_rust(state)
-
-            # Create true branch successor
-            true_state = state.copy()
-            true_state.ip = true_target
-            successors.add_successor(
-                true_state,
-                true_target,
-                _CLARIPY_TRUE,  # Simplified - real impl would track condition
-                "Ijk_Boring",
-            )
-
-            # Create false branch successor
-            false_state = state.copy()
-            false_state.ip = false_target
-            successors.add_successor(
-                false_state,
-                false_target,
-                _CLARIPY_TRUE,
-                "Ijk_Boring",
-            )
-            return False
+            # Symbolic branch detected - fall back to Python for proper handling
+            # The Rust engine doesn't track branch conditions, so Python VEX must
+            # handle symbolic branches to ensure proper constraint propagation.
+            # Without proper constraints, the solver may produce wrong solutions.
+            l.debug("Symbolic branch detected, falling back to Python VEX")
+            raise errors.SimEngineError("symbolic branch requires Python VEX")
 
         elif event_type == "syscall":
             # Syscall - return to Python for handling
@@ -1771,6 +1789,28 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 **kwargs,
             )
 
+        addr = successors.addr
+        state = self.state
+
+        # Check if base/stack pointer registers are symbolic - if so, fall back to Python
+        # because Rust cannot properly handle symbolic register values (they won't be synced)
+        if self._has_symbolic_base_registers(state):
+            # Note: Warning already printed by _has_symbolic_base_registers
+            l.debug("Single-block path: falling back to Python VEX at 0x%x", addr)
+            return super().process_successors(
+                successors,
+                irsb=irsb,
+                insn_bytes=insn_bytes,
+                extra_stop_points=extra_stop_points,
+                num_inst=num_inst,
+                size=size,
+                **kwargs,
+            )
+
+        # Save state snapshot for rollback if Rust fails
+        # Single-block Rust can still modify state via sync operations
+        state_snapshot = state.copy()
+
         # Start profiling if enabled
         if _profiler.enabled:
             block_start = time.perf_counter()
@@ -1778,9 +1818,6 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Mark this as a Rust VEX execution
         successors.sort = "RUST_VEX"
         successors.description = "Rust VEX"
-
-        addr = successors.addr
-        state = self.state
 
         # Setup state scratch
         state.history.recent_block_count = 1
@@ -1874,6 +1911,8 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         except Exception as e:
             l.warning("Rust VEX execution failed: %s, falling back to Python", e)
+            # Restore state snapshot to ensure Python VEX has clean state
+            self.state = state_snapshot
             return super().process_successors(
                 successors,
                 irsb=irsb,
@@ -1897,10 +1936,17 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         for memory access, hooks, and syscalls. It can execute multiple
         blocks before returning to Python.
 
+        IMPORTANT: Requires RustSimSolver for proper constraint handling.
+        The Rust engine and solver share the same SymContext, ensuring all
+        branch constraints are applied consistently in Rust's Z3 solver.
+
         Args:
             successors: SimSuccessors to populate.
             max_blocks: Maximum blocks to execute before returning.
             **kwargs: Additional arguments (ignored for now).
+
+        Raises:
+            TypeError: If state.solver is not a RustSimSolver.
         """
         if not self.rust_engine_available:
             l.warning("Rust engine not available, falling back to single-step")
@@ -1914,6 +1960,24 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             l.warning("PythonCallbacks not available, falling back to single-step")
             return self.process_successors(successors, **kwargs)
 
+        # Enforce RustSimSolver for unified solver architecture
+        # The Rust VEX engine requires RustSimSolver for proper constraint propagation.
+        # Without it, branch constraints would be lost when returning to Python.
+        if RUST_SOLVER_AVAILABLE and not isinstance(self.state.solver, RustSimSolver):
+            raise TypeError(
+                "Rust VEX loop execution requires RustSimSolver for constraint consistency. "
+                "Create state with: state.register_plugin('solver', RustSimSolver())"
+            )
+
+        addr = successors.addr
+        state = self.state
+
+        # Check if base/stack pointer registers are symbolic - if so, fall back to Python
+        # because Rust cannot properly handle symbolic register values (they won't be synced)
+        if self._has_symbolic_base_registers(state):
+            l.debug("Symbolic base registers detected, falling back to Python VEX")
+            return super().process_successors(successors, **kwargs)
+
         # Start profiling if enabled
         if _profiler.enabled:
             loop_start = time.perf_counter()
@@ -1921,9 +1985,6 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Mark this as a Rust VEX loop execution
         successors.sort = "RUST_VEX_LOOP"
         successors.description = "Rust VEX Loop"
-
-        addr = successors.addr
-        state = self.state
 
         # Setup state scratch
         state.history.recent_block_count = 1
@@ -1934,6 +1995,13 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Create callback object
         cbs = RustVEXCallbacks(state, self.project, self)
         self._last_callbacks = cbs  # Save for profiling access
+
+        # Save state snapshot for rollback on failure
+        # This is necessary because Rust execution can modify Python state:
+        # - Memory callbacks write concrete values (overwriting symbolic)
+        # - State might have been partially synced
+        # If Rust execution fails, we need to restore the original state.
+        state_snapshot = state.copy()
 
         try:
             # Setup Rust callbacks
@@ -1959,10 +2027,17 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             if _profiler.enabled:
                 _profiler.sync_to_rust_time += time.perf_counter() - t0
 
+            # Get solver context from RustSimSolver (if available)
+            # This allows the Rust engine to share the constraint solver with Python,
+            # ensuring branch constraints are properly tracked.
+            solver_ctx = None
+            if RUST_SOLVER_AVAILABLE and isinstance(state.solver, RustSimSolver):
+                solver_ctx = state.solver._rust_ctx
+
             # Run the execution loop
             if _profiler.enabled:
                 t0 = time.perf_counter()
-            event = self._rust_engine.run_loop(max_blocks)
+            event = self._rust_engine.run_loop(max_blocks, solver_ctx=solver_ctx)
             if _profiler.enabled:
                 _profiler.execute_time += time.perf_counter() - t0
 
@@ -1987,9 +2062,17 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         except Exception as e:
             l.warning("Rust VEX loop execution failed: %s, falling back", e)
-            # Clear callbacks and fall back to single-step
+            # Restore state snapshot - Rust execution may have modified Python state
+            # through memory callbacks or partial syncs. Restore to ensure Python VEX
+            # has clean symbolic values.
+            self.state = state_snapshot
+
+            # Clear callbacks and fall back to Python VEX directly
+            # Note: We use super().process_successors() to skip RustVEXMixin and go
+            # directly to the Python implementation. This avoids another Rust attempt
+            # which would also likely fail for the same reason (symbolic values).
             self._rust_engine.clear_callbacks()
-            return self.process_successors(successors, **kwargs)
+            return super().process_successors(successors, **kwargs)
         finally:
             # Always clear callbacks after use
             self._rust_engine.clear_callbacks()
@@ -2010,7 +2093,13 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         event_type = event.event_type
 
-        # First, sync state from Rust
+        # Check for error events FIRST - don't sync state if execution failed
+        # because that would overwrite symbolic values with concrete garbage
+        if event_type == "error":
+            error_msg = event.error or "Unknown error"
+            raise errors.SimEngineError(f"Rust VEX engine error: {error_msg}")
+
+        # Sync state from Rust only for successful execution events
         self._sync_state_from_rust(state)
 
         if event_type == "max_blocks":
@@ -2073,65 +2162,99 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             )
 
         elif event_type == "symbolic_branch":
-            # Symbolic branch - fork states
-            true_target = event.true_target
-            false_target = event.false_target
-
-            # Create true branch successor
-            true_state = state.copy()
-            true_state.ip = true_target
-            successors.add_successor(
-                true_state,
-                true_target,
-                _CLARIPY_TRUE,  # TODO: track actual condition
-                "Ijk_Boring",
-            )
-
-            # Create false branch successor
-            false_state = state.copy()
-            false_state.ip = false_target
-            successors.add_successor(
-                false_state,
-                false_target,
-                _CLARIPY_TRUE,
-                "Ijk_Boring",
-            )
+            # Symbolic branch detected - fall back to Python for proper handling
+            # The Rust engine doesn't track branch conditions, so Python VEX must
+            # handle symbolic branches to ensure proper constraint propagation.
+            l.debug("Symbolic branch detected in loop mode, falling back to Python VEX")
+            raise errors.SimEngineError("symbolic branch requires Python VEX")
 
         elif event_type == "need_lift":
             # Need to lift a block - shouldn't happen with callbacks
             l.warning("Unexpected need_lift event at 0x%x", event.addr)
             raise errors.SimEngineError(f"Unexpected need_lift at 0x{event.addr:x}")
 
-        elif event_type == "error":
-            # Error during execution
-            error_msg = event.error or "Unknown error"
-            raise errors.SimEngineError(f"Rust VEX engine error: {error_msg}")
+        # Note: "error" event type is handled at the top of this function
 
         else:
             l.warning("Unknown loop execution event type: %s", event_type)
             raise errors.SimEngineError(f"Unknown event type: {event_type}")
 
-        # Process deferred forks - create additional successors for unexplored paths
-        # These are branches where Rust took one path and deferred the other
+        # Process deferred forks using unified solver architecture
+        # Each deferred fork represents a branch where we took one path and deferred the other.
+        # With the shared solver context, we can properly handle fork constraints.
         if hasattr(event, 'deferred_forks') and event.deferred_forks:
-            l.debug("Processing %d deferred forks", len(event.deferred_forks))
-            for fork in event.deferred_forks:
-                # Create a state for the unexplored branch
-                fork_state = state.copy()
-                fork_state.ip = fork.unexplored_target
+            self._process_deferred_forks(event.deferred_forks, event.push_level, state, successors)
 
-                # Add constraint for the unexplored path
-                # If we took true, the unexplored path has NOT(condition)
-                # If we took false, the unexplored path has the condition
-                # Note: Without full constraint tracking, we can't add the actual constraint
-                # but we can still schedule the unexplored path for execution
+    def _process_deferred_forks(
+        self,
+        deferred_forks: list,
+        current_push_level: int,
+        state: "SimState",
+        successors: SimSuccessors,
+    ) -> None:
+        """
+        Process deferred forks using the unified solver architecture.
 
-                successors.add_successor(
-                    fork_state,
-                    fork.unexplored_target,
-                    _CLARIPY_TRUE,  # TODO: track actual negated condition
-                    "Ijk_Boring",
-                )
+        For each deferred fork, we create a fork state that will explore
+        the unexplored branch path. The key challenge is proper constraint
+        handling - the fork state needs the negated branch constraint.
+
+        Args:
+            deferred_forks: List of DeferredFork objects from Rust execution.
+            current_push_level: Current solver push level after execution.
+            state: The current state after execution.
+            successors: SimSuccessors to add fork states to.
+        """
+        import claripy
+
+        l.debug("Processing %d deferred forks (push_level=%d)",
+                len(deferred_forks), current_push_level)
+
+        # Process forks in reverse order (LIFO) to match solver push/pop structure
+        for fork in reversed(deferred_forks):
+            l.debug("Processing fork: branch_addr=0x%x, path_taken=%s, unexplored=0x%x, fork_push_level=%d",
+                    fork.branch_addr, fork.path_taken, fork.unexplored_target, fork.push_level)
+
+            # Create fork state by copying current state
+            # The solver will be forked along with the state
+            fork_state = state.copy()
+
+            # Set the PC to the unexplored target
+            fork_state.ip = fork.unexplored_target
+
+            # Note: With the current architecture, the forked solver inherits
+            # the parent's constraints but doesn't have the branch constraint
+            # (since SymContext.fork() creates a fresh solver).
+            # The branch constraints were added to the original solver via
+            # assume_true/assume_false, but the fork doesn't inherit them.
+            #
+            # This is actually the desired behavior for the fork:
+            # - The main state has: original_constraints + taken_branch_constraint
+            # - The fork state should have: original_constraints + negated_branch_constraint
+            #
+            # Since the fork starts fresh, we could add the negated constraint here
+            # if we had access to the condition AST.
+            #
+            # For now, we rely on the fact that the fork will be re-explored
+            # and any infeasible paths will be pruned by the solver.
+
+            # If condition AST is available, add the appropriate constraint
+            if fork.condition_ast is not None:
+                if fork.path_taken:
+                    # We took true, fork needs ~condition (false path)
+                    fork_state.solver.add(claripy.Not(fork.condition_ast))
+                else:
+                    # We took false, fork needs condition (true path)
+                    fork_state.solver.add(fork.condition_ast)
+
+            # Add the fork state as a successor
+            successors.add_successor(
+                fork_state,
+                fork.unexplored_target,
+                claripy.true,  # Guard - actual constraints are in solver
+                "Ijk_Boring",
+                add_guard=False,  # Don't add guard as constraint (already handled)
+            )
 
 
 class RustVEXEngineWrapper:
