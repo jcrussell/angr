@@ -329,6 +329,10 @@ impl SymContext {
     }
 
     /// Get the minimum value of a bitvector using binary search (O(log N)).
+    ///
+    /// This implementation uses pure SAT checks without model value extraction,
+    /// which allows it to work with bitvectors of any width (including >64 bits).
+    /// Based on claripy's _extrema algorithm.
     #[cfg(feature = "vex-engine-z3")]
     pub fn min(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         use z3::ast::Ast;
@@ -345,77 +349,108 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
-        // Get initial value from solver
+        // Set initial bounds based on signedness
+        // For unsigned: [0, 2^width - 1]
+        // For signed: [-(2^(width-1)), 2^(width-1) - 1] represented in two's complement
+        let (mut lo, mut hi): (u128, u128) = if signed {
+            // Signed: lo is most negative (0x8000...), hi is most positive (0x7FFF...)
+            let sign_bit = 1u128 << (width - 1);
+            let max_positive = sign_bit - 1;
+            // In two's complement ordering for binary search, we search [0, max_positive] then [sign_bit, max_val]
+            // But for signed comparison, Z3 handles this correctly with bvsle/bvsge
+            // Start with the full signed range in two's complement representation
+            (sign_bit, max_positive)
+        } else {
+            // Unsigned: [0, 2^width - 1]
+            let max_val = if width >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << width) - 1
+            };
+            (0, max_val)
+        };
+
         let solver = self.solver.lock();
         solver.push();
 
-        let initial_value = match solver.check() {
-            z3::SatResult::Sat => {
-                if let Some(model) = solver.get_model() {
-                    if let Some(eval_result) = model.eval(&ast, true) {
-                        Self::extract_bv_value(&eval_result)
-                    } else {
-                        solver.pop(1);
-                        return None;
-                    }
+        if signed {
+            // For signed values, we need to handle the two's complement ordering
+            // First check if a negative value (sign bit set) is possible
+            solver.push();
+            let zero = Self::make_bv_const(0, width);
+            solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
+            let has_negative = matches!(solver.check(), z3::SatResult::Sat);
+            solver.pop(1);
+
+            if has_negative {
+                // Minimum is negative, search in [sign_bit, all_ones] range
+                let sign_bit = 1u128 << (width - 1);
+                let max_val = if width >= 128 {
+                    u128::MAX
                 } else {
+                    (1u128 << width) - 1
+                };
+                lo = sign_bit;
+                hi = max_val;
+
+                // Binary search for minimum negative value (smallest = most negative)
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+
+                    solver.push();
+                    let mid_ast = Self::make_bv_const(mid, width);
+                    // Check if bv can be <= mid (signed comparison)
+                    solver.assert(&ast.bvsle(&mid_ast));
+                    let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
                     solver.pop(1);
-                    return None;
+
+                    if can_be_le_mid {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+            } else {
+                // Minimum is non-negative, search in [0, max_positive] range
+                let max_positive = (1u128 << (width - 1)) - 1;
+                lo = 0;
+                hi = max_positive;
+
+                // Binary search for minimum non-negative value
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+
+                    solver.push();
+                    let mid_ast = Self::make_bv_const(mid, width);
+                    // Check if bv can be <= mid (signed comparison)
+                    solver.assert(&ast.bvsle(&mid_ast));
+                    let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
+                    solver.pop(1);
+
+                    if can_be_le_mid {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
                 }
             }
-            _ => {
-                solver.pop(1);
-                return None;
-            }
-        };
-
-        let mut hi = match initial_value {
-            Some(v) => v,
-            None => {
-                solver.pop(1);
-                return None;
-            }
-        };
-
-        // For signed, the minimum is the most negative value (0x8000... for the width)
-        // For unsigned, the minimum is 0
-        let mut lo: u128 = if signed {
-            // Most negative value for signed interpretation
-            1u128 << (width - 1)
         } else {
-            0
-        };
+            // Unsigned binary search
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
 
-        // If initial value is already the minimum possible, we're done
-        if lo == hi {
-            solver.pop(1);
-            return Some(lo);
-        }
+                solver.push();
+                let mid_ast = Self::make_bv_const(mid, width);
+                // Check if bv can be <= mid (unsigned comparison)
+                solver.assert(&ast.bvule(&mid_ast));
+                let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
+                solver.pop(1);
 
-        // Binary search for minimum value
-        // We want to find the smallest value that is SAT
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-
-            // Check if bv can be <= mid
-            solver.push();
-            let mid_ast = Self::make_bv_const(mid, width);
-            let constraint = if signed {
-                ast.bvsle(&mid_ast)
-            } else {
-                ast.bvule(&mid_ast)
-            };
-            solver.assert(&constraint);
-
-            let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
-            solver.pop(1);
-
-            if can_be_le_mid {
-                // There's a satisfying value <= mid, search lower half
-                hi = mid;
-            } else {
-                // No satisfying value <= mid, search upper half
-                lo = mid + 1;
+                if can_be_le_mid {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
             }
         }
 
@@ -424,6 +459,10 @@ impl SymContext {
     }
 
     /// Get the maximum value of a bitvector using binary search (O(log N)).
+    ///
+    /// This implementation uses pure SAT checks without model value extraction,
+    /// which allows it to work with bitvectors of any width (including >64 bits).
+    /// Based on claripy's _extrema algorithm.
     #[cfg(feature = "vex-engine-z3")]
     pub fn max(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         use z3::ast::Ast;
@@ -440,85 +479,101 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
-        // Get initial value from solver
         let solver = self.solver.lock();
         solver.push();
 
-        let initial_value = match solver.check() {
-            z3::SatResult::Sat => {
-                if let Some(model) = solver.get_model() {
-                    if let Some(eval_result) = model.eval(&ast, true) {
-                        Self::extract_bv_value(&eval_result)
-                    } else {
-                        solver.pop(1);
-                        return None;
-                    }
-                } else {
+        let (mut lo, mut hi): (u128, u128);
+
+        if signed {
+            // For signed values, we need to handle the two's complement ordering
+            // First check if a non-negative value (sign bit clear) is possible
+            let zero = Self::make_bv_const(0, width);
+
+            solver.push();
+            solver.assert(&ast.bvsge(&zero)); // bv >= 0 (signed)
+            let has_non_negative = matches!(solver.check(), z3::SatResult::Sat);
+            solver.pop(1);
+
+            if has_non_negative {
+                // Maximum is non-negative, search in [0, max_positive] range
+                let max_positive = (1u128 << (width - 1)) - 1;
+                lo = 0;
+                hi = max_positive;
+
+                // Binary search for maximum non-negative value
+                while lo < hi {
+                    // Use ceiling division to avoid infinite loop when lo + 1 == hi
+                    let mid = lo + (hi - lo + 1) / 2;
+
+                    solver.push();
+                    let mid_ast = Self::make_bv_const(mid, width);
+                    // Check if bv can be >= mid (signed comparison)
+                    solver.assert(&ast.bvsge(&mid_ast));
+                    let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
                     solver.pop(1);
-                    return None;
+
+                    if can_be_ge_mid {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+            } else {
+                // Maximum is negative, search in [sign_bit, all_ones] range
+                let sign_bit = 1u128 << (width - 1);
+                let max_val = if width >= 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << width) - 1
+                };
+                lo = sign_bit;
+                hi = max_val;
+
+                // Binary search for maximum negative value (largest = least negative = closest to 0)
+                while lo < hi {
+                    // Use ceiling division to avoid infinite loop when lo + 1 == hi
+                    let mid = lo + (hi - lo + 1) / 2;
+
+                    solver.push();
+                    let mid_ast = Self::make_bv_const(mid, width);
+                    // Check if bv can be >= mid (signed comparison)
+                    solver.assert(&ast.bvsge(&mid_ast));
+                    let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
+                    solver.pop(1);
+
+                    if can_be_ge_mid {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
                 }
             }
-            _ => {
-                solver.pop(1);
-                return None;
-            }
-        };
-
-        let mut lo = match initial_value {
-            Some(v) => v,
-            None => {
-                solver.pop(1);
-                return None;
-            }
-        };
-
-        // For signed, the maximum is 0x7FFF... (most positive value)
-        // For unsigned, the maximum is 2^width - 1
-        let max_possible: u128 = if signed {
-            // Most positive value for signed interpretation
-            (1u128 << (width - 1)) - 1
         } else {
-            // Maximum unsigned value
-            if width >= 128 {
+            // Unsigned binary search
+            let max_val = if width >= 128 {
                 u128::MAX
             } else {
                 (1u128 << width) - 1
-            }
-        };
-
-        let mut hi = max_possible;
-
-        // If initial value is already the maximum possible, we're done
-        if lo == hi {
-            solver.pop(1);
-            return Some(hi);
-        }
-
-        // Binary search for maximum value
-        // We want to find the largest value that is SAT
-        while lo < hi {
-            // Use ceiling division to avoid infinite loop when lo + 1 == hi
-            let mid = lo + (hi - lo + 1) / 2;
-
-            // Check if bv can be >= mid
-            solver.push();
-            let mid_ast = Self::make_bv_const(mid, width);
-            let constraint = if signed {
-                ast.bvsge(&mid_ast)
-            } else {
-                ast.bvuge(&mid_ast)
             };
-            solver.assert(&constraint);
+            lo = 0;
+            hi = max_val;
 
-            let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
-            solver.pop(1);
+            while lo < hi {
+                // Use ceiling division to avoid infinite loop when lo + 1 == hi
+                let mid = lo + (hi - lo + 1) / 2;
 
-            if can_be_ge_mid {
-                // There's a satisfying value >= mid, search upper half
-                lo = mid;
-            } else {
-                // No satisfying value >= mid, search lower half
-                hi = mid - 1;
+                solver.push();
+                let mid_ast = Self::make_bv_const(mid, width);
+                // Check if bv can be >= mid (unsigned comparison)
+                solver.assert(&ast.bvuge(&mid_ast));
+                let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
+                solver.pop(1);
+
+                if can_be_ge_mid {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
             }
         }
 
@@ -781,5 +836,90 @@ mod tests {
 
         // Forked context should continue from same ID
         assert_eq!(id2, id1 + 1);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_z3_variable_identity() {
+        // Test that Z3 variables with the same name are treated as the same variable
+        let ctx = SymContext::new();
+
+        // Create a symbolic variable
+        let x = RustBV::symbolic(&ctx, "x", 32);
+
+        // Add constraint: x > 10
+        let ten = RustBV::concrete(10, 32);
+        let gt_ten = x.ugt(&ten, &ctx);
+        ctx.assume_true(&gt_ten);
+
+        // Verify constraint is enforced
+        assert!(ctx.solution(&x, 15)); // 15 > 10, should be true
+        assert!(!ctx.solution(&x, 5));  // 5 > 10 is false, should be unsat
+
+        // Now add constraint: x < 20
+        let twenty = RustBV::concrete(20, 32);
+        let lt_twenty = x.ult(&twenty, &ctx);
+        ctx.assume_true(&lt_twenty);
+
+        // Verify both constraints are enforced
+        assert!(ctx.solution(&x, 15));  // 10 < 15 < 20
+        assert!(!ctx.solution(&x, 5));   // 5 < 10
+        assert!(!ctx.solution(&x, 25));  // 25 > 20
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_min_max_constrained() {
+        // Test min/max with constrained variable
+        let ctx = SymContext::new();
+
+        // Create a symbolic variable
+        let x = RustBV::symbolic(&ctx, "x", 32);
+
+        // Add constraints: 10 < x < 20
+        let ten = RustBV::concrete(10, 32);
+        let twenty = RustBV::concrete(20, 32);
+        ctx.assume_true(&x.ugt(&ten, &ctx));
+        ctx.assume_true(&x.ult(&twenty, &ctx));
+
+        // min should be 11, max should be 19
+        let min_val = ctx.min(&x, false);
+        let max_val = ctx.max(&x, false);
+
+        assert_eq!(min_val, Some(11), "min should be 11");
+        assert_eq!(max_val, Some(19), "max should be 19");
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_z3_same_name_different_create() {
+        // Test that creating variables with the same name but different calls
+        // still references the same Z3 variable
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new();
+
+        // Create two RustBV::symbolic with the same name
+        let x1 = RustBV::symbolic(&ctx, "x_test", 32);
+        let x2 = RustBV::symbolic(&ctx, "x_test", 32);
+
+        // Add constraint using x1: x1 > 10
+        let ten = RustBV::concrete(10, 32);
+        let gt_ten = x1.ugt(&ten, &ctx);
+        ctx.assume_true(&gt_ten);
+
+        // Check using x2 - should have the same constraint if same variable
+        // If they're different variables, x2 wouldn't have the constraint
+        let ast2 = x2.to_z3_ast();
+
+        // Try to find if x2 can be 5 (should be UNSAT if same as x1)
+        ctx.push();
+        let five = z3::ast::BV::from_u64(5, 32);
+        let eq_five = ast2._eq(&five);
+        ctx.add_constraint(eq_five);
+        let can_be_five = ctx.is_sat();
+        ctx.pop();
+
+        assert!(!can_be_five, "x2 should have same constraints as x1 since same name");
     }
 }

@@ -61,26 +61,34 @@ impl From<PyErr> for BridgeError {
 ///
 /// This recursively converts the claripy expression tree to RustBV operations.
 /// Supports: BVV, BVS, arithmetic, bitwise, comparison, and extension ops.
-/// Uses thread-local caching to avoid redundant conversions.
+/// Uses thread-local caching to avoid redundant conversions for symbolic variables.
 pub fn claripy_to_rustbv(
     py: Python<'_>,
     ast: &Bound<'_, PyAny>,
     ctx: &SymContext,
 ) -> Result<RustBV, BridgeError> {
-    // Check cache first using Python object ID
+    // Get the operation name first to check if we should use cache
+    let op: String = ast.getattr("op")?.extract()?;
+    let op_str = op.as_str();
+
+    // Only cache BVS (symbolic variables) - other types are either cheap to recreate
+    // or their Python addresses can be reused after GC, leading to cache corruption.
+    let use_cache = op_str == "BVS";
+
+    // Check cache only for symbolic variables
     let ast_id = ast.as_ptr() as isize;
-    let cached = AST_CACHE.with(|cache| {
-        cache.borrow().get(&ast_id).cloned()
-    });
-    if let Some(cached_bv) = cached {
-        return Ok(cached_bv);
+    if use_cache {
+        let cached = AST_CACHE.with(|cache| {
+            cache.borrow().get(&ast_id).cloned()
+        });
+        if let Some(cached_bv) = cached {
+            return Ok(cached_bv);
+        }
     }
 
-    // Get the operation name
-    let op: String = ast.getattr("op")?.extract()?;
     let args = ast.getattr("args")?;
 
-    let result = match op.as_str() {
+    let result = match op_str {
         // Concrete bitvector value
         "BVV" => {
             let args_tuple = args
@@ -427,6 +435,16 @@ pub fn claripy_to_rustbv(
             Ok(left.sge(&right, ctx))
         }
 
+        // Boolean constant
+        "BoolV" => {
+            let args_tuple = args
+                .downcast::<PyTuple>()
+                .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
+            let value: bool = args_tuple.get_item(0)?.extract()?;
+            // Return 1-bit BV (1 for true, 0 for false)
+            Ok(RustBV::concrete(if value { 1 } else { 0 }, 1))
+        }
+
         // If-then-else
         "If" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
@@ -450,14 +468,19 @@ pub fn claripy_to_rustbv(
             reverse_bytes(&val, ctx)
         }
 
-        _ => Err(BridgeError::UnsupportedOp(op)),
+        _ => Err(BridgeError::UnsupportedOp(op_str.to_string())),
     };
 
-    // Cache successful results
-    if let Ok(ref bv) = result {
-        AST_CACHE.with(|cache| {
-            cache.borrow_mut().insert(ast_id, bv.clone());
-        });
+    // Only cache BVS (symbolic variables) - they're the most important to cache
+    // because they create Z3 variables that must be consistent across constraint additions.
+    // Other operation types are either cheap to recreate or their Python addresses
+    // can be reused after GC, leading to cache corruption.
+    if use_cache {
+        if let Ok(ref bv) = result {
+            AST_CACHE.with(|cache| {
+                cache.borrow_mut().insert(ast_id, bv.clone());
+            });
+        }
     }
 
     result
@@ -619,10 +642,10 @@ mod tests {
 
     #[test]
     fn test_extract_int_value_small() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            let val = 42i64.into_py(py);
-            assert_eq!(extract_int_value(val.bind(py).clone()).unwrap(), 42);
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let val = 42i64.into_pyobject(py).unwrap();
+            assert_eq!(extract_int_value(val.into_any().clone()).unwrap(), 42);
         });
     }
 }
