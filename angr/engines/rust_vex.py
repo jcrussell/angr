@@ -102,6 +102,16 @@ if TYPE_CHECKING:
 l = logging.getLogger(__name__)
 
 
+def _memory_has_paging(memory) -> bool:
+    """Check if memory plugin supports direct paged operations."""
+    return hasattr(memory, 'page_size') and hasattr(memory, '_pages')
+
+
+def _memory_is_regioned(memory) -> bool:
+    """Check if memory plugin uses regioned memory model."""
+    return hasattr(memory, '_regions')
+
+
 # Import the Rust VEX engine
 try:
     from angr.rustylib.vex_engine import (
@@ -164,9 +174,22 @@ def _irsb_to_dict(irsb: "pyvex.IRSB") -> dict:
 def _tyenv_to_dict(tyenv) -> dict:
     """Convert type environment to dictionary."""
     types = []
-    for i in range(tyenv.types_used):
-        ty = tyenv.lookup(i)
-        types.append(ty if ty else "Ity_I64")
+    # Handle potential pyvex inconsistencies
+    try:
+        actual_count = tyenv.types_used
+        # Fallback if types list is accessible and smaller
+        if hasattr(tyenv, 'types') and len(tyenv.types) < actual_count:
+            actual_count = len(tyenv.types)
+    except Exception:
+        actual_count = 0
+
+    for i in range(actual_count):
+        try:
+            ty = tyenv.lookup(i)
+            types.append(ty if ty else "Ity_I64")
+        except (IndexError, Exception) as e:
+            l.debug("tyenv.lookup(%d) failed: %s, using default", i, e)
+            types.append("Ity_I64")
     return {"types": types}
 
 
@@ -1187,18 +1210,28 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Sync memory from SimState to Rust memory model.
 
-        This maps concrete pages from angr's memory to the Rust memory model,
-        enabling Rust to handle memory operations without Python callbacks.
-
-        Args:
-            state: The SimState to sync from.
-
-        Returns:
-            Number of pages synced.
+        Routes to appropriate implementation based on memory type:
+        - PagedMemoryMixin: Direct page access
+        - RegionedMemoryMixin (AbstractMemory): Iterate through regions
         """
         if not self._use_rust_memory or self._rust_engine is None:
             return 0
 
+        if _memory_is_regioned(state.memory):
+            return self._sync_rust_memory_from_state_regioned(state)
+        elif _memory_has_paging(state.memory):
+            return self._sync_rust_memory_from_state_paged(state)
+        else:
+            l.debug("Unknown memory type, skipping Rust memory sync")
+            return 0
+
+    def _sync_rust_memory_from_state_paged(self, state: "SimState") -> int:
+        """
+        Sync memory from PagedMemoryMixin to Rust memory model.
+
+        This maps concrete pages from angr's memory to the Rust memory model,
+        enabling Rust to handle memory operations without Python callbacks.
+        """
         pages_synced = 0
         page_size = state.memory.page_size
 
@@ -1237,6 +1270,61 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         l.debug("Synced %d concrete pages to Rust memory", pages_synced)
         return pages_synced
 
+    def _sync_rust_memory_from_state_regioned(self, state: "SimState") -> int:
+        """
+        Sync memory from regioned memory (AbstractMemory) to Rust memory model.
+
+        AbstractMemory uses RegionedMemoryMixin which stores memory in regions.
+        Each region is a RegionedMemory that internally uses PagedMemoryMixin.
+        """
+        pages_synced = 0
+
+        # Iterate each region
+        for region_id, region in state.memory._regions.items():
+            # Each region has _pages from PagedMemoryMixin
+            if not hasattr(region, '_pages') or not hasattr(region, 'page_size'):
+                continue
+
+            page_size = region.page_size
+
+            # Get region base address for absolute address calculation
+            try:
+                if hasattr(state.memory, '_region_base'):
+                    region_base = state.memory._region_base(region_id)
+                else:
+                    # Fallback: use address mapping if available
+                    region_base = 0
+            except Exception:
+                region_base = 0
+
+            # Process pages in this region
+            for page_no, page in region._pages.items():
+                if page is None:
+                    continue
+
+                page_addr = page_no * page_size
+                abs_addr = region_base + page_addr
+
+                try:
+                    # Get concrete data with bitmap
+                    data, bitmap = region.concrete_load(
+                        page_addr, page_size, with_bitmap=True
+                    )
+
+                    # Only map if fully concrete (all bitmap bits are 0)
+                    if all(b == 0 for b in bitmap):
+                        self._rust_engine.map_rust_memory_data(
+                            abs_addr, bytes(data), 7  # RWX permissions
+                        )
+                        pages_synced += 1
+                except Exception as e:
+                    l.debug("Failed to sync region %s page 0x%x: %s", region_id, page_addr, e)
+                    pass
+
+        self._rust_memory_synced = True
+        l.debug("Synced %d concrete pages from regioned memory to Rust", pages_synced)
+        return pages_synced
+
     def _sync_rust_memory_to_state(self, state: "SimState") -> int:
         """
         Sync dirty pages from Rust memory back to SimState.
@@ -1244,15 +1332,21 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         Only syncs pages that were modified during Rust execution,
         minimizing overhead.
 
-        Args:
-            state: The SimState to sync to.
-
-        Returns:
-            Number of pages synced.
+        Routes to appropriate implementation based on memory type.
         """
         if not self._use_rust_memory or self._rust_engine is None:
             return 0
 
+        if _memory_is_regioned(state.memory):
+            return self._sync_rust_memory_to_state_regioned(state)
+        elif _memory_has_paging(state.memory):
+            return self._sync_rust_memory_to_state_paged(state)
+        else:
+            l.debug("Unknown memory type, skipping Rust memory sync to state")
+            return 0
+
+    def _sync_rust_memory_to_state_paged(self, state: "SimState") -> int:
+        """Sync dirty pages from Rust memory back to paged SimState memory."""
         pages_synced = 0
         page_size = state.memory.page_size
 
@@ -1280,6 +1374,38 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         if pages_synced > 0:
             l.debug("Synced %d dirty pages from Rust memory", pages_synced)
+        return pages_synced
+
+    def _sync_rust_memory_to_state_regioned(self, state: "SimState") -> int:
+        """Sync dirty pages from Rust memory back to regioned SimState memory."""
+        pages_synced = 0
+        # Use default page size for regioned memory
+        page_size = 0x1000
+
+        # Get list of dirty pages from Rust
+        dirty_pages = self._rust_engine.get_rust_memory_dirty_pages()
+
+        for page_addr in dirty_pages:
+            try:
+                # Get page data from Rust
+                result = self._rust_engine.get_rust_memory_page(page_addr)
+                if result is None:
+                    continue
+
+                data, _perms = result
+
+                # Store back to angr's memory (store works on all memory types)
+                bv = claripy.BVV(int.from_bytes(data, 'little'), page_size * 8)
+                state.memory.store(page_addr, bv, endness='Iend_LE')
+                pages_synced += 1
+            except Exception as e:
+                l.debug("Failed to sync dirty page 0x%x to regioned memory: %s", page_addr, e)
+
+        # Clear dirty tracking for next execution
+        self._rust_engine.clear_rust_memory_dirty_pages()
+
+        if pages_synced > 0:
+            l.debug("Synced %d dirty pages from Rust to regioned memory", pages_synced)
         return pages_synced
 
     def get_rust_memory_stats(self) -> dict | None:
@@ -1366,12 +1492,23 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         This maps all pages from angr's memory model to Rust, enabling
         Rust to execute without memory callbacks for concrete regions.
 
-        Returns:
-            Number of pages synced.
+        Routes to appropriate implementation based on memory type:
+        - PagedMemoryMixin: Direct page access
+        - RegionedMemoryMixin (AbstractMemory): Iterate through regions
         """
         if not self.rust_engine_available:
             return 0
 
+        if _memory_is_regioned(state.memory):
+            return self._sync_state_memory_to_rust_regioned(state)
+        elif _memory_has_paging(state.memory):
+            return self._sync_state_memory_to_rust_paged(state)
+        else:
+            l.debug("Unknown memory type, skipping sync to Rust")
+            return 0
+
+    def _sync_state_memory_to_rust_paged(self, state: "SimState") -> int:
+        """Sync memory from PagedMemoryMixin to Rust."""
         pages_synced = 0
         page_size = state.memory.page_size
 
@@ -1412,9 +1549,67 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         return pages_synced
 
+    def _sync_state_memory_to_rust_regioned(self, state: "SimState") -> int:
+        """
+        Sync memory from regioned memory (AbstractMemory) to Rust.
+
+        AbstractMemory uses RegionedMemoryMixin which stores memory in regions.
+        Each region is a RegionedMemory that internally uses PagedMemoryMixin.
+        """
+        pages_synced = 0
+
+        # Clear dirty pages from previous execution
+        self._rust_engine.clear_dirty_pages()
+
+        # Iterate each region
+        for region_id, region in state.memory._regions.items():
+            # Each region has _pages from PagedMemoryMixin
+            if not hasattr(region, '_pages') or not hasattr(region, 'page_size'):
+                continue
+
+            page_size = region.page_size
+
+            # Get region base address for absolute address calculation
+            try:
+                if hasattr(state.memory, '_region_base'):
+                    region_base = state.memory._region_base(region_id)
+                else:
+                    # Fallback: use address mapping if available
+                    region_base = 0
+            except Exception:
+                region_base = 0
+
+            # Process pages in this region
+            for page_no, page in region._pages.items():
+                if page is None:
+                    continue
+
+                page_addr = page_no * page_size
+                abs_addr = region_base + page_addr
+
+                try:
+                    # Get concrete data with bitmap
+                    data, bitmap = region.concrete_load(
+                        page_addr, page_size, with_bitmap=True
+                    )
+
+                    # Only map if fully concrete (all bitmap bits are 0)
+                    if all(b == 0 for b in bitmap):
+                        self._rust_engine.map_memory_data(
+                            abs_addr, bytes(data), 7  # RWX permissions
+                        )
+                        pages_synced += 1
+                except Exception as e:
+                    l.debug("Failed to sync region %s page 0x%x: %s", region_id, page_addr, e)
+                    pass
+
+        return pages_synced
+
     def _sync_memory_from_rust(self, state: "SimState") -> int:
         """
         Sync memory changes from Rust back to angr's state.
+
+        Routes to appropriate implementation based on memory type.
 
         Returns:
             Number of pages synced back.
@@ -1422,6 +1617,16 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         if not self.rust_engine_available:
             return 0
 
+        if _memory_is_regioned(state.memory):
+            return self._sync_memory_from_rust_regioned(state)
+        elif _memory_has_paging(state.memory):
+            return self._sync_memory_from_rust_paged(state)
+        else:
+            l.debug("Unknown memory type, skipping sync from Rust")
+            return 0
+
+    def _sync_memory_from_rust_paged(self, state: "SimState") -> int:
+        """Sync memory changes from Rust back to paged memory."""
         pages_synced = 0
         page_size = state.memory.page_size
 
@@ -1433,6 +1638,29 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 # Read the modified page data from Rust
                 data = self._rust_engine.read_memory(page_addr, page_size)
                 # Store back to angr's memory as a bitvector
+                bv = claripy.BVV(int.from_bytes(data, 'little'), page_size * 8)
+                state.memory.store(page_addr, bv, endness='Iend_LE')
+                pages_synced += 1
+            except Exception:
+                # Page might not be readable or writable in this context
+                pass
+
+        return pages_synced
+
+    def _sync_memory_from_rust_regioned(self, state: "SimState") -> int:
+        """Sync memory changes from Rust back to regioned memory."""
+        pages_synced = 0
+        # Use default page size for regioned memory
+        page_size = 0x1000
+
+        # Get list of dirty pages from Rust (pages that were written)
+        dirty_pages = self._rust_engine.get_dirty_pages()
+
+        for page_addr in dirty_pages:
+            try:
+                # Read the modified page data from Rust
+                data = self._rust_engine.read_memory(page_addr, page_size)
+                # Store back to angr's memory as a bitvector (store works on all memory types)
                 bv = claripy.BVV(int.from_bytes(data, 'little'), page_size * 8)
                 state.memory.store(page_addr, bv, endness='Iend_LE')
                 pages_synced += 1
@@ -1625,6 +1853,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         This prefetches the stack region (SP-64KB to SP+4KB) into the Rust engine's
         concrete memory, reducing the number of Python callbacks needed for stack access.
         """
+        # For regioned memory, skip prefetching - regions manage their own pages
+        # and may not support the permissions() method
+        if _memory_is_regioned(state.memory):
+            return
+
         try:
             sp = state.solver.eval(state.regs.sp)
         except Exception:
