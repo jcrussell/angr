@@ -240,6 +240,9 @@ pub struct PythonCallbacks {
     pub get_register: Option<PyObject>,
     /// Callback for setting register value: fn(offset: u32, data: bytes) -> None
     pub put_register: Option<PyObject>,
+    /// Callback for dirty helper calls: fn(name: str, args: list[int], ret_ty_bits: int) -> (bytes, bool, object | None)
+    /// This handles VEX dirty calls to helper functions (CPUID, RDTSC, etc.)
+    pub dirty_call: Option<PyObject>,
 }
 
 #[pymethods]
@@ -261,6 +264,7 @@ impl PythonCallbacks {
             lift_block: None,
             get_register: None,
             put_register: None,
+            dirty_call: None,
         }
     }
 
@@ -397,6 +401,17 @@ impl PythonCallbacks {
     /// `fn(offset: int, data: bytes) -> None`
     pub fn set_put_register(&mut self, cb: PyObject) {
         self.put_register = Some(cb);
+    }
+
+    /// Set the dirty call callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(name: str, args: list[int], ret_ty_bits: int) -> tuple[bytes, bool, object | None]`
+    ///
+    /// This handles VEX dirty calls to helper functions like CPUID, RDTSC, etc.
+    /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
+    pub fn set_dirty_call(&mut self, cb: PyObject) {
+        self.dirty_call = Some(cb);
     }
 
     /// Check if all required callbacks are set.
@@ -767,6 +782,51 @@ impl PythonCallbacks {
         let py_bytes = PyBytes::new(py, data);
         cb.call1(py, (offset, py_bytes))?;
         Ok(())
+    }
+
+    /// Call the dirty call callback for VEX helper functions.
+    ///
+    /// This handles dirty calls like CPUID, RDTSC, x87 operations, etc.
+    /// Returns (data_bytes, is_symbolic, symbolic_ast).
+    pub fn call_dirty_call(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        args: &[u64],
+        ret_ty_bits: u32,
+    ) -> PyResult<(Vec<u8>, bool, Option<PyObject>)> {
+        let cb = self.dirty_call.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("dirty_call callback not set")
+        })?;
+
+        // Convert args to Python list
+        let args_list: Vec<u64> = args.to_vec();
+
+        let result = cb.call1(py, (name, args_list, ret_ty_bits))?;
+        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+
+        // Extract (bytes, is_symbolic, symbolic_ast?)
+        let data_obj = tuple.get_item(0)?;
+        let data: Vec<u8> = data_obj.extract()?;
+        let is_symbolic: bool = tuple.get_item(1)?.extract()?;
+
+        let symbolic_ast = if tuple.len() > 2 {
+            let ast_obj = tuple.get_item(2)?;
+            if ast_obj.is_none() {
+                None
+            } else {
+                Some(ast_obj.unbind())
+            }
+        } else {
+            None
+        };
+
+        Ok((data, is_symbolic, symbolic_ast))
+    }
+
+    /// Check if dirty call callback is available.
+    pub fn has_dirty_call(&self) -> bool {
+        self.dirty_call.is_some()
     }
 }
 

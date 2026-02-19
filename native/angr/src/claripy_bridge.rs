@@ -5,16 +5,23 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
+use lru::LruCache;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::symbolic::{RustBV, SymContext};
 
-/// Thread-local cache for AST conversions.
-/// Key is the Python object ID (pointer), value is the converted RustBV.
+/// Maximum number of AST nodes to cache.
+const AST_CACHE_SIZE: usize = 10000;
+
+/// Thread-local LRU cache for AST conversions.
+/// Key is the claripy AST's `__hash__` value (stable across GC), value is the converted RustBV.
+/// Using hash instead of object ID avoids cache corruption when Python reuses object addresses.
 thread_local! {
-    static AST_CACHE: RefCell<HashMap<isize, RustBV>> = RefCell::new(HashMap::with_capacity(256));
+    static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
+        RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).unwrap()));
 }
 
 /// Clear the AST conversion cache.
@@ -23,6 +30,16 @@ pub fn clear_ast_cache() {
     AST_CACHE.with(|cache| {
         cache.borrow_mut().clear();
     });
+}
+
+/// Get the current cache hit/miss statistics.
+#[cfg(test)]
+pub fn cache_stats() -> (usize, usize) {
+    // Returns (len, cap) for debugging
+    AST_CACHE.with(|cache| {
+        let c = cache.borrow();
+        (c.len(), c.cap().get())
+    })
 }
 
 /// Error type for claripy bridge operations.
@@ -61,25 +78,36 @@ impl From<PyErr> for BridgeError {
 ///
 /// This recursively converts the claripy expression tree to RustBV operations.
 /// Supports: BVV, BVS, arithmetic, bitwise, comparison, and extension ops.
-/// Uses thread-local caching to avoid redundant conversions for symbolic variables.
+/// Uses thread-local LRU caching with claripy's stable `__hash__` to avoid
+/// redundant conversions across constraint additions.
 pub fn claripy_to_rustbv(
     py: Python<'_>,
     ast: &Bound<'_, PyAny>,
     ctx: &SymContext,
 ) -> Result<RustBV, BridgeError> {
-    // Get the operation name first to check if we should use cache
+    // Get the operation name first to determine caching strategy
     let op: String = ast.getattr("op")?.extract()?;
     let op_str = op.as_str();
 
-    // Only cache BVS (symbolic variables) - other types are either cheap to recreate
-    // or their Python addresses can be reused after GC, leading to cache corruption.
-    let use_cache = op_str == "BVS";
+    // Cache all immutable AST nodes using claripy's stable __hash__.
+    // BVV (concrete) nodes are cheap to create and don't need caching.
+    // All symbolic/compound nodes benefit from caching.
+    let use_cache = op_str != "BVV";
 
-    // Check cache only for symbolic variables
-    let ast_id = ast.as_ptr() as isize;
+    // Get claripy's stable hash for cache lookup.
+    // Claripy ASTs use their internal _hash attribute which is a consistent identifier.
+    // We use ast.hash() which returns Python's Py_hash_t (guaranteed to fit in i64).
+    let ast_hash: i64 = if use_cache {
+        // Use ast.hash() method from PyAny which properly handles Py_hash_t
+        ast.hash()? as i64
+    } else {
+        0 // Not used
+    };
+
+    // Check LRU cache for previously converted AST
     if use_cache {
         let cached = AST_CACHE.with(|cache| {
-            cache.borrow().get(&ast_id).cloned()
+            cache.borrow_mut().get(&ast_hash).cloned()
         });
         if let Some(cached_bv) = cached {
             return Ok(cached_bv);
@@ -457,6 +485,47 @@ pub fn claripy_to_rustbv(
             Ok(cond.ite(&then_val, &else_val, ctx))
         }
 
+        // Boolean operations (for constraints)
+        "And" => {
+            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
+            if args_list.is_empty() {
+                // Empty And is True
+                return Ok(RustBV::concrete(1, 1));
+            }
+            // Boolean And: all 1-bit values must be 1
+            let mut result = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            for arg in &args_list[1..] {
+                let next = claripy_to_rustbv(py, arg, ctx)?;
+                result = result.and(&next, ctx);
+            }
+            Ok(result)
+        }
+
+        "Or" => {
+            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
+            if args_list.is_empty() {
+                // Empty Or is False
+                return Ok(RustBV::concrete(0, 1));
+            }
+            // Boolean Or: at least one 1-bit value must be 1
+            let mut result = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            for arg in &args_list[1..] {
+                let next = claripy_to_rustbv(py, arg, ctx)?;
+                result = result.or(&next, ctx);
+            }
+            Ok(result)
+        }
+
+        "Not" => {
+            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
+            if args_list.is_empty() {
+                return Err(BridgeError::InvalidArgs("Not requires 1 arg".into()));
+            }
+            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            // Boolean Not: invert 1-bit value
+            Ok(val.not(ctx))
+        }
+
         // Reverse bytes
         "Reverse" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
@@ -471,14 +540,13 @@ pub fn claripy_to_rustbv(
         _ => Err(BridgeError::UnsupportedOp(op_str.to_string())),
     };
 
-    // Only cache BVS (symbolic variables) - they're the most important to cache
-    // because they create Z3 variables that must be consistent across constraint additions.
-    // Other operation types are either cheap to recreate or their Python addresses
-    // can be reused after GC, leading to cache corruption.
+    // Cache all symbolic/compound AST nodes using claripy's stable hash.
+    // This dramatically reduces conversion overhead when the same expressions
+    // appear in multiple constraints.
     if use_cache {
         if let Ok(ref bv) = result {
             AST_CACHE.with(|cache| {
-                cache.borrow_mut().insert(ast_id, bv.clone());
+                cache.borrow_mut().put(ast_hash, bv.clone());
             });
         }
     }

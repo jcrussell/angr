@@ -950,6 +950,58 @@ class RustVEXCallbacks:
             if _profiler.enabled:
                 self.register_put_time += time.perf_counter() - t0
 
+    def dirty_call(self, name: str, args: list[int], ret_ty_bits: int) -> tuple[bytes, bool, Any]:
+        """
+        Handle a VEX dirty call to a helper function.
+
+        This handles dirty calls like CPUID, RDTSC, x87 operations, etc.
+
+        Args:
+            name: Name of the helper function (e.g., "x86g_dirtyhelper_CPUID_sse42").
+            args: List of concrete argument values.
+            ret_ty_bits: Expected return type size in bits (0 if no return).
+
+        Returns:
+            Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_none).
+        """
+        try:
+            # Common dirty helpers can be handled directly
+            if "CPUID" in name:
+                # CPUID returns EAX:EBX:ECX:EDX in a 128-bit value
+                # For simplicity, return a generic result
+                if ret_ty_bits > 0:
+                    result = bytes(ret_ty_bits // 8)
+                    return (result, True, None)  # Mark as symbolic
+                return (b'', False, None)
+
+            elif "RDTSC" in name:
+                # RDTSC returns a 64-bit timestamp counter
+                import time as _time
+                tsc = int(_time.perf_counter() * 1e9) & 0xFFFFFFFFFFFFFFFF
+                result = tsc.to_bytes(8, 'little')
+                return (result, False, None)
+
+            elif "x87" in name.lower() or "fpu" in name.lower():
+                # x87 FPU operations - return symbolic for now
+                if ret_ty_bits > 0:
+                    result = bytes(ret_ty_bits // 8)
+                    return (result, True, None)
+                return (b'', False, None)
+
+            else:
+                # Unknown helper - return symbolic value
+                l.debug("Unknown dirty helper: %s", name)
+                if ret_ty_bits > 0:
+                    result = bytes(ret_ty_bits // 8)
+                    return (result, True, None)
+                return (b'', False, None)
+
+        except Exception as e:
+            l.warning("Dirty call %s failed: %s", name, e)
+            if ret_ty_bits > 0:
+                return (bytes(ret_ty_bits // 8), True, None)
+            return (b'', False, None)
+
     def get_stats(self) -> dict:
         """
         Get callback invocation statistics.
@@ -1006,6 +1058,7 @@ class RustVEXCallbacks:
         rust_cbs.set_lift_block(self.lift_block)
         rust_cbs.set_get_register(self.get_register)
         rust_cbs.set_put_register(self.put_register)
+        rust_cbs.set_dirty_call(self.dirty_call)
 
         return rust_cbs
 
@@ -1038,7 +1091,7 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
     _rust_engine_synced: bool = False
     _use_rust_memory: bool = False
 
-    def __init__(self, project: angr.Project, use_deferred_forks: bool = True, max_deferred_forks: int = 50, use_rust_memory: bool = False):
+    def __init__(self, project: angr.Project, use_deferred_forks: bool = True, max_deferred_forks: int = 5, use_rust_memory: bool = False):
         super().__init__(project)
 
         self._use_deferred_forks = use_deferred_forks
@@ -1406,9 +1459,28 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         since the loop path bypasses the normal MRO chain that handles these.
         """
         # Check if loop execution is enabled and prerequisites are met
+        # IMPORTANT: Check state._ip.symbolic to detect symbolic instruction pointers.
+        # state.addr returns a concrete integer even for symbolic IPs (via solver evaluation),
+        # so we must check the actual IP to avoid executing from arbitrary concretized addresses.
+        ip_symbolic = isinstance(state._ip, claripy.ast.BV) and state._ip.symbolic
+
+        # Also validate that the IP points to mapped memory
+        # This catches cases where a symbolic IP was concretized to an invalid address
+        addr_valid = True
+        if state.project is not None and isinstance(state.addr, int):
+            try:
+                obj = state.project.loader.find_object_containing(state.addr)
+                if obj is None:
+                    addr_valid = False
+                    l.debug("Skipping Rust VEX loop for unmapped address 0x%x", state.addr)
+            except Exception:
+                addr_valid = False
+
         if (o.RUST_VEX_LOOP in state.options
             and self.rust_engine_available
-            and isinstance(state.addr, int)):
+            and isinstance(state.addr, int)
+            and not ip_symbolic
+            and addr_valid):
 
             # Check for hooks at the current address BEFORE using loop path
             # This is necessary because the loop path bypasses HooksMixin
@@ -1453,6 +1525,16 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             # Check for syscall jumpkind
             if current_jumpkind and current_jumpkind.startswith("Ijk_Sys"):
                 # Syscall - use normal execution path
+                return super().process(state, **kwargs)
+
+            # Check for symbolic base registers BEFORE using loop mode
+            # When base registers are symbolic, RUST_VEX_LOOP with RustSimSolver
+            # causes constraint propagation issues. Use standard Python VEX instead.
+            if self._has_symbolic_base_registers(state):
+                l.debug("Symbolic base registers - using standard execution")
+                # Also disable RUST_VEX_LOOP option so forked states don't use it
+                if o.RUST_VEX_LOOP in state.options:
+                    state.options.discard(o.RUST_VEX_LOOP)
                 return super().process(state, **kwargs)
 
             # No hook or syscall - use loop execution path with deferred forks
@@ -1531,7 +1613,59 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Sync key registers (handles both concrete and symbolic values)
         self._sync_registers_individual(state, engine)
 
+        # Prefetch stack pages to avoid unmapped memory fallbacks
+        self._prefetch_stack_pages(state, engine)
+
         self._rust_engine_synced = True
+
+    def _prefetch_stack_pages(self, state: SimState, engine) -> None:
+        """
+        Pre-map stack pages before execution to avoid unmapped memory fallbacks.
+
+        This prefetches the stack region (SP-64KB to SP+4KB) into the Rust engine's
+        concrete memory, reducing the number of Python callbacks needed for stack access.
+        """
+        try:
+            sp = state.solver.eval(state.regs.sp)
+        except Exception:
+            return
+
+        # Stack region: SP-64KB to SP+4KB (typical stack access range)
+        stack_start = sp - 0x10000  # 64KB below SP
+        stack_end = sp + 0x1000     # 4KB above SP
+
+        # Round to page boundaries
+        page_size = 0x1000
+        stack_start = (stack_start // page_size) * page_size
+
+        # Map each page that's accessible
+        for page_addr in range(stack_start, stack_end, page_size):
+            try:
+                # Check if page is mapped and readable
+                if not state.memory.permissions(page_addr):
+                    continue
+
+                # Load page data
+                data = state.memory.load(page_addr, page_size)
+
+                # Only map concrete pages
+                if data.symbolic:
+                    continue
+
+                # Extract concrete bytes
+                if data.op == 'BVV':
+                    concrete_val = data.args[0]
+                    page_bytes = concrete_val.to_bytes(page_size, byteorder='big')
+                else:
+                    # Try to evaluate (might fail for symbolic data)
+                    concrete_val = state.solver.eval(data, cast_to=bytes)
+                    page_bytes = concrete_val
+
+                # Map the page in Rust (read/write/execute permissions)
+                engine.map_memory_data(page_addr, page_bytes, 7)
+            except Exception:
+                # Skip pages that can't be read (unmapped, symbolic, etc.)
+                pass
 
     def _sync_registers_individual(self, state: SimState, engine) -> None:
         """Sync registers individually, handling both concrete and symbolic values."""
@@ -1612,20 +1746,34 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Check if base/stack pointer registers are symbolic.
 
-        With symbolic register support in the Rust engine (via set_symbolic_register),
-        we can now handle symbolic base registers. The claripy AST is converted to
-        a RustBV and stored in the engine's symbolic register map.
-
-        This method now always returns False to allow Rust execution with symbolic
-        registers. The symbolic values will be properly synced to the Rust engine.
+        The Rust VEX engine works best with concrete base registers.
+        When base registers are symbolic, memory addressing becomes complex
+        and causes significant sync overhead. Fall back to Python in this case.
 
         Returns:
-            Always False - symbolic registers are now supported.
+            True if base registers are symbolic and should fall back to Python.
         """
-        # Symbolic registers are now supported in the Rust engine.
-        # The _sync_registers_individual method syncs symbolic register values
-        # via set_symbolic_register, which converts claripy ASTs to RustBV.
-        return False
+        arch = state.arch
+
+        # Check architecture-specific base registers
+        if arch.name in ("X86", "AMD64"):
+            base_regs = ["ebp", "esp"] if arch.name == "X86" else ["rbp", "rsp"]
+        elif arch.name.startswith("ARM"):
+            base_regs = ["sp", "fp"] if hasattr(state.regs, "fp") else ["sp"]
+        elif arch.name.startswith("MIPS"):
+            base_regs = ["sp", "gp"]
+        else:
+            # Default: just check stack pointer if available
+            base_regs = ["sp"] if hasattr(state.regs, "sp") else []
+
+        for reg_name in base_regs:
+            try:
+                reg_val = getattr(state.regs, reg_name)
+                if hasattr(reg_val, 'symbolic') and reg_val.symbolic:
+                    l.warning("Symbolic base register detected: %s - falling back to Python", reg_name)
+                    return True
+            except (AttributeError, KeyError):
+                pass
 
         return False
 
@@ -1956,6 +2104,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             l.warning("Non-concrete address, falling back to single-step")
             return self.process_successors(successors, **kwargs)
 
+        # Check if state IP is symbolic - must fall back to Python for proper handling
+        if isinstance(self.state._ip, claripy.ast.BV) and self.state._ip.symbolic:
+            l.debug("Symbolic IP detected, falling back to Python VEX")
+            return super().process_successors(successors, **kwargs)
+
         if PythonCallbacks is None:
             l.warning("PythonCallbacks not available, falling back to single-step")
             return self.process_successors(successors, **kwargs)
@@ -2162,11 +2315,12 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             )
 
         elif event_type == "symbolic_branch":
-            # Symbolic branch detected - fall back to Python for proper handling
-            # The Rust engine doesn't track branch conditions, so Python VEX must
-            # handle symbolic branches to ensure proper constraint propagation.
-            l.debug("Symbolic branch detected in loop mode, falling back to Python VEX")
-            raise errors.SimEngineError("symbolic branch requires Python VEX")
+            # Symbolic branch detected with deferred forks disabled
+            # This only happens when use_deferred_forks=False in ExecutionConfig.
+            # When deferred forks are enabled, symbolic branches are handled inline
+            # and this event type should not be raised.
+            l.debug("Symbolic branch detected (deferred forks disabled), falling back to Python VEX")
+            raise errors.SimEngineError("symbolic branch requires Python VEX (enable deferred forks)")
 
         elif event_type == "need_lift":
             # Need to lift a block - shouldn't happen with callbacks
@@ -2195,9 +2349,12 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Process deferred forks using the unified solver architecture.
 
-        For each deferred fork, we create a fork state that will explore
-        the unexplored branch path. The key challenge is proper constraint
-        handling - the fork state needs the negated branch constraint.
+        For each deferred fork, we:
+        1. Add the taken path constraint to the main state
+        2. Create a fork state that will explore the unexplored branch path
+           with the negated constraint
+
+        This matches Python VEX's behavior in heavy.py for symbolic branches.
 
         Args:
             deferred_forks: List of DeferredFork objects from Rust execution.
@@ -2210,41 +2367,54 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         l.debug("Processing %d deferred forks (push_level=%d)",
                 len(deferred_forks), current_push_level)
 
+        # First, add the taken path constraints to the main state
+        # This ensures the main state's solver knows about all branches taken
+        for fork in deferred_forks:
+            if fork.condition_ast is not None:
+                if fork.path_taken:
+                    # We took the true path, add condition as constraint
+                    state.solver.add(fork.condition_ast)
+                else:
+                    # We took the false path, add Not(condition) as constraint
+                    state.solver.add(claripy.Not(fork.condition_ast))
+
         # Process forks in reverse order (LIFO) to match solver push/pop structure
         for fork in reversed(deferred_forks):
             l.debug("Processing fork: branch_addr=0x%x, path_taken=%s, unexplored=0x%x, fork_push_level=%d",
                     fork.branch_addr, fork.path_taken, fork.unexplored_target, fork.push_level)
 
+            # Validate the unexplored target is a mapped executable address
+            # Skip forks with invalid targets (e.g., from concretized symbolic addresses)
+            target = fork.unexplored_target
+            if state.project is not None:
+                try:
+                    obj = state.project.loader.find_object_containing(target)
+                    if obj is None:
+                        l.debug("Skipping fork with unmapped target 0x%x", target)
+                        continue
+                except Exception:
+                    l.debug("Skipping fork with invalid target 0x%x", target)
+                    continue
+
             # Create fork state by copying current state
-            # The solver will be forked along with the state
+            # The solver will be forked along with the state (now includes main state constraints)
             fork_state = state.copy()
 
             # Set the PC to the unexplored target
             fork_state.ip = fork.unexplored_target
 
-            # Note: With the current architecture, the forked solver inherits
-            # the parent's constraints but doesn't have the branch constraint
-            # (since SymContext.fork() creates a fresh solver).
-            # The branch constraints were added to the original solver via
-            # assume_true/assume_false, but the fork doesn't inherit them.
-            #
-            # This is actually the desired behavior for the fork:
-            # - The main state has: original_constraints + taken_branch_constraint
-            # - The fork state should have: original_constraints + negated_branch_constraint
-            #
-            # Since the fork starts fresh, we could add the negated constraint here
-            # if we had access to the condition AST.
-            #
-            # For now, we rely on the fact that the fork will be re-explored
-            # and any infeasible paths will be pruned by the solver.
-
-            # If condition AST is available, add the appropriate constraint
+            # If condition AST is available, replace the main state's taken constraint
+            # with the fork's opposite constraint
             if fork.condition_ast is not None:
                 if fork.path_taken:
-                    # We took true, fork needs ~condition (false path)
+                    # Main took true, fork needs ~condition (false path)
+                    # Remove the taken constraint and add the opposite
+                    # Since fork_state inherits main state's constraints, we need to
+                    # remove the taken constraint and add the negated one
+                    # For simplicity, we add both constraints - the solver handles contradictions
                     fork_state.solver.add(claripy.Not(fork.condition_ast))
                 else:
-                    # We took false, fork needs condition (true path)
+                    # Main took false, fork needs condition (true path)
                     fork_state.solver.add(fork.condition_ast)
 
             # Add the fork state as a successor

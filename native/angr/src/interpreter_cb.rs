@@ -12,12 +12,12 @@ use pyo3::prelude::*;
 
 use crate::arch::{arch_from_vex, RegisterFile};
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
-use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast};
+use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, rustbv_to_claripy};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ccall;
-use crate::vex::ir::{IRConst, IRExpr, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
+use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
 use crate::vex::ops::{OpError, VEXOps};
 use crate::vex::{deserialize_irsb, Endness};
 
@@ -820,15 +820,18 @@ impl<'a> CallbackInterpreter<'a> {
             IRStmt::Exit { guard, dst, jk, .. } => {
                 let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
 
-                // Check if guard is concrete
-                if let Some(g) = guard_val.as_u64() {
-                    if g != 0 {
-                        return Ok(StmtResult::Exit {
-                            target: *dst,
-                            jumpkind: *jk,
-                        });
+                // Check if guard is symbolic first (Constrained has concrete value but is still symbolic)
+                if !guard_val.is_symbolic() {
+                    // Truly concrete guard - simple check
+                    if let Some(g) = guard_val.as_u64() {
+                        if g != 0 {
+                            return Ok(StmtResult::Exit {
+                                target: *dst,
+                                jumpkind: *jk,
+                            });
+                        }
+                        return Ok(StmtResult::Continue);
                     }
-                    return Ok(StmtResult::Continue);
                 }
 
                 // Guard is symbolic - check both possibilities
@@ -836,82 +839,47 @@ impl<'a> CallbackInterpreter<'a> {
                 let can_be_false = self.ctx.can_be_false(&guard_val);
 
                 if can_be_true && can_be_false {
-                    // Both paths are feasible - decide how to handle
-                    let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
-
-                    // Check if deferred forks are enabled and we haven't hit the limit
-                    if self.config.use_deferred_forks
-                        && self.deferred_forks.len() < self.config.max_deferred_forks as usize
-                    {
-                        // Choose which path to take based on policy
-                        let take_true = match self.config.branch_policy {
-                            BranchPolicy::TakeTrue => true,
-                            BranchPolicy::TakeFalse => false,
-                            BranchPolicy::TakeFallthrough => {
-                                // Take the path that continues to the next instruction
-                                // (false/fallthrough for Exit statements since Exit goes to dst on true)
-                                false
-                            }
-                            BranchPolicy::Alternate => {
-                                self.branch_counter += 1;
-                                self.branch_counter % 2 == 1
-                            }
-                        };
-
-                        // Get a condition ID for this branch
-                        let condition_id = self.next_cond_id();
-
-                        // Save current push level before adding constraint
-                        // This allows proper constraint handling for forks
-                        let fork_push_level = self.push_level;
-
-                        // Push solver state before adding branch constraint
-                        // This creates a checkpoint we can restore for fork processing
-                        self.ctx.push();
-                        self.push_level += 1;
-
-                        if take_true {
-                            // Take the exit (true branch), defer the fallthrough
-                            self.deferred_forks.push(DeferredFork {
-                                branch_addr: self.current_insn_addr,
-                                path_taken: true,
-                                unexplored_target: fallthrough,
-                                condition_id,
-                                push_level: fork_push_level,
-                                condition_ast: None, // TODO: store claripy AST if available
-                            });
-
-                            // Add constraint that condition is true
-                            self.ctx.assume_true(&guard_val);
-
-                            return Ok(StmtResult::Exit {
-                                target: *dst,
-                                jumpkind: *jk,
-                            });
-                        } else {
-                            // Take fallthrough (false branch), defer the exit
-                            self.deferred_forks.push(DeferredFork {
-                                branch_addr: self.current_insn_addr,
-                                path_taken: false,
-                                unexplored_target: *dst,
-                                condition_id,
-                                push_level: fork_push_level,
-                                condition_ast: None, // TODO: store claripy AST if available
-                            });
-
-                            // Add constraint that condition is false
-                            self.ctx.assume_false(&guard_val);
-
-                            return Ok(StmtResult::Continue);
-                        }
-                    } else {
-                        // Deferred forks disabled or limit reached - return to Python
+                    // Both paths are feasible
+                    if !self.config.use_deferred_forks {
+                        // Deferred forks disabled - return to Python for proper state forking
+                        let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
                         return Ok(StmtResult::SymbolicBranch {
                             condition: guard_val,
                             true_target: *dst,
                             false_target: fallthrough,
                         });
                     }
+
+                    // Create a deferred fork for the untaken path
+                    let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
+
+                    // Convert guard to claripy AST for constraint tracking
+                    let condition_ast = match py.import("claripy") {
+                        Ok(claripy_mod) => {
+                            match rustbv_to_claripy(py, &guard_val, claripy_mod.as_any()) {
+                                Ok(ast) => Some(ast),
+                                Err(_) => None, // Failed to convert, fork will proceed without constraint
+                            }
+                        }
+                        Err(_) => None, // Claripy not available
+                    };
+
+                    // Take the "true" path (jump to dst), defer the "false" path (fallthrough)
+                    let deferred = DeferredFork {
+                        branch_addr: self.current_insn_addr,
+                        path_taken: true,
+                        unexplored_target: fallthrough,
+                        condition_id: self.next_cond_id(),
+                        push_level: self.push_level,
+                        condition_ast,
+                    };
+                    self.deferred_forks.push(deferred);
+
+                    // Continue execution on the true branch
+                    return Ok(StmtResult::Exit {
+                        target: *dst,
+                        jumpkind: *jk,
+                    });
                 } else if can_be_true {
                     return Ok(StmtResult::Exit {
                         target: *dst,
@@ -923,14 +891,294 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRStmt::MBE(_) => Ok(StmtResult::Continue),
 
-            IRStmt::PutI { .. } => Err(CbExecutionError::Unsupported("PutI".to_string())),
-            IRStmt::StoreG { .. } => Err(CbExecutionError::Unsupported("guarded store".to_string())),
-            IRStmt::LoadG { .. } => Err(CbExecutionError::Unsupported("guarded load".to_string())),
+            IRStmt::PutI { descr, ix, bias, data } => {
+                // Evaluate the index expression
+                let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, &irsb.tyenv)?;
+
+                // PutI requires a concrete index to compute the register offset
+                if let Some(idx) = ix_val.as_u64() {
+                    // Calculate the rotating register offset:
+                    // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+                    let elem_size = descr.elemTy.bytes();
+                    let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
+                    let offset = descr.base + index * elem_size;
+
+                    // Evaluate the data to write
+                    let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+
+                    // Write to the register file
+                    self.registers.put(offset, data_val);
+
+                    // Mark register as dirty (4-byte granularity)
+                    let bit_index = (offset / 4) as u32;
+                    if bit_index < 128 {
+                        self.dirty_registers |= 1u128 << bit_index;
+                    }
+
+                    Ok(StmtResult::Continue)
+                } else {
+                    // Symbolic index - we can't handle this in Rust
+                    Err(CbExecutionError::Unsupported("symbolic PutI index".to_string()))
+                }
+            }
+
+            IRStmt::StoreG { guard, addr, data, .. } => {
+                // Evaluate guard condition
+                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+
+                // Check if guard is symbolic
+                if guard_val.is_symbolic() {
+                    // Symbolic guard: need to handle conditional store
+                    // For now, check if guard can be true at all
+                    if !self.ctx.can_be_true(&guard_val) {
+                        // Guard is always false - skip store
+                        return Ok(StmtResult::Continue);
+                    }
+                    if !self.ctx.can_be_false(&guard_val) {
+                        // Guard is always true - perform store unconditionally
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                        let data_size = ((data_val.width() + 7) / 8) as usize;
+
+                        if let Some(addr_concrete) = addr_val.as_u64() {
+                            let data_bytes = bv_to_bytes(&data_val);
+                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                            self.pending_stores.push((addr_concrete, data_bytes));
+                            if self.pending_stores.len() >= self.max_pending_stores {
+                                self.flush_stores(py, callbacks)?;
+                            }
+                        }
+                        return Ok(StmtResult::Continue);
+                    }
+                    // Both paths possible with symbolic guard - need Python to handle
+                    return Err(CbExecutionError::Unsupported("symbolic guarded store".to_string()));
+                }
+
+                // Concrete guard: simple check
+                if let Some(g) = guard_val.as_u64() {
+                    if g != 0 {
+                        // Guard is true - perform the store
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                        let data_size = ((data_val.width() + 7) / 8) as usize;
+
+                        if let Some(addr_concrete) = addr_val.as_u64() {
+                            let data_bytes = bv_to_bytes(&data_val);
+                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                            self.pending_stores.push((addr_concrete, data_bytes));
+                            if self.pending_stores.len() >= self.max_pending_stores {
+                                self.flush_stores(py, callbacks)?;
+                            }
+                        } else {
+                            // Symbolic address with concrete guard - flush and use callback
+                            self.flush_stores(py, callbacks)?;
+                            let data_bytes = bv_to_bytes(&data_val);
+                            callbacks
+                                .call_memory_store(py, 0, &data_bytes)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        }
+                    }
+                    // Guard is false - skip the store
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::LoadG { dst, guard, addr, alt, cvt, .. } => {
+                // Evaluate guard condition
+                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+
+                // Evaluate the alternative value (used when guard is false)
+                let alt_val = self.eval_expr_with_callbacks(py, callbacks, alt, &irsb.tyenv)?;
+
+                // Determine the load size from the destination temp type
+                let dst_ty = irsb.tyenv.get(*dst).ok_or_else(|| {
+                    CbExecutionError::InvalidIR(format!("LoadG destination temp {} not in tyenv", dst))
+                })?;
+                let load_size = match cvt {
+                    IRLoadGOp::Identity => dst_ty.bytes() as usize,
+                    IRLoadGOp::WidenS | IRLoadGOp::WidenZ => {
+                        // For widening loads, the memory load is smaller
+                        // Typically 8->32, 16->32, 32->64
+                        match dst_ty.bytes() {
+                            4 => 1, // Could be 1 or 2, default to 1
+                            8 => 4, // 32->64
+                            _ => dst_ty.bytes() as usize,
+                        }
+                    }
+                };
+
+                // Check if guard is symbolic
+                if guard_val.is_symbolic() {
+                    // Check if guard can be true/false
+                    let can_be_true = self.ctx.can_be_true(&guard_val);
+                    let can_be_false = self.ctx.can_be_false(&guard_val);
+
+                    if can_be_true && !can_be_false {
+                        // Guard is always true - perform load unconditionally
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let loaded = if let Some(addr_concrete) = addr_val.as_u64() {
+                            self.load_from_callback(py, callbacks, addr_concrete, load_size)?
+                        } else {
+                            return Err(CbExecutionError::Unsupported("symbolic address in LoadG".to_string()));
+                        };
+
+                        // Apply conversion
+                        let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
+
+                        if (*dst as usize) < self.temps.len() {
+                            self.temps[*dst as usize] = Some(result);
+                        }
+                        return Ok(StmtResult::Continue);
+                    }
+
+                    if !can_be_true && can_be_false {
+                        // Guard is always false - use alt value
+                        if (*dst as usize) < self.temps.len() {
+                            self.temps[*dst as usize] = Some(alt_val);
+                        }
+                        return Ok(StmtResult::Continue);
+                    }
+
+                    // Both paths possible - evaluate address and load, then ITE
+                    let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let loaded = if let Some(addr_concrete) = addr_val.as_u64() {
+                        self.load_from_callback(py, callbacks, addr_concrete, load_size)?
+                    } else {
+                        return Err(CbExecutionError::Unsupported("symbolic address in LoadG".to_string()));
+                    };
+
+                    // Apply conversion to loaded value
+                    let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
+
+                    // Create ITE: if guard then loaded else alt
+                    let result = guard_val.ite(&converted, &alt_val, self.ctx);
+
+                    if (*dst as usize) < self.temps.len() {
+                        self.temps[*dst as usize] = Some(result);
+                    }
+                    return Ok(StmtResult::Continue);
+                }
+
+                // Concrete guard
+                if let Some(g) = guard_val.as_u64() {
+                    let result = if g != 0 {
+                        // Guard is true - perform the load
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let loaded = if let Some(addr_concrete) = addr_val.as_u64() {
+                            self.load_from_callback(py, callbacks, addr_concrete, load_size)?
+                        } else {
+                            return Err(CbExecutionError::Unsupported("symbolic address in LoadG".to_string()));
+                        };
+                        self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
+                    } else {
+                        // Guard is false - use alternative value
+                        alt_val
+                    };
+
+                    if (*dst as usize) < self.temps.len() {
+                        self.temps[*dst as usize] = Some(result);
+                    }
+                } else {
+                    // This shouldn't happen if guard_val is concrete
+                    return Err(CbExecutionError::InvalidIR("LoadG guard evaluation failed".to_string()));
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
             IRStmt::CAS { .. } => Err(CbExecutionError::Unsupported("compare-and-swap".to_string())),
             IRStmt::LLSC { .. } => {
                 Err(CbExecutionError::Unsupported("load-linked/store-conditional".to_string()))
             }
-            IRStmt::Dirty(_) => Err(CbExecutionError::Unsupported("dirty call".to_string())),
+            IRStmt::Dirty(dirty) => {
+                // Check if dirty call callback is available
+                if !callbacks.has_dirty_call() {
+                    return Err(CbExecutionError::Unsupported(format!(
+                        "dirty call: {} (no callback)",
+                        dirty.cee.name
+                    )));
+                }
+
+                // Check guard if present
+                if let Some(guard) = &dirty.guard {
+                    let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+                    if guard_val.is_symbolic() {
+                        // Symbolic guard - check if can be true/false
+                        if !self.ctx.can_be_true(&guard_val) {
+                            return Ok(StmtResult::Continue);
+                        }
+                        // Both paths possible - need Python to handle
+                        return Err(CbExecutionError::Unsupported(format!(
+                            "dirty call with symbolic guard: {}",
+                            dirty.cee.name
+                        )));
+                    } else if let Some(g) = guard_val.as_u64() {
+                        if g == 0 {
+                            // Guard is false - skip the dirty call
+                            return Ok(StmtResult::Continue);
+                        }
+                    }
+                }
+
+                // Evaluate arguments
+                let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
+                for arg in &dirty.args {
+                    let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
+                    if let Some(concrete) = val.as_u64() {
+                        arg_vals.push(concrete);
+                    } else {
+                        // Symbolic argument - Python needs to handle this
+                        return Err(CbExecutionError::Unsupported(format!(
+                            "dirty call with symbolic arg: {}",
+                            dirty.cee.name
+                        )));
+                    }
+                }
+
+                // Determine return type bits
+                let ret_ty_bits = if let Some(tmp) = dirty.tmp {
+                    irsb.tyenv.get(tmp).map(|t| t.bits()).unwrap_or(64)
+                } else {
+                    0 // No return value
+                };
+
+                // Call Python callback
+                let (data, is_symbolic, _symbolic_ast) = callbacks
+                    .call_dirty_call(py, &dirty.cee.name, &arg_vals, ret_ty_bits)
+                    .map_err(|e| CbExecutionError::Callback(format!(
+                        "dirty call {} failed: {}",
+                        dirty.cee.name, e
+                    )))?;
+
+                // Store result in temporary if specified
+                if let Some(tmp) = dirty.tmp {
+                    let result = if is_symbolic {
+                        // Create a symbolic value for the result
+                        RustBV::symbolic(
+                            self.ctx,
+                            &format!("dirty_{}", dirty.cee.name),
+                            ret_ty_bits,
+                        )
+                    } else {
+                        // Convert bytes to concrete value
+                        let mut value: u128 = 0;
+                        for (i, &byte) in data.iter().enumerate() {
+                            if (i * 8) as u32 >= ret_ty_bits {
+                                break;
+                            }
+                            value |= (byte as u128) << (i * 8);
+                        }
+                        RustBV::concrete(value, ret_ty_bits)
+                    };
+
+                    if (tmp as usize) < self.temps.len() {
+                        self.temps[tmp as usize] = Some(result);
+                    }
+                }
+
+                Ok(StmtResult::Continue)
+            }
         }
     }
 
@@ -1071,8 +1319,25 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(cond_val.ite(&true_val, &false_val, self.ctx))
             }
 
-            IRExpr::GetI { .. } => {
-                Err(CbExecutionError::Unsupported("GetI (rotating registers)".to_string()))
+            IRExpr::GetI { descr, ix, bias } => {
+                // Evaluate the index expression
+                let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, tyenv)?;
+
+                // GetI requires a concrete index to compute the register offset
+                if let Some(idx) = ix_val.as_u64() {
+                    // Calculate the rotating register offset:
+                    // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+                    let elem_size = descr.elemTy.bytes();
+                    let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
+                    let offset = descr.base + index * elem_size;
+
+                    // Read from the register file
+                    Ok(self.registers.get(offset, elem_size, self.ctx))
+                } else {
+                    // Symbolic index - we can't handle this in Rust
+                    // (would need to create ITE over all possible indices)
+                    Err(CbExecutionError::Unsupported("symbolic GetI index".to_string()))
+                }
             }
 
             IRExpr::Triop { .. } => Err(CbExecutionError::Unsupported("triop".to_string())),
@@ -1116,6 +1381,28 @@ impl<'a> CallbackInterpreter<'a> {
         }
     }
 
+    /// Apply LoadG conversion (widening) to loaded value.
+    ///
+    /// LoadG can widen the loaded value with sign or zero extension.
+    fn apply_loadg_conversion(&self, cvt: IRLoadGOp, value: RustBV, target_bits: u32) -> RustBV {
+        let src_bits = value.width();
+        if src_bits >= target_bits {
+            // No widening needed, possibly truncate
+            if src_bits > target_bits {
+                value.extract(0, target_bits, self.ctx)
+            } else {
+                value
+            }
+        } else {
+            // Widen the value
+            match cvt {
+                IRLoadGOp::Identity => value, // Should not happen if sizes differ
+                IRLoadGOp::WidenS => value.sign_extend(target_bits, self.ctx),
+                IRLoadGOp::WidenZ => value.zero_extend(target_bits, self.ctx),
+            }
+        }
+    }
+
     /// Evaluate the next address from an IRSB.
     fn eval_next_addr(
         &self,
@@ -1124,8 +1411,12 @@ impl<'a> CallbackInterpreter<'a> {
         irsb: &IRSB,
     ) -> Result<u64, CbExecutionError> {
         let next_val = self.eval_expr_with_callbacks(py, callbacks, &irsb.next, &irsb.tyenv)?;
+        // Check for symbolic addresses FIRST - Constrained BV has concrete value but is still symbolic
+        if next_val.is_symbolic() {
+            return Err(CbExecutionError::Unsupported("symbolic next address".to_string()));
+        }
         next_val.as_u64().ok_or_else(|| {
-            CbExecutionError::Unsupported("symbolic next address".to_string())
+            CbExecutionError::Unsupported("non-concrete next address".to_string())
         })
     }
 
@@ -1135,11 +1426,20 @@ impl<'a> CallbackInterpreter<'a> {
         // since we already have temps set up
         let next_val = self.eval_expr_simple(&irsb.next, &irsb.tyenv)?;
 
+        // Check for symbolic addresses FIRST, before extracting concrete value.
+        // A Constrained BV has a concrete value stored (from solver evaluation),
+        // but it's still symbolic and should not be used as a jump target directly.
+        if next_val.is_symbolic() {
+            return Err(CbExecutionError::Unsupported(
+                "symbolic next address".to_string(),
+            ));
+        }
+
         if let Some(addr) = next_val.as_u64() {
             Ok(self.handle_exit(addr, irsb.jumpkind))
         } else {
             Err(CbExecutionError::Unsupported(
-                "symbolic next address".to_string(),
+                "non-concrete next address".to_string(),
             ))
         }
     }

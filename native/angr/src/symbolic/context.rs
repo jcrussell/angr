@@ -38,6 +38,10 @@ pub struct SymContext {
     /// Cached Z3 model, invalidated on constraint addition.
     #[cfg(feature = "vex-engine-z3")]
     model_cache: RefCell<Option<z3::Model>>,
+    /// List of Z3 tracking boolean constants for unsat core mapping.
+    /// Each entry is a (track_bool, constraint_ast) pair.
+    #[cfg(feature = "vex-engine-z3")]
+    constraint_trackers: Mutex<Vec<z3::ast::Bool>>,
 }
 
 impl SymContext {
@@ -63,13 +67,20 @@ impl SymContext {
     /// All Z3 operations on this thread will use the same context.
     #[cfg(feature = "vex-engine-z3")]
     pub fn new() -> Self {
+        // Create solver with unsat_core support enabled
+        let solver = z3::Solver::new();
+        let mut params = z3::Params::new();
+        params.set_bool("unsat_core", true);
+        solver.set_params(&params);
+
         SymContext {
             next_id: AtomicU64::new(0),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
-            solver: Mutex::new(z3::Solver::new()),
+            solver: Mutex::new(solver),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
+            constraint_trackers: Mutex::new(Vec::new()),
         }
     }
 
@@ -112,7 +123,19 @@ impl SymContext {
     /// Add a constraint.
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint(&self, constraint: z3::ast::Bool) {
-        self.solver.lock().assert(&constraint);
+        // Create a tracking boolean for unsat core extraction
+        let idx = self.constraint_count.load(Ordering::SeqCst);
+        let track_name = format!("__track_{}", idx);
+        let track_bool = z3::ast::Bool::new_const(track_name.as_str());
+
+        // Track the boolean for unsat core mapping
+        {
+            let mut trackers = self.constraint_trackers.lock();
+            trackers.push(track_bool.clone());
+        }
+
+        // Use assert_and_track to enable unsat core extraction
+        self.solver.lock().assert_and_track(&constraint, &track_bool);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         // Invalidate caches - constraint set has changed
         self.sat_cache.set(None);
@@ -219,11 +242,8 @@ impl SymContext {
         if let Some(v) = bv.as_u128() {
             return Some(v);
         }
-        // Need to solve
-        if !self.is_sat() {
-            return None;
-        }
-        // Try to use cached model first
+
+        // Try to use cached model first (avoids re-checking SAT)
         {
             let cache = self.model_cache.borrow();
             if let Some(ref model) = *cache {
@@ -233,29 +253,112 @@ impl SymContext {
                 }
             }
         }
-        // Get fresh model and cache it
-        let model = self.solver.lock().get_model()?;
+
+        // Need to get a fresh model - must call check() first for Z3
+        let solver = self.solver.lock();
+        match solver.check() {
+            z3::SatResult::Sat => {
+                self.sat_cache.set(Some(true));
+            }
+            _ => {
+                self.sat_cache.set(Some(false));
+                return None;
+            }
+        }
+
+        // Get model from the check we just did
+        let model = solver.get_model()?;
         let ast = bv.to_z3_ast();
         let result = model.eval(&ast, true)?;
         let value = Self::extract_bv_value(&result);
+        drop(solver); // Release lock before borrowing model_cache
         *self.model_cache.borrow_mut() = Some(model);
         value
     }
 
+    /// Evaluate a bitvector to bytes (for values > 128 bits).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn eval_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
+        let width = bv.width();
+
+        // Fast path for concrete values
+        if let Some(v) = bv.as_u128() {
+            let byte_len = ((width + 7) / 8) as usize;
+            let mut result = vec![0u8; byte_len];
+            let bytes = v.to_be_bytes();
+            let offset = byte_len.saturating_sub(16);
+            for (i, &b) in bytes.iter().enumerate() {
+                let src_idx = 16 - byte_len.min(16) + i;
+                if src_idx < 16 && offset + i < byte_len {
+                    result[offset + i] = bytes[src_idx];
+                }
+            }
+            // Handle case where byte_len <= 16
+            if byte_len <= 16 {
+                result = bytes[16 - byte_len..].to_vec();
+            }
+            return Some(result);
+        }
+
+        // Need to get a model from Z3
+        let solver = self.solver.lock();
+        match solver.check() {
+            z3::SatResult::Sat => {}
+            _ => return None,
+        }
+
+        let model = solver.get_model()?;
+        let ast = bv.to_z3_ast();
+        let result = model.eval(&ast, true)?;
+        Self::extract_bv_value_wide(&result, width)
+    }
+
     /// Extract a u128 value from a Z3 BV result.
+    /// For values > 128 bits, returns the low 128 bits (caller should use
+    /// extract_bv_value_wide for arbitrarily large values).
     #[cfg(feature = "vex-engine-z3")]
     fn extract_bv_value(bv: &z3::ast::BV) -> Option<u128> {
         // Try as u64 first (fast path for <= 64-bit)
         if let Some(v) = bv.as_u64() {
             return Some(v as u128);
         }
-        // For larger values, try to extract as i64 and convert
-        if let Some(v) = bv.as_i64() {
-            return Some(v as u64 as u128);
+        // For larger values, parse the string representation
+        Self::extract_bv_value_from_string(bv)
+    }
+
+    /// Extract a BV value by parsing its string representation.
+    /// Handles arbitrarily large values, returns low 128 bits.
+    #[cfg(feature = "vex-engine-z3")]
+    fn extract_bv_value_from_string(bv: &z3::ast::BV) -> Option<u128> {
+        let s = format!("{}", bv);
+        // Z3 uses formats: #xHEXDIGITS, #bBINARY, or decimal
+        if let Some(hex_str) = s.strip_prefix("#x") {
+            // Parse as hex, taking low 128 bits
+            parse_wide_hex_low128(hex_str)
+        } else if let Some(bin_str) = s.strip_prefix("#b") {
+            // Parse as binary, taking low 128 bits
+            parse_wide_binary_low128(bin_str)
+        } else {
+            // Try decimal
+            s.parse::<u128>().ok()
         }
-        // For very wide values, we'd need to get the string repr and parse
-        // For now, return None for > 64-bit non-trivial values
-        None
+    }
+
+    /// Extract an arbitrarily large BV value as a Vec<u8> (big-endian).
+    /// Used for values > 128 bits where we need the full value.
+    #[cfg(feature = "vex-engine-z3")]
+    fn extract_bv_value_wide(bv: &z3::ast::BV, width: u32) -> Option<Vec<u8>> {
+        let s = format!("{}", bv);
+        if let Some(hex_str) = s.strip_prefix("#x") {
+            // Parse full hex value to bytes
+            parse_hex_to_bytes(hex_str, width)
+        } else if let Some(bin_str) = s.strip_prefix("#b") {
+            // Parse full binary value to bytes
+            parse_binary_to_bytes(bin_str, width)
+        } else {
+            // Decimal - parse and convert
+            parse_decimal_to_bytes(&s, width)
+        }
     }
 
     /// Evaluate a bitvector and return up to n solutions.
@@ -634,12 +737,44 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn push(&self) {
         self.solver.lock().push();
+        // Invalidate caches since constraint set may change
+        self.sat_cache.set(None);
+        *self.model_cache.borrow_mut() = None;
     }
 
     /// Restore solver state.
     #[cfg(feature = "vex-engine-z3")]
     pub fn pop(&self) {
         self.solver.lock().pop(1);
+        // Invalidate caches since constraint set has changed
+        self.sat_cache.set(None);
+        *self.model_cache.borrow_mut() = None;
+    }
+
+    /// Get the unsat core as indices of constraints added.
+    ///
+    /// Returns the indices of constraints that form the unsatisfiable core.
+    /// Call this after checking satisfiability and finding UNSAT.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn unsat_core(&self) -> Vec<usize> {
+        let solver = self.solver.lock();
+        let core = solver.get_unsat_core();
+
+        let trackers = self.constraint_trackers.lock();
+        let mut result = Vec::new();
+
+        // Match core tracking booleans to stored tracker indices by string representation
+        for core_ast in core.iter() {
+            let core_str = format!("{}", core_ast);
+            for (i, tracker) in trackers.iter().enumerate() {
+                if format!("{}", tracker) == core_str {
+                    result.push(i);
+                    break;
+                }
+            }
+        }
+
+        result
     }
 
 
@@ -677,6 +812,23 @@ impl SymContext {
     pub fn eval(&self, bv: &RustBV) -> Option<u128> {
         // Without Z3, can only evaluate concrete values
         bv.as_u128()
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn eval_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
+        // Without Z3, can only evaluate concrete values
+        let width = bv.width();
+        bv.as_u128().map(|v| {
+            let byte_len = ((width + 7) / 8) as usize;
+            let bytes = v.to_be_bytes();
+            if byte_len <= 16 {
+                bytes[16 - byte_len..].to_vec()
+            } else {
+                let mut result = vec![0u8; byte_len];
+                result[byte_len - 16..].copy_from_slice(&bytes);
+                result
+            }
+        })
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
@@ -733,21 +885,36 @@ impl SymContext {
         // No-op without Z3
     }
 
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn unsat_core(&self) -> Vec<usize> {
+        // Without Z3, no unsat core available
+        vec![]
+    }
+
     // =========================================================================
     // Forking
     // =========================================================================
 
-    /// Fork the context, creating a new context.
-    /// Note: Constraints must be re-added by the caller.
+    /// Fork the context, creating a new context with all constraints preserved.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
+        // Clone solver, preserving all assertions via Z3_solver_translate
+        let cloned_solver = self.solver.lock().clone();
+        // Set unsat_core param on cloned solver
+        let mut params = z3::Params::new();
+        params.set_bool("unsat_core", true);
+        cloned_solver.set_params(&params);
+        // Clone constraint tracking list for unsat core
+        let cloned_trackers = self.constraint_trackers.lock().clone();
+
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
-            constraint_count: AtomicUsize::new(0),  // Start fresh - caller must re-add constraints
+            constraint_count: AtomicUsize::new(self.constraint_count.load(Ordering::SeqCst)),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
-            solver: Mutex::new(z3::Solver::new()),
+            solver: Mutex::new(cloned_solver),
             sat_cache: Cell::new(None),    // Fresh cache for fork
             model_cache: RefCell::new(None), // Fresh cache for fork
+            constraint_trackers: Mutex::new(cloned_trackers),
         }
     }
 
@@ -791,6 +958,113 @@ impl Clone for SymContext {
     fn clone(&self) -> Self {
         self.fork()
     }
+}
+
+// =============================================================================
+// Helper functions for parsing Z3 BV string representations
+// =============================================================================
+
+/// Parse a hex string to u128, taking low 128 bits if larger.
+#[cfg(feature = "vex-engine-z3")]
+fn parse_wide_hex_low128(s: &str) -> Option<u128> {
+    // For values > 128 bits (> 32 hex chars), take low 32 chars
+    let low_hex = if s.len() > 32 {
+        &s[s.len() - 32..]
+    } else {
+        s
+    };
+    u128::from_str_radix(low_hex, 16).ok()
+}
+
+/// Parse a binary string to u128, taking low 128 bits if larger.
+#[cfg(feature = "vex-engine-z3")]
+fn parse_wide_binary_low128(s: &str) -> Option<u128> {
+    // For values > 128 bits (> 128 bin chars), take low 128 chars
+    let low_bin = if s.len() > 128 {
+        &s[s.len() - 128..]
+    } else {
+        s
+    };
+    u128::from_str_radix(low_bin, 2).ok()
+}
+
+/// Parse a hex string to full bytes (big-endian).
+#[cfg(feature = "vex-engine-z3")]
+fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
+    let byte_len = ((width + 7) / 8) as usize;
+    let mut result = vec![0u8; byte_len];
+
+    // Pad hex string to even length
+    let padded = if s.len() % 2 == 1 {
+        format!("0{}", s)
+    } else {
+        s.to_string()
+    };
+
+    // Parse hex pairs from right to left (big-endian output)
+    let hex_bytes: Vec<u8> = (0..padded.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&padded[i..i + 2], 16).ok())
+        .collect();
+
+    // Copy to result (right-aligned, big-endian)
+    let offset = byte_len.saturating_sub(hex_bytes.len());
+    for (i, &b) in hex_bytes.iter().enumerate() {
+        if offset + i < byte_len {
+            result[offset + i] = b;
+        }
+    }
+
+    Some(result)
+}
+
+/// Parse a binary string to full bytes (big-endian).
+#[cfg(feature = "vex-engine-z3")]
+fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
+    let byte_len = ((width + 7) / 8) as usize;
+    let mut result = vec![0u8; byte_len];
+
+    // Parse bits from right to left
+    let bits: Vec<u8> = s.chars().filter_map(|c| match c {
+        '0' => Some(0),
+        '1' => Some(1),
+        _ => None,
+    }).collect();
+
+    // Build bytes from bits (big-endian)
+    let bit_offset = byte_len * 8 - bits.len();
+    for (i, &bit) in bits.iter().enumerate() {
+        let bit_pos = bit_offset + i;
+        let byte_idx = bit_pos / 8;
+        let bit_idx = 7 - (bit_pos % 8);
+        if byte_idx < byte_len {
+            result[byte_idx] |= bit << bit_idx;
+        }
+    }
+
+    Some(result)
+}
+
+/// Parse a decimal string to bytes (big-endian).
+#[cfg(feature = "vex-engine-z3")]
+fn parse_decimal_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
+    // For small values, parse and convert
+    if let Ok(v) = s.parse::<u128>() {
+        let byte_len = ((width + 7) / 8) as usize;
+        let mut result = vec![0u8; byte_len];
+        let bytes = v.to_be_bytes();
+        let offset = byte_len.saturating_sub(16);
+        for (i, &b) in bytes.iter().enumerate() {
+            if offset + i < byte_len {
+                result[offset + i] = b;
+            }
+        }
+        return Some(result);
+    }
+
+    // For very large decimals, we'd need big integer parsing
+    // This is rare in practice as Z3 typically uses hex format
+    None
 }
 
 impl Default for SymContext {

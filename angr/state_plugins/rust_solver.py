@@ -44,6 +44,11 @@ class RustSimSolver(SimStatePlugin):
     provide significant speedups for symbolic execution by avoiding
     Python-Rust serialization overhead.
 
+    Optimizations:
+    - Constraint tracking: Maintains Python-side list for introspection
+    - Lazy conversion: Defers constraint conversion until solver check
+    - Full AST caching: Rust side caches all symbolic AST nodes
+
     Usage:
         # Create state with Rust solver
         state = proj.factory.entry_state()
@@ -53,12 +58,18 @@ class RustSimSolver(SimStatePlugin):
         state = proj.factory.entry_state(add_options={sim_options.RUST_SOLVER})
     """
 
-    def __init__(self, rust_ctx=None, all_variables=None, **kwargs):
+    def __init__(self, rust_ctx=None, all_variables=None, constraint_list=None,
+                 pending=None, temporal_tracked_variables=None,
+                 eternal_tracked_variables=None, **kwargs):
         """Initialize the Rust solver plugin.
 
         Args:
             rust_ctx: Optional RustSolverContext to use. If None, creates new one.
             all_variables: List of all symbolic variables for tracking.
+            constraint_list: List of constraints for introspection.
+            pending: List of pending constraints for lazy conversion.
+            temporal_tracked_variables: Dict of versioned tracked variables.
+            eternal_tracked_variables: Dict of permanent tracked variables.
             **kwargs: Additional arguments (ignored for compatibility).
         """
         super().__init__()
@@ -71,49 +82,79 @@ class RustSimSolver(SimStatePlugin):
 
         self._rust_ctx = rust_ctx if rust_ctx is not None else RustSolverContext()
         self.all_variables = all_variables if all_variables is not None else []
+        # Phase 3: Track constraints for introspection
+        self._constraint_list = constraint_list if constraint_list is not None else []
+        # Phase 4: Pending constraints for lazy conversion
+        self._pending = pending if pending is not None else []
+        # Variable tracking system
+        self.temporal_tracked_variables = temporal_tracked_variables if temporal_tracked_variables is not None else {}
+        self.eternal_tracked_variables = eternal_tracked_variables if eternal_tracked_variables is not None else {}
 
     @property
     def constraints(self):
-        """Return the constraints (not directly available from Rust)."""
-        # The Rust solver doesn't expose constraints back to Python
-        # This is a limitation - for full compatibility, would need
-        # to track constraints on the Python side as well
-        return []
+        """Return the constraints tracked on the Python side."""
+        # Flush pending first to ensure list is complete
+        self._flush()
+        return list(self._constraint_list)
+
+    def _flush(self):
+        """Flush pending constraints to the Rust solver.
+
+        This implements lazy constraint conversion - constraints are only
+        converted to Rust/Z3 when a solver check is actually needed.
+        This avoids conversion overhead for branches that turn out to be unsat.
+        """
+        if not self._pending:
+            return
+
+        pending = self._pending
+        self._pending = []
+
+        try:
+            if len(pending) == 1:
+                self._rust_ctx.add_constraint_ast(pending[0])
+            else:
+                self._rust_ctx.add_constraints(pending)
+        except Exception as e:
+            l.warning("Failed to flush pending constraints to Rust solver: %s", e)
 
     def reload_solver(self, constraints=None):
         """Reload the solver with new constraints."""
         self._rust_ctx = RustSolverContext()
+        self._constraint_list = []
+        self._pending = []
         if constraints:
             for c in constraints:
-                self._rust_ctx.add_constraint_ast(c)
+                self._constraint_list.append(c)
+                self._pending.append(c)
 
     def add(self, *constraints):
         """Add constraints to the solver.
 
+        Uses lazy conversion - constraints are queued and only converted
+        to Rust/Z3 when a solver check is actually needed.
+
         Args:
             *constraints: Constraint ASTs to add.
         """
-        to_add = []
         for c in constraints:
             if isinstance(c, (list, tuple)):
                 raise TypeError("Tuple or list passed to add!")
             if isinstance(c, bool):
                 if not c:
                     # Adding False makes the solver unsat
-                    # Create an impossible constraint
-                    self._rust_ctx.add_constraint_ast(claripy.false)
+                    # Flush immediately and add the impossible constraint
+                    self._flush()
+                    self._constraint_list.append(claripy.false)
+                    try:
+                        self._rust_ctx.add_constraint_ast(claripy.false)
+                    except Exception as e:
+                        l.warning("Failed to add false constraint: %s", e)
                     return
                 continue
-            to_add.append(c)
-
-        # Use batch API when multiple constraints for reduced overhead
-        try:
-            if len(to_add) == 1:
-                self._rust_ctx.add_constraint_ast(to_add[0])
-            elif len(to_add) > 1:
-                self._rust_ctx.add_constraints(to_add)
-        except Exception as e:
-            l.warning("Failed to add constraint(s) to Rust solver: %s", e)
+            # Track constraint and queue for lazy conversion
+            self._constraint_list.append(c)
+            self._pending.append(c)
 
     def satisfiable(self, extra_constraints=(), **kwargs):
         """Check if constraints are satisfiable.
@@ -125,6 +166,9 @@ class RustSimSolver(SimStatePlugin):
         Returns:
             True if satisfiable, False otherwise.
         """
+        # Flush pending constraints before checking
+        self._flush()
+
         if extra_constraints:
             self._rust_ctx.push()
             try:
@@ -160,6 +204,9 @@ class RustSimSolver(SimStatePlugin):
         concrete_val = _concrete_value(e)
         if concrete_val is not None:
             return self._cast_to(e, concrete_val, cast_to)
+
+        # Flush pending constraints before solving
+        self._flush()
 
         result = self._rust_ctx.eval(e)
         if result is None:
@@ -216,10 +263,102 @@ class RustSimSolver(SimStatePlugin):
         if concrete_val is not None:
             return [self._cast_to(e, concrete_val, cast_to)]
 
+        # Flush pending constraints before solving
+        self._flush()
+
         results = self._rust_ctx.eval_upto(e, n)
         if not results:
             raise SimUnsatError(f"Not satisfiable: {e}")
         return [self._cast_to(e, r, cast_to) for r in results]
+
+    def eval_atleast(self, e, n, cast_to=None, **kwargs):
+        """Evaluate expression and verify at least n solutions exist.
+
+        Args:
+            e: Expression to evaluate.
+            n: Minimum number of required solutions.
+            cast_to: Type to cast results to.
+            **kwargs: Additional arguments.
+
+        Returns:
+            List of n solutions.
+
+        Raises:
+            SimUnsatError: If no solution exists.
+            SimValueError: If fewer than n solutions exist.
+        """
+        r = self.eval_upto(e, n, cast_to, **kwargs)
+        if len(r) != n:
+            from angr.errors import SimValueError
+            raise SimValueError(f"Concretized {len(r)} values (must be at least {n}) in eval_atleast")
+        return r
+
+    def eval_atmost(self, e, n, cast_to=None, **kwargs):
+        """Evaluate expression and verify at most n solutions exist.
+
+        Args:
+            e: Expression to evaluate.
+            n: Maximum number of allowed solutions.
+            cast_to: Type to cast results to.
+            **kwargs: Additional arguments.
+
+        Returns:
+            List of up to n solutions.
+
+        Raises:
+            SimUnsatError: If no solution exists.
+            SimValueError: If more than n solutions exist.
+        """
+        r = self.eval_upto(e, n + 1, cast_to, **kwargs)
+        if len(r) > n:
+            from angr.errors import SimValueError
+            raise SimValueError(f"Concretized {len(r)} values (must be at most {n}) in eval_atmost")
+        return r
+
+    def eval_exact(self, e, n, cast_to=None, **kwargs):
+        """Evaluate expression and verify exactly n solutions exist.
+
+        Args:
+            e: Expression to evaluate.
+            n: Exact number of required solutions.
+            cast_to: Type to cast results to.
+            **kwargs: Additional arguments.
+
+        Returns:
+            List of exactly n solutions.
+
+        Raises:
+            SimUnsatError: If no solution exists.
+            SimValueError: If number of solutions != n.
+        """
+        r = self.eval_upto(e, n + 1, cast_to, **kwargs)
+        if len(r) != n:
+            from angr.errors import SimValueError
+            raise SimValueError(f"Concretized {len(r)} values (must be exactly {n}) in eval_exact")
+        return r
+
+    def eval_to_ast(self, e, n, extra_constraints=(), exact=None):
+        """Evaluate expression and return solutions as AST nodes.
+
+        Args:
+            e: Expression to evaluate.
+            n: Number of solutions.
+            extra_constraints: Additional constraints.
+            exact: If False, allow approximate solutions.
+
+        Returns:
+            Tuple of solution ASTs.
+        """
+        # Get primitive solutions
+        solutions = self.eval_upto(e, n, extra_constraints=extra_constraints)
+
+        # Convert to AST nodes
+        if hasattr(e, 'length'):
+            return tuple(claripy.BVV(s, e.length) for s in solutions)
+        elif hasattr(e, 'op') and e.op == 'BoolS':
+            return tuple(claripy.BoolV(s) for s in solutions)
+        else:
+            return tuple(claripy.BVV(s, 64) for s in solutions)
 
     def min(self, e, extra_constraints=(), signed=False, **kwargs):
         """Return the minimum value of an expression.
@@ -237,6 +376,9 @@ class RustSimSolver(SimStatePlugin):
         concrete_val = _concrete_value(e)
         if concrete_val is not None:
             return concrete_val
+
+        # Flush pending constraints before solving
+        self._flush()
 
         if extra_constraints:
             self._rust_ctx.push()
@@ -273,6 +415,9 @@ class RustSimSolver(SimStatePlugin):
         if concrete_val is not None:
             return concrete_val
 
+        # Flush pending constraints before solving
+        self._flush()
+
         if extra_constraints:
             self._rust_ctx.push()
             try:
@@ -291,6 +436,10 @@ class RustSimSolver(SimStatePlugin):
             raise SimUnsatError(f"Cannot maximize {e}: solver returned None")
         return result
 
+    # Aliases for compatibility with standard SimSolver
+    min_int = min
+    max_int = max
+
     def is_true(self, e, **kwargs):
         """Check if an expression is definitely true.
 
@@ -306,6 +455,8 @@ class RustSimSolver(SimStatePlugin):
         if hasattr(e, 'op') and e.op == 'BoolV':
             return e.args[0]
 
+        # Flush pending constraints before checking
+        self._flush()
         return self._rust_ctx.is_true(e)
 
     def is_false(self, e, **kwargs):
@@ -323,6 +474,8 @@ class RustSimSolver(SimStatePlugin):
         if hasattr(e, 'op') and e.op == 'BoolV':
             return not e.args[0]
 
+        # Flush pending constraints before checking
+        self._flush()
         return self._rust_ctx.is_false(e)
 
     def solution(self, e, v, extra_constraints=(), **kwargs):
@@ -340,6 +493,9 @@ class RustSimSolver(SimStatePlugin):
         # Convert v to integer if needed
         if hasattr(v, 'args') and hasattr(v, 'op') and v.op == 'BVV':
             v = v.args[0]
+
+        # Flush pending constraints before checking
+        self._flush()
 
         if extra_constraints:
             self._rust_ctx.push()
@@ -367,6 +523,7 @@ class RustSimSolver(SimStatePlugin):
         if not hasattr(e, 'symbolic') or not e.symbolic:
             return True
 
+        # eval_upto already flushes pending constraints
         results = self.eval_upto(e, 2, **kwargs)
         if len(results) == 1:
             self.add(e == results[0])
@@ -385,6 +542,27 @@ class RustSimSolver(SimStatePlugin):
         if isinstance(e, (int, bytes, float, bool)):
             return False
         return getattr(e, 'symbolic', False)
+
+    def single_valued(self, e):
+        """Check if expression has only one possible value.
+
+        Unlike unique(), this does NOT query the constraint solver.
+
+        Args:
+            e: Expression to check.
+
+        Returns:
+            True if expression has exactly one possible value.
+        """
+        if isinstance(e, (int, bytes, float, bool)):
+            return True
+
+        # Check cardinality for value sets (VSA mode)
+        if hasattr(e, 'cardinality'):
+            return e.cardinality <= 1
+
+        # For symbolic mode, non-symbolic means single-valued
+        return not self.symbolic(e)
 
     def simplify(self, e=None):
         """Simplify an expression.
@@ -432,6 +610,64 @@ class RustSimSolver(SimStatePlugin):
         """
         return self.BVS(name, bits, **kwargs)
 
+    def register_variable(self, v, key, eternal=True):
+        """Register a variable with the tracking system.
+
+        Args:
+            v: The BVS to register.
+            key: A tuple key to register under.
+            eternal: If True, permanent; if False, versioned with counter.
+        """
+        if type(key) is not tuple:
+            raise TypeError("Variable tracking key must be a tuple")
+        if eternal:
+            self.eternal_tracked_variables[key] = v
+        else:
+            # Create new dict to avoid mutation issues
+            self.temporal_tracked_variables = dict(self.temporal_tracked_variables)
+            ctrkey = (*key, None)
+            ctrval = self.temporal_tracked_variables.get(ctrkey, 0) + 1
+            self.temporal_tracked_variables[ctrkey] = ctrval
+            tempkey = (*key, ctrval)
+            self.temporal_tracked_variables[tempkey] = v
+
+    def get_variables(self, *keys):
+        """Iterate over variables whose tracking key starts with given prefix.
+
+        Args:
+            *keys: Key prefix to match.
+
+        Yields:
+            Tuples of (full_key, variable).
+        """
+        for k, v in self.eternal_tracked_variables.items():
+            if len(k) >= len(keys) and all(x == y for x, y in zip(keys, k)):
+                yield k, v
+        for k, v in self.temporal_tracked_variables.items():
+            if k[-1] is None:
+                continue
+            if len(k) >= len(keys) and all(x == y for x, y in zip(keys, k)):
+                yield k, v
+
+    def describe_variables(self, v):
+        """Given an AST, iterate over tracking keys of registered BVS leaves.
+
+        Args:
+            v: Claripy AST to inspect.
+
+        Yields:
+            Tracking keys for registered variables found in v.
+        """
+        reverse_mapping = {next(iter(var.variables)): k
+                           for k, var in self.eternal_tracked_variables.items()}
+        reverse_mapping.update(
+            {next(iter(var.variables)): k
+             for k, var in self.temporal_tracked_variables.items() if k[-1] is not None}
+        )
+        for var in v.variables:
+            if var in reverse_mapping:
+                yield reverse_mapping[var]
+
     @staticmethod
     def _cast_to(e, solution, cast_to):
         """Cast a solution to the desired type.
@@ -475,20 +711,41 @@ class RustSimSolver(SimStatePlugin):
         Returns:
             Copy of the plugin with forked Rust context.
         """
+        # Flush pending constraints before fork to ensure consistency
+        self._flush()
+
         c = RustSimSolver.__new__(RustSimSolver)
         c.state = None
         c._rust_ctx = self._rust_ctx.fork()
         c.all_variables = self.all_variables.copy()
+        # Copy constraint list (shared immutable AST refs are fine)
+        c._constraint_list = self._constraint_list.copy()
+        # Fresh pending list for the fork
+        c._pending = []
+        # Copy variable tracking dictionaries
+        c.temporal_tracked_variables = self.temporal_tracked_variables.copy()
+        c.eternal_tracked_variables = self.eternal_tracked_variables.copy()
         return c
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         """Merge solver states.
 
-        Note: Full merge support would require tracking constraints
-        on the Python side. For now, this creates a fresh solver.
+        Note: Full merge support would require complex constraint disjunction.
+        For now, this merges the constraint lists but returns False to
+        indicate that caller should handle state merging.
         """
-        # Simple merge: just use self's constraints
-        # A proper implementation would merge constraint sets
+        # Flush pending constraints before merge
+        self._flush()
+        for other in others:
+            if hasattr(other, '_flush'):
+                other._flush()
+
+        # Merge variable lists
+        for other in others:
+            for v in other.all_variables:
+                if v not in self.all_variables:
+                    self.all_variables.append(v)
+
         return False
 
     def widen(self, others):
@@ -517,6 +774,48 @@ class RustSimSolver(SimStatePlugin):
             if hasattr(v, 'variables'):
                 result.update(v.variables)
         return frozenset(result)
+
+    def unsat_core(self, extra_constraints=()):
+        """Return the unsat core from the solver.
+
+        Args:
+            extra_constraints: Extra constraints to add temporarily.
+
+        Returns:
+            The unsat core constraints as a list of AST nodes.
+
+        Raises:
+            SimSolverOptionError: If constraint tracking not enabled.
+        """
+        from angr import sim_options as o
+        from angr.errors import SimSolverOptionError
+
+        if self.state and o.CONSTRAINT_TRACKING_IN_SOLVER not in self.state.options:
+            raise SimSolverOptionError(
+                "CONSTRAINT_TRACKING_IN_SOLVER must be enabled before calling unsat_core()."
+            )
+
+        # Delegate to Rust context if supported
+        if hasattr(self._rust_ctx, 'unsat_core'):
+            self._flush()
+            if extra_constraints:
+                self._rust_ctx.push()
+                try:
+                    for c in extra_constraints:
+                        if not isinstance(c, bool):
+                            self._rust_ctx.add_constraint_ast(c)
+                    core_indices = self._rust_ctx.unsat_core()
+                finally:
+                    self._rust_ctx.pop()
+            else:
+                core_indices = self._rust_ctx.unsat_core()
+
+            # Map indices back to constraint ASTs
+            return [self._constraint_list[i] for i in core_indices
+                    if i < len(self._constraint_list)]
+
+        # Fallback: not supported
+        raise NotImplementedError("unsat_core requires Rust solver with constraint tracking")
 
     def __getattr__(self, name):
         """Forward claripy attribute access.

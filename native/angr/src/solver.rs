@@ -96,9 +96,30 @@ impl RustSolverContext {
     /// Evaluate a claripy AST to a single concrete value.
     ///
     /// Returns None if unsatisfiable or the expression cannot be evaluated.
-    pub fn eval(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Option<u128>> {
+    /// For values > 128 bits, use eval_wide which returns a Python int.
+    pub fn eval(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Option<PyObject>> {
         let bv = claripy_to_rustbv(py, ast, &self.inner.sym_ctx)?;
-        Ok(self.inner.sym_ctx.eval(&bv))
+        let width = bv.width();
+
+        // For narrow values (<= 128 bits), use the fast path
+        if width <= 128 {
+            match self.inner.sym_ctx.eval(&bv) {
+                Some(v) => Ok(Some(v.into_pyobject(py)?.into())),
+                None => Ok(None),
+            }
+        } else {
+            // For wide values, use the wide path that returns bytes
+            match self.inner.sym_ctx.eval_wide(&bv) {
+                Some(bytes) => {
+                    // Convert bytes to Python int using int.from_bytes
+                    let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
+                    let int_class = py.get_type::<pyo3::types::PyInt>();
+                    let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
+                    Ok(Some(py_int.into()))
+                }
+                None => Ok(None),
+            }
+        }
     }
 
     /// Evaluate a claripy AST and return up to n solutions.
@@ -258,6 +279,14 @@ impl RustSolverContext {
     #[staticmethod]
     pub fn z3_available() -> bool {
         cfg!(feature = "vex-engine-z3")
+    }
+
+    /// Get the unsat core as indices of constraints added.
+    ///
+    /// Returns the indices of constraints that form the unsatisfiable core.
+    /// Call this after checking satisfiability and finding UNSAT.
+    pub fn unsat_core(&self) -> PyResult<Vec<usize>> {
+        Ok(self.inner.sym_ctx.unsat_core())
     }
 }
 
