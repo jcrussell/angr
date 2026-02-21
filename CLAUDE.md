@@ -82,3 +82,41 @@ print(f'max: {ctx.max(x, signed=False)}')  # 19
 ## Current Test Status
 
 **Tier 3 Extended Tests:** 100% pass rate (920/920)
+
+**angr-examples Pass Rate:** 25/39 (64%) with Rust engine
+
+### Passing Examples (25 total)
+- All 6 CSCI-4968-MBE crackmes (crackme0x00a through crackme0x05)
+- ais3_crackme
+- android_arm_license_validation
+- asisctffinals2015_license
+- CADET_00001
+- codegate_2017-angrybird
+- csgames2018
+- defcamp_r100
+- ekopartyctf2015_rev100
+- fauxware
+- flareon2015_10
+- flareon2015_2
+- google2016_unbreakable_0
+- google2016_unbreakable_1
+- insomnihack_aeg
+- mma_howtouse
+- securityfest_fairlight
+- strcpy_find
+- sym-write
+- whitehatvn2015_re400
+
+### Timeouts (6 examples)
+- asisctffinals2015_fake, csaw_wyvern, ekopartyctf2016_rev250
+- grub, hackcon2016_angry-reverser, simple_heap_overflow
+
+### Remaining Failures (8 examples)
+- flareon2015_5: Symbolic address concretization
+- ekopartyctf2016_sokohashv2: Solver returns unsat
+- cmu_binary_bomb: Memory store error
+- whitehat_crypto400: No solution found
+- defcamp_r200: Example marked as broken
+- 0ctf_trace: Script-specific execution error
+- mma_simplehash: SimProcedure API compatibility
+- secuinside2016mbrainfuzz: No solution found
