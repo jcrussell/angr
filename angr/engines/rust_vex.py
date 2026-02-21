@@ -575,11 +575,12 @@ class RustVEXCallbacks:
                 self.memory_load_time += time.perf_counter() - t0
             return result
         except Exception as e:
-            l.warning("Memory load failed at 0x%x: %s", addr, e)
+            l.debug("Memory load failed at 0x%x (size %d): %s, creating symbolic", addr, size, e)
             if _profiler.enabled:
                 self.memory_load_time += time.perf_counter() - t0
-            # Return zeros on error
-            return (bytes(size), False, None)
+            # Create symbolic value for unmapped memory instead of returning zeros
+            sym_val = claripy.BVS(f"mem_{addr:x}_{size}", size * 8)
+            return (bytes(size), True, sym_val)
 
     def memory_store(self, addr: int, data: bytes) -> None:
         """
@@ -1452,22 +1453,24 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Clear any existing memory mappings
         self._rust_engine.clear_memory()
 
-        # Map binary sections that are readable but not writable
+        # Map all readable binary sections (including writable like GOT/data)
         for obj in self.project.loader.all_objects:
             # Map segments from the loader's memory
             for segment in obj.segments:
-                # Only map readable, non-writable segments (code/rodata)
-                if segment.is_readable and not segment.is_writable:
+                # Map all readable segments (code, rodata, data, got, etc.)
+                if segment.is_readable:
                     try:
                         # Load the data from the loader's memory
                         data = self.project.loader.memory.load(
                             segment.vaddr,
                             segment.memsize
                         )
-                        # Map to Rust engine (permissions: R-X = 5)
+                        # Set permissions based on segment flags
                         perms = 4  # R--
                         if segment.is_executable:
                             perms |= 1  # R-X
+                        if segment.is_writable:
+                            perms |= 2  # RW- or RWX
                         self._rust_engine.map_memory_data(
                             segment.vaddr,
                             bytes(data),
@@ -1475,10 +1478,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                         )
                         regions_mapped += 1
                         l.debug(
-                            "Mapped segment 0x%x-0x%x (%d bytes) to Rust",
+                            "Mapped segment 0x%x-0x%x (%d bytes, perms=%d) to Rust",
                             segment.vaddr,
                             segment.vaddr + segment.memsize,
-                            segment.memsize
+                            segment.memsize,
+                            perms
                         )
                     except Exception as e:
                         l.debug("Failed to map segment at 0x%x: %s", segment.vaddr, e)
@@ -1626,49 +1630,60 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             return 0
 
     def _sync_memory_from_rust_paged(self, state: "SimState") -> int:
-        """Sync memory changes from Rust back to paged memory."""
-        pages_synced = 0
-        page_size = state.memory.page_size
+        """Sync memory changes from Rust back to paged memory.
 
-        # Get list of dirty pages from Rust (pages that were written)
-        dirty_pages = self._rust_engine.get_dirty_pages()
+        Uses store log for precise sync - only updates bytes that were actually
+        written, preserving symbolic values in other locations on the same page.
+        """
+        stores_synced = 0
 
-        for page_addr in dirty_pages:
+        # Get store log: list of (address, size) for individual stores
+        store_log = self._rust_engine.get_store_log()
+
+        for store_addr, store_size in store_log:
             try:
-                # Read the modified page data from Rust
-                data = self._rust_engine.read_memory(page_addr, page_size)
+                # Read only the specific bytes that were stored
+                data = self._rust_engine.read_memory(store_addr, store_size)
                 # Store back to angr's memory as a bitvector
-                bv = claripy.BVV(int.from_bytes(data, 'little'), page_size * 8)
-                state.memory.store(page_addr, bv, endness='Iend_LE')
-                pages_synced += 1
+                bv = claripy.BVV(int.from_bytes(data, 'little'), store_size * 8)
+                state.memory.store(store_addr, bv, endness='Iend_LE')
+                stores_synced += 1
             except Exception:
-                # Page might not be readable or writable in this context
+                # Address might not be readable in this context
                 pass
 
-        return pages_synced
+        # Clear store log after sync
+        self._rust_engine.clear_store_log()
+
+        return stores_synced
 
     def _sync_memory_from_rust_regioned(self, state: "SimState") -> int:
-        """Sync memory changes from Rust back to regioned memory."""
-        pages_synced = 0
-        # Use default page size for regioned memory
-        page_size = 0x1000
+        """Sync memory changes from Rust back to regioned memory.
 
-        # Get list of dirty pages from Rust (pages that were written)
-        dirty_pages = self._rust_engine.get_dirty_pages()
+        Uses store log for precise sync - only updates bytes that were actually
+        written, preserving symbolic values in other locations.
+        """
+        stores_synced = 0
 
-        for page_addr in dirty_pages:
+        # Get store log: list of (address, size) for individual stores
+        store_log = self._rust_engine.get_store_log()
+
+        for store_addr, store_size in store_log:
             try:
-                # Read the modified page data from Rust
-                data = self._rust_engine.read_memory(page_addr, page_size)
+                # Read only the specific bytes that were stored
+                data = self._rust_engine.read_memory(store_addr, store_size)
                 # Store back to angr's memory as a bitvector (store works on all memory types)
-                bv = claripy.BVV(int.from_bytes(data, 'little'), page_size * 8)
-                state.memory.store(page_addr, bv, endness='Iend_LE')
-                pages_synced += 1
+                bv = claripy.BVV(int.from_bytes(data, 'little'), store_size * 8)
+                state.memory.store(store_addr, bv, endness='Iend_LE')
+                stores_synced += 1
             except Exception:
-                # Page might not be readable or writable in this context
+                # Address might not be readable in this context
                 pass
 
-        return pages_synced
+        # Clear store log after sync
+        self._rust_engine.clear_store_log()
+
+        return stores_synced
 
     @property
     def rust_engine_available(self) -> bool:
@@ -1755,16 +1770,6 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 # Syscall - use normal execution path
                 return super().process(state, **kwargs)
 
-            # Check for symbolic base registers BEFORE using loop mode
-            # When base registers are symbolic, RUST_VEX_LOOP with RustSimSolver
-            # causes constraint propagation issues. Use standard Python VEX instead.
-            if self._has_symbolic_base_registers(state):
-                l.debug("Symbolic base registers - using standard execution")
-                # Also disable RUST_VEX_LOOP option so forked states don't use it
-                if o.RUST_VEX_LOOP in state.options:
-                    state.options.discard(o.RUST_VEX_LOOP)
-                return super().process(state, **kwargs)
-
             # No hook or syscall - use loop execution path with deferred forks
             return self._process_with_loop(state, **kwargs)
         # Fall back to standard execution
@@ -1848,14 +1853,22 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
     def _prefetch_stack_pages(self, state: SimState, engine) -> None:
         """
-        Pre-map stack pages before execution to avoid unmapped memory fallbacks.
+        Pre-map existing stack pages before execution to avoid unmapped memory fallbacks.
 
-        This prefetches the stack region (SP-64KB to SP+4KB) into the Rust engine's
-        concrete memory, reducing the number of Python callbacks needed for stack access.
+        Only prefetches pages that already exist in the state's memory - does NOT create
+        new pages. Symbolic data is concretized to provide initial concrete values.
         """
-        # For regioned memory, skip prefetching - regions manage their own pages
-        # and may not support the permissions() method
+        # Handle regioned memory with dedicated method
         if _memory_is_regioned(state.memory):
+            self._prefetch_stack_pages_regioned(state, engine)
+            return
+
+        # Only prefetch pages that already exist in state's memory
+        # Get access to internal _pages dict to avoid creating new pages
+        try:
+            pages = state.memory._pages
+            page_size = state.memory.page_size
+        except AttributeError:
             return
 
         try:
@@ -1863,42 +1876,90 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         except Exception:
             return
 
-        # Stack region: SP-64KB to SP+4KB (typical stack access range)
-        stack_start = sp - 0x10000  # 64KB below SP
+        # Stack region: SP-128KB to SP+4KB (extended stack access range)
+        stack_start = sp - 0x20000  # 128KB below SP
+        stack_end = sp + 0x1000     # 4KB above SP
+
+        # Round to page boundaries
+        stack_start = (stack_start // page_size) * page_size
+
+        # Map each existing page in stack region
+        for page_addr in range(stack_start, stack_end, page_size):
+            page_no = page_addr // page_size
+            if page_no not in pages or pages[page_no] is None:
+                continue  # Only prefetch existing pages
+
+            try:
+                # Load page data (won't create new symbolic data since page exists)
+                data = state.memory.load(page_addr, page_size)
+
+                # Skip pages with symbolic data - let Python callback handle them
+                # This ensures symbolic branches work correctly
+                if data.symbolic:
+                    continue
+
+                # Fast path for concrete data
+                if data.op == 'BVV':
+                    concrete_val = data.args[0]
+                else:
+                    # Should be concrete at this point, but eval to be safe
+                    concrete_val = state.solver.eval(data)
+
+                page_bytes = concrete_val.to_bytes(page_size, byteorder='big')
+
+                # Map the page in Rust (read/write/execute permissions)
+                engine.map_memory_data(page_addr, page_bytes, 7)
+            except Exception:
+                # Skip pages that can't be read
+                pass
+
+    def _prefetch_stack_pages_regioned(self, state: SimState, engine) -> None:
+        """Prefetch existing stack pages from regioned memory."""
+        try:
+            sp = state.solver.eval(state.regs.sp)
+        except Exception:
+            return
+
+        # Stack region: SP-128KB to SP+4KB
+        stack_start = sp - 0x20000  # 128KB below SP
         stack_end = sp + 0x1000     # 4KB above SP
 
         # Round to page boundaries
         page_size = 0x1000
         stack_start = (stack_start // page_size) * page_size
 
-        # Map each page that's accessible
-        for page_addr in range(stack_start, stack_end, page_size):
-            try:
-                # Check if page is mapped and readable
-                if not state.memory.permissions(page_addr):
+        # Iterate existing regions and their pages
+        for region_id, region in state.memory._regions.items():
+            if not hasattr(region, '_pages') or not hasattr(region, 'page_size'):
+                continue
+
+            region_page_size = region.page_size
+            for page_no, page in region._pages.items():
+                if page is None:
                     continue
 
-                # Load page data
-                data = state.memory.load(page_addr, page_size)
+                page_addr = page_no * region_page_size
 
-                # Only map concrete pages
-                if data.symbolic:
+                # Only prefetch pages in stack region
+                if page_addr < stack_start or page_addr >= stack_end:
                     continue
 
-                # Extract concrete bytes
-                if data.op == 'BVV':
-                    concrete_val = data.args[0]
-                    page_bytes = concrete_val.to_bytes(page_size, byteorder='big')
-                else:
-                    # Try to evaluate (might fail for symbolic data)
-                    concrete_val = state.solver.eval(data, cast_to=bytes)
-                    page_bytes = concrete_val
+                try:
+                    data = state.memory.load(page_addr, region_page_size, endness='Iend_LE')
 
-                # Map the page in Rust (read/write/execute permissions)
-                engine.map_memory_data(page_addr, page_bytes, 7)
-            except Exception:
-                # Skip pages that can't be read (unmapped, symbolic, etc.)
-                pass
+                    # Skip pages with symbolic data - let Python callback handle them
+                    if data.symbolic:
+                        continue
+
+                    if data.op == 'BVV':
+                        concrete_val = data.args[0]
+                    else:
+                        concrete_val = state.solver.eval(data)
+
+                    page_bytes = concrete_val.to_bytes(region_page_size, byteorder='big')
+                    engine.map_memory_data(page_addr, page_bytes, 7)
+                except Exception as e:
+                    l.debug("Failed to prefetch stack page 0x%x: %s", page_addr, e)
 
     def _sync_registers_individual(self, state: SimState, engine) -> None:
         """Sync registers individually, handling both concrete and symbolic values."""
@@ -2014,8 +2075,10 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Synchronize Rust engine state back to angr SimState.
 
-        This copies only MODIFIED register values from the Rust engine back
-        to the SimState, using dirty register tracking for efficiency.
+        This syncs key registers from the Rust engine back to the SimState.
+        We sync all key registers unconditionally because dirty tracking is
+        not reliable for single-block execution (execute_cached_block doesn't
+        update dirty_registers).
         """
         if self._rust_engine is None:
             return
@@ -2025,23 +2088,20 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Sync PC
         state.ip = engine.pc
 
-        # Get only the dirty register offsets (registers modified during Rust execution)
-        dirty_offsets = engine.get_dirty_register_offsets()
-
-        if not dirty_offsets:
-            # No registers modified - nothing to sync
-            return
-
-        # Sync only dirty registers
-        for offset in dirty_offsets:
+        # Sync all key registers (dirty tracking is broken for single-block execution)
+        key_registers = self._get_key_registers(state.arch)
+        for reg_name in key_registers:
             try:
-                size = self._get_register_size_at_offset(state.arch, offset)
+                offset = state.arch.get_register_offset(reg_name)
+                size = state.arch.registers.get(reg_name, (None, None))[1]
+                if size is None:
+                    continue
                 value = engine.get_register_by_offset(offset, size)
                 state.registers.store(offset, claripy.BVV(value, size * 8))
             except Exception as e:
-                l.debug("Failed to sync register at offset %d: %s", offset, e)
+                l.debug("Failed to sync register %s: %s", reg_name, e)
 
-        # Clear dirty tracking for next execution
+        # Clear dirty tracking for consistency
         engine.clear_dirty_registers()
 
     def _handle_rust_execution_event(
@@ -2173,11 +2233,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         addr = successors.addr
         state = self.state
 
-        # Check if base/stack pointer registers are symbolic - if so, fall back to Python
-        # because Rust cannot properly handle symbolic register values (they won't be synced)
-        if self._has_symbolic_base_registers(state):
-            # Note: Warning already printed by _has_symbolic_base_registers
-            l.debug("Single-block path: falling back to Python VEX at 0x%x", addr)
+        # Check if there's a hook at this address - if so, use Python for hook handling
+        # This is critical: hooks are at ExternObject addresses which have garbage data.
+        # Lifting/executing garbage IRSB causes incorrect symbolic execution.
+        if state.project is not None and addr in state.project._sim_procedures:
+            l.debug("Single-block path: hook at 0x%x, falling back to Python", addr)
             return super().process_successors(
                 successors,
                 irsb=irsb,
@@ -2357,12 +2417,6 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         addr = successors.addr
         state = self.state
-
-        # Check if base/stack pointer registers are symbolic - if so, fall back to Python
-        # because Rust cannot properly handle symbolic register values (they won't be synced)
-        if self._has_symbolic_base_registers(state):
-            l.debug("Symbolic base registers detected, falling back to Python VEX")
-            return super().process_successors(successors, **kwargs)
 
         # Start profiling if enabled
         if _profiler.enabled:
