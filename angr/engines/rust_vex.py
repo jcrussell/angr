@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 import claripy
@@ -463,8 +464,13 @@ def _const_to_dict(con) -> dict:
         return {"tag": "Ico_F32", "value": float(value)}
     elif "F64" in type_name:
         return {"tag": "Ico_F64", "value": float(value)}
-    elif "V128" in type_name:
-        return {"tag": "Ico_V128", "value": value}
+    elif "V128" in type_name or "U128" in type_name:
+        # Serialize 128-bit values as [low, high] u64 pair since serde_json
+        # cannot deserialize u128 natively
+        low = value & ((1 << 64) - 1)
+        high = (value >> 64) & ((1 << 64) - 1)
+        tag = "Ico_V128" if "V128" in type_name else "Ico_U128"
+        return {"tag": tag, "low": low, "high": high}
     elif "V256" in type_name:
         # V256 is stored as 4 x u64
         if isinstance(value, (list, tuple)) and len(value) == 4:
@@ -536,6 +542,11 @@ class RustVEXCallbacks:
         self.register_get_time = 0.0
         self.register_put_time = 0.0
         self.lift_block_time = 0.0
+
+        # Page fetch counters and timing
+        self.fetch_page_count = 0
+        self.batch_fetch_pages_count = 0
+        self.fetch_page_time = 0.0
 
     def memory_load(self, addr: int, size: int) -> tuple[bytes, bool, Any]:
         """
@@ -1026,6 +1037,114 @@ class RustVEXCallbacks:
                 return (bytes(ret_ty_bits // 8), True, None)
             return (b'', False, None)
 
+    def fetch_page(self, page_addr: int) -> tuple[bytes, int, bool]:
+        """
+        Fetch a 4KB page from angr's memory model.
+
+        This is called when Rust's memory encounters an unmapped page in a
+        lazy region. The page is fetched and cached in Rust memory for
+        subsequent accesses.
+
+        Args:
+            page_addr: Page-aligned address (must be multiple of 4096).
+
+        Returns:
+            Tuple of (page_data_4kb, permissions, is_mapped).
+            - page_data: 4096 bytes of page content
+            - permissions: permission bits (R=4, W=2, X=1)
+            - is_mapped: False if the page doesn't exist in Python memory
+        """
+        self.fetch_page_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
+
+        PAGE_SIZE = 4096
+
+        try:
+            # Check if this page is mapped in angr's memory
+            memory = self.state.memory
+
+            # Try to load the full page
+            # For efficiency, we load all 4KB at once
+            try:
+                page_data = bytearray(PAGE_SIZE)
+                has_data = False
+
+                # Load byte by byte, handling potential unmapped regions
+                for offset in range(PAGE_SIZE):
+                    addr = page_addr + offset
+                    try:
+                        val = memory.load(addr, 1, endness='Iend_LE')
+                        if val.symbolic:
+                            # Symbolic byte - use concrete approximation
+                            if val.op == 'BVV':
+                                page_data[offset] = val.args[0] & 0xFF
+                            else:
+                                page_data[offset] = self.state.solver.eval(val) & 0xFF
+                        else:
+                            if val.op == 'BVV':
+                                page_data[offset] = val.args[0] & 0xFF
+                            else:
+                                page_data[offset] = self.state.solver.eval(val) & 0xFF
+                        has_data = True
+                    except Exception:
+                        # This byte is unmapped - leave as zero
+                        page_data[offset] = 0
+
+                if not has_data:
+                    # Entire page is unmapped
+                    if _profiler.enabled:
+                        self.fetch_page_time += time.perf_counter() - t0
+                    return (bytes(PAGE_SIZE), 0, False)
+
+                # Get permissions (default to RWX if unknown)
+                permissions = 7  # RWX
+
+                if _profiler.enabled:
+                    self.fetch_page_time += time.perf_counter() - t0
+                return (bytes(page_data), permissions, True)
+
+            except Exception as e:
+                l.debug("Page fetch failed at 0x%x: %s", page_addr, e)
+                if _profiler.enabled:
+                    self.fetch_page_time += time.perf_counter() - t0
+                return (bytes(PAGE_SIZE), 0, False)
+
+        except Exception as e:
+            l.warning("Page fetch error at 0x%x: %s", page_addr, e)
+            if _profiler.enabled:
+                self.fetch_page_time += time.perf_counter() - t0
+            return (bytes(PAGE_SIZE), 0, False)
+
+    def batch_fetch_pages(self, page_addrs: list[int]) -> list[tuple[bytes, int, bool]]:
+        """
+        Fetch multiple 4KB pages from angr's memory model.
+
+        This is more efficient than fetching pages one at a time.
+
+        Args:
+            page_addrs: List of page-aligned addresses.
+
+        Returns:
+            List of (page_data_4kb, permissions, is_mapped) tuples.
+        """
+        self.batch_fetch_pages_count += 1
+        if _profiler.enabled:
+            t0 = time.perf_counter()
+
+        results = []
+        for page_addr in page_addrs:
+            # Reuse single-page fetch logic
+            result = self.fetch_page(page_addr)
+            results.append(result)
+            # Don't double-count
+            self.fetch_page_count -= 1
+
+        if _profiler.enabled:
+            self.fetch_page_time += time.perf_counter() - t0
+
+        return results
+
     def get_stats(self) -> dict:
         """
         Get callback invocation statistics.
@@ -1050,11 +1169,14 @@ class RustVEXCallbacks:
             "register_get_time_ms": self.register_get_time * 1000,
             "register_put_time_ms": self.register_put_time * 1000,
             "lift_block_time_ms": self.lift_block_time * 1000,
+            "fetch_page_count": self.fetch_page_count,
+            "batch_fetch_pages_count": self.batch_fetch_pages_count,
+            "fetch_page_time_ms": self.fetch_page_time * 1000,
             "total_callback_time_ms": (
                 self.memory_load_time + self.memory_store_time +
                 self.memory_store_batch_time + self.memory_load_batch_time +
                 self.register_get_time + self.register_put_time +
-                self.lift_block_time
+                self.lift_block_time + self.fetch_page_time
             ) * 1000,
         }
 
@@ -1083,6 +1205,8 @@ class RustVEXCallbacks:
         rust_cbs.set_get_register(self.get_register)
         rust_cbs.set_put_register(self.put_register)
         rust_cbs.set_dirty_call(self.dirty_call)
+        rust_cbs.set_fetch_page(self.fetch_page)
+        rust_cbs.set_batch_fetch_pages(self.batch_fetch_pages)
 
         return rust_cbs
 
@@ -1114,6 +1238,8 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
     _rust_engine: RustVEXEngine | None = None
     _rust_engine_synced: bool = False
     _use_rust_memory: bool = False
+    # Maximum number of fallback entries to cache (LRU eviction)
+    _MAX_FALLBACK_CACHE_SIZE: int = 1024
 
     def __init__(self, project: angr.Project, use_deferred_forks: bool = True, max_deferred_forks: int = 5, use_rust_memory: bool = False):
         super().__init__(project)
@@ -1124,6 +1250,16 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         self._last_callbacks: RustVEXCallbacks | None = None
         self._use_rust_memory = use_rust_memory
         self._rust_memory_synced = False
+        # Cache of addresses that failed Rust execution -> reason string (LRU via OrderedDict)
+        self._fallback_addresses: OrderedDict[int, str] = OrderedDict()
+        # Cache of last synced register values (offset -> concrete_value)
+        # Used to skip redundant syncs when values haven't changed
+        self._last_synced_registers: dict[int, int] = {}
+        # Memory version tracking: id() of the last state whose memory was synced
+        # Used to skip redundant memory syncs when stepping the same state
+        self._last_synced_state_id: int | None = None
+        # Track if memory was modified by Rust (requires resync from Python)
+        self._rust_memory_dirty: bool = False
 
         if not RUST_ENGINE_AVAILABLE:
             l.warning("RustVEXMixin initialized but Rust engine not available")
@@ -1194,8 +1330,36 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         else:
             self._rust_engine.disable_rust_memory()
 
+    def _should_use_rust(self, addr: int) -> bool:
+        """
+        Check if Rust engine should be used for the given address.
+
+        Returns False if the address is in the fallback cache (known to fail),
+        True otherwise.
+        """
+        return addr not in self._fallback_addresses
+
+    def _record_fallback(self, addr: int, reason: str) -> None:
+        """
+        Record that Rust execution failed at the given address.
+
+        This caches the failure so we don't repeatedly try Rust at this address.
+        Uses LRU eviction when cache exceeds _MAX_FALLBACK_CACHE_SIZE.
+        """
+        # Move to end if already present (LRU behavior)
+        if addr in self._fallback_addresses:
+            self._fallback_addresses.move_to_end(addr)
+            return
+
+        # Evict oldest entry if at capacity
+        while len(self._fallback_addresses) >= self._MAX_FALLBACK_CACHE_SIZE:
+            self._fallback_addresses.popitem(last=False)
+
+        self._fallback_addresses[addr] = reason
+        l.debug("Recorded Rust fallback for 0x%x: %s", addr, reason)
+
     def _init_rust_memory(self) -> None:
-        """Initialize Rust-native memory model."""
+        """Initialize Rust-native memory model with lazy regions for on-demand fetching."""
         if self._rust_engine is None:
             return
 
@@ -1205,7 +1369,71 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Create the Rust memory model
         self._rust_engine.create_rust_memory(little_endian)
         self._rust_engine.enable_rust_memory()
+
+        # Add lazy regions for common memory areas that should be fetched on-demand
+        # This avoids pre-loading pages that may never be accessed
+        self._setup_lazy_regions()
+
         l.debug("Rust-native memory model initialized (little_endian=%s)", little_endian)
+
+    def _setup_lazy_regions(self) -> None:
+        """Set up lazy regions for on-demand page fetching."""
+        if self._rust_engine is None:
+            return
+
+        # Stack region: angr uses addresses around 0x7fffffffffef000 for the stack
+        # We need to cover a range below the stack top since stack grows down
+        arch_bits = self.project.arch.bits
+
+        if arch_bits == 64:
+            # 64-bit: Add lazy region for angr's stack area
+            # angr stack is around 0x7fffffffffef000, stack grows DOWN
+            # Cover 1GB below the typical stack top to reduce fallbacks
+            stack_top = 0x7fffffffffff000   # Typical stack top in angr
+            stack_size = 0x40000000         # 1GB lazy region (was 256MB)
+            stack_base = stack_top - stack_size
+
+            self._rust_engine.add_lazy_region(stack_base, stack_size)
+            l.debug("Added 64-bit stack lazy region: 0x%x - 0x%x (1GB)", stack_base, stack_top)
+
+            # Also add lazy region for typical heap area (for brk-based allocation)
+            heap_base = 0x0000_0060_0000  # Common heap start
+            heap_size = 0x0000_4000_0000  # 1GB lazy region (was 256MB)
+
+            self._rust_engine.add_lazy_region(heap_base, heap_size)
+            l.debug("Added 64-bit heap lazy region: 0x%x - 0x%x (1GB)", heap_base, heap_base + heap_size)
+
+            # Add lazy region for mmap area (typical location for large allocations)
+            mmap_base = 0x7fff_0000_0000  # Common mmap region
+            mmap_size = 0x0000_4000_0000  # 1GB lazy region
+
+            self._rust_engine.add_lazy_region(mmap_base, mmap_size)
+            l.debug("Added 64-bit mmap lazy region: 0x%x - 0x%x (1GB)", mmap_base, mmap_base + mmap_size)
+
+        elif arch_bits == 32:
+            # 32-bit: Address space is more limited but still expand regions
+            # angr uses various stack addresses for 32-bit, including 0x7ffef000 and 0xbffff000
+            # We add multiple regions to cover common cases
+
+            # Primary stack region (covers addresses like 0x7ffef000)
+            stack_base_1 = 0x7f00_0000  # Start of typical stack area
+            stack_size_1 = 0x0100_0000  # 16MB to cover 0x7f000000 - 0x80000000
+
+            self._rust_engine.add_lazy_region(stack_base_1, stack_size_1)
+            l.debug("Added 32-bit stack lazy region 1: 0x%x - 0x%x (16MB)", stack_base_1, stack_base_1 + stack_size_1)
+
+            # Secondary stack region (covers addresses like 0xbffef000)
+            stack_base_2 = 0xbf00_0000  # Typical 32-bit stack area for some binaries
+            stack_size_2 = 0x0100_0000  # 16MB
+
+            self._rust_engine.add_lazy_region(stack_base_2, stack_size_2)
+            l.debug("Added 32-bit stack lazy region 2: 0x%x - 0x%x (16MB)", stack_base_2, stack_base_2 + stack_size_2)
+
+            heap_base = 0x0804_0000  # After typical binary load
+            heap_size = 0x2000_0000  # 512MB (was 256MB)
+
+            self._rust_engine.add_lazy_region(heap_base, heap_size)
+            l.debug("Added 32-bit heap lazy region: 0x%x - 0x%x (512MB)", heap_base, heap_base + heap_size)
 
     def _sync_rust_memory_from_state(self, state: "SimState") -> int:
         """
@@ -1489,12 +1717,19 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         return regions_mapped
 
-    def _sync_state_memory_to_rust(self, state: "SimState") -> int:
+    def _sync_state_memory_to_rust(self, state: "SimState", force: bool = False) -> int:
         """
         Sync all concrete memory from state to Rust engine.
 
         This maps all pages from angr's memory model to Rust, enabling
         Rust to execute without memory callbacks for concrete regions.
+
+        Uses state identity tracking to skip redundant syncs when the same
+        state is being stepped multiple times without modification.
+
+        Args:
+            state: SimState to sync from.
+            force: If True, force sync even if state appears unchanged.
 
         Routes to appropriate implementation based on memory type:
         - PagedMemoryMixin: Direct page access
@@ -1502,6 +1737,17 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         if not self.rust_engine_available:
             return 0
+
+        # Skip sync if this is the same state we already synced and Rust didn't
+        # modify memory (no stores during last execution)
+        state_id = id(state)
+        if not force and state_id == self._last_synced_state_id and not self._rust_memory_dirty:
+            l.debug("Skipping memory sync - state unchanged (id=%d)", state_id)
+            return 0
+
+        # Track that we're syncing this state
+        self._last_synced_state_id = state_id
+        self._rust_memory_dirty = False
 
         if _memory_is_regioned(state.memory):
             return self._sync_state_memory_to_rust_regioned(state)
@@ -1616,18 +1862,24 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         Routes to appropriate implementation based on memory type.
 
         Returns:
-            Number of pages synced back.
+            Number of stores synced back.
         """
         if not self.rust_engine_available:
             return 0
 
+        stores_synced = 0
         if _memory_is_regioned(state.memory):
-            return self._sync_memory_from_rust_regioned(state)
+            stores_synced = self._sync_memory_from_rust_regioned(state)
         elif _memory_has_paging(state.memory):
-            return self._sync_memory_from_rust_paged(state)
+            stores_synced = self._sync_memory_from_rust_paged(state)
         else:
             l.debug("Unknown memory type, skipping sync from Rust")
-            return 0
+
+        # If Rust wrote to memory, mark as dirty so next sync doesn't skip
+        if stores_synced > 0:
+            self._rust_memory_dirty = True
+
+        return stores_synced
 
     def _sync_memory_from_rust_paged(self, state: "SimState") -> int:
         """Sync memory changes from Rust back to paged memory.
@@ -1962,7 +2214,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                     l.debug("Failed to prefetch stack page 0x%x: %s", page_addr, e)
 
     def _sync_registers_individual(self, state: SimState, engine) -> None:
-        """Sync registers individually, handling both concrete and symbolic values."""
+        """Sync registers individually, handling both concrete and symbolic values.
+
+        Uses caching to skip syncing registers whose values haven't changed since
+        the last sync, reducing FFI overhead.
+        """
         key_registers = self._get_key_registers(state.arch)
         for reg_name in key_registers:
             try:
@@ -1978,9 +2234,18 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                         concrete_val = reg_val.args[0]
                     else:
                         concrete_val = state.solver.eval(reg_val)
+
+                    # Check cache - skip sync if value unchanged
+                    cached_val = self._last_synced_registers.get(offset)
+                    if cached_val is not None and cached_val == concrete_val:
+                        continue  # Value unchanged, skip sync
+
                     engine.set_register(reg_name, concrete_val)
+                    self._last_synced_registers[offset] = concrete_val
                 else:
-                    # Symbolic register: pass the AST to Rust for symbolic execution
+                    # Symbolic register: always sync (can't easily cache symbolic ASTs)
+                    # Clear cache entry since value is now symbolic
+                    self._last_synced_registers.pop(offset, None)
                     try:
                         engine.set_symbolic_register(offset, reg_val)
                     except Exception as e:
@@ -1989,6 +2254,7 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                         try:
                             concrete_val = state.solver.eval(reg_val)
                             engine.set_register(reg_name, concrete_val)
+                            self._last_synced_registers[offset] = concrete_val
                         except Exception:
                             pass
             except (KeyError, AttributeError, errors.SimValueError):
@@ -2075,33 +2341,50 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         """
         Synchronize Rust engine state back to angr SimState.
 
-        This syncs key registers from the Rust engine back to the SimState.
-        We sync all key registers unconditionally because dirty tracking is
-        not reliable for single-block execution (execute_cached_block doesn't
-        update dirty_registers).
+        Uses lazy register sync: only syncs registers that were modified in Rust.
+        This significantly reduces FFI overhead when few registers change.
         """
         if self._rust_engine is None:
             return
 
         engine = self._rust_engine
 
-        # Sync PC
+        # Sync PC (always needed)
         state.ip = engine.pc
 
-        # Sync all key registers (dirty tracking is broken for single-block execution)
-        key_registers = self._get_key_registers(state.arch)
-        for reg_name in key_registers:
-            try:
-                offset = state.arch.get_register_offset(reg_name)
-                size = state.arch.registers.get(reg_name, (None, None))[1]
-                if size is None:
-                    continue
-                value = engine.get_register_by_offset(offset, size)
-                state.registers.store(offset, claripy.BVV(value, size * 8))
-            except Exception as e:
-                l.debug("Failed to sync register %s: %s", reg_name, e)
+        # Get dirty register offsets (4-byte aligned offsets)
+        dirty_offsets = engine.get_dirty_register_offsets()
 
-        # Clear dirty tracking for consistency
+        if dirty_offsets:
+            # Lazy sync: only sync registers that were modified
+            for offset in dirty_offsets:
+                # Determine register size at this offset
+                size = self._get_register_size_at_offset(state.arch, offset)
+                try:
+                    value = engine.get_register_by_offset(offset, size)
+                    state.registers.store(offset, claripy.BVV(value, size * 8))
+                    # Update cache with value from Rust
+                    self._last_synced_registers[offset] = value
+                except Exception as e:
+                    l.debug("Failed to sync dirty register at offset %d: %s", offset, e)
+        else:
+            # No dirty registers tracked - fall back to full sync for safety
+            # This handles edge cases where dirty tracking wasn't updated
+            key_registers = self._get_key_registers(state.arch)
+            for reg_name in key_registers:
+                try:
+                    offset = state.arch.get_register_offset(reg_name)
+                    size = state.arch.registers.get(reg_name, (None, None))[1]
+                    if size is None:
+                        continue
+                    value = engine.get_register_by_offset(offset, size)
+                    state.registers.store(offset, claripy.BVV(value, size * 8))
+                    # Update cache with value from Rust
+                    self._last_synced_registers[offset] = value
+                except Exception as e:
+                    l.debug("Failed to sync register %s: %s", reg_name, e)
+
+        # Clear dirty tracking for next execution
         engine.clear_dirty_registers()
 
     def _handle_rust_execution_event(
@@ -2248,9 +2531,18 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 **kwargs,
             )
 
-        # Save state snapshot for rollback if Rust fails
-        # Single-block Rust can still modify state via sync operations
-        state_snapshot = state.copy()
+        # Check if this address previously failed Rust execution (fallback cache)
+        if not self._should_use_rust(addr):
+            l.debug("Skipping Rust for 0x%x (cached fallback)", addr)
+            return super().process_successors(
+                successors,
+                irsb=irsb,
+                insn_bytes=insn_bytes,
+                extra_stop_points=extra_stop_points,
+                num_inst=num_inst,
+                size=size,
+                **kwargs,
+            )
 
         # Start profiling if enabled
         if _profiler.enabled:
@@ -2266,62 +2558,82 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         state.scratch.sim_procedure = None
         state.scratch.bbl_addr = addr
 
-        # Sync hooks to Rust engine
-        if state.project is not None:
-            for hook_addr in state.project._sim_procedures:
-                self._rust_engine.add_hook(hook_addr)
+        # Create callback object for proper memory access
+        cbs = RustVEXCallbacks(state, self.project, self)
+        self._last_callbacks = cbs
 
-        # Sync state to Rust engine
-        if _profiler.enabled:
-            t0 = time.perf_counter()
-        self._sync_state_to_rust(state)
-        # Sync concrete memory pages for fast Rust access
-        self._sync_state_memory_to_rust(state)
-        # Sync Rust-native memory if enabled
-        if self._use_rust_memory:
-            self._sync_rust_memory_from_state(state)
-        if _profiler.enabled:
-            _profiler.sync_to_rust_time += time.perf_counter() - t0
+        # Save state snapshot for rollback if Rust fails
+        state_snapshot = state.copy()
 
-        # Lift the block if not provided
-        if irsb is None:
+        try:
+            # Setup Rust callbacks - this enables proper memory access via Python
+            rust_cbs = cbs.setup_rust_callbacks()
+            self._rust_engine.set_callbacks(rust_cbs)
+
+            # Sync hooks to Rust engine
+            if state.project is not None:
+                for hook_addr in state.project._sim_procedures:
+                    self._rust_engine.add_hook(hook_addr)
+
+            # Sync state to Rust engine
             if _profiler.enabled:
                 t0 = time.perf_counter()
-            irsb = self.lift_vex(
-                insn_bytes=insn_bytes,
-                addr=addr,
-                state=state,
-                thumb=thumb,
-                size=size,
-                num_inst=num_inst,
-                extra_stop_points=extra_stop_points,
-                opt_level=opt_level,
-                strict_block_end=strict_block_end,
-            )
+            self._sync_state_to_rust(state)
+            # Sync concrete memory pages for fast Rust access
+            self._sync_state_memory_to_rust(state)
+            # Sync Rust-native memory if enabled
+            if self._use_rust_memory:
+                self._sync_rust_memory_from_state(state)
             if _profiler.enabled:
-                _profiler.lift_time += time.perf_counter() - t0
+                _profiler.sync_to_rust_time += time.perf_counter() - t0
 
-        # Store IRSB in artifacts
-        successors.artifacts["irsb"] = irsb
-        successors.artifacts["irsb_size"] = irsb.size
-        successors.artifacts["irsb_direct_next"] = irsb.direct_next
+            # Lift the block if not provided
+            if irsb is None:
+                if _profiler.enabled:
+                    t0 = time.perf_counter()
+                irsb = self.lift_vex(
+                    insn_bytes=insn_bytes,
+                    addr=addr,
+                    state=state,
+                    thumb=thumb,
+                    size=size,
+                    num_inst=num_inst,
+                    extra_stop_points=extra_stop_points,
+                    opt_level=opt_level,
+                    strict_block_end=strict_block_end,
+                )
+                if _profiler.enabled:
+                    _profiler.lift_time += time.perf_counter() - t0
 
-        # Serialize IRSB and execute in Rust
-        try:
+            # Store IRSB in artifacts
+            successors.artifacts["irsb"] = irsb
+            successors.artifacts["irsb_size"] = irsb.size
+            successors.artifacts["irsb_direct_next"] = irsb.direct_next
+
+            # Serialize and cache IRSB in callbacks so lift_block callback returns it
             if _profiler.enabled:
                 t0 = time.perf_counter()
             irsb_json = _serialize_irsb(irsb)
+            cbs._lifted_blocks[addr] = irsb_json  # Pre-cache for lift_block callback
             if _profiler.enabled:
                 _profiler.serialize_time += time.perf_counter() - t0
                 t0 = time.perf_counter()
-            event = self._rust_engine.execute_irsb_json(irsb_json)
+
+            # Get solver context from RustSimSolver (if available)
+            solver_ctx = None
+            if RUST_SOLVER_AVAILABLE and isinstance(state.solver, RustSimSolver):
+                solver_ctx = state.solver._rust_ctx
+
+            # Execute single block using callback-based interpreter
+            # Note: deferred forks are now properly handled via BV-to-Bool conversion
+            event = self._rust_engine.run_loop(1, solver_ctx=solver_ctx)
             if _profiler.enabled:
                 _profiler.execute_time += time.perf_counter() - t0
 
             # Handle the execution event
             if _profiler.enabled:
                 t0 = time.perf_counter()
-            needs_more = self._handle_rust_execution_event(event, state, successors)
+            self._handle_loop_execution_event(event, state, successors)
             # Sync memory changes back from Rust
             self._sync_memory_from_rust(state)
             # Sync Rust-native memory dirty pages if enabled
@@ -2329,19 +2641,6 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 self._sync_rust_memory_to_state(state)
             if _profiler.enabled:
                 _profiler.sync_from_rust_time += time.perf_counter() - t0
-
-            if needs_more:
-                # Rust engine returned need_lift or similar - fall back to Python
-                l.debug("Rust engine needs more processing at 0x%x, falling back to Python", addr)
-                return super().process_successors(
-                    successors,
-                    irsb=irsb,
-                    insn_bytes=insn_bytes,
-                    extra_stop_points=extra_stop_points,
-                    num_inst=num_inst,
-                    size=size,
-                    **kwargs,
-                )
 
             successors.processed = True
 
@@ -2352,6 +2651,8 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         except Exception as e:
             l.warning("Rust VEX execution failed: %s, falling back to Python", e)
+            # Record this address as a fallback to avoid repeated Rust attempts
+            self._record_fallback(addr, str(e))
             # Restore state snapshot to ensure Python VEX has clean state
             self.state = state_snapshot
             return super().process_successors(
@@ -2400,6 +2701,11 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Check if state IP is symbolic - must fall back to Python for proper handling
         if isinstance(self.state._ip, claripy.ast.BV) and self.state._ip.symbolic:
             l.debug("Symbolic IP detected, falling back to Python VEX")
+            return super().process_successors(successors, **kwargs)
+
+        # Check if this address previously failed Rust execution (fallback cache)
+        if not self._should_use_rust(successors.addr):
+            l.debug("Skipping Rust for 0x%x (cached fallback)", successors.addr)
             return super().process_successors(successors, **kwargs)
 
         if PythonCallbacks is None:
@@ -2502,6 +2808,8 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
         except Exception as e:
             l.warning("Rust VEX loop execution failed: %s, falling back", e)
+            # Record this address as a fallback to avoid repeated Rust attempts
+            self._record_fallback(addr, str(e))
             # Restore state snapshot - Rust execution may have modified Python state
             # through memory callbacks or partial syncs. Restore to ensure Python VEX
             # has clean symbolic values.
@@ -2658,12 +2966,16 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # This ensures the main state's solver knows about all branches taken
         for fork in deferred_forks:
             if fork.condition_ast is not None:
+                # Convert 1-bit BV to proper Bool constraint (matches heavy.py:271)
+                # Rust returns condition_ast as claripy.BVV/BVS(val, 1) but Z3
+                # expects a Bool. Using "!= 0" converts BV to Bool properly.
+                condition_bool = fork.condition_ast != 0
                 if fork.path_taken:
                     # We took the true path, add condition as constraint
-                    state.solver.add(fork.condition_ast)
+                    state.solver.add(condition_bool)
                 else:
                     # We took the false path, add Not(condition) as constraint
-                    state.solver.add(claripy.Not(fork.condition_ast))
+                    state.solver.add(claripy.Not(condition_bool))
 
         # Process forks in reverse order (LIFO) to match solver push/pop structure
         for fork in reversed(deferred_forks):
@@ -2693,16 +3005,18 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             # If condition AST is available, replace the main state's taken constraint
             # with the fork's opposite constraint
             if fork.condition_ast is not None:
+                # Convert 1-bit BV to proper Bool constraint (matches heavy.py:271)
+                condition_bool = fork.condition_ast != 0
                 if fork.path_taken:
                     # Main took true, fork needs ~condition (false path)
                     # Remove the taken constraint and add the opposite
                     # Since fork_state inherits main state's constraints, we need to
                     # remove the taken constraint and add the negated one
                     # For simplicity, we add both constraints - the solver handles contradictions
-                    fork_state.solver.add(claripy.Not(fork.condition_ast))
+                    fork_state.solver.add(claripy.Not(condition_bool))
                 else:
                     # Main took false, fork needs condition (true path)
-                    fork_state.solver.add(fork.condition_ast)
+                    fork_state.solver.add(condition_bool)
 
             # Add the fork state as a successor
             successors.add_successor(

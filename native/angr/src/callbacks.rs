@@ -136,7 +136,7 @@ pub struct ExecutionConfig {
 impl ExecutionConfig {
     /// Create a new execution config with default values.
     #[new]
-    #[pyo3(signature = (max_deferred_forks=100, use_deferred_forks=true))]
+    #[pyo3(signature = (max_deferred_forks=500, use_deferred_forks=true))]
     pub fn py_new(max_deferred_forks: u32, use_deferred_forks: bool) -> Self {
         ExecutionConfig {
             max_deferred_forks,
@@ -156,7 +156,7 @@ impl ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         ExecutionConfig {
-            max_deferred_forks: 100,
+            max_deferred_forks: 500,  // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
             use_deferred_forks: true,
         }
@@ -243,6 +243,12 @@ pub struct PythonCallbacks {
     /// Callback for dirty helper calls: fn(name: str, args: list[int], ret_ty_bits: int) -> (bytes, bool, object | None)
     /// This handles VEX dirty calls to helper functions (CPUID, RDTSC, etc.)
     pub dirty_call: Option<PyObject>,
+    /// Callback for fetching a single 4KB page: fn(page_addr: u64) -> (bytes, permissions: u8, is_mapped: bool)
+    /// This is used for on-demand page loading when Rust memory encounters an unmapped page.
+    pub fetch_page: Option<PyObject>,
+    /// Callback for batched page fetching: fn(page_addrs: list[u64]) -> list[(bytes, u8, bool)]
+    /// Returns list of (data, permissions, is_mapped) for each requested page.
+    pub batch_fetch_pages: Option<PyObject>,
 }
 
 #[pymethods]
@@ -265,6 +271,8 @@ impl PythonCallbacks {
             get_register: None,
             put_register: None,
             dirty_call: None,
+            fetch_page: None,
+            batch_fetch_pages: None,
         }
     }
 
@@ -412,6 +420,27 @@ impl PythonCallbacks {
     /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
     pub fn set_dirty_call(&mut self, cb: PyObject) {
         self.dirty_call = Some(cb);
+    }
+
+    /// Set the page fetch callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(page_addr: int) -> tuple[bytes, int, bool]`
+    ///
+    /// Returns (page_data_4kb, permissions, is_mapped).
+    /// If is_mapped is False, the page doesn't exist in Python memory.
+    pub fn set_fetch_page(&mut self, cb: PyObject) {
+        self.fetch_page = Some(cb);
+    }
+
+    /// Set the batched page fetch callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(page_addrs: list[int]) -> list[tuple[bytes, int, bool]]`
+    ///
+    /// Each result is (page_data_4kb, permissions, is_mapped).
+    pub fn set_batch_fetch_pages(&mut self, cb: PyObject) {
+        self.batch_fetch_pages = Some(cb);
     }
 
     /// Check if all required callbacks are set.
@@ -827,6 +856,76 @@ impl PythonCallbacks {
     /// Check if dirty call callback is available.
     pub fn has_dirty_call(&self) -> bool {
         self.dirty_call.is_some()
+    }
+
+    /// Check if fetch_page callback is available.
+    pub fn has_fetch_page(&self) -> bool {
+        self.fetch_page.is_some()
+    }
+
+    /// Call the page fetch callback to load a single 4KB page.
+    ///
+    /// Returns (page_data, permissions, is_mapped).
+    /// - page_data: 4096 bytes of page content
+    /// - permissions: permission bits (R=4, W=2, X=1)
+    /// - is_mapped: whether the page exists in Python memory
+    pub fn call_fetch_page(
+        &self,
+        py: Python<'_>,
+        page_addr: u64,
+    ) -> PyResult<(Vec<u8>, u8, bool)> {
+        let cb = self.fetch_page.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("fetch_page callback not set")
+        })?;
+
+        let result = cb.call1(py, (page_addr,))?;
+        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+
+        let data: Vec<u8> = tuple.get_item(0)?.extract()?;
+        let permissions: u8 = tuple.get_item(1)?.extract()?;
+        let is_mapped: bool = tuple.get_item(2)?.extract()?;
+
+        Ok((data, permissions, is_mapped))
+    }
+
+    /// Call the batched page fetch callback to load multiple 4KB pages.
+    ///
+    /// Returns a list of (page_data, permissions, is_mapped) for each page.
+    pub fn call_batch_fetch_pages(
+        &self,
+        py: Python<'_>,
+        page_addrs: &[u64],
+    ) -> PyResult<Vec<(Vec<u8>, u8, bool)>> {
+        if page_addrs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Try batch callback first
+        if let Some(cb) = &self.batch_fetch_pages {
+            let addrs_list: Vec<u64> = page_addrs.to_vec();
+            let result = cb.call1(py, (addrs_list,))?;
+
+            let result_list = result.downcast_bound::<pyo3::types::PyList>(py)?;
+            let mut results = Vec::with_capacity(page_addrs.len());
+
+            for item in result_list.iter() {
+                let tuple = item.downcast::<pyo3::types::PyTuple>()?;
+                let data: Vec<u8> = tuple.get_item(0)?.extract()?;
+                let permissions: u8 = tuple.get_item(1)?.extract()?;
+                let is_mapped: bool = tuple.get_item(2)?.extract()?;
+                results.push((data, permissions, is_mapped));
+            }
+
+            return Ok(results);
+        }
+
+        // Fallback: call individual fetches
+        let mut results = Vec::with_capacity(page_addrs.len());
+        for &page_addr in page_addrs {
+            let (data, perms, mapped) = self.call_fetch_page(py, page_addr)?;
+            results.push((data, perms, mapped));
+        }
+        Ok(results)
     }
 }
 

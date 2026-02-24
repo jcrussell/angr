@@ -264,7 +264,7 @@ pub enum PyVexConst {
     U64 { value: u64 },
 
     #[serde(rename = "Ico_U128")]
-    U128 { value: u128 },
+    U128 { low: u64, high: u64 },
 
     #[serde(rename = "Ico_F32")]
     F32 { value: f32 },
@@ -279,7 +279,7 @@ pub enum PyVexConst {
     F64i { value: u64 },
 
     #[serde(rename = "Ico_V128")]
-    V128 { value: u128 },
+    V128 { low: u64, high: u64 },
 
     #[serde(rename = "Ico_V256")]
     V256 { value: [u64; 4] },
@@ -328,12 +328,20 @@ fn convert_const(c: &PyVexConst) -> IRConst {
         PyVexConst::U16 { value } => IRConst::U16(*value),
         PyVexConst::U32 { value } => IRConst::U32(*value),
         PyVexConst::U64 { value } => IRConst::U64(*value),
-        PyVexConst::U128 { value } => IRConst::U128(*value),
+        PyVexConst::U128 { low, high } => {
+            // Reconstruct u128 from low/high u64 pair
+            let value = (*low as u128) | ((*high as u128) << 64);
+            IRConst::U128(value)
+        }
         PyVexConst::F32 { value } => IRConst::F32(*value),
         PyVexConst::F32i { value } => IRConst::F32(f32::from_bits(*value)),
         PyVexConst::F64 { value } => IRConst::F64(*value),
         PyVexConst::F64i { value } => IRConst::F64(f64::from_bits(*value)),
-        PyVexConst::V128 { value } => IRConst::V128(*value),
+        PyVexConst::V128 { low, high } => {
+            // Reconstruct u128 from low/high u64 pair
+            let value = (*low as u128) | ((*high as u128) << 64);
+            IRConst::V128(value)
+        }
         PyVexConst::V256 { value } => IRConst::V256(*value),
     }
 }
@@ -346,12 +354,12 @@ fn const_to_u64(c: &PyVexConst) -> u64 {
         PyVexConst::U16 { value } => *value as u64,
         PyVexConst::U32 { value } => *value as u64,
         PyVexConst::U64 { value } => *value,
-        PyVexConst::U128 { value } => *value as u64,
+        PyVexConst::U128 { low, .. } => *low,  // Take low 64 bits
         PyVexConst::F32 { value } => value.to_bits() as u64,
         PyVexConst::F32i { value } => *value as u64,
         PyVexConst::F64 { value } => value.to_bits(),
         PyVexConst::F64i { value } => *value,
-        PyVexConst::V128 { value } => *value as u64,
+        PyVexConst::V128 { low, .. } => *low,  // Take low 64 bits
         PyVexConst::V256 { value } => value[0],
     }
 }

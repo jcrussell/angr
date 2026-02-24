@@ -25,6 +25,8 @@ pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
 pub enum MemoryError {
     /// Unmapped memory access.
     Unmapped { addr: u64, size: u64 },
+    /// Unmapped page in a mapped region (can be fetched on-demand).
+    UnmappedPageInRegion { page_addr: u64 },
     /// Permission violation.
     Permission {
         addr: u64,
@@ -42,6 +44,9 @@ impl std::fmt::Display for MemoryError {
         match self {
             MemoryError::Unmapped { addr, size } => {
                 write!(f, "unmapped memory at 0x{:x} (size {})", addr, size)
+            }
+            MemoryError::UnmappedPageInRegion { page_addr } => {
+                write!(f, "unmapped page at 0x{:x} in mapped region", page_addr)
             }
             MemoryError::Permission {
                 addr,
@@ -247,6 +252,7 @@ impl MemoryPage {
 /// - Mixed concrete/symbolic storage
 /// - Endianness-aware loads and stores
 /// - Dirty page tracking for efficient sync
+/// - Lazy page regions for on-demand fetching
 pub struct SymbolicMemory {
     /// Pages indexed by page number (addr >> 12).
     pages: OrdMap<u64, MemoryPage>,
@@ -261,6 +267,11 @@ pub struct SymbolicMemory {
     /// Pages that have been modified since last clear.
     /// Stores page numbers (addr >> 12) for efficient tracking.
     dirty_pages: HashSet<u64>,
+    /// Lazy regions: page ranges that CAN have pages fetched on-demand.
+    /// Stores (start_page_num, end_page_num) pairs.
+    /// When a load hits an unmapped page in a lazy region, the interpreter
+    /// should fetch it from Python rather than failing.
+    lazy_regions: Vec<(u64, u64)>,
 }
 
 impl SymbolicMemory {
@@ -273,6 +284,7 @@ impl SymbolicMemory {
             default_permissions: Permission::RWX,
             endness,
             dirty_pages: HashSet::new(),
+            lazy_regions: Vec::new(),
         }
     }
 
@@ -544,6 +556,9 @@ impl SymbolicMemory {
     /// 2. Building an ITE chain for multiple possible addresses
     /// 3. Returning an error if the address range is too large
     ///
+    /// For unmapped pages in lazy regions, returns `UnmappedPageInRegion` so
+    /// the interpreter can fetch the page on-demand.
+    ///
     /// # Arguments
     /// * `addr` - The symbolic address to load from
     /// * `size` - Number of bytes to load
@@ -561,18 +576,18 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.load_concrete(concrete_addr, size, ctx);
+            return self.load_concrete_lazy(concrete_addr, size, ctx);
         }
 
         // Try to concretize the address
         match concretizer.concretize(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete(concrete_addr, size, ctx)
+                self.load_concrete_lazy(concrete_addr, size, ctx)
             }
             ConcretizationResult::Multiple(addrs) => {
                 // Build ITE chain: If(addr==a0, mem[a0], If(addr==a1, mem[a1], ...))
                 let first_addr = addrs[0];
-                let mut result = self.load_concrete(first_addr, size, ctx)?;
+                let mut result = self.load_concrete_lazy(first_addr, size, ctx)?;
 
                 for &candidate in &addrs[1..] {
                     // Build condition: addr == candidate
@@ -580,7 +595,7 @@ impl SymbolicMemory {
                     let cond = addr.eq(&addr_const, ctx);
 
                     // Load value at candidate address
-                    let val = self.load_concrete(candidate, size, ctx)?;
+                    let val = self.load_concrete_lazy(candidate, size, ctx)?;
 
                     // Build ITE: if (addr == candidate) then val else result
                     result = cond.ite(&val, &result, ctx);
@@ -614,6 +629,9 @@ impl SymbolicMemory {
     /// For multiple addresses, each candidate gets a conditional store:
     /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
     ///
+    /// For unmapped pages in lazy regions, returns `UnmappedPageInRegion` so
+    /// the interpreter can fetch the page on-demand.
+    ///
     /// # Arguments
     /// * `addr` - The symbolic address to store to
     /// * `value` - The value to store
@@ -631,13 +649,13 @@ impl SymbolicMemory {
     ) -> Result<(), MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.store_concrete(concrete_addr, value);
+            return self.store_concrete_lazy(concrete_addr, value);
         }
 
         // Try to concretize the address
         match concretizer.concretize(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete(concrete_addr, value)
+                self.store_concrete_lazy(concrete_addr, value)
             }
             ConcretizationResult::Multiple(addrs) => {
                 // For each candidate address, perform a conditional store:
@@ -650,13 +668,13 @@ impl SymbolicMemory {
                     let cond = addr.eq(&addr_const, ctx);
 
                     // Load current value at candidate address
-                    let current = self.load_concrete(candidate, size, ctx)?;
+                    let current = self.load_concrete_lazy(candidate, size, ctx)?;
 
                     // Build conditional value
                     let conditional_value = cond.ite(&value, &current, ctx);
 
                     // Store the conditional value
-                    self.store_concrete(candidate, conditional_value)?;
+                    self.store_concrete_lazy(candidate, conditional_value)?;
                 }
 
                 Ok(())
@@ -686,6 +704,7 @@ impl SymbolicMemory {
             default_permissions: self.default_permissions,
             endness: self.endness,
             dirty_pages: HashSet::new(), // Fresh dirty tracking for fork
+            lazy_regions: self.lazy_regions.clone(), // Share lazy regions
         }
     }
 
@@ -730,6 +749,258 @@ impl SymbolicMemory {
     /// Get the pages OrdMap for iteration.
     pub fn pages(&self) -> &OrdMap<u64, MemoryPage> {
         &self.pages
+    }
+
+    /// Add a lazy region where pages can be fetched on-demand.
+    ///
+    /// When a load hits an unmapped page within this region, the memory
+    /// will return `UnmappedPageInRegion` instead of `Unmapped`, signaling
+    /// to the interpreter that it should fetch the page from Python.
+    ///
+    /// # Arguments
+    /// * `start_addr` - Start address of the region (will be page-aligned down)
+    /// * `size` - Size of the region in bytes
+    pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
+        let start_page = start_addr >> 12;
+        let end_page = (start_addr + size + PAGE_SIZE - 1) >> 12;
+        self.lazy_regions.push((start_page, end_page));
+    }
+
+    /// Check if a page number is within a lazy region.
+    pub fn is_in_lazy_region(&self, page_num: u64) -> bool {
+        for &(start, end) in &self.lazy_regions {
+            if page_num >= start && page_num < end {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if an address is within a lazy region.
+    pub fn is_addr_in_lazy_region(&self, addr: u64) -> bool {
+        self.is_in_lazy_region(addr >> 12)
+    }
+
+    /// Clear all lazy regions.
+    pub fn clear_lazy_regions(&mut self) {
+        self.lazy_regions.clear();
+    }
+
+    /// Get the number of lazy regions.
+    pub fn lazy_region_count(&self) -> usize {
+        self.lazy_regions.len()
+    }
+
+    /// Map a page with data directly (used for on-demand page fetching).
+    ///
+    /// This is a convenience method for the interpreter to add fetched pages.
+    pub fn map_page(&mut self, page_addr: u64, data: Vec<u8>, permissions: Permission) {
+        let page_num = page_addr >> 12;
+        let page = MemoryPage::from_data(page_addr, data, permissions);
+        self.pages.insert(page_num, page);
+    }
+
+    /// Auto-map a zero page for an unmapped address in a lazy region.
+    ///
+    /// This creates a speculative zero page that can be validated later
+    /// against Python state. Returns true if a page was created.
+    pub fn auto_map_zero_page(&mut self, addr: u64) -> bool {
+        let page_num = addr >> 12;
+
+        // Only auto-map if not already mapped and in a lazy region
+        if self.pages.contains_key(&page_num) {
+            return false;
+        }
+
+        if !self.is_in_lazy_region(page_num) {
+            return false;
+        }
+
+        // Create a zero page with RWX permissions
+        let page_addr = page_num << 12;
+        let page = MemoryPage::new(page_addr, Permission::RWX);
+        self.pages.insert(page_num, page);
+
+        // Mark as dirty so it gets synced if modified
+        self.dirty_pages.insert(page_num);
+
+        true
+    }
+
+    /// Load from a concrete address with auto-mapping support.
+    ///
+    /// If the address is in a lazy region and unmapped, automatically
+    /// creates a zero page instead of failing. This reduces fallbacks.
+    pub fn load_concrete_automap(
+        &mut self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // First try normal load
+        match self.load_concrete_lazy_inner(addr, size, ctx) {
+            Ok(v) => Ok(v),
+            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                // Auto-map the missing page
+                self.auto_map_zero_page(page_addr);
+                // Retry the load
+                self.load_concrete_lazy_inner(addr, size, ctx)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Load from a concrete address, returning UnmappedPageInRegion for lazy regions.
+    ///
+    /// This is similar to load_concrete but distinguishes between:
+    /// - Unmapped page in a lazy region (can be fetched)
+    /// - Totally unmapped memory (error)
+    pub fn load_concrete_lazy(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        self.load_concrete_lazy_inner(addr, size, ctx)
+    }
+
+    /// Internal implementation of load_concrete_lazy.
+    fn load_concrete_lazy_inner(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        let mut bytes = Vec::with_capacity(size as usize);
+        let mut has_symbolic = false;
+
+        // Check for stored symbolic object first
+        if let Some(sym) = self.symbolic_objects.get(&addr) {
+            if sym.width() == size * 8 {
+                return Ok(sym.clone());
+            }
+        }
+
+        for i in 0..size {
+            let byte_addr = addr + i as u64;
+            let page_num = byte_addr >> 12;
+            let offset = (byte_addr & PAGE_MASK) as u16;
+
+            if let Some(page) = self.pages.get(&page_num) {
+                if page.is_symbolic(offset) {
+                    has_symbolic = true;
+                }
+                let byte = page.load_concrete(offset, 1);
+                bytes.push(byte.get(0).copied().unwrap_or(0));
+            } else {
+                // Page not mapped - check if it's in a lazy region
+                if self.is_in_lazy_region(page_num) {
+                    return Err(MemoryError::UnmappedPageInRegion {
+                        page_addr: page_num << 12,
+                    });
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: byte_addr,
+                        size: 1,
+                    });
+                }
+            }
+        }
+
+        if has_symbolic {
+            // Return stored symbolic object if available
+            if let Some(sym) = self.symbolic_objects.get(&addr) {
+                return Ok(sym.clone());
+            }
+            // Otherwise create a fresh symbolic value
+            return Err(MemoryError::SymbolicAddress {
+                description: "symbolic bytes not fully tracked".to_string(),
+            });
+        }
+
+        // Convert bytes to value based on endianness
+        let value = match self.endness {
+            Endness::Little => {
+                let mut v: u128 = 0;
+                for (i, &byte) in bytes.iter().enumerate() {
+                    v |= (byte as u128) << (i * 8);
+                }
+                v
+            }
+            Endness::Big => {
+                let mut v: u128 = 0;
+                for &byte in &bytes {
+                    v = (v << 8) | (byte as u128);
+                }
+                v
+            }
+        };
+
+        Ok(RustBV::concrete(value, size * 8))
+    }
+
+    /// Store to a concrete address, returning UnmappedPageInRegion for lazy regions.
+    pub fn store_concrete_lazy(
+        &mut self,
+        addr: u64,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+
+        // Check if pages are mapped
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+
+        for page_num in start_page..end_page {
+            if !self.pages.contains_key(&page_num) {
+                // Page not mapped - check if it's in a lazy region
+                if self.is_in_lazy_region(page_num) {
+                    return Err(MemoryError::UnmappedPageInRegion {
+                        page_addr: page_num << 12,
+                    });
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_num << 12,
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+        }
+
+        // All pages mapped, proceed with store
+        self.store_concrete(addr, value)
+    }
+
+    /// Store to a concrete address with auto-mapping support.
+    ///
+    /// If the address is in a lazy region and unmapped, automatically
+    /// creates a zero page instead of failing. This reduces fallbacks.
+    pub fn store_concrete_automap(
+        &mut self,
+        addr: u64,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+
+        // Auto-map any missing pages in lazy regions
+        for page_num in start_page..end_page {
+            if !self.pages.contains_key(&page_num) {
+                let page_addr = page_num << 12;
+                if self.is_in_lazy_region(page_num) {
+                    self.auto_map_zero_page(page_addr);
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_addr,
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+        }
+
+        // All pages now mapped, proceed with store
+        self.store_concrete(addr, value)
     }
 }
 

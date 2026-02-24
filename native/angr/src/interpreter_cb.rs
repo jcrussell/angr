@@ -14,7 +14,7 @@ use crate::arch::{arch_from_vex, RegisterFile};
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, rustbv_to_claripy};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
-use crate::memory::{MemoryError, SymbolicMemory};
+use crate::memory::{MemoryError, Permission, SymbolicMemory, PAGE_SIZE};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ccall;
 use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
@@ -208,6 +208,10 @@ pub struct CallbackInterpreter<'a> {
     load_prefetch_cache: HashMap<(u64, usize), PrefetchedLoad>,
     /// Whether load prefetching is enabled.
     use_load_prefetch: bool,
+    /// Number of pages to prefetch in each direction when fetching a page.
+    /// 0 = no prefetching, 1 = fetch 3 pages (main + 1 before + 1 after), etc.
+    /// Default is 2 for good locality on stack/heap access patterns.
+    page_prefetch_count: u32,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -244,6 +248,7 @@ impl<'a> CallbackInterpreter<'a> {
             use_rust_memory: false,
             load_prefetch_cache: HashMap::new(),
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
+            page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
         }
     }
 
@@ -747,6 +752,37 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
                                 return Ok(StmtResult::Continue);
                             }
+                            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                                // Page is in a lazy region - try to fetch it from Python with prefetch
+                                let prefetch_count = self.page_prefetch_count;
+                                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+
+                                if !page_fetched {
+                                    // Python doesn't have the page - auto-map a zero page
+                                    // This avoids falling back to Python for uninitialized memory
+                                    if let Some(ref mut rust_mem) = self.rust_memory {
+                                        rust_mem.auto_map_zero_page(page_addr);
+                                    }
+                                }
+
+                                // Retry the store (whether from fetch or auto-map)
+                                if let Some(ref mut rust_mem) = self.rust_memory {
+                                    match rust_mem.store_symbolic(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
+                                        Ok(()) => {
+                                            if let Some(addr_concrete) = addr_val.as_u64() {
+                                                self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                                            } else {
+                                                self.load_prefetch_cache.clear();
+                                            }
+                                            return Ok(StmtResult::Continue);
+                                        }
+                                        Err(_e) => {
+                                            // Still failed - fall through to Python callback
+                                        }
+                                    }
+                                }
+                                // Fall through to Python callback
+                            }
                             Err(MemoryError::Unmapped { .. }) => {
                                 // Fall through to Python callback for unmapped pages
                             }
@@ -896,30 +932,36 @@ impl<'a> CallbackInterpreter<'a> {
                 let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, &irsb.tyenv)?;
 
                 // PutI requires a concrete index to compute the register offset
-                if let Some(idx) = ix_val.as_u64() {
-                    // Calculate the rotating register offset:
-                    // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
-                    let elem_size = descr.elemTy.bytes();
-                    let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
-                    let offset = descr.base + index * elem_size;
-
-                    // Evaluate the data to write
-                    let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-
-                    // Write to the register file
-                    self.registers.put(offset, data_val);
-
-                    // Mark register as dirty (4-byte granularity)
-                    let bit_index = (offset / 4) as u32;
-                    if bit_index < 128 {
-                        self.dirty_registers |= 1u128 << bit_index;
-                    }
-
-                    Ok(StmtResult::Continue)
+                let idx = if let Some(idx) = ix_val.as_u64() {
+                    idx
                 } else {
-                    // Symbolic index - we can't handle this in Rust
-                    Err(CbExecutionError::Unsupported("symbolic PutI index".to_string()))
+                    // Symbolic index - concretize using solver
+                    if let Some(concrete) = self.ctx.eval(&ix_val) {
+                        concrete as u64
+                    } else {
+                        return Err(CbExecutionError::Unsupported("PutI index concretization failed".to_string()));
+                    }
+                };
+
+                // Calculate the rotating register offset:
+                // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+                let elem_size = descr.elemTy.bytes();
+                let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
+                let offset = descr.base + index * elem_size;
+
+                // Evaluate the data to write
+                let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+
+                // Write to the register file
+                self.registers.put(offset, data_val);
+
+                // Mark register as dirty (4-byte granularity)
+                let bit_index = (offset / 4) as u32;
+                if bit_index < 128 {
+                    self.dirty_registers |= 1u128 << bit_index;
                 }
+
+                Ok(StmtResult::Continue)
             }
 
             IRStmt::StoreG { guard, addr, data, .. } => {
@@ -950,8 +992,45 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                         return Ok(StmtResult::Continue);
                     }
-                    // Both paths possible with symbolic guard - need Python to handle
-                    return Err(CbExecutionError::Unsupported("symbolic guarded store".to_string()));
+                    // Both paths possible with symbolic guard - use ITE for conditional store
+                    // Store ITE(guard, new_data, current_data)
+                    let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                    let data_size = ((data_val.width() + 7) / 8) as usize;
+
+                    if let Some(addr_concrete) = addr_val.as_u64() {
+                        // Load current value at address
+                        let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                        // Create ITE: if guard then new_data else current
+                        let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                        let ite_bytes = bv_to_bytes(&ite_result);
+                        self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                        self.pending_stores.push((addr_concrete, ite_bytes));
+                        if self.pending_stores.len() >= self.max_pending_stores {
+                            self.flush_stores(py, callbacks)?;
+                        }
+                    } else {
+                        // Symbolic address with symbolic guard - concretize address first
+                        match self.concretizer.concretize(&addr_val, self.ctx) {
+                            ConcretizationResult::Single(addr_concrete) => {
+                                // Load current value and use ITE
+                                let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                                let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                                let ite_bytes = bv_to_bytes(&ite_result);
+                                self.flush_stores(py, callbacks)?;
+                                callbacks
+                                    .call_memory_store(py, addr_concrete, &ite_bytes)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
+                            _ => {
+                                // Multiple addresses with symbolic guard - unsupported
+                                return Err(CbExecutionError::Unsupported(
+                                    "symbolic guarded store with multiple possible addresses".to_string()
+                                ));
+                            }
+                        }
+                    }
+                    return Ok(StmtResult::Continue);
                 }
 
                 // Concrete guard: simple check
@@ -1017,11 +1096,27 @@ impl<'a> CallbackInterpreter<'a> {
                     if can_be_true && !can_be_false {
                         // Guard is always true - perform load unconditionally
                         let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                        let loaded = if let Some(addr_concrete) = addr_val.as_u64() {
-                            self.load_from_callback(py, callbacks, addr_concrete, load_size)?
-                        } else {
-                            return Err(CbExecutionError::Unsupported("symbolic address in LoadG".to_string()));
+
+                        // Get concrete address (directly or via concretization)
+                        let addr_concrete = match addr_val.as_u64() {
+                            Some(a) => a,
+                            None => {
+                                // Symbolic address - concretize
+                                match self.concretizer.concretize(&addr_val, self.ctx) {
+                                    ConcretizationResult::Single(a) => a,
+                                    ConcretizationResult::Multiple(ref addrs) => {
+                                        *addrs.first().ok_or_else(|| {
+                                            CbExecutionError::Unsupported("LoadG with empty address set".to_string())
+                                        })?
+                                    }
+                                    _ => {
+                                        return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
+                                    }
+                                }
+                            }
                         };
+
+                        let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
 
                         // Apply conversion
                         let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
@@ -1042,11 +1137,26 @@ impl<'a> CallbackInterpreter<'a> {
 
                     // Both paths possible - evaluate address and load, then ITE
                     let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                    let loaded = if let Some(addr_concrete) = addr_val.as_u64() {
-                        self.load_from_callback(py, callbacks, addr_concrete, load_size)?
-                    } else {
-                        return Err(CbExecutionError::Unsupported("symbolic address in LoadG".to_string()));
+
+                    // Get concrete address
+                    let addr_concrete = match addr_val.as_u64() {
+                        Some(a) => a,
+                        None => {
+                            match self.concretizer.concretize(&addr_val, self.ctx) {
+                                ConcretizationResult::Single(a) => a,
+                                ConcretizationResult::Multiple(ref addrs) => {
+                                    *addrs.first().ok_or_else(|| {
+                                        CbExecutionError::Unsupported("LoadG with empty address set".to_string())
+                                    })?
+                                }
+                                _ => {
+                                    return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
+                                }
+                            }
+                        }
                     };
+
+                    let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
 
                     // Apply conversion to loaded value
                     let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
@@ -1065,11 +1175,26 @@ impl<'a> CallbackInterpreter<'a> {
                     let result = if g != 0 {
                         // Guard is true - perform the load
                         let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                        let loaded = if let Some(addr_concrete) = addr_val.as_u64() {
-                            self.load_from_callback(py, callbacks, addr_concrete, load_size)?
-                        } else {
-                            return Err(CbExecutionError::Unsupported("symbolic address in LoadG".to_string()));
+
+                        // Get concrete address
+                        let addr_concrete = match addr_val.as_u64() {
+                            Some(a) => a,
+                            None => {
+                                match self.concretizer.concretize(&addr_val, self.ctx) {
+                                    ConcretizationResult::Single(a) => a,
+                                    ConcretizationResult::Multiple(ref addrs) => {
+                                        *addrs.first().ok_or_else(|| {
+                                            CbExecutionError::Unsupported("LoadG with empty address set".to_string())
+                                        })?
+                                    }
+                                    _ => {
+                                        return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
+                                    }
+                                }
+                            }
                         };
+
+                        let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
                         self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
                     } else {
                         // Guard is false - use alternative value
@@ -1184,7 +1309,7 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Evaluate an IR expression using Python callbacks for memory loads.
     fn eval_expr_with_callbacks(
-        &self,
+        &mut self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         expr: &IRExpr,
@@ -1215,6 +1340,30 @@ impl<'a> CallbackInterpreter<'a> {
                     if let Some(ref rust_mem) = self.rust_memory {
                         match rust_mem.load_symbolic(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
                             Ok(value) => return Ok(value),
+                            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                                // Page is in a lazy region - try to fetch it from Python with prefetch
+                                let prefetch_count = self.page_prefetch_count;
+                                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+
+                                if !page_fetched {
+                                    // Python doesn't have the page - auto-map a zero page
+                                    // This avoids falling back to Python for uninitialized memory
+                                    if let Some(ref mut rust_mem) = self.rust_memory {
+                                        rust_mem.auto_map_zero_page(page_addr);
+                                    }
+                                }
+
+                                // Retry the load (whether from fetch or auto-map)
+                                if let Some(ref rust_mem) = self.rust_memory {
+                                    match rust_mem.load_symbolic(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                                        Ok(value) => return Ok(value),
+                                        Err(_e) => {
+                                            // Still failed after fetch/auto-map - fall through to Python
+                                        }
+                                    }
+                                }
+                                // Fall through to Python callback
+                            }
                             Err(MemoryError::Unmapped { .. }) => {
                                 // Fall through to Python callback for unmapped pages
                             }
@@ -1324,20 +1473,25 @@ impl<'a> CallbackInterpreter<'a> {
                 let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, tyenv)?;
 
                 // GetI requires a concrete index to compute the register offset
-                if let Some(idx) = ix_val.as_u64() {
-                    // Calculate the rotating register offset:
-                    // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
-                    let elem_size = descr.elemTy.bytes();
-                    let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
-                    let offset = descr.base + index * elem_size;
-
-                    // Read from the register file
-                    Ok(self.registers.get(offset, elem_size, self.ctx))
+                let idx = if let Some(idx) = ix_val.as_u64() {
+                    idx
                 } else {
-                    // Symbolic index - we can't handle this in Rust
-                    // (would need to create ITE over all possible indices)
-                    Err(CbExecutionError::Unsupported("symbolic GetI index".to_string()))
-                }
+                    // Symbolic index - concretize using solver
+                    if let Some(concrete) = self.ctx.eval(&ix_val) {
+                        concrete as u64
+                    } else {
+                        return Err(CbExecutionError::Unsupported("GetI index concretization failed".to_string()));
+                    }
+                };
+
+                // Calculate the rotating register offset:
+                // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+                let elem_size = descr.elemTy.bytes();
+                let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
+                let offset = descr.base + index * elem_size;
+
+                // Read from the register file
+                Ok(self.registers.get(offset, elem_size, self.ctx))
             }
 
             IRExpr::Triop { .. } => Err(CbExecutionError::Unsupported("triop".to_string())),
@@ -1405,7 +1559,7 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Evaluate the next address from an IRSB.
     fn eval_next_addr(
-        &self,
+        &mut self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         irsb: &IRSB,
@@ -1529,6 +1683,7 @@ impl<'a> CallbackInterpreter<'a> {
             use_rust_memory: self.use_rust_memory,
             load_prefetch_cache: HashMap::new(), // Fresh prefetch cache for fork
             use_load_prefetch: self.use_load_prefetch,
+            page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
         }
     }
 
@@ -1560,6 +1715,7 @@ impl<'a> CallbackInterpreter<'a> {
     /// Set the Rust memory instance.
     pub fn set_rust_memory(&mut self, memory: SymbolicMemory) {
         self.rust_memory = Some(memory);
+        self.use_rust_memory = true;
     }
 
     /// Take the Rust memory instance (for transferring to engine).
@@ -1570,6 +1726,156 @@ impl<'a> CallbackInterpreter<'a> {
     /// Enable or disable load prefetching.
     pub fn set_load_prefetch(&mut self, enabled: bool) {
         self.use_load_prefetch = enabled;
+    }
+
+    /// Set the number of pages to prefetch when fetching a page.
+    ///
+    /// When a page needs to be fetched from Python, this many additional pages
+    /// will be fetched in each direction (before and after) to improve locality.
+    /// Set to 0 to disable page prefetching.
+    pub fn set_page_prefetch_count(&mut self, count: u32) {
+        self.page_prefetch_count = count;
+    }
+
+    /// Fetch a page from Python and map it in Rust memory.
+    ///
+    /// This is called when a load/store encounters an unmapped page in a lazy region.
+    /// The page is fetched via Python callback and added to rust_memory.
+    ///
+    /// Returns true if the page was successfully fetched and mapped.
+    pub fn fetch_page(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        page_addr: u64,
+    ) -> Result<bool, CbExecutionError> {
+        // Check if we have the callback
+        if !callbacks.has_fetch_page() {
+            return Ok(false);
+        }
+
+        // Call Python to fetch the page
+        let (data, permissions, is_mapped) = callbacks
+            .call_fetch_page(py, page_addr)
+            .map_err(|e| CbExecutionError::Callback(format!("fetch_page failed: {}", e)))?;
+
+        if !is_mapped {
+            // Page doesn't exist in Python memory either
+            return Ok(false);
+        }
+
+        // Ensure we have Rust memory enabled
+        if let Some(ref mut rust_mem) = self.rust_memory {
+            // Convert permission bits to Permission struct
+            let perm = Permission::from_bits(permissions);
+
+            // Map the page in Rust memory
+            rust_mem.map_page(page_addr, data, perm);
+
+            Ok(true)
+        } else {
+            // Rust memory not enabled - shouldn't happen but handle gracefully
+            Ok(false)
+        }
+    }
+
+    /// Fetch multiple pages from Python in a batch.
+    ///
+    /// This is more efficient than fetching pages one at a time.
+    /// Returns the number of pages successfully fetched.
+    pub fn fetch_pages_batch(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        page_addrs: &[u64],
+    ) -> Result<usize, CbExecutionError> {
+        if page_addrs.is_empty() {
+            return Ok(0);
+        }
+
+        // Call Python to fetch pages in batch
+        let results = callbacks
+            .call_batch_fetch_pages(py, page_addrs)
+            .map_err(|e| CbExecutionError::Callback(format!("batch_fetch_pages failed: {}", e)))?;
+
+        let mut fetched = 0;
+
+        if let Some(ref mut rust_mem) = self.rust_memory {
+            for (i, (data, permissions, is_mapped)) in results.into_iter().enumerate() {
+                if is_mapped {
+                    let page_addr = page_addrs[i];
+                    let perm = Permission::from_bits(permissions);
+                    rust_mem.map_page(page_addr, data, perm);
+                    fetched += 1;
+                }
+            }
+        }
+
+        Ok(fetched)
+    }
+
+    /// Fetch a page and prefetch nearby pages for better locality.
+    ///
+    /// This is an optimization that reduces future FFI calls by speculatively
+    /// fetching pages around the accessed address. Useful for sequential access
+    /// patterns (like stack frames, arrays, etc.).
+    ///
+    /// Args:
+    ///     prefetch_count: Number of pages to prefetch in each direction (0 = disabled)
+    ///
+    /// Returns true if the main page was successfully fetched.
+    pub fn fetch_page_with_prefetch(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        page_addr: u64,
+        prefetch_count: u32,
+    ) -> Result<bool, CbExecutionError> {
+        if prefetch_count == 0 {
+            // No prefetching, just fetch the single page
+            return self.fetch_page(py, callbacks, page_addr);
+        }
+
+        // Build list of pages to fetch: main page + nearby pages
+        let page_size = 0x1000u64;
+        let mut pages_to_fetch = Vec::with_capacity(1 + 2 * prefetch_count as usize);
+
+        // Add main page first
+        pages_to_fetch.push(page_addr);
+
+        // Add pages before (lower addresses)
+        for i in 1..=prefetch_count {
+            if let Some(addr) = page_addr.checked_sub(i as u64 * page_size) {
+                // Check if not already mapped
+                if let Some(ref rust_mem) = self.rust_memory {
+                    if !rust_mem.is_mapped(addr) {
+                        pages_to_fetch.push(addr);
+                    }
+                }
+            }
+        }
+
+        // Add pages after (higher addresses)
+        for i in 1..=prefetch_count {
+            if let Some(addr) = page_addr.checked_add(i as u64 * page_size) {
+                // Check if not already mapped
+                if let Some(ref rust_mem) = self.rust_memory {
+                    if !rust_mem.is_mapped(addr) {
+                        pages_to_fetch.push(addr);
+                    }
+                }
+            }
+        }
+
+        // Fetch all pages in one batch
+        let fetched = self.fetch_pages_batch(py, callbacks, &pages_to_fetch)?;
+
+        // Return true if at least the main page was fetched
+        if let Some(ref rust_mem) = self.rust_memory {
+            Ok(rust_mem.is_mapped(page_addr))
+        } else {
+            Ok(fetched > 0)
+        }
     }
 
     /// Clear the load prefetch cache.
@@ -1778,6 +2084,23 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         Ok(())
+    }
+
+    /// Add a lazy region for on-demand page fetching.
+    ///
+    /// Pages in this region will be fetched from Python when accessed.
+    /// This is more efficient than pre-loading all pages.
+    pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
+        if let Some(ref mut rust_mem) = self.rust_memory {
+            rust_mem.add_lazy_region(start_addr, size);
+        }
+    }
+
+    /// Get statistics about Rust memory usage.
+    pub fn rust_memory_stats(&self) -> Option<(usize, usize, usize)> {
+        self.rust_memory.as_ref().map(|m| {
+            (m.page_count(), m.lazy_region_count(), m.get_dirty_pages().len())
+        })
     }
 }
 

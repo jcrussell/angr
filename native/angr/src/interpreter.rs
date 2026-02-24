@@ -118,6 +118,13 @@ pub struct VEXInterpreter<'a> {
     current_insn_addr: u64,
     /// Hook addresses (return to Python when hit).
     hook_addrs: std::collections::HashSet<u64>,
+    /// Store log: tracks individual stores (address, size) for precise sync.
+    /// This allows syncing only specific bytes instead of entire dirty pages.
+    store_log: Vec<(u64, usize)>,
+    /// Bitset tracking which register offsets have been modified.
+    /// Each bit represents a 4-byte aligned offset (offset / 4).
+    /// A u128 covers 512 bytes of register space (128 * 4 = 512).
+    dirty_registers: u128,
 }
 
 impl<'a> VEXInterpreter<'a> {
@@ -134,6 +141,8 @@ impl<'a> VEXInterpreter<'a> {
             pc: 0,
             current_insn_addr: 0,
             hook_addrs: std::collections::HashSet::new(),
+            store_log: Vec::new(),
+            dirty_registers: 0,
         }
     }
 
@@ -167,6 +176,38 @@ impl<'a> VEXInterpreter<'a> {
     /// Get the program counter.
     pub fn get_pc(&self) -> u64 {
         self.pc
+    }
+
+    /// Get the store log: list of (address, size) tuples for stores during execution.
+    pub fn get_store_log(&self) -> &[(u64, usize)] {
+        &self.store_log
+    }
+
+    /// Clear the store log.
+    pub fn clear_store_log(&mut self) {
+        self.store_log.clear();
+    }
+
+    /// Get list of dirty register offsets (registers modified since last clear).
+    /// Returns offsets in 4-byte granularity.
+    pub fn get_dirty_register_offsets(&self) -> Vec<u32> {
+        let mut offsets = Vec::new();
+        for bit in 0..128u32 {
+            if (self.dirty_registers & (1u128 << bit)) != 0 {
+                offsets.push(bit * 4);
+            }
+        }
+        offsets
+    }
+
+    /// Get the raw dirty register bitset.
+    pub fn dirty_registers(&self) -> u128 {
+        self.dirty_registers
+    }
+
+    /// Clear dirty register tracking (called after sync).
+    pub fn clear_dirty_registers(&mut self) {
+        self.dirty_registers = 0;
     }
 
     /// Execute a VEX block.
@@ -229,6 +270,13 @@ impl<'a> VEXInterpreter<'a> {
             IRStmt::Put { offset, data } => {
                 let value = self.eval_expr(data, &irsb.tyenv)?;
                 self.registers.put(*offset, value);
+
+                // Mark register as dirty (4-byte granularity)
+                let bit_index = (*offset / 4) as u32;
+                if bit_index < 128 {
+                    self.dirty_registers |= 1u128 << bit_index;
+                }
+
                 Ok(StmtResult::Continue)
             }
 
@@ -249,6 +297,14 @@ impl<'a> VEXInterpreter<'a> {
             } => {
                 let addr_val = self.eval_expr(addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr(data, &irsb.tyenv)?;
+                // Log the store for precise sync to Python
+                // Get concrete address (or concretize symbolic)
+                let concrete_addr = match addr_val.as_u64() {
+                    Some(a) => a,
+                    None => self.ctx.eval(&addr_val).unwrap_or(0) as u64,
+                };
+                let store_size = data_val.width() / 8;
+                self.store_log.push((concrete_addr, store_size as usize));
                 // TODO: handle endianness properly
                 self.memory.store(addr_val, data_val, self.ctx)?;
                 Ok(StmtResult::Continue)
@@ -484,6 +540,8 @@ impl<'a> VEXInterpreter<'a> {
             pc: self.pc,
             current_insn_addr: self.current_insn_addr,
             hook_addrs: self.hook_addrs.clone(),
+            store_log: Vec::new(), // Fresh store log for fork
+            dirty_registers: 0, // Fresh dirty tracking for fork
         }
     }
 }

@@ -184,6 +184,9 @@ pub struct RustVEXEngine {
     /// Symbolic register values (offset -> RustBV).
     /// These override the concrete `registers` storage for symbolic values.
     symbolic_registers: HashMap<u32, RustBV>,
+    /// Store log: individual stores (address, size) from last execution.
+    /// Used for precise memory sync - only sync specific bytes, not entire pages.
+    store_log: Vec<(u64, usize)>,
 }
 
 #[pymethods]
@@ -217,6 +220,7 @@ impl RustVEXEngine {
             symbolic_memory: None,
             use_rust_memory: false,
             symbolic_registers: HashMap::new(),
+            store_log: Vec::new(),
         })
     }
 
@@ -389,6 +393,17 @@ impl RustVEXEngine {
     /// Clear the dirty pages set.
     pub fn clear_dirty_pages(&mut self) {
         self.dirty_pages.clear();
+    }
+
+    /// Get the store log: list of (address, size) tuples for stores during last execution.
+    /// This allows precise memory sync - only sync specific bytes, not entire pages.
+    pub fn get_store_log(&self) -> Vec<(u64, usize)> {
+        self.store_log.clone()
+    }
+
+    /// Clear the store log.
+    pub fn clear_store_log(&mut self) {
+        self.store_log.clear();
     }
 
     /// Get a register value.
@@ -831,6 +846,8 @@ impl RustVEXEngine {
             use_rust_memory: self.use_rust_memory,
             // Clone symbolic registers for fork
             symbolic_registers: self.symbolic_registers.clone(),
+            // Start with empty store log for fork
+            store_log: Vec::new(),
         })
     }
 
@@ -1039,13 +1056,40 @@ impl RustVEXEngine {
             dict.set_item("page_count", mem.page_count())?;
             dict.set_item("mapped_bytes", mem.mapped_size())?;
             dict.set_item("dirty_pages", mem.get_dirty_pages().len())?;
+            dict.set_item("lazy_regions", mem.lazy_region_count())?;
         } else {
             dict.set_item("page_count", 0)?;
             dict.set_item("mapped_bytes", 0)?;
             dict.set_item("dirty_pages", 0)?;
+            dict.set_item("lazy_regions", 0)?;
         }
 
         Ok(dict)
+    }
+
+    /// Add a lazy region for on-demand page fetching.
+    ///
+    /// Pages in this region will be fetched from Python when accessed,
+    /// rather than being pre-loaded. This is more efficient for large
+    /// address spaces like stack and heap.
+    ///
+    /// Args:
+    ///     start_addr: Start address of the region.
+    ///     size: Size of the region in bytes.
+    pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) -> PyResult<()> {
+        if let Some(ref mut mem) = self.symbolic_memory {
+            mem.add_lazy_region(start_addr, size);
+            Ok(())
+        } else {
+            Err(PyValueError::new_err("Rust memory not created - call create_rust_memory() first"))
+        }
+    }
+
+    /// Clear all lazy regions.
+    pub fn clear_lazy_regions(&mut self) {
+        if let Some(ref mut mem) = self.symbolic_memory {
+            mem.clear_lazy_regions();
+        }
     }
 }
 
@@ -1059,6 +1103,12 @@ impl RustVEXEngine {
 
         // Copy registers from engine to interpreter
         interp.registers.copy_from_bytes(&self.registers);
+
+        // Copy symbolic registers to interpreter (critical for branch detection)
+        // Without this, symbolic values are lost and branches appear concrete
+        for (&offset, bv) in &self.symbolic_registers {
+            interp.registers.put(offset, bv.clone());
+        }
 
         // Set up memory
         for (addr, size, perms, data) in &self.memory_regions {
@@ -1086,6 +1136,39 @@ impl RustVEXEngine {
 
                 // Sync registers back from interpreter to engine
                 interp.registers.copy_to_bytes(&mut self.registers);
+
+                // Copy dirty register tracking from interpreter
+                self.dirty_registers = interp.dirty_registers();
+
+                // Copy store log from interpreter - this allows precise memory sync
+                self.store_log = interp.get_store_log().to_vec();
+
+                // Sync dirty pages from interpreter's memory back to engine
+                // This is critical: the interpreter has its own SymbolicMemory,
+                // and stores during execution write to that memory. We need to
+                // copy those changes back to the engine's memory_regions so that
+                // Python can read the updated values via get_dirty_pages().
+                let dirty_page_addrs = interp.memory.get_dirty_page_addrs();
+                for page_addr in dirty_page_addrs {
+                    // Mark this page as dirty in the engine
+                    self.dirty_pages.insert(page_addr);
+
+                    // Find the page data in interpreter's memory and copy to engine's memory_regions
+                    let page_num = page_addr >> 12;
+                    if let Some((page_data, _perms)) = interp.memory.get_page_data(page_num) {
+                        // Find the region containing this page and update it
+                        for (region_addr, region_size, _region_perms, region_data) in &mut self.memory_regions {
+                            if page_addr >= *region_addr && page_addr < *region_addr + *region_size {
+                                let offset = (page_addr - *region_addr) as usize;
+                                let copy_len = std::cmp::min(page_data.len(), region_data.len() - offset);
+                                if copy_len > 0 && offset < region_data.len() {
+                                    region_data[offset..offset + copy_len].copy_from_slice(&page_data[..copy_len]);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
 
                 Ok(ExecutionEvent::from_result(result))
             }

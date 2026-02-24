@@ -100,6 +100,12 @@ pub enum RustBV {
 }
 
 impl RustBV {
+    /// Sentinel ID for expression results (not real symbolic variables).
+    /// Using u64::MAX avoids allocating new IDs for every intermediate operation.
+    /// This improves solver compatibility since only true symbolic variables
+    /// (inputs like `x`, `y`) get unique IDs that need tracking.
+    pub const EXPRESSION_ID: u64 = u64::MAX;
+
     // =========================================================================
     // Constructors
     // =========================================================================
@@ -231,11 +237,11 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), self.width()),
             _ => {
-                // For symbolic, return a placeholder
+                // For symbolic, return expression with sentinel ID
                 RustBV::Symbolic {
-                    id: _ctx.next_id(),
+                    id: Self::EXPRESSION_ID,
                     width: self.width(),
-                    name: "add_result".to_string(),
+                    name: String::new(),
                     #[cfg(feature = "vex-engine-z3")]
                     ast: self.to_z3_ast().bvadd(&other.to_z3_ast()),
                 }
@@ -249,9 +255,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), self.width()),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "sub_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvsub(&other.to_z3_ast()),
             },
@@ -264,9 +270,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), self.width()),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "mul_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvmul(&other.to_z3_ast()),
             },
@@ -285,9 +291,9 @@ impl RustBV {
                 }
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "udiv_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvudiv(&other.to_z3_ast()),
             },
@@ -308,9 +314,9 @@ impl RustBV {
                 }
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "sdiv_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvsdiv(&other.to_z3_ast()),
             },
@@ -329,9 +335,9 @@ impl RustBV {
                 }
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "urem_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvurem(&other.to_z3_ast()),
             },
@@ -352,9 +358,9 @@ impl RustBV {
                 }
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "srem_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvsrem(&other.to_z3_ast()),
             },
@@ -366,9 +372,9 @@ impl RustBV {
         match self.as_u128() {
             Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "neg_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvneg(),
             },
@@ -385,9 +391,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a & b, self.width()),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "and_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvand(&other.to_z3_ast()),
             },
@@ -400,9 +406,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a | b, self.width()),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "or_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvor(&other.to_z3_ast()),
             },
@@ -415,9 +421,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a ^ b, self.width()),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "xor_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvxor(&other.to_z3_ast()),
             },
@@ -429,9 +435,9 @@ impl RustBV {
         match self.as_u128() {
             Some(v) => Self::concrete(!v, self.width()),
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "not_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvnot(),
             },
@@ -451,9 +457,9 @@ impl RustBV {
                 Self::concrete(v.wrapping_shl(amt), self.width())
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "shl_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvshl(&amount.to_z3_ast()),
             },
@@ -469,9 +475,9 @@ impl RustBV {
                 Self::concrete(v.wrapping_shr(amt), self.width())
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "lshr_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvlshr(&amount.to_z3_ast()),
             },
@@ -488,9 +494,9 @@ impl RustBV {
                 Self::concrete((signed >> amt) as u128, self.width())
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "ashr_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvashr(&amount.to_z3_ast()),
             },
@@ -508,9 +514,9 @@ impl RustBV {
                 Self::concrete(rotated, w)
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "rotl_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvrotl(&amount.to_z3_ast()),
             },
@@ -528,9 +534,9 @@ impl RustBV {
                 Self::concrete(rotated, w)
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "rotr_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvrotr(&amount.to_z3_ast()),
             },
@@ -547,9 +553,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a == b { 1 } else { 0 }, 1),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: 1,
-                name: "eq_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     use z3::ast::Ast;
@@ -575,9 +581,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a < b { 1 } else { 0 }, 1),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: 1,
-                name: "ult_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     // Use direct bvult method from z3-rs 0.19+
@@ -597,9 +603,9 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a <= b { 1 } else { 0 }, 1),
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: 1,
-                name: "ule_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     // Use direct bvule method from z3-rs 0.19+
@@ -633,9 +639,9 @@ impl RustBV {
                 Self::concrete(if a_signed < b_signed { 1 } else { 0 }, 1)
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: 1,
-                name: "slt_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     // Use direct bvslt method from z3-rs 0.19+
@@ -659,9 +665,9 @@ impl RustBV {
                 Self::concrete(if a_signed <= b_signed { 1 } else { 0 }, 1)
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: 1,
-                name: "sle_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     // Use direct bvsle method from z3-rs 0.19+
@@ -695,9 +701,9 @@ impl RustBV {
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: to_width,
-                name: "zext_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().zero_ext(to_width - self.width()),
             },
@@ -713,9 +719,9 @@ impl RustBV {
                 Self::concrete(extended, to_width)
             }
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: to_width,
-                name: "sext_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().sign_ext(to_width - self.width()),
             },
@@ -728,9 +734,9 @@ impl RustBV {
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: to_width,
-                name: "trunc_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().extract(to_width - 1, 0),
             },
@@ -748,9 +754,9 @@ impl RustBV {
                 Self::concrete(extracted, result_width)
             }
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: result_width,
-                name: "extract_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().extract(high, low),
             },
@@ -766,9 +772,9 @@ impl RustBV {
                 Self::concrete(combined, result_width)
             }
             _ => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: result_width,
-                name: "concat_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().concat(&other.to_z3_ast()),
             },
@@ -791,9 +797,9 @@ impl RustBV {
                 }
             }
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: then_val.width(),
-                name: "ite_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     use z3::ast::Ast;
@@ -819,9 +825,9 @@ impl RustBV {
                 Self::concrete(leading as u128, self.width())
             }
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "clz_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     // Build CLZ symbolically - this is complex
@@ -844,9 +850,9 @@ impl RustBV {
                 Self::concrete(trailing as u128, self.width())
             }
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "ctz_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: z3::ast::BV::new_const("ctz", self.width()),
             },
@@ -858,9 +864,9 @@ impl RustBV {
         match self.as_u128() {
             Some(v) => Self::concrete(v.count_ones() as u128, self.width()),
             None => RustBV::Symbolic {
-                id: _ctx.next_id(),
+                id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: "popcount_result".to_string(),
+                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: z3::ast::BV::new_const("popcount", self.width()),
             },

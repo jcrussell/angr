@@ -592,7 +592,7 @@ class RustSimSolver(SimStatePlugin):
         """
         # Filter out angr-specific kwargs that claripy doesn't accept
         filtered_kwargs = {k: v for k, v in kwargs.items()
-                          if k not in ('key', 'inspect', 'events')}
+                          if k not in ('key', 'inspect', 'events', 'eternal')}
         r = claripy.BVS(name, size, **filtered_kwargs)
         self.all_variables.append(r)
         return r
