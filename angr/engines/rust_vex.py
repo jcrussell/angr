@@ -1277,6 +1277,10 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 self._concrete_memory_synced = True
                 if regions > 0:
                     l.debug("Synced %d concrete memory regions to Rust engine", regions)
+                # Load binary regions for native VEX lifting (eliminates lift callbacks)
+                native_regions = self._load_binary_regions_for_native_lift()
+                if native_regions > 0:
+                    l.debug("Loaded %d binary regions for native lifting", native_regions)
                 # Initialize Rust-native memory if requested
                 if use_rust_memory:
                     self._init_rust_memory()
@@ -1716,6 +1720,53 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                         l.debug("Failed to map segment at 0x%x: %s", segment.vaddr, e)
 
         return regions_mapped
+
+    def _load_binary_regions_for_native_lift(self) -> int:
+        """
+        Load binary code regions for native VEX lifting.
+
+        This loads executable segments (.text, etc.) into the Rust engine
+        for native lifting via libpyvex FFI, eliminating Python callbacks
+        for code lifting in most cases.
+
+        Returns:
+            Number of regions loaded for native lifting.
+        """
+        if not self.rust_engine_available:
+            return 0
+
+        regions = []
+
+        # Load all executable segments
+        for obj in self.project.loader.all_objects:
+            for segment in obj.segments:
+                # Only load executable segments (code)
+                if segment.is_executable and segment.is_readable:
+                    try:
+                        data = self.project.loader.memory.load(
+                            segment.vaddr,
+                            segment.memsize
+                        )
+                        regions.append((segment.vaddr, bytes(data)))
+                        l.debug(
+                            "Loaded code region 0x%x-0x%x (%d bytes) for native lifting",
+                            segment.vaddr,
+                            segment.vaddr + segment.memsize,
+                            segment.memsize
+                        )
+                    except Exception as e:
+                        l.debug("Failed to load code region at 0x%x: %s", segment.vaddr, e)
+
+        if regions:
+            try:
+                self._rust_engine.load_binary_regions(regions)
+                if self._rust_engine.native_lift_available:
+                    l.info("Native VEX lifting enabled with %d code regions", len(regions))
+                return len(regions)
+            except Exception as e:
+                l.debug("Failed to enable native lifting: %s", e)
+
+        return 0
 
     def _sync_state_memory_to_rust(self, state: "SimState", force: bool = False) -> int:
         """

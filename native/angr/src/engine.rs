@@ -187,6 +187,12 @@ pub struct RustVEXEngine {
     /// Store log: individual stores (address, size) from last execution.
     /// Used for precise memory sync - only sync specific bytes, not entire pages.
     store_log: Vec<(u64, usize)>,
+    /// Binary code regions for native lifting: (addr, bytes).
+    /// These are read-only regions containing executable code (.text, etc.)
+    /// that can be accessed directly by the native lifter without callbacks.
+    binary_regions: Vec<(u64, Vec<u8>)>,
+    /// Whether native VEX lifting is initialized.
+    native_lift_initialized: bool,
 }
 
 #[pymethods]
@@ -221,6 +227,8 @@ impl RustVEXEngine {
             use_rust_memory: false,
             symbolic_registers: HashMap::new(),
             store_log: Vec::new(),
+            binary_regions: Vec::new(),
+            native_lift_initialized: false,
         })
     }
 
@@ -689,6 +697,78 @@ impl RustVEXEngine {
         self.callbacks.is_some()
     }
 
+    /// Load binary code regions for native VEX lifting.
+    ///
+    /// Each region is a tuple of (start_addr, bytes).
+    /// These regions are registered with libpyvex for direct byte access
+    /// during native lifting, eliminating Python callbacks for code fetch.
+    ///
+    /// Call this once at initialization with the .text, .rodata, and other
+    /// code sections from the loaded binary.
+    #[pyo3(signature = (regions))]
+    pub fn load_binary_regions(&mut self, regions: Vec<(u64, Vec<u8>)>) -> PyResult<()> {
+        // Store regions for direct access
+        self.binary_regions = regions;
+
+        // Initialize native lifting if available
+        #[cfg(feature = "native-lift")]
+        {
+            use crate::vex::libpyvex_ffi;
+
+            // Initialize VEX if needed
+            if let Err(e) = libpyvex_ffi::init_vex() {
+                log::warn!("Failed to initialize native VEX lifting: {}", e);
+                return Ok(());
+            }
+
+            // Clear any previously registered regions
+            libpyvex_ffi::clear_binary_regions();
+
+            // Register each region with libpyvex for const propagation
+            for (addr, bytes) in &self.binary_regions {
+                if !libpyvex_ffi::register_binary_region(*addr, bytes) {
+                    log::warn!("Failed to register binary region at 0x{:x}", addr);
+                }
+            }
+
+            self.native_lift_initialized = true;
+            log::info!(
+                "Loaded {} binary regions for native lifting ({} total bytes)",
+                self.binary_regions.len(),
+                self.binary_regions.iter().map(|(_, b)| b.len()).sum::<usize>()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get bytes from binary regions at the given address.
+    ///
+    /// Returns None if the address is not in any binary region.
+    pub fn get_binary_bytes(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+        for (region_addr, bytes) in &self.binary_regions {
+            let region_end = *region_addr + bytes.len() as u64;
+            if addr >= *region_addr && addr + size as u64 <= region_end {
+                let offset = (addr - *region_addr) as usize;
+                return Some(bytes[offset..offset + size].to_vec());
+            }
+        }
+        None
+    }
+
+    /// Check if native VEX lifting is available and initialized.
+    #[getter]
+    pub fn native_lift_available(&self) -> bool {
+        #[cfg(feature = "native-lift")]
+        {
+            self.native_lift_initialized && crate::vex::libpyvex_ffi::is_vex_initialized()
+        }
+        #[cfg(not(feature = "native-lift"))]
+        {
+            false
+        }
+    }
+
     /// Run the execution loop until an event requires Python handling.
     ///
     /// This is the main entry point for the callback-based execution model.
@@ -848,6 +928,10 @@ impl RustVEXEngine {
             symbolic_registers: self.symbolic_registers.clone(),
             // Start with empty store log for fork
             store_log: Vec::new(),
+            // Share binary regions (read-only, no need to clone data)
+            binary_regions: self.binary_regions.clone(),
+            // Native lift is already initialized if parent had it
+            native_lift_initialized: self.native_lift_initialized,
         })
     }
 

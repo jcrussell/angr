@@ -614,6 +614,11 @@ impl<'a> CallbackInterpreter<'a> {
     }
 
     /// Get or lift a block at the given address.
+    ///
+    /// This tries the following in order:
+    /// 1. Check the block cache
+    /// 2. Try native lifting via libpyvex (if feature enabled and bytes available)
+    /// 3. Fall back to Python callback for lifting
     fn get_or_lift_block(
         &mut self,
         py: Python<'_>,
@@ -625,7 +630,46 @@ impl<'a> CallbackInterpreter<'a> {
             return Ok(irsb.clone());
         }
 
-        // Lift via Python callback
+        // Try native lifting if available
+        #[cfg(feature = "native-lift")]
+        {
+            if crate::vex::libpyvex_ffi::is_vex_initialized() {
+                // Try to get bytes from concrete memory for native lifting
+                // Look for a region containing this address with enough bytes
+                for region in &self.concrete_memory {
+                    if addr >= region.base && addr < region.base + region.size {
+                        let offset = (addr - region.base) as usize;
+                        let available = region.size as usize - offset;
+                        // Use up to 4096 bytes for lifting (typical max block size)
+                        let max_bytes = available.min(4096);
+                        if max_bytes >= 1 {
+                            let bytes = &region.data[offset..offset + max_bytes];
+                            match crate::vex::libpyvex_ffi::lift_native(
+                                bytes,
+                                addr,
+                                self.arch,
+                                99,  // max_insns
+                                max_bytes as u32,
+                            ) {
+                                Ok(irsb) => {
+                                    // Native lift succeeded!
+                                    log::trace!("Native lift succeeded at 0x{:x}", addr);
+                                    self.block_cache.put(addr, irsb.clone());
+                                    return Ok(irsb);
+                                }
+                                Err(e) => {
+                                    log::trace!("Native lift failed at 0x{:x}: {}", addr, e);
+                                    // Fall through to Python callback
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fall back to lifting via Python callback
         let irsb_json = callbacks
             .call_lift_block(py, addr)
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {}", e)))?;

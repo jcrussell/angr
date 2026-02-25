@@ -2,11 +2,13 @@
 //!
 //! This module provides the interface for lifting machine code to VEX IR.
 //! It can use either:
-//! - pyvex via Python FFI (temporary, for compatibility)
-//! - libvex-rs (native, future)
+//! - Native libpyvex FFI (when `native-lift` feature is enabled)
+//! - pyvex via Python callback (fallback)
 
 use std::collections::HashMap;
 
+#[cfg(feature = "native-lift")]
+use super::libpyvex_ffi;
 use super::ir::{
     Endness, IRConst, IRExpr, IROp, IRStmt, IRType, IRSB, JumpKind, TypeEnv, VexArch,
 };
@@ -116,10 +118,25 @@ impl VEXLifter for NativeVEXLifter {
             return Ok(irsb.clone());
         }
 
-        // For now, return an error for unknown code
-        // In a full implementation, we would call libvex here
+        // Try native lifting if available
+        #[cfg(feature = "native-lift")]
+        {
+            match libpyvex_ffi::lift_native(bytes, addr, arch, 99, bytes.len() as u32) {
+                Ok(irsb) => {
+                    // Cache the result
+                    self.cache.write().insert((addr, arch), irsb.clone());
+                    return Ok(irsb);
+                }
+                Err(e) => {
+                    // Log the error but don't fail - caller can try Python fallback
+                    log::debug!("Native lift failed at 0x{:x}: {}", addr, e);
+                }
+            }
+        }
+
+        // Return error indicating fallback needed
         Err(LiftError::Unsupported(
-            "native lifting not yet implemented; use pyvex FFI".to_string(),
+            "native lifting not available; use pyvex callback".to_string(),
         ))
     }
 }
