@@ -845,6 +845,14 @@ impl RustVEXEngine {
             }
         }
 
+        // Also copy binary regions for native VEX lifting
+        // These are read-only code sections (.text, etc.) loaded via load_binary_regions()
+        for (base, data) in &self.binary_regions {
+            if !data.is_empty() {
+                interp.add_concrete_memory(*base, data.clone());
+            }
+        }
+
         // Pass Rust memory to interpreter if enabled
         if self.use_rust_memory {
             if let Some(mem) = self.symbolic_memory.take() {

@@ -17,6 +17,7 @@ use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory, PAGE_SIZE};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ccall;
+use crate::vex::dirty::DirtyHelperDispatch;
 use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
 use crate::vex::ops::{OpError, VEXOps};
 use crate::vex::{deserialize_irsb, Endness};
@@ -212,6 +213,8 @@ pub struct CallbackInterpreter<'a> {
     /// 0 = no prefetching, 1 = fetch 3 pages (main + 1 before + 1 after), etc.
     /// Default is 2 for good locality on stack/heap access patterns.
     page_prefetch_count: u32,
+    /// Dirty helper dispatch table for native handling of common helpers.
+    dirty_dispatch: DirtyHelperDispatch,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -249,6 +252,7 @@ impl<'a> CallbackInterpreter<'a> {
             load_prefetch_cache: HashMap::new(),
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
+            dirty_dispatch: DirtyHelperDispatch::new(),
         }
     }
 
@@ -874,6 +878,13 @@ impl<'a> CallbackInterpreter<'a> {
                                 .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         }
+                        ConcretizationResult::Strided { base, stride, count } => {
+                            // Strided access pattern - generate addresses and delegate to Python
+                            let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                            callbacks
+                                .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        }
                         ConcretizationResult::TooLarge { min, max, .. } => {
                             // Address range too large - delegate to Python's memory model
                             // which has access to angr's address concretization strategies
@@ -1261,14 +1272,6 @@ impl<'a> CallbackInterpreter<'a> {
                 Err(CbExecutionError::Unsupported("load-linked/store-conditional".to_string()))
             }
             IRStmt::Dirty(dirty) => {
-                // Check if dirty call callback is available
-                if !callbacks.has_dirty_call() {
-                    return Err(CbExecutionError::Unsupported(format!(
-                        "dirty call: {} (no callback)",
-                        dirty.cee.name
-                    )));
-                }
-
                 // Check guard if present
                 if let Some(guard) = &dirty.guard {
                     let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
@@ -1292,16 +1295,14 @@ impl<'a> CallbackInterpreter<'a> {
 
                 // Evaluate arguments
                 let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
+                let mut all_args_concrete = true;
                 for arg in &dirty.args {
                     let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
                     if let Some(concrete) = val.as_u64() {
                         arg_vals.push(concrete);
                     } else {
-                        // Symbolic argument - Python needs to handle this
-                        return Err(CbExecutionError::Unsupported(format!(
-                            "dirty call with symbolic arg: {}",
-                            dirty.cee.name
-                        )));
+                        all_args_concrete = false;
+                        break;
                     }
                 }
 
@@ -1311,6 +1312,58 @@ impl<'a> CallbackInterpreter<'a> {
                 } else {
                     0 // No return value
                 };
+
+                // Try native dirty helper dispatch first
+                if all_args_concrete {
+                    if let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals) {
+                        // Native handler succeeded!
+                        log::trace!("Native dirty call: {} (args: {:?})", dirty.cee.name, arg_vals);
+
+                        // Store result in temporary if specified
+                        if let Some(tmp) = dirty.tmp {
+                            if let Some(return_value) = result.return_value {
+                                let value = RustBV::concrete(return_value as u128, ret_ty_bits);
+                                if (tmp as usize) < self.temps.len() {
+                                    self.temps[tmp as usize] = Some(value);
+                                }
+                            }
+                        }
+
+                        // Apply any register writes from the helper
+                        for (offset, value) in result.reg_writes {
+                            // Convert u64 value to RustBV and store in register
+                            let bv = RustBV::concrete(value as u128, 64);
+                            self.registers.put(offset, bv);
+                        }
+
+                        return Ok(StmtResult::Continue);
+                    }
+                }
+
+                // Fall back to Python callback
+                if !callbacks.has_dirty_call() {
+                    return Err(CbExecutionError::Unsupported(format!(
+                        "dirty call: {} (no callback and no native handler)",
+                        dirty.cee.name
+                    )));
+                }
+
+                if !all_args_concrete {
+                    // Re-evaluate args for Python (we aborted early above)
+                    arg_vals.clear();
+                    for arg in &dirty.args {
+                        let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
+                        if let Some(concrete) = val.as_u64() {
+                            arg_vals.push(concrete);
+                        } else {
+                            // Symbolic argument - Python needs to handle this
+                            return Err(CbExecutionError::Unsupported(format!(
+                                "dirty call with symbolic arg: {}",
+                                dirty.cee.name
+                            )));
+                        }
+                    }
+                }
 
                 // Call Python callback
                 let (data, is_symbolic, _symbolic_ast) = callbacks
@@ -1446,6 +1499,13 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                         ConcretizationResult::Multiple(addrs) => {
                             // Delegate to Python for symbolic load with ITE chain
+                            callbacks
+                                .call_memory_load_symbolic(py, &addrs, size as u32, &addr_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                        }
+                        ConcretizationResult::Strided { base, stride, count } => {
+                            // Strided access pattern - generate addresses and delegate to Python
+                            let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
                             callbacks
                                 .call_memory_load_symbolic(py, &addrs, size as u32, &addr_val)
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))
@@ -1728,6 +1788,7 @@ impl<'a> CallbackInterpreter<'a> {
             load_prefetch_cache: HashMap::new(), // Fresh prefetch cache for fork
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
+            dirty_dispatch: DirtyHelperDispatch::new(), // Fresh dispatch (stateless)
         }
     }
 
@@ -1864,6 +1925,10 @@ impl<'a> CallbackInterpreter<'a> {
     /// fetching pages around the accessed address. Useful for sequential access
     /// patterns (like stack frames, arrays, etc.).
     ///
+    /// When `enable_eager_prefetch` is set in config, this will fetch all
+    /// unmapped pages in the lazy region containing the page. Otherwise,
+    /// it fetches `prefetch_count` pages in each direction.
+    ///
     /// Args:
     ///     prefetch_count: Number of pages to prefetch in each direction (0 = disabled)
     ///
@@ -1875,40 +1940,23 @@ impl<'a> CallbackInterpreter<'a> {
         page_addr: u64,
         prefetch_count: u32,
     ) -> Result<bool, CbExecutionError> {
-        if prefetch_count == 0 {
+        if prefetch_count == 0 && !self.config.enable_eager_prefetch {
             // No prefetching, just fetch the single page
             return self.fetch_page(py, callbacks, page_addr);
         }
 
-        // Build list of pages to fetch: main page + nearby pages
-        let page_size = 0x1000u64;
-        let mut pages_to_fetch = Vec::with_capacity(1 + 2 * prefetch_count as usize);
+        // Build list of pages to fetch
+        let pages_to_fetch = if self.config.enable_eager_prefetch {
+            // Eager region prefetch: fetch all unmapped pages in the region
+            self.get_eager_prefetch_list(page_addr)
+        } else {
+            // Nearby prefetch: fetch pages before/after the trigger
+            self.get_nearby_prefetch_list(page_addr, prefetch_count)
+        };
 
-        // Add main page first
-        pages_to_fetch.push(page_addr);
-
-        // Add pages before (lower addresses)
-        for i in 1..=prefetch_count {
-            if let Some(addr) = page_addr.checked_sub(i as u64 * page_size) {
-                // Check if not already mapped
-                if let Some(ref rust_mem) = self.rust_memory {
-                    if !rust_mem.is_mapped(addr) {
-                        pages_to_fetch.push(addr);
-                    }
-                }
-            }
-        }
-
-        // Add pages after (higher addresses)
-        for i in 1..=prefetch_count {
-            if let Some(addr) = page_addr.checked_add(i as u64 * page_size) {
-                // Check if not already mapped
-                if let Some(ref rust_mem) = self.rust_memory {
-                    if !rust_mem.is_mapped(addr) {
-                        pages_to_fetch.push(addr);
-                    }
-                }
-            }
+        if pages_to_fetch.is_empty() {
+            // No pages to fetch (shouldn't happen, but handle gracefully)
+            return self.fetch_page(py, callbacks, page_addr);
         }
 
         // Fetch all pages in one batch
@@ -1920,6 +1968,57 @@ impl<'a> CallbackInterpreter<'a> {
         } else {
             Ok(fetched > 0)
         }
+    }
+
+    /// Get pages to fetch for eager region prefetch.
+    ///
+    /// Returns all unmapped pages in the lazy region containing `page_addr`,
+    /// up to `max_prefetch_batch` pages.
+    fn get_eager_prefetch_list(&self, page_addr: u64) -> Vec<u64> {
+        if let Some(ref rust_mem) = self.rust_memory {
+            if let Some(pages) = rust_mem.get_region_prefetch_list(page_addr, self.config.max_prefetch_batch) {
+                return pages;
+            }
+        }
+        // Fallback to just the main page
+        vec![page_addr]
+    }
+
+    /// Get pages to fetch for nearby prefetch.
+    ///
+    /// Returns `prefetch_count` unmapped pages in each direction.
+    fn get_nearby_prefetch_list(&self, page_addr: u64, prefetch_count: u32) -> Vec<u64> {
+        let page_size = 0x1000u64;
+        let mut pages_to_fetch = Vec::with_capacity(1 + 2 * prefetch_count as usize);
+
+        // Add main page first
+        pages_to_fetch.push(page_addr);
+
+        // Add pages before (lower addresses)
+        for i in 1..=prefetch_count {
+            if let Some(addr) = page_addr.checked_sub(i as u64 * page_size) {
+                // Check if not already mapped
+                if let Some(ref rust_mem) = self.rust_memory {
+                    if !rust_mem.is_mapped(addr) && rust_mem.is_addr_in_lazy_region(addr) {
+                        pages_to_fetch.push(addr);
+                    }
+                }
+            }
+        }
+
+        // Add pages after (higher addresses)
+        for i in 1..=prefetch_count {
+            if let Some(addr) = page_addr.checked_add(i as u64 * page_size) {
+                // Check if not already mapped
+                if let Some(ref rust_mem) = self.rust_memory {
+                    if !rust_mem.is_mapped(addr) && rust_mem.is_addr_in_lazy_region(addr) {
+                        pages_to_fetch.push(addr);
+                    }
+                }
+            }
+        }
+
+        pages_to_fetch
     }
 
     /// Clear the load prefetch cache.

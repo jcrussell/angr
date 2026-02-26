@@ -553,8 +553,9 @@ impl SymbolicMemory {
     ///
     /// This method handles symbolic addresses by:
     /// 1. Trying to concretize the address to a single value (fast path)
-    /// 2. Building an ITE chain for multiple possible addresses
-    /// 3. Returning an error if the address range is too large
+    /// 2. Building a balanced ITE tree for strided access patterns (efficient)
+    /// 3. Building an ITE chain for multiple possible addresses
+    /// 4. Returning an error if the address range is too large
     ///
     /// For unmapped pages in lazy regions, returns `UnmappedPageInRegion` so
     /// the interpreter can fetch the page on-demand.
@@ -584,24 +585,13 @@ impl SymbolicMemory {
             ConcretizationResult::Single(concrete_addr) => {
                 self.load_concrete_lazy(concrete_addr, size, ctx)
             }
+            ConcretizationResult::Strided { base, stride, count } => {
+                // Use balanced ITE tree for strided access - O(log N) depth vs O(N)
+                self.load_strided_balanced(&addr, base, stride, count, size, ctx)
+            }
             ConcretizationResult::Multiple(addrs) => {
-                // Build ITE chain: If(addr==a0, mem[a0], If(addr==a1, mem[a1], ...))
-                let first_addr = addrs[0];
-                let mut result = self.load_concrete_lazy(first_addr, size, ctx)?;
-
-                for &candidate in &addrs[1..] {
-                    // Build condition: addr == candidate
-                    let addr_const = RustBV::concrete(candidate as u128, addr.width());
-                    let cond = addr.eq(&addr_const, ctx);
-
-                    // Load value at candidate address
-                    let val = self.load_concrete_lazy(candidate, size, ctx)?;
-
-                    // Build ITE: if (addr == candidate) then val else result
-                    result = cond.ite(&val, &result, ctx);
-                }
-
-                Ok(result)
+                // Build balanced ITE tree for better solver performance
+                self.build_balanced_ite_load(&addr, &addrs, size, ctx)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
                 Err(MemoryError::SymbolicAddress {
@@ -619,12 +609,154 @@ impl SymbolicMemory {
         }
     }
 
+    /// Load from strided addresses using a balanced ITE tree.
+    ///
+    /// For a strided pattern like base, base+stride, base+2*stride, ...,
+    /// this builds a balanced binary tree of ITE expressions with O(log N) depth
+    /// instead of the linear O(N) depth of a chain.
+    ///
+    /// The tree structure:
+    /// ```text
+    ///                      ITE(addr <= mid_addr)
+    ///                     /                    \
+    ///        ITE(addr <= lo_mid)        ITE(addr <= hi_mid)
+    ///           /      \                    /       \
+    ///         ...     ...                ...        ...
+    /// ```
+    fn load_strided_balanced(
+        &self,
+        addr_expr: &RustBV,
+        base: u64,
+        stride: u64,
+        count: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        if count == 0 {
+            return Err(MemoryError::SymbolicAddress {
+                description: "strided access with zero count".to_string(),
+            });
+        }
+        if count == 1 {
+            return self.load_concrete_lazy(base, size, ctx);
+        }
+
+        // Build the balanced tree recursively
+        self.build_strided_ite_tree(addr_expr, base, stride, 0, count - 1, size, ctx)
+    }
+
+    /// Recursive helper to build a balanced ITE tree for strided access.
+    ///
+    /// # Arguments
+    /// * `addr_expr` - The symbolic address expression
+    /// * `base` - Base address of the strided pattern
+    /// * `stride` - Stride between consecutive addresses
+    /// * `lo` - Lowest index in the current subtree
+    /// * `hi` - Highest index in the current subtree
+    /// * `size` - Number of bytes to load
+    /// * `ctx` - Solver context
+    fn build_strided_ite_tree(
+        &self,
+        addr_expr: &RustBV,
+        base: u64,
+        stride: u64,
+        lo: u64,
+        hi: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // Base case: single element
+        if lo == hi {
+            let addr = base + lo * stride;
+            return self.load_concrete_lazy(addr, size, ctx);
+        }
+
+        // Split at midpoint for balanced tree
+        let mid = (lo + hi) / 2;
+        let mid_addr = base + mid * stride;
+
+        // Build condition: addr <= mid_addr
+        let mid_const = RustBV::concrete(mid_addr as u128, addr_expr.width());
+        let cond = addr_expr.ule(&mid_const, ctx);
+
+        // Recursively build left subtree (lo..mid) and right subtree (mid+1..hi)
+        let left = self.build_strided_ite_tree(addr_expr, base, stride, lo, mid, size, ctx)?;
+        let right = self.build_strided_ite_tree(addr_expr, base, stride, mid + 1, hi, size, ctx)?;
+
+        // Build ITE: if (addr <= mid_addr) then left else right
+        Ok(cond.ite(&left, &right, ctx))
+    }
+
+    /// Build a balanced ITE tree for arbitrary addresses.
+    ///
+    /// This is similar to the strided version but works with any sorted
+    /// list of addresses. Uses binary search style partitioning.
+    fn build_balanced_ite_load(
+        &self,
+        addr_expr: &RustBV,
+        addrs: &[u64],
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        if addrs.is_empty() {
+            return Err(MemoryError::SymbolicAddress {
+                description: "empty address list".to_string(),
+            });
+        }
+        if addrs.len() == 1 {
+            return self.load_concrete_lazy(addrs[0], size, ctx);
+        }
+
+        self.build_balanced_ite_load_inner(addr_expr, addrs, size, ctx)
+    }
+
+    /// Recursive helper for balanced ITE tree with arbitrary addresses.
+    fn build_balanced_ite_load_inner(
+        &self,
+        addr_expr: &RustBV,
+        addrs: &[u64],
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // Base case: single address
+        if addrs.len() == 1 {
+            return self.load_concrete_lazy(addrs[0], size, ctx);
+        }
+
+        // Base case: two addresses - simple ITE
+        if addrs.len() == 2 {
+            let left_val = self.load_concrete_lazy(addrs[0], size, ctx)?;
+            let right_val = self.load_concrete_lazy(addrs[1], size, ctx)?;
+
+            let left_const = RustBV::concrete(addrs[0] as u128, addr_expr.width());
+            let cond = addr_expr.eq(&left_const, ctx);
+
+            return Ok(cond.ite(&left_val, &right_val, ctx));
+        }
+
+        // Split at midpoint
+        let mid = addrs.len() / 2;
+        let mid_addr = addrs[mid];
+
+        // Build condition: addr < mid_addr (for binary partition)
+        let mid_const = RustBV::concrete(mid_addr as u128, addr_expr.width());
+        let cond = addr_expr.ult(&mid_const, ctx);
+
+        // Recursively build left (addrs < mid) and right (addrs >= mid) subtrees
+        let left = self.build_balanced_ite_load_inner(addr_expr, &addrs[..mid], size, ctx)?;
+        let right = self.build_balanced_ite_load_inner(addr_expr, &addrs[mid..], size, ctx)?;
+
+        // Build ITE: if (addr < mid_addr) then left else right
+        Ok(cond.ite(&left, &right, ctx))
+    }
+
     /// Store to a symbolic address with concretization support.
     ///
     /// This method handles symbolic addresses by:
     /// 1. Trying to concretize the address to a single value (fast path)
-    /// 2. Performing conditional stores for multiple possible addresses
-    /// 3. Returning an error if the address range is too large
+    /// 2. Performing conditional stores for strided access patterns
+    /// 3. Performing conditional stores for multiple possible addresses
+    /// 4. Returning an error if the address range is too large
     ///
     /// For multiple addresses, each candidate gets a conditional store:
     /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
@@ -656,6 +788,10 @@ impl SymbolicMemory {
         match concretizer.concretize(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_lazy(concrete_addr, value)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                // Handle strided access pattern
+                self.store_strided(&addr, &value, base, stride, count, ctx)
             }
             ConcretizationResult::Multiple(addrs) => {
                 // For each candidate address, perform a conditional store:
@@ -693,6 +829,41 @@ impl SymbolicMemory {
                 })
             }
         }
+    }
+
+    /// Store to strided addresses with conditional stores.
+    ///
+    /// For each address in the strided pattern, performs:
+    /// `mem[addr] = If(symbolic_addr == addr, new_value, mem[addr])`
+    fn store_strided(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        base: u64,
+        stride: u64,
+        count: u64,
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+
+        for i in 0..count {
+            let candidate = base + i * stride;
+
+            // Build condition: addr == candidate
+            let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
+            let cond = addr_expr.eq(&addr_const, ctx);
+
+            // Load current value at candidate address
+            let current = self.load_concrete_lazy(candidate, size, ctx)?;
+
+            // Build conditional value
+            let conditional_value = cond.ite(value, &current, ctx);
+
+            // Store the conditional value
+            self.store_concrete_lazy(candidate, conditional_value)?;
+        }
+
+        Ok(())
     }
 
     /// Fork the memory (O(1) via CoW).
@@ -789,6 +960,88 @@ impl SymbolicMemory {
     /// Get the number of lazy regions.
     pub fn lazy_region_count(&self) -> usize {
         self.lazy_regions.len()
+    }
+
+    /// Get all unmapped page addresses in the lazy region containing the trigger page.
+    ///
+    /// This is used for eager region prefetch - when a page is missing, we can
+    /// batch-fetch all unmapped pages in that region at once.
+    ///
+    /// # Arguments
+    /// * `trigger_page_addr` - Page address that triggered the fetch
+    /// * `max_pages` - Maximum number of pages to return (for batching)
+    ///
+    /// # Returns
+    /// List of page addresses to fetch, or None if the page is not in a lazy region.
+    pub fn get_region_prefetch_list(&self, trigger_page_addr: u64, max_pages: usize) -> Option<Vec<u64>> {
+        let trigger_page_num = trigger_page_addr >> 12;
+
+        // Find the lazy region containing this page
+        let region = self.lazy_regions.iter()
+            .find(|&&(start, end)| trigger_page_num >= start && trigger_page_num < end)?;
+
+        let (region_start, region_end) = *region;
+
+        // Collect all unmapped pages in this region
+        let mut pages_to_fetch = Vec::new();
+
+        for page_num in region_start..region_end {
+            if !self.pages.contains_key(&page_num) {
+                pages_to_fetch.push(page_num << 12);  // Convert to page address
+                if pages_to_fetch.len() >= max_pages {
+                    break;
+                }
+            }
+        }
+
+        if pages_to_fetch.is_empty() {
+            None
+        } else {
+            Some(pages_to_fetch)
+        }
+    }
+
+    /// Get unmapped pages around a trigger page (for locality-based prefetch).
+    ///
+    /// # Arguments
+    /// * `trigger_page_addr` - Page address that triggered the fetch
+    /// * `count_before` - Number of pages to check before the trigger
+    /// * `count_after` - Number of pages to check after the trigger
+    ///
+    /// # Returns
+    /// List of unmapped page addresses in the region around the trigger.
+    pub fn get_nearby_prefetch_list(
+        &self,
+        trigger_page_addr: u64,
+        count_before: u64,
+        count_after: u64,
+    ) -> Vec<u64> {
+        let trigger_page_num = trigger_page_addr >> 12;
+        let mut pages_to_fetch = Vec::new();
+
+        // Check pages before the trigger
+        for i in 1..=count_before {
+            if let Some(page_num) = trigger_page_num.checked_sub(i) {
+                if self.is_in_lazy_region(page_num) && !self.pages.contains_key(&page_num) {
+                    pages_to_fetch.push(page_num << 12);
+                }
+            }
+        }
+
+        // Add the trigger page itself if not mapped
+        if !self.pages.contains_key(&trigger_page_num) {
+            pages_to_fetch.push(trigger_page_addr);
+        }
+
+        // Check pages after the trigger
+        for i in 1..=count_after {
+            let page_num = trigger_page_num + i;
+            if self.is_in_lazy_region(page_num) && !self.pages.contains_key(&page_num) {
+                pages_to_fetch.push(page_num << 12);
+            }
+        }
+
+        pages_to_fetch
     }
 
     /// Map a page with data directly (used for on-demand page fetching).

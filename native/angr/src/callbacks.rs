@@ -130,6 +130,18 @@ pub struct ExecutionConfig {
     /// Whether to use deferred forks (if false, returns immediately on symbolic branch).
     #[pyo3(get, set)]
     pub use_deferred_forks: bool,
+    /// Whether to enable eager region prefetch (batch prefetch entire regions).
+    #[pyo3(get, set)]
+    pub enable_eager_prefetch: bool,
+    /// Maximum pages to prefetch in a single batch (default: 256 = 1MB).
+    #[pyo3(get, set)]
+    pub max_prefetch_batch: usize,
+    /// Maximum concretization range for symbolic addresses (default: 65536).
+    #[pyo3(get, set)]
+    pub max_concretization_range: u64,
+    /// Enable stride detection for array access patterns (default: true).
+    #[pyo3(get, set)]
+    pub enable_stride_detection: bool,
 }
 
 #[pymethods]
@@ -142,13 +154,18 @@ impl ExecutionConfig {
             max_deferred_forks,
             branch_policy: BranchPolicy::TakeTrue,
             use_deferred_forks,
+            enable_eager_prefetch: true,
+            max_prefetch_batch: 256,
+            max_concretization_range: 65536,
+            enable_stride_detection: true,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "ExecutionConfig(max_deferred_forks={}, use_deferred_forks={}, policy={:?})",
-            self.max_deferred_forks, self.use_deferred_forks, self.branch_policy
+            "ExecutionConfig(max_deferred_forks={}, use_deferred_forks={}, policy={:?}, eager_prefetch={}, max_prefetch_batch={})",
+            self.max_deferred_forks, self.use_deferred_forks, self.branch_policy,
+            self.enable_eager_prefetch, self.max_prefetch_batch
         )
     }
 }
@@ -159,6 +176,10 @@ impl Default for ExecutionConfig {
             max_deferred_forks: 500,  // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
             use_deferred_forks: true,
+            enable_eager_prefetch: true,
+            max_prefetch_batch: 256,        // 256 pages = 1MB
+            max_concretization_range: 65536,
+            enable_stride_detection: true,
         }
     }
 }

@@ -7,8 +7,10 @@
 //! - pyvex IRSB serialization/deserialization
 //! - Native libpyvex FFI for direct VEX lifting (when `native-lift` feature is enabled)
 //! - Clean call (CCall) implementations for flag calculations
+//! - Native dirty helper implementations (CPUID, RDTSC, etc.)
 
 pub mod ccall;
+pub mod dirty;
 pub mod ir;
 #[cfg(feature = "native-lift")]
 pub mod libpyvex_ffi;
@@ -17,6 +19,7 @@ pub mod opcode_map;
 pub mod ops;
 pub mod pyvex_bridge;
 
+pub use dirty::{DirtyHelperDispatch, DirtyHelperResult};
 pub use ir::*;
 #[cfg(feature = "native-lift")]
 pub use libpyvex_ffi::{lift_native, init_vex, is_vex_initialized, NativeLiftError};
