@@ -14,6 +14,7 @@ use pyo3::types::PyDict;
 use crate::arch::arch_from_name;
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks, RunResult};
 use crate::claripy_bridge::claripy_to_rustbv;
+use crate::concretize::AddressConcretizer;
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
 use crate::interpreter_cb::CallbackInterpreter;
 use crate::memory::{Permission, SymbolicMemory, PAGE_SIZE};
@@ -193,6 +194,12 @@ pub struct RustVEXEngine {
     binary_regions: Vec<(u64, Vec<u8>)>,
     /// Whether native VEX lifting is initialized.
     native_lift_initialized: bool,
+    /// Registered SimProcedures: address -> (name, num_args, no_return).
+    /// This info is passed to the interpreter for pre-extracting arguments.
+    simprocedures: HashMap<u64, (String, usize, bool)>,
+    /// Address concretization configuration.
+    /// Used to control how symbolic addresses are concretized for memory access.
+    concretizer_config: AddressConcretizer,
 }
 
 #[pymethods]
@@ -229,6 +236,8 @@ impl RustVEXEngine {
             store_log: Vec::new(),
             binary_regions: Vec::new(),
             native_lift_initialized: false,
+            simprocedures: HashMap::new(),
+            concretizer_config: AddressConcretizer::default(),
         })
     }
 
@@ -257,6 +266,19 @@ impl RustVEXEngine {
     /// Set the branch policy for symbolic branches.
     pub fn set_branch_policy(&mut self, policy: BranchPolicy) {
         self.execution_config.branch_policy = policy;
+    }
+
+    /// Configure address concretization to match Python's strategy.
+    ///
+    /// # Arguments
+    /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
+    /// * `range_limit` - Optional custom range limit (default: 1024)
+    ///
+    /// This should be called before execution to ensure consistent behavior
+    /// between Rust and Python memory access concretization.
+    #[pyo3(signature = (use_approximate, range_limit=None))]
+    pub fn configure_concretization(&mut self, use_approximate: bool, range_limit: Option<u64>) {
+        self.concretizer_config.configure(use_approximate, range_limit);
     }
 
     /// Get the architecture name.
@@ -315,6 +337,37 @@ impl RustVEXEngine {
     /// Check if an address is hooked.
     pub fn is_hooked(&self, addr: u64) -> bool {
         self.hooks.contains(&addr)
+    }
+
+    /// Register a SimProcedure at the given address.
+    ///
+    /// This allows the interpreter to pre-extract arguments when the hook is hit.
+    /// Arguments:
+    /// - addr: The hook address
+    /// - name: SimProcedure name (e.g., "strlen", "malloc")
+    /// - num_args: Number of arguments to extract
+    /// - no_return: Whether this procedure never returns (e.g., "exit")
+    #[pyo3(signature = (addr, name, num_args=0, no_return=false))]
+    pub fn register_simprocedure(&mut self, addr: u64, name: String, num_args: usize, no_return: bool) {
+        self.hooks.insert(addr);
+        self.simprocedures.insert(addr, (name, num_args, no_return));
+        self.hooks_version += 1;
+    }
+
+    /// Register multiple SimProcedures at once.
+    ///
+    /// Each tuple is (address, name, num_args, no_return).
+    pub fn register_simprocedures(&mut self, procs: Vec<(u64, String, usize, bool)>) {
+        for (addr, name, num_args, no_return) in procs {
+            self.hooks.insert(addr);
+            self.simprocedures.insert(addr, (name, num_args, no_return));
+        }
+        self.hooks_version += 1;
+    }
+
+    /// Clear all SimProcedure registrations.
+    pub fn clear_simprocedures(&mut self) {
+        self.simprocedures.clear();
     }
 
     /// Map a memory region.
@@ -822,6 +875,9 @@ impl RustVEXEngine {
             self.execution_config.clone(),
         );
 
+        // Set concretizer configuration to match Python's strategy
+        interp.set_concretizer(self.concretizer_config.clone());
+
         // Copy registers from engine to interpreter
         interp.registers.copy_from_bytes(&self.registers);
 
@@ -836,6 +892,11 @@ impl RustVEXEngine {
         // Set up hooks
         for &addr in &self.hooks {
             interp.add_hook(addr);
+        }
+
+        // Register SimProcedures with their names and argument counts
+        for (addr, (name, num_args, no_return)) in &self.simprocedures {
+            interp.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
         }
 
         // Copy concrete memory regions for fast local access
@@ -940,6 +1001,10 @@ impl RustVEXEngine {
             binary_regions: self.binary_regions.clone(),
             // Native lift is already initialized if parent had it
             native_lift_initialized: self.native_lift_initialized,
+            // Share SimProcedure registry (same for all forks)
+            simprocedures: self.simprocedures.clone(),
+            // Copy concretizer configuration
+            concretizer_config: self.concretizer_config.clone(),
         })
     }
 

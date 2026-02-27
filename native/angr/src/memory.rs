@@ -1373,6 +1373,17 @@ impl SymbolicMemory {
 
     /// Auto-map a zero page for an unmapped address in a lazy region.
     ///
+    /// # DEPRECATION WARNING
+    ///
+    /// This function is deprecated for use in interpreter callbacks. Creating
+    /// speculative zero pages causes state divergence when Python has actual
+    /// data (from backers like file contents or initialized sections). Use
+    /// this function only for internal Rust memory operations where Python
+    /// state is not involved.
+    ///
+    /// For interpreter callbacks that need memory, prefer falling back to
+    /// the Python callback which can provide correct backer data.
+    ///
     /// This creates a speculative zero page that can be validated later
     /// against Python state. Returns true if a page was created.
     pub fn auto_map_zero_page(&mut self, addr: u64) -> bool {

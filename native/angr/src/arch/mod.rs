@@ -4,16 +4,22 @@
 //! - `Arch` trait for architecture abstraction
 //! - Register file implementations for each architecture
 //! - Register name mappings
+//! - Calling convention implementations for argument extraction
 
 mod amd64;
 mod arm;
 mod arm64;
+pub mod calling_conventions;
 mod mips;
 mod x86;
 
 pub use amd64::AMD64;
 pub use arm::ARM;
 pub use arm64::ARM64;
+pub use calling_conventions::{
+    AArch64CC, ARMEABI, CallingConvention, Cdecl, MicrosoftX64, SystemVAMD64,
+    default_cc_for_arch,
+};
 pub use mips::{MIPS32, MIPS64};
 pub use x86::X86;
 

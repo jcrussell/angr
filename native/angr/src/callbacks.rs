@@ -203,7 +203,20 @@ pub enum RunResult {
     /// Reached max blocks limit - continue later.
     MaxBlocks { pc: u64 },
     /// Hit a hook address - need Python to handle.
+    /// This is the legacy variant without pre-extracted arguments.
     Hook { addr: u64 },
+    /// SimProcedure hook hit with pre-extracted arguments.
+    /// This allows Python to directly use the arguments without re-extracting.
+    SimProcedure {
+        /// Address where the SimProcedure is hooked.
+        addr: u64,
+        /// Name of the SimProcedure (e.g., "strlen", "malloc").
+        name: String,
+        /// Number of arguments extracted (for Python to know how many to use).
+        num_args: usize,
+        /// Return address (from stack for calls, or 0 if unknown).
+        return_addr: u64,
+    },
     /// Syscall encountered - need Python to handle.
     Syscall { num: u64, pc: u64 },
     /// Symbolic branch - need Python to fork states.
@@ -954,7 +967,7 @@ impl PythonCallbacks {
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct LoopExecutionEvent {
-    /// Type of event: "max_blocks", "hook", "syscall", "symbolic_branch", "block_end", "error", "need_lift", "max_deferred_forks"
+    /// Type of event: "max_blocks", "hook", "simprocedure", "syscall", "symbolic_branch", "block_end", "error", "need_lift", "max_deferred_forks"
     #[pyo3(get)]
     pub event_type: String,
     /// Current/next PC address.
@@ -989,6 +1002,15 @@ pub struct LoopExecutionEvent {
     /// Used for proper constraint handling during fork processing.
     #[pyo3(get)]
     pub push_level: u32,
+    /// SimProcedure name (for "simprocedure" events).
+    #[pyo3(get)]
+    pub simprocedure_name: Option<String>,
+    /// Number of arguments for SimProcedure.
+    #[pyo3(get)]
+    pub simprocedure_num_args: Option<usize>,
+    /// Return address for SimProcedure (from stack).
+    #[pyo3(get)]
+    pub simprocedure_return_addr: Option<u64>,
 }
 
 impl LoopExecutionEvent {
@@ -1012,6 +1034,9 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
             },
             RunResult::Hook { addr } => LoopExecutionEvent {
                 event_type: "hook".to_string(),
@@ -1025,6 +1050,25 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
+            },
+            RunResult::SimProcedure { addr, name, num_args, return_addr } => LoopExecutionEvent {
+                event_type: "simprocedure".to_string(),
+                pc: Some(addr),
+                addr: Some(addr),
+                syscall_num: None,
+                true_target: None,
+                false_target: None,
+                jumpkind: Some("Ijk_Call".to_string()),
+                error: None,
+                blocks_executed,
+                deferred_forks,
+                push_level,
+                simprocedure_name: Some(name),
+                simprocedure_num_args: Some(num_args),
+                simprocedure_return_addr: if return_addr != 0 { Some(return_addr) } else { None },
             },
             RunResult::Syscall { num, pc } => LoopExecutionEvent {
                 event_type: "syscall".to_string(),
@@ -1038,6 +1082,9 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
             },
             RunResult::SymbolicBranch {
                 true_target,
@@ -1055,6 +1102,9 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
             },
             RunResult::BlockEnd { next_addr, jumpkind } => LoopExecutionEvent {
                 event_type: "block_end".to_string(),
@@ -1068,6 +1118,9 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
             },
             RunResult::Error { message, addr } => LoopExecutionEvent {
                 event_type: "error".to_string(),
@@ -1081,6 +1134,9 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
             },
             RunResult::NeedLift { addr } => LoopExecutionEvent {
                 event_type: "need_lift".to_string(),
@@ -1094,6 +1150,9 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
             },
             RunResult::MaxDeferredForks { pc } => LoopExecutionEvent {
                 event_type: "max_deferred_forks".to_string(),
@@ -1107,6 +1166,9 @@ impl LoopExecutionEvent {
                 blocks_executed,
                 deferred_forks,
                 push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
             },
         }
     }

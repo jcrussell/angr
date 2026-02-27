@@ -92,7 +92,7 @@ impl ConcretizationResult {
 /// Configuration for address concretization.
 #[derive(Debug, Clone)]
 pub struct AddressConcretizer {
-    /// Maximum address range to consider (default: 65536).
+    /// Maximum address range to consider (default: 1024, matching Python).
     /// If max - min > max_range, concretization fails.
     pub max_range: u64,
     /// Maximum number of solutions to enumerate (default: 256).
@@ -104,16 +104,20 @@ pub struct AddressConcretizer {
     pub enable_stride_detection: bool,
     /// Minimum number of samples for stride detection (default: 4).
     pub stride_sample_count: usize,
+    /// Whether to use approximate memory indices (from APPROXIMATE_MEMORY_INDICES option).
+    /// When true, allows more aggressive concretization with potential approximation.
+    pub use_approximate: bool,
 }
 
 impl Default for AddressConcretizer {
     fn default() -> Self {
         AddressConcretizer {
-            max_range: 65536,           // Increased from 1024 to 64KB
+            max_range: 1024,            // Match Python's default range limit
             max_solutions: 256,
             max_stride_count: 16384,    // Max 16K elements in strided access
             enable_stride_detection: true,
             stride_sample_count: 4,     // Sample 4 solutions for stride detection
+            use_approximate: false,     // Default to precise concretization
         }
     }
 }
@@ -146,6 +150,23 @@ impl AddressConcretizer {
             max_stride_count,
             enable_stride_detection,
             stride_sample_count: 4,
+            use_approximate: false,
+        }
+    }
+
+    /// Configure from Python sim_options.
+    ///
+    /// # Arguments
+    /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
+    /// * `range_limit` - Optional custom range limit (default: 1024)
+    pub fn configure(&mut self, use_approximate: bool, range_limit: Option<u64>) {
+        self.use_approximate = use_approximate;
+        if let Some(limit) = range_limit {
+            self.max_range = limit;
+        }
+        // When approximate is enabled, we can be more aggressive with range
+        if use_approximate && self.max_range < 4096 {
+            self.max_range = 4096;
         }
     }
 
@@ -464,9 +485,25 @@ mod tests {
     #[test]
     fn test_default_config() {
         let concretizer = AddressConcretizer::default();
-        assert_eq!(concretizer.max_range, 65536);
+        assert_eq!(concretizer.max_range, 1024);  // Match Python default
         assert_eq!(concretizer.max_solutions, 256);
         assert_eq!(concretizer.max_stride_count, 16384);
         assert!(concretizer.enable_stride_detection);
+        assert!(!concretizer.use_approximate);
+    }
+
+    #[test]
+    fn test_configure() {
+        let mut concretizer = AddressConcretizer::default();
+
+        // Configure without approximate
+        concretizer.configure(false, Some(2048));
+        assert_eq!(concretizer.max_range, 2048);
+        assert!(!concretizer.use_approximate);
+
+        // Configure with approximate - should increase range to at least 4096
+        concretizer.configure(true, None);
+        assert!(concretizer.use_approximate);
+        assert!(concretizer.max_range >= 4096);
     }
 }

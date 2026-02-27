@@ -2143,6 +2143,12 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         # Clear any stale symbolic registers from previous sync
         engine.clear_symbolic_registers()
 
+        # Sync concretization configuration to match Python's strategy.
+        # This ensures Rust uses the same address concretization behavior as Python,
+        # preventing state divergence from different concretization results.
+        use_approximate = o.APPROXIMATE_MEMORY_INDICES in state.options
+        engine.configure_concretization(use_approximate, range_limit=1024)
+
         # Sync PC
         pc = state.solver.eval(state.ip)
         engine.pc = pc
@@ -2636,6 +2642,15 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         cbs = RustVEXCallbacks(state, self.project, self)
         self._last_callbacks = cbs
 
+        # Capture constraints before Rust execution for replay on fallback.
+        # When Rust fails and we restore the snapshot, any constraints added
+        # during Rust execution would be lost. We capture the pre-Rust constraint
+        # count so we can replay the Rust-added constraints on the restored state.
+        pre_rust_constraint_count = 0
+        if RUST_SOLVER_AVAILABLE and isinstance(state.solver, RustSimSolver):
+            state.solver._flush()  # Ensure all pending are in Rust context
+            pre_rust_constraint_count = len(state.solver._constraint_list)
+
         # Save state snapshot for rollback if Rust fails
         state_snapshot = state.copy()
 
@@ -2726,8 +2741,25 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             l.warning("Rust VEX execution failed: %s, falling back to Python", e)
             # Record this address as a fallback to avoid repeated Rust attempts
             self._record_fallback(addr, str(e))
+
+            # Capture constraints added during Rust execution BEFORE restoring snapshot.
+            # These constraints are valid (added by branch decisions, etc.) and must be
+            # replayed on the restored state to avoid constraint loss.
+            rust_added_constraints = []
+            if RUST_SOLVER_AVAILABLE and isinstance(state.solver, RustSimSolver):
+                state.solver._flush()  # Ensure pending constraints are committed
+                rust_added_constraints = state.solver._constraint_list[pre_rust_constraint_count:]
+
             # Restore state snapshot to ensure Python VEX has clean state
             self.state = state_snapshot
+
+            # Replay Rust-added constraints on restored state to prevent constraint loss.
+            # This is critical for correctness: branch constraints established during
+            # Rust execution must persist even when falling back to Python.
+            if rust_added_constraints:
+                for constraint in rust_added_constraints:
+                    state_snapshot.solver.add(constraint)
+
             return super().process_successors(
                 successors,
                 irsb=irsb,
@@ -2815,6 +2847,15 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         cbs = RustVEXCallbacks(state, self.project, self)
         self._last_callbacks = cbs  # Save for profiling access
 
+        # Capture constraints before Rust execution for replay on fallback.
+        # When Rust fails and we restore the snapshot, any constraints added
+        # during Rust execution would be lost. We capture the pre-Rust constraint
+        # count so we can replay the Rust-added constraints on the restored state.
+        pre_rust_constraint_count = 0
+        if RUST_SOLVER_AVAILABLE and isinstance(state.solver, RustSimSolver):
+            state.solver._flush()  # Ensure all pending are in Rust context
+            pre_rust_constraint_count = len(state.solver._constraint_list)
+
         # Save state snapshot for rollback on failure
         # This is necessary because Rust execution can modify Python state:
         # - Memory callbacks write concrete values (overwriting symbolic)
@@ -2882,10 +2923,26 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             l.warning("Rust VEX loop execution failed: %s, falling back", e)
             # Record this address as a fallback to avoid repeated Rust attempts
             self._record_fallback(addr, str(e))
+
+            # Capture constraints added during Rust execution BEFORE restoring snapshot.
+            # These constraints are valid (added by branch decisions, etc.) and must be
+            # replayed on the restored state to avoid constraint loss.
+            rust_added_constraints = []
+            if RUST_SOLVER_AVAILABLE and isinstance(state.solver, RustSimSolver):
+                state.solver._flush()  # Ensure pending constraints are committed
+                rust_added_constraints = state.solver._constraint_list[pre_rust_constraint_count:]
+
             # Restore state snapshot - Rust execution may have modified Python state
             # through memory callbacks or partial syncs. Restore to ensure Python VEX
             # has clean symbolic values.
             self.state = state_snapshot
+
+            # Replay Rust-added constraints on restored state to prevent constraint loss.
+            # This is critical for correctness: branch constraints established during
+            # Rust execution must persist even when falling back to Python.
+            if rust_added_constraints:
+                for constraint in rust_added_constraints:
+                    state_snapshot.solver.add(constraint)
 
             # Clear callbacks and fall back to Python VEX directly
             # Note: We use super().process_successors() to skip RustVEXMixin and go

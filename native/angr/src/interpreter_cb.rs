@@ -930,28 +930,31 @@ impl<'a> CallbackInterpreter<'a> {
                                 let prefetch_count = self.page_prefetch_count;
                                 let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
 
-                                if !page_fetched {
-                                    if let Some(ref mut rust_mem) = self.rust_memory {
-                                        rust_mem.auto_map_zero_page(page_addr);
-                                    }
-                                }
+                                // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
+                                // Python may have actual data for this page from backers (file contents,
+                                // initialized data). Speculatively creating zero pages causes state
+                                // divergence between Rust and Python. Instead, we fall through to
+                                // the Python callback which handles memory correctly.
 
-                                // Retry with unified store (reborrow rust_mem)
-                                if let Some(ref mut rust_mem) = self.rust_memory {
-                                    match rust_mem.store_symbolic_unified(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
-                                        Ok(()) => {
-                                            if let Some(addr_concrete) = addr_val.as_u64() {
-                                                self.load_prefetch_cache.remove(&(addr_concrete, data_size));
-                                            } else {
-                                                self.load_prefetch_cache.clear();
+                                if page_fetched {
+                                    // Page was fetched - retry with unified store
+                                    if let Some(ref mut rust_mem) = self.rust_memory {
+                                        match rust_mem.store_symbolic_unified(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
+                                            Ok(()) => {
+                                                if let Some(addr_concrete) = addr_val.as_u64() {
+                                                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                                                } else {
+                                                    self.load_prefetch_cache.clear();
+                                                }
+                                                return Ok(StmtResult::Continue);
                                             }
-                                            return Ok(StmtResult::Continue);
-                                        }
-                                        Err(_e) => {
-                                            // Still failed - fall through to Python callback
+                                            Err(_e) => {
+                                                // Still failed - fall through to Python callback
+                                            }
                                         }
                                     }
                                 }
+                                // If page not fetched, fall through to Python callback
                             }
                             Err(MemoryError::Unmapped { .. }) => {
                                 // Totally unmapped (not in lazy region) - fall through to Python
@@ -1568,21 +1571,24 @@ impl<'a> CallbackInterpreter<'a> {
                                 let prefetch_count = self.page_prefetch_count;
                                 let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
 
-                                if !page_fetched {
-                                    if let Some(ref mut rust_mem) = self.rust_memory {
-                                        rust_mem.auto_map_zero_page(page_addr);
-                                    }
-                                }
+                                // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
+                                // Python may have actual data for this page from backers (file contents,
+                                // initialized data). Speculatively creating zero pages causes state
+                                // divergence between Rust and Python. Instead, we fall through to
+                                // the Python callback which handles memory correctly.
 
-                                // Retry with unified load (reborrow rust_mem)
-                                if let Some(ref mut rust_mem) = self.rust_memory {
-                                    match rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
-                                        Ok(value) => return Ok(value),
-                                        Err(_e) => {
-                                            // Still failed - fall through to Python callback
+                                if page_fetched {
+                                    // Page was fetched - retry with unified load
+                                    if let Some(ref mut rust_mem) = self.rust_memory {
+                                        match rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                                            Ok(value) => return Ok(value),
+                                            Err(_e) => {
+                                                // Still failed - fall through to Python callback
+                                            }
                                         }
                                     }
                                 }
+                                // If page not fetched, fall through to Python callback
                             }
                             Err(MemoryError::Unmapped { .. }) => {
                                 // Totally unmapped (not in lazy region) - fall through to Python

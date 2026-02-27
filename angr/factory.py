@@ -27,6 +27,12 @@ except ImportError:
     UberEnginePcode = None
     register_pcode_arch_default_cc = None
 
+try:
+    from .engines import UberEngineRust, RUST_ENGINE_AVAILABLE
+except ImportError:
+    UberEngineRust = None
+    RUST_ENGINE_AVAILABLE = False
+
 if TYPE_CHECKING:
     from angr import Project, SimCC
     from angr.engines import SimEngine
@@ -56,6 +62,10 @@ class AngrObjectFactory:
                 l.warning("Creating project with the experimental 'UberEnginePcode' engine")
                 self.default_engine_factory = UberEnginePcode
             else:
+                # Default to UberEngine for stability.
+                # Use UberEngineRust explicitly for faster symbolic execution:
+                #   from angr.engines import UberEngineRust
+                #   proj.factory.default_engine_factory = UberEngineRust
                 self.default_engine_factory = UberEngine
         else:
             self.default_engine_factory = default_engine
