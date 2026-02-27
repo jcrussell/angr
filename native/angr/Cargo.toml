@@ -9,7 +9,8 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 # Z3 support enabled by default with z3-rs 0.19+ (thread-local context API)
-default = ["vex-engine", "vex-engine-z3", "native-lift"]
+# native-lift is intentionally not enabled by default (requires libpyvex.so)
+default = ["vex-engine", "vex-engine-z3"]
 vex-engine = ["im", "lru", "thiserror"]
 vex-engine-z3 = ["vex-engine", "z3"]
 # Native VEX lifting via libpyvex FFI (requires libpyvex.so from pyvex)

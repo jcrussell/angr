@@ -699,12 +699,9 @@ class RustVEXCallbacks:
         """
         Load from memory with symbolic address (multiple concrete possibilities).
 
-        This builds an ITE chain: If(addr==a0, mem[a0], If(addr==a1, mem[a1], ...))
-        For simplicity in the Rust->Python callback, we load from all addresses
-        and return bytes. The Rust side can handle the ITE chain construction.
-
-        For now, we just load from the first address as a fallback.
-        More sophisticated handling would build an ITE expression in Python.
+        Note: When use_rust_memory=True, Rust handles symbolic loads internally
+        via load_symbolic_unified() which builds proper ITE chains. This callback
+        is a fallback that only loads from the first address.
 
         Args:
             addrs: List of possible concrete addresses.
@@ -718,8 +715,7 @@ class RustVEXCallbacks:
             if not addrs:
                 return bytes(size)
 
-            # For now, load from first address as the concrete value
-            # A full implementation would build an ITE chain
+            # Fallback: only loads from first address - no ITE chain built
             val = self.state.memory.load(addrs[0], size, endness='Iend_LE')
 
             # Extract concrete value
@@ -740,11 +736,9 @@ class RustVEXCallbacks:
         """
         Store to memory with symbolic address (multiple concrete possibilities).
 
-        This performs conditional stores to each possible address:
-        mem[addr] = If(addr == candidate, new_value, mem[addr])
-
-        For simplicity in the Rust->Python callback, we store to all addresses
-        with conditional values.
+        Note: When use_rust_memory=True, Rust handles symbolic stores internally
+        via store_symbolic_unified() which performs proper conditional stores.
+        This callback is a fallback that only stores to the first address.
 
         Args:
             addrs: List of possible concrete addresses.
@@ -758,12 +752,9 @@ class RustVEXCallbacks:
             size = len(data)
             value = int.from_bytes(data, 'little')
             bits = size * 8
-            # Use cached zero BVV for common zero stores
             new_val = _get_zero_bvv(bits) if value == 0 else claripy.BVV(value, bits)
 
-            # For each candidate address, perform a conditional store
-            # Note: For a full implementation, we'd need the actual symbolic address
-            # to build proper ITE conditions. For now, we store to first address.
+            # Fallback: only stores to first address - no conditional stores
             self.state.memory.store(addrs[0], new_val, endness='Iend_LE')
         except Exception as e:
             l.warning("Symbolic memory store failed for addrs %s: %s", addrs, e)
@@ -772,15 +763,8 @@ class RustVEXCallbacks:
         """
         Load from memory when the address range is too large to concretize.
 
-        This is called when Rust's address concretizer returns TooLarge,
-        meaning the symbolic address has too many possible values to enumerate.
-        We delegate to angr's full memory model which can use its own
-        address concretization strategies.
-
-        The key insight is that the symbolic address expression is still
-        tracked in angr's state (in the scratch space or computed from
-        registers). We use a symbolic value as a placeholder and let
-        angr's memory model handle the actual load.
+        Returns a fresh symbolic value since the actual value depends on
+        which address is accessed.
 
         Args:
             size: Number of bytes to load.
@@ -789,19 +773,9 @@ class RustVEXCallbacks:
             Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_none).
         """
         try:
-            # Create a fresh symbolic value to represent the loaded data
-            # since we can't know the actual value without concretizing the address
             sym_name = f"unconstrained_load_{size}_{id(self)}"
             result = claripy.BVS(sym_name, size * 8)
-
-            # Return as symbolic - the actual value depends on which address is accessed
-            # The caller will get a fresh symbolic variable representing "unknown memory"
-            is_sym = True
-            # Get a concrete evaluation for the bytes (arbitrary, but needed for Rust)
-            concrete = 0  # Default to zero
-            concrete_bytes = concrete.to_bytes(size, 'little')
-
-            return (concrete_bytes, is_sym, result)
+            return (bytes(size), True, result)
         except Exception as e:
             l.warning("Symbolic AST memory load failed: %s", e)
             return (bytes(size), True, None)
@@ -810,32 +784,16 @@ class RustVEXCallbacks:
         """
         Store to memory when the address range is too large to concretize.
 
-        This is called when Rust's address concretizer returns TooLarge,
-        meaning the symbolic address has too many possible values to enumerate.
-        We delegate to angr's full memory model which can use its own
-        address concretization strategies.
-
-        For stores with unconstrained addresses, angr typically:
-        1. Applies address concretization strategies
-        2. Or treats it as a write to "symbolic memory"
+        Since we can't enumerate all possible addresses, this store is
+        treated as a no-op. This is a known limitation for unconstrained
+        symbolic addresses.
 
         Args:
             data: Bytes to store.
             size: Number of bytes being stored.
         """
-        try:
-            # For stores to unconstrained addresses, we log a warning
-            # since the address could be anywhere in the address space.
-            # The actual store semantics depend on angr's memory model settings.
-            l.debug("Symbolic AST store of %d bytes (address unconstrained)", size)
-
-            # We don't have the actual address expression here, so we can't
-            # perform a real store. This is a limitation - the store is "lost"
-            # unless angr's state has other tracking mechanisms.
-            # TODO: Track the symbolic address expression through Rust to enable
-            # proper symbolic stores.
-        except Exception as e:
-            l.warning("Symbolic AST memory store failed: %s", e)
+        # No-op: can't perform store without knowing the address
+        pass
 
     def on_hook(self, addr: int) -> int:
         """
@@ -2127,6 +2085,43 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
         self.successors._finalize()
         return self.successors
 
+    def _sync_simprocedures_to_rust(self, project) -> None:
+        """
+        Synchronize SimProcedure hooks to the Rust engine.
+
+        This registers SimProcedures with their names and argument counts,
+        enabling the Rust engine to provide more detailed event information.
+        """
+        if self._rust_engine is None:
+            return
+
+        for hook_addr, proc_info in project._sim_procedures.items():
+            if proc_info is not None:
+                # proc_info is typically (SimProcedure class, kwargs) or just a SimProcedure
+                proc = proc_info if not isinstance(proc_info, tuple) else proc_info[0]
+
+                # Get procedure name
+                proc_name = (
+                    getattr(proc, "__name__", None)
+                    or getattr(proc, "display_name", None)
+                    or type(proc).__name__
+                )
+
+                # Try to get num_args from prototype if available
+                num_args = 0
+                if hasattr(proc, "prototype") and proc.prototype is not None:
+                    num_args = len(getattr(proc.prototype, "args", []))
+                elif hasattr(proc, "num_args"):
+                    num_args = proc.num_args
+
+                # Check if procedure never returns
+                no_return = getattr(proc, "NO_RET", False)
+
+                self._rust_engine.register_simprocedure(hook_addr, proc_name, num_args, no_return)
+            else:
+                # Fall back to simple hook if no proc info
+                self._rust_engine.add_hook(hook_addr)
+
     def _sync_state_to_rust(self, state: SimState) -> None:
         """
         Synchronize angr SimState to Rust engine.
@@ -2506,6 +2501,28 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             )
             return False
 
+        elif event_type == "simprocedure":
+            # SimProcedure hook hit with additional info
+            self._sync_state_from_rust(state)
+
+            proc_addr = event.next_addr or event.addr
+            proc_name = getattr(event, "simprocedure_name", None)
+            num_args = getattr(event, "simprocedure_num_args", None)
+            return_addr = getattr(event, "simprocedure_return_addr", None)
+
+            l.debug(
+                "SimProcedure hit (single-step): %s at 0x%x (num_args=%s, ret_addr=%s)",
+                proc_name or "unknown", proc_addr, num_args, return_addr
+            )
+
+            successors.add_successor(
+                state,
+                proc_addr,
+                _CLARIPY_TRUE,
+                "Ijk_Call",
+            )
+            return False
+
         elif event_type == "need_lift":
             # Rust engine doesn't have this block cached - we need to lift it
             # This shouldn't happen often once we implement proper block passing
@@ -2621,10 +2638,9 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             rust_cbs = cbs.setup_rust_callbacks()
             self._rust_engine.set_callbacks(rust_cbs)
 
-            # Sync hooks to Rust engine
+            # Sync hooks and SimProcedures to Rust engine
             if state.project is not None:
-                for hook_addr in state.project._sim_procedures:
-                    self._rust_engine.add_hook(hook_addr)
+                self._sync_simprocedures_to_rust(state.project)
 
             # Sync state to Rust engine
             if _profiler.enabled:
@@ -2807,10 +2823,9 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             # Set callbacks on engine
             self._rust_engine.set_callbacks(rust_cbs)
 
-            # Sync hooks to Rust engine
+            # Sync hooks and SimProcedures to Rust engine
             if state.project is not None:
-                for hook_addr in state.project._sim_procedures:
-                    self._rust_engine.add_hook(hook_addr)
+                self._sync_simprocedures_to_rust(state.project)
 
             # Sync state to Rust engine
             if _profiler.enabled:
@@ -2948,6 +2963,28 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
                 hook_addr,
                 _CLARIPY_TRUE,
                 "Ijk_Boring",  # Changed from Ijk_NoHook
+            )
+
+        elif event_type == "simprocedure":
+            # SimProcedure hook hit - similar to hook but with additional info
+            # The Rust engine provides the SimProcedure name, arg count, and return addr.
+            # This event type is used when a registered SimProcedure is hit.
+            proc_addr = event.addr
+            proc_name = getattr(event, "simprocedure_name", None)
+            num_args = getattr(event, "simprocedure_num_args", None)
+            return_addr = getattr(event, "simprocedure_return_addr", None)
+
+            l.debug(
+                "SimProcedure hit: %s at 0x%x (num_args=%s, ret_addr=%s)",
+                proc_name or "unknown", proc_addr, num_args, return_addr
+            )
+
+            state.ip = proc_addr
+            successors.add_successor(
+                state,
+                proc_addr,
+                _CLARIPY_TRUE,
+                "Ijk_Call",  # Use Ijk_Call for SimProcedures
             )
 
         elif event_type == "syscall":
@@ -3127,6 +3164,23 @@ class RustVEXEngineWrapper:
 
     def remove_hook(self, addr: int) -> None:
         self._engine.remove_hook(addr)
+
+    def register_simprocedure(
+        self, addr: int, name: str, num_args: int = 0, no_return: bool = False
+    ) -> None:
+        """
+        Register a SimProcedure at the given address.
+
+        This allows the Rust interpreter to pre-extract arguments when the hook is hit,
+        providing the SimProcedure name and argument count in the event.
+
+        Args:
+            addr: The hook address.
+            name: SimProcedure name (e.g., "strlen", "malloc").
+            num_args: Number of arguments to extract.
+            no_return: Whether this procedure never returns (e.g., "exit").
+        """
+        self._engine.register_simprocedure(addr, name, num_args, no_return)
 
     def step(self) -> ExecutionEvent:
         return self._engine.step()

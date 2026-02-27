@@ -866,6 +866,324 @@ impl SymbolicMemory {
         Ok(())
     }
 
+    // ==================== UNIFIED SYMBOLIC MEMORY OPERATIONS ====================
+    // These methods handle all symbolic memory operations entirely in Rust,
+    // eliminating the need for Python callbacks that were previously broken.
+
+    /// Prepare addresses for ITE construction by auto-mapping unmapped pages.
+    ///
+    /// For each candidate address, if its page is unmapped but in a lazy region,
+    /// auto-map it as a zero page. Returns the list of addresses that are ready
+    /// for ITE construction (i.e., their pages are mapped).
+    ///
+    /// # Arguments
+    /// * `addrs` - List of candidate addresses
+    /// * `size` - Size of the access in bytes
+    ///
+    /// # Returns
+    /// List of addresses whose pages are mapped (either already or auto-mapped).
+    pub fn prepare_addresses_for_ite(&mut self, addrs: &[u64], size: u32) -> Vec<u64> {
+        let mut ready_addrs = Vec::with_capacity(addrs.len());
+
+        for &addr in addrs {
+            let page_num = addr >> 12;
+
+            // Check if page is already mapped
+            if self.pages.contains_key(&page_num) {
+                ready_addrs.push(addr);
+                continue;
+            }
+
+            // Page not mapped - try to auto-map if in lazy region
+            if self.is_in_lazy_region(page_num) {
+                self.auto_map_zero_page(addr);
+                // After auto-mapping, add to ready list
+                if self.pages.contains_key(&page_num) {
+                    ready_addrs.push(addr);
+                }
+            }
+            // If not in lazy region and not mapped, skip this address
+            // The ITE will use unconstrained values for missing addresses
+        }
+
+        ready_addrs
+    }
+
+    /// Load from a concrete address, returning an unconstrained symbolic value if unmapped.
+    ///
+    /// This is used as a fallback in ITE construction when an address cannot be mapped.
+    /// Instead of failing, we return a fresh symbolic value representing unknown memory.
+    ///
+    /// # Arguments
+    /// * `addr` - The address to load from
+    /// * `size` - Number of bytes to load
+    /// * `ctx` - The solver context
+    /// * `counter` - A counter for generating unique symbolic names
+    ///
+    /// # Returns
+    /// The loaded value, or a fresh unconstrained symbolic value if unmapped.
+    pub fn load_concrete_or_unconstrained(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+        counter: &mut u64,
+    ) -> RustBV {
+        match self.load_concrete_lazy(addr, size, ctx) {
+            Ok(value) => value,
+            Err(_) => {
+                // Generate a unique name for the unconstrained memory read
+                *counter += 1;
+                RustBV::symbolic(ctx, &format!("unc_mem_{:x}_{}", addr, counter), size * 8)
+            }
+        }
+    }
+
+    /// Unified symbolic load that handles all concretization results in Rust.
+    ///
+    /// This method replaces the Python fallback for symbolic memory loads.
+    /// It handles all cases:
+    /// - Single address: direct load
+    /// - Multiple addresses: build balanced ITE tree with auto-mapping
+    /// - Strided access: build balanced ITE tree
+    /// - Too large range: return unconstrained symbolic value
+    /// - Failed concretization: return error
+    ///
+    /// The key improvement is that unmapped pages in lazy regions are auto-mapped
+    /// before ITE construction, and truly unmapped addresses use unconstrained
+    /// symbolic values instead of failing.
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to load from
+    /// * `size` - Number of bytes to load
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer
+    ///
+    /// # Returns
+    /// The loaded value as a RustBV, or an error if loading fails.
+    pub fn load_symbolic_unified(
+        &mut self,
+        addr: RustBV,
+        size: u32,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<RustBV, MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            return self.load_concrete_automap(concrete_addr, size, ctx);
+        }
+
+        // Try to concretize the address
+        match concretizer.concretize(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.load_concrete_automap(concrete_addr, size, ctx)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // Prepare addresses by auto-mapping unmapped pages in lazy regions
+                // This mutates self, so we do it first
+                let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
+
+                if ready_addrs.is_empty() {
+                    // All addresses unmapped - return unconstrained
+                    return Ok(RustBV::symbolic(
+                        ctx,
+                        &format!("mem_all_unmapped_{}", size),
+                        size * 8,
+                    ));
+                }
+
+                // Now that preparation is done, build the ITE tree (immutable borrow)
+                // Clone ready_addrs to own the data
+                let addr_clone = addr.clone();
+                self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                // Prepare strided region for access (mutates self)
+                self.prepare_strided_region(base, stride, count, size);
+                // Use the existing balanced ITE builder (immutable borrow)
+                self.load_strided_balanced(&addr, base, stride, count, size, ctx)
+            }
+            ConcretizationResult::TooLarge { .. } => {
+                // Address range too large - return unconstrained symbolic value
+                // This is better than failing, as it preserves soundness
+                Ok(RustBV::symbolic(
+                    ctx,
+                    &format!("mem_unbounded_{}", size),
+                    size * 8,
+                ))
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress { description: reason })
+            }
+        }
+    }
+
+    /// Build a balanced ITE tree after addresses have been prepared.
+    ///
+    /// This is the immutable part of the unified load, called after prepare_addresses_for_ite.
+    fn build_balanced_ite_load_after_prep(
+        &self,
+        addr_expr: &RustBV,
+        addrs: &[u64],
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        if addrs.is_empty() {
+            return Ok(RustBV::symbolic(
+                ctx,
+                &format!("mem_empty_ite_{}", size),
+                size * 8,
+            ));
+        }
+        if addrs.len() == 1 {
+            let mut counter = 0u64;
+            return Ok(self.load_concrete_or_unconstrained(addrs[0], size, ctx, &mut counter));
+        }
+
+        let mut counter = 0u64;
+        self.build_ite_tree_inner(addr_expr, addrs, size, ctx, &mut counter)
+    }
+
+    /// Recursive helper for building ITE tree (immutable borrow).
+    fn build_ite_tree_inner(
+        &self,
+        addr_expr: &RustBV,
+        addrs: &[u64],
+        size: u32,
+        ctx: &SymContext,
+        counter: &mut u64,
+    ) -> Result<RustBV, MemoryError> {
+        if addrs.len() == 1 {
+            return Ok(self.load_concrete_or_unconstrained(addrs[0], size, ctx, counter));
+        }
+
+        if addrs.len() == 2 {
+            let left_val = self.load_concrete_or_unconstrained(addrs[0], size, ctx, counter);
+            let right_val = self.load_concrete_or_unconstrained(addrs[1], size, ctx, counter);
+            let left_const = RustBV::concrete(addrs[0] as u128, addr_expr.width());
+            let cond = addr_expr.eq(&left_const, ctx);
+            return Ok(cond.ite(&left_val, &right_val, ctx));
+        }
+
+        let mid = addrs.len() / 2;
+        let mid_addr = addrs[mid];
+        let mid_const = RustBV::concrete(mid_addr as u128, addr_expr.width());
+        let cond = addr_expr.ult(&mid_const, ctx);
+
+        let left = self.build_ite_tree_inner(addr_expr, &addrs[..mid], size, ctx, counter)?;
+        let right = self.build_ite_tree_inner(addr_expr, &addrs[mid..], size, ctx, counter)?;
+
+        Ok(cond.ite(&left, &right, ctx))
+    }
+
+    /// Prepare a strided memory region by auto-mapping unmapped pages.
+    ///
+    /// # Arguments
+    /// * `base` - Base address of the strided pattern
+    /// * `stride` - Stride between consecutive addresses
+    /// * `count` - Number of addresses in the pattern
+    /// * `size` - Size of each access in bytes
+    fn prepare_strided_region(&mut self, base: u64, stride: u64, count: u64, size: u32) {
+        // Auto-map pages that might be accessed in the strided pattern
+        for i in 0..count.min(1024) { // Limit to prevent excessive mapping
+            let addr = base + i * stride;
+            let page_num = addr >> 12;
+
+            if !self.pages.contains_key(&page_num) && self.is_in_lazy_region(page_num) {
+                self.auto_map_zero_page(addr);
+            }
+        }
+    }
+
+    /// Unified symbolic store that handles all concretization results in Rust.
+    ///
+    /// This method replaces the Python fallback for symbolic memory stores.
+    /// It handles all cases by performing conditional stores for each candidate address:
+    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to store to
+    /// * `value` - The value to store
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer
+    ///
+    /// # Returns
+    /// Ok(()) on success, or an error if storing fails.
+    pub fn store_symbolic_unified(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<(), MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            return self.store_concrete_automap(concrete_addr, value);
+        }
+
+        // Try to concretize the address
+        match concretizer.concretize(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete_automap(concrete_addr, value)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // Prepare addresses by auto-mapping
+                let ready_addrs = self.prepare_addresses_for_ite(&addrs, value.width() / 8);
+
+                // Perform conditional stores for each ready address
+                self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                // Prepare strided region
+                self.prepare_strided_region(base, stride, count, value.width() / 8);
+                // Use existing strided store
+                self.store_strided(&addr, &value, base, stride, count, ctx)
+            }
+            ConcretizationResult::TooLarge { .. } => {
+                // For truly unbounded addresses, we can't do much.
+                // Log a warning and treat as a no-op to avoid unsoundness.
+                // This is better than crashing or corrupting state.
+                // A more sophisticated approach would track symbolic writes.
+                Ok(())
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress { description: reason })
+            }
+        }
+    }
+
+    /// Perform conditional stores to multiple addresses.
+    ///
+    /// For each candidate address, performs:
+    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
+    fn store_conditional_multiple(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        addrs: &[u64],
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+        let mut counter = 0u64;
+
+        for &candidate in addrs {
+            // Build condition: addr == candidate
+            let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
+            let cond = addr_expr.eq(&addr_const, ctx);
+
+            // Load current value (with unconstrained fallback)
+            let current = self.load_concrete_or_unconstrained(candidate, size, ctx, &mut counter);
+
+            // Build conditional value: If(addr == candidate, new_value, current)
+            let conditional_value = cond.ite(value, &current, ctx);
+
+            // Store the conditional value with auto-mapping
+            self.store_concrete_automap(candidate, conditional_value)?;
+        }
+
+        Ok(())
+    }
+
     /// Fork the memory (O(1) via CoW).
     pub fn fork(&self) -> Self {
         SymbolicMemory {

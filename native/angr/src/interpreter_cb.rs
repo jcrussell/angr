@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 use lru::LruCache;
 use pyo3::prelude::*;
 
-use crate::arch::{arch_from_vex, RegisterFile};
+use crate::arch::{arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch, RegisterFile};
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, rustbv_to_claripy};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
@@ -144,6 +144,17 @@ pub struct PrefetchedLoad {
     pub is_symbolic: bool,
 }
 
+/// Information about a registered SimProcedure.
+#[derive(Clone, Debug)]
+pub struct SimProcedureInfo {
+    /// Name of the SimProcedure (e.g., "strlen", "malloc").
+    pub name: String,
+    /// Number of arguments to extract.
+    pub num_args: usize,
+    /// Whether this is a no-return procedure (e.g., "exit", "abort").
+    pub no_return: bool,
+}
+
 /// Callback-aware VEX IR interpreter.
 ///
 /// This interpreter uses Python callbacks for memory and register access,
@@ -215,6 +226,11 @@ pub struct CallbackInterpreter<'a> {
     page_prefetch_count: u32,
     /// Dirty helper dispatch table for native handling of common helpers.
     dirty_dispatch: DirtyHelperDispatch,
+    /// Registry mapping hook addresses to SimProcedure info.
+    /// When a hook is hit, we can extract arguments using this info.
+    simprocedure_registry: HashMap<u64, SimProcedureInfo>,
+    /// Calling convention for argument extraction.
+    calling_convention: Box<dyn CallingConvention>,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -226,6 +242,8 @@ impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter with custom config.
     pub fn with_config(arch: VexArch, ctx: &'a SymContext, config: ExecutionConfig) -> Self {
         let arch_box = arch_from_vex(arch);
+        let arch_name = arch_box.name();
+        let cc = default_cc_for_arch(arch_name);
 
         CallbackInterpreter {
             registers: RegisterFile::new(arch_box),
@@ -253,6 +271,8 @@ impl<'a> CallbackInterpreter<'a> {
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
+            simprocedure_registry: HashMap::new(),
+            calling_convention: cc,
         }
     }
 
@@ -461,6 +481,59 @@ impl<'a> CallbackInterpreter<'a> {
         self.hook_addrs.contains(&addr)
     }
 
+    /// Register a SimProcedure at an address.
+    ///
+    /// This allows the interpreter to pre-extract arguments when the hook is hit,
+    /// reducing Python callback overhead.
+    pub fn register_simprocedure(&mut self, addr: u64, name: String, num_args: usize, no_return: bool) {
+        self.hook_addrs.insert(addr);
+        self.simprocedure_registry.insert(addr, SimProcedureInfo {
+            name,
+            num_args,
+            no_return,
+        });
+    }
+
+    /// Register multiple SimProcedures at once.
+    ///
+    /// Each tuple is (address, name, num_args, no_return).
+    pub fn register_simprocedures(&mut self, procs: &[(u64, String, usize, bool)]) {
+        for (addr, name, num_args, no_return) in procs {
+            self.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
+        }
+    }
+
+    /// Get SimProcedure info for an address, if registered.
+    pub fn get_simprocedure_info(&self, addr: u64) -> Option<&SimProcedureInfo> {
+        self.simprocedure_registry.get(&addr)
+    }
+
+    /// Clear all SimProcedure registrations.
+    pub fn clear_simprocedures(&mut self) {
+        self.simprocedure_registry.clear();
+    }
+
+    /// Extract arguments for a SimProcedure call.
+    ///
+    /// Uses the calling convention to extract arguments from registers and stack.
+    pub fn extract_simprocedure_args(&self, num_args: usize) -> Vec<RustBV> {
+        self.calling_convention.extract_args(
+            &self.registers,
+            self.rust_memory.as_ref(),
+            self.ctx,
+            num_args,
+        )
+    }
+
+    /// Get the return address for a function call.
+    pub fn get_return_addr(&self) -> Option<u64> {
+        self.calling_convention.get_return_addr(
+            &self.registers,
+            self.rust_memory.as_ref(),
+            self.ctx,
+        )
+    }
+
     /// Check if we have a cached block at the given address.
     pub fn has_cached_block(&self, addr: u64) -> bool {
         self.block_cache.contains(&addr)
@@ -498,6 +571,22 @@ impl<'a> CallbackInterpreter<'a> {
             // Check for hook at current PC
             if self.is_hooked(self.pc) {
                 let forks = self.take_deferred_forks();
+                // Check if this is a registered SimProcedure with known args
+                if let Some(info) = self.simprocedure_registry.get(&self.pc).cloned() {
+                    // Get return address if available
+                    let return_addr = self.get_return_addr().unwrap_or(0);
+                    return (
+                        RunResult::SimProcedure {
+                            addr: self.pc,
+                            name: info.name,
+                            num_args: info.num_args,
+                            return_addr,
+                        },
+                        blocks_executed,
+                        forks,
+                    );
+                }
+                // Fall back to generic Hook for unregistered hooks
                 return (RunResult::Hook { addr: self.pc }, blocks_executed, forks);
             }
 
@@ -553,6 +642,22 @@ impl<'a> CallbackInterpreter<'a> {
                             // For Call/Ret, we might want to return for SimProcedures
                             if self.is_hooked(next_addr) {
                                 let forks = self.take_deferred_forks();
+                                // Update PC before extracting args (so SP/ret addr are correct)
+                                self.pc = next_addr;
+                                // Check if this is a registered SimProcedure
+                                if let Some(info) = self.simprocedure_registry.get(&next_addr).cloned() {
+                                    let return_addr = self.get_return_addr().unwrap_or(0);
+                                    return (
+                                        RunResult::SimProcedure {
+                                            addr: next_addr,
+                                            name: info.name,
+                                            num_args: info.num_args,
+                                            return_addr,
+                                        },
+                                        blocks_executed,
+                                        forks,
+                                    );
+                                }
                                 return (RunResult::Hook { addr: next_addr }, blocks_executed, forks);
                             }
                             // Otherwise, continue execution
@@ -583,6 +688,20 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                         BlockResult::Hook { addr } => {
                             let forks = self.take_deferred_forks();
+                            // Check if this is a registered SimProcedure
+                            if let Some(info) = self.simprocedure_registry.get(&addr).cloned() {
+                                let return_addr = self.get_return_addr().unwrap_or(0);
+                                return (
+                                    RunResult::SimProcedure {
+                                        addr,
+                                        name: info.name,
+                                        num_args: info.num_args,
+                                        return_addr,
+                                    },
+                                    blocks_executed,
+                                    forks,
+                                );
+                            }
                             return (RunResult::Hook { addr }, blocks_executed, forks);
                         }
                         BlockResult::Error { message } => {
@@ -786,36 +905,40 @@ impl<'a> CallbackInterpreter<'a> {
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                 let data_size = ((data_val.width() + 7) / 8) as usize;
 
-                // Try Rust-native memory first if enabled
+                // Try Rust-native memory first if enabled - use unified method
                 if self.use_rust_memory {
-                    if let Some(ref mut rust_mem) = self.rust_memory {
-                        match rust_mem.store_symbolic(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
+                    // First attempt - may need page fetch
+                    let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
+                        Some(rust_mem.store_symbolic_unified(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer))
+                    } else {
+                        None
+                    };
+
+                    if let Some(result) = first_result {
+                        match result {
                             Ok(()) => {
                                 // Invalidate prefetch cache for this address
                                 if let Some(addr_concrete) = addr_val.as_u64() {
                                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                                 } else {
-                                    // Symbolic address - clear entire cache
                                     self.load_prefetch_cache.clear();
                                 }
                                 return Ok(StmtResult::Continue);
                             }
                             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
-                                // Page is in a lazy region - try to fetch it from Python with prefetch
+                                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
                                 let prefetch_count = self.page_prefetch_count;
                                 let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
 
                                 if !page_fetched {
-                                    // Python doesn't have the page - auto-map a zero page
-                                    // This avoids falling back to Python for uninitialized memory
                                     if let Some(ref mut rust_mem) = self.rust_memory {
                                         rust_mem.auto_map_zero_page(page_addr);
                                     }
                                 }
 
-                                // Retry the store (whether from fetch or auto-map)
+                                // Retry with unified store (reborrow rust_mem)
                                 if let Some(ref mut rust_mem) = self.rust_memory {
-                                    match rust_mem.store_symbolic(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
+                                    match rust_mem.store_symbolic_unified(addr_val.clone(), data_val.clone(), self.ctx, &self.concretizer) {
                                         Ok(()) => {
                                             if let Some(addr_concrete) = addr_val.as_u64() {
                                                 self.load_prefetch_cache.remove(&(addr_concrete, data_size));
@@ -829,13 +952,9 @@ impl<'a> CallbackInterpreter<'a> {
                                         }
                                     }
                                 }
-                                // Fall through to Python callback
                             }
                             Err(MemoryError::Unmapped { .. }) => {
-                                // Fall through to Python callback for unmapped pages
-                            }
-                            Err(MemoryError::SymbolicAddress { .. }) => {
-                                // Fall through - Python has better symbolic handling
+                                // Totally unmapped (not in lazy region) - fall through to Python
                             }
                             Err(e) => {
                                 return Err(CbExecutionError::Memory(e.to_string()));
@@ -1432,40 +1551,41 @@ impl<'a> CallbackInterpreter<'a> {
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
                 let size = ty.bytes() as usize;
 
-                // Try Rust-native memory first if enabled
+                // Try Rust-native memory first if enabled - use unified method
                 if self.use_rust_memory {
-                    if let Some(ref rust_mem) = self.rust_memory {
-                        match rust_mem.load_symbolic(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                    // First attempt - may need page fetch
+                    let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
+                        Some(rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer))
+                    } else {
+                        None
+                    };
+
+                    if let Some(result) = first_result {
+                        match result {
                             Ok(value) => return Ok(value),
                             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
-                                // Page is in a lazy region - try to fetch it from Python with prefetch
+                                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
                                 let prefetch_count = self.page_prefetch_count;
                                 let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
 
                                 if !page_fetched {
-                                    // Python doesn't have the page - auto-map a zero page
-                                    // This avoids falling back to Python for uninitialized memory
                                     if let Some(ref mut rust_mem) = self.rust_memory {
                                         rust_mem.auto_map_zero_page(page_addr);
                                     }
                                 }
 
-                                // Retry the load (whether from fetch or auto-map)
-                                if let Some(ref rust_mem) = self.rust_memory {
-                                    match rust_mem.load_symbolic(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                                // Retry with unified load (reborrow rust_mem)
+                                if let Some(ref mut rust_mem) = self.rust_memory {
+                                    match rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
                                         Ok(value) => return Ok(value),
                                         Err(_e) => {
-                                            // Still failed after fetch/auto-map - fall through to Python
+                                            // Still failed - fall through to Python callback
                                         }
                                     }
                                 }
-                                // Fall through to Python callback
                             }
                             Err(MemoryError::Unmapped { .. }) => {
-                                // Fall through to Python callback for unmapped pages
-                            }
-                            Err(MemoryError::SymbolicAddress { .. }) => {
-                                // Fall through - Python has better symbolic handling
+                                // Totally unmapped (not in lazy region) - fall through to Python
                             }
                             Err(e) => {
                                 return Err(CbExecutionError::Memory(e.to_string()));
@@ -1762,6 +1882,10 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Fork the interpreter state.
     pub fn fork(&self) -> CallbackInterpreter<'a> {
+        // Clone the calling convention based on its type
+        let arch_box = arch_from_vex(self.arch);
+        let cc = default_cc_for_arch(arch_box.name());
+
         CallbackInterpreter {
             registers: self.registers.fork(),
             temps: self.temps.clone(),
@@ -1789,6 +1913,8 @@ impl<'a> CallbackInterpreter<'a> {
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
             dirty_dispatch: DirtyHelperDispatch::new(), // Fresh dispatch (stateless)
+            simprocedure_registry: self.simprocedure_registry.clone(), // Share SimProcedure registry
+            calling_convention: cc,
         }
     }
 
