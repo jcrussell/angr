@@ -81,16 +81,19 @@ try:
         When Rust can't handle execution (symbolic addresses, unsupported ops),
         it falls back to HeavyVEXMixin via TrackActionsMixin.
 
-        For multi-block execution with deferred forks, add RUST_VEX_LOOP to
-        state.options. This enables process_successors_loop() for reduced
-        Python/Rust round trips.
+        Multi-block execution with deferred forks is enabled by default when
+        using RustSimSolver, reducing Python/Rust round trips. Without
+        RustSimSolver, falls back to single-block mode. To explicitly disable
+        multi-block mode, add RUST_VEX_SINGLE to state.options.
 
         Example:
             import angr
             from angr import sim_options as o
+            from angr.state_plugins.rust_solver import RustSimSolver
 
             proj = angr.Project("/path/to/binary", auto_load_libs=False)
-            state = proj.factory.entry_state(add_options={o.RUST_VEX_LOOP})
+            state = proj.factory.entry_state()
+            state.register_plugin('solver', RustSimSolver())  # Enable multi-block
 
             from angr.engines import UberEngineRust
             engine = UberEngineRust(proj)

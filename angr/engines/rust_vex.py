@@ -1953,11 +1953,13 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
 
     def process(self, state, **kwargs):
         """
-        Override to enable loop execution when RUST_VEX_LOOP option is set.
+        Override to use multi-block loop execution by default.
 
-        When the RUST_VEX_LOOP sim_option is enabled and prerequisites are met,
-        this uses process_successors_loop() for multi-block execution with
-        deferred forks. Otherwise, falls back to standard single-block execution.
+        By default, this uses process_successors_loop() for multi-block execution
+        with deferred forks, reducing Python/Rust round trips. Multi-block mode
+        requires RustSimSolver for constraint consistency; without it, falls back
+        to single-block mode. To explicitly disable multi-block mode, add
+        RUST_VEX_SINGLE to state.options.
 
         IMPORTANT: We must check for hooks/syscalls BEFORE using the loop path,
         since the loop path bypasses the normal MRO chain that handles these.
@@ -1980,8 +1982,12 @@ class RustVEXMixin(SuccessorsEngine, VEXLifter):
             except Exception:
                 addr_valid = False
 
-        if (o.RUST_VEX_LOOP in state.options
+        # Multi-block execution requires RustSimSolver for constraint consistency
+        has_rust_solver = RUST_SOLVER_AVAILABLE and isinstance(state.solver, RustSimSolver)
+
+        if (o.RUST_VEX_SINGLE not in state.options
             and self.rust_engine_available
+            and has_rust_solver
             and isinstance(state.addr, int)
             and not ip_symbolic
             and addr_valid):

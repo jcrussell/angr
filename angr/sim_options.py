@@ -282,6 +282,10 @@ RUST_SOLVER = "RUST_SOLVER"
 # reduced Python/Rust round trips during symbolic execution.
 RUST_VEX_LOOP = "RUST_VEX_LOOP"
 
+# Disable multi-block Rust VEX execution, forcing single-block mode.
+# Use this if you need fine-grained Python control after each block.
+RUST_VEX_SINGLE = "RUST_VEX_SINGLE"
+
 # This tells the hybrid solver to use the approximate backend first. The exact backend will be used
 # only if the number of possible approximate solutions is greater than what was request by user.
 # Note, that this option will only take effect if a hybrid solver used.
