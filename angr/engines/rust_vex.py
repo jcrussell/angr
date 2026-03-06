@@ -548,6 +548,9 @@ class RustVEXCallbacks:
         self.batch_fetch_pages_count = 0
         self.fetch_page_time = 0.0
 
+        # Track concretization constraints to ensure forked solvers use same values
+        self._concretization_constraints = []
+
     def memory_load(self, addr: int, size: int) -> tuple[bytes, bool, Any]:
         """
         Load from angr's memory model.
@@ -575,6 +578,11 @@ class RustVEXCallbacks:
                     concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
+                # Add concretization constraint so forked solvers use same value.
+                # This prevents divergence when falling back from Rust to Python.
+                concretization_constraint = (val == concrete)
+                self.state.solver.add(concretization_constraint)
+                self._concretization_constraints.append(concretization_constraint)
 
             concrete_bytes = concrete.to_bytes(size, 'little')
 
@@ -679,6 +687,11 @@ class RustVEXCallbacks:
                             concrete = self.state.solver.eval(val)
                     else:
                         concrete = self.state.solver.eval(val)
+                        # Add concretization constraint so forked solvers use same value.
+                        # This prevents divergence when falling back from Rust to Python.
+                        concretization_constraint = (val == concrete)
+                        self.state.solver.add(concretization_constraint)
+                        self._concretization_constraints.append(concretization_constraint)
 
                     concrete_bytes = concrete.to_bytes(size, 'little')
 
@@ -726,6 +739,11 @@ class RustVEXCallbacks:
                     concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
+                # Add concretization constraint so forked solvers use same value.
+                # This prevents divergence when falling back from Rust to Python.
+                concretization_constraint = (val == concrete)
+                self.state.solver.add(concretization_constraint)
+                self._concretization_constraints.append(concretization_constraint)
 
             return concrete.to_bytes(size, 'little')
         except Exception as e:
@@ -903,6 +921,11 @@ class RustVEXCallbacks:
                     concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
+                # Add concretization constraint so forked solvers use same value.
+                # This prevents divergence when falling back from Rust to Python.
+                concretization_constraint = (val == concrete)
+                self.state.solver.add(concretization_constraint)
+                self._concretization_constraints.append(concretization_constraint)
 
             concrete_bytes = concrete.to_bytes(size, 'little')
 
