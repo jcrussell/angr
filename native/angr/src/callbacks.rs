@@ -283,6 +283,13 @@ pub struct PythonCallbacks {
     /// Callback for batched page fetching: fn(page_addrs: list[u64]) -> list[(bytes, u8, bool)]
     /// Returns list of (data, permissions, is_mapped) for each requested page.
     pub batch_fetch_pages: Option<PyObject>,
+    /// Callback for syncing constraints to Python: fn(constraints: list[(str, int, int)]) -> None
+    /// Each constraint is (description, width, concrete_value) where:
+    /// - description: human-readable description (e.g., "addr_concretize_0x1234")
+    /// - width: bit width of the constrained expression
+    /// - concrete_value: the value the expression was constrained to
+    /// Python should add these constraints to its claripy solver.
+    pub sync_constraints: Option<PyObject>,
 }
 
 #[pymethods]
@@ -307,6 +314,7 @@ impl PythonCallbacks {
             dirty_call: None,
             fetch_page: None,
             batch_fetch_pages: None,
+            sync_constraints: None,
         }
     }
 
@@ -475,6 +483,17 @@ impl PythonCallbacks {
     /// Each result is (page_data_4kb, permissions, is_mapped).
     pub fn set_batch_fetch_pages(&mut self, cb: PyObject) {
         self.batch_fetch_pages = Some(cb);
+    }
+
+    /// Set the constraint sync callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(constraints: list[tuple[str, int, int]]) -> None`
+    ///
+    /// Each tuple is (description, width, concrete_value).
+    /// Python should add these constraints to its claripy solver.
+    pub fn set_sync_constraints(&mut self, cb: PyObject) {
+        self.sync_constraints = Some(cb);
     }
 
     /// Check if all required callbacks are set.
@@ -960,6 +979,36 @@ impl PythonCallbacks {
             results.push((data, perms, mapped));
         }
         Ok(results)
+    }
+
+    /// Sync accumulated constraints to Python's claripy solver.
+    ///
+    /// This should be called before falling back to Python for operations
+    /// that depend on solver state (e.g., symbolic memory operations).
+    ///
+    /// # Arguments
+    /// * `py` - Python GIL token
+    /// * `constraints` - List of (description, width, concrete_value) tuples
+    ///
+    /// # Returns
+    /// Ok(()) on success, or error if callback fails.
+    pub fn call_sync_constraints(
+        &self,
+        py: Python<'_>,
+        constraints: &[(String, u32, u128)],
+    ) -> PyResult<()> {
+        if constraints.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(cb) = &self.sync_constraints {
+            // Convert to Python list of tuples
+            let py_constraints: Vec<(String, u32, u128)> = constraints.to_vec();
+            cb.call1(py, (py_constraints,))?;
+        }
+        // If no callback is set, silently succeed - constraints will be lost
+        // but this allows gradual adoption of the feature
+        Ok(())
     }
 }
 

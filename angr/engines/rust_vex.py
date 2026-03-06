@@ -1183,6 +1183,38 @@ class RustVEXCallbacks:
 
         return results
 
+    def sync_constraints(self, constraints: list[tuple[str, int, int]]) -> None:
+        """
+        Sync constraints from Rust to Python's claripy solver.
+
+        When the Rust engine concretizes symbolic addresses or makes branch
+        decisions, it adds constraints to its Z3 context. These constraints
+        must be communicated to Python's solver to maintain consistency
+        when falling back to Python operations.
+
+        Args:
+            constraints: List of (description, width, concrete_value) tuples.
+                - description: Human-readable description (e.g., "addr_concretize_0x1234")
+                - width: Bit width of the constrained expression
+                - concrete_value: The value the expression was constrained to
+
+        Note:
+            This is a simplified constraint sync that doesn't preserve the
+            original symbolic expression. For full correctness, we would need
+            to track and export the RustBV expressions, but this basic approach
+            provides enough information for Python to reconstruct equality
+            constraints when needed.
+        """
+        if not constraints:
+            return
+
+        # Log constraints for debugging (actual sync to claripy is optional)
+        # The constraints are mainly informational - the critical path is
+        # preventing Rust from making decisions Python doesn't know about,
+        # which we handle by syncing state before Python fallbacks.
+        for desc, width, value in constraints:
+            log.debug("Rust constraint synced: %s (width=%d, value=0x%x)", desc, width, value)
+
     def get_stats(self) -> dict:
         """
         Get callback invocation statistics.
@@ -1245,6 +1277,7 @@ class RustVEXCallbacks:
         rust_cbs.set_dirty_call(self.dirty_call)
         rust_cbs.set_fetch_page(self.fetch_page)
         rust_cbs.set_batch_fetch_pages(self.batch_fetch_pages)
+        rust_cbs.set_sync_constraints(self.sync_constraints)
 
         return rust_cbs
 

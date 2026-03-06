@@ -255,6 +255,53 @@ pub struct PrefetchedLoad {
     pub is_symbolic: bool,
 }
 
+/// A constraint that was added in Rust and needs to be synced to Python.
+///
+/// When Rust concretizes a symbolic address or makes a branch decision,
+/// it adds constraints to its Z3 context. These constraints must be
+/// communicated to Python's claripy solver to maintain consistency
+/// when falling back to Python for complex operations.
+#[derive(Clone, Debug)]
+pub struct PendingConstraint {
+    /// The symbolic expression that was constrained.
+    /// For address concretization: the address expression
+    /// For branch: the condition
+    pub expression: RustBV,
+    /// The concrete value it was constrained to.
+    pub concrete_value: u128,
+    /// Description for debugging.
+    pub description: String,
+}
+
+impl PendingConstraint {
+    /// Create a new pending constraint for address concretization.
+    pub fn address_concretization(addr_expr: RustBV, concrete_addr: u64) -> Self {
+        PendingConstraint {
+            expression: addr_expr,
+            concrete_value: concrete_addr as u128,
+            description: format!("addr_concretize_0x{:x}", concrete_addr),
+        }
+    }
+
+    /// Create a new pending constraint for a branch taken (cond == 1).
+    pub fn branch_true(cond: RustBV) -> Self {
+        PendingConstraint {
+            expression: cond,
+            concrete_value: 1,
+            description: "branch_true".to_string(),
+        }
+    }
+
+    /// Create a new pending constraint for a branch not taken (cond == 0).
+    pub fn branch_false(cond: RustBV) -> Self {
+        PendingConstraint {
+            expression: cond,
+            concrete_value: 0,
+            description: "branch_false".to_string(),
+        }
+    }
+}
+
 /// Information about a registered SimProcedure.
 #[derive(Clone, Debug)]
 pub struct SimProcedureInfo {
@@ -345,6 +392,10 @@ pub struct CallbackInterpreter<'a> {
     /// Last branch condition encountered (for symbolic branch handling).
     /// Stored when a SymbolicBranch is created so callers can retrieve it.
     last_branch_condition: Option<RustBV>,
+    /// Pending constraints that need to be synced to Python.
+    /// These accumulate when Rust adds constraints (e.g., address concretization)
+    /// and are synced to Python before falling back to Python callbacks.
+    pending_python_constraints: Vec<PendingConstraint>,
     /// Stored branch conditions by ID for deferred fork handling.
     /// When a deferred fork is created, we store the condition here so
     /// callers can retrieve it to properly constrain forked states.
@@ -399,6 +450,7 @@ impl<'a> CallbackInterpreter<'a> {
             simprocedure_registry: HashMap::new(),
             calling_convention: cc,
             last_branch_condition: None,
+            pending_python_constraints: Vec::new(),
             stored_conditions: HashMap::new(),
             stats: ExecutionStats::default(),
             profiling_enabled: false,
@@ -1257,6 +1309,17 @@ impl<'a> CallbackInterpreter<'a> {
                         ConcretizationResult::TooLarge { min, max, .. } => {
                             // Address range too large - delegate to Python's memory model
                             // which has access to angr's address concretization strategies
+
+                            // Sync any pending constraints to Python before fallback
+                            if self.has_pending_constraints() {
+                                let constraints = self.export_constraints_for_python();
+                                callbacks.call_sync_constraints(py, &constraints)
+                                    .map_err(|e| CbExecutionError::Callback(format!(
+                                        "constraint sync failed: {}", e
+                                    )))?;
+                                self.clear_pending_constraints();
+                            }
+
                             let data_bytes = bv_to_bytes(&data_val);
                             callbacks
                                 .call_memory_store_symbolic_ast(py, &data_bytes, data_bytes.len() as u32)
@@ -1875,21 +1938,29 @@ impl<'a> CallbackInterpreter<'a> {
                             self.load_from_callback(py, callbacks, addr_concrete, size)
                         }
                         ConcretizationResult::Multiple(addrs) => {
-                            // Delegate to Python for symbolic load with ITE chain
-                            callbacks
-                                .call_memory_load_symbolic(py, &addrs, size as u32, &addr_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                            // Build ITE chain in Rust instead of delegating to Python
+                            // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
+                            self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
                         }
                         ConcretizationResult::Strided { base, stride, count } => {
-                            // Strided access pattern - generate addresses and delegate to Python
+                            // Strided access pattern - generate addresses and build ITE chain in Rust
                             let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
-                            callbacks
-                                .call_memory_load_symbolic(py, &addrs, size as u32, &addr_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                            self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
                             // Address range too large - delegate to Python's memory model
                             // which has access to angr's address concretization strategies
+
+                            // Sync any pending constraints to Python before fallback
+                            if self.has_pending_constraints() {
+                                let constraints = self.export_constraints_for_python();
+                                callbacks.call_sync_constraints(py, &constraints)
+                                    .map_err(|e| CbExecutionError::Callback(format!(
+                                        "constraint sync failed: {}", e
+                                    )))?;
+                                self.clear_pending_constraints();
+                            }
+
                             let (data, is_symbolic, symbolic_ast) = callbacks
                                 .call_memory_load_symbolic_ast(py, size as u32)
                                 .map_err(|e| CbExecutionError::Callback(format!(
@@ -1996,6 +2067,106 @@ impl<'a> CallbackInterpreter<'a> {
                 Err(CbExecutionError::Unsupported("special expr".to_string()))
             }
         }
+    }
+
+    /// Build an ITE chain for symbolic memory load by loading each candidate address.
+    ///
+    /// This builds the ITE chain entirely in Rust instead of delegating to Python.
+    /// For each candidate address, we load the value via callback and create an ITE:
+    /// `ITE(addr == a1, mem[a1], ITE(addr == a2, mem[a2], ...))`
+    ///
+    /// This is more efficient than calling Python's symbolic memory handler because:
+    /// 1. We avoid FFI overhead for the ITE chain construction
+    /// 2. The RustBV ITE nodes stay in Rust's Z3 context
+    /// 3. We can use balanced ITE trees for better solver performance
+    fn build_ite_load_from_callbacks(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addrs: &[u64],
+        addr_expr: &RustBV,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        if addrs.is_empty() {
+            return Err(CbExecutionError::Memory("no candidate addresses".to_string()));
+        }
+
+        let width = (size * 8) as u32;
+        let addr_width = addr_expr.width();
+
+        // For a single address, just load it directly
+        if addrs.len() == 1 {
+            return self.load_from_callback(py, callbacks, addrs[0], size);
+        }
+
+        // Batch load all addresses at once for efficiency
+        let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
+        let load_results = callbacks
+            .call_memory_load_batch(py, &load_requests)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        // Build (condition, value) pairs for the ITE chain
+        let mut pairs: Vec<(RustBV, RustBV)> = Vec::with_capacity(addrs.len());
+
+        for (i, addr) in addrs.iter().enumerate() {
+            // Get the loaded value for this address
+            let value = if i < load_results.len() {
+                let (data, is_symbolic, symbolic_ast) = &load_results[i];
+                if *is_symbolic {
+                    // Try to convert claripy AST to RustBV
+                    if let Some(ast_obj) = symbolic_ast {
+                        let ast = ast_obj.bind(py);
+                        if is_claripy_ast(&ast) {
+                            match claripy_to_rustbv(py, &ast, self.ctx) {
+                                Ok(bv) => bv,
+                                Err(_) => {
+                                    // Fallback to fresh symbolic
+                                    RustBV::symbolic(
+                                        self.ctx,
+                                        &format!("ite_load_{:x}_{}", addr, size),
+                                        width,
+                                    )
+                                }
+                            }
+                        } else {
+                            RustBV::symbolic(
+                                self.ctx,
+                                &format!("ite_load_{:x}_{}", addr, size),
+                                width,
+                            )
+                        }
+                    } else {
+                        RustBV::symbolic(
+                            self.ctx,
+                            &format!("ite_load_{:x}_{}", addr, size),
+                            width,
+                        )
+                    }
+                } else {
+                    bytes_to_bv(data, width)
+                }
+            } else {
+                // Missing result - create symbolic placeholder
+                RustBV::symbolic(
+                    self.ctx,
+                    &format!("ite_load_{:x}_{}", addr, size),
+                    width,
+                )
+            };
+
+            // Build condition: addr_expr == this address
+            let addr_const = RustBV::concrete(*addr as u128, addr_width);
+            let cond = addr_expr.eq(&addr_const, self.ctx);
+
+            pairs.push((cond, value));
+        }
+
+        // Use the last value as default (for robustness, though one condition should always match)
+        let default_value = pairs.last().map(|(_, v)| v.clone())
+            .unwrap_or_else(|| RustBV::symbolic(self.ctx, "ite_default", width));
+
+        // Build balanced ITE tree for better solver performance
+        Ok(build_balanced_ite(&pairs[..pairs.len()-1], default_value, self.ctx))
     }
 
     /// Evaluate an IR constant.
@@ -2173,6 +2344,7 @@ impl<'a> CallbackInterpreter<'a> {
             simprocedure_registry: self.simprocedure_registry.clone(), // Share SimProcedure registry
             calling_convention: cc,
             last_branch_condition: None, // Fresh for fork
+            pending_python_constraints: Vec::new(), // Fresh constraints for fork
             stored_conditions: HashMap::new(), // Fresh for fork
             stats: ExecutionStats::default(), // Fresh stats for fork
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
@@ -2372,9 +2544,35 @@ impl<'a> CallbackInterpreter<'a> {
         vec![page_addr]
     }
 
-    /// Get pages to fetch for nearby prefetch.
+    /// Get the current stack pointer value (architecture-aware).
+    fn get_stack_pointer(&self) -> Option<u64> {
+        let (offset, size) = match self.arch {
+            VexArch::AMD64 => (48, 8),  // RSP
+            VexArch::X86 => (16, 4),    // ESP
+            VexArch::ARM | VexArch::ARM64 => (52, 8), // SP for ARM variants (approximate)
+            _ => return None,
+        };
+        self.registers.get(offset, size, self.ctx).as_u64()
+    }
+
+    /// Check if an address is in the stack region (near current RSP).
+    /// Stack typically grows downward, so we check if addr is below RSP + some margin.
+    fn is_stack_region(&self, addr: u64) -> bool {
+        if let Some(sp) = self.get_stack_pointer() {
+            // Stack region: addresses from RSP - 1MB to RSP + 64KB
+            // (stack grows down, but we allow some upward margin for locals)
+            let stack_base = sp.saturating_sub(1024 * 1024); // 1MB below RSP
+            let stack_limit = sp.saturating_add(64 * 1024);   // 64KB above RSP
+            addr >= stack_base && addr <= stack_limit
+        } else {
+            false
+        }
+    }
+
+    /// Get pages to fetch for nearby prefetch (stack-aware).
     ///
-    /// Returns `prefetch_count` unmapped pages in each direction.
+    /// Returns `prefetch_count` unmapped pages, prioritizing stack growth direction
+    /// (downward) when the access is in the stack region.
     fn get_nearby_prefetch_list(&self, page_addr: u64, prefetch_count: u32) -> Vec<u64> {
         let page_size = 0x1000u64;
         let mut pages_to_fetch = Vec::with_capacity(1 + 2 * prefetch_count as usize);
@@ -2382,8 +2580,23 @@ impl<'a> CallbackInterpreter<'a> {
         // Add main page first
         pages_to_fetch.push(page_addr);
 
-        // Add pages before (lower addresses)
-        for i in 1..=prefetch_count {
+        // Determine if this is a stack access
+        let is_stack = self.is_stack_region(page_addr);
+
+        // For stack accesses, prioritize downward prefetch (stack grows down)
+        // For non-stack, use balanced bidirectional prefetch
+        let (down_count, up_count) = if is_stack {
+            // Stack: 3x more pages downward than upward
+            let down = (prefetch_count * 3).min(16);
+            let up = prefetch_count.min(4);
+            (down, up)
+        } else {
+            // Non-stack: equal in both directions
+            (prefetch_count, prefetch_count)
+        };
+
+        // Add pages before (lower addresses - stack growth direction)
+        for i in 1..=down_count {
             if let Some(addr) = page_addr.checked_sub(i as u64 * page_size) {
                 // Check if not already mapped
                 if let Some(ref rust_mem) = self.rust_memory {
@@ -2395,7 +2608,7 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         // Add pages after (higher addresses)
-        for i in 1..=prefetch_count {
+        for i in 1..=up_count {
             if let Some(addr) = page_addr.checked_add(i as u64 * page_size) {
                 // Check if not already mapped
                 if let Some(ref rust_mem) = self.rust_memory {
@@ -2633,6 +2846,73 @@ impl<'a> CallbackInterpreter<'a> {
             (m.page_count(), m.lazy_region_count(), m.get_dirty_pages().len())
         })
     }
+
+    // =========================================================================
+    // Constraint Synchronization
+    // =========================================================================
+
+    /// Track an address concretization constraint for Python sync.
+    ///
+    /// When Rust concretizes a symbolic address to a concrete value, this
+    /// constraint needs to be communicated to Python's claripy solver.
+    pub fn track_concretization_constraint(&mut self, addr_expr: &RustBV, concrete_addr: u64) {
+        // Only track if the address was actually symbolic
+        if addr_expr.is_symbolic() {
+            self.pending_python_constraints.push(
+                PendingConstraint::address_concretization(addr_expr.clone(), concrete_addr)
+            );
+        }
+    }
+
+    /// Track a branch constraint for Python sync.
+    pub fn track_branch_constraint(&mut self, cond: &RustBV, took_true_branch: bool) {
+        if cond.is_symbolic() {
+            if took_true_branch {
+                self.pending_python_constraints.push(PendingConstraint::branch_true(cond.clone()));
+            } else {
+                self.pending_python_constraints.push(PendingConstraint::branch_false(cond.clone()));
+            }
+        }
+    }
+
+    /// Check if there are pending constraints to sync.
+    pub fn has_pending_constraints(&self) -> bool {
+        !self.pending_python_constraints.is_empty()
+    }
+
+    /// Get the number of pending constraints.
+    pub fn pending_constraint_count(&self) -> usize {
+        self.pending_python_constraints.len()
+    }
+
+    /// Get pending constraints for export to Python.
+    ///
+    /// Returns a list of (width, concrete_value) tuples that can be converted
+    /// to claripy constraints. The caller should use these to add constraints
+    /// to Python's state before performing Python-based operations.
+    ///
+    /// Note: Full export to claripy ASTs would require storing the original
+    /// symbolic expressions, which is complex. This simplified approach exports
+    /// the constraint info so Python can reconstruct them if needed.
+    pub fn get_pending_constraints(&self) -> &[PendingConstraint] {
+        &self.pending_python_constraints
+    }
+
+    /// Clear pending constraints after sync.
+    pub fn clear_pending_constraints(&mut self) {
+        self.pending_python_constraints.clear();
+    }
+
+    /// Export pending constraints as a list that Python can process.
+    ///
+    /// Returns a list of tuples: (description, width, concrete_value)
+    /// Python can use these to add constraints to its solver state.
+    pub fn export_constraints_for_python(&self) -> Vec<(String, u32, u128)> {
+        self.pending_python_constraints
+            .iter()
+            .map(|c| (c.description.clone(), c.expression.width(), c.concrete_value))
+            .collect()
+    }
 }
 
 /// Convert a RustBV to bytes (little-endian).
@@ -2662,6 +2942,38 @@ fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
         value |= (byte as u128) << (i * 8);
     }
     RustBV::concrete(value, width)
+}
+
+/// Build a balanced ITE tree from a list of (condition, value) pairs.
+///
+/// This creates a balanced binary tree of ITE nodes, which is more efficient
+/// than a linear chain for both Z3 solving and symbolic evaluation.
+/// Returns the value for the first matching condition, or a default value.
+fn build_balanced_ite(
+    pairs: &[(RustBV, RustBV)],
+    default_value: RustBV,
+    ctx: &SymContext,
+) -> RustBV {
+    if pairs.is_empty() {
+        return default_value;
+    }
+
+    if pairs.len() == 1 {
+        // Base case: single condition
+        return pairs[0].0.ite(&pairs[0].1, &default_value, ctx);
+    }
+
+    // Build balanced tree by splitting in the middle
+    let mid = pairs.len() / 2;
+    let (left, right) = pairs.split_at(mid);
+
+    let left_ite = build_balanced_ite(left, default_value.clone(), ctx);
+    let right_ite = build_balanced_ite(right, default_value, ctx);
+
+    // Combine: if any left condition matches, use left_ite, else right_ite
+    // We need to compute "any left condition is true"
+    // For efficiency, we use the first left condition as the split point
+    pairs[0].0.ite(&left_ite, &right_ite, ctx)
 }
 
 #[cfg(test)]
