@@ -1391,6 +1391,8 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PythonCallbacks>()?;
     m.add_class::<LoopExecutionEvent>()?;
     m.add_class::<RustSolverContext>()?;
+    // Handle-based API for claripy bypass
+    m.add_class::<crate::symbolic::RustBVHandle>()?;
     // Deferred fork types
     m.add_class::<DeferredFork>()?;
     m.add_class::<BranchPolicy>()?;
