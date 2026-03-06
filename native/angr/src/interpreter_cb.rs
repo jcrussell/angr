@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::Instant;
 
 use lru::LruCache;
 use pyo3::prelude::*;
@@ -21,6 +23,115 @@ use crate::vex::dirty::DirtyHelperDispatch;
 use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
 use crate::vex::ops::{OpError, VEXOps};
 use crate::vex::{deserialize_irsb, Endness};
+
+/// Execution statistics for profiling.
+///
+/// Tracks timing and counts for various operations during VEX execution.
+/// Times are in nanoseconds for precision.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionStats {
+    /// Number of load statements executed.
+    pub load_stmt_count: u64,
+    /// Time spent in load statements (nanoseconds).
+    pub load_stmt_time_ns: u64,
+    /// Number of store statements executed.
+    pub store_stmt_count: u64,
+    /// Time spent in store statements (nanoseconds).
+    pub store_stmt_time_ns: u64,
+    /// Number of exit statements executed.
+    pub exit_stmt_count: u64,
+    /// Time spent in exit statements (nanoseconds).
+    pub exit_stmt_time_ns: u64,
+    /// Number of Python callback invocations.
+    pub python_callback_count: u64,
+    /// Time spent in Python callbacks (nanoseconds).
+    pub python_callback_time_ns: u64,
+    /// Number of address concretizations performed.
+    pub concretize_count: u64,
+    /// Time spent in address concretization (nanoseconds).
+    pub concretize_time_ns: u64,
+    /// Number of IRSB cache hits.
+    pub cache_hit_count: u64,
+    /// Number of IRSB cache misses (lifts needed).
+    pub cache_miss_count: u64,
+    /// Time spent lifting blocks (nanoseconds).
+    pub lift_time_ns: u64,
+    /// Number of Rust memory loads (vs callback fallback).
+    pub rust_memory_load_count: u64,
+    /// Number of Python fallback memory loads.
+    pub fallback_memory_load_count: u64,
+    /// Number of Rust memory stores.
+    pub rust_memory_store_count: u64,
+    /// Number of Python fallback memory stores.
+    pub fallback_memory_store_count: u64,
+    /// Number of expression evaluations.
+    pub expr_eval_count: u64,
+    /// Time spent evaluating expressions (nanoseconds).
+    pub expr_eval_time_ns: u64,
+    /// Number of blocks executed.
+    pub blocks_executed: u64,
+    /// Total execution time (nanoseconds).
+    pub total_time_ns: u64,
+}
+
+impl ExecutionStats {
+    /// Convert stats to a HashMap for Python exposure.
+    pub fn to_hashmap(&self) -> HashMap<String, u64> {
+        let mut map = HashMap::new();
+        map.insert("load_stmt_count".to_string(), self.load_stmt_count);
+        map.insert("load_stmt_time_ns".to_string(), self.load_stmt_time_ns);
+        map.insert("store_stmt_count".to_string(), self.store_stmt_count);
+        map.insert("store_stmt_time_ns".to_string(), self.store_stmt_time_ns);
+        map.insert("exit_stmt_count".to_string(), self.exit_stmt_count);
+        map.insert("exit_stmt_time_ns".to_string(), self.exit_stmt_time_ns);
+        map.insert("python_callback_count".to_string(), self.python_callback_count);
+        map.insert("python_callback_time_ns".to_string(), self.python_callback_time_ns);
+        map.insert("concretize_count".to_string(), self.concretize_count);
+        map.insert("concretize_time_ns".to_string(), self.concretize_time_ns);
+        map.insert("cache_hit_count".to_string(), self.cache_hit_count);
+        map.insert("cache_miss_count".to_string(), self.cache_miss_count);
+        map.insert("lift_time_ns".to_string(), self.lift_time_ns);
+        map.insert("rust_memory_load_count".to_string(), self.rust_memory_load_count);
+        map.insert("fallback_memory_load_count".to_string(), self.fallback_memory_load_count);
+        map.insert("rust_memory_store_count".to_string(), self.rust_memory_store_count);
+        map.insert("fallback_memory_store_count".to_string(), self.fallback_memory_store_count);
+        map.insert("expr_eval_count".to_string(), self.expr_eval_count);
+        map.insert("expr_eval_time_ns".to_string(), self.expr_eval_time_ns);
+        map.insert("blocks_executed".to_string(), self.blocks_executed);
+        map.insert("total_time_ns".to_string(), self.total_time_ns);
+        map
+    }
+
+    /// Reset all statistics to zero.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Merge another stats instance into this one.
+    pub fn merge(&mut self, other: &ExecutionStats) {
+        self.load_stmt_count += other.load_stmt_count;
+        self.load_stmt_time_ns += other.load_stmt_time_ns;
+        self.store_stmt_count += other.store_stmt_count;
+        self.store_stmt_time_ns += other.store_stmt_time_ns;
+        self.exit_stmt_count += other.exit_stmt_count;
+        self.exit_stmt_time_ns += other.exit_stmt_time_ns;
+        self.python_callback_count += other.python_callback_count;
+        self.python_callback_time_ns += other.python_callback_time_ns;
+        self.concretize_count += other.concretize_count;
+        self.concretize_time_ns += other.concretize_time_ns;
+        self.cache_hit_count += other.cache_hit_count;
+        self.cache_miss_count += other.cache_miss_count;
+        self.lift_time_ns += other.lift_time_ns;
+        self.rust_memory_load_count += other.rust_memory_load_count;
+        self.fallback_memory_load_count += other.fallback_memory_load_count;
+        self.rust_memory_store_count += other.rust_memory_store_count;
+        self.fallback_memory_store_count += other.fallback_memory_store_count;
+        self.expr_eval_count += other.expr_eval_count;
+        self.expr_eval_time_ns += other.expr_eval_time_ns;
+        self.blocks_executed += other.blocks_executed;
+        self.total_time_ns += other.total_time_ns;
+    }
+}
 
 /// Errors during callback-based VEX execution.
 #[derive(Debug, Clone)]
@@ -178,8 +289,8 @@ pub struct CallbackInterpreter<'a> {
     hook_addrs: HashSet<u64>,
     /// VEX architecture.
     arch: VexArch,
-    /// Block cache (shared across runs).
-    block_cache: LruCache<u64, IRSB>,
+    /// Block cache (shared across runs) using Arc for O(1) cloning.
+    block_cache: LruCache<u64, Arc<IRSB>>,
     /// Whether to use callbacks for memory (vs local registers).
     use_memory_callbacks: bool,
     /// Deferred forks collected during execution.
@@ -231,6 +342,20 @@ pub struct CallbackInterpreter<'a> {
     simprocedure_registry: HashMap<u64, SimProcedureInfo>,
     /// Calling convention for argument extraction.
     calling_convention: Box<dyn CallingConvention>,
+    /// Last branch condition encountered (for symbolic branch handling).
+    /// Stored when a SymbolicBranch is created so callers can retrieve it.
+    last_branch_condition: Option<RustBV>,
+    /// Stored branch conditions by ID for deferred fork handling.
+    /// When a deferred fork is created, we store the condition here so
+    /// callers can retrieve it to properly constrain forked states.
+    stored_conditions: HashMap<u64, RustBV>,
+    /// Execution statistics for profiling.
+    stats: ExecutionStats,
+    /// Whether profiling is enabled.
+    profiling_enabled: bool,
+    /// Concrete memory regions sorted by base address for binary search.
+    /// This is rebuilt when regions are added.
+    concrete_memory_sorted: bool,
 }
 
 impl<'a> CallbackInterpreter<'a> {
@@ -247,7 +372,7 @@ impl<'a> CallbackInterpreter<'a> {
 
         CallbackInterpreter {
             registers: RegisterFile::new(arch_box),
-            temps: Vec::new(),
+            temps: Vec::with_capacity(64), // Pre-allocate for typical block size
             ctx,
             pc: 0,
             current_insn_addr: 0,
@@ -273,6 +398,11 @@ impl<'a> CallbackInterpreter<'a> {
             dirty_dispatch: DirtyHelperDispatch::new(),
             simprocedure_registry: HashMap::new(),
             calling_convention: cc,
+            last_branch_condition: None,
+            stored_conditions: HashMap::new(),
+            stats: ExecutionStats::default(),
+            profiling_enabled: false,
+            concrete_memory_sorted: false,
         }
     }
 
@@ -293,23 +423,75 @@ impl<'a> CallbackInterpreter<'a> {
     pub fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
         let size = data.len() as u64;
         self.concrete_memory.push(ConcreteMemoryRegion { base, size, data });
+        self.concrete_memory_sorted = false;
+    }
+
+    /// Sort concrete memory regions by base address for binary search.
+    fn sort_concrete_memory(&mut self) {
+        if !self.concrete_memory_sorted && self.concrete_memory.len() > 1 {
+            self.concrete_memory.sort_by_key(|r| r.base);
+            self.concrete_memory_sorted = true;
+        }
     }
 
     /// Clear all concrete memory regions.
     pub fn clear_concrete_memory(&mut self) {
         self.concrete_memory.clear();
+        self.concrete_memory_sorted = false;
     }
 
-    /// Try to read from concrete memory cache.
+    /// Try to read from concrete memory cache using binary search.
     /// Returns Some(data) if the address range is fully contained in a cached region.
     #[inline]
     fn try_read_concrete_memory(&self, addr: u64, size: usize) -> Option<&[u8]> {
+        if self.concrete_memory.is_empty() {
+            return None;
+        }
+
+        // Use binary search if we have many regions
+        if self.concrete_memory.len() > 4 && self.concrete_memory_sorted {
+            // Binary search: find the region where base <= addr
+            let idx = self.concrete_memory.partition_point(|r| r.base <= addr);
+            if idx > 0 {
+                // Check the region just before this index
+                let region = &self.concrete_memory[idx - 1];
+                if let Some(data) = region.read(addr, size) {
+                    return Some(data);
+                }
+            }
+            return None;
+        }
+
+        // Linear scan for small number of regions
         for region in &self.concrete_memory {
             if let Some(data) = region.read(addr, size) {
                 return Some(data);
             }
         }
         None
+    }
+
+    /// Enable or disable profiling.
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.profiling_enabled = enabled;
+        if enabled {
+            self.stats.reset();
+        }
+    }
+
+    /// Get execution statistics.
+    pub fn stats(&self) -> &ExecutionStats {
+        &self.stats
+    }
+
+    /// Get mutable execution statistics.
+    pub fn stats_mut(&mut self) -> &mut ExecutionStats {
+        &mut self.stats
+    }
+
+    /// Take the execution statistics, replacing with default.
+    pub fn take_stats(&mut self) -> ExecutionStats {
+        std::mem::take(&mut self.stats)
     }
 
     /// Load from memory via Python callback.
@@ -541,12 +723,37 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Add a block to the cache.
     pub fn cache_block(&mut self, addr: u64, irsb: IRSB) {
-        self.block_cache.put(addr, irsb);
+        self.block_cache.put(addr, Arc::new(irsb));
     }
 
     /// Get a block from the cache.
     pub fn get_cached_block(&mut self, addr: u64) -> Option<&IRSB> {
-        self.block_cache.get(&addr)
+        self.block_cache.get(&addr).map(|arc| arc.as_ref())
+    }
+
+    /// Take the last branch condition, if any.
+    ///
+    /// This is set when a SymbolicBranch result is created, and can be retrieved
+    /// by callers who need to add constraints for forked states.
+    /// The condition is cleared after being retrieved.
+    pub fn take_last_branch_condition(&mut self) -> Option<RustBV> {
+        self.last_branch_condition.take()
+    }
+
+    /// Get a stored condition by ID.
+    ///
+    /// Returns the branch condition associated with the given condition ID,
+    /// if one was stored. This is used for deferred fork handling.
+    pub fn get_stored_condition(&self, condition_id: u64) -> Option<&RustBV> {
+        self.stored_conditions.get(&condition_id)
+    }
+
+    /// Take all stored conditions.
+    ///
+    /// Returns all stored conditions as a HashMap. The internal map is cleared.
+    /// This is useful for bulk retrieval when processing multiple deferred forks.
+    pub fn take_stored_conditions(&mut self) -> HashMap<u64, RustBV> {
+        std::mem::take(&mut self.stored_conditions)
     }
 
     /// Run the execution loop until an event requires Python handling.
@@ -562,7 +769,11 @@ impl<'a> CallbackInterpreter<'a> {
         callbacks: &PythonCallbacks,
         max_blocks: u32,
     ) -> (RunResult, u32, Vec<DeferredFork>) {
+        let total_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
         let mut blocks_executed = 0u32;
+
+        // Sort concrete memory regions for binary search if needed
+        self.sort_concrete_memory();
 
         // Clear any previous deferred forks
         self.deferred_forks.clear();
@@ -733,6 +944,12 @@ impl<'a> CallbackInterpreter<'a> {
 
         // Reached max blocks
         let forks = self.take_deferred_forks();
+        if self.profiling_enabled {
+            self.stats.blocks_executed += blocks_executed as u64;
+            if let Some(start) = total_start {
+                self.stats.total_time_ns += start.elapsed().as_nanos() as u64;
+            }
+        }
         (RunResult::MaxBlocks { pc: self.pc }, blocks_executed, forks)
     }
 
@@ -747,11 +964,20 @@ impl<'a> CallbackInterpreter<'a> {
         py: Python<'_>,
         callbacks: &PythonCallbacks,
         addr: u64,
-    ) -> Result<IRSB, CbExecutionError> {
-        // Check cache first
+    ) -> Result<Arc<IRSB>, CbExecutionError> {
+        // Check cache first - Arc clone is O(1)
         if let Some(irsb) = self.block_cache.get(&addr) {
-            return Ok(irsb.clone());
+            if self.profiling_enabled {
+                self.stats.cache_hit_count += 1;
+            }
+            return Ok(Arc::clone(irsb));
         }
+
+        if self.profiling_enabled {
+            self.stats.cache_miss_count += 1;
+        }
+
+        let lift_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
 
         // Try native lifting if available
         #[cfg(feature = "native-lift")]
@@ -777,8 +1003,12 @@ impl<'a> CallbackInterpreter<'a> {
                                 Ok(irsb) => {
                                     // Native lift succeeded!
                                     log::trace!("Native lift succeeded at 0x{:x}", addr);
-                                    self.block_cache.put(addr, irsb.clone());
-                                    return Ok(irsb);
+                                    if let Some(start) = lift_start {
+                                        self.stats.lift_time_ns += start.elapsed().as_nanos() as u64;
+                                    }
+                                    let arc_irsb = Arc::new(irsb);
+                                    self.block_cache.put(addr, Arc::clone(&arc_irsb));
+                                    return Ok(arc_irsb);
                                 }
                                 Err(e) => {
                                     log::trace!("Native lift failed at 0x{:x}: {}", addr, e);
@@ -793,17 +1023,27 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         // Fall back to lifting via Python callback
+        let callback_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
         let irsb_json = callbacks
             .call_lift_block(py, addr)
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {}", e)))?;
+        if let Some(start) = callback_start {
+            self.stats.python_callback_count += 1;
+            self.stats.python_callback_time_ns += start.elapsed().as_nanos() as u64;
+        }
 
         let irsb = deserialize_irsb(&irsb_json)
             .map_err(|e| CbExecutionError::LiftError(format!("IRSB deserialization failed: {}", e)))?;
 
-        // Cache it
-        self.block_cache.put(addr, irsb.clone());
+        if let Some(start) = lift_start {
+            self.stats.lift_time_ns += start.elapsed().as_nanos() as u64;
+        }
 
-        Ok(irsb)
+        // Cache it - Arc allows O(1) cloning
+        let arc_irsb = Arc::new(irsb);
+        self.block_cache.put(addr, Arc::clone(&arc_irsb));
+
+        Ok(arc_irsb)
     }
 
     /// Execute a block using Python callbacks for memory access.
@@ -813,8 +1053,13 @@ impl<'a> CallbackInterpreter<'a> {
         callbacks: &PythonCallbacks,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
-        // Reset temps for this block
-        self.temps = vec![None; irsb.tyenv.types.len()];
+        // Reset temps for this block - reuse allocation instead of creating new vec
+        let needed_temps = irsb.tyenv.types.len();
+        self.temps.clear();
+        if self.temps.capacity() < needed_temps {
+            self.temps.reserve(needed_temps - self.temps.capacity());
+        }
+        self.temps.resize(needed_temps, None);
         self.current_insn_addr = irsb.addr;
 
         // Prefetch loads for this block (reduces individual FFI calls)
@@ -836,6 +1081,8 @@ impl<'a> CallbackInterpreter<'a> {
                 } => {
                     // Flush pending stores before returning
                     self.flush_stores(py, callbacks)?;
+                    // Store the condition for retrieval by callers
+                    self.last_branch_condition = Some(condition);
                     return Ok(BlockResult::SymbolicBranch {
                         condition_id: 0, // TODO: proper condition tracking
                         true_target,
@@ -1078,11 +1325,15 @@ impl<'a> CallbackInterpreter<'a> {
                     };
 
                     // Take the "true" path (jump to dst), defer the "false" path (fallthrough)
+                    let cond_id = self.next_cond_id();
+                    // Store the Rust condition for later retrieval when processing forks
+                    self.stored_conditions.insert(cond_id, guard_val.clone());
+
                     let deferred = DeferredFork {
                         branch_addr: self.current_insn_addr,
                         path_taken: true,
                         unexplored_target: fallthrough,
-                        condition_id: self.next_cond_id(),
+                        condition_id: cond_id,
                         push_level: self.push_level,
                         condition_ast,
                     };
@@ -1921,6 +2172,11 @@ impl<'a> CallbackInterpreter<'a> {
             dirty_dispatch: DirtyHelperDispatch::new(), // Fresh dispatch (stateless)
             simprocedure_registry: self.simprocedure_registry.clone(), // Share SimProcedure registry
             calling_convention: cc,
+            last_branch_condition: None, // Fresh for fork
+            stored_conditions: HashMap::new(), // Fresh for fork
+            stats: ExecutionStats::default(), // Fresh stats for fork
+            profiling_enabled: self.profiling_enabled, // Inherit profiling setting
+            concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
         }
     }
 

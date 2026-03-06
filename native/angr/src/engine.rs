@@ -200,6 +200,10 @@ pub struct RustVEXEngine {
     /// Address concretization configuration.
     /// Used to control how symbolic addresses are concretized for memory access.
     concretizer_config: AddressConcretizer,
+    /// Whether profiling is enabled.
+    profiling_enabled: bool,
+    /// Accumulated execution statistics from all run_loop calls.
+    accumulated_stats: crate::interpreter_cb::ExecutionStats,
 }
 
 #[pymethods]
@@ -238,6 +242,8 @@ impl RustVEXEngine {
             native_lift_initialized: false,
             simprocedures: HashMap::new(),
             concretizer_config: AddressConcretizer::default(),
+            profiling_enabled: false,
+            accumulated_stats: crate::interpreter_cb::ExecutionStats::default(),
         })
     }
 
@@ -279,6 +285,36 @@ impl RustVEXEngine {
     #[pyo3(signature = (use_approximate, range_limit=None))]
     pub fn configure_concretization(&mut self, use_approximate: bool, range_limit: Option<u64>) {
         self.concretizer_config.configure(use_approximate, range_limit);
+    }
+
+    /// Enable or disable profiling.
+    ///
+    /// When enabled, execution statistics are collected and can be retrieved
+    /// via `get_execution_stats()`.
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.profiling_enabled = enabled;
+        if enabled {
+            self.accumulated_stats = crate::interpreter_cb::ExecutionStats::default();
+        }
+    }
+
+    /// Check if profiling is enabled.
+    pub fn is_profiling_enabled(&self) -> bool {
+        self.profiling_enabled
+    }
+
+    /// Get execution statistics as a dictionary.
+    ///
+    /// Returns a dictionary with timing and count statistics from all
+    /// `run_loop` calls since profiling was enabled or last reset.
+    #[pyo3(name = "get_execution_stats")]
+    pub fn py_get_execution_stats(&self) -> HashMap<String, u64> {
+        self.accumulated_stats.to_hashmap()
+    }
+
+    /// Reset execution statistics.
+    pub fn reset_stats(&mut self) {
+        self.accumulated_stats = crate::interpreter_cb::ExecutionStats::default();
     }
 
     /// Get the architecture name.
@@ -875,6 +911,11 @@ impl RustVEXEngine {
             self.execution_config.clone(),
         );
 
+        // Enable profiling on interpreter if enabled on engine
+        if self.profiling_enabled {
+            interp.set_profiling(true);
+        }
+
         // Set concretizer configuration to match Python's strategy
         interp.set_concretizer(self.concretizer_config.clone());
 
@@ -938,6 +979,11 @@ impl RustVEXEngine {
 
         // Get the current push level for constraint tracking
         let push_level = interp.push_level();
+
+        // Merge profiling stats from interpreter
+        if self.profiling_enabled {
+            self.accumulated_stats.merge(interp.stats());
+        }
 
         // Convert to Python event with deferred forks and push level
         Ok(LoopExecutionEvent::from_run_result_with_forks(result, blocks_executed, deferred_forks, push_level))
@@ -1005,6 +1051,9 @@ impl RustVEXEngine {
             simprocedures: self.simprocedures.clone(),
             // Copy concretizer configuration
             concretizer_config: self.concretizer_config.clone(),
+            // Fork inherits profiling setting but starts fresh stats
+            profiling_enabled: self.profiling_enabled,
+            accumulated_stats: crate::interpreter_cb::ExecutionStats::default(),
         })
     }
 
@@ -1346,6 +1395,10 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DeferredFork>()?;
     m.add_class::<BranchPolicy>()?;
     m.add_class::<ExecutionConfig>()?;
+    // Rust-first state
+    m.add_class::<crate::state::PyRustSimState>()?;
+    // Exploration manager
+    crate::exploration::register_exploration(m)?;
     Ok(())
 }
 

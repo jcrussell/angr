@@ -551,6 +551,49 @@ class RustVEXCallbacks:
         # Track concretization constraints to ensure forked solvers use same values
         self._concretization_constraints = []
 
+        # Deduplication set for already-constrained symbolic loads this block
+        # Key: (addr, size), prevents adding redundant constraints
+        self._constrained_this_block = set()
+
+        # Readonly memory regions cache: list of (start, end) tuples
+        # Loads from these regions don't need concretization constraints
+        self._readonly_regions = None
+        self._readonly_regions_initialized = False
+
+    def _initialize_readonly_regions(self):
+        """Build cache of readonly memory regions from the project."""
+        if self._readonly_regions_initialized:
+            return
+
+        self._readonly_regions = []
+        if hasattr(self.project, 'loader') and self.project.loader:
+            # Get .text, .rodata and other readonly sections
+            for obj in self.project.loader.all_objects:
+                if hasattr(obj, 'sections'):
+                    for sec in obj.sections:
+                        # Check for readonly sections
+                        name = sec.name if hasattr(sec, 'name') else ''
+                        is_readonly = (
+                            name in ('.text', '.rodata', '.init', '.fini', '.plt', '.plt.got') or
+                            (hasattr(sec, 'is_writable') and not sec.is_writable and sec.vaddr)
+                        )
+                        if is_readonly and sec.vaddr and sec.memsize > 0:
+                            self._readonly_regions.append((sec.vaddr, sec.vaddr + sec.memsize))
+        self._readonly_regions_initialized = True
+
+    def _is_readonly_region(self, addr: int, size: int = 1) -> bool:
+        """Check if address range is in a readonly memory region."""
+        self._initialize_readonly_regions()
+        end = addr + size
+        for (start, region_end) in self._readonly_regions:
+            if addr >= start and end <= region_end:
+                return True
+        return False
+
+    def clear_block_tracking(self):
+        """Clear per-block tracking data. Call at block boundaries."""
+        self._constrained_this_block.clear()
+
     def memory_load(self, addr: int, size: int) -> tuple[bytes, bool, Any]:
         """
         Load from angr's memory model.
@@ -579,10 +622,15 @@ class RustVEXCallbacks:
             else:
                 concrete = self.state.solver.eval(val)
                 # Add concretization constraint so forked solvers use same value.
-                # This prevents divergence when falling back from Rust to Python.
-                concretization_constraint = (val == concrete)
-                self.state.solver.add(concretization_constraint)
-                self._concretization_constraints.append(concretization_constraint)
+                # Skip for:
+                # 1. Readonly regions (values can't change, constraint is redundant)
+                # 2. Already constrained this block (avoid duplicate constraints)
+                key = (addr, size)
+                if key not in self._constrained_this_block and not self._is_readonly_region(addr, size):
+                    self._constrained_this_block.add(key)
+                    concretization_constraint = (val == concrete)
+                    self.state.solver.add(concretization_constraint)
+                    self._concretization_constraints.append(concretization_constraint)
 
             concrete_bytes = concrete.to_bytes(size, 'little')
 
@@ -688,10 +736,15 @@ class RustVEXCallbacks:
                     else:
                         concrete = self.state.solver.eval(val)
                         # Add concretization constraint so forked solvers use same value.
-                        # This prevents divergence when falling back from Rust to Python.
-                        concretization_constraint = (val == concrete)
-                        self.state.solver.add(concretization_constraint)
-                        self._concretization_constraints.append(concretization_constraint)
+                        # Skip for:
+                        # 1. Readonly regions (values can't change, constraint is redundant)
+                        # 2. Already constrained this block (avoid duplicate constraints)
+                        key = (addr, size)
+                        if key not in self._constrained_this_block and not self._is_readonly_region(addr, size):
+                            self._constrained_this_block.add(key)
+                            concretization_constraint = (val == concrete)
+                            self.state.solver.add(concretization_constraint)
+                            self._concretization_constraints.append(concretization_constraint)
 
                     concrete_bytes = concrete.to_bytes(size, 'little')
 
@@ -729,7 +782,8 @@ class RustVEXCallbacks:
                 return bytes(size)
 
             # Fallback: only loads from first address - no ITE chain built
-            val = self.state.memory.load(addrs[0], size, endness='Iend_LE')
+            addr = addrs[0]
+            val = self.state.memory.load(addr, size, endness='Iend_LE')
 
             # Extract concrete value
             if not val.symbolic:
@@ -740,10 +794,13 @@ class RustVEXCallbacks:
             else:
                 concrete = self.state.solver.eval(val)
                 # Add concretization constraint so forked solvers use same value.
-                # This prevents divergence when falling back from Rust to Python.
-                concretization_constraint = (val == concrete)
-                self.state.solver.add(concretization_constraint)
-                self._concretization_constraints.append(concretization_constraint)
+                # Skip for readonly regions or already-constrained addresses
+                key = (addr, size)
+                if key not in self._constrained_this_block and not self._is_readonly_region(addr, size):
+                    self._constrained_this_block.add(key)
+                    concretization_constraint = (val == concrete)
+                    self.state.solver.add(concretization_constraint)
+                    self._concretization_constraints.append(concretization_constraint)
 
             return concrete.to_bytes(size, 'little')
         except Exception as e:
