@@ -560,6 +560,16 @@ class RustVEXCallbacks:
         self._readonly_regions = None
         self._readonly_regions_initialized = False
 
+        # Handle mode: return RustBVHandle instead of claripy ASTs
+        # This enables O(1) lookups in Rust instead of repeated AST traversal
+        self._use_handles = True
+        self._rust_solver = None  # RustSolverContext, set from state.solver._rust_ctx
+
+        # Map handle_id → original claripy AST for constraint reconstruction.
+        # When Rust concretizes a symbolic address, it needs to export the handle_id
+        # so Python can look up the original AST and add the constraint to claripy.
+        self._handle_to_ast: dict[int, Any] = {}
+
     def _initialize_readonly_regions(self):
         """Build cache of readonly memory regions from the project."""
         if self._readonly_regions_initialized:
@@ -593,6 +603,33 @@ class RustVEXCallbacks:
     def clear_block_tracking(self):
         """Clear per-block tracking data. Call at block boundaries."""
         self._constrained_this_block.clear()
+
+    def _to_handle(self, claripy_ast):
+        """Convert a claripy AST to a RustBVHandle.
+
+        This performs a one-time conversion of the claripy AST to a Rust
+        symbolic value, returning a handle for O(1) lookups. If handle mode
+        is disabled or solver is unavailable, returns the original AST.
+
+        Also tracks the handle_id → claripy_ast mapping so we can reconstruct
+        constraints when Rust concretizes symbolic addresses.
+
+        Args:
+            claripy_ast: The claripy AST to convert.
+
+        Returns:
+            RustBVHandle if handle mode enabled, otherwise the original AST.
+        """
+        if self._rust_solver is None:
+            return claripy_ast
+        try:
+            handle = self._rust_solver.claripy_ast_to_handle(claripy_ast)
+            # Track mapping for constraint reconstruction
+            self._handle_to_ast[handle.id] = claripy_ast
+            return handle
+        except Exception as e:
+            l.debug("Failed to convert AST to handle: %s", e)
+            return claripy_ast
 
     def memory_load(self, addr: int, size: int) -> tuple[bytes, bool, Any]:
         """
@@ -635,7 +672,12 @@ class RustVEXCallbacks:
             concrete_bytes = concrete.to_bytes(size, 'little')
 
             if is_sym:
-                result = (concrete_bytes, True, val)
+                # Convert to handle for O(1) Rust lookup if handle mode enabled
+                if self._use_handles and self._rust_solver is not None:
+                    handle = self._to_handle(val)
+                    result = (concrete_bytes, True, handle)
+                else:
+                    result = (concrete_bytes, True, val)
             else:
                 result = (concrete_bytes, False, None)
             if _profiler.enabled:
@@ -646,8 +688,13 @@ class RustVEXCallbacks:
             if _profiler.enabled:
                 self.memory_load_time += time.perf_counter() - t0
             # Create symbolic value for unmapped memory instead of returning zeros
-            sym_val = claripy.BVS(f"mem_{addr:x}_{size}", size * 8)
-            return (bytes(size), True, sym_val)
+            if self._use_handles and self._rust_solver is not None:
+                # Create handle directly without claripy
+                handle = self._rust_solver.create_symbolic(f"mem_{addr:x}_{size}", size * 8)
+                return (bytes(size), True, handle)
+            else:
+                sym_val = claripy.BVS(f"mem_{addr:x}_{size}", size * 8)
+                return (bytes(size), True, sym_val)
 
     def memory_store(self, addr: int, data: bytes) -> None:
         """
@@ -749,12 +796,22 @@ class RustVEXCallbacks:
                     concrete_bytes = concrete.to_bytes(size, 'little')
 
                     if is_sym:
-                        results.append((concrete_bytes, True, val))
+                        # Convert to handle for O(1) Rust lookup if handle mode enabled
+                        if self._use_handles and self._rust_solver is not None:
+                            handle = self._to_handle(val)
+                            results.append((concrete_bytes, True, handle))
+                        else:
+                            results.append((concrete_bytes, True, val))
                     else:
                         results.append((concrete_bytes, False, None))
                 except Exception as e:
                     l.warning("Batch memory load failed at 0x%x: %s", addr, e)
-                    results.append((bytes(size), False, None))
+                    # Create symbolic value for failed loads
+                    if self._use_handles and self._rust_solver is not None:
+                        handle = self._rust_solver.create_symbolic(f"mem_{addr:x}_{size}", size * 8)
+                        results.append((bytes(size), True, handle))
+                    else:
+                        results.append((bytes(size), False, None))
         finally:
             if _profiler.enabled:
                 self.memory_load_batch_time += time.perf_counter() - t0
@@ -845,12 +902,17 @@ class RustVEXCallbacks:
             size: Number of bytes to load.
 
         Returns:
-            Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_none).
+            Tuple of (concrete_bytes, is_symbolic, symbolic_ast_or_handle).
         """
         try:
             sym_name = f"unconstrained_load_{size}_{id(self)}"
-            result = claripy.BVS(sym_name, size * 8)
-            return (bytes(size), True, result)
+            # Create handle directly without claripy if handle mode enabled
+            if self._use_handles and self._rust_solver is not None:
+                handle = self._rust_solver.create_symbolic(sym_name, size * 8)
+                return (bytes(size), True, handle)
+            else:
+                result = claripy.BVS(sym_name, size * 8)
+                return (bytes(size), True, result)
         except Exception as e:
             l.warning("Symbolic AST memory load failed: %s", e)
             return (bytes(size), True, None)
@@ -1183,7 +1245,7 @@ class RustVEXCallbacks:
 
         return results
 
-    def sync_constraints(self, constraints: list[tuple[str, int, int]]) -> None:
+    def sync_constraints(self, constraints: list[tuple[str, int, int, int | None]]) -> None:
         """
         Sync constraints from Rust to Python's claripy solver.
 
@@ -1193,27 +1255,28 @@ class RustVEXCallbacks:
         when falling back to Python operations.
 
         Args:
-            constraints: List of (description, width, concrete_value) tuples.
+            constraints: List of (description, width, concrete_value, handle_id) tuples.
                 - description: Human-readable description (e.g., "addr_concretize_0x1234")
                 - width: Bit width of the constrained expression
                 - concrete_value: The value the expression was constrained to
-
-        Note:
-            This is a simplified constraint sync that doesn't preserve the
-            original symbolic expression. For full correctness, we would need
-            to track and export the RustBV expressions, but this basic approach
-            provides enough information for Python to reconstruct equality
-            constraints when needed.
+                - handle_id: Optional handle ID to look up the original claripy AST
         """
         if not constraints:
             return
 
-        # Log constraints for debugging (actual sync to claripy is optional)
-        # The constraints are mainly informational - the critical path is
-        # preventing Rust from making decisions Python doesn't know about,
-        # which we handle by syncing state before Python fallbacks.
-        for desc, width, value in constraints:
-            log.debug("Rust constraint synced: %s (width=%d, value=0x%x)", desc, width, value)
+        import claripy
+
+        for desc, width, concrete_value, handle_id in constraints:
+            # Try to look up the original claripy AST from handle mapping
+            if handle_id is not None and handle_id in self._handle_to_ast:
+                original_ast = self._handle_to_ast[handle_id]
+                concrete_bv = claripy.BVV(concrete_value, width)
+                eq_constraint = (original_ast == concrete_bv)
+                self.state.solver.add(eq_constraint)
+                l.debug("Synced constraint: %s == 0x%x (handle_id=%d)", original_ast, concrete_value, handle_id)
+            else:
+                # No AST mapping available - log for debugging
+                l.debug("Rust constraint (no AST): %s (width=%d, value=0x%x)", desc, width, concrete_value)
 
     def get_stats(self) -> dict:
         """
@@ -1259,6 +1322,14 @@ class RustVEXCallbacks:
         """
         if PythonCallbacks is None:
             raise ImportError("PythonCallbacks not available")
+
+        # Wire up RustSolverContext for handle mode (claripy bypass)
+        # This enables O(1) lookups in Rust instead of repeated AST traversal
+        if hasattr(self.state, 'solver') and hasattr(self.state.solver, '_rust_ctx'):
+            self._rust_solver = self.state.solver._rust_ctx
+        else:
+            self._rust_solver = None
+            self._use_handles = False  # Disable handle mode if no Rust solver
 
         rust_cbs = PythonCallbacks()
         rust_cbs.set_memory_load(self.memory_load)

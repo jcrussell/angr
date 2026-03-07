@@ -271,6 +271,10 @@ pub struct PendingConstraint {
     pub concrete_value: u128,
     /// Description for debugging.
     pub description: String,
+    /// Handle ID for looking up the original claripy AST in Python.
+    /// If the expression came from a Python callback that returned a handle,
+    /// this ID can be used to look up the original AST for constraint sync.
+    pub handle_id: Option<u64>,
 }
 
 impl PendingConstraint {
@@ -280,6 +284,21 @@ impl PendingConstraint {
             expression: addr_expr,
             concrete_value: concrete_addr as u128,
             description: format!("addr_concretize_0x{:x}", concrete_addr),
+            handle_id: None,
+        }
+    }
+
+    /// Create a new pending constraint for address concretization with handle_id.
+    pub fn address_concretization_with_handle(
+        addr_expr: RustBV,
+        concrete_addr: u64,
+        handle_id: Option<u64>,
+    ) -> Self {
+        PendingConstraint {
+            expression: addr_expr,
+            concrete_value: concrete_addr as u128,
+            description: format!("addr_concretize_0x{:x}", concrete_addr),
+            handle_id,
         }
     }
 
@@ -289,6 +308,7 @@ impl PendingConstraint {
             expression: cond,
             concrete_value: 1,
             description: "branch_true".to_string(),
+            handle_id: None,
         }
     }
 
@@ -298,6 +318,7 @@ impl PendingConstraint {
             expression: cond,
             concrete_value: 0,
             description: "branch_false".to_string(),
+            handle_id: None,
         }
     }
 }
@@ -1309,6 +1330,8 @@ impl<'a> CallbackInterpreter<'a> {
                     // Symbolic address - try to concretize
                     match self.concretizer.concretize(&addr_val, self.ctx) {
                         ConcretizationResult::Single(addr_concrete) => {
+                            // Track concretization constraint for Python sync
+                            self.track_concretization_constraint(&addr_val, addr_concrete);
                             let data_bytes = bv_to_bytes(&data_val);
                             callbacks
                                 .call_memory_store(py, addr_concrete, &data_bytes)
@@ -1525,6 +1548,8 @@ impl<'a> CallbackInterpreter<'a> {
                         // Symbolic address with symbolic guard - concretize address first
                         match self.concretizer.concretize(&addr_val, self.ctx) {
                             ConcretizationResult::Single(addr_concrete) => {
+                                // Track concretization constraint for Python sync
+                                self.track_concretization_constraint(&addr_val, addr_concrete);
                                 // Load current value and use ITE
                                 let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
                                 let ite_result = guard_val.ite(&data_val, &current, self.ctx);
@@ -1615,7 +1640,11 @@ impl<'a> CallbackInterpreter<'a> {
                             None => {
                                 // Symbolic address - concretize
                                 match self.concretizer.concretize(&addr_val, self.ctx) {
-                                    ConcretizationResult::Single(a) => a,
+                                    ConcretizationResult::Single(a) => {
+                                        // Track concretization constraint for Python sync
+                                        self.track_concretization_constraint(&addr_val, a);
+                                        a
+                                    }
                                     ConcretizationResult::Multiple(ref addrs) => {
                                         *addrs.first().ok_or_else(|| {
                                             CbExecutionError::Unsupported("LoadG with empty address set".to_string())
@@ -1655,7 +1684,11 @@ impl<'a> CallbackInterpreter<'a> {
                         Some(a) => a,
                         None => {
                             match self.concretizer.concretize(&addr_val, self.ctx) {
-                                ConcretizationResult::Single(a) => a,
+                                ConcretizationResult::Single(a) => {
+                                    // Track concretization constraint for Python sync
+                                    self.track_concretization_constraint(&addr_val, a);
+                                    a
+                                }
                                 ConcretizationResult::Multiple(ref addrs) => {
                                     *addrs.first().ok_or_else(|| {
                                         CbExecutionError::Unsupported("LoadG with empty address set".to_string())
@@ -1693,7 +1726,11 @@ impl<'a> CallbackInterpreter<'a> {
                             Some(a) => a,
                             None => {
                                 match self.concretizer.concretize(&addr_val, self.ctx) {
-                                    ConcretizationResult::Single(a) => a,
+                                    ConcretizationResult::Single(a) => {
+                                        // Track concretization constraint for Python sync
+                                        self.track_concretization_constraint(&addr_val, a);
+                                        a
+                                    }
                                     ConcretizationResult::Multiple(ref addrs) => {
                                         *addrs.first().ok_or_else(|| {
                                             CbExecutionError::Unsupported("LoadG with empty address set".to_string())
@@ -1952,6 +1989,8 @@ impl<'a> CallbackInterpreter<'a> {
                     // Symbolic address - try to concretize
                     match self.concretizer.concretize(&addr_val, self.ctx) {
                         ConcretizationResult::Single(addr_concrete) => {
+                            // Track concretization constraint for Python sync
+                            self.track_concretization_constraint(&addr_val, addr_concrete);
                             // Check cached concrete memory first
                             if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
                                 return Ok(bytes_to_bv(data, (size * 8) as u32));
@@ -2988,10 +3027,10 @@ impl<'a> CallbackInterpreter<'a> {
     ///
     /// Returns a list of tuples: (description, width, concrete_value)
     /// Python can use these to add constraints to its solver state.
-    pub fn export_constraints_for_python(&self) -> Vec<(String, u32, u128)> {
+    pub fn export_constraints_for_python(&self) -> Vec<(String, u32, u128, Option<u64>)> {
         self.pending_python_constraints
             .iter()
-            .map(|c| (c.description.clone(), c.expression.width(), c.concrete_value))
+            .map(|c| (c.description.clone(), c.expression.width(), c.concrete_value, c.handle_id))
             .collect()
     }
 }

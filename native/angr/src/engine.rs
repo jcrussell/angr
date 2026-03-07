@@ -971,6 +971,17 @@ impl RustVEXEngine {
         // Run the execution loop
         let (result, blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, max_blocks);
 
+        // Sync any pending constraints to Python before returning
+        // This ensures Python's solver knows about any concretization decisions Rust made
+        if interp.has_pending_constraints() {
+            let constraints = interp.export_constraints_for_python();
+            // Best-effort sync - don't fail the whole execution if sync fails
+            if let Err(e) = callbacks.call_sync_constraints(py, &constraints) {
+                log::debug!("Constraint sync failed (non-fatal): {}", e);
+            }
+            interp.clear_pending_constraints();
+        }
+
         // Update engine state from interpreter
         self.pc = interp.get_pc();
         interp.registers.copy_to_bytes(&mut self.registers);
