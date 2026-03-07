@@ -916,6 +916,12 @@ impl RustVEXEngine {
             interp.set_profiling(true);
         }
 
+        // Set symbol table for handle-based claripy bypass
+        // This allows Python to return RustBVHandle instead of claripy ASTs
+        if let Some(solver) = solver_ctx {
+            interp.set_symbol_table(solver.symbol_table());
+        }
+
         // Set concretizer configuration to match Python's strategy
         interp.set_concretizer(self.concretizer_config.clone());
 

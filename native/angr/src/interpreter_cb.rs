@@ -14,10 +14,10 @@ use pyo3::prelude::*;
 
 use crate::arch::{arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch, RegisterFile};
 use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
-use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, rustbv_to_claripy};
+use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, is_rust_handle, python_to_rustbv, rustbv_to_claripy, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory, PAGE_SIZE};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::{RustBV, RustSymbolTable, SymContext};
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;
 use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
@@ -328,6 +328,9 @@ pub struct CallbackInterpreter<'a> {
     temps: Vec<Option<RustBV>>,
     /// Solver context.
     ctx: &'a SymContext,
+    /// Symbol table for handle-based claripy bypass.
+    /// When present, Python callbacks can return RustBVHandle instead of claripy ASTs.
+    symbol_table: Option<&'a RustSymbolTable>,
     /// Current program counter.
     pub pc: u64,
     /// Current instruction address (within block).
@@ -425,6 +428,7 @@ impl<'a> CallbackInterpreter<'a> {
             registers: RegisterFile::new(arch_box),
             temps: Vec::with_capacity(64), // Pre-allocate for typical block size
             ctx,
+            symbol_table: None,  // Set via set_symbol_table() when using handles
             pc: 0,
             current_insn_addr: 0,
             hook_addrs: HashSet::new(),
@@ -466,6 +470,14 @@ impl<'a> CallbackInterpreter<'a> {
     /// Set custom concretizer settings.
     pub fn set_concretizer(&mut self, concretizer: AddressConcretizer) {
         self.concretizer = concretizer;
+    }
+
+    /// Set the symbol table for handle-based claripy bypass.
+    ///
+    /// When set, Python callbacks can return RustBVHandle instead of claripy ASTs,
+    /// providing significant performance improvement by bypassing AST conversion.
+    pub fn set_symbol_table(&mut self, table: &'a RustSymbolTable) {
+        self.symbol_table = Some(table);
     }
 
     /// Add a concrete memory region for fast local access.
@@ -560,9 +572,18 @@ impl<'a> CallbackInterpreter<'a> {
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         if is_symbolic {
-            // Try to convert claripy AST to RustBV
+            // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
             if let Some(ast_obj) = symbolic_ast {
                 let ast = ast_obj.bind(py);
+
+                // Fast path: check for RustBVHandle first
+                if let Some(ref table) = self.symbol_table {
+                    if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                        return Ok(bv);
+                    }
+                }
+
+                // Slow path: claripy AST conversion
                 if is_claripy_ast(&ast) {
                     match claripy_to_rustbv(py, &ast, self.ctx) {
                         Ok(bv) => return Ok(bv),
@@ -1969,9 +1990,18 @@ impl<'a> CallbackInterpreter<'a> {
                                 )))?;
 
                             if is_symbolic {
-                                // Try to convert claripy AST to RustBV
+                                // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
                                 if let Some(ast_obj) = symbolic_ast {
                                     let ast = ast_obj.bind(py);
+
+                                    // Fast path: check for RustBVHandle first
+                                    if let Some(ref table) = self.symbol_table {
+                                        if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                            return Ok(bv);
+                                        }
+                                    }
+
+                                    // Slow path: claripy AST conversion
                                     if is_claripy_ast(&ast) {
                                         match claripy_to_rustbv(py, &ast, self.ctx) {
                                             Ok(bv) => return Ok(bv),
@@ -2113,10 +2143,35 @@ impl<'a> CallbackInterpreter<'a> {
             let value = if i < load_results.len() {
                 let (data, is_symbolic, symbolic_ast) = &load_results[i];
                 if *is_symbolic {
-                    // Try to convert claripy AST to RustBV
+                    // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
                     if let Some(ast_obj) = symbolic_ast {
                         let ast = ast_obj.bind(py);
-                        if is_claripy_ast(&ast) {
+
+                        // Fast path: check for RustBVHandle first
+                        if let Some(ref table) = self.symbol_table {
+                            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                bv
+                            } else if is_claripy_ast(&ast) {
+                                // Slow path: claripy AST conversion
+                                match claripy_to_rustbv(py, &ast, self.ctx) {
+                                    Ok(bv) => bv,
+                                    Err(_) => {
+                                        // Fallback to fresh symbolic
+                                        RustBV::symbolic(
+                                            self.ctx,
+                                            &format!("ite_load_{:x}_{}", addr, size),
+                                            width,
+                                        )
+                                    }
+                                }
+                            } else {
+                                RustBV::symbolic(
+                                    self.ctx,
+                                    &format!("ite_load_{:x}_{}", addr, size),
+                                    width,
+                                )
+                            }
+                        } else if is_claripy_ast(&ast) {
                             match claripy_to_rustbv(py, &ast, self.ctx) {
                                 Ok(bv) => bv,
                                 Err(_) => {
@@ -2318,6 +2373,7 @@ impl<'a> CallbackInterpreter<'a> {
             registers: self.registers.fork(),
             temps: self.temps.clone(),
             ctx: self.ctx,
+            symbol_table: self.symbol_table, // Share symbol table reference
             pc: self.pc,
             current_insn_addr: self.current_insn_addr,
             hook_addrs: self.hook_addrs.clone(),
@@ -2784,10 +2840,35 @@ impl<'a> CallbackInterpreter<'a> {
         for (i, (addr, size)) in unique_loads.iter().enumerate() {
             if let Some((data, is_symbolic, symbolic_ast)) = results.get(i) {
                 let value = if *is_symbolic {
-                    // Try to convert claripy AST to RustBV
+                    // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
                     if let Some(ast_obj) = symbolic_ast {
                         let ast = ast_obj.bind(py);
-                        if is_claripy_ast(&ast) {
+
+                        // Fast path: check for RustBVHandle first
+                        if let Some(ref table) = self.symbol_table {
+                            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                bv
+                            } else if is_claripy_ast(&ast) {
+                                // Slow path: claripy AST conversion
+                                match claripy_to_rustbv(py, &ast, self.ctx) {
+                                    Ok(bv) => bv,
+                                    Err(_) => {
+                                        // Fallback to fresh symbolic
+                                        RustBV::symbolic(
+                                            self.ctx,
+                                            &format!("prefetch_{:x}_{}", addr, size),
+                                            (size * 8) as u32,
+                                        )
+                                    }
+                                }
+                            } else {
+                                RustBV::symbolic(
+                                    self.ctx,
+                                    &format!("prefetch_{:x}_{}", addr, size),
+                                    (size * 8) as u32,
+                                )
+                            }
+                        } else if is_claripy_ast(&ast) {
                             match claripy_to_rustbv(py, &ast, self.ctx) {
                                 Ok(bv) => bv,
                                 Err(_) => {

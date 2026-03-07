@@ -11,7 +11,7 @@ use lru::LruCache;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
 /// Maximum number of AST nodes to cache.
 const AST_CACHE_SIZE: usize = 10000;
@@ -71,6 +71,64 @@ impl std::error::Error for BridgeError {}
 impl From<PyErr> for BridgeError {
     fn from(err: PyErr) -> Self {
         BridgeError::PythonError(err.to_string())
+    }
+}
+
+/// Check if a Python object is a RustBVHandle.
+///
+/// This is a fast check that allows bypassing claripy conversion entirely
+/// when the Python side returns a handle instead of a claripy AST.
+pub fn is_rust_handle(obj: &Bound<'_, PyAny>) -> bool {
+    obj.is_instance_of::<RustBVHandle>()
+}
+
+/// Try to extract a RustBV from a RustBVHandle via the symbol table.
+///
+/// This is the fast path for handle-based operations. If the object is a
+/// RustBVHandle, we look up the RustBV directly from the symbol table,
+/// completely bypassing claripy AST conversion.
+///
+/// Returns None if the object is not a handle or the handle ID is not found.
+pub fn try_handle_to_rustbv(
+    obj: &Bound<'_, PyAny>,
+    symbol_table: &RustSymbolTable,
+) -> Option<RustBV> {
+    if let Ok(handle) = obj.extract::<RustBVHandle>() {
+        symbol_table.get(handle.id())
+    } else {
+        None
+    }
+}
+
+/// Convert a Python object to RustBV, trying handle first, then claripy.
+///
+/// This is the primary entry point for Python -> Rust conversion on the hot path.
+/// It first checks if the object is a RustBVHandle (fast path), and only falls
+/// back to claripy conversion if necessary.
+///
+/// Returns the RustBV, or an error if conversion fails.
+pub fn python_to_rustbv(
+    py: Python<'_>,
+    obj: &Bound<'_, PyAny>,
+    symbol_table: &RustSymbolTable,
+    ctx: &SymContext,
+) -> Result<RustBV, BridgeError> {
+    // Fast path: check for RustBVHandle first
+    if let Some(bv) = try_handle_to_rustbv(obj, symbol_table) {
+        return Ok(bv);
+    }
+
+    // Slow path: claripy AST conversion
+    if is_claripy_ast(obj) {
+        claripy_to_rustbv(py, obj, ctx)
+    } else {
+        let type_name = obj.get_type().name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        Err(BridgeError::TypeMismatch(format!(
+            "expected RustBVHandle or claripy AST, got {}",
+            type_name
+        )))
     }
 }
 

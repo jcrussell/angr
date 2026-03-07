@@ -612,6 +612,13 @@ impl RustSolverContext {
     pub fn sym_context(&self) -> &SymContext {
         &self.inner.sym_ctx
     }
+
+    /// Get a reference to the symbol table.
+    ///
+    /// This is used by the interpreter to look up handles returned from Python.
+    pub fn symbol_table(&self) -> &RustSymbolTable {
+        &self.inner.symbol_table
+    }
 }
 
 /// Register the solver module with Python.
