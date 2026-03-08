@@ -3,10 +3,166 @@
 //! The `RustBV` type represents a bitvector that can be either:
 //! - Concrete: A known fixed value
 //! - Symbolic: Represents an unknown value (with optional Z3 backing)
+//! - Expression: A compound expression with operation tree for reconstruction
 
 use std::fmt;
+use std::sync::Arc;
 
 use super::SymContext;
+
+/// Bitvector operation type for expression tree reconstruction.
+///
+/// This enum represents all operations that can be performed on bitvectors,
+/// enabling reconstruction of claripy ASTs from Rust expression trees.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BVOp {
+    // Arithmetic operations
+    Add,
+    Sub,
+    Mul,
+    UDiv,
+    SDiv,
+    URem,
+    SRem,
+    Neg,
+
+    // Bitwise operations
+    And,
+    Or,
+    Xor,
+    Not,
+
+    // Shift operations
+    Shl,
+    Lshr,
+    Ashr,
+    RotL,
+    RotR,
+
+    // Conversion operations
+    ZeroExt(u32),   // Number of bits to extend
+    SignExt(u32),   // Number of bits to extend
+    Extract(u32, u32), // (high, low) bit indices
+    Concat,
+
+    // Comparison operations (return 1-bit result)
+    Eq,
+    Ne,
+    Ult,
+    Ule,
+    Ugt,
+    Uge,
+    Slt,
+    Sle,
+    Sgt,
+    Sge,
+
+    // Conditional
+    Ite,
+
+    // Utility
+    Reverse,
+    Clz,
+    Ctz,
+    Popcount,
+}
+
+impl BVOp {
+    /// Get the claripy method name for this operation.
+    pub fn claripy_method(&self) -> &'static str {
+        match self {
+            BVOp::Add => "__add__",
+            BVOp::Sub => "__sub__",
+            BVOp::Mul => "__mul__",
+            BVOp::UDiv => "UDiv",
+            BVOp::SDiv => "SDiv",
+            BVOp::URem => "URem",
+            BVOp::SRem => "SMod",
+            BVOp::Neg => "__neg__",
+            BVOp::And => "__and__",
+            BVOp::Or => "__or__",
+            BVOp::Xor => "__xor__",
+            BVOp::Not => "__invert__",
+            BVOp::Shl => "__lshift__",
+            BVOp::Lshr => "LShR",
+            BVOp::Ashr => "__rshift__",
+            BVOp::RotL => "RotateLeft",
+            BVOp::RotR => "RotateRight",
+            BVOp::ZeroExt(_) => "ZeroExt",
+            BVOp::SignExt(_) => "SignExt",
+            BVOp::Extract(_, _) => "Extract",
+            BVOp::Concat => "Concat",
+            BVOp::Eq => "__eq__",
+            BVOp::Ne => "__ne__",
+            BVOp::Ult => "ULT",
+            BVOp::Ule => "ULE",
+            BVOp::Ugt => "UGT",
+            BVOp::Uge => "UGE",
+            BVOp::Slt => "SLT",
+            BVOp::Sle => "SLE",
+            BVOp::Sgt => "SGT",
+            BVOp::Sge => "SGE",
+            BVOp::Ite => "If",
+            BVOp::Reverse => "Reverse",
+            BVOp::Clz => "clz",
+            BVOp::Ctz => "ctz",
+            BVOp::Popcount => "popcount",
+        }
+    }
+
+    /// Check if this is a unary operation.
+    pub fn is_unary(&self) -> bool {
+        matches!(
+            self,
+            BVOp::Neg
+                | BVOp::Not
+                | BVOp::ZeroExt(_)
+                | BVOp::SignExt(_)
+                | BVOp::Extract(_, _)
+                | BVOp::Reverse
+                | BVOp::Clz
+                | BVOp::Ctz
+                | BVOp::Popcount
+        )
+    }
+
+    /// Check if this is a binary operation.
+    pub fn is_binary(&self) -> bool {
+        matches!(
+            self,
+            BVOp::Add
+                | BVOp::Sub
+                | BVOp::Mul
+                | BVOp::UDiv
+                | BVOp::SDiv
+                | BVOp::URem
+                | BVOp::SRem
+                | BVOp::And
+                | BVOp::Or
+                | BVOp::Xor
+                | BVOp::Shl
+                | BVOp::Lshr
+                | BVOp::Ashr
+                | BVOp::RotL
+                | BVOp::RotR
+                | BVOp::Eq
+                | BVOp::Ne
+                | BVOp::Ult
+                | BVOp::Ule
+                | BVOp::Ugt
+                | BVOp::Uge
+                | BVOp::Slt
+                | BVOp::Sle
+                | BVOp::Sgt
+                | BVOp::Sge
+        )
+    }
+
+    /// Check if this is a ternary operation (ITE).
+    pub fn is_ternary(&self) -> bool {
+        matches!(self, BVOp::Ite)
+    }
+}
 
 /// Bit width for parameterized operations.
 /// This reduces ~200 VEX ops to ~30 parameterized variants.
@@ -77,6 +233,7 @@ pub enum RustBV {
         width: u32,
     },
     /// A symbolic value (backed by Z3 when available, otherwise just a name).
+    /// This represents a leaf symbolic variable (e.g., BVS("x", 32)).
     Symbolic {
         /// Unique identifier for this symbolic value.
         id: u64,
@@ -96,6 +253,24 @@ pub enum RustBV {
         value: u128,
         /// Width in bits.
         width: u32,
+    },
+    /// A compound expression with operation tree for claripy reconstruction.
+    ///
+    /// This variant stores the operation and operands that created this value,
+    /// enabling accurate conversion back to claripy ASTs without creating
+    /// fresh symbolic variables.
+    Expression {
+        /// Unique identifier (typically EXPRESSION_ID sentinel).
+        id: u64,
+        /// Width in bits.
+        width: u32,
+        /// Z3 AST when z3 feature is enabled.
+        #[cfg(feature = "vex-engine-z3")]
+        ast: z3::ast::BV,
+        /// The operation that created this expression.
+        op: BVOp,
+        /// The operands to this operation. Uses Arc for subtree sharing.
+        operands: Vec<Arc<RustBV>>,
     },
 }
 
@@ -184,6 +359,7 @@ impl RustBV {
             RustBV::Concrete { width, .. } => *width,
             RustBV::Symbolic { width, .. } => *width,
             RustBV::Constrained { width, .. } => *width,
+            RustBV::Expression { width, .. } => *width,
         }
     }
 
@@ -196,7 +372,13 @@ impl RustBV {
     /// Check if this value is symbolic.
     #[inline]
     pub fn is_symbolic(&self) -> bool {
-        matches!(self, RustBV::Symbolic { .. } | RustBV::Constrained { .. })
+        matches!(self, RustBV::Symbolic { .. } | RustBV::Constrained { .. } | RustBV::Expression { .. })
+    }
+
+    /// Check if this value is an expression (compound symbolic).
+    #[inline]
+    pub fn is_expression(&self) -> bool {
+        matches!(self, RustBV::Expression { .. })
     }
 
     /// Try to get the concrete value.
@@ -206,7 +388,32 @@ impl RustBV {
             RustBV::Concrete { value, .. } => Some(*value),
             RustBV::Constrained { value, .. } => Some(*value),
             RustBV::Symbolic { .. } => None,
+            RustBV::Expression { .. } => None,
         }
+    }
+
+    /// Get the operation if this is an Expression variant.
+    #[inline]
+    pub fn op(&self) -> Option<&BVOp> {
+        match self {
+            RustBV::Expression { op, .. } => Some(op),
+            _ => None,
+        }
+    }
+
+    /// Get the operands if this is an Expression variant.
+    #[inline]
+    pub fn operands(&self) -> Option<&[Arc<RustBV>]> {
+        match self {
+            RustBV::Expression { operands, .. } => Some(operands),
+            _ => None,
+        }
+    }
+
+    /// Wrap this RustBV in an Arc for use as an operand.
+    #[inline]
+    pub fn into_arc(self) -> Arc<RustBV> {
+        Arc::new(self)
     }
 
     /// Get the concrete value, panicking if symbolic.
@@ -237,13 +444,14 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), self.width()),
             _ => {
-                // For symbolic, return expression with sentinel ID
-                RustBV::Symbolic {
+                // Build expression tree for claripy reconstruction
+                RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width: self.width(),
-                    name: String::new(),
                     #[cfg(feature = "vex-engine-z3")]
                     ast: self.to_z3_ast().bvadd(&other.to_z3_ast()),
+                    op: BVOp::Add,
+                    operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
                 }
             }
         }
@@ -254,12 +462,13 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), self.width()),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvsub(&other.to_z3_ast()),
+                op: BVOp::Sub,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -269,12 +478,13 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), self.width()),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvmul(&other.to_z3_ast()),
+                op: BVOp::Mul,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -290,12 +500,13 @@ impl RustBV {
                     Self::concrete(a / b, self.width())
                 }
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvudiv(&other.to_z3_ast()),
+                op: BVOp::UDiv,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -313,12 +524,13 @@ impl RustBV {
                     Self::concrete((a_signed / b_signed) as u128, self.width())
                 }
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvsdiv(&other.to_z3_ast()),
+                op: BVOp::SDiv,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -334,12 +546,13 @@ impl RustBV {
                     Self::concrete(a % b, self.width())
                 }
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvurem(&other.to_z3_ast()),
+                op: BVOp::URem,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -357,12 +570,13 @@ impl RustBV {
                     Self::concrete((a_signed % b_signed) as u128, self.width())
                 }
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvsrem(&other.to_z3_ast()),
+                op: BVOp::SRem,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -371,12 +585,13 @@ impl RustBV {
     pub fn neg(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvneg(),
+                op: BVOp::Neg,
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -390,12 +605,13 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a & b, self.width()),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvand(&other.to_z3_ast()),
+                op: BVOp::And,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -405,12 +621,13 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a | b, self.width()),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvor(&other.to_z3_ast()),
+                op: BVOp::Or,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -420,12 +637,13 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a ^ b, self.width()),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvxor(&other.to_z3_ast()),
+                op: BVOp::Xor,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -434,12 +652,13 @@ impl RustBV {
     pub fn not(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(!v, self.width()),
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvnot(),
+                op: BVOp::Not,
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -456,12 +675,13 @@ impl RustBV {
                 let amt = (a as u32).min(self.width());
                 Self::concrete(v.wrapping_shl(amt), self.width())
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvshl(&amount.to_z3_ast()),
+                op: BVOp::Shl,
+                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
         }
     }
@@ -474,12 +694,13 @@ impl RustBV {
                 let amt = (a as u32).min(self.width());
                 Self::concrete(v.wrapping_shr(amt), self.width())
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvlshr(&amount.to_z3_ast()),
+                op: BVOp::Lshr,
+                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
         }
     }
@@ -493,12 +714,13 @@ impl RustBV {
                 let signed = sign_extend(v, self.width());
                 Self::concrete((signed >> amt) as u128, self.width())
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvashr(&amount.to_z3_ast()),
+                op: BVOp::Ashr,
+                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
         }
     }
@@ -513,12 +735,13 @@ impl RustBV {
                 let rotated = (v << amt) | (v >> (w - amt));
                 Self::concrete(rotated, w)
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvrotl(&amount.to_z3_ast()),
+                op: BVOp::RotL,
+                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
         }
     }
@@ -533,12 +756,13 @@ impl RustBV {
                 let rotated = (v >> amt) | (v << (w - amt));
                 Self::concrete(rotated, w)
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().bvrotr(&amount.to_z3_ast()),
+                op: BVOp::RotR,
+                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
         }
     }
@@ -552,10 +776,9 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a == b { 1 } else { 0 }, 1),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     use z3::ast::Ast;
@@ -565,14 +788,33 @@ impl RustBV {
                         &z3::ast::BV::from_u64(0, 1),
                     )
                 },
+                op: BVOp::Eq,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
 
     /// Inequality comparison (returns 1-bit result).
     pub fn ne(&self, other: &Self, _ctx: &SymContext) -> Self {
-        let eq_result = self.eq(other, _ctx);
-        eq_result.not(_ctx)
+        debug_assert_eq!(self.width(), other.width());
+        match (self.as_u128(), other.as_u128()) {
+            (Some(a), Some(b)) => Self::concrete(if a != b { 1 } else { 0 }, 1),
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: 1,
+                #[cfg(feature = "vex-engine-z3")]
+                ast: {
+                    use z3::ast::Ast;
+                    let eq = self.to_z3_ast()._eq(&other.to_z3_ast()).not();
+                    eq.ite(
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
+                    )
+                },
+                op: BVOp::Ne,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+            },
+        }
     }
 
     /// Unsigned less-than comparison.
@@ -580,19 +822,19 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a < b { 1 } else { 0 }, 1),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    // Use direct bvult method from z3-rs 0.19+
                     let lt = self.to_z3_ast().bvult(&other.to_z3_ast());
                     lt.ite(
                         &z3::ast::BV::from_u64(1, 1),
                         &z3::ast::BV::from_u64(0, 1),
                     )
                 },
+                op: BVOp::Ult,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -602,31 +844,65 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a <= b { 1 } else { 0 }, 1),
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    // Use direct bvule method from z3-rs 0.19+
                     let le = self.to_z3_ast().bvule(&other.to_z3_ast());
                     le.ite(
                         &z3::ast::BV::from_u64(1, 1),
                         &z3::ast::BV::from_u64(0, 1),
                     )
                 },
+                op: BVOp::Ule,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
 
     /// Unsigned greater-than comparison.
-    pub fn ugt(&self, other: &Self, ctx: &SymContext) -> Self {
-        other.ult(self, ctx)
+    pub fn ugt(&self, other: &Self, _ctx: &SymContext) -> Self {
+        debug_assert_eq!(self.width(), other.width());
+        match (self.as_u128(), other.as_u128()) {
+            (Some(a), Some(b)) => Self::concrete(if a > b { 1 } else { 0 }, 1),
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: 1,
+                #[cfg(feature = "vex-engine-z3")]
+                ast: {
+                    let gt = self.to_z3_ast().bvugt(&other.to_z3_ast());
+                    gt.ite(
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
+                    )
+                },
+                op: BVOp::Ugt,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+            },
+        }
     }
 
     /// Unsigned greater-than-or-equal comparison.
-    pub fn uge(&self, other: &Self, ctx: &SymContext) -> Self {
-        other.ule(self, ctx)
+    pub fn uge(&self, other: &Self, _ctx: &SymContext) -> Self {
+        debug_assert_eq!(self.width(), other.width());
+        match (self.as_u128(), other.as_u128()) {
+            (Some(a), Some(b)) => Self::concrete(if a >= b { 1 } else { 0 }, 1),
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: 1,
+                #[cfg(feature = "vex-engine-z3")]
+                ast: {
+                    let ge = self.to_z3_ast().bvuge(&other.to_z3_ast());
+                    ge.ite(
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
+                    )
+                },
+                op: BVOp::Uge,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+            },
+        }
     }
 
     /// Signed less-than comparison.
@@ -638,19 +914,19 @@ impl RustBV {
                 let b_signed = sign_extend(b, self.width());
                 Self::concrete(if a_signed < b_signed { 1 } else { 0 }, 1)
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    // Use direct bvslt method from z3-rs 0.19+
                     let lt = self.to_z3_ast().bvslt(&other.to_z3_ast());
                     lt.ite(
                         &z3::ast::BV::from_u64(1, 1),
                         &z3::ast::BV::from_u64(0, 1),
                     )
                 },
+                op: BVOp::Slt,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -664,31 +940,73 @@ impl RustBV {
                 let b_signed = sign_extend(b, self.width());
                 Self::concrete(if a_signed <= b_signed { 1 } else { 0 }, 1)
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
-                    // Use direct bvsle method from z3-rs 0.19+
                     let le = self.to_z3_ast().bvsle(&other.to_z3_ast());
                     le.ite(
                         &z3::ast::BV::from_u64(1, 1),
                         &z3::ast::BV::from_u64(0, 1),
                     )
                 },
+                op: BVOp::Sle,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
 
     /// Signed greater-than comparison.
-    pub fn sgt(&self, other: &Self, ctx: &SymContext) -> Self {
-        other.slt(self, ctx)
+    pub fn sgt(&self, other: &Self, _ctx: &SymContext) -> Self {
+        debug_assert_eq!(self.width(), other.width());
+        match (self.as_u128(), other.as_u128()) {
+            (Some(a), Some(b)) => {
+                let a_signed = sign_extend(a, self.width());
+                let b_signed = sign_extend(b, self.width());
+                Self::concrete(if a_signed > b_signed { 1 } else { 0 }, 1)
+            }
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: 1,
+                #[cfg(feature = "vex-engine-z3")]
+                ast: {
+                    let gt = self.to_z3_ast().bvsgt(&other.to_z3_ast());
+                    gt.ite(
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
+                    )
+                },
+                op: BVOp::Sgt,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+            },
+        }
     }
 
     /// Signed greater-than-or-equal comparison.
-    pub fn sge(&self, other: &Self, ctx: &SymContext) -> Self {
-        other.sle(self, ctx)
+    pub fn sge(&self, other: &Self, _ctx: &SymContext) -> Self {
+        debug_assert_eq!(self.width(), other.width());
+        match (self.as_u128(), other.as_u128()) {
+            (Some(a), Some(b)) => {
+                let a_signed = sign_extend(a, self.width());
+                let b_signed = sign_extend(b, self.width());
+                Self::concrete(if a_signed >= b_signed { 1 } else { 0 }, 1)
+            }
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: 1,
+                #[cfg(feature = "vex-engine-z3")]
+                ast: {
+                    let ge = self.to_z3_ast().bvsge(&other.to_z3_ast());
+                    ge.ite(
+                        &z3::ast::BV::from_u64(1, 1),
+                        &z3::ast::BV::from_u64(0, 1),
+                    )
+                },
+                op: BVOp::Sge,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+            },
+        }
     }
 
     // =========================================================================
@@ -698,14 +1016,16 @@ impl RustBV {
     /// Zero-extend to a wider width.
     pub fn zero_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width >= self.width());
+        let extend_bits = to_width - self.width();
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().zero_ext(to_width - self.width()),
+                ast: self.to_z3_ast().zero_ext(extend_bits),
+                op: BVOp::ZeroExt(extend_bits),
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -713,17 +1033,19 @@ impl RustBV {
     /// Sign-extend to a wider width.
     pub fn sign_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width >= self.width());
+        let extend_bits = to_width - self.width();
         match self.as_u128() {
             Some(v) => {
                 let extended = sign_extend_to(v, self.width(), to_width);
                 Self::concrete(extended, to_width)
             }
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().sign_ext(to_width - self.width()),
+                ast: self.to_z3_ast().sign_ext(extend_bits),
+                op: BVOp::SignExt(extend_bits),
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -733,12 +1055,13 @@ impl RustBV {
         debug_assert!(to_width <= self.width());
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().extract(to_width - 1, 0),
+                op: BVOp::Extract(to_width - 1, 0),
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -753,12 +1076,13 @@ impl RustBV {
                 let extracted = (v >> low) & ((1u128 << result_width) - 1);
                 Self::concrete(extracted, result_width)
             }
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: result_width,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().extract(high, low),
+                op: BVOp::Extract(high, low),
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -771,12 +1095,13 @@ impl RustBV {
                 let combined = (hi << other.width()) | lo;
                 Self::concrete(combined, result_width)
             }
-            _ => RustBV::Symbolic {
+            _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: result_width,
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: self.to_z3_ast().concat(&other.to_z3_ast()),
+                op: BVOp::Concat,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
         }
     }
@@ -796,10 +1121,9 @@ impl RustBV {
                     else_val.clone()
                 }
             }
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: then_val.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     use z3::ast::Ast;
@@ -809,6 +1133,12 @@ impl RustBV {
                         .not();
                     cond.ite(&then_val.to_z3_ast(), &else_val.to_z3_ast())
                 },
+                op: BVOp::Ite,
+                operands: vec![
+                    Arc::new(self.clone()),
+                    Arc::new(then_val.clone()),
+                    Arc::new(else_val.clone()),
+                ],
             },
         }
     }
@@ -824,16 +1154,17 @@ impl RustBV {
                 };
                 Self::concrete(leading as u128, self.width())
             }
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: {
                     // Build CLZ symbolically - this is complex
                     // For now, just return a symbolic value
                     z3::ast::BV::new_const("clz", self.width())
                 },
+                op: BVOp::Clz,
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -849,12 +1180,13 @@ impl RustBV {
                 };
                 Self::concrete(trailing as u128, self.width())
             }
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: z3::ast::BV::new_const("ctz", self.width()),
+                op: BVOp::Ctz,
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -863,12 +1195,13 @@ impl RustBV {
     pub fn popcount(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(v.count_ones() as u128, self.width()),
-            None => RustBV::Symbolic {
+            None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                name: String::new(),
                 #[cfg(feature = "vex-engine-z3")]
                 ast: z3::ast::BV::new_const("popcount", self.width()),
+                op: BVOp::Popcount,
+                operands: vec![Arc::new(self.clone())],
             },
         }
     }
@@ -904,6 +1237,7 @@ impl RustBV {
                     hi.concat(&lo)
                 }
             }
+            RustBV::Expression { ast, .. } => ast.clone(),
         }
     }
 }
@@ -957,6 +1291,9 @@ impl fmt::Debug for RustBV {
             RustBV::Constrained { value, width, .. } => {
                 write!(f, "Constrained(0x{:x}, {})", value, width)
             }
+            RustBV::Expression { width, op, operands, .. } => {
+                write!(f, "Expression({:?}, {}, {} operands)", op, width, operands.len())
+            }
         }
     }
 }
@@ -972,6 +1309,9 @@ impl fmt::Display for RustBV {
             }
             RustBV::Constrained { value, width, .. } => {
                 write!(f, "<BV{} 0x{:x} (constrained)>", width, value)
+            }
+            RustBV::Expression { width, op, .. } => {
+                write!(f, "<BV{} {:?}>", width, op)
             }
         }
     }

@@ -379,6 +379,20 @@ impl RustSolverContext {
         self.inner.symbol_table.len()
     }
 
+    /// Convert a claripy AST to a handle.
+    ///
+    /// This performs a one-time conversion of a claripy AST to a RustBV,
+    /// storing it in the symbol table and returning a handle. Subsequent
+    /// operations can use the handle directly, avoiding repeated AST traversal.
+    ///
+    /// This is the key optimization for the callback return path: instead of
+    /// returning a claripy AST that must be traversed on every use, we convert
+    /// once and return a handle for O(1) lookups.
+    pub fn claripy_ast_to_handle(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<RustBVHandle> {
+        let bv = claripy_to_rustbv(py, ast, &self.inner.sym_ctx)?;
+        Ok(self.inner.symbol_table.insert(bv))
+    }
+
     // =========================================================================
     // Handle-based Arithmetic Operations
     // =========================================================================

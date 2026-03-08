@@ -26,9 +26,15 @@ pub mod memory;
 #[cfg(feature = "vex-engine")]
 pub mod solver;
 #[cfg(feature = "vex-engine")]
+pub mod state;
+#[cfg(feature = "vex-engine")]
 pub mod symbolic;
 #[cfg(feature = "vex-engine")]
 pub mod vex;
+#[cfg(feature = "vex-engine")]
+pub mod exploration;
+#[cfg(feature = "vex-engine")]
+pub mod procedures;
 
 use pyo3::prelude::*;
 

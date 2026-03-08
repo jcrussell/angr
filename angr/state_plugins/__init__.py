@@ -35,6 +35,13 @@ except ImportError:
     RustSimSolver = None
     RUST_SOLVER_AVAILABLE = False
 
+# Optional Rust state plugin (requires vex-engine feature)
+try:
+    from .rust_state import RustStatePlugin, RUST_STATE_AVAILABLE
+except ImportError:
+    RustStatePlugin = None
+    RUST_STATE_AVAILABLE = False
+
 __all__ = (
     "BP_AFTER",
     "BP_BEFORE",
@@ -49,7 +56,9 @@ __all__ = (
     "PosixDevFS",
     "PosixProcFS",
     "RUST_SOLVER_AVAILABLE",
+    "RUST_STATE_AVAILABLE",
     "RustSimSolver",
+    "RustStatePlugin",
     "SimAction",
     "SimActionConstraint",
     "SimActionData",

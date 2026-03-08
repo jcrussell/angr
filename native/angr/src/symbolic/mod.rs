@@ -14,4 +14,4 @@ mod value;
 pub use context::SymContext;
 pub use handle::RustBVHandle;
 pub use table::RustSymbolTable;
-pub use value::{BitWidth, RustBV, Signedness};
+pub use value::{BitWidth, BVOp, RustBV, Signedness};
