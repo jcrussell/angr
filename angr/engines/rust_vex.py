@@ -548,18 +548,6 @@ class RustVEXCallbacks:
         self.batch_fetch_pages_count = 0
         self.fetch_page_time = 0.0
 
-        # Track concretization constraints to ensure forked solvers use same values
-        self._concretization_constraints = []
-
-        # Deduplication set for already-constrained symbolic loads this block
-        # Key: (addr, size), prevents adding redundant constraints
-        self._constrained_this_block = set()
-
-        # Readonly memory regions cache: list of (start, end) tuples
-        # Loads from these regions don't need concretization constraints
-        self._readonly_regions = None
-        self._readonly_regions_initialized = False
-
         # Handle mode: return RustBVHandle instead of claripy ASTs
         # This enables O(1) lookups in Rust instead of repeated AST traversal
         self._use_handles = True
@@ -569,40 +557,6 @@ class RustVEXCallbacks:
         # When Rust concretizes a symbolic address, it needs to export the handle_id
         # so Python can look up the original AST and add the constraint to claripy.
         self._handle_to_ast: dict[int, Any] = {}
-
-    def _initialize_readonly_regions(self):
-        """Build cache of readonly memory regions from the project."""
-        if self._readonly_regions_initialized:
-            return
-
-        self._readonly_regions = []
-        if hasattr(self.project, 'loader') and self.project.loader:
-            # Get .text, .rodata and other readonly sections
-            for obj in self.project.loader.all_objects:
-                if hasattr(obj, 'sections'):
-                    for sec in obj.sections:
-                        # Check for readonly sections
-                        name = sec.name if hasattr(sec, 'name') else ''
-                        is_readonly = (
-                            name in ('.text', '.rodata', '.init', '.fini', '.plt', '.plt.got') or
-                            (hasattr(sec, 'is_writable') and not sec.is_writable and sec.vaddr)
-                        )
-                        if is_readonly and sec.vaddr and sec.memsize > 0:
-                            self._readonly_regions.append((sec.vaddr, sec.vaddr + sec.memsize))
-        self._readonly_regions_initialized = True
-
-    def _is_readonly_region(self, addr: int, size: int = 1) -> bool:
-        """Check if address range is in a readonly memory region."""
-        self._initialize_readonly_regions()
-        end = addr + size
-        for (start, region_end) in self._readonly_regions:
-            if addr >= start and end <= region_end:
-                return True
-        return False
-
-    def clear_block_tracking(self):
-        """Clear per-block tracking data. Call at block boundaries."""
-        self._constrained_this_block.clear()
 
     def _to_handle(self, claripy_ast):
         """Convert a claripy AST to a RustBVHandle.
@@ -658,16 +612,10 @@ class RustVEXCallbacks:
                     concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
-                # Add concretization constraint so forked solvers use same value.
-                # Skip for:
-                # 1. Readonly regions (values can't change, constraint is redundant)
-                # 2. Already constrained this block (avoid duplicate constraints)
-                key = (addr, size)
-                if key not in self._constrained_this_block and not self._is_readonly_region(addr, size):
-                    self._constrained_this_block.add(key)
-                    concretization_constraint = (val == concrete)
-                    self.state.solver.add(concretization_constraint)
-                    self._concretization_constraints.append(concretization_constraint)
+                # Note: We intentionally do NOT add concretization constraints here.
+                # These would incorrectly constrain symbolic input values (like password bytes)
+                # to arbitrary concrete values (typically 0), breaking symbolic execution.
+                # Rust's constraint sync handles address concretization separately.
 
             concrete_bytes = concrete.to_bytes(size, 'little')
 
@@ -782,16 +730,9 @@ class RustVEXCallbacks:
                             concrete = self.state.solver.eval(val)
                     else:
                         concrete = self.state.solver.eval(val)
-                        # Add concretization constraint so forked solvers use same value.
-                        # Skip for:
-                        # 1. Readonly regions (values can't change, constraint is redundant)
-                        # 2. Already constrained this block (avoid duplicate constraints)
-                        key = (addr, size)
-                        if key not in self._constrained_this_block and not self._is_readonly_region(addr, size):
-                            self._constrained_this_block.add(key)
-                            concretization_constraint = (val == concrete)
-                            self.state.solver.add(concretization_constraint)
-                            self._concretization_constraints.append(concretization_constraint)
+                        # Note: We intentionally do NOT add concretization constraints here.
+                        # These would incorrectly constrain symbolic input values (like password bytes)
+                        # to arbitrary concrete values (typically 0), breaking symbolic execution.
 
                     concrete_bytes = concrete.to_bytes(size, 'little')
 
@@ -850,14 +791,9 @@ class RustVEXCallbacks:
                     concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
-                # Add concretization constraint so forked solvers use same value.
-                # Skip for readonly regions or already-constrained addresses
-                key = (addr, size)
-                if key not in self._constrained_this_block and not self._is_readonly_region(addr, size):
-                    self._constrained_this_block.add(key)
-                    concretization_constraint = (val == concrete)
-                    self.state.solver.add(concretization_constraint)
-                    self._concretization_constraints.append(concretization_constraint)
+                # Note: We intentionally do NOT add concretization constraints here.
+                # These would incorrectly constrain symbolic input values (like password bytes)
+                # to arbitrary concrete values (typically 0), breaking symbolic execution.
 
             return concrete.to_bytes(size, 'little')
         except Exception as e:
@@ -931,6 +867,83 @@ class RustVEXCallbacks:
         """
         # No-op: can't perform store without knowing the address
         pass
+
+    def memory_store_symbolic_value(self, addr: int, ast) -> None:
+        """
+        Store a symbolic value to memory with full expression tree preservation.
+
+        This callback is called by Rust when storing a symbolic value. The AST
+        is the fully reconstructed claripy expression from the Rust engine,
+        preserving the original symbolic structure (e.g., `x + 10 ^ 0x42`
+        instead of a fresh symbolic variable).
+
+        This is critical for proper constraint solving - without expression
+        tree preservation, operations like XOR or ADD on symbolic values
+        would be lost, causing constraint solving to fail.
+
+        Args:
+            addr: Memory address to store to.
+            ast: The claripy AST representing the symbolic value with full
+                 expression tree intact.
+        """
+        try:
+            # Store the symbolic AST directly to memory
+            self.state.memory.store(addr, ast, inspect=False, disable_actions=True)
+        except Exception as e:
+            l.warning("Symbolic value store failed at 0x%x: %s", addr, e)
+            # Fallback: try storing as bytes if AST store fails
+            # This loses symbolic information but prevents crashes
+            try:
+                size = ast.length // 8
+                self.state.memory.store(addr, bytes(size), inspect=False, disable_actions=True)
+            except Exception:
+                pass
+
+    def memory_store_symbolic_full(self, addr_ast, data_ast) -> None:
+        """
+        Store symbolic data at a symbolic address.
+
+        This callback is used when the address cannot be concretized (range too large).
+        It preserves both the symbolic address and symbolic data expression trees.
+
+        Args:
+            addr_ast: The claripy AST for the symbolic address.
+            data_ast: The claripy AST for the symbolic data.
+        """
+        try:
+            # Let angr's memory model handle the symbolic address
+            self.state.memory.store(addr_ast, data_ast, inspect=False, disable_actions=True)
+        except Exception as e:
+            l.warning("Full symbolic store failed: addr=%s, error=%s", addr_ast, e)
+
+    def memory_load_symbolic_full(self, addr_ast, size: int):
+        """
+        Load from memory at a symbolic address.
+
+        This callback is used when the address cannot be concretized (range too large).
+        Instead of returning a fresh unconstrained symbol, this delegates to angr's
+        memory model which properly tracks symbolic regions and builds ITE chains.
+
+        This is critical for correct symbolic execution - without it, loads from
+        symbolic addresses (like array accesses) would return fresh symbols unrelated
+        to what was stored there.
+
+        Args:
+            addr_ast: The claripy AST for the symbolic address.
+            size: Number of bytes to load.
+
+        Returns:
+            The loaded claripy AST from angr's memory model.
+        """
+        try:
+            # Let angr's memory model handle the symbolic address
+            # This builds proper ITE chains and tracks symbolic memory regions
+            result = self.state.memory.load(addr_ast, size, endness='Iend_LE')
+            return result
+        except Exception as e:
+            l.warning("Full symbolic load failed: addr=%s, size=%d, error=%s", addr_ast, size, e)
+            # Fallback: return unconstrained symbolic value
+            return claripy.BVS(f"unconstrained_load_{size}_{id(self)}", size * 8)
 
     def on_hook(self, addr: int) -> int:
         """
@@ -1040,11 +1053,9 @@ class RustVEXCallbacks:
                     concrete = self.state.solver.eval(val)
             else:
                 concrete = self.state.solver.eval(val)
-                # Add concretization constraint so forked solvers use same value.
-                # This prevents divergence when falling back from Rust to Python.
-                concretization_constraint = (val == concrete)
-                self.state.solver.add(concretization_constraint)
-                self._concretization_constraints.append(concretization_constraint)
+                # Note: We intentionally do NOT add concretization constraints here.
+                # These would incorrectly constrain symbolic input values to arbitrary
+                # concrete values (typically 0), breaking symbolic execution.
 
             concrete_bytes = concrete.to_bytes(size, 'little')
 
@@ -1267,16 +1278,16 @@ class RustVEXCallbacks:
         import claripy
 
         for desc, width, concrete_value, handle_id in constraints:
-            # Try to look up the original claripy AST from handle mapping
-            if handle_id is not None and handle_id in self._handle_to_ast:
-                original_ast = self._handle_to_ast[handle_id]
-                concrete_bv = claripy.BVV(concrete_value, width)
-                eq_constraint = (original_ast == concrete_bv)
-                self.state.solver.add(eq_constraint)
-                l.debug("Synced constraint: %s == 0x%x (handle_id=%d)", original_ast, concrete_value, handle_id)
-            else:
-                # No AST mapping available - log for debugging
-                l.debug("Rust constraint (no AST): %s (width=%d, value=0x%x)", desc, width, concrete_value)
+            # Note: We intentionally do NOT sync address concretization constraints
+            # from Rust to Python. These constraints are used by Rust internally to
+            # access memory at concrete addresses, but adding them to Python's solver
+            # would incorrectly constrain symbolic input values (like stack-relative
+            # addresses computed from ebp) to specific concrete values.
+            #
+            # Rust's internal Z3 context tracks these constraints for its operations,
+            # but Python's solver should remain free to solve for all possible values.
+            l.debug("Skipping constraint sync: %s (width=%d, value=0x%x, handle_id=%s)",
+                    desc, width, concrete_value, handle_id)
 
     def get_stats(self) -> dict:
         """
@@ -1340,6 +1351,9 @@ class RustVEXCallbacks:
         rust_cbs.set_memory_store_symbolic(self.memory_store_symbolic)
         rust_cbs.set_memory_load_ast(self.memory_load_ast)
         rust_cbs.set_memory_store_ast(self.memory_store_ast)
+        rust_cbs.set_memory_store_symbolic_value(self.memory_store_symbolic_value)
+        rust_cbs.set_memory_store_symbolic_full(self.memory_store_symbolic_full)
+        rust_cbs.set_memory_load_symbolic_full(self.memory_load_symbolic_full)
         rust_cbs.set_on_hook(self.on_hook)
         rust_cbs.set_on_syscall(self.on_syscall)
         rust_cbs.set_lift_block(self.lift_block)

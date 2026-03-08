@@ -291,6 +291,21 @@ pub struct PythonCallbacks {
     /// - handle_id: optional handle ID to look up the original claripy AST
     /// Python should add these constraints to its claripy solver.
     pub sync_constraints: Option<PyObject>,
+    /// Callback for storing a symbolic value with full expression tree: fn(addr: int, ast: claripy.AST) -> None
+    /// This is called when storing a symbolic value to memory. The AST is reconstructed from
+    /// the Rust expression tree, preserving the original symbolic expression structure.
+    /// This allows symbolic values to be properly stored without data loss.
+    pub memory_store_symbolic_value: Option<PyObject>,
+    /// Callback for storing symbolic data at a symbolic address.
+    /// Called when the address cannot be concretized (too many possibilities).
+    /// Takes (addr_ast: claripy.AST, data_ast: claripy.AST) -> None
+    /// Python should use state.memory.store(addr_ast, data_ast).
+    pub memory_store_symbolic_full: Option<PyObject>,
+    /// Callback for loading data at a symbolic address.
+    /// Called when the address cannot be concretized (too many possibilities).
+    /// Takes (addr_ast: claripy.AST, size: int) -> claripy.AST
+    /// Python should use state.memory.load(addr_ast, size) and return the result.
+    pub memory_load_symbolic_full: Option<PyObject>,
 }
 
 #[pymethods]
@@ -316,6 +331,9 @@ impl PythonCallbacks {
             fetch_page: None,
             batch_fetch_pages: None,
             sync_constraints: None,
+            memory_store_symbolic_value: None,
+            memory_store_symbolic_full: None,
+            memory_load_symbolic_full: None,
         }
     }
 
@@ -496,6 +514,31 @@ impl PythonCallbacks {
     /// The handle_id can be used to look up the original claripy AST.
     pub fn set_sync_constraints(&mut self, cb: PyObject) {
         self.sync_constraints = Some(cb);
+    }
+
+    /// Set the symbolic value store callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(addr: int, ast: claripy.AST) -> None`
+    ///
+    /// This is called when storing a symbolic value to memory. The AST
+    /// is the fully reconstructed claripy expression from the Rust engine,
+    /// preserving the original symbolic structure (e.g., `x + 10 ^ 0x42`
+    /// instead of a fresh symbolic variable).
+    pub fn set_memory_store_symbolic_value(&mut self, cb: PyObject) {
+        self.memory_store_symbolic_value = Some(cb);
+    }
+
+    /// Set the callback for storing symbolic data at a symbolic address.
+    /// Used when the address cannot be concretized (too many possibilities).
+    pub fn set_memory_store_symbolic_full(&mut self, cb: PyObject) {
+        self.memory_store_symbolic_full = Some(cb);
+    }
+
+    /// Set the callback for loading data at a symbolic address.
+    /// Used when the address cannot be concretized (too many possibilities).
+    pub fn set_memory_load_symbolic_full(&mut self, cb: PyObject) {
+        self.memory_load_symbolic_full = Some(cb);
     }
 
     /// Check if all required callbacks are set.
@@ -1011,6 +1054,112 @@ impl PythonCallbacks {
         // If no callback is set, silently succeed - constraints will be lost
         // but this allows gradual adoption of the feature
         Ok(())
+    }
+
+    /// Store a symbolic value to memory with full expression tree preservation.
+    ///
+    /// This method converts the RustBV expression tree to a claripy AST and
+    /// calls Python to store it. This preserves symbolic expressions like
+    /// `x + 10 ^ 0x42` instead of losing them to zeros.
+    ///
+    /// # Arguments
+    /// * `py` - Python GIL token
+    /// * `addr` - The memory address to store to
+    /// * `value` - The symbolic RustBV value with expression tree
+    ///
+    /// # Returns
+    /// Ok(()) on success, or falls back to byte-based store if callback unavailable.
+    pub fn call_memory_store_symbolic_value(
+        &self,
+        py: Python<'_>,
+        addr: u64,
+        value: &RustBV,
+    ) -> PyResult<()> {
+        use crate::claripy_bridge::rustbv_to_claripy;
+
+        // If the symbolic value callback is set, use it
+        if let Some(cb) = &self.memory_store_symbolic_value {
+            // Import claripy module
+            let claripy_mod = py.import("claripy")?;
+
+            // Convert RustBV expression tree to claripy AST
+            let ast = rustbv_to_claripy(py, value, &claripy_mod)?;
+            cb.call1(py, (addr, ast))?;
+            return Ok(());
+        }
+
+        // Fallback: use the standard memory_store with byte representation
+        // This will lose symbolic information but maintains backward compatibility
+        let data_bytes = bv_to_bytes(value);
+        self.call_memory_store(py, addr, &data_bytes)
+    }
+
+    /// Check if symbolic value store callback is available.
+    pub fn has_memory_store_symbolic_value(&self) -> bool {
+        self.memory_store_symbolic_value.is_some()
+    }
+
+    /// Call the full symbolic store callback (symbolic address + symbolic value).
+    /// Used when the address cannot be concretized to a single value or small set.
+    pub fn call_memory_store_symbolic_full(
+        &self,
+        py: Python<'_>,
+        addr_val: &RustBV,
+        data_val: &RustBV,
+    ) -> PyResult<()> {
+        use crate::claripy_bridge::rustbv_to_claripy;
+
+        if let Some(cb) = &self.memory_store_symbolic_full {
+            let claripy_mod = py.import("claripy")?;
+            let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
+            let data_ast = rustbv_to_claripy(py, data_val, &claripy_mod)?;
+            cb.call1(py, (addr_ast, data_ast))?;
+            return Ok(());
+        }
+
+        // Fallback: silently ignore (no proper fallback available)
+        Ok(())
+    }
+
+    /// Check if full symbolic store callback is available.
+    pub fn has_memory_store_symbolic_full(&self) -> bool {
+        self.memory_store_symbolic_full.is_some()
+    }
+
+    /// Load from memory at a symbolic address (full AST delegation).
+    ///
+    /// This is called when the address range is too large to concretize.
+    /// Python will use angr's memory model to handle the symbolic address,
+    /// which may build ITE chains or use address concretization strategies.
+    ///
+    /// # Arguments
+    /// * `py` - Python GIL token
+    /// * `addr_val` - The symbolic address as a RustBV
+    /// * `size` - Number of bytes to load
+    ///
+    /// # Returns
+    /// The loaded claripy AST from Python's memory model.
+    pub fn call_memory_load_symbolic_full(
+        &self,
+        py: Python<'_>,
+        addr_val: &RustBV,
+        size: u32,
+    ) -> PyResult<PyObject> {
+        use crate::claripy_bridge::rustbv_to_claripy;
+
+        if let Some(cb) = &self.memory_load_symbolic_full {
+            let claripy_mod = py.import("claripy")?;
+            let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
+            return cb.call1(py, (addr_ast, size));
+        }
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "memory_load_symbolic_full callback not set"
+        ))
+    }
+
+    /// Check if full symbolic load callback is available.
+    pub fn has_memory_load_symbolic_full(&self) -> bool {
+        self.memory_load_symbolic_full.is_some()
     }
 }
 

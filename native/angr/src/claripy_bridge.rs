@@ -24,10 +24,39 @@ thread_local! {
         RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).unwrap()));
 }
 
+/// Thread-local cache for preserving original claripy ASTs.
+/// Maps RustBV symbol ID to the original claripy AST.
+/// This is critical for correctly reconstructing expressions that reference
+/// symbolic values imported from Python - without this, BVS("x", 32) would
+/// create a new symbol each time instead of referencing the original.
+thread_local! {
+    static CLARIPY_AST_CACHE: RefCell<HashMap<u64, PyObject>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Store a claripy AST for later retrieval.
+/// Called when converting claripy→RustBV for symbolic values.
+pub fn store_claripy_ast(symbol_id: u64, ast: PyObject) {
+    CLARIPY_AST_CACHE.with(|cache| {
+        cache.borrow_mut().insert(symbol_id, ast);
+    });
+}
+
+/// Retrieve a previously stored claripy AST by symbol ID.
+/// Called when converting RustBV→claripy to return the original AST.
+pub fn get_claripy_ast(symbol_id: u64) -> Option<PyObject> {
+    CLARIPY_AST_CACHE.with(|cache| {
+        cache.borrow().get(&symbol_id).cloned()
+    })
+}
+
 /// Clear the AST conversion cache.
 /// Call this at block boundaries or when the constraint set changes significantly.
 pub fn clear_ast_cache() {
     AST_CACHE.with(|cache| {
+        cache.borrow_mut().clear();
+    });
+    CLARIPY_AST_CACHE.with(|cache| {
         cache.borrow_mut().clear();
     });
 }
@@ -199,7 +228,13 @@ pub fn claripy_to_rustbv(
             } else {
                 ast.getattr("length")?.extract()?
             };
-            Ok(RustBV::symbolic(ctx, &name, width))
+            let bv = RustBV::symbolic(ctx, &name, width);
+            // Store the original claripy AST so we can return it when converting back
+            // This preserves symbol identity for Python's memory model
+            if let RustBV::Symbolic { id, .. } = &bv {
+                store_claripy_ast(*id, ast.clone().unbind());
+            }
+            Ok(bv)
         }
 
         // Arithmetic operations
@@ -615,11 +650,15 @@ pub fn claripy_to_rustbv(
 /// Convert a RustBV back to a claripy AST.
 ///
 /// This is used when returning symbolic results to Python.
+/// For Expression variants, this recursively reconstructs the claripy AST
+/// from the operation tree, preserving the original expression structure.
 pub fn rustbv_to_claripy(
     py: Python<'_>,
     bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,
 ) -> PyResult<PyObject> {
+    use crate::symbolic::BVOp;
+
     match bv {
         RustBV::Concrete { value, width } => {
             // Create claripy.BVV(value, width)
@@ -636,8 +675,14 @@ pub fn rustbv_to_claripy(
                     .map(|obj| obj.into())
             }
         }
-        RustBV::Symbolic { name, width, .. } => {
-            // Create claripy.BVS(name, width)
+        RustBV::Symbolic { id, name, width, .. } => {
+            // Try to return the original claripy AST if we have it cached
+            // This preserves symbol identity for Python's memory model
+            if let Some(original_ast) = get_claripy_ast(*id) {
+                return Ok(original_ast);
+            }
+            // Fallback: Create new claripy.BVS(name, width)
+            // This happens for symbols created purely in Rust
             claripy_mod
                 .call_method1("BVS", (name.as_str(), *width))
                 .map(|obj| obj.into())
@@ -654,6 +699,163 @@ pub fn rustbv_to_claripy(
                 claripy_mod
                     .call_method1("BVV", (py_bytes, *width))
                     .map(|obj| obj.into())
+            }
+        }
+        RustBV::Expression { op, operands, .. } => {
+            // Recursively convert operands to claripy ASTs
+            let args: Vec<PyObject> = operands
+                .iter()
+                .map(|operand| rustbv_to_claripy(py, operand.as_ref(), claripy_mod))
+                .collect::<Result<_, _>>()?;
+
+            // Build the claripy expression based on the operation
+            match op {
+                // Arithmetic operations (binary, use method on first arg)
+                BVOp::Add => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__add__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Sub => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__sub__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Mul => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__mul__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::UDiv => {
+                    claripy_mod.call_method1("UDiv", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::SDiv => {
+                    claripy_mod.call_method1("SDiv", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::URem => {
+                    claripy_mod.call_method1("URem", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::SRem => {
+                    claripy_mod.call_method1("SMod", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Neg => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method0("__neg__").map(|o| o.into())
+                }
+
+                // Bitwise operations
+                BVOp::And => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__and__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Or => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__or__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Xor => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__xor__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Not => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method0("__invert__").map(|o| o.into())
+                }
+
+                // Shift operations
+                BVOp::Shl => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__lshift__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Lshr => {
+                    claripy_mod.call_method1("LShR", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Ashr => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__rshift__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::RotL => {
+                    claripy_mod.call_method1("RotateLeft", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::RotR => {
+                    claripy_mod.call_method1("RotateRight", (&args[0], &args[1])).map(|o| o.into())
+                }
+
+                // Extension operations
+                BVOp::ZeroExt(extend_bits) => {
+                    claripy_mod.call_method1("ZeroExt", (*extend_bits, &args[0])).map(|o| o.into())
+                }
+                BVOp::SignExt(extend_bits) => {
+                    claripy_mod.call_method1("SignExt", (*extend_bits, &args[0])).map(|o| o.into())
+                }
+                BVOp::Extract(high, low) => {
+                    claripy_mod.call_method1("Extract", (*high, *low, &args[0])).map(|o| o.into())
+                }
+                BVOp::Concat => {
+                    // Concat takes multiple args
+                    if args.len() == 2 {
+                        claripy_mod.call_method1("Concat", (&args[0], &args[1])).map(|o| o.into())
+                    } else {
+                        // For multi-arg concat, build a tuple
+                        let args_tuple = pyo3::types::PyTuple::new(py, &args)?;
+                        claripy_mod.call_method1("Concat", args_tuple).map(|o| o.into())
+                    }
+                }
+
+                // Comparison operations
+                BVOp::Eq => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__eq__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Ne => {
+                    let arg0 = args[0].bind(py);
+                    arg0.call_method1("__ne__", (&args[1],)).map(|o| o.into())
+                }
+                BVOp::Ult => {
+                    claripy_mod.call_method1("ULT", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Ule => {
+                    claripy_mod.call_method1("ULE", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Ugt => {
+                    claripy_mod.call_method1("UGT", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Uge => {
+                    claripy_mod.call_method1("UGE", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Slt => {
+                    claripy_mod.call_method1("SLT", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Sle => {
+                    claripy_mod.call_method1("SLE", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Sgt => {
+                    claripy_mod.call_method1("SGT", (&args[0], &args[1])).map(|o| o.into())
+                }
+                BVOp::Sge => {
+                    claripy_mod.call_method1("SGE", (&args[0], &args[1])).map(|o| o.into())
+                }
+
+                // Conditional
+                BVOp::Ite => {
+                    // If(cond, then_val, else_val)
+                    claripy_mod.call_method1("If", (&args[0], &args[1], &args[2])).map(|o| o.into())
+                }
+
+                // Utility operations
+                BVOp::Reverse => {
+                    claripy_mod.call_method1("Reverse", (&args[0],)).map(|o| o.into())
+                }
+                BVOp::Clz | BVOp::Ctz | BVOp::Popcount => {
+                    // These don't have direct claripy equivalents in all cases,
+                    // so we create a fresh symbolic variable with a descriptive name
+                    let op_name = match op {
+                        BVOp::Clz => "clz",
+                        BVOp::Ctz => "ctz",
+                        BVOp::Popcount => "popcount",
+                        _ => unreachable!(),
+                    };
+                    let width = bv.width();
+                    claripy_mod
+                        .call_method1("BVS", (format!("{}_result", op_name), width))
+                        .map(|o| o.into())
+                }
             }
         }
     }
