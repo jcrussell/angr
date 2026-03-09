@@ -1027,6 +1027,131 @@ impl RustExplorationManager {
 
         Ok(dict)
     }
+
+    // =========================================================================
+    // State Export Methods
+    // =========================================================================
+
+    /// Export a state by ID as a full snapshot.
+    ///
+    /// This searches all stashes for the state with the given ID and returns
+    /// a complete snapshot that can be used to reconstruct an angr SimState.
+    pub fn export_state(&self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
+        // Search all stashes for the state
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    return Ok(state.export_full());
+                }
+            }
+        }
+
+        // Also check pending callback state
+        if let Some(ref pending) = self.pending_callback {
+            if pending.state.state_id() == state_id {
+                return Ok(pending.state.export_full());
+            }
+        }
+
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Export all states in a stash as snapshots.
+    pub fn export_stash(&self, stash: &str) -> Vec<crate::state::ExplorationStateSnapshot> {
+        self.stashes
+            .get(stash)
+            .map(|s| s.iter().map(|state| state.export_full()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Export all found states as snapshots.
+    pub fn export_found_states(&self) -> Vec<crate::state::ExplorationStateSnapshot> {
+        self.export_stash("found")
+    }
+
+    /// Evaluate a symbolic value in a state's solver context.
+    ///
+    /// This allows Python to get concrete values for symbolic inputs
+    /// that were found during exploration.
+    pub fn eval_in_state(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
+        // Search for the state
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    // Try to load and evaluate from memory
+                    match state.memory_load(addr, size) {
+                        Ok(bv) => {
+                            // Try to evaluate to concrete value
+                            if let Some(val) = state.eval(&bv) {
+                                let bytes: Vec<u8> = (0..size as usize)
+                                    .map(|i| (val >> (i * 8)) as u8)
+                                    .collect();
+                                return Ok(Some(bytes));
+                            }
+                            return Ok(None);
+                        }
+                        Err(_) => return Ok(None),
+                    }
+                }
+            }
+        }
+
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Check if constraints are satisfiable for a state.
+    pub fn state_satisfiable(&self, state_id: u64) -> PyResult<bool> {
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    return Ok(state.satisfiable());
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Get a register value from a state.
+    pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    return Ok(state.get_register(name).and_then(|bv| bv.as_u128()));
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Get memory from a state.
+    pub fn get_state_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    match state.memory_load(addr, size) {
+                        Ok(bv) => {
+                            if let Some(val) = bv.as_u128() {
+                                let bytes: Vec<u8> = (0..size as usize)
+                                    .map(|i| (val >> (i * 8)) as u8)
+                                    .collect();
+                                return Ok(Some(bytes));
+                            }
+                            // Try to evaluate symbolic value
+                            if let Some(val) = state.eval(&bv) {
+                                let bytes: Vec<u8> = (0..size as usize)
+                                    .map(|i| (val >> (i * 8)) as u8)
+                                    .collect();
+                                return Ok(Some(bytes));
+                            }
+                            return Ok(None);
+                        }
+                        Err(_) => return Ok(None),
+                    }
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
 }
 
 impl RustExplorationManager {

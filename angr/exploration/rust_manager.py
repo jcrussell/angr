@@ -24,6 +24,7 @@ try:
     from angr.rustylib.vex_engine import (
         RustExplorationManager as _RustExplorationManager,
         ExplorationEvent as _ExplorationEvent,
+        ExplorationStateSnapshot as _ExplorationStateSnapshot,
         PythonCallbacks,
         RustSimState as _RustSimState,
     )
@@ -32,6 +33,7 @@ except ImportError:
     RUST_EXPLORATION_AVAILABLE = False
     _RustExplorationManager = None
     _ExplorationEvent = None
+    _ExplorationStateSnapshot = None
     PythonCallbacks = None
     _RustSimState = None
 
@@ -828,6 +830,175 @@ class RustExplorationManager:
     def errored(self) -> list:
         """Get states in the errored stash."""
         return self._rust_mgr.get_state_ids('errored')
+
+    # =========================================================================
+    # State Conversion Methods
+    # =========================================================================
+
+    @property
+    def found_states(self) -> list["angr.SimState"]:
+        """Get found states as angr SimStates.
+
+        This converts Rust exploration states back to angr SimStates that
+        can be used to evaluate symbolic values and get solutions.
+
+        Returns:
+            List of angr SimStates with constraints and symbolic values.
+        """
+        states = []
+        snapshots = self._rust_mgr.export_found_states()
+        for snapshot in snapshots:
+            try:
+                angr_state = self._snapshot_to_angr(snapshot)
+                states.append(angr_state)
+            except Exception as e:
+                l.warning(f"Failed to convert state {snapshot.state_id}: {e}")
+        return states
+
+    def get_state_by_id(self, state_id: int) -> Optional["angr.SimState"]:
+        """Get a specific state by ID as an angr SimState.
+
+        Args:
+            state_id: The Rust state ID.
+
+        Returns:
+            angr SimState, or None if not found.
+        """
+        try:
+            snapshot = self._rust_mgr.export_state(state_id)
+            return self._snapshot_to_angr(snapshot)
+        except Exception as e:
+            l.warning(f"Failed to get state {state_id}: {e}")
+            return None
+
+    def _snapshot_to_angr(self, snapshot: "_ExplorationStateSnapshot") -> "angr.SimState":
+        """Convert a Rust state snapshot to an angr SimState.
+
+        This creates an angr SimState from the snapshot data, including:
+        - Register values
+        - Memory contents
+        - Basic state metadata
+
+        Note: Symbolic values are evaluated using the Rust solver context
+        since the Z3 constraints cannot be directly transferred.
+
+        Args:
+            snapshot: The state snapshot from Rust.
+
+        Returns:
+            An angr SimState.
+        """
+        # Create a blank state with the correct address
+        state = self._project.factory.blank_state(addr=snapshot.pc)
+
+        # Set register values from raw bytes
+        reg_bytes = snapshot.get_registers_raw()
+        arch = self._project.arch
+
+        # Common register mappings for AMD64
+        if arch.name in ('AMD64', 'X86_64'):
+            reg_offsets = {
+                'rax': (16, 8), 'rcx': (24, 8), 'rdx': (32, 8), 'rbx': (40, 8),
+                'rsp': (48, 8), 'rbp': (56, 8), 'rsi': (64, 8), 'rdi': (72, 8),
+                'r8': (80, 8), 'r9': (88, 8), 'r10': (96, 8), 'r11': (104, 8),
+                'r12': (112, 8), 'r13': (120, 8), 'r14': (128, 8), 'r15': (136, 8),
+                'rip': (184, 8),
+            }
+            for reg_name, (offset, size) in reg_offsets.items():
+                if offset + size <= len(reg_bytes):
+                    value = int.from_bytes(reg_bytes[offset:offset+size], 'little')
+                    try:
+                        setattr(state.regs, reg_name, claripy.BVV(value, size * 8))
+                    except Exception:
+                        pass
+        elif arch.name == 'X86':
+            reg_offsets = {
+                'eax': (8, 4), 'ecx': (12, 4), 'edx': (16, 4), 'ebx': (20, 4),
+                'esp': (24, 4), 'ebp': (28, 4), 'esi': (32, 4), 'edi': (36, 4),
+                'eip': (68, 4),
+            }
+            for reg_name, (offset, size) in reg_offsets.items():
+                if offset + size <= len(reg_bytes):
+                    value = int.from_bytes(reg_bytes[offset:offset+size], 'little')
+                    try:
+                        setattr(state.regs, reg_name, claripy.BVV(value, size * 8))
+                    except Exception:
+                        pass
+
+        # Load memory pages
+        for i in range(snapshot.page_count()):
+            page = snapshot.get_page(i)
+            if page is not None:
+                addr, data, _perms = page
+                try:
+                    # Store the page data in the state
+                    state.memory.store(addr, claripy.BVV(data, len(data) * 8),
+                                       endness=arch.memory_endness,
+                                       inspect=False)
+                except Exception as e:
+                    l.debug(f"Failed to load page at 0x{addr:x}: {e}")
+
+        # Store state ID as a scratch attribute for reference
+        state.scratch.rust_state_id = snapshot.state_id
+        state.scratch.rust_parent_id = snapshot.parent_id
+
+        return state
+
+    def eval_memory(self, state_id: int, addr: int, size: int) -> Optional[bytes]:
+        """Evaluate memory from a Rust state's solver context.
+
+        This evaluates symbolic memory using the Rust solver context,
+        returning a concrete value given the state's constraints.
+
+        Args:
+            state_id: The Rust state ID.
+            addr: Memory address to evaluate.
+            size: Number of bytes to read.
+
+        Returns:
+            Concrete byte value, or None if evaluation fails.
+        """
+        result = self._rust_mgr.get_state_memory(state_id, addr, size)
+        if result is not None:
+            return bytes(result)
+        return None
+
+    def eval_register(self, state_id: int, name: str) -> Optional[int]:
+        """Evaluate a register from a Rust state.
+
+        Args:
+            state_id: The Rust state ID.
+            name: Register name (e.g., 'rax').
+
+        Returns:
+            Concrete register value, or None if not available.
+        """
+        return self._rust_mgr.get_state_register(state_id, name)
+
+    def is_satisfiable(self, state_id: int) -> bool:
+        """Check if a state's constraints are satisfiable.
+
+        Args:
+            state_id: The Rust state ID.
+
+        Returns:
+            True if satisfiable, False otherwise.
+        """
+        return self._rust_mgr.state_satisfiable(state_id)
+
+    def one_found_state(self) -> Optional["angr.SimState"]:
+        """Get one found state as an angr SimState.
+
+        This is a convenience method that returns a single found state
+        converted to an angr SimState for solution extraction.
+
+        Returns:
+            An angr SimState, or None if no found states exist.
+        """
+        found_ids = self.found
+        if found_ids:
+            return self.get_state_by_id(found_ids[0])
+        return None
 
     def stash_counts(self) -> dict:
         """Get state counts for all stashes."""

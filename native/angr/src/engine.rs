@@ -1416,6 +1416,8 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ExecutionConfig>()?;
     // Rust-first state
     m.add_class::<crate::state::PyRustSimState>()?;
+    // State snapshot for exploration export
+    m.add_class::<crate::state::ExplorationStateSnapshot>()?;
     // Exploration manager
     crate::exploration::register_exploration(m)?;
     Ok(())

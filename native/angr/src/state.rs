@@ -856,6 +856,11 @@ impl PyRustSimState {
     pub fn set_max_history(&mut self, max: usize) {
         self.inner.set_max_history(max);
     }
+
+    /// Export the complete state as a snapshot.
+    pub fn export_full(&self) -> ExplorationStateSnapshot {
+        self.inner.export_full()
+    }
 }
 
 impl PyRustSimState {
@@ -867,6 +872,137 @@ impl PyRustSimState {
     /// Get mutable access to the inner state.
     pub fn inner_mut(&mut self) -> &mut RustSimState {
         &mut self.inner
+    }
+}
+
+// =============================================================================
+// State Snapshot for Exploration Export
+// =============================================================================
+
+/// Internal memory page data (addr, data, permissions, symbolic_offsets).
+type PageData = (u64, Vec<u8>, u8, Vec<u16>);
+
+/// Complete state snapshot for exploration export.
+///
+/// This contains all information needed to reconstruct an angr SimState
+/// from a Rust execution state.
+#[pyclass(name = "ExplorationStateSnapshot")]
+pub struct ExplorationStateSnapshot {
+    /// Unique state identifier.
+    #[pyo3(get)]
+    pub state_id: u64,
+    /// Parent state ID (for fork tracking).
+    #[pyo3(get)]
+    pub parent_id: Option<u64>,
+    /// Program counter.
+    #[pyo3(get)]
+    pub pc: u64,
+    /// Architecture name.
+    #[pyo3(get)]
+    pub arch_name: String,
+    /// Raw register bytes.
+    registers_raw: Vec<u8>,
+    /// Memory pages: (addr, data, permissions, symbolic_offsets).
+    memory_pages: Vec<PageData>,
+    /// Number of constraints in the solver.
+    #[pyo3(get)]
+    pub constraint_count: usize,
+    /// Basic block history.
+    history: Vec<u64>,
+}
+
+#[pymethods]
+impl ExplorationStateSnapshot {
+    /// Get raw register bytes.
+    pub fn get_registers_raw(&self) -> Vec<u8> {
+        self.registers_raw.clone()
+    }
+
+    /// Get history (basic block addresses visited).
+    pub fn get_history(&self) -> Vec<u64> {
+        self.history.clone()
+    }
+
+    /// Get the number of memory pages.
+    pub fn page_count(&self) -> usize {
+        self.memory_pages.len()
+    }
+
+    /// Get a memory page by index.
+    /// Returns (addr, data, permissions) or None.
+    pub fn get_page(&self, index: usize) -> Option<(u64, Vec<u8>, u8)> {
+        self.memory_pages.get(index).map(|p| {
+            (p.0, p.1.clone(), p.2)
+        })
+    }
+
+    /// Get all memory page addresses.
+    pub fn page_addresses(&self) -> Vec<u64> {
+        self.memory_pages.iter().map(|p| p.0).collect()
+    }
+
+    /// Load bytes from memory at a given address.
+    /// Returns None if the address is not mapped.
+    pub fn memory_load(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+        let page_addr = addr & !0xFFF;
+        let offset = (addr & 0xFFF) as usize;
+
+        // Find the page
+        for page in &self.memory_pages {
+            if page.0 == page_addr {
+                if offset + size <= page.1.len() {
+                    return Some(page.1[offset..offset + size].to_vec());
+                }
+            }
+        }
+        None
+    }
+
+    /// Get symbolic byte offsets for a page.
+    /// Returns empty vec if page not found.
+    pub fn get_symbolic_offsets(&self, page_addr: u64) -> Vec<u16> {
+        for page in &self.memory_pages {
+            if page.0 == page_addr {
+                return page.3.clone();
+            }
+        }
+        Vec::new()
+    }
+}
+
+impl RustSimState {
+    /// Export the complete state as a snapshot.
+    ///
+    /// This creates a self-contained snapshot that can be used to
+    /// reconstruct an angr SimState.
+    pub fn export_full(&self) -> ExplorationStateSnapshot {
+        // Export registers
+        let registers_raw = self.get_registers_raw();
+
+        // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
+        let mut memory_pages: Vec<PageData> = Vec::new();
+        for (page_num, page) in self.memory.pages().iter() {
+            let page_addr = page_num << 12;
+            let data = page.load_concrete(0, crate::memory::PAGE_SIZE as u16);
+            let permissions = page.permissions().to_bits();
+            let symbolic_offsets = page.symbolic_offsets();
+
+            memory_pages.push((page_addr, data, permissions, symbolic_offsets));
+        }
+
+        // Get constraint count
+        let constraint_count = self.solver.borrow().num_constraints();
+
+        ExplorationStateSnapshot {
+            state_id: self.state_id,
+            parent_id: self.parent_id,
+            pc: self.pc,
+            arch_name: self.arch.name().to_string(),
+            registers_raw,
+            memory_pages,
+            constraint_count,
+            history: self.history.clone(),
+        }
     }
 }
 
