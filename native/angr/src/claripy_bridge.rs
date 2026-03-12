@@ -34,6 +34,17 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// Thread-local bidirectional expression cache.
+/// Maps RustBV expression hash to the original claripy AST.
+/// This allows Expression variants to be efficiently converted back to their
+/// original claripy representation, preserving AST identity across FFI boundary.
+/// Critical for constraint sync - without this, complex expressions would be
+/// reconstructed from scratch, potentially losing identity with the original AST.
+thread_local! {
+    static EXPRESSION_CACHE: RefCell<LruCache<u64, PyObject>> =
+        RefCell::new(LruCache::new(NonZeroUsize::new(10000).unwrap()));
+}
+
 /// Store a claripy AST for later retrieval.
 /// Called when converting claripy→RustBV for symbolic values.
 pub fn store_claripy_ast(symbol_id: u64, ast: PyObject) {
@@ -50,13 +61,32 @@ pub fn get_claripy_ast(symbol_id: u64) -> Option<PyObject> {
     })
 }
 
-/// Clear the AST conversion cache.
+/// Store a claripy AST in the expression cache by expression hash.
+/// Called when converting claripy→RustBV for compound expressions.
+pub fn store_expression_ast(expr_hash: u64, ast: PyObject) {
+    EXPRESSION_CACHE.with(|cache| {
+        cache.borrow_mut().put(expr_hash, ast);
+    });
+}
+
+/// Retrieve a claripy AST from the expression cache by expression hash.
+/// Called when converting RustBV→claripy to return the original AST.
+pub fn get_expression_ast(expr_hash: u64) -> Option<PyObject> {
+    EXPRESSION_CACHE.with(|cache| {
+        cache.borrow_mut().get(&expr_hash).cloned()
+    })
+}
+
+/// Clear all AST conversion caches.
 /// Call this at block boundaries or when the constraint set changes significantly.
 pub fn clear_ast_cache() {
     AST_CACHE.with(|cache| {
         cache.borrow_mut().clear();
     });
     CLARIPY_AST_CACHE.with(|cache| {
+        cache.borrow_mut().clear();
+    });
+    EXPRESSION_CACHE.with(|cache| {
         cache.borrow_mut().clear();
     });
 }
@@ -638,9 +668,15 @@ pub fn claripy_to_rustbv(
     // appear in multiple constraints.
     if use_cache {
         if let Ok(ref bv) = result {
+            // Forward cache: claripy hash → RustBV
             AST_CACHE.with(|cache| {
                 cache.borrow_mut().put(ast_hash, bv.clone());
             });
+            // Reverse cache: store original claripy AST for later retrieval
+            // This preserves AST identity when converting back to Python
+            // Use the ast_hash as a positive u64 key
+            let expr_key = ast_hash as u64;
+            store_expression_ast(expr_key, ast.clone().unbind());
         }
     }
 
@@ -659,6 +695,14 @@ pub fn rustbv_to_claripy(
 ) -> PyResult<PyObject> {
     use crate::symbolic::BVOp;
 
+    // Check cache first for Symbolic variants
+    // This preserves AST identity across FFI boundary
+    if let RustBV::Symbolic { id, .. } = bv {
+        if let Some(cached) = get_claripy_ast(*id) {
+            return Ok(cached);
+        }
+    }
+
     match bv {
         RustBV::Concrete { value, width } => {
             // Create claripy.BVV(value, width)
@@ -675,14 +719,9 @@ pub fn rustbv_to_claripy(
                     .map(|obj| obj.into())
             }
         }
-        RustBV::Symbolic { id, name, width, .. } => {
-            // Try to return the original claripy AST if we have it cached
-            // This preserves symbol identity for Python's memory model
-            if let Some(original_ast) = get_claripy_ast(*id) {
-                return Ok(original_ast);
-            }
-            // Fallback: Create new claripy.BVS(name, width)
-            // This happens for symbols created purely in Rust
+        RustBV::Symbolic { id: _, name, width, .. } => {
+            // Cache was already checked above, so this is a symbol created purely in Rust
+            // Create new claripy.BVS(name, width)
             claripy_mod
                 .call_method1("BVS", (name.as_str(), *width))
                 .map(|obj| obj.into())
@@ -843,8 +882,6 @@ pub fn rustbv_to_claripy(
                     claripy_mod.call_method1("Reverse", (&args[0],)).map(|o| o.into())
                 }
                 BVOp::Clz | BVOp::Ctz | BVOp::Popcount => {
-                    // These don't have direct claripy equivalents in all cases,
-                    // so we create a fresh symbolic variable with a descriptive name
                     let op_name = match op {
                         BVOp::Clz => "clz",
                         BVOp::Ctz => "ctz",
@@ -852,6 +889,44 @@ pub fn rustbv_to_claripy(
                         _ => unreachable!(),
                     };
                     let width = bv.width();
+
+                    // If operand is concrete, compute actual result
+                    if let Some(operand) = operands.get(0) {
+                        if let Some(concrete_val) = operand.as_u128() {
+                            let result = match op {
+                                BVOp::Clz => {
+                                    // Count leading zeros, adjusting for width
+                                    if concrete_val == 0 {
+                                        width as u128
+                                    } else {
+                                        let leading = (concrete_val as u128).leading_zeros();
+                                        // Adjust for actual bit width (128 - width)
+                                        (leading - (128 - width)) as u128
+                                    }
+                                }
+                                BVOp::Ctz => {
+                                    // Count trailing zeros
+                                    if concrete_val == 0 {
+                                        width as u128
+                                    } else {
+                                        concrete_val.trailing_zeros().min(width) as u128
+                                    }
+                                }
+                                BVOp::Popcount => {
+                                    // Count ones
+                                    concrete_val.count_ones() as u128
+                                }
+                                _ => unreachable!(),
+                            };
+                            return claripy_mod.call_method1("BVV", (result as i64, width)).map(|o| o.into());
+                        }
+                    }
+
+                    // For symbolic input, create fresh variable (limitation - no constraint relationship)
+                    log::debug!(
+                        "Creating unconstrained {} result for symbolic input (constraint relationship lost)",
+                        op_name
+                    );
                     claripy_mod
                         .call_method1("BVS", (format!("{}_result", op_name), width))
                         .map(|o| o.into())

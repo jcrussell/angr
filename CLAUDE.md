@@ -81,11 +81,11 @@ print(f'max: {ctx.max(x, signed=False)}')  # 19
 
 ## Current Test Status
 
-**Tier 3 Extended Tests:** 100% pass rate (920/920)
+**Tier 3 Extended Tests:** 100% pass rate (990/990)
 
-**angr-examples Pass Rate:** 25/39 (64%) with Rust engine
+**angr-examples Pass Rate:** 28/39 (72%) with Rust engine
 
-### Passing Examples (25 total)
+### Passing Examples (28 total)
 - All 6 CSCI-4968-MBE crackmes (crackme0x00a through crackme0x05)
 - ais3_crackme
 - android_arm_license_validation
@@ -95,9 +95,11 @@ print(f'max: {ctx.max(x, signed=False)}')  # 19
 - csgames2018
 - defcamp_r100
 - ekopartyctf2015_rev100
+- ekopartyctf2016_sokohashv2
 - fauxware
 - flareon2015_10
 - flareon2015_2
+- flareon2015_5
 - google2016_unbreakable_0
 - google2016_unbreakable_1
 - insomnihack_aeg
@@ -105,18 +107,14 @@ print(f'max: {ctx.max(x, signed=False)}')  # 19
 - securityfest_fairlight
 - strcpy_find
 - sym-write
+- whitehat_crypto400
 - whitehatvn2015_re400
 
 ### Timeouts (6 examples)
 - asisctffinals2015_fake, csaw_wyvern, ekopartyctf2016_rev250
 - grub, hackcon2016_angry-reverser, simple_heap_overflow
 
-### Remaining Failures (8 examples)
-
-**True Rust engine issues (3):**
-- flareon2015_5: Symbolic address constraint propagation differs from Python
-- ekopartyctf2016_sokohashv2: Solver returns unsat incorrectly
-- whitehat_crypto400: Exploration path differs, no solution found
+### Remaining Failures (5 examples)
 
 **Not Rust engine issues (5):**
 - cmu_binary_bomb: angr bug, same "Not enough data for store" error with Python
@@ -124,15 +122,3 @@ print(f'max: {ctx.max(x, signed=False)}')  # 19
 - 0ctf_trace: Script parsing issue
 - mma_simplehash: Old SimProcedure API (class instead of instance)
 - secuinside2016mbrainfuzz: Requires CLI argument
-
-### Known Issues Pattern
-
-The 3 true Rust engine issues share a common pattern: the Rust engine frequently
-falls back to Python due to "unmapped memory" errors when accessing symbolic
-addresses. These fallbacks may cause constraint or state divergence between
-Rust and Python execution paths.
-
-Potential root causes under investigation:
-1. State snapshot/restore during fallback may lose some constraints
-2. Rust memory model handles unmapped regions differently
-3. Address concretization strategies differ between Rust and Python

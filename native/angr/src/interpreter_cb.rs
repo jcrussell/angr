@@ -179,6 +179,25 @@ impl std::fmt::Display for CbExecutionError {
 
 impl std::error::Error for CbExecutionError {}
 
+/// Result of concretizing a symbolic jump target.
+enum ConcretizedJump {
+    /// Single concrete address (common case for deterministic jumps).
+    Single(u64),
+    /// Multiple concrete addresses (for symbolic ret/call/jmp).
+    /// Contains the list of targets and the original symbolic expression.
+    Multiple {
+        targets: Vec<u64>,
+        expr: RustBV,
+    },
+    /// Too many targets - exceeds max_symbolic_ip_targets limit.
+    /// State should be marked as unconstrained.
+    TooMany {
+        min: u64,
+        max: u64,
+        limit: usize,
+    },
+}
+
 /// Result of executing a single statement.
 enum StmtResult {
     /// Continue to next statement.
@@ -212,6 +231,30 @@ pub enum BlockResult {
     Error { message: String },
     /// Normal block end with jumpkind.
     BlockEnd { next_addr: u64, jumpkind: JumpKind },
+    /// Symbolic jump target with multiple concrete targets after concretization.
+    /// The exploration manager should fork states for each target.
+    SymbolicJumpTarget {
+        /// Concrete target addresses after concretization.
+        targets: Vec<u64>,
+        /// ID for the stored symbolic expression (for constraint addition).
+        condition_id: u64,
+        /// The symbolic expression for the jump target.
+        target_expr: RustBV,
+        /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
+        jumpkind: JumpKind,
+    },
+    /// Unconstrained jump - too many targets, exceeds limit.
+    /// The state should be moved to the "unconstrained" stash.
+    UnconstrainedJump {
+        /// Minimum possible target address.
+        min_target: u64,
+        /// Maximum possible target address.
+        max_target: u64,
+        /// The configured limit that was exceeded.
+        limit: usize,
+        /// Jump kind.
+        jumpkind: JumpKind,
+    },
 }
 
 /// A concrete memory region cached locally in Rust.
@@ -1020,6 +1063,41 @@ impl<'a> CallbackInterpreter<'a> {
                                 forks,
                             );
                         }
+                        BlockResult::SymbolicJumpTarget {
+                            targets,
+                            condition_id,
+                            target_expr: _,
+                            jumpkind,
+                        } => {
+                            let forks = self.take_deferred_forks();
+                            return (
+                                RunResult::SymbolicJumpTarget {
+                                    targets,
+                                    condition_id,
+                                    jumpkind: format!("{:?}", jumpkind),
+                                },
+                                blocks_executed,
+                                forks,
+                            );
+                        }
+                        BlockResult::UnconstrainedJump {
+                            min_target,
+                            max_target,
+                            limit,
+                            jumpkind,
+                        } => {
+                            let forks = self.take_deferred_forks();
+                            return (
+                                RunResult::UnconstrainedJump {
+                                    min_target,
+                                    max_target,
+                                    limit,
+                                    jumpkind: format!("{:?}", jumpkind),
+                                },
+                                blocks_executed,
+                                forks,
+                            );
+                        }
                     }
                 }
                 Err(e) => {
@@ -1175,10 +1253,16 @@ impl<'a> CallbackInterpreter<'a> {
                 } => {
                     // Flush pending stores before returning
                     self.flush_stores(py, callbacks)?;
-                    // Store the condition for retrieval by callers
+
+                    // Generate unique condition ID and store condition for later retrieval
+                    let cond_id = self.next_cond_id();
+                    self.stored_conditions.insert(cond_id, condition.clone());
+
+                    // Also store for callers using take_last_branch_condition
                     self.last_branch_condition = Some(condition);
+
                     return Ok(BlockResult::SymbolicBranch {
-                        condition_id: 0, // TODO: proper condition tracking
+                        condition_id: cond_id,  // Fixed: use proper unique ID
                         true_target,
                         false_target,
                     });
@@ -1344,18 +1428,22 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
                                 // If page not fetched, fall through to Python callback
                                                             }
-                            Err(MemoryError::Unmapped { .. }) => {
+                            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
                                 // Totally unmapped (not in lazy region) - fall through to Python
-                                                            }
+                                log::debug!(
+                                    "Unmapped memory store at 0x{:x} (size={}), falling back to Python",
+                                    addr, unmapped_size
+                                );
+                            }
                             Err(e) => {
-                                                                return Err(CbExecutionError::Memory(e.to_string()));
+                                return Err(CbExecutionError::Memory(e.to_string()));
                             }
                         }
                     }
                 }
 
                 // Store via callback - handle symbolic addresses
-                                if let Some(addr_concrete) = addr_val.as_u64() {
+                if let Some(addr_concrete) = addr_val.as_u64() {
                     // Invalidate prefetch cache for this address
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
 
@@ -1402,12 +1490,16 @@ impl<'a> CallbackInterpreter<'a> {
                             }
                         }
                         ConcretizationResult::Multiple(addrs) => {
+                            // Sync constraints before delegating to Python
+                            self.sync_before_callback(py, callbacks)?;
                             // Delegate to Python for conditional stores
-                                                        callbacks
+                            callbacks
                                 .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         }
                         ConcretizationResult::Strided { base, stride, count } => {
+                            // Sync constraints before delegating to Python
+                            self.sync_before_callback(py, callbacks)?;
                             // Strided access pattern - generate addresses and delegate to Python
                             let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
                             callbacks
@@ -1419,14 +1511,7 @@ impl<'a> CallbackInterpreter<'a> {
                             // which has access to angr's address concretization strategies
 
                             // Sync any pending constraints to Python before fallback
-                            if self.has_pending_constraints() {
-                                let constraints = self.export_constraints_for_python();
-                                callbacks.call_sync_constraints(py, &constraints)
-                                    .map_err(|e| CbExecutionError::Callback(format!(
-                                        "constraint sync failed: {}", e
-                                    )))?;
-                                self.clear_pending_constraints();
-                            }
+                            self.sync_before_callback(py, callbacks)?;
 
                             // Use full symbolic callback to preserve expression trees
                             if callbacks.has_memory_store_symbolic_full() {
@@ -1593,11 +1678,19 @@ impl<'a> CallbackInterpreter<'a> {
                         let data_size = ((data_val.width() + 7) / 8) as usize;
 
                         if let Some(addr_concrete) = addr_val.as_u64() {
-                            let data_bytes = bv_to_bytes(&data_val);
                             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
-                            self.pending_stores.push((addr_concrete, data_bytes));
-                            if self.pending_stores.len() >= self.max_pending_stores {
+                            // Check if data is symbolic - use symbolic store callback
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                                 self.flush_stores(py, callbacks)?;
+                                callbacks
+                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                let data_bytes = bv_to_bytes(&data_val);
+                                self.pending_stores.push((addr_concrete, data_bytes));
+                                if self.pending_stores.len() >= self.max_pending_stores {
+                                    self.flush_stores(py, callbacks)?;
+                                }
                             }
                         }
                         return Ok(StmtResult::Continue);
@@ -1613,11 +1706,19 @@ impl<'a> CallbackInterpreter<'a> {
                         let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
                         // Create ITE: if guard then new_data else current
                         let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                        let ite_bytes = bv_to_bytes(&ite_result);
                         self.load_prefetch_cache.remove(&(addr_concrete, data_size));
-                        self.pending_stores.push((addr_concrete, ite_bytes));
-                        if self.pending_stores.len() >= self.max_pending_stores {
+                        // ITE result is symbolic if guard or either operand is symbolic
+                        if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                             self.flush_stores(py, callbacks)?;
+                            callbacks
+                                .call_memory_store_symbolic_value(py, addr_concrete, &ite_result)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        } else {
+                            let ite_bytes = bv_to_bytes(&ite_result);
+                            self.pending_stores.push((addr_concrete, ite_bytes));
+                            if self.pending_stores.len() >= self.max_pending_stores {
+                                self.flush_stores(py, callbacks)?;
+                            }
                         }
                     } else {
                         // Symbolic address with symbolic guard - concretize address first
@@ -1628,11 +1729,18 @@ impl<'a> CallbackInterpreter<'a> {
                                 // Load current value and use ITE
                                 let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
                                 let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                                let ite_bytes = bv_to_bytes(&ite_result);
                                 self.flush_stores(py, callbacks)?;
-                                callbacks
-                                    .call_memory_store(py, addr_concrete, &ite_bytes)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                // ITE result is symbolic - use symbolic store callback
+                                if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                    callbacks
+                                        .call_memory_store_symbolic_value(py, addr_concrete, &ite_result)
+                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                } else {
+                                    let ite_bytes = bv_to_bytes(&ite_result);
+                                    callbacks
+                                        .call_memory_store(py, addr_concrete, &ite_bytes)
+                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                }
                             }
                             _ => {
                                 // Multiple addresses with symbolic guard - unsupported
@@ -1654,19 +1762,66 @@ impl<'a> CallbackInterpreter<'a> {
                         let data_size = ((data_val.width() + 7) / 8) as usize;
 
                         if let Some(addr_concrete) = addr_val.as_u64() {
-                            let data_bytes = bv_to_bytes(&data_val);
                             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
-                            self.pending_stores.push((addr_concrete, data_bytes));
-                            if self.pending_stores.len() >= self.max_pending_stores {
+                            // Check if data is symbolic - use symbolic store callback
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                                 self.flush_stores(py, callbacks)?;
+                                callbacks
+                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                let data_bytes = bv_to_bytes(&data_val);
+                                self.pending_stores.push((addr_concrete, data_bytes));
+                                if self.pending_stores.len() >= self.max_pending_stores {
+                                    self.flush_stores(py, callbacks)?;
+                                }
                             }
                         } else {
                             // Symbolic address with concrete guard - flush and use callback
                             self.flush_stores(py, callbacks)?;
-                            let data_bytes = bv_to_bytes(&data_val);
-                            callbacks
-                                .call_memory_store(py, 0, &data_bytes)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            // Check if data is symbolic - use symbolic store callback
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                // Concretize address first
+                                let concret_result = self.concretizer.concretize(&addr_val, self.ctx);
+                                match concret_result {
+                                    ConcretizationResult::Single(addr_concrete) => {
+                                        self.track_concretization_constraint(&addr_val, addr_concrete);
+                                        callbacks
+                                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                    }
+                                    ConcretizationResult::Multiple(addrs) => {
+                                        // Delegate to Python for conditional stores with symbolic data
+                                        if callbacks.has_memory_store_symbolic_full() {
+                                            callbacks
+                                                .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        } else {
+                                            // Fallback: store to first address
+                                            callbacks
+                                                .call_memory_store_symbolic_value(py, addrs[0], &data_val)
+                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        }
+                                    }
+                                    _ => {
+                                        // TooLarge or Failed - delegate to Python's full symbolic callback
+                                        if callbacks.has_memory_store_symbolic_full() {
+                                            callbacks
+                                                .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        } else {
+                                            return Err(CbExecutionError::Unsupported(
+                                                "symbolic store with unconcretizable address".to_string()
+                                            ));
+                                        }
+                                    }
+                                }
+                            } else {
+                                let data_bytes = bv_to_bytes(&data_val);
+                                callbacks
+                                    .call_memory_store(py, 0, &data_bytes)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
                         }
                     }
                     // Guard is false - skip the store
@@ -2037,8 +2192,12 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
                                 // If page not fetched, fall through to Python callback
                             }
-                            Err(MemoryError::Unmapped { .. }) => {
+                            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
                                 // Totally unmapped (not in lazy region) - fall through to Python
+                                log::debug!(
+                                    "Unmapped memory load at 0x{:x} (size={}), falling back to Python",
+                                    addr, unmapped_size
+                                );
                             }
                             Err(e) => {
                                 return Err(CbExecutionError::Memory(e.to_string()));
@@ -2073,11 +2232,15 @@ impl<'a> CallbackInterpreter<'a> {
                             self.load_from_callback(py, callbacks, addr_concrete, size)
                         }
                         ConcretizationResult::Multiple(addrs) => {
+                            // Sync constraints before batch load
+                            self.sync_before_callback(py, callbacks)?;
                             // Build ITE chain in Rust instead of delegating to Python
                             // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
                             self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
                         }
                         ConcretizationResult::Strided { base, stride, count } => {
+                            // Sync constraints before batch load
+                            self.sync_before_callback(py, callbacks)?;
                             // Strided access pattern - generate addresses and build ITE chain in Rust
                             let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
                             self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
@@ -2087,14 +2250,7 @@ impl<'a> CallbackInterpreter<'a> {
                             // which has access to angr's address concretization strategies
 
                             // Sync any pending constraints to Python before fallback
-                            if self.has_pending_constraints() {
-                                let constraints = self.export_constraints_for_python();
-                                callbacks.call_sync_constraints(py, &constraints)
-                                    .map_err(|e| CbExecutionError::Callback(format!(
-                                        "constraint sync failed: {}", e
-                                    )))?;
-                                self.clear_pending_constraints();
-                            }
+                            self.sync_before_callback(py, callbacks)?;
 
                             // NEW: Use full symbolic load if available - passes address AST to Python
                             // This allows Python's memory model to properly resolve the symbolic address
@@ -2121,16 +2277,25 @@ impl<'a> CallbackInterpreter<'a> {
                                 if is_claripy_ast(&ast) {
                                     match claripy_to_rustbv(py, &ast, self.ctx) {
                                         Ok(bv) => return Ok(bv),
-                                        Err(_e) => {
-                                            // Fall back to fresh symbolic value
+                                        Err(e) => {
+                                            // Log warning about conversion failure
+                                            log::warn!(
+                                                "Symbolic load at 0x{:x} (size={}): AST conversion failed: {}. \
+                                                 Creating fresh symbol - constraints may diverge!",
+                                                min, size, e
+                                            );
                                         }
                                     }
                                 }
 
-                                // Fallback: create a fresh symbolic value
+                                // Fallback: create a fresh symbolic value with marker name
+                                log::debug!(
+                                    "Creating fresh symbolic value sym_pyref_{:x}_{} for symbolic load",
+                                    min, size
+                                );
                                 return Ok(RustBV::symbolic(
                                     self.ctx,
-                                    &format!("sym_load_{:x}_{}", min, size),
+                                    &format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
                                     (size * 8) as u32,
                                 ));
                             }
@@ -2159,16 +2324,25 @@ impl<'a> CallbackInterpreter<'a> {
                                     if is_claripy_ast(&ast) {
                                         match claripy_to_rustbv(py, &ast, self.ctx) {
                                             Ok(bv) => return Ok(bv),
-                                            Err(_e) => {
-                                                // Fall back to creating a fresh symbolic value
+                                            Err(e) => {
+                                                // Log warning about conversion failure
+                                                log::warn!(
+                                                    "Symbolic load at 0x{:x} (size={}): legacy AST conversion failed: {}. \
+                                                     Creating fresh symbol - constraints may diverge!",
+                                                    min, size, e
+                                                );
                                             }
                                         }
                                     }
                                 }
-                                // Fallback: create a fresh symbolic value
+                                // Fallback: create a fresh symbolic value with marker name
+                                log::debug!(
+                                    "Creating fresh symbolic value sym_pyref_{:x}_{} for legacy symbolic load",
+                                    min, size
+                                );
                                 Ok(RustBV::symbolic(
                                     self.ctx,
-                                    &format!("sym_load_{:x}_{}", min, size),
+                                    &format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
                                     (size * 8) as u32,
                                 ))
                             } else {
@@ -2419,6 +2593,7 @@ impl<'a> CallbackInterpreter<'a> {
     }
 
     /// Evaluate the next address from an IRSB.
+    /// Used for Exit statements where we still need callbacks for complex expressions.
     fn eval_next_addr(
         &mut self,
         py: Python<'_>,
@@ -2428,34 +2603,131 @@ impl<'a> CallbackInterpreter<'a> {
         let next_val = self.eval_expr_with_callbacks(py, callbacks, &irsb.next, &irsb.tyenv)?;
         // Check for symbolic addresses FIRST - Constrained BV has concrete value but is still symbolic
         if next_val.is_symbolic() {
-            return Err(CbExecutionError::Unsupported("symbolic next address".to_string()));
+            // Try to concretize to a single value
+            match self.concretizer.concretize(&next_val, self.ctx) {
+                ConcretizationResult::Single(addr) => {
+                    // Add constraint that target == addr
+                    let concrete = RustBV::concrete(addr as u128, next_val.width());
+                    let constraint = next_val.eq(&concrete, self.ctx);
+                    self.ctx.assume_true(&constraint);
+                    return Ok(addr);
+                }
+                _ => {
+                    // For Exit statements mid-block, we can't easily fork
+                    // Return error to fall back to Python handling
+                    return Err(CbExecutionError::Unsupported("symbolic next address".to_string()));
+                }
+            }
         }
         next_val.as_u64().ok_or_else(|| {
             CbExecutionError::Unsupported("non-concrete next address".to_string())
         })
     }
 
-    /// Handle the default exit (end of block).
-    fn handle_default_exit(&mut self, irsb: &IRSB) -> Result<BlockResult, CbExecutionError> {
-        // For default exit, we need to evaluate next without callbacks
-        // since we already have temps set up
+    /// Evaluate and concretize the jump target for the default exit.
+    ///
+    /// This method handles symbolic jump targets (e.g., ret instructions with symbolic
+    /// return addresses) by concretizing them to a bounded set of concrete values.
+    fn eval_next_addr_concretized(
+        &mut self,
+        irsb: &IRSB,
+    ) -> Result<ConcretizedJump, CbExecutionError> {
         let next_val = self.eval_expr_simple(&irsb.next, &irsb.tyenv)?;
 
-        // Check for symbolic addresses FIRST, before extracting concrete value.
-        // A Constrained BV has a concrete value stored (from solver evaluation),
-        // but it's still symbolic and should not be used as a jump target directly.
-        if next_val.is_symbolic() {
-            return Err(CbExecutionError::Unsupported(
-                "symbolic next address".to_string(),
-            ));
+        // Fast path: concrete address
+        if let Some(addr) = next_val.as_u64() {
+            if !next_val.is_symbolic() {
+                return Ok(ConcretizedJump::Single(addr));
+            }
         }
 
-        if let Some(addr) = next_val.as_u64() {
-            Ok(self.handle_exit(addr, irsb.jumpkind))
-        } else {
-            Err(CbExecutionError::Unsupported(
-                "non-concrete next address".to_string(),
-            ))
+        // Symbolic address - use AddressConcretizer
+        match self.concretizer.concretize(&next_val, self.ctx) {
+            ConcretizationResult::Single(addr) => {
+                // Add constraint that target == addr
+                let concrete = RustBV::concrete(addr as u128, next_val.width());
+                let constraint = next_val.eq(&concrete, self.ctx);
+                self.ctx.assume_true(&constraint);
+                Ok(ConcretizedJump::Single(addr))
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // Check if we exceed max_symbolic_ip_targets
+                if addrs.len() > self.config.max_symbolic_ip_targets {
+                    let min = *addrs.first().unwrap_or(&0);
+                    let max = *addrs.last().unwrap_or(&0);
+                    Ok(ConcretizedJump::TooMany {
+                        min,
+                        max,
+                        limit: self.config.max_symbolic_ip_targets,
+                    })
+                } else {
+                    Ok(ConcretizedJump::Multiple {
+                        targets: addrs,
+                        expr: next_val,
+                    })
+                }
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                // Convert strided to explicit list, but check limit first
+                let num_targets = count as usize;
+                if num_targets > self.config.max_symbolic_ip_targets {
+                    let max = base + (count - 1) * stride;
+                    Ok(ConcretizedJump::TooMany {
+                        min: base,
+                        max,
+                        limit: self.config.max_symbolic_ip_targets,
+                    })
+                } else {
+                    let targets: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                    Ok(ConcretizedJump::Multiple {
+                        targets,
+                        expr: next_val,
+                    })
+                }
+            }
+            ConcretizationResult::TooLarge { min, max, limit: _ } => {
+                Ok(ConcretizedJump::TooMany {
+                    min,
+                    max,
+                    limit: self.config.max_symbolic_ip_targets,
+                })
+            }
+            ConcretizationResult::Failed(msg) => {
+                Err(CbExecutionError::Unsupported(format!(
+                    "jump target concretization failed: {}",
+                    msg
+                )))
+            }
+        }
+    }
+
+    /// Handle the default exit (end of block).
+    fn handle_default_exit(&mut self, irsb: &IRSB) -> Result<BlockResult, CbExecutionError> {
+        match self.eval_next_addr_concretized(irsb)? {
+            ConcretizedJump::Single(addr) => {
+                Ok(self.handle_exit(addr, irsb.jumpkind))
+            }
+            ConcretizedJump::Multiple { targets, expr } => {
+                // Store the expression for constraint addition later
+                let condition_id = self.next_condition_id;
+                self.next_condition_id += 1;
+                self.stored_conditions.insert(condition_id, expr.clone());
+
+                Ok(BlockResult::SymbolicJumpTarget {
+                    targets,
+                    condition_id,
+                    target_expr: expr,
+                    jumpkind: irsb.jumpkind,
+                })
+            }
+            ConcretizedJump::TooMany { min, max, limit } => {
+                Ok(BlockResult::UnconstrainedJump {
+                    min_target: min,
+                    max_target: max,
+                    limit,
+                    jumpkind: irsb.jumpkind,
+                })
+            }
         }
     }
 
@@ -2505,15 +2777,23 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Get the syscall number from the appropriate register.
     fn get_syscall_num(&self) -> u64 {
-        // For AMD64, syscall number is in RAX (offset 16)
-        // For x86, syscall number is in EAX (offset 8)
-        // TODO: make this architecture-aware
-        let offset = match self.arch {
-            VexArch::AMD64 => 16,  // RAX
-            VexArch::X86 => 8,     // EAX
-            _ => 0,  // TODO: other architectures
+        // Syscall number register varies by architecture:
+        // - AMD64: RAX (offset 16, 8 bytes)
+        // - X86: EAX (offset 8, 4 bytes)
+        // - ARM: R7 (offset 36, 4 bytes) - EABI syscall convention
+        // - ARM64: X8 (offset 80, 8 bytes)
+        // - MIPS32: v0/$2 (offset 16, 4 bytes)
+        // - MIPS64: v0/$2 (offset 32, 8 bytes)
+        let (offset, size) = match self.arch {
+            VexArch::AMD64 => (16, 8),   // RAX
+            VexArch::X86 => (8, 4),      // EAX
+            VexArch::ARM => (36, 4),     // R7 (EABI)
+            VexArch::ARM64 => (80, 8),   // X8
+            VexArch::MIPS32 => (16, 4),  // v0/$2
+            VexArch::MIPS64 => (32, 8),  // v0/$2
+            _ => (0, 8),                 // Default fallback
         };
-        let syscall_bv = self.registers.get(offset, 8, self.ctx);
+        let syscall_bv = self.registers.get(offset, size, self.ctx);
         syscall_bv.as_u64().unwrap_or(0)
     }
 
@@ -3147,6 +3427,29 @@ impl<'a> CallbackInterpreter<'a> {
             .iter()
             .map(|c| (c.description.clone(), c.expression.width(), c.concrete_value, c.handle_id))
             .collect()
+    }
+
+    /// Sync pending constraints to Python before making a callback.
+    ///
+    /// This ensures that Python's claripy solver has all the constraints
+    /// that Rust has accumulated, which is critical for operations that
+    /// depend on solver state (e.g., symbolic memory operations, SimProcedures).
+    ///
+    /// Call this before any Python callback that may need solver context.
+    pub fn sync_before_callback(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+    ) -> Result<(), CbExecutionError> {
+        if self.has_pending_constraints() {
+            let constraints = self.export_constraints_for_python();
+            callbacks.call_sync_constraints(py, &constraints)
+                .map_err(|e| CbExecutionError::Callback(format!(
+                    "constraint sync failed: {}", e
+                )))?;
+            self.clear_pending_constraints();
+        }
+        Ok(())
     }
 }
 

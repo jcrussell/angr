@@ -19,11 +19,13 @@ use pyo3::types::PyDict;
 
 use crate::arch::{arch_from_name, default_cc_for_arch, CallingConvention};
 use crate::callbacks::{ExecutionConfig, PythonCallbacks, RunResult, DeferredFork};
+use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter_cb::CallbackInterpreter;
 use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcedureError};
+use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::{RustBV, RustSymbolTable, SymContext};
 use crate::vex::{VexArch, IRSB};
 
 /// Reason for returning to Python.
@@ -217,7 +219,20 @@ impl ExplorationEvent {
 /// State held during a Python callback.
 struct PendingCallback {
     state: RustSimState,
+    /// Clean snapshot of state BEFORE any callback modifications.
+    /// Used for creating deferred forks - they diverged before the callback,
+    /// so they should not inherit callback constraints.
+    pre_callback_snapshot: Option<RustSimState>,
     reason: CallbackReason,
+    /// Jumpkind that led to this callback (e.g., "Ijk_Call", "Ijk_Boring").
+    jumpkind: Option<String>,
+    /// Forked solver context for Python callbacks.
+    solver_ctx: Option<RustSolverContext>,
+    /// Deferred forks accumulated before the callback.
+    /// These should be processed when the callback returns.
+    deferred_forks: Vec<DeferredFork>,
+    /// Stored conditions for deferred fork handling.
+    stored_conditions: HashMap<u64, RustBV>,
 }
 
 /// Statistics for native procedure execution.
@@ -229,6 +244,8 @@ struct NativeProcStats {
     python_fallbacks: u64,
     /// Per-procedure call counts.
     call_counts: HashMap<String, u64>,
+    /// Number of constraint sync failures.
+    constraint_sync_failures: u64,
 }
 
 impl Default for NativeProcStats {
@@ -237,6 +254,7 @@ impl Default for NativeProcStats {
             native_calls: 0,
             python_fallbacks: 0,
             call_counts: HashMap::new(),
+            constraint_sync_failures: 0,
         }
     }
 }
@@ -289,6 +307,10 @@ pub struct RustExplorationManager {
     calling_convention: Box<dyn CallingConvention>,
     /// Statistics for native procedure executions.
     native_proc_stats: NativeProcStats,
+    /// Address to skip hook check for (used for zero-length hooks).
+    /// This prevents infinite loops when a hook with length=0 runs and
+    /// returns to the same address.
+    skip_hook_addr: Option<u64>,
 }
 
 #[pymethods]
@@ -309,6 +331,7 @@ impl RustExplorationManager {
         stashes.insert("avoid".to_string(), VecDeque::new());
         stashes.insert("deadended".to_string(), VecDeque::new());
         stashes.insert("errored".to_string(), VecDeque::new());
+        stashes.insert("unconstrained".to_string(), VecDeque::new());
 
         Ok(RustExplorationManager {
             arch_name: arch.to_string(),
@@ -332,6 +355,7 @@ impl RustExplorationManager {
             native_procedures: NativeProcedureRegistry::new(),
             calling_convention: default_cc_for_arch(arch),
             native_proc_stats: NativeProcStats::default(),
+            skip_hook_addr: None,
         })
     }
 
@@ -605,24 +629,18 @@ impl RustExplorationManager {
             }
 
             // Check hooks (SimProcedures)
-            if self.hooks.contains(&pc) {
+            // Skip if this address was marked for skip (zero-length hook case)
+            let should_skip_hook = self.skip_hook_addr == Some(pc);
+            if should_skip_hook {
+                self.skip_hook_addr = None; // Clear after use
+                log::debug!("Skipping hook at 0x{:x} (zero-length hook)", pc);
+            }
+            if self.hooks.contains(&pc) && !should_skip_hook {
                 // Check if this is a registered SimProcedure
                 if let Some((name, num_args, no_return)) = self.simprocedures.get(&pc).cloned() {
                     // Try native procedure first
                     if let Some(native_proc) = self.native_procedures.get(&name) {
-                        // Extract arguments using calling convention
-                        let ctx = state.solver().borrow();
-                        let args = self.calling_convention.extract_args(
-                            &crate::arch::RegisterFile::new(
-                                crate::arch::arch_from_name(&self.arch_name).unwrap()
-                            ),
-                            None, // TODO: Pass memory for stack args
-                            &ctx,
-                            num_args,
-                        );
-                        drop(ctx);
-
-                        // Get args from state registers directly
+                        // Extract arguments from state registers and stack
                         let args = self.extract_procedure_args(&state, num_args);
 
                         // Try to execute native procedure
@@ -695,14 +713,28 @@ impl RustExplorationManager {
                     let state_id = state.state_id();
                     let return_addr = self.get_return_addr(&state).unwrap_or(0);
 
+                    // Save pre-callback snapshot for deferred forks
+                    // Deferred forks diverged BEFORE this callback, so they should
+                    // not inherit any constraints added by the callback
+                    let pre_callback_snapshot = Some(state.fork());
+
+                    // Fork solver context for Python callback use
+                    let solver_ref = state.solver();
+                    let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
+
                     self.pending_callback = Some(PendingCallback {
                         state,
+                        pre_callback_snapshot,
                         reason: CallbackReason::SimProcedure {
                             addr: pc,
                             name: name.clone(),
                             num_args,
                             return_addr,
                         },
+                        jumpkind: Some("Ijk_Call".to_string()),
+                        solver_ctx: Some(forked_ctx),
+                        deferred_forks: Vec::new(),
+                        stored_conditions: HashMap::new(),
                     });
 
                     return Ok(ExplorationEvent::need_simprocedure(
@@ -718,8 +750,9 @@ impl RustExplorationManager {
                 }
             }
 
-            // Step the state
-            match self.step_state(py, &callbacks, state) {
+            // Step the state, passing the skip_hook_addr if we just skipped
+            let skip_addr_for_step = if should_skip_hook { Some(pc) } else { None };
+            match self.step_state_with_skip(py, &callbacks, state, skip_addr_for_step) {
                 Ok(successors) => {
                     // Add successors back to active stash
                     let active = self.stashes
@@ -790,6 +823,14 @@ impl RustExplorationManager {
                         .or_insert_with(VecDeque::new)
                         .push_back(state);
                 }
+                Err(StepError::Unconstrained(state)) => {
+                    // State has too many symbolic jump targets - move to unconstrained stash
+                    log::debug!("State {} moved to unconstrained stash", state.state_id());
+                    self.stashes
+                        .entry("unconstrained".to_string())
+                        .or_insert_with(VecDeque::new)
+                        .push_back(state);
+                }
             }
 
             self.steps += 1;
@@ -807,14 +848,23 @@ impl RustExplorationManager {
     ///
     /// This is called from Python after executing a SimProcedure.
     /// The state changes (registers, memory, new PC) are applied.
-    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None))]
+    ///
+    /// Args:
+    ///     new_pc: The new program counter after the SimProcedure.
+    ///     register_changes: List of (offset, size, data) tuples for register changes.
+    ///     memory_changes: List of (addr, data) tuples for memory changes.
+    ///     new_constraints: Optional list of claripy ASTs to add as constraints.
+    ///         These are constraints added by the SimProcedure (e.g., strcmp results).
+    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
     pub fn resume_after_simprocedure(
         &mut self,
+        py: Python<'_>,
         new_pc: u64,
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
+        new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
-        let mut pending = self.pending_callback.take().ok_or_else(|| {
+        let pending = self.pending_callback.take().ok_or_else(|| {
             PyRuntimeError::new_err("no pending callback state")
         })?;
 
@@ -830,28 +880,97 @@ impl RustExplorationManager {
             changes.memory_writes = mem_changes;
         }
 
-        pending.state.apply_changes(&changes);
-        pending.state.set_pc(new_pc);
+        let mut state = pending.state;
+        state.apply_changes(&changes);
+        state.set_pc(new_pc);
 
-        // Add state back to active stash
-        self.stashes
+        // Sync constraints from Python back to Rust
+        // This ensures constraints added by SimProcedures (e.g., strcmp return conditions)
+        // are properly reflected in the Rust solver state
+        if let Some(constraints) = new_constraints {
+            self.sync_constraints_from_python(py, &state, constraints)?;
+        }
+
+        // Validate deferred forks reference valid conditions before processing
+        let mut missing_conditions = 0usize;
+        for fork in &pending.deferred_forks {
+            if !pending.stored_conditions.contains_key(&fork.condition_id) {
+                missing_conditions += 1;
+                log::warn!(
+                    "Deferred fork at 0x{:x} references missing condition_id={}",
+                    fork.branch_addr, fork.condition_id
+                );
+            }
+        }
+        if missing_conditions > 0 {
+            log::warn!(
+                "{} of {} deferred forks have missing conditions - will be skipped",
+                missing_conditions, pending.deferred_forks.len()
+            );
+        }
+
+        // Process deferred forks that were stored during the step
+        // These represent unexplored branches that should be added to active
+        //
+        // CRITICAL: Deferred forks diverged BEFORE the callback, so they should
+        // NOT inherit callback constraints. Use pre_callback_snapshot as fork base.
+        let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| state.fork());
+
+        let mut successors = vec![state];  // Post-callback state first
+        for fork in pending.deferred_forks {
+            // Look up the condition for this deferred fork
+            if let Some(condition) = pending.stored_conditions.get(&fork.condition_id) {
+                // Fork from CLEAN pre-callback snapshot, not from post-callback state
+                // This ensures deferred forks don't inherit callback constraints
+                let mut forked = if fork.path_taken {
+                    // Took the true branch, so fork needs false constraint
+                    let mut f = fork_base.fork_false(condition);
+                    f.set_pc(fork.unexplored_target);
+                    f
+                } else {
+                    // Took the false branch, so fork needs true constraint
+                    let mut f = fork_base.fork_true(condition);
+                    f.set_pc(fork.unexplored_target);
+                    f
+                };
+
+                // DO NOT sync callback constraints to forked state!
+                // These paths diverged before the callback occurred.
+                // Adding callback constraints would pollute unexplored branches.
+
+                successors.push(forked);
+            } else {
+                log::warn!(
+                    "Missing condition for deferred fork at 0x{:x} (condition_id={}), skipping",
+                    fork.branch_addr,
+                    fork.condition_id
+                );
+            }
+        }
+
+        // Add all successors (original state + forks) to active stash
+        let active = self.stashes
             .entry("active".to_string())
-            .or_insert_with(VecDeque::new)
-            .push_back(pending.state);
+            .or_insert_with(VecDeque::new);
+        for successor in successors {
+            active.push_back(successor);
+        }
 
         Ok(())
     }
 
     /// Resume after a syscall callback.
-    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None))]
+    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
     pub fn resume_after_syscall(
         &mut self,
+        py: Python<'_>,
         new_pc: u64,
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
+        new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
         // Same as resume_after_simprocedure for now
-        self.resume_after_simprocedure(new_pc, register_changes, memory_changes)
+        self.resume_after_simprocedure(py, new_pc, register_changes, memory_changes, new_constraints)
     }
 
     /// Get register value from pending state.
@@ -860,6 +979,30 @@ impl RustExplorationManager {
             pending.state.get_register(name)
                 .map(|bv| bv.as_u128())
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Get history (BBL addresses) from pending callback state.
+    ///
+    /// This is used by Python to initialize history on callback states,
+    /// preventing IndexError when hooks access `state.history.recent_bbl_addrs[-1]`.
+    pub fn get_pending_history(&self) -> PyResult<Vec<u64>> {
+        if let Some(ref pending) = self.pending_callback {
+            Ok(pending.state.history().to_vec())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Get jumpkind for pending callback.
+    ///
+    /// Returns the jumpkind that led to this callback (e.g., "Ijk_Call", "Ijk_Boring").
+    /// This is used by Python to properly initialize callstack management.
+    pub fn get_pending_jumpkind(&self) -> PyResult<String> {
+        if let Some(ref pending) = self.pending_callback {
+            Ok(pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))
         } else {
             Err(PyRuntimeError::new_err("no pending callback state"))
         }
@@ -875,6 +1018,64 @@ impl RustExplorationManager {
                 Ok(())
             } else {
                 Err(PyValueError::new_err(format!("failed to set register: {}", name)))
+            }
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Set register to a symbolic value from a handle ID.
+    ///
+    /// Used for syncing symbolic return values from SimProcedures.
+    /// The handle_id should reference a RustBV in the solver's symbol table.
+    pub fn set_pending_register_symbolic(&mut self, name: &str, handle_id: u64) -> PyResult<()> {
+        if let Some(ref mut pending) = self.pending_callback {
+            // Look up the RustBV from the symbol table
+            let bv = if let Some(ref solver) = pending.solver_ctx {
+                solver.symbol_table().get(handle_id)
+                    .ok_or_else(|| PyValueError::new_err(format!(
+                        "invalid handle id: {}", handle_id
+                    )))?
+            } else {
+                return Err(PyRuntimeError::new_err("no solver context in pending state"));
+            };
+
+            if pending.state.set_register(name, bv) {
+                Ok(())
+            } else {
+                Err(PyValueError::new_err(format!("failed to set register: {}", name)))
+            }
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Set a symbolic register value in the pending state from claripy AST.
+    ///
+    /// This allows direct sync of symbolic register values from Python callbacks.
+    /// The claripy AST is converted to RustBV and stored in the pending state.
+    pub fn set_pending_register_symbolic_ast(
+        &mut self,
+        py: Python<'_>,
+        reg_name: &str,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        if let Some(ref mut pending) = self.pending_callback {
+            let solver_ref = pending.state.solver();
+            let sym_ctx = solver_ref.borrow();
+            let ctx_ref: &SymContext = &*sym_ctx;
+
+            // Convert claripy AST to RustBV
+            let bv = claripy_to_rustbv(py, ast, ctx_ref)
+                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
+
+            drop(sym_ctx);
+
+            if pending.state.set_register(reg_name, bv) {
+                log::debug!("Set symbolic register {} from claripy AST", reg_name);
+                Ok(())
+            } else {
+                Err(PyValueError::new_err(format!("failed to set register: {}", reg_name)))
             }
         } else {
             Err(PyRuntimeError::new_err("no pending callback state"))
@@ -911,6 +1112,196 @@ impl RustExplorationManager {
         } else {
             Err(PyRuntimeError::new_err("no pending callback state"))
         }
+    }
+
+    /// Get dirty page addresses from pending state.
+    ///
+    /// This returns the list of page-aligned addresses that have been
+    /// modified in the pending callback state.
+    pub fn get_pending_dirty_pages(&self) -> PyResult<Vec<u64>> {
+        if let Some(ref pending) = self.pending_callback {
+            Ok(pending.state.get_dirty_pages())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Get dirty register offsets from pending state.
+    pub fn get_pending_dirty_registers(&self) -> PyResult<Vec<u32>> {
+        if let Some(ref pending) = self.pending_callback {
+            Ok(pending.state.get_dirty_registers())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Clear dirty tracking in pending state.
+    pub fn clear_pending_dirty_tracking(&mut self) -> PyResult<()> {
+        if let Some(ref mut pending) = self.pending_callback {
+            pending.state.clear_dirty_pages();
+            pending.state.clear_dirty_registers();
+            Ok(())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Export pending constraints as a list of claripy ASTs.
+    ///
+    /// Returns constraints that can be added to Python state.solver.
+    /// This exports stored branch conditions accumulated during Rust execution.
+    pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        if let Some(ref pending) = self.pending_callback {
+            let mut result = Vec::new();
+
+            // Import claripy for AST conversion
+            let claripy_mod = py.import("claripy")?;
+
+            // Export stored branch conditions as claripy ASTs
+            for (_condition_id, rustbv) in &pending.stored_conditions {
+                match rustbv_to_claripy(py, rustbv, &claripy_mod) {
+                    Ok(ast) => {
+                        result.push(ast);
+                    }
+                    Err(e) => {
+                        log::debug!("Could not convert stored condition to claripy: {}", e);
+                    }
+                }
+            }
+
+            log::debug!("Exported {} pending constraints", result.len());
+            Ok(result)
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Get handle IDs that are actively referenced in the pending state.
+    ///
+    /// Returns handle IDs used in stored conditions and deferred forks.
+    /// These should not be evicted from the AST handle cache.
+    pub fn get_active_handle_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        if let Some(ref pending) = self.pending_callback {
+            // Add condition IDs from stored_conditions
+            for (id, _) in &pending.stored_conditions {
+                ids.push(*id);
+            }
+            // Add condition IDs from deferred forks
+            for fork in &pending.deferred_forks {
+                ids.push(fork.condition_id);
+            }
+        }
+        ids
+    }
+
+    /// Export the pending state as a full snapshot.
+    ///
+    /// This allows Python to get a complete snapshot of the pending state
+    /// including all registers, memory pages, and metadata.
+    pub fn export_pending_state(&self) -> PyResult<crate::state::ExplorationStateSnapshot> {
+        if let Some(ref pending) = self.pending_callback {
+            Ok(pending.state.export_full())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Fork the pending state's solver context for Python callbacks.
+    ///
+    /// This creates a new RustSolverContext that inherits all constraints
+    /// accumulated during Rust exploration. The forked context can be
+    /// attached to the Python callback state, ensuring SimProcedures
+    /// see the full constraint context.
+    ///
+    /// This is critical for proper constraint propagation: without it,
+    /// callbacks would create fresh solver contexts without parent
+    /// constraints, leading to incorrect symbolic evaluation.
+    pub fn fork_pending_solver(&self) -> PyResult<RustSolverContext> {
+        if let Some(ref pending) = self.pending_callback {
+            // Fork the pending state's solver context
+            let solver_ref = pending.state.solver();
+            let forked_ctx = solver_ref.borrow().fork();
+            // Create a new RustSolverContext wrapping the forked SymContext
+            Ok(RustSolverContext::from_sym_context(forked_ctx))
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Add constraints from Python callbacks back to the pending state.
+    ///
+    /// This is called after a SimProcedure executes to sync any new
+    /// constraints added during the callback back to the Rust solver.
+    /// This ensures bidirectional constraint flow between Rust and Python.
+    ///
+    /// Args:
+    ///     constraints: List of claripy AST constraints to add
+    pub fn add_constraints_to_pending(
+        &mut self,
+        py: Python<'_>,
+        constraints: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<()> {
+        use pyo3::types::PyListMethods;
+
+        if let Some(ref mut pending) = self.pending_callback {
+            let solver_ref = pending.state.solver();
+            let sym_ctx = solver_ref.borrow();
+            let ctx_ref: &SymContext = &*sym_ctx;
+
+            let len = constraints.len();
+            for i in 0..len {
+                // Use get_item with usize index
+                if let Ok(constraint) = constraints.get_item(i) {
+                    // Convert claripy AST to RustBV
+                    if let Ok(bv) = claripy_to_rustbv(py, &constraint, ctx_ref) {
+                        // Add constraint to solver
+                        #[cfg(feature = "vex-engine-z3")]
+                        {
+                            if bv.width() == 1 {
+                                sym_ctx.assume_true(&bv);
+                            } else {
+                                // For wider values, interpret as "value != 0"
+                                let zero = RustBV::concrete(0, bv.width());
+                                let neq = bv.ne(&zero, ctx_ref);
+                                sym_ctx.assume_true(&neq);
+                            }
+                        }
+                    } else {
+                        log::debug!("Could not convert constraint {} from Python", i);
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Get the number of constraints in the pending state's solver.
+    pub fn pending_constraint_count(&self) -> PyResult<usize> {
+        if let Some(ref pending) = self.pending_callback {
+            let solver_ref = pending.state.solver();
+            Ok(solver_ref.borrow().num_constraints())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Set address to skip hook check for on next step.
+    ///
+    /// This is used to prevent infinite loops with zero-length hooks.
+    /// When a hook with length=0 runs, it returns to the same address.
+    /// Without this skip mechanism, the hook would trigger again immediately.
+    ///
+    /// The skip is automatically cleared after one step.
+    pub fn set_skip_hook_addr(&mut self, addr: u64) {
+        self.skip_hook_addr = Some(addr);
+    }
+
+    /// Clear the skip_hook_addr flag.
+    pub fn clear_skip_hook_addr(&mut self) {
+        self.skip_hook_addr = None;
     }
 
     /// Get errors encountered during exploration.
@@ -1155,6 +1546,95 @@ impl RustExplorationManager {
 }
 
 impl RustExplorationManager {
+    /// Sync constraints from Python callbacks back to the Rust state's solver.
+    ///
+    /// This is the critical piece for bidirectional constraint flow:
+    /// - Rust syncs constraints TO Python before callbacks (via sync_before_callback)
+    /// - Python SimProcedures may add new constraints (e.g., strcmp conditions)
+    /// - This method syncs those new constraints BACK to Rust after the callback
+    ///
+    /// Without this, constraints added by SimProcedures would be lost when
+    /// Rust resumes execution, leading to incorrect symbolic evaluation.
+    fn sync_constraints_from_python(
+        &self,
+        py: Python<'_>,
+        state: &RustSimState,
+        constraints: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<()> {
+        use pyo3::types::PyListMethods;
+
+        let solver_ref = state.solver();
+        let sym_ctx = solver_ref.borrow();
+        let ctx_ref: &SymContext = &*sym_ctx;
+
+        let mut success_count = 0usize;
+        let mut failed_count = 0usize;
+
+        // Extract list items - we need to convert each to RustBV
+        let len = constraints.len();
+        for i in 0..len {
+            // Use get_item with usize index
+            if let Ok(constraint) = constraints.get_item(i) {
+                // Convert claripy AST to RustBV
+                match claripy_to_rustbv(py, &constraint, ctx_ref) {
+                    Ok(bv) => {
+                        // Add constraint to solver
+                        #[cfg(feature = "vex-engine-z3")]
+                        {
+                            if bv.width() == 1 {
+                                sym_ctx.assume_true(&bv);
+                                success_count += 1;
+                            } else {
+                                // For wider values, interpret as "value != 0"
+                                let zero = RustBV::concrete(0, bv.width());
+                                let neq = bv.ne(&zero, ctx_ref);
+                                sym_ctx.assume_true(&neq);
+                                success_count += 1;
+                            }
+                        }
+                        #[cfg(not(feature = "vex-engine-z3"))]
+                        {
+                            // Without Z3, constraints are tracked but not solved
+                            success_count += 1;
+                        }
+                    }
+                    Err(e) => {
+                        failed_count += 1;
+                        log::warn!(
+                            "Constraint {} conversion failed: {}. Solver state may diverge.",
+                            i, e
+                        );
+                    }
+                }
+            }
+        }
+
+        if failed_count > 0 {
+            log::warn!(
+                "sync_constraints_from_python: {}/{} constraints failed to convert",
+                failed_count, failed_count + success_count
+            );
+        }
+
+        if success_count > 0 {
+            log::debug!("Synced {} constraints from Python to Rust", success_count);
+
+            // Check satisfiability after syncing constraints
+            #[cfg(feature = "vex-engine-z3")]
+            {
+                if !sym_ctx.is_sat() {
+                    log::warn!(
+                        "Constraints became UNSAT after syncing {} from Python. \
+                         State should be pruned.",
+                        success_count
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Extract procedure arguments from state registers.
     fn extract_procedure_args(&self, state: &RustSimState, num_args: usize) -> Vec<RustBV> {
         let arg_regs = self.calling_convention.arg_registers();
@@ -1207,6 +1687,8 @@ enum StepError {
     Deadended(RustSimState),
     /// Error during execution.
     Error(RustSimState, String),
+    /// Unconstrained state - too many symbolic jump targets.
+    Unconstrained(RustSimState),
 }
 
 impl RustExplorationManager {
@@ -1215,7 +1697,22 @@ impl RustExplorationManager {
         &mut self,
         py: Python<'_>,
         callbacks: &PythonCallbacks,
+        state: RustSimState,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        self.step_state_with_skip(py, callbacks, state, None)
+    }
+
+    /// Step a state, optionally skipping a hook address.
+    ///
+    /// The skip_addr parameter is used for zero-length hooks: after the hook
+    /// runs but returns to the same address, we skip adding that hook to the
+    /// interpreter so the underlying instruction can execute.
+    fn step_state_with_skip(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
         mut state: RustSimState,
+        skip_addr: Option<u64>,
     ) -> Result<Vec<RustSimState>, StepError> {
         // Get state information before borrowing the solver
         let reg_bytes = state.get_registers_raw();
@@ -1239,14 +1736,18 @@ impl RustExplorationManager {
             interp.registers.copy_from_bytes(&reg_bytes);
             interp.set_pc(initial_pc);
 
-            // Set up hooks
+            // Set up hooks, skipping the one we just processed (for zero-length hooks)
             for &addr in &self.hooks {
-                interp.add_hook(addr);
+                if Some(addr) != skip_addr {
+                    interp.add_hook(addr);
+                }
             }
 
-            // Register SimProcedures
+            // Register SimProcedures, also skipping the one we just processed
             for (addr, (name, num_args, no_return)) in &self.simprocedures {
-                interp.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
+                if Some(*addr) != skip_addr {
+                    interp.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
+                }
             }
 
             // Copy binary regions for code
@@ -1307,10 +1808,15 @@ impl RustExplorationManager {
                         };
                         successors.push(forked);
                     } else {
-                        // Fallback: no condition available, fork without constraint
-                        let mut forked = successors[0].fork();
-                        forked.set_pc(fork.unexplored_target);
-                        successors.push(forked);
+                        // No condition available - skip this fork rather than create unconstrained state
+                        // Creating an unconstrained fork leads to too many possible values for
+                        // symbolic expressions, causing the state to end up in the unconstrained stash
+                        log::warn!(
+                            "Missing condition for deferred fork at 0x{:x} (condition_id={}), skipping",
+                            fork.branch_addr,
+                            fork.condition_id
+                        );
+                        continue;
                     }
                 }
 
@@ -1318,34 +1824,64 @@ impl RustExplorationManager {
             }
             RunResult::Hook { addr } => {
                 state.set_pc(addr);
-                // Return to Python for hook
+                // Save pre-callback snapshot for deferred forks
+                let pre_callback_snapshot = Some(state.fork());
+                // Fork solver context for Python callback use
+                let solver_ref = state.solver();
+                let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
+                // Return to Python for hook - store deferred forks for later processing
                 Err(StepError::NeedCallback(PendingCallback {
                     state,
+                    pre_callback_snapshot,
                     reason: CallbackReason::SimProcedure {
                         addr,
                         name: "unknown".to_string(),
                         num_args: 0,
                         return_addr: 0,
                     },
+                    jumpkind: Some("Ijk_Boring".to_string()),
+                    solver_ctx: Some(forked_ctx),
+                    deferred_forks,
+                    stored_conditions,
                 }))
             }
             RunResult::SimProcedure { addr, name, num_args, return_addr } => {
                 state.set_pc(addr);
+                // Save pre-callback snapshot for deferred forks
+                let pre_callback_snapshot = Some(state.fork());
+                // Fork solver context for Python callback use
+                let solver_ref = state.solver();
+                let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
                 Err(StepError::NeedCallback(PendingCallback {
                     state,
+                    pre_callback_snapshot,
                     reason: CallbackReason::SimProcedure {
                         addr,
                         name,
                         num_args,
                         return_addr,
                     },
+                    jumpkind: Some("Ijk_Call".to_string()),
+                    solver_ctx: Some(forked_ctx),
+                    deferred_forks,
+                    stored_conditions,
                 }))
             }
             RunResult::Syscall { num, pc } => {
                 state.set_pc(pc);
+                // Save pre-callback snapshot for deferred forks
+                let pre_callback_snapshot = Some(state.fork());
+                // Fork solver context for Python callback use
+                let solver_ref = state.solver();
+                let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
                 Err(StepError::NeedCallback(PendingCallback {
                     state,
+                    pre_callback_snapshot,
                     reason: CallbackReason::Syscall { num },
+                    jumpkind: Some("Ijk_Sys_syscall".to_string()),
+                    solver_ctx: Some(forked_ctx),
+                    deferred_forks,
+                    stored_conditions,
                 }))
             }
             RunResult::SymbolicBranch { true_target, false_target, .. } => {
@@ -1379,6 +1915,67 @@ impl RustExplorationManager {
                 // This shouldn't happen if callbacks are properly set
                 state.set_pc(addr);
                 Err(StepError::Error(state, format!("need lift at 0x{:x}", addr)))
+            }
+            RunResult::SymbolicJumpTarget { targets, condition_id, jumpkind: _ } => {
+                // Symbolic jump with multiple concrete targets - fork for each
+                // Look up the condition for constraint addition
+                let target_expr = stored_conditions.get(&condition_id).cloned();
+
+                if targets.is_empty() {
+                    // No targets - deadended
+                    return Err(StepError::Deadended(state));
+                }
+
+                if targets.len() == 1 {
+                    // Single target - just continue
+                    let addr = targets[0];
+                    if let Some(ref expr) = target_expr {
+                        // Add constraint: target_expr == addr
+                        let concrete = RustBV::concrete(addr as u128, expr.width());
+                        let constraint = expr.eq(&concrete, &*state.solver().borrow());
+                        state.add_constraint(constraint);
+                    }
+                    state.set_pc(addr);
+                    return Ok(vec![state]);
+                }
+
+                // Multiple targets - fork for each from the UNCONSTRAINED original
+                // CRITICAL: Save unconstrained base state BEFORE adding any target constraints
+                // This ensures each fork only has its own target constraint, not all previous ones
+                let base_state = state.fork();  // Save unconstrained clone
+
+                let mut successors = Vec::with_capacity(targets.len());
+
+                // Handle first target - use the original state (moved here)
+                let first_addr = targets[0];
+                let mut first_state = state;  // Move state into first_state
+                if let Some(ref expr) = target_expr {
+                    let concrete = RustBV::concrete(first_addr as u128, expr.width());
+                    let constraint = expr.eq(&concrete, &*first_state.solver().borrow());
+                    first_state.add_constraint(constraint);
+                }
+                first_state.set_pc(first_addr);
+                successors.push(first_state);
+
+                // Handle remaining targets - fork from unconstrained base
+                for &addr in targets.iter().skip(1) {
+                    let mut forked = base_state.fork();
+
+                    // Add constraint: target_expr == addr (only this target's constraint)
+                    if let Some(ref expr) = target_expr {
+                        let concrete = RustBV::concrete(addr as u128, expr.width());
+                        let constraint = expr.eq(&concrete, &*forked.solver().borrow());
+                        forked.add_constraint(constraint);
+                    }
+                    forked.set_pc(addr);
+                    successors.push(forked);
+                }
+
+                Ok(successors)
+            }
+            RunResult::UnconstrainedJump { min_target: _, max_target: _, limit: _, jumpkind: _ } => {
+                // Too many symbolic jump targets - move to unconstrained stash
+                Err(StepError::Unconstrained(state))
             }
         }
     }

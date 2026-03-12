@@ -294,6 +294,46 @@ impl RustSolverContext {
         Ok(self.inner.sym_ctx.unsat_core())
     }
 
+    /// Get all Z3 solver assertions as strings.
+    ///
+    /// Returns string representations of all active constraints in the Z3 solver.
+    /// Useful for debugging and for verifying constraint sync between Rust and Python.
+    pub fn get_all_constraints_str(&self) -> Vec<String> {
+        self.inner.sym_ctx.get_all_constraints_str()
+    }
+
+    /// Get the number of assertions in the Z3 solver.
+    ///
+    /// Returns the total count of active constraints.
+    pub fn z3_assertion_count(&self) -> usize {
+        self.inner.sym_ctx.z3_assertion_count()
+    }
+
+    /// Export constraints as serialized data for Python sync.
+    ///
+    /// This returns a list of (description, is_trackable) tuples for each
+    /// constraint in the solver. The descriptions can be used for debugging
+    /// and the is_trackable flag indicates if the constraint could be
+    /// reconstructed from tracked handles.
+    ///
+    /// Note: Full Z3->claripy AST conversion is complex. This method provides
+    /// constraint info for debugging. The primary sync mechanism is through
+    /// the bidirectional constraint flow via add_constraints_to_pending.
+    pub fn export_constraint_info(&self) -> Vec<(String, bool)> {
+        self.inner.sym_ctx.get_all_constraints_str()
+            .into_iter()
+            .map(|s| (s, true))  // All Z3 constraints are trackable
+            .collect()
+    }
+
+    /// Get the number of new constraints added since last sync.
+    ///
+    /// This helps track constraint growth during callbacks.
+    pub fn constraint_delta(&self, baseline: usize) -> usize {
+        let current = self.inner.sym_ctx.num_constraints();
+        current.saturating_sub(baseline)
+    }
+
     // =========================================================================
     // Handle-based API (Claripy Bypass)
     // These methods allow Python to perform symbolic operations without
@@ -619,6 +659,32 @@ impl Default for RustSolverContext {
 }
 
 impl RustSolverContext {
+    /// Create a RustSolverContext from an existing SymContext.
+    ///
+    /// This is used when forking solver contexts during callback handling,
+    /// allowing Python callbacks to inherit the full constraint context
+    /// from Rust exploration.
+    pub fn from_sym_context(sym_ctx: SymContext) -> Self {
+        RustSolverContext {
+            inner: Box::new(SolverInner {
+                sym_ctx,
+                symbol_table: RustSymbolTable::new(),
+            }),
+        }
+    }
+
+    /// Create a RustSolverContext from an existing SymContext with a forked symbol table.
+    ///
+    /// This preserves both constraints and symbolic variable mappings.
+    pub fn from_sym_context_with_symbols(sym_ctx: SymContext, symbol_table: RustSymbolTable) -> Self {
+        RustSolverContext {
+            inner: Box::new(SolverInner {
+                sym_ctx,
+                symbol_table,
+            }),
+        }
+    }
+
     /// Get a reference to the inner SymContext.
     ///
     /// This is used by the Rust VEX engine to share the solver context,

@@ -777,6 +777,25 @@ impl SymContext {
         result
     }
 
+    /// Get all solver assertions as strings.
+    ///
+    /// Returns string representations of all Z3 constraints. Useful for debugging
+    /// and for syncing constraint state to Python. While not a full AST export,
+    /// this allows Python to understand what constraints are active.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn get_all_constraints_str(&self) -> Vec<String> {
+        let solver = self.solver.lock();
+        solver.get_assertions().iter().map(|a| format!("{}", a)).collect()
+    }
+
+    /// Check the total number of assertions in the Z3 solver.
+    ///
+    /// This can be used to verify constraint sync between Rust and Python.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn z3_assertion_count(&self) -> usize {
+        let solver = self.solver.lock();
+        solver.get_assertions().len()
+    }
 
     // =========================================================================
     // Mock implementations when Z3 is not available
@@ -889,6 +908,18 @@ impl SymContext {
     pub fn unsat_core(&self) -> Vec<usize> {
         // Without Z3, no unsat core available
         vec![]
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn get_all_constraints_str(&self) -> Vec<String> {
+        // Without Z3, no constraints available
+        vec![]
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn z3_assertion_count(&self) -> usize {
+        // Without Z3, no assertions
+        0
     }
 
     // =========================================================================

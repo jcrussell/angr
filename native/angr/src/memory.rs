@@ -881,7 +881,13 @@ impl SymbolicMemory {
     /// * `size` - Size of the access in bytes
     ///
     /// # Returns
-    /// List of addresses whose pages are mapped (either already or auto-mapped).
+    /// List of addresses whose pages are mapped. Unmapped addresses are skipped
+    /// to allow fallback to Python callback which has access to actual backer data.
+    ///
+    /// # Note
+    /// This function no longer auto-maps zero pages. When addresses are in lazy
+    /// regions but unmapped, they are skipped. Callers should check if the result
+    /// is incomplete and fall back to Python if needed.
     pub fn prepare_addresses_for_ite(&mut self, addrs: &[u64], size: u32) -> Vec<u64> {
         let mut ready_addrs = Vec::with_capacity(addrs.len());
 
@@ -894,16 +900,13 @@ impl SymbolicMemory {
                 continue;
             }
 
-            // Page not mapped - try to auto-map if in lazy region
-            if self.is_in_lazy_region(page_num) {
-                self.auto_map_zero_page(addr);
-                // After auto-mapping, add to ready list
-                if self.pages.contains_key(&page_num) {
-                    ready_addrs.push(addr);
-                }
-            }
-            // If not in lazy region and not mapped, skip this address
-            // The ITE will use unconstrained values for missing addresses
+            // Page not mapped - skip this address
+            // The caller should fall back to Python callback which can provide
+            // actual backer data instead of speculative zeros
+            //
+            // NOTE: We intentionally do NOT auto-map zero pages here. Python may
+            // have actual data for this page from backers (file contents, initialized
+            // data). Speculatively creating zero pages causes state divergence.
         }
 
         ready_addrs
@@ -1076,23 +1079,25 @@ impl SymbolicMemory {
         Ok(cond.ite(&left, &right, ctx))
     }
 
-    /// Prepare a strided memory region by auto-mapping unmapped pages.
+    /// Prepare a strided memory region (no-op - kept for API compatibility).
+    ///
+    /// # Note
+    /// This function previously auto-mapped zero pages for unmapped addresses,
+    /// but that caused state divergence with Python's actual backer data.
+    /// Now it does nothing - unmapped pages will trigger Python fallback.
     ///
     /// # Arguments
     /// * `base` - Base address of the strided pattern
     /// * `stride` - Stride between consecutive addresses
     /// * `count` - Number of addresses in the pattern
     /// * `size` - Size of each access in bytes
-    fn prepare_strided_region(&mut self, base: u64, stride: u64, count: u64, size: u32) {
-        // Auto-map pages that might be accessed in the strided pattern
-        for i in 0..count.min(1024) { // Limit to prevent excessive mapping
-            let addr = base + i * stride;
-            let page_num = addr >> 12;
-
-            if !self.pages.contains_key(&page_num) && self.is_in_lazy_region(page_num) {
-                self.auto_map_zero_page(addr);
-            }
-        }
+    fn prepare_strided_region(&mut self, _base: u64, _stride: u64, _count: u64, _size: u32) {
+        // No longer auto-maps zero pages.
+        // The interpreter will fall back to Python callback which can provide
+        // actual backer data instead of speculative zeros.
+        //
+        // NOTE: Strided loads/stores may fail and trigger Python fallback.
+        // This is intentional - Python has the correct memory state.
     }
 
     /// Unified symbolic store that handles all concretization results in Rust.
@@ -1409,11 +1414,35 @@ impl SymbolicMemory {
         true
     }
 
-    /// Load from a concrete address with auto-mapping support.
+    /// Load from a concrete address with lazy region support.
     ///
-    /// If the address is in a lazy region and unmapped, automatically
-    /// creates a zero page instead of failing. This reduces fallbacks.
+    /// # Deprecation Warning
+    ///
+    /// This function previously auto-mapped zero pages for unmapped regions,
+    /// but that behavior caused state divergence with Python's actual backer
+    /// data. Now it propagates the UnmappedPageInRegion error so callers can
+    /// fall back to Python callbacks to get correct data.
+    ///
+    /// If you need auto-mapping behavior for internal Rust operations that
+    /// don't involve Python state, use `load_concrete_automap_internal`.
     pub fn load_concrete_automap(
+        &mut self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // Use the lazy inner function which returns UnmappedPageInRegion
+        // for unmapped pages in lazy regions. Caller should handle this
+        // by falling back to Python callback.
+        self.load_concrete_lazy_inner(addr, size, ctx)
+    }
+
+    /// Load from a concrete address with internal auto-mapping.
+    ///
+    /// This is for internal Rust operations that don't involve Python state.
+    /// For interpreter callbacks, use `load_concrete_automap` which propagates
+    /// errors so Python can provide correct backer data.
+    pub fn load_concrete_automap_internal(
         &mut self,
         addr: u64,
         size: u32,
@@ -1553,11 +1582,52 @@ impl SymbolicMemory {
         self.store_concrete(addr, value)
     }
 
-    /// Store to a concrete address with auto-mapping support.
+    /// Store to a concrete address with lazy region support.
     ///
-    /// If the address is in a lazy region and unmapped, automatically
-    /// creates a zero page instead of failing. This reduces fallbacks.
+    /// # Deprecation Warning
+    ///
+    /// This function previously auto-mapped zero pages for unmapped regions,
+    /// but that behavior caused state divergence with Python's actual backer
+    /// data. Now it returns UnmappedPageInRegion error so callers can fall
+    /// back to Python callbacks to handle the store correctly.
+    ///
+    /// If you need auto-mapping behavior for internal Rust operations that
+    /// don't involve Python state, use `store_concrete_automap_internal`.
     pub fn store_concrete_automap(
+        &mut self,
+        addr: u64,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+
+        // Check all pages are mapped - do NOT auto-map
+        for page_num in start_page..end_page {
+            if !self.pages.contains_key(&page_num) {
+                let page_addr = page_num << 12;
+                if self.is_in_lazy_region(page_num) {
+                    // Return error so caller can fall back to Python
+                    return Err(MemoryError::UnmappedPageInRegion { page_addr });
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_addr,
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+        }
+
+        // All pages mapped, proceed with store
+        self.store_concrete(addr, value)
+    }
+
+    /// Store to a concrete address with internal auto-mapping.
+    ///
+    /// This is for internal Rust operations that don't involve Python state.
+    /// For interpreter callbacks, use `store_concrete_automap` which propagates
+    /// errors so Python can handle the store correctly.
+    pub fn store_concrete_automap_internal(
         &mut self,
         addr: u64,
         value: RustBV,

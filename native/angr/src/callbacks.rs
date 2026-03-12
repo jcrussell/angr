@@ -142,6 +142,12 @@ pub struct ExecutionConfig {
     /// Enable stride detection for array access patterns (default: true).
     #[pyo3(get, set)]
     pub enable_stride_detection: bool,
+    /// Maximum symbolic IP targets before marking unconstrained (default: 257).
+    /// When a symbolic jump target (e.g., ret from symbolic return address)
+    /// concretizes to more than this many targets, the state is marked
+    /// as unconstrained rather than forking into many states.
+    #[pyo3(get, set)]
+    pub max_symbolic_ip_targets: usize,
 }
 
 #[pymethods]
@@ -158,6 +164,7 @@ impl ExecutionConfig {
             max_prefetch_batch: 256,
             max_concretization_range: 65536,
             enable_stride_detection: true,
+            max_symbolic_ip_targets: 257,
         }
     }
 
@@ -180,6 +187,7 @@ impl Default for ExecutionConfig {
             max_prefetch_batch: 256,        // 256 pages = 1MB
             max_concretization_range: 65536,
             enable_stride_detection: true,
+            max_symbolic_ip_targets: 257,   // Match Python angr default
         }
     }
 }
@@ -234,6 +242,29 @@ pub enum RunResult {
     NeedLift { addr: u64 },
     /// Reached max deferred forks limit - return to Python with accumulated forks.
     MaxDeferredForks { pc: u64 },
+    /// Symbolic jump target - multiple concrete targets after concretization.
+    /// This is returned when a jump target (e.g., ret instruction) is symbolic
+    /// but can be concretized to a bounded set of concrete addresses.
+    SymbolicJumpTarget {
+        /// Concrete target addresses after concretization.
+        targets: Vec<u64>,
+        /// ID for the stored symbolic expression (for constraint addition).
+        condition_id: u64,
+        /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
+        jumpkind: String,
+    },
+    /// Unconstrained jump - too many targets, exceeds limit.
+    /// The state should be moved to the "unconstrained" stash.
+    UnconstrainedJump {
+        /// Minimum possible target address.
+        min_target: u64,
+        /// Maximum possible target address.
+        max_target: u64,
+        /// The configured limit that was exceeded.
+        limit: usize,
+        /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
+        jumpkind: String,
+    },
 }
 
 /// Python callback holder for the Rust VEX engine.
@@ -753,7 +784,32 @@ impl PythonCallbacks {
         data: &RustBV,
         addr_ast: &RustBV,
     ) -> PyResult<()> {
-        // If symbolic callback is set, use it
+        use crate::claripy_bridge::rustbv_to_claripy;
+
+        // If data is symbolic and we have the full symbolic callback, use it
+        if data.is_symbolic() && self.memory_store_symbolic_full.is_some() {
+            return self.call_memory_store_symbolic_full(py, addr_ast, data);
+        }
+
+        // If data is symbolic, try to use symbolic value callback for each address
+        if data.is_symbolic() && self.memory_store_symbolic_value.is_some() {
+            let claripy_mod = py.import("claripy")?;
+            let data_ast = rustbv_to_claripy(py, data, &claripy_mod)?;
+            let addr_claripy = rustbv_to_claripy(py, addr_ast, &claripy_mod)?;
+
+            // Use the symbolic value callback with claripy AST
+            if let Some(cb) = &self.memory_store_symbolic_value {
+                // For multiple addresses, we need conditional stores
+                // The callback should handle creating ITE chains
+                // Store to first address with the full expression
+                if let Some(first_addr) = addrs.first() {
+                    cb.call1(py, (*first_addr, data_ast))?;
+                }
+            }
+            return Ok(());
+        }
+
+        // If symbolic callback is set, use it (concrete data case)
         if let Some(cb) = &self.memory_store_symbolic {
             let addrs_list: Vec<u64> = addrs.to_vec();
             let data_bytes = bv_to_bytes(data);
@@ -764,8 +820,13 @@ impl PythonCallbacks {
 
         // Fallback: store to first address only (not ideal but maintains progress)
         if let Some(first_addr) = addrs.first() {
-            let data_bytes = bv_to_bytes(data);
-            self.call_memory_store(py, *first_addr, &data_bytes)?;
+            // Even in fallback, try to preserve symbolic data
+            if data.is_symbolic() && self.memory_store_symbolic_value.is_some() {
+                self.call_memory_store_symbolic_value(py, *first_addr, data)?;
+            } else {
+                let data_bytes = bv_to_bytes(data);
+                self.call_memory_store(py, *first_addr, &data_bytes)?;
+            }
         }
         Ok(())
     }
@@ -1167,7 +1228,8 @@ impl PythonCallbacks {
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct LoopExecutionEvent {
-    /// Type of event: "max_blocks", "hook", "simprocedure", "syscall", "symbolic_branch", "block_end", "error", "need_lift", "max_deferred_forks"
+    /// Type of event: "max_blocks", "hook", "simprocedure", "syscall", "symbolic_branch",
+    /// "block_end", "error", "need_lift", "max_deferred_forks", "symbolic_jump_target", "unconstrained_jump"
     #[pyo3(get)]
     pub event_type: String,
     /// Current/next PC address.
@@ -1211,6 +1273,21 @@ pub struct LoopExecutionEvent {
     /// Return address for SimProcedure (from stack).
     #[pyo3(get)]
     pub simprocedure_return_addr: Option<u64>,
+    /// Symbolic jump targets (for "symbolic_jump_target" events).
+    #[pyo3(get)]
+    pub jump_targets: Option<Vec<u64>>,
+    /// Condition ID for symbolic jump (used to add constraints).
+    #[pyo3(get)]
+    pub jump_condition_id: Option<u64>,
+    /// Minimum target for unconstrained jump.
+    #[pyo3(get)]
+    pub unconstrained_min: Option<u64>,
+    /// Maximum target for unconstrained jump.
+    #[pyo3(get)]
+    pub unconstrained_max: Option<u64>,
+    /// Limit exceeded for unconstrained jump.
+    #[pyo3(get)]
+    pub unconstrained_limit: Option<usize>,
 }
 
 impl LoopExecutionEvent {
@@ -1237,6 +1314,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::Hook { addr } => LoopExecutionEvent {
                 event_type: "hook".to_string(),
@@ -1253,6 +1335,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::SimProcedure { addr, name, num_args, return_addr } => LoopExecutionEvent {
                 event_type: "simprocedure".to_string(),
@@ -1269,6 +1356,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: Some(name),
                 simprocedure_num_args: Some(num_args),
                 simprocedure_return_addr: if return_addr != 0 { Some(return_addr) } else { None },
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::Syscall { num, pc } => LoopExecutionEvent {
                 event_type: "syscall".to_string(),
@@ -1285,6 +1377,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::SymbolicBranch {
                 true_target,
@@ -1305,6 +1402,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::BlockEnd { next_addr, jumpkind } => LoopExecutionEvent {
                 event_type: "block_end".to_string(),
@@ -1321,6 +1423,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::Error { message, addr } => LoopExecutionEvent {
                 event_type: "error".to_string(),
@@ -1337,6 +1444,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::NeedLift { addr } => LoopExecutionEvent {
                 event_type: "need_lift".to_string(),
@@ -1353,6 +1465,11 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
             },
             RunResult::MaxDeferredForks { pc } => LoopExecutionEvent {
                 event_type: "max_deferred_forks".to_string(),
@@ -1369,6 +1486,53 @@ impl LoopExecutionEvent {
                 simprocedure_name: None,
                 simprocedure_num_args: None,
                 simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
+            },
+            RunResult::SymbolicJumpTarget { targets, condition_id, jumpkind } => LoopExecutionEvent {
+                event_type: "symbolic_jump_target".to_string(),
+                pc: targets.first().copied(),
+                addr: None,
+                syscall_num: None,
+                true_target: None,
+                false_target: None,
+                jumpkind: Some(jumpkind),
+                error: None,
+                blocks_executed,
+                deferred_forks,
+                push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
+                jump_targets: Some(targets),
+                jump_condition_id: Some(condition_id),
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
+            },
+            RunResult::UnconstrainedJump { min_target, max_target, limit, jumpkind } => LoopExecutionEvent {
+                event_type: "unconstrained_jump".to_string(),
+                pc: None,
+                addr: None,
+                syscall_num: None,
+                true_target: None,
+                false_target: None,
+                jumpkind: Some(jumpkind),
+                error: None,
+                blocks_executed,
+                deferred_forks,
+                push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: Some(min_target),
+                unconstrained_max: Some(max_target),
+                unconstrained_limit: Some(limit),
             },
         }
     }
