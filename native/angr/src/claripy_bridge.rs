@@ -2,6 +2,17 @@
 //!
 //! This module provides bidirectional conversion between Python claripy ASTs
 //! and Rust RustBV values, enabling native symbolic execution in Rust.
+//!
+//! ## Identity Preservation
+//!
+//! A critical requirement is preserving symbolic identity across the FFI boundary:
+//! - When `BVS("x", 32)` is imported from Python, it should keep its identity
+//! - When exported back to Python, the original AST should be returned
+//! - This ensures constraints on the original `x` apply to the exported value
+//!
+//! Identity preservation uses two mechanisms:
+//! 1. **Global registry** (`SymbolicIdentityRegistry`): Cross-thread, persistent
+//! 2. **Thread-local caches**: Fast access for repeated conversions
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,7 +22,7 @@ use lru::LruCache;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
-use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
+use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext, global_registry};
 
 /// Maximum number of AST nodes to cache.
 const AST_CACHE_SIZE: usize = 10000;
@@ -47,18 +58,69 @@ thread_local! {
 
 /// Store a claripy AST for later retrieval.
 /// Called when converting claripy→RustBV for symbolic values.
+///
+/// This stores in both the global registry (for cross-thread access)
+/// and the thread-local cache (for fast repeated access).
 pub fn store_claripy_ast(symbol_id: u64, ast: PyObject) {
+    // Store in thread-local cache
     CLARIPY_AST_CACHE.with(|cache| {
-        cache.borrow_mut().insert(symbol_id, ast);
+        cache.borrow_mut().insert(symbol_id, ast.clone());
     });
+
+    // Also store in global registry via public method
+    // Note: We use a dummy hash (0) since we only have the symbol_id here
+    global_registry().register_by_id(symbol_id, ast);
+}
+
+/// Store a claripy AST with full symbol information.
+///
+/// This is the preferred method when symbol name and width are available,
+/// as it enables name-based lookup for better identity preservation.
+pub fn store_claripy_ast_with_info(
+    py_hash: i64,
+    symbol_id: u64,
+    name: &str,
+    width: u32,
+    ast: PyObject,
+) {
+    // Store in thread-local cache
+    CLARIPY_AST_CACHE.with(|cache| {
+        cache.borrow_mut().insert(symbol_id, ast.clone());
+    });
+
+    // Register in global registry with full information
+    global_registry().register(py_hash, symbol_id, name, width, ast);
 }
 
 /// Retrieve a previously stored claripy AST by symbol ID.
 /// Called when converting RustBV→claripy to return the original AST.
+///
+/// Checks global registry first (for cross-thread access),
+/// then falls back to thread-local cache.
 pub fn get_claripy_ast(symbol_id: u64) -> Option<PyObject> {
+    // Check global registry first (survives across threads/callbacks)
+    if let Some(ast) = global_registry().get_original_ast(symbol_id) {
+        return Some(ast);
+    }
+
+    // Fall back to thread-local cache
     CLARIPY_AST_CACHE.with(|cache| {
         cache.borrow().get(&symbol_id).cloned()
     })
+}
+
+/// Look up a symbol by its Python hash.
+///
+/// This is used during import to check if we've already imported this symbol.
+pub fn lookup_symbol_by_hash(py_hash: i64) -> Option<u64> {
+    global_registry().lookup_by_hash(py_hash)
+}
+
+/// Look up symbol info by name.
+///
+/// This is used when we receive a symbol by name and need to find its Rust ID.
+pub fn lookup_symbol_by_name(name: &str) -> Option<crate::symbolic::SymbolInfo> {
+    global_registry().lookup_by_name(name)
 }
 
 /// Store a claripy AST in the expression cache by expression hash.
@@ -79,6 +141,9 @@ pub fn get_expression_ast(expr_hash: u64) -> Option<PyObject> {
 
 /// Clear all AST conversion caches.
 /// Call this at block boundaries or when the constraint set changes significantly.
+///
+/// Note: This clears thread-local caches but NOT the global registry.
+/// Use `clear_all_caches()` to clear everything including global state.
 pub fn clear_ast_cache() {
     AST_CACHE.with(|cache| {
         cache.borrow_mut().clear();
@@ -89,6 +154,13 @@ pub fn clear_ast_cache() {
     EXPRESSION_CACHE.with(|cache| {
         cache.borrow_mut().clear();
     });
+}
+
+/// Clear all caches including the global registry.
+/// Call this at the start of a new exploration to prevent stale mappings.
+pub fn clear_all_caches() {
+    clear_ast_cache();
+    crate::symbolic::clear_global_registry();
 }
 
 /// Get the current cache hit/miss statistics.
@@ -258,11 +330,29 @@ pub fn claripy_to_rustbv(
             } else {
                 ast.getattr("length")?.extract()?
             };
+
+            // CRITICAL: Check global registry first for identity preservation
+            // If this symbol was already imported, return the existing RustBV
+            // to maintain identity across Python<->Rust boundary
+            if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
+                // Symbol already registered, return a reference to it
+                return Ok(RustBV::symbolic_with_id(existing_id, &name, width));
+            }
+
+            // Also check by name for cases where the hash changed but name is stable
+            if let Some(info) = lookup_symbol_by_name(&name) {
+                if info.width == width {
+                    // Symbol with same name/width exists, return reference
+                    return Ok(RustBV::symbolic_with_id(info.rust_id, &name, width));
+                }
+            }
+
+            // Create new symbol and register with full info
             let bv = RustBV::symbolic(ctx, &name, width);
             // Store the original claripy AST so we can return it when converting back
             // This preserves symbol identity for Python's memory model
             if let RustBV::Symbolic { id, .. } = &bv {
-                store_claripy_ast(*id, ast.clone().unbind());
+                store_claripy_ast_with_info(ast_hash, *id, &name, width, ast.clone().unbind());
             }
             Ok(bv)
         }

@@ -1245,6 +1245,86 @@ impl SymbolicMemory {
         &self.pages
     }
 
+    // =========================================================================
+    // Symbolic Memory Preservation
+    // =========================================================================
+
+    /// Get all symbolic regions for export to Python.
+    ///
+    /// Returns a list of (address, width, symbol_id) tuples where symbol_id
+    /// is the Rust symbol ID that can be used to look up the original Python AST.
+    ///
+    /// This is critical for preserving symbolic identity when syncing state
+    /// back to Python - without it, symbolic values would be recreated as
+    /// fresh symbols, losing their relationship to constraints.
+    pub fn get_symbolic_regions(&self) -> Vec<(u64, u32, Option<u64>)> {
+        let mut regions = Vec::new();
+
+        for (&addr, bv) in &self.symbolic_objects {
+            let width = bv.width();
+            // Try to get the symbol ID for Symbolic variants
+            let sym_id = match bv {
+                RustBV::Symbolic { id, .. } => Some(*id),
+                RustBV::Expression { .. } => {
+                    // For expressions, try to get the hash as an identifier
+                    None
+                }
+                _ => None,
+            };
+            regions.push((addr, width, sym_id));
+        }
+
+        regions
+    }
+
+    /// Import a symbolic value with identity preservation.
+    ///
+    /// This stores a symbolic value at the given address and ensures the
+    /// symbol ID is tracked for later export back to Python.
+    ///
+    /// # Arguments
+    /// * `addr` - The address to store the value at
+    /// * `value` - The symbolic value to store
+    /// * `symbol_id` - Optional symbol ID for identity tracking
+    pub fn import_symbolic_value(&mut self, addr: u64, value: RustBV, _symbol_id: Option<u64>) {
+        // Store in symbolic_objects for lookup
+        self.symbolic_objects.insert(addr, value.clone());
+
+        // Mark pages as having symbolic bytes
+        let size = value.width() / 8;
+        for i in 0..size {
+            let byte_addr = addr + i as u64;
+            let page_num = byte_addr >> 12;
+            let offset = (byte_addr & PAGE_MASK) as u16;
+
+            if let Some(page) = self.pages.get(&page_num) {
+                let mut page = page.clone();
+                page.mark_symbolic(offset, 1);
+                self.pages.insert(page_num, page);
+            }
+        }
+    }
+
+    /// Get the symbolic object at an address if it exists.
+    pub fn get_symbolic_object(&self, addr: u64) -> Option<&RustBV> {
+        self.symbolic_objects.get(&addr)
+    }
+
+    /// Check if there are any symbolic objects in memory.
+    pub fn has_symbolic_objects(&self) -> bool {
+        !self.symbolic_objects.is_empty()
+    }
+
+    /// Get the count of symbolic objects.
+    pub fn symbolic_object_count(&self) -> usize {
+        self.symbolic_objects.len()
+    }
+
+    /// Clear all symbolic objects (used when resetting state).
+    pub fn clear_symbolic_objects(&mut self) {
+        self.symbolic_objects.clear();
+    }
+
     /// Add a lazy region where pages can be fetched on-demand.
     ///
     /// When a load hits an unmapped page within this region, the memory

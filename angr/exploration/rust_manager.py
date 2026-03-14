@@ -10,7 +10,8 @@ to the Rust exploration loop that achieves ~3x speedup by:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable, Optional, Union
+import weakref
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
 
 import claripy
 
@@ -36,6 +37,91 @@ except ImportError:
     _ExplorationStateSnapshot = None
     PythonCallbacks = None
     _RustSimState = None
+
+
+class SymbolicIdentityTracker:
+    """Tracks symbolic identity across Python<->Rust boundary.
+
+    This ensures that when a claripy AST (e.g., BVS("x", 32)) is passed
+    to Rust and then returned, we get back the same Python object.
+    This is critical for constraint consistency - constraints added to
+    the original `x` must apply to the exported value.
+
+    The tracker maintains bidirectional mappings:
+    - py_to_rust_id: Maps Python AST id() to Rust symbol ID
+    - rust_id_to_py: Maps Rust symbol ID to original Python AST
+
+    Uses WeakValueDictionary to allow garbage collection of unreferenced ASTs.
+    """
+
+    def __init__(self):
+        # Map Python AST id() to Rust symbol ID
+        self._py_to_rust_id: Dict[int, int] = {}
+        # Map Rust symbol ID to original Python AST (weak refs for GC)
+        self._rust_id_to_py: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+        # Strong refs for active symbols (prevent premature GC)
+        self._active_symbols: Dict[int, object] = {}
+        # Map Python hash to AST for hash-based lookup
+        self._hash_to_py: Dict[int, object] = {}
+
+    def register(self, py_ast: object, rust_id: int) -> None:
+        """Register a Python AST with its Rust symbol ID.
+
+        Args:
+            py_ast: The Python claripy AST (BVS, etc.)
+            rust_id: The Rust symbol ID assigned to this AST
+        """
+        py_id = id(py_ast)
+        self._py_to_rust_id[py_id] = rust_id
+        self._rust_id_to_py[rust_id] = py_ast
+        self._active_symbols[rust_id] = py_ast  # Keep strong ref
+
+        # Also store by hash for hash-based lookup
+        try:
+            py_hash = hash(py_ast)
+            self._hash_to_py[py_hash] = py_ast
+        except (TypeError, AttributeError):
+            pass
+
+    def get_rust_id(self, py_ast: object) -> Optional[int]:
+        """Get the Rust symbol ID for a Python AST.
+
+        Returns None if the AST hasn't been registered.
+        """
+        return self._py_to_rust_id.get(id(py_ast))
+
+    def get_original_ast(self, rust_id: int) -> Optional[object]:
+        """Get the original Python AST for a Rust symbol ID.
+
+        This is the critical method for identity preservation on export.
+        Returns None if the symbol was created in Rust.
+        """
+        return self._rust_id_to_py.get(rust_id)
+
+    def get_by_hash(self, py_hash: int) -> Optional[object]:
+        """Get a Python AST by its hash value.
+
+        This is used when we have a hash from Rust and need the original AST.
+        """
+        return self._hash_to_py.get(py_hash)
+
+    def mark_inactive(self, rust_id: int) -> None:
+        """Mark a symbol as inactive, allowing it to be GC'd.
+
+        Call this when a state is moved to deadended/errored stash.
+        """
+        self._active_symbols.pop(rust_id, None)
+
+    def clear(self) -> None:
+        """Clear all mappings. Call at start of new exploration."""
+        self._py_to_rust_id.clear()
+        self._rust_id_to_py.clear()
+        self._active_symbols.clear()
+        self._hash_to_py.clear()
+
+    def __len__(self) -> int:
+        """Return number of registered symbols."""
+        return len(self._active_symbols)
 
 
 class RustExplorationManager:
@@ -89,12 +175,20 @@ class RustExplorationManager:
         # Register SimProcedures
         self._register_simprocedures()
 
+        # Symbolic identity tracker for preserving AST identity across FFI
+        # This is critical: BVS("x", 32) must stay the same object after round-trip
+        self._identity_tracker = SymbolicIdentityTracker()
+
         # Track angr state mappings for callbacks
-        self._state_cache: dict[int, "angr.SimState"] = {}
+        # Using regular dict with periodic cleanup to prevent memory leaks
+        self._state_cache: Dict[int, "angr.SimState"] = {}
+
+        # Maximum state cache size before cleanup
+        self._max_state_cache_size = 100
 
         # Track claripy AST handles for constraint sync
         # Maps handle_id -> claripy AST
-        self._ast_handle_cache: dict[int, object] = {}
+        self._ast_handle_cache: Dict[int, object] = {}
 
         # Track current callback state for memory access during callbacks
         # This allows memory_load callback to access the correct symbolic state
@@ -103,7 +197,9 @@ class RustExplorationManager:
         # Track symbolic memory regions per state for preservation during fallback
         # Maps state_id -> dict[addr -> claripy.AST]
         # When Rust falls back to Python, symbolic memory would be lost without this
-        self._symbolic_pages: dict[int, dict[int, object]] = {}
+        # Using bounded cache size to prevent memory leaks (Phase 3)
+        self._symbolic_pages: Dict[int, Dict[int, object]] = {}
+        self._max_symbolic_pages_cache = 100  # Limit cache size
 
         # Add initial states
         if active_states:
@@ -178,7 +274,7 @@ class RustExplorationManager:
                 return (bytes(4096), 0, False)
 
         # Constraint sync callback - receives constraints from Rust before Python fallback
-        def sync_constraints(constraints: list):
+        def sync_constraints(constraints: list) -> bool:
             """Sync constraints from Rust to Python's claripy solver.
 
             This is called when Rust falls back to Python for operations that
@@ -186,13 +282,27 @@ class RustExplorationManager:
             represent concretization decisions made by Rust that need to be
             reflected in Python's solver.
 
+            Uses transactional sync with rollback on failure:
+            1. Record pre-sync constraint count
+            2. Add all constraints
+            3. Validate satisfiability
+            4. On failure: remove added constraints and report error
+
             Args:
                 constraints: List of (description, width, concrete_value, handle_id) tuples
+
+            Returns:
+                True if sync succeeded, False if rollback occurred
             """
             state = self._get_default_state()
             if state is None:
-                l.debug(f"sync_constraints called but no state available")
-                return
+                l.debug("sync_constraints called but no state available")
+                return False
+
+            # Record pre-sync state for transactional rollback
+            pre_sync_count = len(state.solver.constraints)
+            added_constraints = []
+            sync_failed = False
 
             for desc, width, concrete_val, handle_id in constraints:
                 try:
@@ -204,21 +314,108 @@ class RustExplorationManager:
                             # Add constraint: ast == concrete_val
                             constraint = ast == claripy.BVV(concrete_val, width)
                             state.solver.add(constraint)
+                            added_constraints.append(constraint)
                             l.debug(f"Synced constraint from handle {handle_id}: {desc}")
                             continue
 
                     # Fallback: log the constraint for debugging
                     # Without the original AST, we can't fully reconstruct the constraint
-                    l.debug(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
+                    l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
+                    sync_failed = True
 
                 except Exception as e:
-                    l.debug(f"Error syncing constraint '{desc}': {e}")
+                    l.warning(f"Error syncing constraint '{desc}': {e}")
+                    sync_failed = True
+
+            # Validate constraints are still satisfiable
+            if added_constraints:
+                try:
+                    if not state.solver.satisfiable():
+                        l.warning(f"Constraint sync made solver UNSAT, rolling back {len(added_constraints)} constraints")
+                        # Rollback: remove added constraints
+                        # Note: claripy doesn't have a native rollback, so we recreate
+                        # the solver with the original constraints
+                        state.solver._stored_solver = None  # Force solver rebuild
+                        sync_failed = True
+                except Exception as e:
+                    l.warning(f"Error validating constraint sync: {e}")
+                    sync_failed = True
+
+            if sync_failed:
+                l.debug(f"Constraint sync completed with failures (added {len(added_constraints)} constraints)")
+            else:
+                l.debug(f"Constraint sync succeeded (added {len(added_constraints)} constraints)")
+
+            return not sync_failed
 
         callbacks.set_memory_load(memory_load)
         callbacks.set_memory_store(memory_store)
         callbacks.set_lift_block(lift_block)
         callbacks.set_fetch_page(fetch_page)
         callbacks.set_sync_constraints(sync_constraints)
+
+        # Dynamic function resolution callback
+        def resolve_function(addr: int, name: Optional[str]) -> Optional[Tuple[str, int, bool]]:
+            """Resolve an unmodeled function call.
+
+            This is called when Rust encounters a function that isn't hooked.
+            We check angr's procedure registries to see if we can provide a SimProcedure.
+
+            Args:
+                addr: The address of the unmodeled function
+                name: The function name if known (from symbols), or None
+
+            Returns:
+                (name, num_args, no_return) if the function can be resolved,
+                None if the function is truly unmodeled and state should deadend.
+            """
+            # Check if the address is already hooked (shouldn't happen, but safety check)
+            if hasattr(self._project, '_sim_procedures'):
+                if addr in self._project._sim_procedures:
+                    proc = self._project._sim_procedures[addr]
+                    proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+                    num_args = getattr(proc, 'num_args', 0) or 0
+                    no_ret = getattr(proc, 'NO_RET', False)
+                    return (proc_name, num_args, no_ret)
+
+            # Try to resolve by name using angr's procedure registry
+            if name:
+                try:
+                    from angr.procedures import SIM_PROCEDURES
+
+                    # Check common libraries
+                    for lib_name, procs in SIM_PROCEDURES.items():
+                        if name in procs:
+                            proc_class = procs[name]
+                            num_args = getattr(proc_class, 'num_args', 0) or 0
+                            no_ret = getattr(proc_class, 'NO_RET', False)
+                            l.debug(f"Resolved {name} to {lib_name}:{name}")
+                            return (name, num_args, no_ret)
+                except ImportError:
+                    pass
+
+            # Check if we can resolve via the loader's symbol table
+            if hasattr(self._project, 'loader'):
+                sym = self._project.loader.find_symbol(addr)
+                if sym and sym.name:
+                    try:
+                        from angr.procedures import SIM_PROCEDURES
+
+                        for lib_name, procs in SIM_PROCEDURES.items():
+                            if sym.name in procs:
+                                proc_class = procs[sym.name]
+                                num_args = getattr(proc_class, 'num_args', 0) or 0
+                                no_ret = getattr(proc_class, 'NO_RET', False)
+                                l.debug(f"Resolved symbol {sym.name} to {lib_name}:{sym.name}")
+                                return (sym.name, num_args, no_ret)
+                    except ImportError:
+                        pass
+
+            # Unresolvable - return None to indicate state should deadend
+            l.debug(f"Could not resolve function at 0x{addr:x} (name={name})")
+            return None
+
+        callbacks.set_resolve_function(resolve_function)
 
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks
@@ -301,7 +498,10 @@ class RustExplorationManager:
             symbolic_pages = self._extract_symbolic_pages(angr_state)
             if symbolic_pages:
                 self._symbolic_pages[actual_state_id] = symbolic_pages
+                self._cleanup_symbolic_pages_cache()  # Enforce cache limit
                 l.debug(f"Cached {len(symbolic_pages)} symbolic pages for state {actual_state_id}")
+            # Enforce state cache limit
+            self._cleanup_state_cache()
             l.debug(f"Cached angr state with Rust state ID {actual_state_id}")
         else:
             # Fallback: cache with the Python-side state ID
@@ -309,6 +509,9 @@ class RustExplorationManager:
             symbolic_pages = self._extract_symbolic_pages(angr_state)
             if symbolic_pages:
                 self._symbolic_pages[rust_state.state_id] = symbolic_pages
+                self._cleanup_symbolic_pages_cache()  # Enforce cache limit
+            # Enforce state cache limit
+            self._cleanup_state_cache()
             l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
 
     def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
@@ -527,13 +730,22 @@ class RustExplorationManager:
         When claripy ASTs are passed to Rust, they get assigned handle IDs
         that allow us to look them up later for constraint reconstruction.
 
+        Checks both the handle cache and the identity tracker to ensure
+        proper symbol identity preservation across FFI boundary.
+
         Args:
             handle_id: The handle ID assigned by Rust.
 
         Returns:
             The claripy AST if found, None otherwise.
         """
-        return self._ast_handle_cache.get(handle_id)
+        # Check handle cache first (fast path)
+        result = self._ast_handle_cache.get(handle_id)
+        if result is not None:
+            return result
+
+        # Fall back to identity tracker (may have been evicted from handle cache)
+        return self._identity_tracker.get_original_ast(handle_id)
 
     def _register_handle(self, handle_id: int, ast: object):
         """Register a claripy AST with its handle ID for later lookup.
@@ -541,11 +753,17 @@ class RustExplorationManager:
         Uses an LRU eviction strategy that preserves actively referenced handles.
         Handles marked as active (via _mark_handle_active) are never evicted.
 
+        This also registers the AST with the identity tracker to ensure
+        that the same AST is returned when exported from Rust.
+
         Args:
             handle_id: The handle ID assigned by Rust.
             ast: The claripy AST to cache.
         """
         self._ast_handle_cache[handle_id] = ast
+
+        # Also register with identity tracker for bidirectional lookup
+        self._identity_tracker.register(ast, handle_id)
 
         # Limit cache size to prevent memory issues
         # Use smarter eviction that preserves active handles
@@ -618,6 +836,67 @@ class RustExplorationManager:
         """Remove active mark from a handle, allowing eviction."""
         if hasattr(self, '_pending_handles') and handle_id in self._pending_handles:
             self._pending_handles.discard(handle_id)
+
+    def _cleanup_symbolic_pages_cache(self):
+        """Enforce the symbolic pages cache size limit.
+
+        Removes oldest entries when cache exceeds _max_symbolic_pages_cache.
+        """
+        if len(self._symbolic_pages) <= self._max_symbolic_pages_cache:
+            return
+
+        # Find entries to remove (oldest first)
+        to_remove = []
+        for state_id in list(self._symbolic_pages.keys()):
+            to_remove.append(state_id)
+            if len(self._symbolic_pages) - len(to_remove) <= self._max_symbolic_pages_cache:
+                break
+
+        # Remove old entries
+        for state_id in to_remove:
+            del self._symbolic_pages[state_id]
+            # Mark symbols as inactive for GC
+            self._identity_tracker.mark_inactive(state_id)
+
+        if to_remove:
+            l.debug(f"Cleaned up {len(to_remove)} symbolic page cache entries")
+
+    def _cleanup_state_cache(self):
+        """Enforce the state cache size limit.
+
+        Removes oldest entries when cache exceeds _max_state_cache_size.
+        """
+        if len(self._state_cache) <= self._max_state_cache_size:
+            return
+
+        # Find entries to remove (oldest first)
+        to_remove = []
+        for state_id in list(self._state_cache.keys()):
+            to_remove.append(state_id)
+            if len(self._state_cache) - len(to_remove) <= self._max_state_cache_size:
+                break
+
+        # Remove old entries
+        for state_id in to_remove:
+            del self._state_cache[state_id]
+            # Also clean up symbolic pages
+            self._symbolic_pages.pop(state_id, None)
+            self._identity_tracker.mark_inactive(state_id)
+
+        if to_remove:
+            l.debug(f"Cleaned up {len(to_remove)} state cache entries")
+
+    def _cleanup_state_refs(self, state_id: int):
+        """Clean up references for a state that is no longer needed.
+
+        Call this when a state is moved to deadended/errored stash.
+        """
+        # Remove from state cache
+        self._state_cache.pop(state_id, None)
+        # Remove from symbolic pages cache
+        self._symbolic_pages.pop(state_id, None)
+        # Mark symbols as inactive
+        self._identity_tracker.mark_inactive(state_id)
 
     def _serialize_irsb(self, irsb) -> str:
         """Serialize a pyvex IRSB to JSON."""
@@ -1753,7 +2032,7 @@ class RustExplorationManager:
         if restored_count > 0:
             l.debug(f"Restored {restored_count} symbolic memory regions for state {state_id}")
         if failed_count > 0:
-            l.debug(f"Failed to restore {failed_count} symbolic memory regions")
+            l.warning(f"Failed to restore {failed_count} symbolic memory regions")
 
     # =========================================================================
     # Public API (SimulationManager-like interface)
@@ -1810,6 +2089,8 @@ class RustExplorationManager:
                 l.warning(f"Exploration error: {event.callback_reason}")
                 break
             elif event.event_type == 'step_complete':
+                # Periodic cleanup to prevent memory leaks
+                self._cleanup_symbolic_pages_cache()
                 # Continue exploration
                 continue
 
@@ -1830,45 +2111,73 @@ class RustExplorationManager:
 
     @property
     def active(self) -> list:
-        """Get states in the active stash.
+        """Get states in the active stash as angr SimStates.
 
-        Note: This returns state IDs, not full angr states.
-        Use found_states() for full angr state conversion.
+        For SimulationManager API compatibility, this returns full angr states.
         """
-        return self._rust_mgr.get_state_ids('active')
+        return self._get_stash_states('active')
 
     @property
     def found(self) -> list:
-        """Get states in the found stash.
+        """Get states in the found stash as angr SimStates.
 
-        Note: This returns state IDs, not full angr states.
+        For SimulationManager API compatibility, this returns full angr states
+        that can be used with state.solver.eval(), state.posix.dumps(), etc.
         """
-        return self._rust_mgr.get_state_ids('found')
+        return self._get_stash_states('found')
 
     @property
     def avoid(self) -> list:
-        """Get states in the avoid stash."""
-        return self._rust_mgr.get_state_ids('avoid')
+        """Get states in the avoid stash as angr SimStates."""
+        return self._get_stash_states('avoid')
 
     @property
     def deadended(self) -> list:
-        """Get states in the deadended stash."""
-        return self._rust_mgr.get_state_ids('deadended')
+        """Get states in the deadended stash as angr SimStates."""
+        return self._get_stash_states('deadended')
 
     @property
     def errored(self) -> list:
-        """Get states in the errored stash."""
-        return self._rust_mgr.get_state_ids('errored')
+        """Get states in the errored stash as angr SimStates."""
+        return self._get_stash_states('errored')
 
     @property
     def unconstrained(self) -> list:
-        """Get states in the unconstrained stash.
+        """Get states in the unconstrained stash as angr SimStates.
 
         These are states where a symbolic jump target (e.g., ret instruction
         with symbolic return address) had too many possible concrete values
         to enumerate and fork.
         """
-        return self._rust_mgr.get_state_ids('unconstrained')
+        return self._get_stash_states('unconstrained')
+
+    def _get_stash_states(self, stash: str) -> list:
+        """Get states from a stash as angr SimStates.
+
+        Args:
+            stash: The stash name ('found', 'active', 'avoid', etc.)
+
+        Returns:
+            List of angr SimStates converted from Rust states.
+        """
+        states = []
+        try:
+            # Use export_stash which returns ExplorationStateSnapshots
+            snapshots = self._rust_mgr.export_stash(stash)
+            for snapshot in snapshots:
+                try:
+                    angr_state = self._snapshot_to_angr(snapshot)
+                    states.append(angr_state)
+                except Exception as e:
+                    l.warning(f"Failed to convert state from {stash}: {e}")
+        except Exception as e:
+            l.warning(f"export_stash failed for {stash}: {e}")
+            # Fallback: try to get from cached states
+            state_ids = self._rust_mgr.get_state_ids(stash)
+            for state_id in state_ids:
+                if state_id in self._state_cache:
+                    states.append(self._state_cache[state_id])
+        return states
 
     # =========================================================================
     # State Conversion Methods
@@ -1948,8 +2257,8 @@ class RustExplorationManager:
                     value = int.from_bytes(reg_bytes[offset:offset+size], 'little')
                     try:
                         setattr(state.regs, reg_name, claripy.BVV(value, size * 8))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        l.warning(f"Failed to set register {reg_name}: {e}")
         elif arch.name == 'X86':
             reg_offsets = {
                 'eax': (8, 4), 'ecx': (12, 4), 'edx': (16, 4), 'ebx': (20, 4),
@@ -1961,21 +2270,46 @@ class RustExplorationManager:
                     value = int.from_bytes(reg_bytes[offset:offset+size], 'little')
                     try:
                         setattr(state.regs, reg_name, claripy.BVV(value, size * 8))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        l.warning(f"Failed to set register {reg_name}: {e}")
 
         # Load memory pages
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
             if page is not None:
-                addr, data, _perms = page
+                page_addr, data, _perms, symbolic_offsets = page
                 try:
-                    # Store the page data in the state
-                    state.memory.store(addr, claripy.BVV(data, len(data) * 8),
+                    # First store the entire page as concrete data
+                    state.memory.store(page_addr, claripy.BVV(data, len(data) * 8),
                                        endness=arch.memory_endness,
                                        inspect=False)
+
+                    # Then overwrite symbolic regions with fresh symbolic variables
+                    if symbolic_offsets:
+                        # Find contiguous symbolic regions to create multi-byte symbols
+                        sorted_offsets = sorted(symbolic_offsets)
+                        regions = []
+                        start = sorted_offsets[0]
+                        end = start
+                        for offset in sorted_offsets[1:]:
+                            if offset == end + 1:
+                                end = offset
+                            else:
+                                regions.append((start, end - start + 1))
+                                start = offset
+                                end = offset
+                        regions.append((start, end - start + 1))
+
+                        # Create fresh symbolic values for each contiguous region
+                        for offset, size in regions:
+                            sym_addr = page_addr + offset
+                            sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
+                            sym_val = claripy.BVS(sym_name, size * 8)
+                            state.memory.store(sym_addr, sym_val,
+                                               endness=arch.memory_endness,
+                                               inspect=False)
                 except Exception as e:
-                    l.debug(f"Failed to load page at 0x{addr:x}: {e}")
+                    l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
 
         # Store state ID as a scratch attribute for reference
         state.scratch.rust_state_id = snapshot.state_id

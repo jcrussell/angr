@@ -13,6 +13,35 @@ use parking_lot::{Mutex, RwLock};
 
 use super::RustBV;
 
+/// Error type for constraint sync operations.
+#[derive(Debug, Clone)]
+pub enum ConstraintSyncError {
+    /// Conversion failed for a constraint.
+    ConversionFailed(String),
+    /// Constraints became unsatisfiable after sync.
+    Unsatisfiable,
+    /// Invalid rollback (no transaction to rollback).
+    NoTransaction,
+}
+
+impl std::fmt::Display for ConstraintSyncError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConstraintSyncError::ConversionFailed(msg) => {
+                write!(f, "constraint conversion failed: {}", msg)
+            }
+            ConstraintSyncError::Unsatisfiable => {
+                write!(f, "constraints became unsatisfiable after sync")
+            }
+            ConstraintSyncError::NoTransaction => {
+                write!(f, "no transaction to rollback")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConstraintSyncError {}
+
 /// Solver context for symbolic execution.
 ///
 /// Manages symbolic variable creation and, when Z3 is available,
@@ -21,6 +50,13 @@ use super::RustBV;
 /// With z3-rs 0.19+, the Z3 context is thread-local, so we don't need
 /// to store a reference to it. All Z3 operations on a thread share
 /// the same context automatically.
+///
+/// ## Transactional Constraint Sync
+///
+/// The context supports transactional constraint sync with push/pop semantics:
+/// - `transaction_begin()`: Start a new transaction
+/// - `transaction_commit()`: Commit constraints (validate and keep)
+/// - `transaction_rollback()`: Rollback on failure
 pub struct SymContext {
     /// Counter for generating unique symbol IDs.
     next_id: AtomicU64,
@@ -28,6 +64,10 @@ pub struct SymContext {
     constraint_count: AtomicUsize,
     /// Named symbolic variables for debugging.
     symbol_table: RwLock<HashMap<String, u64>>,
+    /// Current push level for transaction tracking.
+    push_level: AtomicUsize,
+    /// Constraint count at each push level (for rollback).
+    push_constraint_counts: Mutex<Vec<usize>>,
 
     // Z3-specific fields (when feature is enabled)
     #[cfg(feature = "vex-engine-z3")]
@@ -52,6 +92,8 @@ impl SymContext {
             next_id: AtomicU64::new(0),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
+            push_level: AtomicUsize::new(0),
+            push_constraint_counts: Mutex::new(Vec::new()),
         }
     }
 
@@ -75,6 +117,8 @@ impl SymContext {
 
         SymContext {
             next_id: AtomicU64::new(0),
+            push_level: AtomicUsize::new(0),
+            push_constraint_counts: Mutex::new(Vec::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
             solver: Mutex::new(solver),
@@ -751,6 +795,116 @@ impl SymContext {
         *self.model_cache.borrow_mut() = None;
     }
 
+    // =========================================================================
+    // Transactional Constraint Sync
+    // =========================================================================
+
+    /// Begin a new transaction.
+    ///
+    /// This pushes a new solver frame and records the constraint count,
+    /// allowing rollback on failure via `transaction_rollback()`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn transaction_begin(&self) {
+        self.push();
+        let current_count = self.constraint_count.load(Ordering::SeqCst);
+        self.push_constraint_counts.lock().push(current_count);
+        self.push_level.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Commit the current transaction.
+    ///
+    /// This validates that constraints are satisfiable before committing.
+    /// Returns an error if constraints became unsatisfiable.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn transaction_commit(&self) -> Result<(), ConstraintSyncError> {
+        let level = self.push_level.load(Ordering::SeqCst);
+        if level == 0 {
+            return Err(ConstraintSyncError::NoTransaction);
+        }
+
+        // Validate constraints are satisfiable before committing
+        if !self.is_sat() {
+            // Rollback on failure
+            self.transaction_rollback()?;
+            return Err(ConstraintSyncError::Unsatisfiable);
+        }
+
+        // Pop the solver frame but keep the constraints
+        // Note: We don't actually pop here since we want to keep constraints
+        // The push was just for protection during sync
+        self.push_constraint_counts.lock().pop();
+        self.push_level.fetch_sub(1, Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    /// Rollback the current transaction.
+    ///
+    /// This restores the solver state to before `transaction_begin()` was called.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn transaction_rollback(&self) -> Result<(), ConstraintSyncError> {
+        let level = self.push_level.load(Ordering::SeqCst);
+        if level == 0 {
+            return Err(ConstraintSyncError::NoTransaction);
+        }
+
+        // Pop the solver frame (discards constraints added since begin)
+        self.pop();
+
+        // Restore constraint count
+        if let Some(prev_count) = self.push_constraint_counts.lock().pop() {
+            self.constraint_count.store(prev_count, Ordering::SeqCst);
+        }
+
+        self.push_level.fetch_sub(1, Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    /// Get the current transaction level.
+    ///
+    /// Returns 0 if no transaction is active.
+    pub fn current_push_level(&self) -> usize {
+        self.push_level.load(Ordering::SeqCst)
+    }
+
+    /// Check if currently in a transaction.
+    pub fn in_transaction(&self) -> bool {
+        self.current_push_level() > 0
+    }
+
+    // Non-Z3 versions of transaction methods
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn transaction_begin(&self) {
+        let current_count = self.constraint_count.load(Ordering::SeqCst);
+        self.push_constraint_counts.lock().push(current_count);
+        self.push_level.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn transaction_commit(&self) -> Result<(), ConstraintSyncError> {
+        let level = self.push_level.load(Ordering::SeqCst);
+        if level == 0 {
+            return Err(ConstraintSyncError::NoTransaction);
+        }
+        self.push_constraint_counts.lock().pop();
+        self.push_level.fetch_sub(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn transaction_rollback(&self) -> Result<(), ConstraintSyncError> {
+        let level = self.push_level.load(Ordering::SeqCst);
+        if level == 0 {
+            return Err(ConstraintSyncError::NoTransaction);
+        }
+        if let Some(prev_count) = self.push_constraint_counts.lock().pop() {
+            self.constraint_count.store(prev_count, Ordering::SeqCst);
+        }
+        self.push_level.fetch_sub(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     /// Get the unsat core as indices of constraints added.
     ///
     /// Returns the indices of constraints that form the unsatisfiable core.
@@ -942,6 +1096,8 @@ impl SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(self.constraint_count.load(Ordering::SeqCst)),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
+            push_level: AtomicUsize::new(0), // Fresh transaction state for fork
+            push_constraint_counts: Mutex::new(Vec::new()),
             solver: Mutex::new(cloned_solver),
             sat_cache: Cell::new(None),    // Fresh cache for fork
             model_cache: RefCell::new(None), // Fresh cache for fork
@@ -955,6 +1111,8 @@ impl SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
+            push_level: AtomicUsize::new(0),
+            push_constraint_counts: Mutex::new(Vec::new()),
         }
     }
 

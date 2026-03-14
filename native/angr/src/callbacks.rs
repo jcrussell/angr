@@ -337,6 +337,12 @@ pub struct PythonCallbacks {
     /// Takes (addr_ast: claripy.AST, size: int) -> claripy.AST
     /// Python should use state.memory.load(addr_ast, size) and return the result.
     pub memory_load_symbolic_full: Option<PyObject>,
+    /// Callback for resolving unmodeled function calls.
+    /// Called when execution reaches a function that isn't hooked or modeled.
+    /// Takes (addr: int, name: str | None) -> (name: str, num_args: int, no_return: bool) | None
+    /// If returns None, the function is truly unmodeled and state should be deadended.
+    /// If returns info, Rust will register the function as a SimProcedure and retry.
+    pub resolve_function: Option<PyObject>,
 }
 
 #[pymethods]
@@ -365,6 +371,7 @@ impl PythonCallbacks {
             memory_store_symbolic_value: None,
             memory_store_symbolic_full: None,
             memory_load_symbolic_full: None,
+            resolve_function: None,
         }
     }
 
@@ -570,6 +577,20 @@ impl PythonCallbacks {
     /// Used when the address cannot be concretized (too many possibilities).
     pub fn set_memory_load_symbolic_full(&mut self, cb: PyObject) {
         self.memory_load_symbolic_full = Some(cb);
+    }
+
+    /// Set the callback for resolving unmodeled function calls.
+    ///
+    /// The callback should have signature:
+    /// `fn(addr: int, name: str | None) -> tuple[str, int, bool] | None`
+    ///
+    /// If the function can be resolved, return (name, num_args, no_return).
+    /// If not, return None to deadend the state.
+    ///
+    /// This is called when execution reaches a function that isn't hooked.
+    /// The callback should check project._sim_procedures and angr's procedure registry.
+    pub fn set_resolve_function(&mut self, cb: PyObject) {
+        self.resolve_function = Some(cb);
     }
 
     /// Check if all required callbacks are set.

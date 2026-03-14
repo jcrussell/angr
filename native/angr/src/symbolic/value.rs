@@ -348,6 +348,31 @@ impl RustBV {
         }
     }
 
+    /// Create a symbolic bitvector variable with a specific ID.
+    ///
+    /// This is used for identity preservation when the same symbol
+    /// was previously imported from Python. By reusing the same ID,
+    /// we ensure that constraints on the original symbol apply correctly.
+    pub fn symbolic_with_id(id: u64, name: &str, width: u32) -> Self {
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            RustBV::Symbolic {
+                id,
+                width,
+                name: name.to_string(),
+                ast: z3::ast::BV::new_const(name, width),
+            }
+        }
+        #[cfg(not(feature = "vex-engine-z3"))]
+        {
+            RustBV::Symbolic {
+                id,
+                width,
+                name: name.to_string(),
+            }
+        }
+    }
+
     // =========================================================================
     // Accessors
     // =========================================================================

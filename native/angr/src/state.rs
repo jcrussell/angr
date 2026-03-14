@@ -929,10 +929,10 @@ impl ExplorationStateSnapshot {
     }
 
     /// Get a memory page by index.
-    /// Returns (addr, data, permissions) or None.
-    pub fn get_page(&self, index: usize) -> Option<(u64, Vec<u8>, u8)> {
+    /// Returns (addr, data, permissions, symbolic_offsets) or None.
+    pub fn get_page(&self, index: usize) -> Option<(u64, Vec<u8>, u8, Vec<u16>)> {
         self.memory_pages.get(index).map(|p| {
-            (p.0, p.1.clone(), p.2)
+            (p.0, p.1.clone(), p.2, p.3.clone())
         })
     }
 
