@@ -124,6 +124,117 @@ class SymbolicIdentityTracker:
         return len(self._active_symbols)
 
 
+class CallbackMemoryTracker:
+    """Tracks memory writes during SimProcedure callback execution.
+
+    GAP 5: This class automatically tracks all state.memory.store() calls
+    during callback execution, ensuring memory changes are properly synced
+    back to Rust without relying on changed_bytes() comparison.
+
+    Usage:
+        with CallbackMemoryTracker(state) as tracker:
+            # Execute SimProcedure
+            proc.execute(state, successors)
+        memory_changes = tracker.get_writes()
+        symbolic_writes = tracker.get_symbolic_writes()
+    """
+
+    def __init__(self, state: "angr.SimState"):
+        """Initialize the tracker for a given state.
+
+        Args:
+            state: The angr state to track memory writes on.
+        """
+        self._state = state
+        self._writes: list = []  # List of (addr, data_bytes) tuples
+        self._symbolic_writes: list = []  # List of (addr, ast) for symbolic imports
+        self._original_store = None
+        self._tracking = False
+
+    def __enter__(self):
+        """Start tracking memory writes."""
+        if hasattr(self._state, 'memory') and hasattr(self._state.memory, 'store'):
+            self._original_store = self._state.memory.store
+            self._tracking = True
+
+            # Create wrapper that tracks writes
+            tracker = self
+
+            def tracking_store(addr, data, size=None, condition=None, **kwargs):
+                """Wrapper for memory.store that tracks writes."""
+                # Call original store first
+                result = tracker._original_store(addr, data, size=size, condition=condition, **kwargs)
+
+                # Track the write
+                try:
+                    # Get concrete address
+                    if hasattr(addr, 'symbolic') and addr.symbolic:
+                        # For symbolic addresses, we can't easily track
+                        pass
+                    else:
+                        concrete_addr = addr if isinstance(addr, int) else int(addr)
+
+                        # Get concrete data
+                        if hasattr(data, 'symbolic') and data.symbolic:
+                            # For symbolic data, get a concrete witness
+                            concrete_data = tracker._state.solver.eval(data)
+                            if size is None:
+                                size = data.size() // 8 if hasattr(data, 'size') else 8
+                            data_bytes = concrete_data.to_bytes(size, 'little')
+                            # Also track the symbolic AST for Rust import
+                            tracker._symbolic_writes.append((concrete_addr, data))
+                        elif isinstance(data, int):
+                            if size is None:
+                                size = 8
+                            data_bytes = data.to_bytes(size, 'little')
+                        else:
+                            # claripy concrete value
+                            concrete_val = tracker._state.solver.eval(data)
+                            if size is None:
+                                size = data.size() // 8 if hasattr(data, 'size') else 8
+                            data_bytes = concrete_val.to_bytes(size, 'little')
+
+                        tracker._writes.append((concrete_addr, list(data_bytes)))
+                except Exception as e:
+                    # Don't fail on tracking errors
+                    pass
+
+                return result
+
+            self._state.memory.store = tracking_store
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Stop tracking memory writes and restore original store."""
+        if self._tracking and self._original_store is not None:
+            self._state.memory.store = self._original_store
+            self._tracking = False
+        return False  # Don't suppress exceptions
+
+    def get_writes(self) -> list:
+        """Get all tracked memory writes.
+
+        Returns:
+            List of (addr, data_bytes) tuples.
+        """
+        return self._writes
+
+    def get_symbolic_writes(self) -> list:
+        """Get all tracked symbolic memory writes.
+
+        Returns:
+            List of (addr, ast) tuples for symbolic values that need
+            to be imported to Rust.
+        """
+        return self._symbolic_writes
+
+    def clear(self):
+        """Clear tracked writes."""
+        self._writes.clear()
+        self._symbolic_writes.clear()
+
+
 class RustExplorationManager:
     """Python wrapper for Rust-native exploration manager.
 
@@ -166,6 +277,12 @@ class RustExplorationManager:
         self._project = project
         self._rust_mgr = _RustExplorationManager(project.arch.name)
 
+        # Track registered hooks to detect dynamically created continuations
+        # SimProcedures can create continuation hooks via self.call() which
+        # need to be registered with Rust before exploration continues
+        # (Must be initialized before _register_simprocedures() is called)
+        self._registered_hooks: set = set()
+
         # Set up callbacks
         self._setup_callbacks()
 
@@ -201,8 +318,32 @@ class RustExplorationManager:
         self._symbolic_pages: Dict[int, Dict[int, object]] = {}
         self._max_symbolic_pages_cache = 100  # Limit cache size
 
+        # Track symbolic memory writes during hooks for preservation
+        # Maps state_id -> {addr -> (claripy_ast, size)}
+        # This ensures symbolic memory written by hooks survives the sync back to Rust
+        self._hook_symbolic_memory: Dict[int, Dict[int, Tuple[object, int]]] = {}
+
+        # Track the current callback state ID for memory tracking during callbacks
+        self._current_callback_state_id: Optional[int] = None
+
+        # Track symbolic memory by address for state export recovery (P1 fix)
+        # Maps state_id -> {addr -> (ast, size)}
+        # This allows recovering original symbols during state export instead of
+        # creating fresh BVS variables that lose constraint linkage
+        self._addr_to_ast: Dict[int, Dict[int, Tuple[object, int]]] = {}
+
+        # Track procedure_data for SimProcedure continuations (P1 fix)
+        # When a SimProcedure uses self.call() to invoke a function and register
+        # a continuation, the procedure_data is stored here keyed by the continuation
+        # address. When Rust invokes the continuation, we restore this data.
+        # Maps continuation_addr -> procedure_data tuple
+        self._pending_procedure_data: Dict[int, Tuple] = {}
+
         # Add initial states
         if active_states:
+            # Handle single state or list of states
+            if hasattr(active_states, 'solver'):  # Single SimState
+                active_states = [active_states]
             for state in active_states:
                 self._add_rust_state('active', state)
 
@@ -219,14 +360,45 @@ class RustExplorationManager:
                 return (bytes(size), False, None)
 
             try:
+                # Check preserved hook symbolic memory first
+                # This is critical for preserving symbolic relationships when
+                # hooks manipulate symbolic memory (like flareon2015_5)
+                # P5 fix: Use effective state ID to find parent's symbolic memory
+                state_id = self._current_callback_state_id
+                effective_state_id = self._get_effective_state_id(state_id) if state_id is not None else None
+                lookup_id = effective_state_id if effective_state_id is not None else state_id
+                if lookup_id is not None and lookup_id in self._hook_symbolic_memory:
+                    hook_mem = self._hook_symbolic_memory[lookup_id]
+                    for mem_addr, (ast, mem_size) in hook_mem.items():
+                        # Check if the requested address overlaps with tracked symbolic memory
+                        if mem_addr <= addr < mem_addr + mem_size:
+                            # Found symbolic memory at this address
+                            offset = addr - mem_addr
+                            if offset == 0 and size == mem_size:
+                                # Exact match - return the full AST
+                                concrete = state.solver.eval(ast).to_bytes(size, 'little')
+                                self._register_handle(id(ast), ast, addr=addr, size=size, state_id=lookup_id)
+                                l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
+                                return (concrete, True, ast)
+                            elif offset == 0 and size < mem_size:
+                                # Partial read from start - extract bytes
+                                extracted = claripy.Extract(size * 8 - 1, 0, ast)
+                                concrete = state.solver.eval(extracted).to_bytes(size, 'little')
+                                self._register_handle(id(extracted), extracted, addr=addr, size=size, state_id=lookup_id)
+                                return (concrete, True, extracted)
+
+                # Standard memory load from state
                 val = state.memory.load(addr, size, endness=state.arch.memory_endness)
-                if val.symbolic:
+                # Safe check for symbolic (handles callables)
+                is_symbolic = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                if is_symbolic:
                     # Register the handle for later constraint reconstruction
                     # This is critical for bidirectional constraint sync - when Rust
                     # concretizes this address and syncs constraints back, we can
                     # look up the original AST and properly constrain it
                     handle_id = id(val)
-                    self._register_handle(handle_id, val)
+                    # Track address mapping for state export recovery (P1 fix)
+                    self._register_handle(handle_id, val, addr=addr, size=size, state_id=state_id)
                     concrete = state.solver.eval(val).to_bytes(size, 'little')
                     return (concrete, True, val)  # Return claripy AST for symbolic values
                 else:
@@ -318,10 +490,58 @@ class RustExplorationManager:
                             l.debug(f"Synced constraint from handle {handle_id}: {desc}")
                             continue
 
-                    # Fallback: log the constraint for debugging
-                    # Without the original AST, we can't fully reconstruct the constraint
-                    l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
-                    sync_failed = True
+                    # P2 fix: Try to reconstruct constraint from description
+                    # Description formats: "addr_concretize_0x1234", "branch_cond_0xABCD", etc.
+                    reconstructed = False
+
+                    # P5 fix: Use effective state ID for addr_to_ast lookups
+                    state_id = self._current_callback_state_id
+                    effective_id = self._get_effective_state_id(state_id) if state_id is not None else None
+
+                    if desc.startswith("addr_concretize_"):
+                        # Address concretization - extract address from description
+                        addr_str = desc.replace("addr_concretize_", "")
+                        try:
+                            addr = int(addr_str, 16)
+                            # Look for AST by address in our tracking
+                            lookup_id = effective_id if effective_id is not None else state_id
+                            if lookup_id is not None:
+                                addr_map = self._addr_to_ast.get(lookup_id, {})
+                                for tracked_addr, (tracked_ast, _) in addr_map.items():
+                                    if tracked_addr == addr:
+                                        constraint = tracked_ast == claripy.BVV(concrete_val, width)
+                                        state.solver.add(constraint)
+                                        added_constraints.append(constraint)
+                                        l.debug(f"Reconstructed addr_concretize constraint from desc: {desc}")
+                                        reconstructed = True
+                                        break
+                        except ValueError:
+                            pass
+
+                    elif desc.startswith("mem_") and "_" in desc:
+                        # Memory read symbolic - try to find by address
+                        parts = desc.split("_")
+                        if len(parts) >= 2:
+                            try:
+                                addr = int(parts[1], 16)
+                                lookup_id = effective_id if effective_id is not None else state_id
+                                if lookup_id is not None:
+                                    addr_map = self._addr_to_ast.get(lookup_id, {})
+                                    for tracked_addr, (tracked_ast, _) in addr_map.items():
+                                        if tracked_addr == addr:
+                                            constraint = tracked_ast == claripy.BVV(concrete_val, width)
+                                            state.solver.add(constraint)
+                                            added_constraints.append(constraint)
+                                            l.debug(f"Reconstructed mem constraint from desc: {desc}")
+                                            reconstructed = True
+                                            break
+                            except ValueError:
+                                pass
+
+                    if not reconstructed:
+                        # Still couldn't reconstruct - log warning
+                        l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
+                        sync_failed = True
 
                 except Exception as e:
                     l.warning(f"Error syncing constraint '{desc}': {e}")
@@ -354,6 +574,121 @@ class RustExplorationManager:
         callbacks.set_fetch_page(fetch_page)
         callbacks.set_sync_constraints(sync_constraints)
 
+        # P3 fix: Register callbacks for reading/writing registers
+        def get_register(offset: int, size: int) -> Tuple[bytes, bool, Optional[object]]:
+            """Get register value from Python state.
+
+            P3 fix: This callback allows Rust to read register values from the
+            Python state, supporting both concrete and symbolic values.
+
+            Args:
+                offset: Register offset in the register file.
+                size: Size of the register in bytes.
+
+            Returns:
+                (concrete_bytes, is_symbolic, symbolic_ast_or_none)
+            """
+            state = self._get_callback_state() or self._get_default_state()
+            if state is None:
+                return (bytes(size), False, None)
+
+            try:
+                val = state.registers.load(offset, size, endness=state.arch.register_endness)
+                is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                concrete = state.solver.eval(val).to_bytes(size, 'little')
+                if is_sym:
+                    self._register_handle(id(val), val)
+                    return (concrete, True, val)
+                return (concrete, False, None)
+            except Exception as e:
+                l.warning(f"get_register error at offset {offset}: {e}")
+                return (bytes(size), False, None)
+
+        def put_register(offset: int, data: bytes):
+            """Set register value in Python state.
+
+            P3 fix: This callback allows Rust to write register values to the
+            Python state.
+
+            Args:
+                offset: Register offset in the register file.
+                data: Raw bytes to write to the register.
+            """
+            state = self._get_callback_state() or self._get_default_state()
+            if state is None:
+                return
+
+            try:
+                val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
+                state.registers.store(offset, val, endness=state.arch.register_endness)
+            except Exception as e:
+                l.warning(f"put_register error at offset {offset}: {e}")
+
+        callbacks.set_get_register(get_register)
+        callbacks.set_put_register(put_register)
+
+        # P4 fix: Dirty call callback for VEX dirty helpers (CPUID, RDTSC, etc.)
+        def dirty_call(name: str, args: list, ret_ty_bits: int) -> Tuple[bytes, bool, Optional[object]]:
+            """Handle VEX dirty calls (CPUID, RDTSC, x87 ops, etc.).
+
+            P4 fix: VEX dirty calls are helper functions that perform complex
+            operations like reading CPU features (CPUID) or timestamp counter
+            (RDTSC). These need to be handled in Python where the dirty
+            helper implementations live.
+
+            Args:
+                name: Name of the dirty helper function (e.g., "amd64g_dirtyhelper_RDTSC").
+                args: List of integer arguments to pass to the helper.
+                ret_ty_bits: Size of return value in bits.
+
+            Returns:
+                (concrete_bytes, is_symbolic, symbolic_ast_or_none)
+            """
+            state = self._get_callback_state() or self._get_default_state()
+            if state is None:
+                return (bytes(ret_ty_bits // 8), False, None)
+
+            try:
+                from angr.engines.vex.heavy import dirty as dirty_module
+
+                if not hasattr(dirty_module, name):
+                    l.warning(f"No dirty call handler for {name}")
+                    return (bytes(ret_ty_bits // 8), False, None)
+
+                handler = getattr(dirty_module, name)
+
+                # Convert integer args to claripy BVVs
+                claripy_args = [claripy.BVV(arg, 64) for arg in args]
+
+                # Call the handler
+                result, constraints = handler(state, *claripy_args)
+
+                # Add any constraints returned by the handler
+                if constraints:
+                    for c in constraints:
+                        state.solver.add(c)
+
+                if result is None:
+                    return (bytes(ret_ty_bits // 8), False, None)
+
+                is_sym = getattr(result, 'symbolic', False) if hasattr(result, 'symbolic') else False
+
+                # Get concrete value (evaluate if symbolic)
+                concrete_val = state.solver.eval(result)
+                num_bytes = ret_ty_bits // 8
+                concrete_bytes = concrete_val.to_bytes(num_bytes, 'little')
+
+                if is_sym:
+                    self._register_handle(id(result), result)
+                    return (concrete_bytes, True, result)
+                return (concrete_bytes, False, None)
+
+            except Exception as e:
+                l.warning(f"dirty_call {name} error: {e}")
+                return (bytes(ret_ty_bits // 8), False, None)
+
+        callbacks.set_dirty_call(dirty_call)
+
         # Dynamic function resolution callback
         def resolve_function(addr: int, name: Optional[str]) -> Optional[Tuple[str, int, bool]]:
             """Resolve an unmodeled function call.
@@ -377,6 +712,67 @@ class RustExplorationManager:
                     num_args = getattr(proc, 'num_args', 0) or 0
                     no_ret = getattr(proc, 'NO_RET', False)
                     return (proc_name, num_args, no_ret)
+
+            # Check if this is a PLT address - resolve through GOT using jmprel table
+            # PLT stubs do `jmp [GOT]` - we need to find which symbol the GOT entry maps to
+            if hasattr(self._project, 'loader'):
+                obj = self._project.loader.find_object_containing(addr)
+                if obj:
+                    # Check if addr is in a PLT section
+                    in_plt = False
+                    for section in obj.sections:
+                        if section.name in ('.plt', '.plt.got', '.plt.sec') and section.min_addr <= addr < section.max_addr:
+                            in_plt = True
+                            break
+
+                    if in_plt:
+                        # Build mappings for resolution
+                        proc_by_name = {}
+                        for proc_addr, proc in self._project._sim_procedures.items():
+                            proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+                            proc_by_name[proc_name] = (proc_addr, proc)
+
+                        # Build GOT address -> symbol name mapping from jmprel
+                        got_to_sym = {}
+                        if hasattr(obj, 'jmprel'):
+                            for sym_name, reloc in obj.jmprel.items():
+                                got_to_sym[reloc.rebased_addr] = sym_name
+
+                        # Read the GOT address from the PLT instruction
+                        try:
+                            block = self._project.factory.block(addr, num_inst=1)
+                            insn = block.capstone.insns[0] if block.capstone.insns else None
+                            if insn and insn.mnemonic == 'jmp':
+                                # Get the memory operand (GOT address)
+                                for op in insn.operands:
+                                    if op.type == 3:  # CS_OP_MEM
+                                        # RIP-relative addressing: target = insn.address + insn.size + disp
+                                        got_addr = insn.address + insn.size + op.mem.disp
+                                        # Look up which symbol this GOT address belongs to
+                                        if got_addr in got_to_sym:
+                                            sym_name = got_to_sym[got_addr]
+                                            if sym_name in proc_by_name:
+                                                proc_addr, proc = proc_by_name[sym_name]
+                                                num_args = getattr(proc, 'num_args', 0) or 0
+                                                no_ret = getattr(proc, 'NO_RET', False)
+                                                l.debug(f"Resolved PLT at 0x{addr:x} to {sym_name} (GOT 0x{got_addr:x})")
+                                                return (sym_name, num_args, no_ret)
+                                        else:
+                                            # GOT not in jmprel - try reading the value and checking SimProcedures
+                                            state = self._get_default_state()
+                                            if state:
+                                                got_val = state.memory.load(got_addr, 8, endness='Iend_LE')
+                                                extern_addr = state.solver.eval(got_val)
+                                                if extern_addr in self._project._sim_procedures:
+                                                    proc = self._project._sim_procedures[extern_addr]
+                                                    proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+                                                    num_args = getattr(proc, 'num_args', 0) or 0
+                                                    no_ret = getattr(proc, 'NO_RET', False)
+                                                    l.debug(f"Resolved PLT at 0x{addr:x} to {proc_name} via GOT value")
+                                                    return (proc_name, num_args, no_ret)
+                        except Exception as e:
+                            l.debug(f"PLT resolution failed for 0x{addr:x}: {e}")
+
 
             # Try to resolve by name using angr's procedure registry
             if name:
@@ -410,6 +806,19 @@ class RustExplorationManager:
                                 return (sym.name, num_args, no_ret)
                     except ImportError:
                         pass
+
+            # Check if this is internal binary code (not PLT, not extern)
+            # If so, return a special marker to tell Rust to continue execution
+            if hasattr(self._project, 'loader'):
+                obj = self._project.loader.find_object_containing(addr)
+                if obj and obj.binary is not None:
+                    # Check if addr is in an executable section (but not PLT)
+                    for section in obj.sections:
+                        if section.is_executable and section.min_addr <= addr < section.max_addr:
+                            if section.name not in ('.plt', '.plt.got', '.plt.sec'):
+                                # This is internal binary code - return a pass-through marker
+                                l.debug(f"Internal function at 0x{addr:x} - returning pass-through")
+                                return ("__internal_passthrough__", 0, False)
 
             # Unresolvable - return None to indicate state should deadend
             l.debug(f"Could not resolve function at 0x{addr:x} (name={name})")
@@ -454,9 +863,45 @@ class RustExplorationManager:
                 num_args = getattr(proc, 'num_args', 0) or 0
                 no_return = getattr(proc, 'NO_RET', False)
                 procs.append((addr, name, num_args, no_return))
+                # Track this hook as registered
+                self._registered_hooks.add(addr)
 
         if procs:
             self._rust_mgr.register_simprocedures(procs)
+
+    def _sync_hooks_before_step(self):
+        """Sync dynamically created hooks (like continuations) before stepping.
+
+        SimProcedures can create continuation hooks via self.call() which are
+        added to the project dynamically. This method ensures those hooks are
+        registered with Rust before exploration continues.
+
+        This is critical for __libc_start_main and other procedures that use
+        continuations to chain function calls (init -> main -> fini).
+        """
+        if not hasattr(self._project, '_sim_procedures'):
+            return
+
+        current_hooks = set(self._project._sim_procedures.keys())
+        new_hooks = current_hooks - self._registered_hooks
+
+        if not new_hooks:
+            return
+
+        # Register newly created hooks with Rust
+        procs = []
+        for addr in new_hooks:
+            proc = self._project._sim_procedures[addr]
+            name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+            num_args = getattr(proc, 'num_args', 0) or 0
+            no_return = getattr(proc, 'NO_RET', False)
+            procs.append((addr, name, num_args, no_return))
+            self._registered_hooks.add(addr)
+            l.debug(f"Syncing dynamically created hook at 0x{addr:x}: {name}")
+
+        if procs:
+            self._rust_mgr.register_simprocedures(procs)
+            l.debug(f"Synced {len(procs)} dynamically created hooks")
 
     def _add_rust_state(self, stash: str, angr_state: "angr.SimState"):
         """Add an angr state to a Rust stash.
@@ -536,9 +981,13 @@ class RustExplorationManager:
         for reg_name in reg_names:
             try:
                 reg_val = getattr(regs, reg_name)
-                if not reg_val.symbolic:
-                    rust_state.set_register(reg_name, angr_state.solver.eval(reg_val))
-            except (AttributeError, KeyError):
+                # Sync ALL registers, including symbolic ones
+                # For symbolic registers, evaluate to get a concrete value
+                # This ensures Rust has consistent state with Python
+                concrete_val = angr_state.solver.eval(reg_val)
+                rust_state.set_register(reg_name, concrete_val)
+            except (AttributeError, KeyError, Exception):
+                # Skip if register doesn't exist or can't be evaluated
                 pass
 
     def _sync_memory_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
@@ -559,40 +1008,88 @@ class RustExplorationManager:
                     except Exception:
                         pass
 
-        # Map stack (simplified - just map a region)
-        stack_base = 0x7fff_fff0_0000
-        stack_size = 0x10_0000
-        rust_state.map_memory(stack_base - stack_size, stack_size, 6)  # RW
+        # Map stack - architecture aware
+        # Use actual SP from state instead of hardcoded 64-bit address
+        arch = self._project.arch
+        stack_size_below = 0x10_0000  # 1MB below SP
+        stack_size_above = 0x1_0000   # 64KB above SP (for args, caller frame, etc.)
+
+        # Get the actual stack pointer from the state
+        try:
+            sp = angr_state.solver.eval(angr_state.regs.sp)
+        except Exception:
+            # Fallback to architecture default
+            if arch.bits == 32:
+                sp = 0x7fff_0000  # Typical 32-bit stack
+            else:
+                sp = 0x7fff_fff0_0000  # Typical 64-bit stack
+
+        # Map stack region covering both below and above SP
+        # Stack grows down, but we need space above SP for args and caller data
+        stack_base = (sp & ~0xFFF) + 0x1000  # Align to next page above SP
+        total_stack_size = stack_size_below + stack_size_above
+        rust_state.map_memory(stack_base - total_stack_size, total_stack_size, 6)  # RW
 
     def _concretize_stack_registers(self, state: "angr.SimState"):
         """Concretize stack registers for Rust memory mapping compatibility.
 
         This prevents symbolic address issues during Rust exploration by
         ensuring stack-relative registers have concrete values.
+
+        Uses solver.eval() to get the same concrete values that Python
+        already evaluated, ensuring Rust has consistent state with what
+        Python set up (e.g., address calculations like ebp - 0x80004).
         """
         arch = state.arch
 
         # Determine which registers to concretize based on architecture
         if arch.name in ('AMD64', 'X86_64'):
             stack_regs = ['rsp', 'rbp']
+            bp_reg = 'rbp'
+            sp_reg = 'rsp'
         elif arch.name == 'X86':
             stack_regs = ['esp', 'ebp']
+            bp_reg = 'ebp'
+            sp_reg = 'esp'
         elif arch.name.startswith('ARM'):
             stack_regs = ['sp']
+            bp_reg = None
+            sp_reg = 'sp'
         else:
             stack_regs = []
+            bp_reg = None
+            sp_reg = None
 
-        for reg_name in stack_regs:
+        # First, concretize SP if needed (we need a concrete SP for BP default)
+        sp_val = None
+        if sp_reg:
             try:
-                reg_val = getattr(state.regs, reg_name)
+                reg_val = getattr(state.regs, sp_reg)
                 if reg_val.symbolic:
-                    concrete_val = state.solver.eval(reg_val)
-                    setattr(state.regs, reg_name, concrete_val)
-                    l.debug(f"Concretized {reg_name} to 0x{concrete_val:x}")
-            except AttributeError:
-                pass
+                    sp_val = state.solver.eval(reg_val)
+                    setattr(state.regs, sp_reg, sp_val)
+                    l.debug(f"Concretized {sp_reg} to 0x{sp_val:x}")
+                else:
+                    sp_val = state.solver.eval(reg_val)
             except Exception as e:
-                l.debug(f"Could not concretize {reg_name}: {e}")
+                l.debug(f"Could not concretize {sp_reg}: {e}")
+
+        # Then concretize BP - always use solver.eval() to get the same value
+        # that Python already used to calculate addresses. This ensures
+        # Rust gets consistent register values with what Python set up.
+        if bp_reg:
+            try:
+                reg_val = getattr(state.regs, bp_reg)
+                if reg_val.symbolic:
+                    # Always use solver.eval() to get the value Python already used.
+                    # Even if unconstrained, Python may have evaluated it to
+                    # calculate addresses (e.g., ebp - 0x80004 for password buffer).
+                    # Using a different value breaks those address calculations.
+                    concrete_val = state.solver.eval(reg_val)
+                    l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x}")
+                    setattr(state.regs, bp_reg, concrete_val)
+            except Exception as e:
+                l.debug(f"Could not concretize {bp_reg}: {e}")
 
     def _get_default_state(self) -> Optional["angr.SimState"]:
         """Get a default state for callbacks."""
@@ -660,6 +1157,10 @@ class RustExplorationManager:
         SimProcedures may need procedure_data for continuations (e.g., when
         using self.call()). This method initializes the required data.
 
+        P1 fix: Check for stored procedure_data from a previous self.call() and
+        restore it. This is critical for continuations like __libc_start_main
+        which call init/fini functions and expect to resume with saved args.
+
         Args:
             state: The angr callback state to initialize.
             event: The exploration event that triggered the callback.
@@ -667,7 +1168,24 @@ class RustExplorationManager:
         if event.callback_reason != 'simprocedure':
             return
 
-        # Get SP from Rust for saved state
+        addr = event.callback_addr
+        # Ensure consistent int type for lookup
+        addr_int = int(addr) if addr is not None else None
+
+        # P1 fix: Check for stored procedure_data from a previous self.call()
+        # This restores the full context (arguments, local vars) for continuations
+        if addr_int in self._pending_procedure_data:
+            stored_data = self._pending_procedure_data.pop(addr_int)
+            try:
+                if hasattr(state.callstack, 'top') and state.callstack.top is not None:
+                    state.callstack.top.procedure_data = stored_data
+                    l.debug(f"Restored procedure_data for continuation at 0x{addr:x}: "
+                            f"args={len(stored_data[1]) if len(stored_data) > 1 else 0}")
+                    return
+            except Exception as e:
+                l.debug(f"Could not restore procedure_data: {e}")
+
+        # Fallback: Get SP from Rust for saved state
         try:
             sp_val = self._rust_mgr.get_pending_register('rsp')
             if sp_val is None:
@@ -686,9 +1204,9 @@ class RustExplorationManager:
                     [],                    # sim_args (populated by SimProcedure)
                     [],                    # saved_local_vars
                     None,                  # saved_lr
-                    event.callback_addr,   # ideal_addr
+                    addr,                  # ideal_addr
                 )
-                l.debug(f"Initialized callstack procedure_data at 0x{event.callback_addr:x}")
+                l.debug(f"Initialized callstack procedure_data at 0x{addr:x}")
         except Exception as e:
             l.debug(f"Could not initialize callstack procedure_data: {e}")
 
@@ -747,7 +1265,7 @@ class RustExplorationManager:
         # Fall back to identity tracker (may have been evicted from handle cache)
         return self._identity_tracker.get_original_ast(handle_id)
 
-    def _register_handle(self, handle_id: int, ast: object):
+    def _register_handle(self, handle_id: int, ast: object, addr: int = None, size: int = None, state_id: int = None):
         """Register a claripy AST with its handle ID for later lookup.
 
         Uses an LRU eviction strategy that preserves actively referenced handles.
@@ -759,11 +1277,24 @@ class RustExplorationManager:
         Args:
             handle_id: The handle ID assigned by Rust.
             ast: The claripy AST to cache.
+            addr: Optional memory address where this AST is stored.
+            size: Optional size in bytes of the AST.
+            state_id: Optional state ID for address tracking.
         """
         self._ast_handle_cache[handle_id] = ast
 
         # Also register with identity tracker for bidirectional lookup
         self._identity_tracker.register(ast, handle_id)
+
+        # Track address -> AST mapping for state export recovery (P1 fix)
+        # P5 fix: Use effective state ID to ensure forked states share parent's data
+        if addr is not None and state_id is not None:
+            effective_id = self._get_effective_state_id(state_id)
+            if effective_id is not None:
+                if effective_id not in self._addr_to_ast:
+                    self._addr_to_ast[effective_id] = {}
+                actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, 'length') else 1)
+                self._addr_to_ast[effective_id][addr] = (ast, actual_size)
 
         # Limit cache size to prevent memory issues
         # Use smarter eviction that preserves active handles
@@ -841,6 +1372,7 @@ class RustExplorationManager:
         """Enforce the symbolic pages cache size limit.
 
         Removes oldest entries when cache exceeds _max_symbolic_pages_cache.
+        Also cleans up _addr_to_ast to prevent memory leaks.
         """
         if len(self._symbolic_pages) <= self._max_symbolic_pages_cache:
             return
@@ -855,6 +1387,9 @@ class RustExplorationManager:
         # Remove old entries
         for state_id in to_remove:
             del self._symbolic_pages[state_id]
+            # Also clean up address tracking for this state (P1 fix)
+            if state_id in self._addr_to_ast:
+                del self._addr_to_ast[state_id]
             # Mark symbols as inactive for GC
             self._identity_tracker.mark_inactive(state_id)
 
@@ -1000,7 +1535,12 @@ class RustExplorationManager:
             # Handle CCall (helper function calls)
             if expr_name == 'CCall':
                 if hasattr(expr, 'cee'):
-                    result['cee'] = str(expr.cee)
+                    cee = expr.cee
+                    result['cee'] = {
+                        'name': cee.name if hasattr(cee, 'name') else str(cee),
+                        'addr': 0,
+                        'mcx_mask': getattr(cee, 'mcx_mask', 0),
+                    }
                 if hasattr(expr, 'retty'):
                     result['retty'] = str(expr.retty)
                 if hasattr(expr, 'args'):
@@ -1125,6 +1665,9 @@ class RustExplorationManager:
 
             # CAS: compare-and-swap
             if tag == 'CAS':
+                result['end'] = str(stmt.end) if hasattr(stmt, 'end') else "Iend_LE"
+                result['oldLo'] = stmt.oldLo if hasattr(stmt, 'oldLo') else 0
+                result['oldHi'] = stmt.oldHi if hasattr(stmt, 'oldHi') else None
                 if hasattr(stmt, 'addr'):
                     result['addr'] = serialize_expr(stmt.addr)
                 if hasattr(stmt, 'dataLo'):
@@ -1139,10 +1682,11 @@ class RustExplorationManager:
 
             # LLSC: load-linked/store-conditional
             if tag == 'LLSC':
+                result['end'] = str(stmt.end) if hasattr(stmt, 'end') else "Iend_LE"
                 if hasattr(stmt, 'addr'):
                     result['addr'] = serialize_expr(stmt.addr)
                 if hasattr(stmt, 'storedata'):
-                    result['storedata'] = serialize_expr(stmt.storedata)
+                    result['storedata'] = serialize_expr(stmt.storedata) if stmt.storedata else None
                 if hasattr(stmt, 'result'):
                     result['result'] = stmt.result
                 return result
@@ -1150,11 +1694,27 @@ class RustExplorationManager:
             # Dirty: helper call with side effects
             if tag == 'Dirty':
                 if hasattr(stmt, 'cee'):
-                    result['cee'] = str(stmt.cee)
+                    cee = stmt.cee
+                    result['cee'] = {
+                        'name': cee.name if hasattr(cee, 'name') else str(cee),
+                        'addr': 0,
+                        'mcx_mask': getattr(cee, 'mcx_mask', 0),
+                    }
+                if hasattr(stmt, 'guard'):
+                    result['guard'] = serialize_expr(stmt.guard) if stmt.guard else None
+                else:
+                    result['guard'] = None
                 if hasattr(stmt, 'args'):
                     result['args'] = [serialize_expr(a) for a in stmt.args]
                 if hasattr(stmt, 'tmp'):
                     result['tmp'] = stmt.tmp
+                else:
+                    result['tmp'] = None
+                # Memory effect fields
+                result['mFx'] = str(stmt.mFx) if hasattr(stmt, 'mFx') and stmt.mFx else "Ifx_None"
+                result['mAddr'] = serialize_expr(stmt.mAddr) if hasattr(stmt, 'mAddr') and stmt.mAddr else None
+                result['mSize'] = stmt.mSize if hasattr(stmt, 'mSize') else 0
+                result['nFxState'] = stmt.nFxState if hasattr(stmt, 'nFxState') else 0
                 return result
 
             # AbiHint - needs base, len, nia fields
@@ -1251,10 +1811,34 @@ class RustExplorationManager:
         name = event.callback_name
         state_id = event.callback_state_id
 
-        # Find the SimProcedure
+        # Track current callback state ID for symbolic memory preservation
+        self._current_callback_state_id = state_id
+
+        # Handle internal passthrough - this is internal binary code, just continue execution
+        if name == "__internal_passthrough__":
+            l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
+            # Resume execution at this address, no SimProcedure to run
+            self._rust_mgr.resume_after_simprocedure(addr, None, None)
+            return
+
+        # Find the SimProcedure - first by address, then by name
         proc = self._project._sim_procedures.get(addr)
+        if proc is None and name:
+            # Address lookup failed (e.g., PLT address) - try to find by name
+            for proc_addr, candidate in self._project._sim_procedures.items():
+                proc_name = candidate.__class__.__name__ if hasattr(candidate, '__class__') else str(candidate)
+                if proc_name == name:
+                    proc = candidate
+                    l.debug(f"Found SimProcedure {name} at 0x{proc_addr:x} (callback was at 0x{addr:x})")
+                    break
         if proc is None:
-            l.warning(f"SimProcedure not found at 0x{addr:x}")
+            l.warning(f"SimProcedure not found at 0x{addr:x} (name={name})")
+            self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
+            return
+
+        # Defensive type check
+        if isinstance(proc, (list, tuple)):
+            l.error(f"Invalid SimProcedure at 0x{addr:x}: got {type(proc).__name__}, expected callable")
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
             return
 
@@ -1271,6 +1855,17 @@ class RustExplorationManager:
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
             return
 
+        # Save original state for extracting changes after hook execution
+        # This is needed for no-successor hooks that modify state without creating successors
+        orig_state = state.copy()
+
+        # GAP 2 fix: Save original constraints before hook execution
+        # This allows extracting new constraints even for zero-length hooks
+        orig_constraints = set(state.solver.constraints) if hasattr(state, 'solver') else set()
+
+        # GAP 5: Track memory writes during callback execution
+        memory_tracker = CallbackMemoryTracker(state)
+
         # Run the SimProcedure
         try:
             from angr.engines.successors import SimSuccessors
@@ -1278,17 +1873,62 @@ class RustExplorationManager:
             # Create SimSuccessors object for the procedure
             successors = SimSuccessors(addr=addr, initial_state=state)
 
-            # Execute the procedure
-            proc_instance = proc
-            if hasattr(proc, 'run'):
-                proc.execute(state, successors)
-            else:
-                # It's a class, instantiate it
-                proc_instance = proc()
-                proc_instance.execute(state, successors)
+            # Execute the procedure with memory tracking (GAP 5)
+            with memory_tracker:
+                proc_instance = proc
+                if hasattr(proc, 'run'):
+                    proc.execute(state, successors)
+                else:
+                    # It's a class, instantiate it
+                    proc_instance = proc()
+                    proc_instance.execute(state, successors)
+
+            # Get tracked memory writes from callback execution
+            tracked_writes = memory_tracker.get_writes()
+            tracked_symbolic_writes = memory_tracker.get_symbolic_writes()
+            if tracked_writes:
+                l.debug(f"Tracked {len(tracked_writes)} memory writes during callback")
+            if tracked_symbolic_writes:
+                l.debug(f"Tracked {len(tracked_symbolic_writes)} symbolic memory writes during callback")
 
             # Handle successors
             all_succs = successors.all_successors
+
+            # P1 fix: Capture procedure_data from successors that use self.call()
+            # When a SimProcedure uses self.call() to invoke another function,
+            # it stores arguments and continuation info in procedure_data.
+            # We capture this here so we can restore it when the continuation runs.
+            for succ in all_succs:
+                try:
+                    cs = succ.callstack
+                    top = cs.top if cs else None
+                    if top is None:
+                        continue
+
+                    # P1 fix: When jumpkind is Ijk_Call, add_successor pushes a NEW callstack frame.
+                    # The procedure_data is on the PREVIOUS frame (the caller's frame).
+                    # Check both top and top.next for procedure_data.
+                    frames_to_check = [top]
+                    if hasattr(top, 'next') and top.next is not None:
+                        frames_to_check.append(top.next)
+
+                    for frame in frames_to_check:
+                        pdata = getattr(frame, 'procedure_data', None)
+                        if pdata is not None and len(pdata) >= 5:
+                            cont_addr = pdata[4]  # ideal_addr is continuation address
+                            # Convert to int for consistent key type
+                            if hasattr(cont_addr, 'concrete'):
+                                cont_addr_int = int(cont_addr)
+                            elif isinstance(cont_addr, int):
+                                cont_addr_int = cont_addr
+                            else:
+                                continue
+                            if cont_addr_int != addr:
+                                self._pending_procedure_data[cont_addr_int] = pdata
+                                l.debug(f"Stored procedure_data for continuation at 0x{cont_addr_int:x}")
+                except Exception as e:
+                    l.debug(f"Could not capture procedure_data: {e}")
+
             if all_succs:
                 # First successor continues in Rust
                 first_succ = all_succs[0]
@@ -1296,11 +1936,28 @@ class RustExplorationManager:
                 # For zero-length hooks, if successor has same address as hook,
                 # the hook just modifies state and we should continue execution
                 # at the same address WITHOUT re-triggering the hook
-                if is_zero_length_hook and first_succ.addr == addr:
+                #
+                # Note: Check symbolic IP before accessing .addr to prevent
+                # SimValueError when IP has multiple possible values
+                succ_ip_symbolic = first_succ.regs._ip.symbolic
+                succ_addr_matches = (not succ_ip_symbolic and first_succ.addr == addr)
+                if is_zero_length_hook and succ_addr_matches:
                     # Resume with skip_hook flag to prevent infinite loop
-                    self._resume_with_state(first_succ, state, event, skip_hook_addr=addr)
+                    # GAP 5: Pass tracked writes for memory sync
+                    self._resume_with_state(first_succ, state, event, skip_hook_addr=addr,
+                                           tracked_writes=tracked_writes,
+                                           tracked_symbolic_writes=tracked_symbolic_writes)
+                elif succ_ip_symbolic:
+                    # Symbolic IP - let standard handling work
+                    # Fall through to normal resume without skip_hook
+                    self._resume_with_state(first_succ, state, event,
+                                           tracked_writes=tracked_writes,
+                                           tracked_symbolic_writes=tracked_symbolic_writes)
                 else:
-                    self._resume_with_state(first_succ, state, event)
+                    # GAP 5: Pass tracked writes for memory sync
+                    self._resume_with_state(first_succ, state, event,
+                                           tracked_writes=tracked_writes,
+                                           tracked_symbolic_writes=tracked_symbolic_writes)
 
                 # Additional successors are added as new active states
                 for succ in all_succs[1:]:
@@ -1310,11 +1967,23 @@ class RustExplorationManager:
                 # No successors - for zero-length hooks, execute the instruction
                 if is_zero_length_hook:
                     # Tell Rust to skip the hook and execute from addr
-                    self._resume_with_skip_hook(addr, state, event)
+                    # GAP 2: Pass original constraints for constraint sync
+                    # GAP 5: Pass tracked writes for memory sync
+                    self._resume_with_skip_hook(addr, state, orig_state, event, orig_constraints,
+                                               tracked_writes=tracked_writes,
+                                               tracked_symbolic_writes=tracked_symbolic_writes)
                 else:
                     # No successors - maybe it's a no-return procedure
                     ret_addr = event.callback_return_addr or (addr + 1)
-                    self._rust_mgr.resume_after_simprocedure(ret_addr, None, None)
+                    # GAP 5: Pass tracked writes even for no-return procedures
+                    # Also import symbolic writes directly
+                    for sym_addr, ast in (tracked_symbolic_writes or []):
+                        try:
+                            self._rust_mgr.import_symbolic_memory(sym_addr, ast)
+                            l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to Rust")
+                        except Exception as e:
+                            l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
+                    self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
 
         except Exception as e:
             l.warning(f"SimProcedure execution error at 0x{addr:x}: {e}")
@@ -1325,13 +1994,16 @@ class RustExplorationManager:
         finally:
             # Clear callback state to avoid stale references
             self._set_callback_state(None)
+            self._current_callback_state_id = None
 
     def _resume_with_state(
         self,
         succ_state: "angr.SimState",
         orig_state: "angr.SimState",
         event: "_ExplorationEvent",
-        skip_hook_addr: Optional[int] = None
+        skip_hook_addr: Optional[int] = None,
+        tracked_writes: Optional[list] = None,
+        tracked_symbolic_writes: Optional[list] = None
     ):
         """Resume Rust execution with a successor state.
 
@@ -1345,12 +2017,64 @@ class RustExplorationManager:
             skip_hook_addr: If set, tells Rust to skip the hook at this address
                            for the next step (prevents infinite loops with
                            zero-length hooks).
+            tracked_writes: GAP 5 - Memory writes tracked during callback execution.
+            tracked_symbolic_writes: List of (addr, ast) for symbolic memory imports.
         """
-        new_pc = succ_state.addr
+        # Handle symbolic IP: pick first concrete solution if symbolic
+        if succ_state.regs._ip.symbolic:
+            try:
+                # Try to get one concrete value for the symbolic IP
+                new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
+            except claripy.errors.ClaripyError:
+                # Multiple solutions - pick any valid one
+                new_pc = succ_state.solver.eval(succ_state.regs._ip)
+        else:
+            new_pc = succ_state.addr
 
         # Extract changes
         reg_changes = self._extract_register_changes(orig_state, succ_state)
-        mem_changes = self._extract_memory_changes(orig_state, succ_state)
+        mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, succ_state)
+
+        # GAP 5: Merge tracked writes with extracted memory changes
+        if tracked_writes:
+            # Create a set of existing addresses to avoid duplicates
+            existing_addrs = {addr for addr, _ in mem_changes}
+            for addr, data in tracked_writes:
+                if addr not in existing_addrs:
+                    mem_changes.append((addr, data))
+                    existing_addrs.add(addr)
+            l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
+
+        # Collect all symbolic addresses to exclude from concrete memory changes
+        # This prevents apply_changes from overwriting symbolic imports with concrete values
+        all_symbolic_addrs = {addr for addr, _ in symbolic_imports}
+        if tracked_symbolic_writes:
+            all_symbolic_addrs.update(addr for addr, _ in tracked_symbolic_writes)
+
+        # Filter out symbolic addresses from mem_changes
+        if all_symbolic_addrs:
+            mem_changes = [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
+
+        # Import symbolic memory to Rust before resume
+        # This ensures Rust's symbolic_objects is populated for later loads
+        # First import from _extract_memory_changes()
+        for addr, ast in symbolic_imports:
+            try:
+                self._rust_mgr.import_symbolic_memory(addr, ast)
+                l.debug(f"Imported symbolic memory at 0x{addr:x} to Rust")
+            except Exception as e:
+                l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
+
+        # Then import from tracked symbolic writes (from CallbackMemoryTracker)
+        if tracked_symbolic_writes:
+            existing_sym_addrs = {addr for addr, _ in symbolic_imports}
+            for addr, ast in tracked_symbolic_writes:
+                if addr not in existing_sym_addrs:
+                    try:
+                        self._rust_mgr.import_symbolic_memory(addr, ast)
+                        l.debug(f"Imported tracked symbolic memory at 0x{addr:x} to Rust")
+                    except Exception as e:
+                        l.debug(f"Could not import tracked symbolic memory at 0x{addr:x}: {e}")
 
         # Extract any new constraints added during callback
         new_constraints = self._extract_new_constraints(orig_state, succ_state)
@@ -1368,7 +2092,7 @@ class RustExplorationManager:
         # Resume Rust with the changes and any new constraints
         # This enables bidirectional constraint flow: Rust -> Python -> Rust
         self._rust_mgr.resume_after_simprocedure(
-            new_pc, reg_changes, mem_changes, new_constraints or None
+            new_pc, reg_changes, mem_changes or None, new_constraints or None
         )
 
         # Update cache for future callbacks
@@ -1380,21 +2104,118 @@ class RustExplorationManager:
         self,
         addr: int,
         state: "angr.SimState",
-        event: "_ExplorationEvent"
+        orig_state: "angr.SimState",
+        event: "_ExplorationEvent",
+        orig_constraints: Optional[set] = None,
+        tracked_writes: Optional[list] = None,
+        tracked_symbolic_writes: Optional[list] = None
     ):
-        """Resume Rust execution at addr, skipping the hook there.
+        """Resume Rust execution after a zero-length hook with no successors.
 
-        Used for zero-length hooks that have no successors.
+        This handles hooks that modify state in-place without creating successor
+        states. We need to extract all state changes and sync them to Rust.
+
+        Args:
+            addr: Original hook address (used for skip_hook).
+            state: The modified state after hook execution.
+            orig_state: The original state before hook execution.
+            event: The exploration event.
+            orig_constraints: Original constraints before callback (for constraint sync).
+            tracked_writes: Memory writes tracked during callback execution.
+            tracked_symbolic_writes: List of (addr, ast) for symbolic memory imports.
         """
+        # Tell Rust to skip the hook at this address for the next step
+        # This prevents infinite loops when resuming at a zero-length hook address
         try:
             self._rust_mgr.set_skip_hook_addr(addr)
-            l.debug(f"Set skip_hook_addr to 0x{addr:x} (no successors)")
+            l.debug(f"Set skip_hook_addr to 0x{addr:x}")
         except Exception as e:
             l.debug(f"Could not set skip_hook_addr: {e}")
 
-        self._rust_mgr.resume_after_simprocedure(addr, None, None)
+        # Extract actual next PC from the modified state
+        # This handles hooks that manually set the return address (e.g., pop ret simulation)
+        if state.regs._ip.symbolic:
+            try:
+                new_pc = state.solver.eval_one(state.regs._ip)
+            except Exception:
+                try:
+                    new_pc = state.solver.eval(state.regs._ip)
+                except Exception:
+                    new_pc = addr  # Fallback to original address
+        else:
+            new_pc = state.addr
 
-        # Update cache
+        if new_pc != addr:
+            l.debug(f"Hook modified IP from 0x{addr:x} to 0x{new_pc:x}")
+
+        # Extract register changes between original and modified state
+        # This syncs all register modifications made by the hook
+        reg_changes = self._extract_register_changes(orig_state, state)
+
+        # Extract memory changes between original and modified state
+        mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, state)
+
+        # Merge tracked writes with extracted memory changes
+        # Tracked writes capture symbolic stores that _extract_memory_changes might miss
+        if tracked_writes:
+            existing_addrs = {write_addr for write_addr, _ in mem_changes} if mem_changes else set()
+            for write_addr, data in tracked_writes:
+                if write_addr not in existing_addrs:
+                    mem_changes.append((write_addr, data))
+                    existing_addrs.add(write_addr)
+            l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
+
+        # Collect all symbolic addresses to exclude from concrete memory changes
+        # This prevents apply_changes from overwriting symbolic imports with concrete values
+        all_symbolic_addrs = {sym_addr for sym_addr, _ in symbolic_imports}
+        if tracked_symbolic_writes:
+            all_symbolic_addrs.update(sym_addr for sym_addr, _ in tracked_symbolic_writes)
+
+        # Filter out symbolic addresses from mem_changes
+        if all_symbolic_addrs:
+            mem_changes = [(write_addr, data) for write_addr, data in mem_changes if write_addr not in all_symbolic_addrs]
+
+        # Import symbolic memory to Rust before resume
+        # This ensures Rust's symbolic_objects is populated for later loads
+        # First import from _extract_memory_changes()
+        for sym_addr, ast in symbolic_imports:
+            try:
+                self._rust_mgr.import_symbolic_memory(sym_addr, ast)
+                l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to Rust")
+            except Exception as e:
+                l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
+
+        # Then import from tracked symbolic writes (from CallbackMemoryTracker)
+        if tracked_symbolic_writes:
+            existing_sym_addrs = {sym_addr for sym_addr, _ in symbolic_imports}
+            for sym_addr, ast in tracked_symbolic_writes:
+                if sym_addr not in existing_sym_addrs:
+                    try:
+                        self._rust_mgr.import_symbolic_memory(sym_addr, ast)
+                        l.debug(f"Imported tracked symbolic memory at 0x{sym_addr:x} to Rust")
+                    except Exception as e:
+                        l.debug(f"Could not import tracked symbolic memory at 0x{sym_addr:x}: {e}")
+
+        # Extract new constraints added during hook execution
+        new_constraints = None
+        if orig_constraints is not None and hasattr(state, 'solver'):
+            try:
+                current_constraints = set(state.solver.constraints)
+                new_constraints = list(current_constraints - orig_constraints)
+                if new_constraints:
+                    l.debug(f"Extracted {len(new_constraints)} constraints from hook")
+            except Exception as e:
+                l.debug(f"Could not extract constraints: {e}")
+
+        # Resume Rust with all extracted changes
+        self._rust_mgr.resume_after_simprocedure(
+            new_pc,
+            reg_changes or None,
+            mem_changes or None,
+            new_constraints or None
+        )
+
+        # Update cache with modified state for future callbacks
         state_id = event.callback_state_id
         if state_id is not None:
             self._state_cache[state_id] = state
@@ -1516,6 +2337,10 @@ class RustExplorationManager:
         then syncs changes back to Rust after syscall execution.
         """
         syscall_num = event.callback_syscall_num
+        state_id = event.callback_state_id
+
+        # Track current callback state ID for symbolic memory preservation
+        self._current_callback_state_id = state_id
 
         # Create a state for syscall handling (uses cached state if available)
         state = self._create_state_for_callback(event)
@@ -1538,7 +2363,15 @@ class RustExplorationManager:
             if all_succs:
                 # First successor continues in Rust
                 succ_state = all_succs[0]
-                new_pc = succ_state.addr
+
+                # Handle symbolic IP: pick first concrete solution if symbolic
+                if succ_state.regs._ip.symbolic:
+                    try:
+                        new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
+                    except claripy.errors.ClaripyError:
+                        new_pc = succ_state.solver.eval(succ_state.regs._ip)
+                else:
+                    new_pc = succ_state.addr
 
                 reg_changes = self._extract_register_changes(state, succ_state)
                 mem_changes = self._extract_memory_changes(state, succ_state)
@@ -1567,6 +2400,216 @@ class RustExplorationManager:
         finally:
             # Clear callback state to avoid stale references
             self._set_callback_state(None)
+            self._current_callback_state_id = None
+
+    def _handle_find_predicate_callback(self, event: "_ExplorationEvent"):
+        """Handle callable find predicate evaluation callback from Rust.
+
+        P2 fix: When find is a callable (lambda/function), Rust cannot evaluate
+        it directly. This handler creates an angr state and evaluates the
+        predicate, then tells Rust whether the state matched.
+
+        Args:
+            event: The exploration event from Rust.
+        """
+        state_id = event.callback_state_id
+        addr = event.callback_addr
+
+        # Track current callback state ID
+        self._current_callback_state_id = state_id
+
+        try:
+            # Create angr state for predicate evaluation
+            state = self._create_state_for_callback(event)
+            if state is None:
+                l.warning(f"Could not create state for find predicate at 0x{addr:x}")
+                self._rust_mgr.resume_find_predicate(False)
+                return
+
+            # Evaluate the find predicate
+            if self._find_predicate is None:
+                l.warning("Find predicate callback but no predicate stored")
+                self._rust_mgr.resume_find_predicate(False)
+                return
+
+            try:
+                result = self._find_predicate(state)
+                matched = bool(result) if result is not None else False
+                l.debug(f"Find predicate at 0x{addr:x} returned: {matched}")
+            except Exception as e:
+                l.warning(f"Find predicate evaluation error at 0x{addr:x}: {e}")
+                matched = False
+
+            # Tell Rust the result
+            self._rust_mgr.resume_find_predicate(matched)
+
+            # If matched, update state cache for later retrieval
+            if matched and state_id is not None:
+                self._state_cache[state_id] = state
+
+        except Exception as e:
+            l.warning(f"Find predicate callback error: {e}")
+            self._rust_mgr.resume_find_predicate(False)
+        finally:
+            # Clear callback state to avoid stale references
+            self._set_callback_state(None)
+            self._current_callback_state_id = None
+
+    def _handle_symbolic_branch_callback(self, event: "_ExplorationEvent"):
+        """Handle symbolic branch callback from Rust.
+
+        When a symbolic branch with both paths feasible is encountered,
+        Rust returns to Python for proper state forking with constraints.
+        This ensures symbolic branches are handled correctly even when
+        hooks/callbacks occur, preventing lost forks.
+
+        The handler:
+        1. Gets the branch condition from Rust
+        2. Creates two forked states with appropriate constraints
+        3. Adds both states back to Rust's active stash
+        """
+        true_target = event.branch_true_target
+        false_target = event.branch_false_target
+        condition_id = event.branch_condition_id
+        state_id = event.callback_state_id
+
+        l.debug(f"Handling symbolic branch: true=0x{true_target:x}, false=0x{false_target:x}, "
+                f"cond_id={condition_id}")
+
+        try:
+            # Get the branch condition from Rust as a claripy AST
+            condition = self._rust_mgr.get_pending_branch_condition()
+
+            l.debug(f"Got branch condition from Rust: {condition}")
+
+            # Create true branch constraint: condition != 0 (condition is true)
+            # For a VEX guard, "true" means the guard evaluates to non-zero
+            true_constraint = condition != 0
+
+            # Create false branch constraint: condition == 0 (condition is false)
+            false_constraint = condition == 0
+
+            l.debug(f"True constraint: {true_constraint}")
+            l.debug(f"False constraint: {false_constraint}")
+
+            # Resume Rust with the forked states
+            # Pass constraints as lists for each branch
+            self._rust_mgr.resume_after_symbolic_branch(
+                true_target,
+                false_target,
+                [true_constraint],
+                [false_constraint],
+            )
+
+            l.debug(f"Resumed after symbolic branch with 2 forked states")
+
+        except Exception as e:
+            l.warning(f"Symbolic branch handling error: {e}")
+            import traceback
+            l.debug(traceback.format_exc())
+
+            # Fallback: just fork without proper constraints
+            # This is less accurate but at least continues exploration
+            try:
+                self._rust_mgr.resume_after_symbolic_branch(
+                    true_target,
+                    false_target,
+                    None,
+                    None,
+                )
+                l.debug("Resumed after symbolic branch with fallback (no constraints)")
+            except Exception as e2:
+                l.error(f"Failed to resume after symbolic branch: {e2}")
+                # Try to recover by adding a simple forked state
+                # This is a last resort to avoid hanging
+
+    def _get_pending_parent_id(self) -> Optional[int]:
+        """Get parent state ID of current pending callback state.
+
+        When Rust forks a state during exploration, the forked state gets a
+        new state_id but the Python caches only have the parent's state_id.
+        This method retrieves the parent_id from the pending state snapshot
+        so we can look up the parent's caches.
+
+        Returns:
+            The parent state ID, or None if not available.
+        """
+        try:
+            snapshot = self._rust_mgr.export_pending_state()
+            return snapshot.parent_id
+        except Exception:
+            return None
+
+    def _get_pending_root_state_id(self) -> Optional[int]:
+        """Get root state ID for the pending callback state.
+
+        When Rust forks states internally (multi-level forks), Python only has
+        cached data for the original state that was added via Python. This method
+        returns the root state ID (the original ancestor) for any forked descendant.
+
+        Returns:
+            The root state ID if available, or None if not tracked.
+        """
+        try:
+            return self._rust_mgr.get_pending_root_state_id()
+        except Exception:
+            return None
+
+    def _get_effective_state_id(self, state_id: Optional[int]) -> Optional[int]:
+        """Get effective state ID following lineage for lookups.
+
+        P5 fix: When a state is forked in Rust, its ID changes but Python's caches
+        are keyed by the original state ID. This method follows the lineage chain
+        to find a state ID that exists in our caches.
+
+        Args:
+            state_id: The current state ID to look up.
+
+        Returns:
+            The effective state ID (either the original or an ancestor that's cached).
+        """
+        if state_id is None:
+            return None
+
+        # Fast path: direct hit
+        if state_id in self._state_cache:
+            return state_id
+
+        # Try root state from pending callback (most common case for forked states)
+        try:
+            root_id = self._get_pending_root_state_id()
+            if root_id is not None and root_id in self._state_cache:
+                return root_id
+        except Exception:
+            pass
+
+        # Walk full ancestry chain from pending callback
+        try:
+            ancestry = self._get_pending_ancestry()
+            for ancestor_id in ancestry:
+                if ancestor_id in self._state_cache:
+                    return ancestor_id
+        except Exception:
+            pass
+
+        # No cached ancestor found, return original
+        return state_id
+
+    def _get_pending_ancestry(self) -> list:
+        """Get full ancestry chain for the pending callback state.
+
+        Returns a list of state IDs: [state_id, parent_id, grandparent_id, ...].
+        This allows Python to find cached state data even for multi-level forks.
+
+        Returns:
+            List of state IDs in the ancestry chain.
+        """
+        try:
+            return self._rust_mgr.get_pending_ancestry()
+        except Exception:
+            # Fallback to single parent lookup
+            parent_id = self._get_pending_parent_id()
+            return [parent_id] if parent_id is not None else []
 
     def _create_state_for_callback(self, event: "_ExplorationEvent") -> Optional["angr.SimState"]:
         """Create an angr state from the pending Rust state.
@@ -1589,8 +2632,30 @@ class RustExplorationManager:
         state = None
 
         # Use cached state if available - this preserves symbolic memory
+        # For forked states, follow the ancestry chain to find cached state
+        cached_state = None
+        lookup_state_id = state_id
+
         if state_id is not None and state_id in self._state_cache:
             cached_state = self._state_cache[state_id]
+            lookup_state_id = state_id
+        elif state_id is not None:
+            # Forked state - try root state first (most likely to be cached)
+            root_id = self._get_pending_root_state_id()
+            if root_id is not None and root_id in self._state_cache:
+                cached_state = self._state_cache[root_id]
+                lookup_state_id = root_id
+                l.debug(f"Using root state {root_id} cache for forked state {state_id}")
+            else:
+                # Walk full ancestry chain to find any cached ancestor
+                for ancestor_id in self._get_pending_ancestry():
+                    if ancestor_id in self._state_cache:
+                        cached_state = self._state_cache[ancestor_id]
+                        lookup_state_id = ancestor_id
+                        l.debug(f"Using ancestor {ancestor_id} cache for forked state {state_id}")
+                        break
+
+        if cached_state is not None:
             state = cached_state.copy()  # Copy to preserve original
 
             # CRITICAL: Fork the Rust solver context with all accumulated constraints
@@ -1611,9 +2676,15 @@ class RustExplorationManager:
             # Restore symbolic memory regions that may have been lost during
             # Rust execution fallback. This is critical for callbacks that need
             # to read symbolic values from memory (e.g., symbolic buffer access)
-            self._restore_symbolic_pages(state, state_id)
+            # Use lookup_state_id to find cached pages (handles forked states)
+            self._restore_symbolic_pages(state, lookup_state_id)
 
-            l.debug(f"Using cached state {state_id} for callback")
+            # Also restore any hook-tracked symbolic memory
+            # This handles symbolic memory written by previous hooks that needs
+            # to be preserved across multiple callbacks
+            self._restore_hook_symbolic_memory(state, lookup_state_id)
+
+            l.debug(f"Using cached state {state_id} for callback (lookup_id={lookup_state_id})")
         else:
             # Fallback to blank state (original behavior)
             l.warning(f"No cached state for ID {state_id}, using blank state fallback")
@@ -1703,17 +2774,43 @@ class RustExplorationManager:
         changes = []
         arch = old_state.arch
 
-        # Map register names to offsets
-        reg_map = {
-            'rax': (16, 8), 'rcx': (24, 8), 'rdx': (32, 8), 'rbx': (40, 8),
-            'rsp': (48, 8), 'rbp': (56, 8), 'rsi': (64, 8), 'rdi': (72, 8),
-            'r8': (80, 8), 'r9': (88, 8), 'r10': (96, 8), 'r11': (104, 8),
-            'r12': (112, 8), 'r13': (120, 8), 'r14': (128, 8), 'r15': (136, 8),
-            'rip': (184, 8),
-        }
+        # Architecture-specific register offset maps
+        # Offsets verified against native/angr/src/arch/*.rs
+        if arch.name in ('AMD64', 'X86_64'):
+            reg_map = {
+                'rax': (16, 8), 'rcx': (24, 8), 'rdx': (32, 8), 'rbx': (40, 8),
+                'rsp': (48, 8), 'rbp': (56, 8), 'rsi': (64, 8), 'rdi': (72, 8),
+                'r8': (80, 8), 'r9': (88, 8), 'r10': (96, 8), 'r11': (104, 8),
+                'r12': (112, 8), 'r13': (120, 8), 'r14': (128, 8), 'r15': (136, 8),
+                'rip': (184, 8),
+            }
+            return_regs = {'rax'}
+        elif arch.name == 'X86':
+            # X86 32-bit (verified: native/angr/src/arch/x86.rs)
+            reg_map = {
+                'eax': (8, 4), 'ecx': (12, 4), 'edx': (16, 4), 'ebx': (20, 4),
+                'esp': (24, 4), 'ebp': (28, 4), 'esi': (32, 4), 'edi': (36, 4),
+                'eip': (68, 4),
+            }
+            return_regs = {'eax'}
+        elif arch.name in ('ARMEL', 'ARMHF', 'ARM'):
+            # ARM 32-bit (verified: native/angr/src/arch/arm.rs)
+            reg_map = {
+                'r0': (8, 4), 'r1': (12, 4), 'r2': (16, 4), 'r3': (20, 4),
+                'r4': (24, 4), 'r5': (28, 4), 'r6': (32, 4), 'r7': (36, 4),
+                'r8': (40, 4), 'r9': (44, 4), 'r10': (48, 4), 'r11': (52, 4),
+                'r12': (56, 4), 'sp': (60, 4), 'lr': (64, 4), 'pc': (68, 4),
+            }
+            return_regs = {'r0'}
+        elif arch.name == 'AARCH64':
+            # ARM 64-bit - not yet implemented
+            l.warning(f"AARCH64 register extraction not yet implemented")
+            return []
+        else:
+            l.warning(f"Unknown architecture {arch.name} for register extraction")
+            return []
 
         # Return register is critical - always sync it
-        return_regs = {'rax', 'eax', 'r0'}  # AMD64, x86, ARM
 
         for reg_name, (offset, size) in reg_map.items():
             try:
@@ -1778,7 +2875,7 @@ class RustExplorationManager:
         self,
         old_state: "angr.SimState",
         new_state: "angr.SimState"
-    ) -> list:
+    ) -> tuple:
         """Extract memory changes between states for Rust sync.
 
         Uses angr's changed_bytes() to detect memory modifications,
@@ -1786,32 +2883,48 @@ class RustExplorationManager:
         Also tracks symbolic values for constraint propagation.
 
         Returns:
-            List of (addr, data_bytes) tuples for memory changes.
+            Tuple of:
+            - List of (addr, data_bytes) for concrete memory changes
+            - List of (addr, ast) for symbolic memory that needs import
         """
-        changes = []
+        concrete_changes = []
+        symbolic_imports = []  # Collect symbolic ASTs for import to Rust
         try:
             # Use angr's changed_bytes to find modifications
             changed = new_state.memory.changed_bytes(old_state.memory)
             if not changed:
-                return []
+                return [], []
 
             # Group consecutive changed bytes into regions
             for item in self._group_changed_bytes(new_state, changed):
                 if item[0] == 'concrete':
                     _, start, size, data = item
-                    changes.append((start, list(data)))
+                    concrete_changes.append((start, list(data)))
                 elif item[0] == 'symbolic':
                     _, start, size, data, handle_id, ast = item
                     # Provide concrete witness for Rust memory sync
-                    changes.append((start, list(data)))
+                    concrete_changes.append((start, list(data)))
                     # Cache symbolic value for later constraint sync
                     # The handle is already registered in _emit_memory_region
                     l.debug(f"Tracked symbolic memory change at 0x{start:x} (handle={handle_id})")
 
+                    # Collect symbolic AST for import to Rust
+                    symbolic_imports.append((start, ast))
+
+                    # Track symbolic AST for state restoration during callbacks
+                    # This is critical: hooks that copy symbolic memory would lose
+                    # the symbolic relationship without this tracking
+                    state_id = self._current_callback_state_id
+                    if state_id is not None:
+                        if state_id not in self._hook_symbolic_memory:
+                            self._hook_symbolic_memory[state_id] = {}
+                        self._hook_symbolic_memory[state_id][start] = (ast, size)
+                        l.debug(f"Preserved symbolic memory at 0x{start:x} for state {state_id}")
+
         except Exception as e:
             l.debug(f"Error extracting memory changes: {e}")
 
-        return changes
+        return concrete_changes, symbolic_imports
 
     def _group_changed_bytes(self, state: "angr.SimState", changed_addrs):
         """Group consecutive changed bytes into contiguous regions.
@@ -1912,7 +3025,7 @@ class RustExplorationManager:
                             try:
                                 # Load individual symbolic bytes
                                 val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-                                if val.symbolic:
+                                if hasattr(val, 'symbolic') and val.symbolic:
                                     symbolic_regions[addr] = val
                                     self._register_handle(id(val), val)
                             except Exception:
@@ -1923,57 +3036,70 @@ class RustExplorationManager:
                 except Exception as e:
                     l.debug(f"get_symbolic_addrs failed: {e}")
 
-            # Strategy 2: Check page-level symbolic maps if available
+            # Strategy 2: Scan pages for symbolic content
+            # Note: _pages keys are page NUMBERS, not addresses
             if hasattr(state.memory, '_pages'):
-                for page_addr in list(state.memory._pages.keys()):
-                    page = state.memory._pages.get(page_addr)
+                page_size = getattr(state.memory, 'page_size', 4096)
+
+                for page_num in list(state.memory._pages.keys()):
+                    page = state.memory._pages.get(page_num)
                     if page is None:
                         continue
 
-                    # Check if page has symbolic byte tracking
-                    if hasattr(page, '_symbolic_bitmap') and page._symbolic_bitmap:
-                        # Use internal bitmap for precise tracking
-                        for offset in range(4096):
+                    page_addr = page_num * page_size  # Convert page number to address
+
+                    # UltraPage: use all_bytes_changed_in_history() for written bytes,
+                    # then check symbolic_bitmap to filter to symbolic ones
+                    if hasattr(page, 'all_bytes_changed_in_history') and hasattr(page, 'symbolic_bitmap'):
+                        try:
+                            changed = page.all_bytes_changed_in_history()
+                            sb = page.symbolic_bitmap
+                            # changed is a SegmentList, iterate over Segment objects
+                            for segment in changed:
+                                # Segment has start/end attributes
+                                start = getattr(segment, 'start', None)
+                                end = getattr(segment, 'end', None)
+                                if start is not None and end is not None:
+                                    for offset in range(start, end):
+                                        if offset < len(sb) and sb[offset]:
+                                            addr = page_addr + offset
+                                            try:
+                                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
+                                                if hasattr(val, 'symbolic') and val.symbolic:
+                                                    symbolic_regions[addr] = val
+                                                    self._register_handle(id(val), val)
+                                            except Exception:
+                                                pass
+                        except Exception:
+                            pass
+                    # ListPage: stored_offset tracks all written bytes
+                    elif hasattr(page, 'stored_offset') and page.stored_offset:
+                        for offset in page.stored_offset:
+                            addr = page_addr + offset
+                            try:
+                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
+                                if hasattr(val, 'symbolic') and val.symbolic:
+                                    symbolic_regions[addr] = val
+                                    self._register_handle(id(val), val)
+                            except Exception:
+                                pass
+                    # Fallback: Check alternative tracking attributes
+                    elif hasattr(page, '_symbolic_bitmap') and page._symbolic_bitmap:
+                        for offset in range(page_size):
                             if page._symbolic_bitmap.get(offset, False):
                                 addr = page_addr + offset
                                 try:
                                     val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-                                    if val.symbolic:
+                                    if hasattr(val, 'symbolic') and val.symbolic:
                                         symbolic_regions[addr] = val
                                         self._register_handle(id(val), val)
                                 except Exception:
                                     pass
                     elif hasattr(page, 'symbolic_byte_map') and page.symbolic_byte_map:
-                        # Alternative: symbolic_byte_map
                         for offset, sym_val in page.symbolic_byte_map.items():
                             addr = page_addr + offset
                             symbolic_regions[addr] = sym_val
                             self._register_handle(id(sym_val), sym_val)
-                    else:
-                        # Strategy 3: Byte-granularity fallback for pages without tracking
-                        # Sample multiple offsets to detect symbolic content anywhere in page
-                        sample_offsets = [0, 256, 512, 1024, 2048, 3072, 4088]
-                        has_symbolic = False
-                        for offset in sample_offsets:
-                            try:
-                                test_val = state.memory.load(page_addr + offset, 8, endness=state.arch.memory_endness)
-                                if test_val.symbolic:
-                                    has_symbolic = True
-                                    break
-                            except Exception:
-                                continue
-
-                        if has_symbolic:
-                            # Scan the full page at byte granularity
-                            for offset in range(4096):
-                                addr = page_addr + offset
-                                try:
-                                    val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-                                    if val.symbolic:
-                                        symbolic_regions[addr] = val
-                                        self._register_handle(id(val), val)
-                                except Exception:
-                                    pass
 
             if symbolic_regions:
                 l.debug(f"Extracted {len(symbolic_regions)} symbolic memory regions")
@@ -1989,14 +3115,33 @@ class RustExplorationManager:
         cached, ensuring that Python callbacks see the correct symbolic
         memory context after fallback from Rust.
 
+        For forked states, tries parent chain if direct lookup fails.
+
         Args:
             state: The angr state to restore symbolic pages to.
             state_id: The state ID to look up cached symbolic pages.
         """
-        if state_id not in self._symbolic_pages:
-            return
+        # Try direct lookup, then ancestry chain for forked states
+        symbolic_pages = None
+        if state_id in self._symbolic_pages:
+            symbolic_pages = self._symbolic_pages[state_id]
+        else:
+            # Try root state first (most likely to have cached pages)
+            root_id = self._get_pending_root_state_id()
+            if root_id is not None and root_id in self._symbolic_pages:
+                symbolic_pages = self._symbolic_pages[root_id]
+                l.debug(f"Using root {root_id} symbolic pages for state {state_id}")
+            else:
+                # Walk full ancestry chain
+                for ancestor_id in self._get_pending_ancestry():
+                    if ancestor_id in self._symbolic_pages:
+                        symbolic_pages = self._symbolic_pages[ancestor_id]
+                        l.debug(f"Using ancestor {ancestor_id} symbolic pages for state {state_id}")
+                        break
 
-        symbolic_pages = self._symbolic_pages[state_id]
+        if symbolic_pages is None:
+            l.debug(f"No symbolic pages found for state {state_id} or ancestors")
+            return
         restored_count = 0
         failed_count = 0
 
@@ -2034,6 +3179,57 @@ class RustExplorationManager:
         if failed_count > 0:
             l.warning(f"Failed to restore {failed_count} symbolic memory regions")
 
+    def _restore_hook_symbolic_memory(self, state: "angr.SimState", state_id: int):
+        """Restore symbolic memory that was tracked during hook execution.
+
+        When hooks copy or manipulate symbolic memory, the symbolic ASTs are
+        tracked in `_hook_symbolic_memory`. This method restores those ASTs
+        to the callback state so subsequent operations preserve symbolic
+        relationships.
+
+        This is critical for examples like flareon2015_5 where hooks copy
+        symbolic password bytes to new memory locations.
+
+        For forked states, tries parent chain if direct lookup fails.
+
+        Args:
+            state: The angr state to restore symbolic memory to.
+            state_id: The state ID to look up tracked symbolic memory.
+        """
+        # Try direct lookup, then ancestry chain for forked states
+        hook_memory = None
+        if state_id in self._hook_symbolic_memory:
+            hook_memory = self._hook_symbolic_memory[state_id]
+        else:
+            # Try root state first (most likely to have hook memory)
+            root_id = self._get_pending_root_state_id()
+            if root_id is not None and root_id in self._hook_symbolic_memory:
+                hook_memory = self._hook_symbolic_memory[root_id]
+                l.debug(f"Using root {root_id} hook symbolic memory for state {state_id}")
+            else:
+                # Walk full ancestry chain
+                for ancestor_id in self._get_pending_ancestry():
+                    if ancestor_id in self._hook_symbolic_memory:
+                        hook_memory = self._hook_symbolic_memory[ancestor_id]
+                        l.debug(f"Using ancestor {ancestor_id} hook symbolic memory for state {state_id}")
+                        break
+
+        if hook_memory is None:
+            return
+        restored_count = 0
+
+        for addr, (ast, size) in hook_memory.items():
+            try:
+                state.memory.store(addr, ast, endness=state.arch.memory_endness)
+                self._register_handle(id(ast), ast)
+                restored_count += 1
+                l.debug(f"Restored hook symbolic memory at 0x{addr:x} (size={size})")
+            except Exception as e:
+                l.debug(f"Could not restore hook symbolic at 0x{addr:x}: {e}")
+
+        if restored_count > 0:
+            l.debug(f"Restored {restored_count} hook symbolic memory regions for state {state_id}")
+
     # =========================================================================
     # Public API (SimulationManager-like interface)
     # =========================================================================
@@ -2043,6 +3239,7 @@ class RustExplorationManager:
         find: Optional[Union[int, list, Callable]] = None,
         avoid: Optional[Union[int, list, Callable]] = None,
         num_find: int = 1,
+        until: Optional[Callable] = None,
         **kwargs
     ) -> "RustExplorationManager":
         """Run exploration with find/avoid conditions.
@@ -2051,26 +3248,34 @@ class RustExplorationManager:
             find: Address(es) or callable predicate for finding solutions.
             avoid: Address(es) or callable predicate for avoiding states.
             num_find: Number of solutions to find before stopping.
+            until: Callable predicate that receives `self` and returns True to stop.
             **kwargs: Additional arguments (ignored for compatibility).
 
         Returns:
             Self, for chaining.
         """
-        # Set find addresses
+        # Set find addresses and store predicate for P2 callback handling
         find_addrs = self._extract_addrs(find)
         self._rust_mgr.set_find_addrs(find_addrs)
         self._rust_mgr.set_find_needs_python(callable(find))
+        # P2 fix: Store the find predicate for callback evaluation
+        self._find_predicate = find if callable(find) else None
 
         # Set avoid addresses
         avoid_addrs = self._extract_addrs(avoid)
         self._rust_mgr.set_avoid_addrs(avoid_addrs)
         self._rust_mgr.set_avoid_needs_python(callable(avoid))
+        # P2 fix: Store the avoid predicate for callback evaluation
+        self._avoid_predicate = avoid if callable(avoid) else None
 
         # Set num_find
         self._rust_mgr.set_num_find(num_find)
 
         # Run exploration loop
         while True:
+            # Sync any dynamically created hooks (continuations from self.call())
+            self._sync_hooks_before_step()
+
             event = self._rust_mgr.run()
 
             if event.event_type == 'found' and event.found_count >= num_find:
@@ -2080,9 +3285,22 @@ class RustExplorationManager:
                     self._handle_simprocedure_callback(event)
                 elif event.callback_reason == 'syscall':
                     self._handle_syscall_callback(event)
+                elif event.callback_reason == 'symbolic_branch':
+                    self._handle_symbolic_branch_callback(event)
+                elif event.callback_reason == 'find_predicate':
+                    # P2 fix: Handle callable find predicate evaluation
+                    self._handle_find_predicate_callback(event)
                 else:
                     l.warning(f"Unknown callback reason: {event.callback_reason}")
                     break
+                # Check `until` predicate after callback handling (needed for run(until=...))
+                if until is not None:
+                    try:
+                        if until(self):
+                            l.debug("until predicate returned True after callback, stopping")
+                            break
+                    except Exception as e:
+                        l.warning(f"until predicate error: {e}")
             elif event.event_type == 'active_empty':
                 break
             elif event.event_type == 'errored':
@@ -2091,6 +3309,14 @@ class RustExplorationManager:
             elif event.event_type == 'step_complete':
                 # Periodic cleanup to prevent memory leaks
                 self._cleanup_symbolic_pages_cache()
+                # Check the `until` predicate after each step
+                if until is not None:
+                    try:
+                        if until(self):
+                            l.debug("until predicate returned True, stopping exploration")
+                            break
+                    except Exception as e:
+                        l.warning(f"until predicate error: {e}")
                 # Continue exploration
                 continue
 
@@ -2106,7 +3332,41 @@ class RustExplorationManager:
         Returns:
             Self, for chaining.
         """
-        self._rust_mgr.run(n)
+        steps_taken = 0
+        while steps_taken < n:
+            # Sync any dynamically created hooks (continuations from self.call())
+            self._sync_hooks_before_step()
+
+            event = self._rust_mgr.run(1)
+
+            if event.event_type == 'need_callback':
+                # Handle callback and continue
+                if event.callback_reason == 'simprocedure':
+                    self._handle_simprocedure_callback(event)
+                elif event.callback_reason == 'syscall':
+                    self._handle_syscall_callback(event)
+                elif event.callback_reason == 'symbolic_branch':
+                    self._handle_symbolic_branch_callback(event)
+                elif event.callback_reason == 'find_predicate':
+                    # P2 fix: Handle callable find predicate evaluation
+                    self._handle_find_predicate_callback(event)
+                else:
+                    l.warning(f"Unknown callback reason: {event.callback_reason}")
+                    break
+                # After callback, increment step count
+                steps_taken += 1
+            elif event.event_type == 'active_empty':
+                # No more active states
+                break
+            elif event.event_type == 'errored':
+                l.warning(f"Step error: {event.callback_reason}")
+                break
+            elif event.event_type in ('step_complete', 'found'):
+                steps_taken += 1
+            else:
+                # Unknown event type, count as a step
+                steps_taken += 1
+
         return self
 
     @property
@@ -2172,11 +3432,14 @@ class RustExplorationManager:
                     l.warning(f"Failed to convert state from {stash}: {e}")
         except Exception as e:
             l.warning(f"export_stash failed for {stash}: {e}")
-            # Fallback: try to get from cached states
+
+        # Fallback: if no states exported, try cache
+        if not states:
             state_ids = self._rust_mgr.get_state_ids(stash)
             for state_id in state_ids:
                 if state_id in self._state_cache:
                     states.append(self._state_cache[state_id])
+
         return states
 
     # =========================================================================
@@ -2300,14 +3563,48 @@ class RustExplorationManager:
                                 end = offset
                         regions.append((start, end - start + 1))
 
-                        # Create fresh symbolic values for each contiguous region
+                        # Restore symbolic values - try to recover original ASTs first (P1 fix)
                         for offset, size in regions:
                             sym_addr = page_addr + offset
-                            sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
-                            sym_val = claripy.BVS(sym_name, size * 8)
-                            state.memory.store(sym_addr, sym_val,
-                                               endness=arch.memory_endness,
-                                               inspect=False)
+                            original_ast = None
+
+                            # Try to find original AST from address tracking
+                            state_addr_map = self._addr_to_ast.get(snapshot.state_id, {})
+                            if sym_addr in state_addr_map:
+                                tracked_ast, tracked_size = state_addr_map[sym_addr]
+                                if tracked_size == size:
+                                    original_ast = tracked_ast
+                                    l.debug(f"Recovered original AST at 0x{sym_addr:x} for state {snapshot.state_id}")
+
+                            # Also check parent state for inherited symbolic values
+                            if original_ast is None and snapshot.parent_id >= 0:
+                                parent_addr_map = self._addr_to_ast.get(snapshot.parent_id, {})
+                                if sym_addr in parent_addr_map:
+                                    tracked_ast, tracked_size = parent_addr_map[sym_addr]
+                                    if tracked_size == size:
+                                        original_ast = tracked_ast
+                                        l.debug(f"Recovered original AST from parent at 0x{sym_addr:x}")
+
+                            # Also check hook symbolic memory
+                            hook_mem = self._hook_symbolic_memory.get(snapshot.state_id, {})
+                            if original_ast is None and sym_addr in hook_mem:
+                                tracked_ast, tracked_size = hook_mem[sym_addr]
+                                if tracked_size == size:
+                                    original_ast = tracked_ast
+                                    l.debug(f"Recovered original AST from hook memory at 0x{sym_addr:x}")
+
+                            # Use original AST if found, otherwise create fresh symbol
+                            if original_ast is not None:
+                                state.memory.store(sym_addr, original_ast,
+                                                   endness=arch.memory_endness,
+                                                   inspect=False)
+                            else:
+                                # Fallback: create fresh symbolic (for Rust-created symbols)
+                                sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
+                                sym_val = claripy.BVS(sym_name, size * 8)
+                                state.memory.store(sym_addr, sym_val,
+                                                   endness=arch.memory_endness,
+                                                   inspect=False)
                 except Exception as e:
                     l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
 
@@ -2409,6 +3706,7 @@ class RustExplorationManager:
             l.warning("RustExplorationManager.move() does not support filter functions")
         return self._rust_mgr.move_states(from_stash, to_stash, None)
 
+    @property
     def one_active(self):
         """Get one active state (compatibility stub)."""
         active = self.active
@@ -2416,6 +3714,7 @@ class RustExplorationManager:
             return active[0]
         return None
 
+    @property
     def one_found(self):
         """Get one found state (compatibility stub)."""
         found = self.found
@@ -2432,6 +3731,13 @@ class RustExplorationManager:
         # Try to get stash by name
         if name.startswith('_'):
             raise AttributeError(name)
+
+        # Handle one_* prefix for single state access (SimulationManager compatibility)
+        if name.startswith("one_"):
+            stash_name = name[4:]  # Remove "one_" prefix
+            states = self._get_stash_states(stash_name)
+            return states[0] if states else None
+
         try:
             return self._rust_mgr.get_state_ids(name)
         except Exception:

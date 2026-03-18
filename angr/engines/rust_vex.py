@@ -31,6 +31,26 @@ def _get_zero_bvv(bits):
     return _BVV_ZERO_CACHE[bits]
 
 
+def _is_symbolic_safe(val) -> bool:
+    """Safely check if a value is symbolic, handling callables.
+
+    Sometimes memory loads can return callables (functions) instead of
+    claripy ASTs, which don't have the 'symbolic' attribute. This helper
+    safely handles all cases.
+
+    Args:
+        val: A potential claripy AST or other value.
+
+    Returns:
+        True if the value is symbolic, False otherwise.
+    """
+    if val is None:
+        return False
+    if callable(val) and not hasattr(val, 'symbolic'):
+        return False
+    return getattr(val, 'symbolic', False)
+
+
 # Profiling stats - can be enabled for performance analysis
 class RustVEXProfiler:
     """Collects timing statistics for Rust VEX engine operations."""
@@ -601,11 +621,20 @@ class RustVEXCallbacks:
             t0 = time.perf_counter()
         try:
             val = self.state.memory.load(addr, size, endness='Iend_LE')
-            is_sym = val.symbolic
+
+            # P4 fix: Validate return type - ensure it's an AST, not a callable
+            if callable(val) and not hasattr(val, 'op'):
+                l.error("memory.load returned callable at 0x%x, forcing evaluation", addr)
+                try:
+                    val = val()  # Try calling if it's a thunk
+                except Exception:
+                    val = claripy.BVS(f"load_error_{addr:x}", size * 8)
+
+            is_sym = _is_symbolic_safe(val)
 
             # FAST PATH: Extract concrete value directly without solver
             if not is_sym:
-                if val.op == 'BVV':
+                if hasattr(val, 'op') and val.op == 'BVV':
                     concrete = val.args[0]
                 else:
                     # Fallback for other concrete representations
@@ -720,11 +749,11 @@ class RustVEXCallbacks:
             for addr, size in loads:
                 try:
                     val = self.state.memory.load(addr, size, endness='Iend_LE')
-                    is_sym = val.symbolic
+                    is_sym = _is_symbolic_safe(val)
 
                     # FAST PATH: Extract concrete value directly without solver
                     if not is_sym:
-                        if val.op == 'BVV':
+                        if hasattr(val, 'op') and val.op == 'BVV':
                             concrete = val.args[0]
                         else:
                             concrete = self.state.solver.eval(val)
@@ -784,8 +813,8 @@ class RustVEXCallbacks:
             val = self.state.memory.load(addr, size, endness='Iend_LE')
 
             # Extract concrete value
-            if not val.symbolic:
-                if val.op == 'BVV':
+            if not _is_symbolic_safe(val):
+                if hasattr(val, 'op') and val.op == 'BVV':
                     concrete = val.args[0]
                 else:
                     concrete = self.state.solver.eval(val)
@@ -939,6 +968,20 @@ class RustVEXCallbacks:
             # Let angr's memory model handle the symbolic address
             # This builds proper ITE chains and tracks symbolic memory regions
             result = self.state.memory.load(addr_ast, size, endness='Iend_LE')
+
+            # P6 fix: Validate result has expected AST type
+            if not hasattr(result, 'op'):
+                l.warning("Symbolic load returned non-AST: %s", type(result))
+                return claripy.BVS(f"symbolic_load_{size}", size * 8)
+
+            # P6 fix: Handle callable results (should be rare)
+            if callable(result) and not hasattr(result, 'args'):
+                l.warning("Symbolic load returned callable, trying to evaluate")
+                try:
+                    result = result()
+                except Exception:
+                    return claripy.BVS(f"symbolic_load_{size}", size * 8)
+
             return result
         except Exception as e:
             l.warning("Full symbolic load failed: addr=%s, size=%d, error=%s", addr_ast, size, e)
@@ -1042,11 +1085,11 @@ class RustVEXCallbacks:
             t0 = time.perf_counter()
         try:
             val = self.state.registers.load(offset, size=size)
-            is_sym = val.symbolic
+            is_sym = _is_symbolic_safe(val)
 
             # FAST PATH: Extract concrete value directly without solver
             if not is_sym:
-                if val.op == 'BVV':
+                if hasattr(val, 'op') and val.op == 'BVV':
                     concrete = val.args[0]
                 else:
                     # Fallback for other concrete representations

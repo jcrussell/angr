@@ -46,6 +46,12 @@ pub enum CallbackReason {
     AvoidPredicate { addr: u64 },
     /// Error during execution.
     Error { message: String },
+    /// Symbolic branch - both paths feasible, need Python to fork states.
+    SymbolicBranch {
+        condition_id: u64,
+        true_target: u64,
+        false_target: u64,
+    },
 }
 
 /// Event returned from exploration to Python.
@@ -85,6 +91,15 @@ pub struct ExplorationEvent {
     /// Number of arguments for SimProcedure.
     #[pyo3(get)]
     pub callback_num_args: Option<usize>,
+    /// Symbolic branch true target (if symbolic_branch callback).
+    #[pyo3(get)]
+    pub branch_true_target: Option<u64>,
+    /// Symbolic branch false target (if symbolic_branch callback).
+    #[pyo3(get)]
+    pub branch_false_target: Option<u64>,
+    /// Symbolic branch condition ID (if symbolic_branch callback).
+    #[pyo3(get)]
+    pub branch_condition_id: Option<u64>,
 }
 
 impl ExplorationEvent {
@@ -101,6 +116,9 @@ impl ExplorationEvent {
             callback_syscall_num: None,
             callback_return_addr: None,
             callback_num_args: None,
+            branch_true_target: None,
+            branch_false_target: None,
+            branch_condition_id: None,
         }
     }
 
@@ -117,6 +135,9 @@ impl ExplorationEvent {
             callback_syscall_num: None,
             callback_return_addr: None,
             callback_num_args: None,
+            branch_true_target: None,
+            branch_false_target: None,
+            branch_condition_id: None,
         }
     }
 
@@ -133,6 +154,9 @@ impl ExplorationEvent {
             callback_syscall_num: None,
             callback_return_addr: None,
             callback_num_args: None,
+            branch_true_target: None,
+            branch_false_target: None,
+            branch_condition_id: None,
         }
     }
 
@@ -149,6 +173,9 @@ impl ExplorationEvent {
             callback_syscall_num: None,
             callback_return_addr: None,
             callback_num_args: None,
+            branch_true_target: None,
+            branch_false_target: None,
+            branch_condition_id: None,
         }
     }
 
@@ -174,6 +201,9 @@ impl ExplorationEvent {
             callback_syscall_num: None,
             callback_return_addr: Some(return_addr),
             callback_num_args: Some(num_args),
+            branch_true_target: None,
+            branch_false_target: None,
+            branch_condition_id: None,
         }
     }
 
@@ -196,6 +226,36 @@ impl ExplorationEvent {
             callback_syscall_num: Some(syscall_num),
             callback_return_addr: None,
             callback_num_args: None,
+            branch_true_target: None,
+            branch_false_target: None,
+            branch_condition_id: None,
+        }
+    }
+
+    fn need_symbolic_branch(
+        state_id: u64,
+        condition_id: u64,
+        true_target: u64,
+        false_target: u64,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
+    ) -> Self {
+        ExplorationEvent {
+            event_type: "need_callback".to_string(),
+            found_count,
+            active_count,
+            steps_taken: steps,
+            callback_state_id: Some(state_id),
+            callback_reason: Some("symbolic_branch".to_string()),
+            callback_addr: None,
+            callback_name: None,
+            callback_syscall_num: None,
+            callback_return_addr: None,
+            callback_num_args: None,
+            branch_true_target: Some(true_target),
+            branch_false_target: Some(false_target),
+            branch_condition_id: Some(condition_id),
         }
     }
 
@@ -212,6 +272,9 @@ impl ExplorationEvent {
             callback_syscall_num: None,
             callback_return_addr: None,
             callback_num_args: None,
+            branch_true_target: None,
+            branch_false_target: None,
+            branch_condition_id: None,
         }
     }
 }
@@ -307,10 +370,16 @@ pub struct RustExplorationManager {
     calling_convention: Box<dyn CallingConvention>,
     /// Statistics for native procedure executions.
     native_proc_stats: NativeProcStats,
-    /// Address to skip hook check for (used for zero-length hooks).
+    /// Stack of (address, expiry_step) for zero-length hook skip tracking.
+    /// Each entry represents an address to skip, valid until the specified step.
     /// This prevents infinite loops when a hook with length=0 runs and
-    /// returns to the same address.
-    skip_hook_addr: Option<u64>,
+    /// returns to the same address. Stack-based to handle nested hooks.
+    skip_hook_stack: Vec<(u64, u64)>,
+    /// Maps state_id -> root_state_id for lineage tracking.
+    /// When Rust forks states internally, Python only has cached data for the
+    /// original state added via Python. This map allows looking up the root
+    /// state (the one originally added) for any forked descendant.
+    state_roots: HashMap<u64, u64>,
 }
 
 #[pymethods]
@@ -355,7 +424,8 @@ impl RustExplorationManager {
             native_procedures: NativeProcedureRegistry::new(),
             calling_convention: default_cc_for_arch(arch),
             native_proc_stats: NativeProcStats::default(),
-            skip_hook_addr: None,
+            skip_hook_stack: Vec::new(),
+            state_roots: HashMap::new(),
         })
     }
 
@@ -500,6 +570,11 @@ impl RustExplorationManager {
     pub fn add_state(&mut self, stash: &str, state: &crate::state::PyRustSimState) {
         // Fork the state to get our own copy
         let forked = state.inner().fork();
+        let state_id = forked.state_id();
+
+        // Track this state as its own root (it was added via Python)
+        self.state_roots.insert(state_id, state_id);
+
         self.stashes
             .entry(stash.to_string())
             .or_insert_with(VecDeque::new)
@@ -610,7 +685,7 @@ impl RustExplorationManager {
             // Check find/avoid before stepping
             let pc = state.pc();
 
-            // Check avoid addresses
+            // Check avoid addresses (address-based only)
             if self.avoid_addrs.contains(&pc) {
                 self.stashes
                     .entry("avoid".to_string())
@@ -619,7 +694,40 @@ impl RustExplorationManager {
                 continue;
             }
 
-            // Check find addresses
+            // P2 fix: Check if callable find predicate needs Python evaluation
+            // When find is a callable (lambda/function), we must return to Python
+            // to evaluate it for each state, not just check addresses.
+            if self.find_needs_python {
+                let state_id = state.state_id();
+                self.pending_callback = Some(PendingCallback {
+                    state,
+                    pre_callback_snapshot: None,
+                    reason: CallbackReason::FindPredicate { addr: pc },
+                    jumpkind: None,
+                    solver_ctx: None,
+                    deferred_forks: Vec::new(),
+                    stored_conditions: HashMap::new(),
+                });
+
+                return Ok(ExplorationEvent {
+                    event_type: "need_callback".to_string(),
+                    callback_reason: Some("find_predicate".to_string()),
+                    callback_addr: Some(pc),
+                    callback_state_id: Some(state_id),
+                    found_count: self.found_count(),
+                    active_count: self.active_count(),
+                    steps_taken: self.steps,
+                    callback_name: None,
+                    callback_syscall_num: None,
+                    callback_return_addr: None,
+                    callback_num_args: None,
+                    branch_true_target: None,
+                    branch_false_target: None,
+                    branch_condition_id: None,
+                });
+            }
+
+            // Check find addresses (address-based, only when NOT using callable predicate)
             if self.find_addrs.contains(&pc) {
                 self.stashes
                     .entry("found".to_string())
@@ -629,11 +737,16 @@ impl RustExplorationManager {
             }
 
             // Check hooks (SimProcedures)
-            // Skip if this address was marked for skip (zero-length hook case)
-            let should_skip_hook = self.skip_hook_addr == Some(pc);
+            // GAP 6: Stack-based skip tracking for zero-length hooks
+            // Clean up expired skip entries before checking
+            self.skip_hook_stack.retain(|&(_, expiry)| expiry > self.steps);
+
+            // Check if this address is in the skip stack
+            let should_skip_hook = self.skip_hook_stack.iter().any(|&(addr, _)| addr == pc);
             if should_skip_hook {
-                self.skip_hook_addr = None; // Clear after use
-                log::debug!("Skipping hook at 0x{:x} (zero-length hook)", pc);
+                // Remove this address from the skip stack (consumed)
+                self.skip_hook_stack.retain(|&(addr, _)| addr != pc);
+                log::debug!("Skipping hook at 0x{:x} (zero-length hook, step {})", pc, self.steps);
             }
             if self.hooks.contains(&pc) && !should_skip_hook {
                 // Check if this is a registered SimProcedure
@@ -787,6 +900,17 @@ impl RustExplorationManager {
                                 self.steps,
                             )
                         }
+                        CallbackReason::SymbolicBranch { condition_id, true_target, false_target } => {
+                            ExplorationEvent::need_symbolic_branch(
+                                state_id,
+                                *condition_id,
+                                *true_target,
+                                *false_target,
+                                self.found_count(),
+                                self.active_count(),
+                                self.steps,
+                            )
+                        }
                         CallbackReason::Error { message } => {
                             ExplorationEvent::error(
                                 message.clone(),
@@ -916,13 +1040,18 @@ impl RustExplorationManager {
         // NOT inherit callback constraints. Use pre_callback_snapshot as fork base.
         let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| state.fork());
 
+        // Track root state ID for lineage
+        // The root is inherited from the original pending state
+        let original_state_id = state.state_id();
+        let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+
         let mut successors = vec![state];  // Post-callback state first
         for fork in pending.deferred_forks {
             // Look up the condition for this deferred fork
             if let Some(condition) = pending.stored_conditions.get(&fork.condition_id) {
                 // Fork from CLEAN pre-callback snapshot, not from post-callback state
                 // This ensures deferred forks don't inherit callback constraints
-                let mut forked = if fork.path_taken {
+                let forked = if fork.path_taken {
                     // Took the true branch, so fork needs false constraint
                     let mut f = fork_base.fork_false(condition);
                     f.set_pc(fork.unexplored_target);
@@ -933,6 +1062,9 @@ impl RustExplorationManager {
                     f.set_pc(fork.unexplored_target);
                     f
                 };
+
+                // Track root state ID for this forked state
+                self.state_roots.insert(forked.state_id(), root_state_id);
 
                 // DO NOT sync callback constraints to forked state!
                 // These paths diverged before the callback occurred.
@@ -969,8 +1101,166 @@ impl RustExplorationManager {
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
-        // Same as resume_after_simprocedure for now
+        // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
         self.resume_after_simprocedure(py, new_pc, register_changes, memory_changes, new_constraints)
+    }
+
+    /// Resume after a hook callback.
+    ///
+    /// This is equivalent to resume_after_simprocedure but with a more explicit name
+    /// for hook-specific handling. Ensures constraints added during hook execution
+    /// are properly synced back to Rust (GAP 2 fix).
+    #[pyo3(signature = (new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    pub fn resume_after_hook(
+        &mut self,
+        py: Python<'_>,
+        new_pc: u64,
+        register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
+        memory_changes: Option<Vec<(u64, Vec<u8>)>>,
+        new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+    ) -> PyResult<()> {
+        // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
+        self.resume_after_simprocedure(py, new_pc, register_changes, memory_changes, new_constraints)
+    }
+
+    /// Resume after Python handles a symbolic branch.
+    ///
+    /// Python creates forked states with proper constraints and passes them back
+    /// to be added to the active stash.
+    #[pyo3(signature = (true_pc, false_pc, true_constraints=None, false_constraints=None))]
+    pub fn resume_after_symbolic_branch(
+        &mut self,
+        py: Python<'_>,
+        true_pc: u64,
+        false_pc: u64,
+        true_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+        false_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+    ) -> PyResult<()> {
+        let pending = self.pending_callback.take()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending symbolic branch callback"))?;
+
+        // Create the true state (fork of original)
+        let mut true_state = pending.state.fork();
+        true_state.set_pc(true_pc);
+
+        // Add true branch constraints
+        if let Some(constraints) = true_constraints {
+            // Convert all constraints first, then add them
+            let mut converted_constraints = Vec::new();
+            {
+                let solver_ref = true_state.solver();
+                let sym_ctx = solver_ref.borrow();
+                let ctx_ref: &SymContext = &*sym_ctx;
+
+                for item in constraints.iter() {
+                    match claripy_to_rustbv(py, &item, ctx_ref) {
+                        Ok(bv) => {
+                            converted_constraints.push(bv);
+                        }
+                        Err(e) => {
+                            log::debug!("Failed to convert true constraint: {}", e);
+                        }
+                    }
+                }
+            }
+            // Now add constraints (solver borrow is dropped)
+            for bv in converted_constraints {
+                true_state.add_constraint(bv);
+            }
+        }
+
+        // Create the false state (use original)
+        let mut false_state = pending.state;
+        false_state.set_pc(false_pc);
+
+        // Add false branch constraints
+        if let Some(constraints) = false_constraints {
+            // Convert all constraints first, then add them
+            let mut converted_constraints = Vec::new();
+            {
+                let solver_ref = false_state.solver();
+                let sym_ctx = solver_ref.borrow();
+                let ctx_ref: &SymContext = &*sym_ctx;
+
+                for item in constraints.iter() {
+                    match claripy_to_rustbv(py, &item, ctx_ref) {
+                        Ok(bv) => {
+                            converted_constraints.push(bv);
+                        }
+                        Err(e) => {
+                            log::debug!("Failed to convert false constraint: {}", e);
+                        }
+                    }
+                }
+            }
+            // Now add constraints (solver borrow is dropped)
+            for bv in converted_constraints {
+                false_state.add_constraint(bv);
+            }
+        }
+
+        // Add both states to active stash
+        let active = self.stashes
+            .entry("active".to_string())
+            .or_insert_with(VecDeque::new);
+        active.push_back(true_state);
+        active.push_back(false_state);
+
+        log::debug!("Resumed after symbolic branch: true_pc=0x{:x}, false_pc=0x{:x}",
+                    true_pc, false_pc);
+
+        Ok(())
+    }
+
+    /// Resume after Python evaluates a find predicate.
+    ///
+    /// P2 fix: This is called after Python evaluates a callable find predicate.
+    /// If matched=true, the state is moved to found stash; otherwise, it continues
+    /// exploration in the active stash.
+    pub fn resume_find_predicate(&mut self, matched: bool) -> PyResult<()> {
+        let pending = self.pending_callback.take()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending find predicate callback"))?;
+
+        if matched {
+            log::debug!("Find predicate matched - moving state to found stash");
+            self.stashes
+                .entry("found".to_string())
+                .or_insert_with(VecDeque::new)
+                .push_back(pending.state);
+        } else {
+            log::debug!("Find predicate did not match - continuing exploration");
+            self.stashes
+                .entry("active".to_string())
+                .or_insert_with(VecDeque::new)
+                .push_back(pending.state);
+        }
+
+        Ok(())
+    }
+
+    /// Get the branch condition from the pending symbolic branch callback.
+    ///
+    /// Returns the condition as a claripy AST that Python can use for forking.
+    pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let pending = self.pending_callback.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+
+        // Get the condition ID from the callback reason
+        let condition_id = match &pending.reason {
+            CallbackReason::SymbolicBranch { condition_id, .. } => *condition_id,
+            _ => return Err(PyValueError::new_err("pending callback is not a symbolic branch")),
+        };
+
+        // Look up the condition in stored_conditions
+        let condition = pending.stored_conditions.get(&condition_id)
+            .ok_or_else(|| PyValueError::new_err(
+                format!("condition {} not found in stored_conditions", condition_id)
+            ))?;
+
+        // Convert to claripy AST
+        let claripy = py.import("claripy")?;
+        rustbv_to_claripy(py, condition, claripy.as_any())
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {}", e)))
     }
 
     /// Get register value from pending state.
@@ -1080,6 +1370,35 @@ impl RustExplorationManager {
         } else {
             Err(PyRuntimeError::new_err("no pending callback state"))
         }
+    }
+
+    /// Import symbolic memory from Python hook into Rust's symbolic_objects.
+    ///
+    /// Called after a hook writes symbolic memory. Converts the claripy AST
+    /// to RustBV and imports it into the pending state's SymbolicMemory.
+    #[pyo3(signature = (addr, ast))]
+    pub fn import_symbolic_memory(
+        &mut self,
+        py: Python<'_>,
+        addr: u64,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let pending = self.pending_callback.as_mut().ok_or_else(|| {
+            PyRuntimeError::new_err("no pending callback state")
+        })?;
+
+        // Convert claripy AST to RustBV (caches original AST for round-trip)
+        let solver_ref = pending.state.solver();
+        let sym_ctx = solver_ref.borrow();
+        let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
+            .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
+        drop(sym_ctx);
+
+        // Import into symbolic memory via existing infrastructure
+        // Symbol ID is not used by import_symbolic_value, so pass None
+        pending.state.memory_mut().import_symbolic_value(addr, bv, None);
+        log::debug!("Imported symbolic memory at 0x{:x}", addr);
+        Ok(())
     }
 
     /// Get memory from pending state.
@@ -1207,6 +1526,57 @@ impl RustExplorationManager {
         }
     }
 
+    /// Get the root state ID for the pending callback state.
+    ///
+    /// When Rust forks states internally, Python only has cached data for the
+    /// original state that was added via Python. This method returns the root
+    /// state ID (the original state) for any forked descendant.
+    ///
+    /// Returns:
+    ///     The root state ID if available, or None if the state has no tracked root.
+    pub fn get_pending_root_state_id(&self) -> PyResult<Option<u64>> {
+        if let Some(ref pending) = self.pending_callback {
+            let state_id = pending.state.state_id();
+            Ok(self.state_roots.get(&state_id).copied())
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Get the full ancestry chain for the pending callback state.
+    ///
+    /// Returns a list of state IDs starting with the current state and walking
+    /// up the parent chain: [state_id, parent_id, grandparent_id, ...].
+    ///
+    /// This is used by Python to find cached state data when the current state
+    /// is a multi-level fork of an original state.
+    pub fn get_pending_ancestry(&self) -> PyResult<Vec<u64>> {
+        if let Some(ref pending) = self.pending_callback {
+            let mut ancestry = vec![pending.state.state_id()];
+
+            // Walk the parent chain
+            let mut current_parent = pending.state.parent_id();
+            while let Some(parent_id) = current_parent {
+                ancestry.push(parent_id);
+                // We can't traverse further without access to parent state objects,
+                // but we can include the root state if known
+                break;
+            }
+
+            // Add root state if not already in ancestry
+            let state_id = pending.state.state_id();
+            if let Some(&root_id) = self.state_roots.get(&state_id) {
+                if !ancestry.contains(&root_id) {
+                    ancestry.push(root_id);
+                }
+            }
+
+            Ok(ancestry)
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
     /// Fork the pending state's solver context for Python callbacks.
     ///
     /// This creates a new RustSolverContext that inherits all constraints
@@ -1294,14 +1664,24 @@ impl RustExplorationManager {
     /// When a hook with length=0 runs, it returns to the same address.
     /// Without this skip mechanism, the hook would trigger again immediately.
     ///
-    /// The skip is automatically cleared after one step.
+    /// The skip is automatically cleared after one step or when the address is used.
+    /// GAP 6: Stack-based tracking allows for nested zero-length hooks.
     pub fn set_skip_hook_addr(&mut self, addr: u64) {
-        self.skip_hook_addr = Some(addr);
+        // Set expiry to current_step + 2 to account for step increment
+        // This ensures the skip persists through the next step
+        let expiry = self.steps + 2;
+        self.skip_hook_stack.push((addr, expiry));
+        log::debug!("Added skip hook 0x{:x} with expiry step {}", addr, expiry);
     }
 
-    /// Clear the skip_hook_addr flag.
+    /// Clear all pending skip_hook entries.
     pub fn clear_skip_hook_addr(&mut self) {
-        self.skip_hook_addr = None;
+        self.skip_hook_stack.clear();
+    }
+
+    /// Clear skip entry for a specific address.
+    pub fn clear_skip_hook_for_addr(&mut self, addr: u64) {
+        self.skip_hook_stack.retain(|&(a, _)| a != addr);
     }
 
     /// Get errors encountered during exploration.
@@ -1787,6 +2167,10 @@ impl RustExplorationManager {
             RunResult::BlockEnd { next_addr: pc, .. } => {
                 state.set_pc(pc);
 
+                // Track root state ID for lineage
+                let original_state_id = state.state_id();
+                let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+
                 // Process deferred forks with proper constraint handling
                 let mut successors = vec![state];
                 for fork in deferred_forks {
@@ -1806,6 +2190,8 @@ impl RustExplorationManager {
                             f.set_pc(fork.unexplored_target);
                             f
                         };
+                        // Track root state ID for this forked state
+                        self.state_roots.insert(forked.state_id(), root_state_id);
                         successors.push(forked);
                     } else {
                         // No condition available - skip this fork rather than create unconstrained state
@@ -1884,28 +2270,35 @@ impl RustExplorationManager {
                     stored_conditions,
                 }))
             }
-            RunResult::SymbolicBranch { true_target, false_target, .. } => {
-                // Fork for both branches with proper constraint handling
-                if let Some(condition) = last_condition {
-                    // Use fork_true/fork_false to properly add branch constraints
-                    let mut true_state = state.fork_true(&condition);
-                    let mut false_state = state.fork_false(&condition);
+            RunResult::SymbolicBranch { condition_id, true_target, false_target } => {
+                // Return to Python for proper state forking with constraints
+                // This ensures symbolic branches are handled correctly even when
+                // hooks/callbacks occur, preventing lost forks.
+                let pre_callback_snapshot = Some(state.fork());
+                let solver_ref = state.solver();
+                let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
 
-                    true_state.set_pc(true_target);
-                    false_state.set_pc(false_target);
-
-                    Ok(vec![true_state, false_state])
-                } else {
-                    // Fallback: no condition available (shouldn't happen normally)
-                    // Fork without constraints as a safety measure
-                    let mut true_state = state.fork();
-                    let false_state = state;
-
-                    true_state.set_pc(true_target);
-                    // false_state already has the correct PC from the original state
-
-                    Ok(vec![true_state, false_state])
+                // Store the condition in stored_conditions for Python to retrieve
+                // The condition was already stored in the interpreter under condition_id
+                // We pass it through so Python can look it up
+                let mut branch_conditions = stored_conditions;
+                if let Some(cond) = last_condition {
+                    branch_conditions.insert(condition_id, cond);
                 }
+
+                Err(StepError::NeedCallback(PendingCallback {
+                    state,
+                    pre_callback_snapshot,
+                    reason: CallbackReason::SymbolicBranch {
+                        condition_id,
+                        true_target,
+                        false_target,
+                    },
+                    jumpkind: Some("Ijk_Boring".to_string()),
+                    solver_ctx: Some(forked_ctx),
+                    deferred_forks,
+                    stored_conditions: branch_conditions,
+                }))
             }
             RunResult::Error { message, addr } => {
                 state.set_pc(addr);
@@ -1944,6 +2337,10 @@ impl RustExplorationManager {
                 // This ensures each fork only has its own target constraint, not all previous ones
                 let base_state = state.fork();  // Save unconstrained clone
 
+                // Track root state ID for lineage
+                let original_state_id = state.state_id();
+                let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+
                 let mut successors = Vec::with_capacity(targets.len());
 
                 // Handle first target - use the original state (moved here)
@@ -1968,6 +2365,8 @@ impl RustExplorationManager {
                         forked.add_constraint(constraint);
                     }
                     forked.set_pc(addr);
+                    // Track root state ID for this forked state
+                    self.state_roots.insert(forked.state_id(), root_state_id);
                     successors.push(forked);
                 }
 
@@ -1976,6 +2375,69 @@ impl RustExplorationManager {
             RunResult::UnconstrainedJump { min_target: _, max_target: _, limit: _, jumpkind: _ } => {
                 // Too many symbolic jump targets - move to unconstrained stash
                 Err(StepError::Unconstrained(state))
+            }
+            RunResult::UnmodeledCall { addr, return_addr, symbol_name } => {
+                // Unhooked CALL target - try to resolve via Python callback
+                state.set_pc(addr);
+
+                // Try to resolve the function via callback
+                if callbacks.has_resolve_function() {
+                    match callbacks.call_resolve_function(py, addr, symbol_name.as_deref()) {
+                        Ok(Some((name, num_args, no_return))) => {
+                            // Function resolved! Register it and return to Python for execution
+                            log::debug!(
+                                "Resolved unmodeled call at 0x{:x} -> {} (args={}, no_return={})",
+                                addr, name, num_args, no_return
+                            );
+
+                            // Register the procedure so future calls are hooked
+                            self.hooks.insert(addr);
+                            self.simprocedures.insert(addr, (name.clone(), num_args, no_return));
+
+                            // Save pre-callback snapshot for deferred forks
+                            let pre_callback_snapshot = Some(state.fork());
+                            // Fork solver context for Python callback use
+                            let solver_ref = state.solver();
+                            let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
+
+                            // Return to Python for SimProcedure execution
+                            Err(StepError::NeedCallback(PendingCallback {
+                                state,
+                                pre_callback_snapshot,
+                                reason: CallbackReason::SimProcedure {
+                                    addr,
+                                    name,
+                                    num_args,
+                                    return_addr,
+                                },
+                                jumpkind: Some("Ijk_Call".to_string()),
+                                solver_ctx: Some(forked_ctx),
+                                deferred_forks,
+                                stored_conditions,
+                            }))
+                        }
+                        Ok(None) => {
+                            // Function could not be resolved - deadend the state
+                            log::debug!(
+                                "Unmodeled call at 0x{:x} could not be resolved, deadending state",
+                                addr
+                            );
+                            Err(StepError::Deadended(state))
+                        }
+                        Err(e) => {
+                            // Callback error - treat as execution error
+                            log::warn!("resolve_function callback error at 0x{:x}: {}", addr, e);
+                            Err(StepError::Error(state, format!("resolve_function error: {}", e)))
+                        }
+                    }
+                } else {
+                    // No resolve_function callback - deadend the state
+                    log::debug!(
+                        "Unmodeled call at 0x{:x} - no resolve_function callback, deadending",
+                        addr
+                    );
+                    Err(StepError::Deadended(state))
+                }
             }
         }
     }

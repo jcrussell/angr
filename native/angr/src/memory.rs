@@ -1291,17 +1291,23 @@ impl SymbolicMemory {
         self.symbolic_objects.insert(addr, value.clone());
 
         // Mark pages as having symbolic bytes
+        // Create pages if they don't exist (critical for stack addresses)
         let size = value.width() / 8;
         for i in 0..size {
             let byte_addr = addr + i as u64;
             let page_num = byte_addr >> 12;
             let offset = (byte_addr & PAGE_MASK) as u16;
+            let page_addr = page_num << 12;
 
-            if let Some(page) = self.pages.get(&page_num) {
-                let mut page = page.clone();
-                page.mark_symbolic(offset, 1);
-                self.pages.insert(page_num, page);
-            }
+            // Get or create page
+            let page = self.pages.entry(page_num).or_insert_with(|| {
+                MemoryPage::new(page_addr, Permission::RW)
+            });
+
+            // Clone and modify
+            let mut page = page.clone();
+            page.mark_symbolic(offset, 1);
+            self.pages.insert(page_num, page);
         }
     }
 
@@ -1599,11 +1605,56 @@ impl SymbolicMemory {
         }
 
         if has_symbolic {
-            // Return stored symbolic object if available
+            // Return stored symbolic object if available and width matches
             if let Some(sym) = self.symbolic_objects.get(&addr) {
-                return Ok(sym.clone());
+                if sym.width() == size * 8 {
+                    return Ok(sym.clone());
+                }
             }
-            // Otherwise create a fresh symbolic value
+
+            // Try to combine individual byte objects into a multi-byte value
+            // This handles the case where hooks write byte-by-byte
+            let mut all_bytes_have_objects = true;
+            let mut byte_objects: Vec<RustBV> = Vec::with_capacity(size as usize);
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
+                    if sym.width() == 8 {
+                        byte_objects.push(sym.clone());
+                    } else {
+                        all_bytes_have_objects = false;
+                        break;
+                    }
+                } else {
+                    all_bytes_have_objects = false;
+                    break;
+                }
+            }
+
+            if all_bytes_have_objects && byte_objects.len() == size as usize {
+                // Combine bytes into a single value using Concat
+                // For little-endian, the first byte is the LSB
+                match self.endness {
+                    Endness::Little => {
+                        // Start with the MSB (last byte) and concat towards LSB
+                        let mut result = byte_objects.pop().unwrap();
+                        while let Some(byte) = byte_objects.pop() {
+                            result = result.concat(&byte, ctx);
+                        }
+                        return Ok(result);
+                    }
+                    Endness::Big => {
+                        // Start with the MSB (first byte) and concat towards LSB
+                        let mut result = byte_objects.remove(0);
+                        for byte in byte_objects {
+                            result = result.concat(&byte, ctx);
+                        }
+                        return Ok(result);
+                    }
+                }
+            }
+
+            // Cannot reconstruct - return error for Python fallback
             return Err(MemoryError::SymbolicAddress {
                 description: "symbolic bytes not fully tracked".to_string(),
             });

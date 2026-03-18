@@ -888,6 +888,16 @@ impl JumpKind {
                 | JumpKind::Sys_sysenter
         )
     }
+
+    /// Check if this is a function call.
+    pub fn is_call(&self) -> bool {
+        matches!(self, JumpKind::Call)
+    }
+
+    /// Check if this is a function return.
+    pub fn is_ret(&self) -> bool {
+        matches!(self, JumpKind::Ret)
+    }
 }
 
 /// Endianness.

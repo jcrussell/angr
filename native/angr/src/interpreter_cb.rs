@@ -152,6 +152,8 @@ pub enum CbExecutionError {
     Callback(String),
     /// Block lifting error.
     LiftError(String),
+    /// Needs Python fallback for special expressions (P7 fix)
+    NeedPythonFallback(String),
 }
 
 impl From<OpError> for CbExecutionError {
@@ -173,6 +175,7 @@ impl std::fmt::Display for CbExecutionError {
             CbExecutionError::UnknownTemp(tmp) => write!(f, "unknown temporary t{}", tmp),
             CbExecutionError::Callback(msg) => write!(f, "callback error: {}", msg),
             CbExecutionError::LiftError(msg) => write!(f, "lift error: {}", msg),
+            CbExecutionError::NeedPythonFallback(msg) => write!(f, "need Python fallback: {}", msg),
         }
     }
 }
@@ -254,6 +257,16 @@ pub enum BlockResult {
         limit: usize,
         /// Jump kind.
         jumpkind: JumpKind,
+    },
+    /// Unmodeled function call - target is not hooked but is a CALL.
+    /// Need Python to check if a SimProcedure can be resolved.
+    UnmodeledCall {
+        /// Address of the unmodeled function.
+        addr: u64,
+        /// Return address (from stack).
+        return_addr: u64,
+        /// Symbol name if available.
+        symbol_name: Option<String>,
     },
 }
 
@@ -800,6 +813,14 @@ impl<'a> CallbackInterpreter<'a> {
         self.hook_addrs.contains(&addr)
     }
 
+    /// Check if an address is within loaded binary (concrete memory) regions.
+    /// Used to distinguish internal function calls from external/library calls.
+    pub fn is_in_binary(&self, addr: u64) -> bool {
+        self.concrete_memory.iter().any(|region| {
+            addr >= region.base && addr < region.base + region.size
+        })
+    }
+
     /// Register a SimProcedure at an address.
     ///
     /// This allows the interpreter to pre-extract arguments when the hook is hit,
@@ -1093,6 +1114,22 @@ impl<'a> CallbackInterpreter<'a> {
                                     max_target,
                                     limit,
                                     jumpkind: format!("{:?}", jumpkind),
+                                },
+                                blocks_executed,
+                                forks,
+                            );
+                        }
+                        BlockResult::UnmodeledCall {
+                            addr,
+                            return_addr,
+                            symbol_name,
+                        } => {
+                            let forks = self.take_deferred_forks();
+                            return (
+                                RunResult::UnmodeledCall {
+                                    addr,
+                                    return_addr,
+                                    symbol_name,
                                 },
                                 blocks_executed,
                                 forks,
@@ -2422,7 +2459,11 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRExpr::VECRET | IRExpr::GSPTR => {
-                Err(CbExecutionError::Unsupported("special expr".to_string()))
+                // P7 fix: Request Python fallback instead of failing
+                // These special expressions require Python's VEX handling
+                Err(CbExecutionError::NeedPythonFallback(
+                    format!("special expr {:?} requires Python", expr)
+                ))
             }
         }
     }
@@ -2769,6 +2810,26 @@ impl<'a> CallbackInterpreter<'a> {
             return BlockResult::Hook { addr: target };
         }
 
+        // For CALL instructions to external code, ask Python to resolve
+        if jumpkind.is_call() && !self.is_in_binary(target) {
+            let return_addr = self.get_return_addr().unwrap_or(0);
+            return BlockResult::UnmodeledCall {
+                addr: target,
+                return_addr,
+                symbol_name: None, // Symbol lookup done by Python
+            };
+        }
+
+        // For jumps/returns to external addresses that are NOT hooked,
+        // we cannot continue - deadend the state
+        if !self.is_in_binary(target) {
+            // This happens when returning to angr's internal continuation addresses
+            // The Rust engine cannot handle these - they need special Python handling
+            return BlockResult::Error {
+                message: format!("Cannot execute external address 0x{:x} (not hooked)", target),
+            };
+        }
+
         BlockResult::BlockEnd {
             next_addr: target,
             jumpkind,
@@ -3038,7 +3099,7 @@ impl<'a> CallbackInterpreter<'a> {
     fn get_stack_pointer(&self) -> Option<u64> {
         let (offset, size) = match self.arch {
             VexArch::AMD64 => (48, 8),  // RSP
-            VexArch::X86 => (16, 4),    // ESP
+            VexArch::X86 => (24, 4),    // ESP (offset 24 per arch/x86.rs)
             VexArch::ARM | VexArch::ARM64 => (52, 8), // SP for ARM variants (approximate)
             _ => return None,
         };

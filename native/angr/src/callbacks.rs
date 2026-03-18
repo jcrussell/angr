@@ -154,7 +154,7 @@ pub struct ExecutionConfig {
 impl ExecutionConfig {
     /// Create a new execution config with default values.
     #[new]
-    #[pyo3(signature = (max_deferred_forks=500, use_deferred_forks=true))]
+    #[pyo3(signature = (max_deferred_forks=500, use_deferred_forks=false))]
     pub fn py_new(max_deferred_forks: u32, use_deferred_forks: bool) -> Self {
         ExecutionConfig {
             max_deferred_forks,
@@ -182,7 +182,9 @@ impl Default for ExecutionConfig {
         ExecutionConfig {
             max_deferred_forks: 500,  // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
-            use_deferred_forks: true,
+            // Default to false: always return to Python for symbolic branches
+            // This ensures proper state forking even when hooks/callbacks occur
+            use_deferred_forks: false,
             enable_eager_prefetch: true,
             max_prefetch_batch: 256,        // 256 pages = 1MB
             max_concretization_range: 65536,
@@ -264,6 +266,17 @@ pub enum RunResult {
         limit: usize,
         /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
         jumpkind: String,
+    },
+    /// Unmodeled function call - need Python to resolve.
+    /// This is returned when execution reaches a CALL to an address that isn't hooked.
+    /// Python should check if a SimProcedure exists for this address.
+    UnmodeledCall {
+        /// Address of the unmodeled function.
+        addr: u64,
+        /// Return address (where to continue after the call).
+        return_addr: u64,
+        /// Symbol name if available from binary.
+        symbol_name: Option<String>,
     },
 }
 
@@ -1243,6 +1256,57 @@ impl PythonCallbacks {
     pub fn has_memory_load_symbolic_full(&self) -> bool {
         self.memory_load_symbolic_full.is_some()
     }
+
+    /// Call the resolve_function callback to dynamically resolve unmodeled function calls.
+    ///
+    /// This is called when Rust encounters a CALL to an address that isn't hooked.
+    /// Python can check its procedure registries and return procedure info if available.
+    ///
+    /// # Arguments
+    /// * `py` - Python GIL token
+    /// * `addr` - Address of the unmodeled function
+    /// * `symbol_name` - Symbol name if known from binary, None otherwise
+    ///
+    /// # Returns
+    /// * `Ok(Some((name, num_args, no_return)))` - Function resolved, register and retry
+    /// * `Ok(None)` - Function cannot be resolved, deadend the state
+    /// * `Err(...)` - Callback error
+    pub fn call_resolve_function(
+        &self,
+        py: Python<'_>,
+        addr: u64,
+        symbol_name: Option<&str>,
+    ) -> PyResult<Option<(String, usize, bool)>> {
+        let cb = self.resolve_function.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("resolve_function callback not set")
+        })?;
+
+        let result = cb.call1(py, (addr, symbol_name))?;
+
+        // Check if result is None
+        if result.is_none(py) {
+            return Ok(None);
+        }
+
+        // Extract tuple (name, num_args, no_return)
+        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+        if tuple.len() != 3 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "resolve_function must return (name, num_args, no_return) or None"
+            ));
+        }
+
+        let name: String = tuple.get_item(0)?.extract()?;
+        let num_args: usize = tuple.get_item(1)?.extract()?;
+        let no_return: bool = tuple.get_item(2)?.extract()?;
+
+        Ok(Some((name, num_args, no_return)))
+    }
+
+    /// Check if resolve_function callback is available.
+    pub fn has_resolve_function(&self) -> bool {
+        self.resolve_function.is_some()
+    }
 }
 
 /// Execution event returned to Python from run_loop.
@@ -1309,6 +1373,15 @@ pub struct LoopExecutionEvent {
     /// Limit exceeded for unconstrained jump.
     #[pyo3(get)]
     pub unconstrained_limit: Option<usize>,
+    /// Address of unmodeled function call (for "unmodeled_call" events).
+    #[pyo3(get)]
+    pub unmodeled_call_addr: Option<u64>,
+    /// Return address for unmodeled function call.
+    #[pyo3(get)]
+    pub unmodeled_call_return_addr: Option<u64>,
+    /// Symbol name for unmodeled function call (if available).
+    #[pyo3(get)]
+    pub unmodeled_call_symbol: Option<String>,
 }
 
 impl LoopExecutionEvent {
@@ -1340,6 +1413,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::Hook { addr } => LoopExecutionEvent {
                 event_type: "hook".to_string(),
@@ -1361,6 +1437,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::SimProcedure { addr, name, num_args, return_addr } => LoopExecutionEvent {
                 event_type: "simprocedure".to_string(),
@@ -1382,6 +1461,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::Syscall { num, pc } => LoopExecutionEvent {
                 event_type: "syscall".to_string(),
@@ -1403,6 +1485,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::SymbolicBranch {
                 true_target,
@@ -1428,6 +1513,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::BlockEnd { next_addr, jumpkind } => LoopExecutionEvent {
                 event_type: "block_end".to_string(),
@@ -1449,6 +1537,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::Error { message, addr } => LoopExecutionEvent {
                 event_type: "error".to_string(),
@@ -1470,6 +1561,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::NeedLift { addr } => LoopExecutionEvent {
                 event_type: "need_lift".to_string(),
@@ -1491,6 +1585,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::MaxDeferredForks { pc } => LoopExecutionEvent {
                 event_type: "max_deferred_forks".to_string(),
@@ -1512,6 +1609,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::SymbolicJumpTarget { targets, condition_id, jumpkind } => LoopExecutionEvent {
                 event_type: "symbolic_jump_target".to_string(),
@@ -1533,6 +1633,9 @@ impl LoopExecutionEvent {
                 unconstrained_min: None,
                 unconstrained_max: None,
                 unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
             RunResult::UnconstrainedJump { min_target, max_target, limit, jumpkind } => LoopExecutionEvent {
                 event_type: "unconstrained_jump".to_string(),
@@ -1554,6 +1657,33 @@ impl LoopExecutionEvent {
                 unconstrained_min: Some(min_target),
                 unconstrained_max: Some(max_target),
                 unconstrained_limit: Some(limit),
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
+            },
+            RunResult::UnmodeledCall { addr, return_addr, symbol_name } => LoopExecutionEvent {
+                event_type: "unmodeled_call".to_string(),
+                pc: Some(addr),
+                addr: Some(addr),
+                syscall_num: None,
+                true_target: None,
+                false_target: None,
+                jumpkind: Some("Ijk_Call".to_string()),
+                error: None,
+                blocks_executed,
+                deferred_forks,
+                push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
+                unmodeled_call_addr: Some(addr),
+                unmodeled_call_return_addr: Some(return_addr),
+                unmodeled_call_symbol: symbol_name,
             },
         }
     }

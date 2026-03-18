@@ -559,6 +559,20 @@ pub fn claripy_to_rustbv(
             let high: u32 = args_list[0].extract()?;
             let low: u32 = args_list[1].extract()?;
             let val = claripy_to_rustbv(py, &args_list[2], ctx)?;
+            let val_width = val.width();
+
+            // P5 fix: Validate Extract bounds to prevent runtime errors
+            if high >= val_width {
+                return Err(BridgeError::InvalidArgs(format!(
+                    "Extract high={} >= width={}", high, val_width
+                )));
+            }
+            if low > high {
+                return Err(BridgeError::InvalidArgs(format!(
+                    "Extract low={} > high={}", low, high
+                )));
+            }
+
             Ok(val.extract(high, low, ctx))
         }
 
