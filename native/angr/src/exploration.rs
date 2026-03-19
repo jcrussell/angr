@@ -380,6 +380,9 @@ pub struct RustExplorationManager {
     /// original state added via Python. This map allows looking up the root
     /// state (the one originally added) for any forked descendant.
     state_roots: HashMap<u64, u64>,
+    /// P9 fix: Use LIFO (stack) state selection instead of FIFO (queue).
+    /// When true, states are popped from the back (DFS). Default is false (BFS).
+    use_lifo: bool,
 }
 
 #[pymethods]
@@ -426,6 +429,7 @@ impl RustExplorationManager {
             native_proc_stats: NativeProcStats::default(),
             skip_hook_stack: Vec::new(),
             state_roots: HashMap::new(),
+            use_lifo: false,  // P9: Default to BFS (FIFO)
         })
     }
 
@@ -480,6 +484,18 @@ impl RustExplorationManager {
     /// Mark that avoid condition has callable predicates (needs Python).
     pub fn set_avoid_needs_python(&mut self, needs: bool) {
         self.avoid_needs_python = needs;
+    }
+
+    /// P9 fix: Set state selection to LIFO (DFS - depth-first search).
+    pub fn set_state_selection_lifo(&mut self) {
+        self.use_lifo = true;
+        log::debug!("State selection set to LIFO (DFS)");
+    }
+
+    /// P9 fix: Set state selection to FIFO (BFS - breadth-first search).
+    pub fn set_state_selection_fifo(&mut self) {
+        self.use_lifo = false;
+        log::debug!("State selection set to FIFO (BFS)");
     }
 
     /// Set the number of solutions to find before stopping.
@@ -663,7 +679,14 @@ impl RustExplorationManager {
             }
 
             // Get next state from active stash
-            let mut state = match self.stashes.get_mut("active").and_then(|s| s.pop_front()) {
+            // P9 fix: Use LIFO (pop_back) for DFS or FIFO (pop_front) for BFS
+            let mut state = match self.stashes.get_mut("active").and_then(|s| {
+                if self.use_lifo {
+                    s.pop_back()  // DFS: LIFO (most recent state first)
+                } else {
+                    s.pop_front()  // BFS: FIFO (oldest state first)
+                }
+            }) {
                 Some(s) => s,
                 None => {
                     // No active states
@@ -685,7 +708,40 @@ impl RustExplorationManager {
             // Check find/avoid before stepping
             let pc = state.pc();
 
-            // Check avoid addresses (address-based only)
+            // P7 fix: Check if callable avoid predicate needs Python evaluation
+            // When avoid is a callable (lambda/function), we must return to Python
+            // to evaluate it for each state, not just check addresses.
+            if self.avoid_needs_python {
+                let state_id = state.state_id();
+                self.pending_callback = Some(PendingCallback {
+                    state,
+                    pre_callback_snapshot: None,
+                    reason: CallbackReason::AvoidPredicate { addr: pc },
+                    jumpkind: None,
+                    solver_ctx: None,
+                    deferred_forks: Vec::new(),
+                    stored_conditions: HashMap::new(),
+                });
+
+                return Ok(ExplorationEvent {
+                    event_type: "need_callback".to_string(),
+                    callback_reason: Some("avoid_predicate".to_string()),
+                    callback_addr: Some(pc),
+                    callback_state_id: Some(state_id),
+                    found_count: self.found_count(),
+                    active_count: self.active_count(),
+                    steps_taken: self.steps,
+                    callback_name: None,
+                    callback_syscall_num: None,
+                    callback_return_addr: None,
+                    callback_num_args: None,
+                    branch_true_target: None,
+                    branch_false_target: None,
+                    branch_condition_id: None,
+                });
+            }
+
+            // Check avoid addresses (address-based, only when NOT using callable predicate)
             if self.avoid_addrs.contains(&pc) {
                 self.stashes
                     .entry("avoid".to_string())
@@ -1048,17 +1104,38 @@ impl RustExplorationManager {
         let mut successors = vec![state];  // Post-callback state first
         for fork in pending.deferred_forks {
             // Look up the condition for this deferred fork
-            if let Some(condition) = pending.stored_conditions.get(&fork.condition_id) {
+            let condition = pending.stored_conditions.get(&fork.condition_id);
+
+            // P11 fix: If condition not in stored_conditions, try to reconstruct from condition_ast
+            let reconstructed_condition = if condition.is_none() {
+                if let Some(ref py_ast) = fork.condition_ast {
+                    // Try to convert the claripy AST to RustBV
+                    Python::with_gil(|py| {
+                        let ast = py_ast.bind(py);
+                        let solver_ref = fork_base.solver();
+                        let ctx: &SymContext = &*solver_ref.borrow();
+                        claripy_to_rustbv(py, ast, ctx).ok()
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let effective_condition = condition.or(reconstructed_condition.as_ref());
+
+            if let Some(cond) = effective_condition {
                 // Fork from CLEAN pre-callback snapshot, not from post-callback state
                 // This ensures deferred forks don't inherit callback constraints
                 let forked = if fork.path_taken {
                     // Took the true branch, so fork needs false constraint
-                    let mut f = fork_base.fork_false(condition);
+                    let mut f = fork_base.fork_false(cond);
                     f.set_pc(fork.unexplored_target);
                     f
                 } else {
                     // Took the false branch, so fork needs true constraint
-                    let mut f = fork_base.fork_true(condition);
+                    let mut f = fork_base.fork_true(cond);
                     f.set_pc(fork.unexplored_target);
                     f
                 };
@@ -1071,6 +1148,12 @@ impl RustExplorationManager {
                 // Adding callback constraints would pollute unexplored branches.
 
                 successors.push(forked);
+                if reconstructed_condition.is_some() {
+                    log::debug!(
+                        "P11: Reconstructed condition from condition_ast for fork at 0x{:x}",
+                        fork.branch_addr
+                    );
+                }
             } else {
                 log::warn!(
                     "Missing condition for deferred fork at 0x{:x} (condition_id={}), skipping",
@@ -1229,6 +1312,32 @@ impl RustExplorationManager {
                 .push_back(pending.state);
         } else {
             log::debug!("Find predicate did not match - continuing exploration");
+            self.stashes
+                .entry("active".to_string())
+                .or_insert_with(VecDeque::new)
+                .push_back(pending.state);
+        }
+
+        Ok(())
+    }
+
+    /// Resume after Python evaluates an avoid predicate.
+    ///
+    /// P7 fix: This is called after Python evaluates a callable avoid predicate.
+    /// If matched=true, the state is moved to avoid stash; otherwise, it continues
+    /// exploration in the active stash.
+    pub fn resume_avoid_predicate(&mut self, matched: bool) -> PyResult<()> {
+        let pending = self.pending_callback.take()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending avoid predicate callback"))?;
+
+        if matched {
+            log::debug!("Avoid predicate matched - moving state to avoid stash");
+            self.stashes
+                .entry("avoid".to_string())
+                .or_insert_with(VecDeque::new)
+                .push_back(pending.state);
+        } else {
+            log::debug!("Avoid predicate did not match - continuing exploration");
             self.stashes
                 .entry("active".to_string())
                 .or_insert_with(VecDeque::new)
@@ -1711,6 +1820,40 @@ impl RustExplorationManager {
         // With filter - for now just move all (filter requires Python evaluation)
         // TODO: Implement filter evaluation
         self.move_states(from_stash, to_stash, None)
+    }
+
+    /// P8 fix: Move a single state by ID between stashes.
+    pub fn move_state(&mut self, state_id: u64, from_stash: &str, to_stash: &str) -> PyResult<bool> {
+        // Find and remove the state from the source stash
+        let mut found_state = None;
+        if let Some(stash) = self.stashes.get_mut(from_stash) {
+            let mut idx = None;
+            for (i, state) in stash.iter().enumerate() {
+                if state.state_id() == state_id {
+                    idx = Some(i);
+                    break;
+                }
+            }
+            if let Some(i) = idx {
+                found_state = stash.remove(i);
+            }
+        }
+
+        // Add to destination stash if found
+        if let Some(state) = found_state {
+            let to = self.stashes.entry(to_stash.to_string()).or_insert_with(VecDeque::new);
+            to.push_back(state);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// P8 fix: Clear all states from a stash.
+    pub fn clear_stash(&mut self, stash: &str) {
+        if let Some(s) = self.stashes.get_mut(stash) {
+            s.clear();
+        }
     }
 
     /// Get statistics.
