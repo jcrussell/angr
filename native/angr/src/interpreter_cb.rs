@@ -1780,10 +1780,24 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
                             }
                             _ => {
-                                // Multiple addresses with symbolic guard - unsupported
-                                return Err(CbExecutionError::Unsupported(
-                                    "symbolic guarded store with multiple possible addresses".to_string()
-                                ));
+                                // P20: Multiple addresses with symbolic guard - delegate to Python
+                                // instead of returning UNSUPPORTED error which deadends the state
+                                log::debug!(
+                                    "P20: Symbolic guarded store with multiple addresses - delegating to Python"
+                                );
+                                self.flush_stores(py, callbacks)?;
+                                if callbacks.has_memory_store_symbolic_full() {
+                                    // Use full symbolic store callback which handles complex cases
+                                    callbacks
+                                        .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                } else {
+                                    // No symbolic store callback - log warning but don't fail
+                                    log::warn!(
+                                        "P20: No symbolic_store_full callback for guarded store with symbolic address. \
+                                         Store may be lost, but continuing execution."
+                                    );
+                                }
                             }
                         }
                     }
@@ -2821,12 +2835,17 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         // For jumps/returns to external addresses that are NOT hooked,
-        // we cannot continue - deadend the state
+        // treat as UnmodeledCall so Python can handle them properly.
+        // This includes:
+        // - angr's internal continuation addresses (0x700000+)
+        // - extern stubs and SimProcedure return points
+        // - dynamically registered hooks that weren't synced yet
         if !self.is_in_binary(target) {
-            // This happens when returning to angr's internal continuation addresses
-            // The Rust engine cannot handle these - they need special Python handling
-            return BlockResult::Error {
-                message: format!("Cannot execute external address 0x{:x} (not hooked)", target),
+            let return_addr = self.get_return_addr().unwrap_or(0);
+            return BlockResult::UnmodeledCall {
+                addr: target,
+                return_addr,
+                symbol_name: Some("__extern_addr__".to_string()),
             };
         }
 

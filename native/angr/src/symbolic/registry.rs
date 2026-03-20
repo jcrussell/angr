@@ -111,8 +111,12 @@ impl SymbolicIdentityRegistry {
         // Store mappings
         self.py_hash_to_rust_id.write().insert(py_hash, rust_id);
         self.rust_id_to_py.write().insert(rust_id, py_ast);
+        // D2 Fix: Include width in the name key to prevent collisions
+        // when symbols have the same name but different widths.
+        // E.g., "x" with width 32 vs "x" with width 64 should not collide.
+        let qualified_name = format!("{}_w{}", name, width);
         self.name_to_info.write().insert(
-            name.to_string(),
+            qualified_name,
             SymbolInfo {
                 rust_id,
                 width,
@@ -139,11 +143,22 @@ impl SymbolicIdentityRegistry {
         result
     }
 
-    /// Look up symbol info by name.
+    /// Look up symbol info by name (deprecated - use lookup_by_name_and_width).
     ///
     /// Returns the SymbolInfo if a symbol with this name was registered.
+    /// Note: Since D2 fix, names are stored as "{name}_w{width}", so this
+    /// method is only useful for backwards compatibility.
     pub fn lookup_by_name(&self, name: &str) -> Option<SymbolInfo> {
         self.name_to_info.read().get(name).cloned()
+    }
+
+    /// Look up symbol info by name and width.
+    ///
+    /// Returns the SymbolInfo if a symbol with this name and width was registered.
+    /// This is the preferred method after D2 fix which uses width-qualified names.
+    pub fn lookup_by_name_and_width(&self, name: &str, width: u32) -> Option<SymbolInfo> {
+        let qualified_name = format!("{}_w{}", name, width);
+        self.name_to_info.read().get(&qualified_name).cloned()
     }
 
     /// Get the original Python AST for a Rust symbol ID.
@@ -320,7 +335,8 @@ mod tests {
 
             // Lookup should succeed
             assert_eq!(registry.lookup_by_hash(12345), Some(1));
-            assert!(registry.lookup_by_name("x").is_some());
+            // D2 Fix: lookup_by_name_and_width uses width-qualified names
+            assert!(registry.lookup_by_name_and_width("x", 32).is_some());
             assert!(registry.has_original(1));
         });
     }

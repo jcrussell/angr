@@ -196,8 +196,8 @@ class CallbackMemoryTracker:
 
                         tracker._writes.append((concrete_addr, list(data_bytes)))
                 except Exception as e:
-                    # Don't fail on tracking errors
-                    pass
+                    # P18: Log tracking errors for debugging instead of silently passing
+                    l.debug(f"P18: Memory tracking error at addr={addr}: {e}")
 
                 return result
 
@@ -1939,6 +1939,20 @@ class RustExplorationManager:
                             if cont_addr_int != addr:
                                 self._pending_procedure_data[cont_addr_int] = pdata
                                 l.debug(f"Stored procedure_data for continuation at 0x{cont_addr_int:x}")
+
+                                # C1 Fix: Register continuation hook with Rust IMMEDIATELY
+                                # This prevents "Cannot execute external address" errors
+                                # when Rust tries to execute the continuation before the
+                                # normal hook sync happens via _sync_hooks_before_step()
+                                if cont_addr_int not in self._registered_hooks:
+                                    cont_proc = self._project._sim_procedures.get(cont_addr_int)
+                                    if cont_proc:
+                                        cont_name = cont_proc.__class__.__name__ if hasattr(cont_proc, '__class__') else str(cont_proc)
+                                        cont_num_args = getattr(cont_proc, 'num_args', 0) or 0
+                                        cont_no_return = getattr(cont_proc, 'NO_RET', False)
+                                        self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])
+                                        self._registered_hooks.add(cont_addr_int)
+                                        l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}: {cont_name}")
                 except Exception as e:
                     l.debug(f"Could not capture procedure_data: {e}")
 
@@ -1999,15 +2013,23 @@ class RustExplorationManager:
                     self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
 
         except Exception as e:
-            l.warning(f"SimProcedure execution error at 0x{addr:x}: {e}")
+            # P17: On exception, move state to errored stash instead of resuming with corrupted state
+            l.warning(f"P17: SimProcedure execution error at 0x{addr:x}: {e}")
             import traceback
             traceback.print_exc()
-            ret_addr = event.callback_return_addr or (addr + 1)
-            self._rust_mgr.resume_after_simprocedure(ret_addr, None, None)
-        finally:
-            # Clear callback state to avoid stale references
+            # Signal error to Rust - this will move the state to errored stash
+            try:
+                self._rust_mgr.resume_after_error(str(e))
+            except Exception as resume_err:
+                l.warning(f"P17: Could not signal error to Rust: {resume_err}")
+            # P19: Clear callback state since we've handled the error
             self._set_callback_state(None)
             self._current_callback_state_id = None
+            return
+        # P19: Only clear callback state on success, not in finally
+        # This ensures state isn't lost if resume fails
+        self._set_callback_state(None)
+        self._current_callback_state_id = None
 
     def _resume_with_state(
         self,
@@ -2544,6 +2566,13 @@ class RustExplorationManager:
 
             l.debug(f"Got branch condition from Rust: {condition}")
 
+            # Defensive: ensure condition is a claripy AST, not Python bool/int
+            # This can happen if rustbv_to_claripy() returns the wrong type
+            if isinstance(condition, (bool, int)):
+                l.warning(f"Branch condition is {type(condition).__name__}, wrapping to claripy")
+                import claripy
+                condition = claripy.BoolV(bool(condition))
+
             # Create true branch constraint: condition != 0 (condition is true)
             # For a VEX guard, "true" means the guard evaluates to non-zero
             true_constraint = condition != 0
@@ -2582,8 +2611,16 @@ class RustExplorationManager:
                 l.debug("Resumed after symbolic branch with fallback (no constraints)")
             except Exception as e2:
                 l.error(f"Failed to resume after symbolic branch: {e2}")
-                # Try to recover by adding a simple forked state
-                # This is a last resort to avoid hanging
+                # Recovery: Move the pending state to errored stash to avoid hanging
+                # This uses the same error handling as other callback failures (P17 fix)
+                try:
+                    self._rust_mgr.resume_after_error(f"symbolic_branch_error: {e2}")
+                    l.warning("Moved state to errored stash after symbolic branch failure")
+                except Exception as e3:
+                    l.error(f"Failed to move state to errored stash: {e3}")
+                    # Last resort: the pending_callback is still set, which will cause
+                    # step() to fail on the next iteration. This is better than silently
+                    # losing the state or hanging indefinitely.
 
     def _get_pending_parent_id(self) -> Optional[int]:
         """Get parent state ID of current pending callback state.

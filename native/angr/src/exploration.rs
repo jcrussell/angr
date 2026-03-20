@@ -1067,8 +1067,18 @@ impl RustExplorationManager {
         // Sync constraints from Python back to Rust
         // This ensures constraints added by SimProcedures (e.g., strcmp return conditions)
         // are properly reflected in the Rust solver state
+        //
+        // P12: Track if state becomes UNSAT after constraint sync
+        let mut main_state_unsat = false;
         if let Some(constraints) = new_constraints {
-            self.sync_constraints_from_python(py, &state, constraints)?;
+            let is_sat = self.sync_constraints_from_python(py, &state, constraints)?;
+            if !is_sat {
+                log::debug!(
+                    "P12: State {} became UNSAT after constraint sync in resume_after_simprocedure.",
+                    state.state_id()
+                );
+                main_state_unsat = true;
+            }
         }
 
         // Validate deferred forks reference valid conditions before processing
@@ -1101,7 +1111,12 @@ impl RustExplorationManager {
         let original_state_id = state.state_id();
         let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
 
-        let mut successors = vec![state];  // Post-callback state first
+        // P12: Only add main state if SAT, otherwise add to pruned list
+        let (mut successors, mut pruned_states) = if main_state_unsat {
+            (Vec::new(), vec![state])
+        } else {
+            (vec![state], Vec::new())
+        };
         for fork in pending.deferred_forks {
             // Look up the condition for this deferred fork
             let condition = pending.stored_conditions.get(&fork.condition_id);
@@ -1147,28 +1162,82 @@ impl RustExplorationManager {
                 // These paths diverged before the callback occurred.
                 // Adding callback constraints would pollute unexplored branches.
 
-                successors.push(forked);
-                if reconstructed_condition.is_some() {
+                // P13: Check satisfiability before adding to successors
+                if forked.satisfiable() {
+                    successors.push(forked);
+                    if reconstructed_condition.is_some() {
+                        log::debug!(
+                            "P11: Reconstructed condition from condition_ast for fork at 0x{:x}",
+                            fork.branch_addr
+                        );
+                    }
+                } else {
                     log::debug!(
-                        "P11: Reconstructed condition from condition_ast for fork at 0x{:x}",
-                        fork.branch_addr
+                        "P13: Forked state at 0x{:x} is UNSAT, adding to pruned",
+                        fork.unexplored_target
                     );
+                    pruned_states.push(forked);
                 }
             } else {
+                // P15: Better handling of missing deferred fork conditions
+                // Try harder to get a condition or create a fresh boolean to explore both paths
                 log::warn!(
-                    "Missing condition for deferred fork at 0x{:x} (condition_id={}), skipping",
+                    "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
+                     Creating conservative fork to explore the path.",
                     fork.branch_addr,
                     fork.condition_id
                 );
+                // Create a fork without additional constraints - this is conservative
+                // but ensures we don't lose valid paths
+                let mut forked = fork_base.fork();
+                forked.set_pc(fork.unexplored_target);
+                self.state_roots.insert(forked.state_id(), root_state_id);
+
+                // P13: Still check satisfiability
+                if forked.satisfiable() {
+                    successors.push(forked);
+                } else {
+                    log::debug!(
+                        "P13: Unconstrained fork at 0x{:x} is UNSAT, adding to pruned",
+                        fork.unexplored_target
+                    );
+                    pruned_states.push(forked);
+                }
             }
         }
 
-        // Add all successors (original state + forks) to active stash
+        // Add all successors (original state + forks) to stashes
+        // P13: Check satisfiability for each before adding
+        // Note: We split the loops to avoid double mutable borrow of self.stashes
+        let mut final_successors = Vec::new();
+        for successor in successors {
+            if successor.satisfiable() {
+                final_successors.push(successor);
+            } else {
+                log::debug!(
+                    "P13: Successor state {} is UNSAT, moving to pruned stash",
+                    successor.state_id()
+                );
+                pruned_states.push(successor);
+            }
+        }
+
+        // Add to active stash
         let active = self.stashes
             .entry("active".to_string())
             .or_insert_with(VecDeque::new);
-        for successor in successors {
-            active.push_back(successor);
+        for s in final_successors {
+            active.push_back(s);
+        }
+
+        // Add to pruned stash
+        if !pruned_states.is_empty() {
+            let pruned = self.stashes
+                .entry("pruned".to_string())
+                .or_insert_with(VecDeque::new);
+            for s in pruned_states {
+                pruned.push_back(s);
+            }
         }
 
         Ok(())
@@ -1204,6 +1273,36 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
         self.resume_after_simprocedure(py, new_pc, register_changes, memory_changes, new_constraints)
+    }
+
+    /// Resume after an error occurred during callback execution (P17).
+    ///
+    /// This moves the pending state to the errored stash instead of continuing
+    /// with a corrupted state. This prevents "list index out of range" errors
+    /// caused by UNSAT states proliferating from callback failures.
+    pub fn resume_after_error(&mut self, error_msg: &str) -> PyResult<()> {
+        let pending = self.pending_callback.take().ok_or_else(|| {
+            PyRuntimeError::new_err("no pending callback state for error handling")
+        })?;
+
+        let pc = pending.state.pc();
+        let state_id = pending.state.state_id();
+
+        log::warn!(
+            "P17: Moving state {} to errored stash after callback error at 0x{:x}: {}",
+            state_id, pc, error_msg
+        );
+
+        // Record the error
+        self.errors.push((pc, error_msg.to_string(), state_id));
+
+        // Move to errored stash
+        self.stashes
+            .entry("errored".to_string())
+            .or_insert_with(VecDeque::new)
+            .push_back(pending.state);
+
+        Ok(())
     }
 
     /// Resume after Python handles a symbolic branch.
@@ -1282,12 +1381,42 @@ impl RustExplorationManager {
             }
         }
 
-        // Add both states to active stash
+        // P13: Add states to stashes based on satisfiability
+        // Collect to local vectors first to avoid double mutable borrow
+        let mut active_states = Vec::new();
+        let mut pruned_states = Vec::new();
+
+        if true_state.satisfiable() {
+            active_states.push(true_state);
+        } else {
+            log::debug!("P13: True branch at 0x{:x} is UNSAT, moving to pruned stash", true_pc);
+            pruned_states.push(true_state);
+        }
+
+        if false_state.satisfiable() {
+            active_states.push(false_state);
+        } else {
+            log::debug!("P13: False branch at 0x{:x} is UNSAT, moving to pruned stash", false_pc);
+            pruned_states.push(false_state);
+        }
+
+        // Add to active stash
         let active = self.stashes
             .entry("active".to_string())
             .or_insert_with(VecDeque::new);
-        active.push_back(true_state);
-        active.push_back(false_state);
+        for s in active_states {
+            active.push_back(s);
+        }
+
+        // Add to pruned stash
+        if !pruned_states.is_empty() {
+            let pruned = self.stashes
+                .entry("pruned".to_string())
+                .or_insert_with(VecDeque::new);
+            for s in pruned_states {
+                pruned.push_back(s);
+            }
+        }
 
         log::debug!("Resumed after symbolic branch: true_pc=0x{:x}, false_pc=0x{:x}",
                     true_pc, false_pc);
@@ -2078,12 +2207,17 @@ impl RustExplorationManager {
     ///
     /// Without this, constraints added by SimProcedures would be lost when
     /// Rust resumes execution, leading to incorrect symbolic evaluation.
+    ///
+    /// Returns:
+    ///   - Ok(true): Constraints synced and state is SAT (satisfiable)
+    ///   - Ok(false): State became UNSAT after syncing - should be pruned (P12)
+    ///   - Err: Python error during sync
     fn sync_constraints_from_python(
         &self,
         py: Python<'_>,
         state: &RustSimState,
         constraints: &Bound<'_, pyo3::types::PyList>,
-    ) -> PyResult<()> {
+    ) -> PyResult<bool> {
         use pyo3::types::PyListMethods;
 
         let solver_ref = state.solver();
@@ -2141,21 +2275,37 @@ impl RustExplorationManager {
 
         if success_count > 0 {
             log::debug!("Synced {} constraints from Python to Rust", success_count);
+        }
 
-            // Check satisfiability after syncing constraints
-            #[cfg(feature = "vex-engine-z3")]
-            {
-                if !sym_ctx.is_sat() {
-                    log::warn!(
-                        "Constraints became UNSAT after syncing {} from Python. \
-                         State should be pruned.",
-                        success_count
-                    );
-                }
+        // P12: Check satisfiability and return status so callers can prune UNSAT states
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            let is_sat = sym_ctx.is_sat();
+            if !is_sat {
+                log::debug!(
+                    "P12: Constraints are UNSAT after syncing {} from Python (failed={}). \
+                     Returning false to trigger pruning.",
+                    success_count, failed_count
+                );
+                return Ok(false);
             }
         }
 
-        Ok(())
+        // P14: If many constraints failed to convert, do explicit SAT check
+        // Failed conversions can leave state in divergent state
+        #[cfg(feature = "vex-engine-z3")]
+        if failed_count > 0 && success_count > 0 {
+            let is_sat = sym_ctx.is_sat();
+            if !is_sat {
+                log::debug!(
+                    "P14: State became UNSAT with partial constraint sync ({}/{} failed). Pruning.",
+                    failed_count, failed_count + success_count
+                );
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     /// Extract procedure arguments from state registers.
@@ -2315,7 +2465,10 @@ impl RustExplorationManager {
                 let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
 
                 // Process deferred forks with proper constraint handling
+                // P13: Track UNSAT states for pruning
                 let mut successors = vec![state];
+                let mut pruned_states = Vec::new();
+
                 for fork in deferred_forks {
                     // Look up the condition for this deferred fork
                     if let Some(condition) = stored_conditions.get(&fork.condition_id) {
@@ -2335,17 +2488,49 @@ impl RustExplorationManager {
                         };
                         // Track root state ID for this forked state
                         self.state_roots.insert(forked.state_id(), root_state_id);
-                        successors.push(forked);
+
+                        // P13: Check satisfiability before adding to successors
+                        if forked.satisfiable() {
+                            successors.push(forked);
+                        } else {
+                            log::debug!(
+                                "P13: Deferred fork at 0x{:x} is UNSAT, will be pruned",
+                                fork.unexplored_target
+                            );
+                            pruned_states.push(forked);
+                        }
                     } else {
-                        // No condition available - skip this fork rather than create unconstrained state
-                        // Creating an unconstrained fork leads to too many possible values for
-                        // symbolic expressions, causing the state to end up in the unconstrained stash
+                        // P15: Create conservative fork to explore the path even without condition
                         log::warn!(
-                            "Missing condition for deferred fork at 0x{:x} (condition_id={}), skipping",
+                            "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
+                             Creating conservative fork.",
                             fork.branch_addr,
                             fork.condition_id
                         );
-                        continue;
+                        let mut forked = successors[0].fork();
+                        forked.set_pc(fork.unexplored_target);
+                        self.state_roots.insert(forked.state_id(), root_state_id);
+
+                        // P13: Still check satisfiability
+                        if forked.satisfiable() {
+                            successors.push(forked);
+                        } else {
+                            log::debug!(
+                                "P13: Unconstrained fork at 0x{:x} is UNSAT, will be pruned",
+                                fork.unexplored_target
+                            );
+                            pruned_states.push(forked);
+                        }
+                    }
+                }
+
+                // Add pruned states to pruned stash
+                if !pruned_states.is_empty() {
+                    let pruned = self.stashes
+                        .entry("pruned".to_string())
+                        .or_insert_with(VecDeque::new);
+                    for s in pruned_states {
+                        pruned.push_back(s);
                     }
                 }
 
@@ -2560,12 +2745,26 @@ impl RustExplorationManager {
                             }))
                         }
                         Ok(None) => {
-                            // Function could not be resolved - deadend the state
+                            // P21: Function could not be resolved - use generic skip instead of deadending
+                            // This sets return register to 0 and continues at return address
                             log::debug!(
-                                "Unmodeled call at 0x{:x} could not be resolved, deadending state",
-                                addr
+                                "P21: Unmodeled call at 0x{:x} could not be resolved. \
+                                 Using generic skip (ret=0) to return_addr=0x{:x}",
+                                addr, return_addr
                             );
-                            Err(StepError::Deadended(state))
+
+                            // Set return register to 0 (symbolic unconstrained would be better but
+                            // concrete 0 is simpler and often sufficient)
+                            let ret_reg_offset = self.calling_convention.return_register();
+                            let ptr_size = self.calling_convention.pointer_size();
+                            let zero_val = RustBV::zero((ptr_size * 8) as u32);
+                            state.set_register_by_offset(ret_reg_offset, zero_val);
+
+                            // Continue at return address
+                            state.set_pc(return_addr);
+
+                            // Return the state as a successor
+                            Ok(vec![state])
                         }
                         Err(e) => {
                             // Callback error - treat as execution error
@@ -2574,12 +2773,24 @@ impl RustExplorationManager {
                         }
                     }
                 } else {
-                    // No resolve_function callback - deadend the state
+                    // P21: No resolve_function callback - use generic skip instead of deadending
                     log::debug!(
-                        "Unmodeled call at 0x{:x} - no resolve_function callback, deadending",
-                        addr
+                        "P21: Unmodeled call at 0x{:x} - no resolve_function callback. \
+                         Using generic skip (ret=0) to return_addr=0x{:x}",
+                        addr, return_addr
                     );
-                    Err(StepError::Deadended(state))
+
+                    // Set return register to 0
+                    let ret_reg_offset = self.calling_convention.return_register();
+                    let ptr_size = self.calling_convention.pointer_size();
+                    let zero_val = RustBV::zero((ptr_size * 8) as u32);
+                    state.set_register_by_offset(ret_reg_offset, zero_val);
+
+                    // Continue at return address
+                    state.set_pc(return_addr);
+
+                    // Return the state as a successor
+                    Ok(vec![state])
                 }
             }
         }

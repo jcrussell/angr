@@ -116,11 +116,18 @@ pub fn lookup_symbol_by_hash(py_hash: i64) -> Option<u64> {
     global_registry().lookup_by_hash(py_hash)
 }
 
-/// Look up symbol info by name.
+/// Look up symbol info by name (deprecated - use lookup_symbol_by_name_and_width).
 ///
 /// This is used when we receive a symbol by name and need to find its Rust ID.
 pub fn lookup_symbol_by_name(name: &str) -> Option<crate::symbolic::SymbolInfo> {
     global_registry().lookup_by_name(name)
+}
+
+/// Look up symbol info by name and width.
+///
+/// This is the preferred method after D2 fix which uses width-qualified names.
+pub fn lookup_symbol_by_name_and_width(name: &str, width: u32) -> Option<crate::symbolic::SymbolInfo> {
+    global_registry().lookup_by_name_and_width(name, width)
 }
 
 /// Store a claripy AST in the expression cache by expression hash.
@@ -339,12 +346,11 @@ pub fn claripy_to_rustbv(
                 return Ok(RustBV::symbolic_with_id(existing_id, &name, width));
             }
 
-            // Also check by name for cases where the hash changed but name is stable
-            if let Some(info) = lookup_symbol_by_name(&name) {
-                if info.width == width {
-                    // Symbol with same name/width exists, return reference
-                    return Ok(RustBV::symbolic_with_id(info.rust_id, &name, width));
-                }
+            // Also check by name+width for cases where the hash changed but name is stable
+            // D2 Fix: Use width-qualified lookup to avoid collisions
+            if let Some(info) = lookup_symbol_by_name_and_width(&name, width) {
+                // Symbol with same name/width exists, return reference
+                return Ok(RustBV::symbolic_with_id(info.rust_id, &name, width));
             }
 
             // Create new symbol and register with full info
@@ -787,6 +793,79 @@ pub fn claripy_to_rustbv(
     result
 }
 
+/// Ensure a PyObject is a claripy AST, wrapping ints/bools if needed.
+///
+/// This is a defensive function to handle cases where a Python int or bool
+/// might be returned from cache or operations instead of a proper claripy AST.
+/// Operations like Extract require claripy ASTs and will fail with
+/// "'int' object has no attribute 'length'" if passed an int.
+fn ensure_claripy_ast(
+    py: Python<'_>,
+    obj: &PyObject,
+    claripy_mod: &Bound<'_, PyAny>,
+    width_hint: Option<u32>,
+) -> PyResult<PyObject> {
+    let bound = obj.bind(py);
+
+    // Check if it's already a claripy AST by checking for 'op' attribute
+    match bound.hasattr("op") {
+        Ok(true) => {
+            return Ok(obj.clone());
+        }
+        Ok(false) => {
+            let type_name = bound.get_type().name()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            log::debug!(
+                "ensure_claripy_ast: object {} missing 'op' attr, wrapping",
+                type_name
+            );
+        }
+        Err(e) => {
+            log::warn!("ensure_claripy_ast: hasattr('op') failed: {}", e);
+        }
+    }
+
+    // Check the actual Python type to distinguish bool from int
+    // IMPORTANT: In Python, bool is a subclass of int, so we must check bool FIRST
+    // but use is_instance_of, not extract, because extract::<bool>() succeeds for ints too
+    let type_name = bound.get_type().name()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    // Check if it's exactly a Python bool (not an int that happens to be 0 or 1)
+    if type_name == "bool" {
+        if let Ok(bool_val) = bound.extract::<bool>() {
+            log::debug!("ensure_claripy_ast: wrapping bool {} in BoolV", bool_val);
+            return claripy_mod.call_method1("BoolV", (bool_val,)).map(|o| o.into());
+        }
+    }
+
+    // If it's an int, wrap in BVV with the provided width hint
+    // Try i128 first for larger values, then fall back to i64
+    if type_name == "int" {
+        let width = width_hint.unwrap_or(64);
+        // Try to extract as i128 for larger values
+        if let Ok(int_val) = bound.extract::<i128>() {
+            log::debug!("ensure_claripy_ast: wrapping int {} in BVV with width {}", int_val, width);
+            // For values that fit in i64, use that (more compatible)
+            if int_val >= i64::MIN as i128 && int_val <= i64::MAX as i128 {
+                return claripy_mod.call_method1("BVV", (int_val as i64, width)).map(|o| o.into());
+            } else {
+                // For larger values, pass as Python int directly
+                return claripy_mod.call_method1("BVV", (&bound, width)).map(|o| o.into());
+            }
+        }
+        // Fallback: pass the Python object directly and let claripy handle it
+        log::debug!("ensure_claripy_ast: wrapping large int in BVV with width {}", width);
+        return claripy_mod.call_method1("BVV", (&bound, width)).map(|o| o.into());
+    }
+
+    // Otherwise return as-is and hope for the best
+    log::warn!("ensure_claripy_ast: unknown type {}, returning as-is", type_name);
+    Ok(obj.clone())
+}
+
 /// Convert a RustBV back to a claripy AST.
 ///
 /// This is used when returning symbolic results to Python.
@@ -801,9 +880,11 @@ pub fn rustbv_to_claripy(
 
     // Check cache first for Symbolic variants
     // This preserves AST identity across FFI boundary
-    if let RustBV::Symbolic { id, .. } = bv {
+    if let RustBV::Symbolic { id, width, .. } = bv {
         if let Some(cached) = get_claripy_ast(*id) {
-            return Ok(cached);
+            // Validate cached value is a claripy AST, not an int
+            let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;
+            return Ok(cached_valid);
         }
     }
 
@@ -846,10 +927,19 @@ pub fn rustbv_to_claripy(
         }
         RustBV::Expression { op, operands, .. } => {
             // Recursively convert operands to claripy ASTs
-            let args: Vec<PyObject> = operands
+            let raw_args: Vec<PyObject> = operands
                 .iter()
                 .map(|operand| rustbv_to_claripy(py, operand.as_ref(), claripy_mod))
                 .collect::<Result<_, _>>()?;
+
+            // Validate all args to ensure they're claripy ASTs
+            // This handles cases where cache corruption or other issues return ints
+            let args: Vec<PyObject> = raw_args.iter().enumerate()
+                .map(|(i, arg)| {
+                    let width = operands.get(i).map(|o| o.width());
+                    ensure_claripy_ast(py, arg, claripy_mod, width)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Build the claripy expression based on the operation
             match op {
@@ -920,18 +1010,58 @@ pub fn rustbv_to_claripy(
                     claripy_mod.call_method1("RotateRight", (&args[0], &args[1])).map(|o| o.into())
                 }
 
-                // Extension operations
+                // Extension operations (args already validated)
                 BVOp::ZeroExt(extend_bits) => {
-                    claripy_mod.call_method1("ZeroExt", (*extend_bits, &args[0])).map(|o| o.into())
+                    let arg0_type = args[0].bind(py).get_type().name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
+
+                    // If arg0 is a Bool, convert it to a 1-bit BV first
+                    // claripy.ZeroExt requires a BV, not a Bool
+                    if arg0_type == "Bool" {
+                        // Use claripy.If(cond, BVV(1, 1), BVV(0, 1)) to convert Bool to 1-bit BV
+                        let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
+                        let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
+                        let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
+                        claripy_mod.call_method1("ZeroExt", (*extend_bits, bv1)).map(|o| o.into())
+                    } else {
+                        claripy_mod.call_method1("ZeroExt", (*extend_bits, &args[0])).map(|o| o.into())
+                    }
                 }
                 BVOp::SignExt(extend_bits) => {
-                    claripy_mod.call_method1("SignExt", (*extend_bits, &args[0])).map(|o| o.into())
+                    let arg0_type = args[0].bind(py).get_type().name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
+
+                    // If arg0 is a Bool, convert it to a 1-bit BV first
+                    // claripy.SignExt requires a BV, not a Bool
+                    if arg0_type == "Bool" {
+                        let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
+                        let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
+                        let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
+                        claripy_mod.call_method1("SignExt", (*extend_bits, bv1)).map(|o| o.into())
+                    } else {
+                        claripy_mod.call_method1("SignExt", (*extend_bits, &args[0])).map(|o| o.into())
+                    }
                 }
                 BVOp::Extract(high, low) => {
-                    claripy_mod.call_method1("Extract", (*high, *low, &args[0])).map(|o| o.into())
+                    let arg0_type = args[0].bind(py).get_type().name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
+
+                    // If arg0 is a Bool, convert it to a 1-bit BV first
+                    // claripy.Extract requires a BV, not a Bool
+                    if arg0_type == "Bool" {
+                        let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
+                        let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
+                        let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
+                        claripy_mod.call_method1("Extract", (*high, *low, bv1)).map(|o| o.into())
+                    } else {
+                        claripy_mod.call_method1("Extract", (*high, *low, &args[0])).map(|o| o.into())
+                    }
                 }
                 BVOp::Concat => {
-                    // Concat takes multiple args
+                    // Concat takes multiple args (already validated)
                     if args.len() == 2 {
                         claripy_mod.call_method1("Concat", (&args[0], &args[1])).map(|o| o.into())
                     } else {
@@ -942,13 +1072,31 @@ pub fn rustbv_to_claripy(
                 }
 
                 // Comparison operations
+                // Note: __eq__ and __ne__ on claripy BVV objects may return Python bool,
+                // not claripy Bool. We must wrap Python bools to ensure claripy AST output.
                 BVOp::Eq => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__eq__", (&args[1],)).map(|o| o.into())
+                    let result = arg0.call_method1("__eq__", (&args[1],))?;
+                    // If result is Python bool/int (concrete comparison result),
+                    // wrap it in claripy.BoolV. Use extract::<bool> which works for
+                    // both PyBool and PyInt (True/False are ints in Python).
+                    if let Ok(bool_val) = result.extract::<bool>() {
+                        claripy_mod.call_method1("BoolV", (bool_val,)).map(|o| o.into())
+                    } else {
+                        Ok(result.into())
+                    }
                 }
                 BVOp::Ne => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__ne__", (&args[1],)).map(|o| o.into())
+                    let result = arg0.call_method1("__ne__", (&args[1],))?;
+                    // If result is Python bool/int (concrete comparison result),
+                    // wrap it in claripy.BoolV. Use extract::<bool> which works for
+                    // both PyBool and PyInt (True/False are ints in Python).
+                    if let Ok(bool_val) = result.extract::<bool>() {
+                        claripy_mod.call_method1("BoolV", (bool_val,)).map(|o| o.into())
+                    } else {
+                        Ok(result.into())
+                    }
                 }
                 BVOp::Ult => {
                     claripy_mod.call_method1("ULT", (&args[0], &args[1])).map(|o| o.into())
