@@ -1,3 +1,0 @@
-"""
-Architecture-specific verification tests.
-"""

@@ -662,7 +662,7 @@ class ReportGenerator:
                 "- **Isolation**: Each example runs in a separate subprocess",
                 "- **Timeout**: 120 seconds per example (30 seconds in quick mode)",
                 "- **Engine switching**: Python engine uses default UberEngine,",
-                "  Rust engine patches simulation_manager to use UberEngineRust",
+                "  Rust engine uses RustExplorationManager for full Rust symex",
                 "- **Metrics**: Success/failure status, execution time, speedup ratio",
                 "",
             ])

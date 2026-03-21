@@ -896,9 +896,14 @@ pub fn rustbv_to_claripy(
                     .call_method1("BVV", (*value as i64, *width))
                     .map(|obj| obj.into())
             } else {
-                // For wider values, pass as bytes
-                let bytes = value.to_le_bytes();
-                let py_bytes = PyBytes::new(py, &bytes[..(*width as usize / 8)]);
+                // P3 Fix: Use big-endian for claripy compatibility
+                // Phase 1 Fix: Round up byte count for non-byte-aligned widths
+                // e.g., width=70 needs 9 bytes, not 8
+                let byte_count = (*width as usize + 7) / 8;
+                let bytes = value.to_be_bytes();
+                // Take the least significant bytes (from the end of big-endian representation)
+                let start = bytes.len().saturating_sub(byte_count);
+                let py_bytes = PyBytes::new(py, &bytes[start..]);
                 claripy_mod
                     .call_method1("BVV", (py_bytes, *width))
                     .map(|obj| obj.into())
@@ -918,8 +923,13 @@ pub fn rustbv_to_claripy(
                     .call_method1("BVV", (*value as i64, *width))
                     .map(|obj| obj.into())
             } else {
-                let bytes = value.to_le_bytes();
-                let py_bytes = PyBytes::new(py, &bytes[..(*width as usize / 8)]);
+                // P3 Fix: Use big-endian for claripy compatibility
+                // Phase 1 Fix: Round up byte count for non-byte-aligned widths
+                let byte_count = (*width as usize + 7) / 8;
+                let bytes = value.to_be_bytes();
+                // Take the least significant bytes (from the end of big-endian representation)
+                let start = bytes.len().saturating_sub(byte_count);
+                let py_bytes = PyBytes::new(py, &bytes[start..]);
                 claripy_mod
                     .call_method1("BVV", (py_bytes, *width))
                     .map(|obj| obj.into())
@@ -1263,6 +1273,36 @@ fn reverse_bytes(
 /// Check if a Python object is a claripy AST.
 pub fn is_claripy_ast(obj: &Bound<'_, PyAny>) -> bool {
     obj.hasattr("op").unwrap_or(false) && obj.hasattr("args").unwrap_or(false)
+}
+
+/// Phase 4 Fix: Get a stable identifier for a claripy AST.
+///
+/// This computes a hash that is more stable than Python's `__hash__` by:
+/// 1. Using the internal `_hash` attribute if available (most stable)
+/// 2. Computing a deterministic hash from op + args structure
+///
+/// This prevents duplicate symbols when Python's hash changes due to
+/// garbage collection or object reallocation.
+pub fn get_stable_ast_id(ast: &Bound<'_, PyAny>) -> Result<i64, BridgeError> {
+    // Try internal _hash first (most stable across claripy versions)
+    if let Ok(internal_hash) = ast.getattr("_hash") {
+        if let Ok(hash_val) = internal_hash.extract::<i64>() {
+            return Ok(hash_val);
+        }
+    }
+
+    // Try __hash__ attribute directly (for cached hash)
+    if let Ok(hash_method) = ast.getattr("__hash__") {
+        if let Ok(hash_val) = hash_method.call0() {
+            if let Ok(h) = hash_val.extract::<i64>() {
+                return Ok(h);
+            }
+        }
+    }
+
+    // Fall back to PyAny.hash() which calls Python's hash()
+    ast.hash().map(|h| h as i64)
+        .map_err(|e| BridgeError::PythonError(format!("hash failed: {}", e)))
 }
 
 /// Get the width (in bits) of a claripy AST.

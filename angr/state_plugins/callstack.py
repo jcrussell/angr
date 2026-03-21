@@ -406,8 +406,12 @@ class CallStack(SimStatePlugin):
             except (errors.SimSolverModeError, errors.SimUnsatError):
                 stack_ptr = 0
 
+            # P1 Fix: Defensive check for empty history from Rust-exported states
+            recent_addrs = self.state.history.recent_bbl_addrs
+            call_site_addr = recent_addrs[-1] if recent_addrs else (state_addr or 0)
+
             new_frame = type(self)(
-                call_site_addr=self.state.history.recent_bbl_addrs[-1],
+                call_site_addr=call_site_addr,
                 func_addr=state_addr,
                 stack_ptr=stack_ptr,
                 ret_addr=ret_addr,

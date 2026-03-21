@@ -2538,6 +2538,8 @@ impl RustExplorationManager {
             }
             RunResult::Hook { addr } => {
                 state.set_pc(addr);
+                // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
+                state.add_to_history(addr);
                 // Save pre-callback snapshot for deferred forks
                 let pre_callback_snapshot = Some(state.fork());
                 // Fork solver context for Python callback use
@@ -2561,6 +2563,8 @@ impl RustExplorationManager {
             }
             RunResult::SimProcedure { addr, name, num_args, return_addr } => {
                 state.set_pc(addr);
+                // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
+                state.add_to_history(addr);
                 // Save pre-callback snapshot for deferred forks
                 let pre_callback_snapshot = Some(state.fork());
                 // Fork solver context for Python callback use
@@ -2583,6 +2587,8 @@ impl RustExplorationManager {
             }
             RunResult::Syscall { num, pc } => {
                 state.set_pc(pc);
+                // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
+                state.add_to_history(pc);
                 // Save pre-callback snapshot for deferred forks
                 let pre_callback_snapshot = Some(state.fork());
                 // Fork solver context for Python callback use
@@ -2707,6 +2713,8 @@ impl RustExplorationManager {
             RunResult::UnmodeledCall { addr, return_addr, symbol_name } => {
                 // Unhooked CALL target - try to resolve via Python callback
                 state.set_pc(addr);
+                // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
+                state.add_to_history(addr);
 
                 // Try to resolve the function via callback
                 if callbacks.has_resolve_function() {

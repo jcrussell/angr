@@ -30,33 +30,54 @@ pip install -e .
 
 **Stale .so file**: If `maturin develop` was used previously, it installs to site-packages but Python loads from the source tree. Delete `angr/rustylib.*.so` and rebuild with `pip install -e .`
 
-## Running Differential Tests
+## Running Tests
 
 ```bash
-# Run Tier 3 extended tests
-python -m pytest tests/engines/differential/test_tier3_extended.py -v --tb=short
+# Run RustExplorationManager tests
+python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 
-# Check pass rate from report
-python3 -c "
-import json
-with open('tests/engines/differential/reports/tier3_extended_report.json') as f:
-    report = json.load(f)
-s = report['summary']
-print(f'Pass rate: {s[\"pass_rate\"]:.1%} ({s[\"passed\"]}/{s[\"total\"]})')
-"
+# Run a comparison against Python engine
+python tests/benchmarks/run_comparison_10.py
 ```
 
 ## Key Files
 
 - **Build config**: `pyproject.toml` (setuptools-rust at lines 96-99)
-- **Rust source**: `native/angr/src/vex/opcode_map.rs`, `native/angr/src/vex/ops.rs`
+- **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration.rs`
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
-- **Tests**: `tests/engines/differential/test_tier3_extended.py`
-- **Rust engine docs**: `docs/rust_vex_engine.md`
+- **Claripy bridge**: `native/angr/src/claripy_bridge.rs`
+- **Tests**: `tests/engines/test_rust_exploration.py`
+
+## Rust Symbolic Execution
+
+The Rust engine provides full symbolic execution with Python callbacks for SimProcedures:
+
+```python
+import angr
+from angr.exploration import RustExplorationManager
+
+proj = angr.Project("/path/to/binary", auto_load_libs=False)
+state = proj.factory.entry_state()
+
+# Create Rust exploration manager
+mgr = RustExplorationManager(proj, [state])
+
+# Set exploration targets
+mgr.set_find_addresses([0x401234])  # Target addresses
+mgr.set_avoid_addresses([0x401000])  # Addresses to avoid
+
+# Run exploration (Rust handles symex, Python handles SimProcedures)
+mgr.run(max_steps=10000)
+
+# Get found states
+found_states = mgr.found
+for state in found_states:
+    print(f"Found at {hex(state.addr)}")
+```
 
 ## Z3 Solver Integration (z3-rs 0.19)
 
-The Rust VEX engine uses z3-rs 0.19+ for real Z3 constraint solving. Key points:
+The Rust engine uses z3-rs 0.19+ for real Z3 constraint solving:
 
 - **Thread-local context**: z3-rs 0.19+ uses a thread-local context model
 - **No lifetime parameters**: Z3 types (Solver, BV, Bool) don't have lifetime parameters
@@ -81,44 +102,6 @@ print(f'max: {ctx.max(x, signed=False)}')  # 19
 
 ## Current Test Status
 
-**Tier 3 Extended Tests:** 100% pass rate (990/990)
+**RustExplorationManager Tests:** 14/14 passing
 
-**angr-examples Pass Rate:** 28/39 (72%) with Rust engine
-
-### Passing Examples (28 total)
-- All 6 CSCI-4968-MBE crackmes (crackme0x00a through crackme0x05)
-- ais3_crackme
-- android_arm_license_validation
-- asisctffinals2015_license
-- CADET_00001
-- codegate_2017-angrybird
-- csgames2018
-- defcamp_r100
-- ekopartyctf2015_rev100
-- ekopartyctf2016_sokohashv2
-- fauxware
-- flareon2015_10
-- flareon2015_2
-- flareon2015_5
-- google2016_unbreakable_0
-- google2016_unbreakable_1
-- insomnihack_aeg
-- mma_howtouse
-- securityfest_fairlight
-- strcpy_find
-- sym-write
-- whitehat_crypto400
-- whitehatvn2015_re400
-
-### Timeouts (6 examples)
-- asisctffinals2015_fake, csaw_wyvern, ekopartyctf2016_rev250
-- grub, hackcon2016_angry-reverser, simple_heap_overflow
-
-### Remaining Failures (5 examples)
-
-**Not Rust engine issues (5):**
-- cmu_binary_bomb: angr bug, same "Not enough data for store" error with Python
-- defcamp_r200: Script explicitly marked as broken
-- 0ctf_trace: Script parsing issue
-- mma_simplehash: Old SimProcedure API (class instead of instance)
-- secuinside2016mbrainfuzz: Requires CLI argument
+Tests include unit tests for state management, stash handling, and an integration test with the fauxware example.

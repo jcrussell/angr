@@ -68,6 +68,9 @@ pub struct SymContext {
     push_level: AtomicUsize,
     /// Constraint count at each push level (for rollback).
     push_constraint_counts: Mutex<Vec<usize>>,
+    /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
+    /// Each entry is (constraint, is_assumed_true) - constraint == 1 if true, == 0 if false.
+    assumed_constraints: Mutex<Vec<(RustBV, bool)>>,
 
     // Z3-specific fields (when feature is enabled)
     #[cfg(feature = "vex-engine-z3")]
@@ -94,6 +97,7 @@ impl SymContext {
             symbol_table: RwLock::new(HashMap::new()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
+            assumed_constraints: Mutex::new(Vec::new()),
         }
     }
 
@@ -109,10 +113,12 @@ impl SymContext {
     /// All Z3 operations on this thread will use the same context.
     #[cfg(feature = "vex-engine-z3")]
     pub fn new() -> Self {
-        // Create solver with unsat_core support enabled
+        // Create solver with unsat_core support enabled and timeout
         let solver = z3::Solver::new();
         let mut params = z3::Params::new();
         params.set_bool("unsat_core", true);
+        // Phase 2 Fix: Add 30 second timeout to prevent indefinite hangs
+        params.set_u32("timeout", 30000);
         solver.set_params(&params);
 
         SymContext {
@@ -121,6 +127,7 @@ impl SymContext {
             push_constraint_counts: Mutex::new(Vec::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
+            assumed_constraints: Mutex::new(Vec::new()),
             solver: Mutex::new(solver),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
@@ -1077,6 +1084,24 @@ impl SymContext {
     }
 
     // =========================================================================
+    // Constraint Export (Phase 2 Fix)
+    // =========================================================================
+
+    /// Get the assumed constraints as (RustBV, is_assumed_true) pairs.
+    ///
+    /// This exports the tracked path constraints that can be converted to claripy
+    /// ASTs for Python constraint sync. Each constraint is a 1-bit RustBV that was
+    /// either assumed true or false during symbolic execution.
+    pub fn get_assumed_constraints(&self) -> Vec<(RustBV, bool)> {
+        self.assumed_constraints.lock().clone()
+    }
+
+    /// Get the number of assumed constraints.
+    pub fn assumed_constraint_count(&self) -> usize {
+        self.assumed_constraints.lock().len()
+    }
+
+    // =========================================================================
     // Forking
     // =========================================================================
 
@@ -1092,12 +1117,16 @@ impl SymContext {
         // Clone constraint tracking list for unsat core
         let cloned_trackers = self.constraint_trackers.lock().clone();
 
+        // Phase 2 Fix: Clone assumed constraints for proper export
+        let cloned_assumed = self.assumed_constraints.lock().clone();
+
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(self.constraint_count.load(Ordering::SeqCst)),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             push_level: AtomicUsize::new(0), // Fresh transaction state for fork
             push_constraint_counts: Mutex::new(Vec::new()),
+            assumed_constraints: Mutex::new(cloned_assumed),
             solver: Mutex::new(cloned_solver),
             sat_cache: Cell::new(None),    // Fresh cache for fork
             model_cache: RefCell::new(None), // Fresh cache for fork
@@ -1113,6 +1142,7 @@ impl SymContext {
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
+            assumed_constraints: Mutex::new(self.assumed_constraints.lock().clone()),
         }
     }
 

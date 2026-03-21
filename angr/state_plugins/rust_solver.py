@@ -109,6 +109,10 @@ class RustSimSolver(SimStatePlugin):
         This implements lazy constraint conversion - constraints are only
         converted to Rust/Z3 when a solver check is actually needed.
         This avoids conversion overhead for branches that turn out to be unsat.
+
+        P2 Fix: Properly handle constraint errors - re-add to pending queue
+        on failure and propagate the error so callers know the solver state
+        may be inconsistent.
         """
         if not self._pending:
             return
@@ -122,7 +126,10 @@ class RustSimSolver(SimStatePlugin):
             else:
                 self._rust_ctx.add_constraints(pending)
         except Exception as e:
-            l.warning("Failed to flush pending constraints to Rust solver: %s", e)
+            l.error("Failed to flush constraints to Rust solver: %s", e)
+            # Re-add to pending so they're not lost
+            self._pending = pending + self._pending
+            raise  # Propagate error so caller knows solver state is inconsistent
 
     def reload_solver(self, constraints=None):
         """Reload the solver with new constraints."""

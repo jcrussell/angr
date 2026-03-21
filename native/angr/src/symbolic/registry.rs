@@ -188,6 +188,19 @@ impl SymbolicIdentityRegistry {
         self.rust_id_to_py.read().contains_key(&rust_id)
     }
 
+    /// Phase 4 Fix: Update hash mapping for an existing symbol.
+    ///
+    /// This is used when we find an existing symbol by name+width lookup
+    /// but want to also register it under a new hash (e.g., when Python's
+    /// hash changes but the symbol is still the same).
+    ///
+    /// # Arguments
+    /// * `py_hash` - The new Python hash to map
+    /// * `rust_id` - The existing Rust symbol ID
+    pub fn update_hash_mapping(&self, py_hash: i64, rust_id: u64) {
+        self.py_hash_to_rust_id.write().insert(py_hash, rust_id);
+    }
+
     /// Allocate a new unique symbol ID.
     ///
     /// This is used when creating a symbol that doesn't have a Python origin.

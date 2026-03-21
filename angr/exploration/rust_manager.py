@@ -10,6 +10,7 @@ to the Rust exploration loop that achieves ~3x speedup by:
 from __future__ import annotations
 
 import logging
+import time
 import weakref
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
 
@@ -398,6 +399,24 @@ class RustExplorationManager:
 
                 # Standard memory load from state
                 val = state.memory.load(addr, size, endness=state.arch.memory_endness)
+
+                # Fix 1C: Coerce thunks/callables to actual values
+                # Some memory loads can return callable thunks instead of proper ASTs
+                coerce_attempts = 0
+                while callable(val) and not hasattr(val, 'op') and coerce_attempts < 3:
+                    try:
+                        val = val()
+                        coerce_attempts += 1
+                    except Exception:
+                        l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
+                        val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
+                        break
+
+                # Validate we have a proper claripy AST
+                if not hasattr(val, 'op'):
+                    l.warning(f"Memory load at 0x{addr:x} returned invalid type: {type(val)}")
+                    return (bytes(size), False, None)
+
                 # Safe check for symbolic (handles callables)
                 is_symbolic = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
                 if is_symbolic:
@@ -835,6 +854,102 @@ class RustExplorationManager:
 
         callbacks.set_resolve_function(resolve_function)
 
+        # Phase 5 Fix: Add batch callbacks for improved performance
+        # Batching reduces Python<->Rust FFI overhead
+
+        def memory_store_batch(stores: list):
+            """Batch memory stores callback for improved performance.
+
+            Phase 5 Fix: Handle multiple memory stores in a single callback
+            to reduce Python<->Rust FFI overhead.
+
+            Args:
+                stores: List of (addr, data) tuples to write.
+            """
+            state = self._get_callback_state() or self._get_default_state()
+            if state is None:
+                return
+
+            for addr, data in stores:
+                try:
+                    state.memory.store(addr, claripy.BVV(data), endness='Iend_LE')
+                except Exception as e:
+                    l.debug(f"Batch memory store failed at 0x{addr:x}: {e}")
+
+        def memory_load_batch(loads: list) -> list:
+            """Batch memory loads callback for improved performance.
+
+            Phase 5 Fix: Handle multiple memory loads in a single callback
+            to reduce Python<->Rust FFI overhead.
+
+            Args:
+                loads: List of (addr, size) tuples to read.
+
+            Returns:
+                List of (bytes, is_symbolic, ast_or_none) tuples.
+            """
+            state = self._get_callback_state() or self._get_default_state()
+            if state is None:
+                return [(bytes(size), False, None) for _, size in loads]
+
+            results = []
+            for addr, size in loads:
+                try:
+                    val = state.memory.load(addr, size, endness=state.arch.memory_endness)
+                    is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                    concrete = state.solver.eval(val).to_bytes(size, 'little')
+                    if is_sym:
+                        self._register_handle(id(val), val, addr=addr, size=size)
+                        results.append((concrete, True, val))
+                    else:
+                        results.append((concrete, False, None))
+                except Exception as e:
+                    l.debug(f"Batch memory load failed at 0x{addr:x}: {e}")
+                    results.append((bytes(size), False, None))
+
+            return results
+
+        def batch_fetch_pages(page_addrs: list) -> list:
+            """Batch page fetch callback for improved performance.
+
+            Phase 5 Fix: Fetch multiple pages in a single callback to reduce
+            FFI overhead when prefetching nearby pages.
+
+            Args:
+                page_addrs: List of page-aligned addresses to fetch.
+
+            Returns:
+                List of (bytes, permissions, is_concrete) tuples.
+            """
+            state = self._get_callback_state() or self._get_default_state()
+            if state is None:
+                return [(bytes(4096), 0, True) for _ in page_addrs]
+
+            results = []
+            for page_addr in page_addrs:
+                try:
+                    # Use fetch_page logic but batch it
+                    data = state.memory.load(page_addr, 4096, endness='Iend_LE')
+                    if getattr(data, 'symbolic', False):
+                        concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                        results.append((concrete, 7, False))  # RWX, symbolic
+                    else:
+                        concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                        results.append((concrete, 7, True))  # RWX, concrete
+                except Exception as e:
+                    l.debug(f"Batch page fetch failed at 0x{page_addr:x}: {e}")
+                    results.append((bytes(4096), 0, True))
+
+            return results
+
+        # Set batch callbacks if available
+        if hasattr(callbacks, 'set_memory_store_batch'):
+            callbacks.set_memory_store_batch(memory_store_batch)
+        if hasattr(callbacks, 'set_memory_load_batch'):
+            callbacks.set_memory_load_batch(memory_load_batch)
+        if hasattr(callbacks, 'set_batch_fetch_pages'):
+            callbacks.set_batch_fetch_pages(batch_fetch_pages)
+
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks
 
@@ -1149,10 +1264,13 @@ class RustExplorationManager:
         # This is the critical fix - hooks access state.history.recent_bbl_addrs[-1]
         if hasattr(state.history, 'recent_bbl_addrs'):
             # Use Rust history if available, otherwise use callback address
+            # P1 Fix: Always ensure history has at least one entry, even if callback_addr is 0
             if rust_history:
                 state.history.recent_bbl_addrs = list(rust_history)
-            elif callback_addr:
-                state.history.recent_bbl_addrs = [callback_addr]
+            else:
+                # Use callback_addr, or state.addr if callback_addr is None/0
+                addr_to_use = callback_addr if callback_addr else (state.addr if state.addr else 0)
+                state.history.recent_bbl_addrs = [addr_to_use]
 
         # Set jumpkind to avoid callstack._manage() pushing a new frame
         # Ijk_Boring prevents the callstack from being modified
@@ -1230,6 +1348,10 @@ class RustExplorationManager:
         to the Python state's solver. This ensures Python hooks see the
         same constraint context as Rust.
 
+        Phase 2 Fix: Enhanced to export assumed path constraints (condition == true/false)
+        not just stored branch conditions. This ensures Python's claripy solver has
+        all the path constraints that Rust accumulated during exploration.
+
         Note: This relies on export_pending_constraints() which converts
         Rust constraints back to claripy ASTs.
         """
@@ -1241,16 +1363,33 @@ class RustExplorationManager:
 
             constraints = self._rust_mgr.export_pending_constraints()
             synced = 0
+            skipped = 0
+
+            # Get existing constraint hashes to avoid duplicates
+            existing_hashes = set()
+            try:
+                for c in state.solver.constraints:
+                    existing_hashes.add(hash(c))
+            except Exception:
+                pass  # If we can't get existing constraints, add all
+
             for ast in constraints:
                 if ast is not None:
                     try:
+                        # Phase 2 Fix: Skip duplicate constraints
+                        ast_hash = hash(ast)
+                        if ast_hash in existing_hashes:
+                            skipped += 1
+                            continue
+
                         state.solver.add(ast)
+                        existing_hashes.add(ast_hash)
                         synced += 1
                     except Exception as e:
                         l.debug(f"Could not add constraint: {e}")
 
-            if synced > 0:
-                l.debug(f"Synced {synced} constraints from Rust to Python state")
+            if synced > 0 or skipped > 0:
+                l.debug(f"Synced {synced} constraints from Rust to Python state ({skipped} duplicates skipped)")
 
         except Exception as e:
             l.debug(f"Could not sync Rust constraints: {e}")
@@ -2738,6 +2877,12 @@ class RustExplorationManager:
         if state_id is not None and state_id in self._state_cache:
             cached_state = self._state_cache[state_id]
             lookup_state_id = state_id
+            # Fix 1B: Validate cached state has required attributes
+            if cached_state is not None:
+                if not hasattr(cached_state, 'solver') or not hasattr(cached_state, 'memory'):
+                    l.warning(f"Cached state {state_id} invalid type: {type(cached_state)}, clearing")
+                    del self._state_cache[state_id]
+                    cached_state = None
         elif state_id is not None:
             # Forked state - try root state first (most likely to be cached)
             root_id = self._get_pending_root_state_id()
@@ -2802,7 +2947,57 @@ class RustExplorationManager:
             # Sync Rust constraints to Python state
             self._sync_rust_constraints_to_python(state)
 
+            # Phase 3 Fix: Ensure critical plugins are present
+            # Some scripts assume posix/libc plugins exist - restore if missing
+            self._ensure_critical_plugins(state, event.callback_state_id)
+
         return state
+
+    def _ensure_critical_plugins(self, state: "angr.SimState", state_id: Optional[int]):
+        """Ensure critical plugins are present on the state.
+
+        Phase 3 Fix: Some scripts and SimProcedures expect plugins like
+        posix and libc to be present. If they're missing after state copy/creation,
+        restore them from a template state.
+
+        Args:
+            state: The state to check/fix.
+            state_id: The state ID for root state lookup.
+        """
+        # Check if critical plugins are missing
+        missing_plugins = []
+        for plugin_name in ['posix', 'libc', 'heap']:
+            if not hasattr(state, plugin_name) or getattr(state, plugin_name) is None:
+                missing_plugins.append(plugin_name)
+
+        if not missing_plugins:
+            return  # All plugins present
+
+        # Find template state for plugin restoration
+        template = None
+        if state_id is not None:
+            root_id = self._state_roots.get(state_id, state_id)
+            if root_id in self._state_cache:
+                template = self._state_cache[root_id]
+
+        # Fall back to any cached state
+        if template is None and self._state_cache:
+            template = next(iter(self._state_cache.values()))
+
+        if template is None:
+            l.debug(f"Phase 3: No template for plugin restoration, missing: {missing_plugins}")
+            return
+
+        # Restore missing plugins
+        for plugin_name in missing_plugins:
+            try:
+                if hasattr(template, plugin_name):
+                    plugin = getattr(template, plugin_name)
+                    if plugin is not None and hasattr(plugin, 'copy'):
+                        state.register_plugin(plugin_name, plugin.copy())
+                        l.debug(f"Phase 3: Restored {plugin_name} plugin")
+            except Exception as e:
+                l.debug(f"Phase 3: Could not restore {plugin_name}: {e}")
 
     def _create_blank_state_fallback(self, event: "_ExplorationEvent") -> Optional["angr.SimState"]:
         """Create a blank state as fallback when no cached state is available."""
@@ -3339,6 +3534,8 @@ class RustExplorationManager:
         avoid: Optional[Union[int, list, Callable]] = None,
         num_find: int = 1,
         until: Optional[Callable] = None,
+        timeout: Optional[float] = None,
+        max_steps: Optional[int] = None,
         **kwargs
     ) -> "RustExplorationManager":
         """Run exploration with find/avoid conditions.
@@ -3348,6 +3545,8 @@ class RustExplorationManager:
             avoid: Address(es) or callable predicate for avoiding states.
             num_find: Number of solutions to find before stopping.
             until: Callable predicate that receives `self` and returns True to stop.
+            timeout: Wall-clock timeout in seconds (Phase 3 fix).
+            max_steps: Maximum exploration steps before stopping (Phase 3 fix).
             **kwargs: Additional arguments (ignored for compatibility).
 
         Returns:
@@ -3370,12 +3569,27 @@ class RustExplorationManager:
         # Set num_find
         self._rust_mgr.set_num_find(num_find)
 
+        # Phase 3 Fix: Track timeout and steps
+        start_time = time.time()
+        steps_taken = 0
+
         # Run exploration loop
         while True:
+            # Phase 3 Fix: Check timeout
+            if timeout is not None and (time.time() - start_time) > timeout:
+                l.warning(f"Exploration timeout reached ({timeout}s)")
+                break
+
+            # Phase 3 Fix: Check max_steps
+            if max_steps is not None and steps_taken >= max_steps:
+                l.warning(f"Max exploration steps reached ({max_steps})")
+                break
+
             # Sync any dynamically created hooks (continuations from self.call())
             self._sync_hooks_before_step()
 
             event = self._rust_mgr.run()
+            steps_taken += 1
 
             if event.event_type == 'found' and event.found_count >= num_find:
                 break

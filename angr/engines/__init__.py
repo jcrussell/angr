@@ -55,59 +55,10 @@ __all__ = [
 ]
 
 
-# Rust VEX Engine (optional, requires rustylib with vex-engine feature)
-try:
-    from .rust_vex import RustVEXMixin, RustVEXEngineWrapper, RUST_ENGINE_AVAILABLE
-
-    # UberEngineRust uses RustVEXMixin for VEX execution when available.
-    # RustVEXMixin comes before TrackActionsMixin in the MRO so Rust execution
-    # is tried first. When Rust can't handle execution (symbolic addresses, etc.),
-    # it falls back to HeavyVEXMixin via the super() chain.
-    #
-    # Enable RUST_VEX_LOOP sim_option for multi-block execution with deferred forks.
-    class UberEngineRust(
-        SimEngineFailure,
-        SimEngineSyscall,
-        HooksMixin,
-        RustVEXMixin,  # First: try Rust VEX execution
-        TrackActionsMixin,  # Fallback: Python VEX via HeavyVEXMixin
-        SimInspectMixin,
-        HeavyResilienceMixin,
-    ):
-        """
-        Execution engine that uses Rust VEX execution with Python fallback.
-
-        RustVEXMixin.process_successors() is called first due to MRO ordering.
-        When Rust can't handle execution (symbolic addresses, unsupported ops),
-        it falls back to HeavyVEXMixin via TrackActionsMixin.
-
-        Multi-block execution with deferred forks is enabled by default when
-        using RustSimSolver, reducing Python/Rust round trips. Without
-        RustSimSolver, falls back to single-block mode. To explicitly disable
-        multi-block mode, add RUST_VEX_SINGLE to state.options.
-
-        Example:
-            import angr
-            from angr import sim_options as o
-            from angr.state_plugins.rust_solver import RustSimSolver
-
-            proj = angr.Project("/path/to/binary", auto_load_libs=False)
-            state = proj.factory.entry_state()
-            state.register_plugin('solver', RustSimSolver())  # Enable multi-block
-
-            from angr.engines import UberEngineRust
-            engine = UberEngineRust(proj)
-            engine.configure_deferred_forks(enabled=True, max_forks=50)
-
-            successors = engine.process(state)
-        """
-
-    __all__.extend(["RustVEXMixin", "RustVEXEngineWrapper", "UberEngineRust", "RUST_ENGINE_AVAILABLE"])
-
-except ImportError:
-    # Rust engine not available
-    RUST_ENGINE_AVAILABLE = False
-    __all__.append("RUST_ENGINE_AVAILABLE")
+# UberEngineRust was removed - use RustExplorationManager from angr.exploration instead
+# for full Rust-based symbolic execution with Python callbacks for SimProcedures.
+RUST_ENGINE_AVAILABLE = False
+__all__.append("RUST_ENGINE_AVAILABLE")
 
 
 try:
