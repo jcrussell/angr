@@ -1067,6 +1067,19 @@ class RustExplorationManager:
         # Cache the angr state with the actual Rust state ID
         if new_ids:
             actual_state_id = new_ids.pop()
+
+            # Sync constraints from Python state to Rust solver
+            if hasattr(angr_state, 'solver') and angr_state.solver.constraints:
+                try:
+                    constraints = list(angr_state.solver.constraints)
+                    if constraints:
+                        sat = self._rust_mgr.add_constraints_to_state(
+                            actual_state_id, constraints)
+                        l.debug(f"Synced {len(constraints)} initial constraints to Rust state "
+                                f"{actual_state_id}, sat={sat}")
+                except Exception as e:
+                    l.warning(f"Failed to sync initial constraints: {e}")
+
             self._state_cache[actual_state_id] = angr_state
             # P10 fix: Track this as a root state for plugin restoration
             self._state_roots[actual_state_id] = actual_state_id

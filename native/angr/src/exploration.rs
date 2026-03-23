@@ -1909,6 +1909,48 @@ impl RustExplorationManager {
         }
     }
 
+    /// Add constraints from Python to a state in a stash by state ID.
+    /// This is used to sync initial constraints from the Python state.
+    pub fn add_constraints_to_state(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        constraints: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<bool> {
+        // Find the state in any stash
+        for stash in self.stashes.values_mut() {
+            for state in stash.iter_mut() {
+                if state.state_id() == state_id {
+                    let solver_ref = state.solver();
+                    let sym_ctx = solver_ref.borrow();
+                    let ctx_ref: &SymContext = &*sym_ctx;
+
+                    let mut added = 0u32;
+                    for item in constraints.iter() {
+                        match claripy_to_rustbv(py, &item, ctx_ref) {
+                            Ok(bv) => {
+                                if bv.width() == 1 {
+                                    sym_ctx.assume_true(&bv);
+                                } else {
+                                    let zero = RustBV::concrete(0, bv.width());
+                                    let neq = bv.ne(&zero, ctx_ref);
+                                    sym_ctx.assume_true(&neq);
+                                }
+                                added += 1;
+                            }
+                            Err(e) => {
+                                log::debug!("Could not convert initial constraint: {}", e);
+                            }
+                        }
+                    }
+                    log::debug!("Added {} initial constraints to state {}", added, state_id);
+                    return Ok(state.satisfiable());
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Get the number of constraints in the pending state's solver.
     pub fn pending_constraint_count(&self) -> PyResult<usize> {
         if let Some(ref pending) = self.pending_callback {
