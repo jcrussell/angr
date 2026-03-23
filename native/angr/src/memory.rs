@@ -1222,6 +1222,17 @@ impl SymbolicMemory {
         self.dirty_pages.iter().map(|&pn| pn << 12).collect()
     }
 
+    /// Load an entire page as concrete bytes (4096 bytes).
+    /// Returns Err if the page is not mapped.
+    pub fn load_page_concrete(&self, page_addr: u64) -> Result<Vec<u8>, MemoryError> {
+        let page_num = page_addr >> 12;
+        if let Some(page) = self.pages.get(&page_num) {
+            Ok(page.load_concrete(0, PAGE_SIZE as u16))
+        } else {
+            Err(MemoryError::Unmapped { addr: page_addr, size: PAGE_SIZE })
+        }
+    }
+
     /// Clear dirty page tracking (called after sync to Python).
     pub fn clear_dirty_pages(&mut self) {
         self.dirty_pages.clear();

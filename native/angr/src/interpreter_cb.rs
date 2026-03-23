@@ -444,6 +444,10 @@ pub struct CallbackInterpreter<'a> {
     /// Pending concrete stores to batch for efficiency.
     /// Each entry is (address, data_bytes).
     pending_stores: Vec<(u64, Vec<u8>)>,
+    /// All stores flushed during this step (accumulated across block boundaries).
+    /// Used for same-step cross-block load forwarding and for applying to state memory.
+    /// HashMap for O(1) lookup by address. Value is the most recent store data.
+    all_flushed_stores: HashMap<u64, Vec<u8>>,
     /// Pending symbolic stores - maps address to symbolic RustBV.
     /// These override the concrete bytes in pending_stores for load forwarding.
     pending_symbolic_stores: HashMap<u64, RustBV>,
@@ -524,6 +528,7 @@ impl<'a> CallbackInterpreter<'a> {
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
             pending_stores: Vec::with_capacity(256),
+            all_flushed_stores: HashMap::new(),
             pending_symbolic_stores: HashMap::new(),
             max_pending_stores: 256,
             rust_memory: None,
@@ -779,9 +784,22 @@ impl<'a> CallbackInterpreter<'a> {
             .call_memory_store_batch(py, &self.pending_stores)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
-        self.pending_stores.clear();
+        // Accumulate flushed stores for cross-block load forwarding.
+        for (addr, data) in self.pending_stores.drain(..) {
+            self.all_flushed_stores.insert(addr, data);
+        }
         self.pending_symbolic_stores.clear();
         Ok(())
+    }
+
+    /// Take all stores from this step (both pending and previously flushed).
+    pub fn take_all_stores(&mut self) -> Vec<(u64, Vec<u8>)> {
+        self.pending_symbolic_stores.clear();
+        // Merge pending into flushed
+        for (addr, data) in self.pending_stores.drain(..) {
+            self.all_flushed_stores.insert(addr, data);
+        }
+        std::mem::take(&mut self.all_flushed_stores).into_iter().collect()
     }
 
     /// Set the program counter.
@@ -2297,6 +2315,14 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                     }
 
+                    // Also check previously flushed stores (from earlier blocks in this step)
+                    if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
+                        if size <= store_data.len() {
+                            let data = &store_data[..size];
+                            return Ok(bytes_to_bv(data, (size * 8) as u32));
+                        }
+                    }
+
                     // FAST PATH 1: Check prefetch cache (batch-loaded values)
                     if let Some(prefetched) = self.load_prefetch_cache.get(&(addr_concrete, size)) {
                         return Ok(prefetched.value.clone());
@@ -2942,6 +2968,7 @@ impl<'a> CallbackInterpreter<'a> {
             concretizer: self.concretizer.clone(), // Share concretizer settings
             dirty_registers: 0, // Fresh dirty tracking for fork
             pending_stores: Vec::with_capacity(256), // Fresh store buffer for fork
+            all_flushed_stores: HashMap::new(),
             pending_symbolic_stores: HashMap::new(),
             max_pending_stores: self.max_pending_stores,
             // Fork Rust memory with O(1) CoW

@@ -2549,6 +2549,17 @@ impl RustExplorationManager {
                 interp.add_concrete_memory(*base, data.clone());
             }
 
+            // Copy state's dirty memory pages so cross-step stores are visible.
+            // When VEX stores (from a previous step) are applied to the state's
+            // SymbolicMemory, they become dirty pages. Adding them as concrete
+            // memory makes them available for loads without Python callbacks.
+            for page_num in state.get_dirty_page_nums() {
+                let page_addr = page_num << 12;
+                if let Ok(data) = state.memory().load_page_concrete(page_addr) {
+                    interp.add_concrete_memory(page_addr, data);
+                }
+            }
+
             // Run until event
             let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, 100);
 
@@ -2562,6 +2573,18 @@ impl RustExplorationManager {
             let mut new_reg_bytes = vec![0u8; reg_bytes.len()];
             interp.registers.copy_to_bytes(&mut new_reg_bytes);
             let new_pc = interp.get_pc();
+
+            // Apply all stores from this step to the state's SymbolicMemory.
+            // This persists VEX stores across steps with per-state isolation via CoW.
+            let pending = interp.take_all_stores();
+            for (addr, data) in &pending {
+                let mut value: u128 = 0;
+                for (i, &byte) in data.iter().enumerate() {
+                    if i < 16 { value |= (byte as u128) << (i * 8); }
+                }
+                let bv = RustBV::concrete(value, (data.len() * 8) as u32);
+                let _ = state.memory_mut().store_concrete(*addr, bv);
+            }
 
             (result, deferred_forks, last_condition, stored_conditions, new_reg_bytes, new_pc)
         };

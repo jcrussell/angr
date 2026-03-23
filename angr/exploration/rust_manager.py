@@ -1139,7 +1139,9 @@ class RustExplorationManager:
 
     def _sync_memory_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
         """Sync memory from angr state to Rust state."""
-        # Map main binary regions
+        # Map main binary regions from the Python STATE's memory (not raw loader).
+        # The state has modifications applied by entry_state/full_init_state
+        # (e.g., GOT entries pointing to SimProcedure stub addresses).
         for obj in self._project.loader.all_objects:
             if obj.binary is None:
                 continue
@@ -1147,13 +1149,28 @@ class RustExplorationManager:
             for section in obj.sections:
                 if section.memsize > 0:
                     try:
-                        data = self._project.loader.memory.load(
-                            section.min_addr,
-                            section.memsize
+                        # Try state memory first (has relocations applied)
+                        val = angr_state.memory.load(
+                            section.min_addr, section.memsize,
+                            endness='Iend_BE', inspect=False,
+                            disable_actions=True
                         )
-                        rust_state.map_memory_data(section.min_addr, bytes(data), 7)
+                        if not val.symbolic:
+                            data = angr_state.solver.eval(val).to_bytes(section.memsize, 'big')
+                            rust_state.map_memory_data(section.min_addr, data, 7)
+                        else:
+                            # Section has symbolic data — use raw loader as fallback
+                            data = self._project.loader.memory.load(
+                                section.min_addr, section.memsize)
+                            rust_state.map_memory_data(section.min_addr, bytes(data), 7)
                     except Exception:
-                        pass
+                        try:
+                            # Last resort: raw loader
+                            data = self._project.loader.memory.load(
+                                section.min_addr, section.memsize)
+                            rust_state.map_memory_data(section.min_addr, bytes(data), 7)
+                        except Exception:
+                            pass
 
         # Map stack - architecture aware
         # Use actual SP from state instead of hardcoded 64-bit address
@@ -1171,20 +1188,21 @@ class RustExplorationManager:
             else:
                 sp = 0x7fff_fff0_0000  # Typical 64-bit stack
 
-        # Map stack region covering both below and above SP
-        # Stack grows down, but we need space above SP for args and caller data
-        stack_base = (sp & ~0xFFF) + 0x1000  # Align to next page above SP
+        # Sync stack pages from the Python state's memory to Rust.
+        # Use add_lazy_region so the interpreter can fetch unmapped pages,
+        # but pre-populate concrete pages for performance.
+        stack_base = (sp & ~0xFFF) + 0x1000
         total_stack_size = stack_size_below + stack_size_above
         stack_start = stack_base - total_stack_size
-        rust_state.map_memory(stack_start, total_stack_size, 6)  # RW
+        rust_state.add_lazy_region(stack_start, total_stack_size)
 
-        # Populate stack pages with concrete data from Python state.
-        # This copies argv, environment, and other concrete stack data into
-        # Rust's memory, enabling per-state memory isolation when Rust memory
-        # is used for VEX execution.
+        # Pre-populate concrete stack pages (argv, environment, frame data).
+        # Only sync pages near SP (±16 pages) to avoid fetching the entire stack.
         page_size = 0x1000
-        pages_synced = 0
-        for page_addr in range(stack_start & ~(page_size - 1), stack_base, page_size):
+        sp_page = sp & ~(page_size - 1)
+        for page_addr in range(max(stack_start, sp_page - 16 * page_size),
+                               min(stack_base, sp_page + 16 * page_size),
+                               page_size):
             try:
                 page_data = angr_state.memory.load(
                     page_addr, page_size, endness='Iend_BE',
@@ -1193,11 +1211,8 @@ class RustExplorationManager:
                 if not page_data.symbolic:
                     concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
                     rust_state.map_memory_data(page_addr, concrete, 6)
-                    pages_synced += 1
             except Exception:
-                pass  # Page not accessible or symbolic — skip
-        if pages_synced:
-            l.debug(f"Synced {pages_synced} concrete stack pages to Rust")
+                pass
 
     def _concretize_stack_registers(self, state: "angr.SimState"):
         """Concretize stack registers for Rust memory mapping compatibility.
@@ -2957,6 +2972,27 @@ class RustExplorationManager:
 
         if cached_state is not None:
             state = cached_state.copy()  # Copy to preserve original
+
+            # Sync dirty memory pages from Rust state to Python state.
+            # VEX execution stores to Rust's per-state SymbolicMemory;
+            # the Python state's memory is stale. We sync dirty pages so
+            # SimProcedures see current memory (e.g., stack variables,
+            # function arguments).
+            try:
+                dirty_pages = self._rust_mgr.get_pending_dirty_pages()
+                for page_addr in dirty_pages:
+                    try:
+                        data = self._rust_mgr.pending_memory_load(page_addr, 0x1000)
+                        if data and len(data) == 0x1000:
+                            val = claripy.BVV(int.from_bytes(data, 'big'), 0x1000 * 8)
+                            state.memory.store(page_addr, val, endness='Iend_BE',
+                                               inspect=False, disable_actions=True)
+                    except Exception:
+                        pass
+                if dirty_pages:
+                    l.debug(f"Synced {len(dirty_pages)} dirty pages from Rust to callback state")
+            except Exception as e:
+                l.debug(f"Dirty page sync skipped: {e}")
 
             # CRITICAL: Fork the Rust solver context with all accumulated constraints
             # This ensures SimProcedures see the full constraint context from exploration
