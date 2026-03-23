@@ -1245,11 +1245,11 @@ class RustExplorationManager:
                     concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
                     rust_state.map_memory_data(page_addr, concrete, 6)
                     pages_synced += 1
-                else:
-                    # Zero-fill symbolic stack pages in BOTH Python and Rust.
-                    # Python: so callback returns 0 for uninitialized locations
-                    # (VEX stores will override with correct return addresses).
-                    # Rust: so the interpreter has concrete data for cross-step reads.
+                elif page_addr < sp_page:
+                    # Zero-fill symbolic stack pages BELOW SP in both Python
+                    # and Rust. These are uninitialized function frames.
+                    # Pages at/above SP may have argc/argv/environ data
+                    # and must NOT be zeroed.
                     zero_page = claripy.BVV(0, page_size * 8)
                     angr_state.memory.store(page_addr, zero_page, endness='Iend_BE',
                                            inspect=False, disable_actions=True)
