@@ -1540,9 +1540,17 @@ impl<'a> CallbackInterpreter<'a> {
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))
                         })();
                         if let Err(_e) = sym_ok {
-                            // Fall through to concrete store on failure
-                            let data_bytes = bv_to_bytes(&data_val);
-                            self.pending_stores.push((addr_concrete, data_bytes));
+                            // Symbolic store callback failed — evaluate to concrete using
+                            // solver and store directly via Python callback (not pending_stores).
+                            // Using pending_stores would pollute all_flushed_stores with zeros
+                            // since bv_to_bytes returns zeros for symbolic expressions.
+                            let concrete_val = self.ctx.eval(&data_val).unwrap_or(0);
+                            let size_bytes = (data_val.width() / 8) as usize;
+                            let mut data_bytes = vec![0u8; size_bytes];
+                            for i in 0..size_bytes {
+                                data_bytes[i] = (concrete_val >> (i * 8)) as u8;
+                            }
+                            let _ = callbacks.call_memory_store(py, addr_concrete, &data_bytes);
                         }
                     } else {
                         // Fast path: buffer for batch processing
