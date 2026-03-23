@@ -1700,6 +1700,25 @@ class RustExplorationManager:
             # These appear in Exit.dst and need Ico_ prefix, not Iex_
             if hasattr(expr, 'value') and expr_name in ('U1', 'U8', 'U16', 'U32', 'U64', 'U128',
                                                          'F32', 'F32i', 'F64', 'F64i', 'V128', 'V256'):
+                if expr_name == 'V128':
+                    # Rust expects {low: u64, high: u64}
+                    val = expr.value if isinstance(expr.value, int) else 0
+                    return {
+                        'tag': 'Ico_V128',
+                        'low': val & 0xFFFFFFFFFFFFFFFF,
+                        'high': (val >> 64) & 0xFFFFFFFFFFFFFFFF,
+                    }
+                elif expr_name == 'V256':
+                    val = expr.value if isinstance(expr.value, int) else 0
+                    return {
+                        'tag': 'Ico_V256',
+                        'value': [
+                            val & 0xFFFFFFFFFFFFFFFF,
+                            (val >> 64) & 0xFFFFFFFFFFFFFFFF,
+                            (val >> 128) & 0xFFFFFFFFFFFFFFFF,
+                            (val >> 192) & 0xFFFFFFFFFFFFFFFF,
+                        ]
+                    }
                 return {
                     'tag': f'Ico_{expr_name}',
                     'value': expr.value
@@ -1711,11 +1730,16 @@ class RustExplorationManager:
             # Handle Const expressions
             if hasattr(expr, 'con'):
                 con = expr.con
-                # Rust expects VEX constant tags with Ico_ prefix
-                result['con'] = {
-                    'tag': f'Ico_{type(con).__name__}',
-                    'value': con.value if hasattr(con, 'value') else 0
-                }
+                con_name = type(con).__name__
+                # Serialize the constant with the right format
+                con_result = serialize_expr(con)
+                if con_result and isinstance(con_result, dict):
+                    result['con'] = con_result
+                else:
+                    result['con'] = {
+                        'tag': f'Ico_{con_name}',
+                        'value': con.value if hasattr(con, 'value') else 0
+                    }
                 return result
 
             # Handle RdTmp (read temporary)
@@ -2192,6 +2216,20 @@ class RustExplorationManager:
                     l.debug(f"Could not capture procedure_data: {e}")
 
             if all_succs:
+                # Check for no-return procedures (exit, abort, etc.)
+                # Only deadend if the procedure has NO continuations
+                # (__libc_start_main has NO_RET but uses self.call() for continuations)
+                proc_no_ret = getattr(proc, 'NO_RET', False) if proc else False
+                has_continuation = any(
+                    getattr(getattr(s.callstack, 'top', None), 'procedure_data', None) is not None
+                    for s in all_succs
+                ) if all_succs else False
+                if proc_no_ret and not has_continuation and name not in ('__libc_start_main',):
+                    # Deadend the state by resuming at address 0
+                    l.debug(f"No-return procedure {name} with successors — deadending")
+                    self._rust_mgr.resume_after_simprocedure(0, None, None)
+                    return
+
                 # First successor continues in Rust
                 first_succ = all_succs[0]
 
@@ -2235,17 +2273,21 @@ class RustExplorationManager:
                                                tracked_writes=tracked_writes,
                                                tracked_symbolic_writes=tracked_symbolic_writes)
                 else:
-                    # No successors - maybe it's a no-return procedure
-                    ret_addr = event.callback_return_addr or (addr + 1)
-                    # GAP 5: Pass tracked writes even for no-return procedures
-                    # Also import symbolic writes directly
-                    for sym_addr, ast in (tracked_symbolic_writes or []):
-                        try:
-                            self._rust_mgr.import_symbolic_memory(sym_addr, ast)
-                            l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to Rust")
-                        except Exception as e:
-                            l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
-                    self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
+                    # No successors — check if this is a no-return procedure
+                    # (e.g., exit, abort, _exit). If so, deadend the state.
+                    proc_no_ret = getattr(proc, 'NO_RET', False)
+                    if proc_no_ret or name in ('exit', '_exit', 'abort', '__stack_chk_fail'):
+                        # Deadend the state by resuming at address 0 (triggers deadend)
+                        l.debug(f"No-return procedure {name} — deadending state")
+                        self._rust_mgr.resume_after_simprocedure(0, None, None)
+                    else:
+                        ret_addr = event.callback_return_addr or (addr + 1)
+                        for sym_addr, ast in (tracked_symbolic_writes or []):
+                            try:
+                                self._rust_mgr.import_symbolic_memory(sym_addr, ast)
+                            except Exception:
+                                pass
+                        self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
 
         except Exception as e:
             # P17: On exception, move state to errored stash instead of resuming with corrupted state
