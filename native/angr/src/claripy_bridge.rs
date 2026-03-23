@@ -1027,7 +1027,12 @@ pub fn rustbv_to_claripy(
                     let arg0 = args[0].bind(py);
                     let result = arg0.call_method1("__or__", (&args[1],))?;
                     if result.is_none() || result.get_type().name().map_or(false, |n| n == "NotImplementedType") {
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err("__or__ returned NotImplemented"));
+                        let t0 = args[0].bind(py).get_type().name().map(|n| n.to_string()).unwrap_or("?".into());
+                        let t1 = args[1].bind(py).get_type().name().map(|n| n.to_string()).unwrap_or("?".into());
+                        let w0: String = args[0].bind(py).getattr("length").map(|l| format!("{}", l)).unwrap_or("?".into());
+                        let w1: String = args[1].bind(py).getattr("length").map(|l| format!("{}", l)).unwrap_or("?".into());
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            format!("__or__ NotImpl: {}(w={}) | {}(w={})", t0, w0, t1, w1)));
                     }
                     Ok(result.into())
                 }

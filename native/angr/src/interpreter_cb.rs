@@ -1522,8 +1522,13 @@ impl<'a> CallbackInterpreter<'a> {
                     // 64-bit: skip entirely (too many false positives from extern addresses).
                     let use_sym_store = if self.arch.pointer_size() == 32 {
                         let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
-                            addr_concrete >= sp_val.saturating_sub(0x200000) &&
-                            addr_concrete <= sp_val.saturating_add(0x200000)
+                            // Non-wrapping distance check
+                            let dist = if addr_concrete >= sp_val {
+                                addr_concrete - sp_val
+                            } else {
+                                sp_val - addr_concrete
+                            };
+                            dist <= 0x10000
                         });
                         !is_stack
                     } else {

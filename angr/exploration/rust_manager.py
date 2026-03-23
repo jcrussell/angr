@@ -3923,23 +3923,49 @@ class RustExplorationManager:
                 self._sync_exported_constraints(state, state_id)
                 states.append(state)
 
-        # For states not in cache, try snapshot export + constraint sync
+        # For states not in cache, try parent state or snapshot export
         cached_ids = {sid for sid in state_ids if sid in self._state_cache}
         uncached_ids = [sid for sid in state_ids if sid not in self._state_cache]
 
         if uncached_ids:
-            try:
-                snapshots = self._rust_mgr.export_stash(stash)
-                for snapshot in snapshots:
-                    if snapshot.state_id not in cached_ids:
-                        try:
-                            angr_state = self._snapshot_to_angr(snapshot)
-                            self._sync_exported_constraints(angr_state, snapshot.state_id)
-                            states.append(angr_state)
-                        except Exception as e:
-                            l.warning(f"Failed to convert state from {stash}: {e}")
-            except Exception as e:
-                l.warning(f"export_stash failed for {stash}: {e}")
+            # First try: look up parent state in cache (for intercepted find/avoid states)
+            for sid in uncached_ids:
+                root = self._state_roots.get(sid)
+                if root is not None and root in self._state_cache:
+                    state = self._state_cache[root].copy()
+                    self._restore_plugins_to_state(state, sid)
+                    self._sync_exported_constraints(state, sid)
+                    states.append(state)
+                    cached_ids.add(sid)
+
+            # Remaining: try stepping state (the state that was being stepped
+            # when the find/avoid was detected)
+            stepping_id = getattr(self, '_current_stepping_state_id', None)
+            for sid in uncached_ids:
+                if sid in cached_ids:
+                    continue
+                if stepping_id is not None and stepping_id in self._state_cache:
+                    state = self._state_cache[stepping_id].copy()
+                    self._restore_plugins_to_state(state, sid)
+                    self._sync_exported_constraints(state, sid)
+                    states.append(state)
+                    cached_ids.add(sid)
+
+            # Last resort: snapshot export
+            remaining = [sid for sid in uncached_ids if sid not in cached_ids]
+            if remaining:
+                try:
+                    snapshots = self._rust_mgr.export_stash(stash)
+                    for snapshot in snapshots:
+                        if snapshot.state_id not in cached_ids:
+                            try:
+                                angr_state = self._snapshot_to_angr(snapshot)
+                                self._sync_exported_constraints(angr_state, snapshot.state_id)
+                                states.append(angr_state)
+                            except Exception as e:
+                                l.warning(f"Failed to convert state from {stash}: {e}")
+                except Exception as e:
+                    l.warning(f"export_stash failed for {stash}: {e}")
 
         return states
 
