@@ -444,6 +444,9 @@ pub struct CallbackInterpreter<'a> {
     /// Pending concrete stores to batch for efficiency.
     /// Each entry is (address, data_bytes).
     pending_stores: Vec<(u64, Vec<u8>)>,
+    /// Pending symbolic stores - maps address to symbolic RustBV.
+    /// These override the concrete bytes in pending_stores for load forwarding.
+    pending_symbolic_stores: HashMap<u64, RustBV>,
     /// Maximum pending stores before auto-flush.
     max_pending_stores: usize,
     /// Rust-native symbolic memory (replaces Python callbacks when enabled).
@@ -521,6 +524,7 @@ impl<'a> CallbackInterpreter<'a> {
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
             pending_stores: Vec::with_capacity(256),
+            pending_symbolic_stores: HashMap::new(),
             max_pending_stores: 256,
             rust_memory: None,
             use_rust_memory: false,
@@ -776,6 +780,7 @@ impl<'a> CallbackInterpreter<'a> {
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         self.pending_stores.clear();
+        self.pending_symbolic_stores.clear();
         Ok(())
     }
 
@@ -1499,8 +1504,12 @@ impl<'a> CallbackInterpreter<'a> {
                             .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
                             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                     } else {
-                        // Fast path: concrete data - buffer for batch processing
+                        // Fast path: buffer for batch processing
                         let data_bytes = bv_to_bytes(&data_val);
+                        // Track symbolic values for load forwarding
+                        if data_val.is_symbolic() {
+                            self.pending_symbolic_stores.insert(addr_concrete, data_val);
+                        }
                         self.pending_stores.push((addr_concrete, data_bytes));
 
                         // Auto-flush if buffer is full
@@ -2266,8 +2275,18 @@ impl<'a> CallbackInterpreter<'a> {
                     // FAST PATH 0: Check pending stores buffer
                     // Stores within the same block are buffered in pending_stores.
                     // We must check this buffer before falling through to Python
-                    // callbacks, which have stale state. Search in reverse order
-                    // to find the most recent store to this address.
+                    // callbacks, which have stale state.
+
+                    // First check symbolic stores (preserves symbolic values)
+                    if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
+                        if sym_val.width() == (size * 8) as u32 {
+                            return Ok(sym_val.clone());
+                        } else if sym_val.width() > (size * 8) as u32 {
+                            return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+                        }
+                    }
+
+                    // Then check concrete stores (reverse order for most recent)
                     for &(store_addr, ref store_data) in self.pending_stores.iter().rev() {
                         if store_addr <= addr_concrete && addr_concrete + size as u64 <= store_addr + store_data.len() as u64 {
                             let offset = (addr_concrete - store_addr) as usize;
@@ -2921,6 +2940,7 @@ impl<'a> CallbackInterpreter<'a> {
             concretizer: self.concretizer.clone(), // Share concretizer settings
             dirty_registers: 0, // Fresh dirty tracking for fork
             pending_stores: Vec::with_capacity(256), // Fresh store buffer for fork
+            pending_symbolic_stores: HashMap::new(),
             max_pending_stores: self.max_pending_stores,
             // Fork Rust memory with O(1) CoW
             rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),

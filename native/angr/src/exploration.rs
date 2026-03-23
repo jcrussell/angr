@@ -2423,6 +2423,14 @@ impl RustExplorationManager {
                 }
             }
 
+            // Add find/avoid addresses as hooks so the interpreter stops there
+            for &addr in &self.find_addrs {
+                interp.add_hook(addr);
+            }
+            for &addr in &self.avoid_addrs {
+                interp.add_hook(addr);
+            }
+
             // Copy binary regions for code
             for (base, data) in &self.binary_regions {
                 interp.add_concrete_memory(*base, data.clone());
@@ -2636,7 +2644,14 @@ impl RustExplorationManager {
             }
             RunResult::Error { message, addr } => {
                 state.set_pc(addr);
-                Err(StepError::Error(state, message))
+                // Treat lift errors at unmapped addresses as deadends, not errors.
+                // This matches Python engine behavior where states that reach
+                // invalid code addresses (e.g., 0x0 after exit) are deadended.
+                if message.contains("No bytes in memory") || message.contains("lift") || addr == 0 {
+                    Err(StepError::Deadended(state))
+                } else {
+                    Err(StepError::Error(state, message))
+                }
             }
             RunResult::NeedLift { addr } => {
                 // This shouldn't happen if callbacks are properly set
