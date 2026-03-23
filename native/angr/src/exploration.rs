@@ -356,6 +356,8 @@ pub struct RustExplorationManager {
     block_cache: LruCache<u64, IRSB>,
     /// Pending state waiting for Python callback result.
     pending_callback: Option<PendingCallback>,
+    /// ID of the state currently being stepped (for Python callbacks to identify)
+    current_stepping_state_id: Option<u64>,
     /// Total steps executed.
     steps: u64,
     /// Error log: (addr, message, state_id).
@@ -420,6 +422,7 @@ impl RustExplorationManager {
             binary_regions: Vec::new(),
             block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()),
             pending_callback: None,
+            current_stepping_state_id: None,
             steps: 0,
             errors: Vec::new(),
             num_find: 1,
@@ -687,7 +690,10 @@ impl RustExplorationManager {
                     s.pop_front()  // BFS: FIFO (oldest state first)
                 }
             }) {
-                Some(s) => s,
+                Some(s) => {
+                    self.current_stepping_state_id = Some(s.state_id());
+                    s
+                },
                 None => {
                     // No active states
                     if self.found_count() > 0 {
@@ -1961,6 +1967,11 @@ impl RustExplorationManager {
         }
     }
 
+    /// Get the ID of the state currently being stepped.
+    pub fn get_current_stepping_state_id(&self) -> Option<u64> {
+        self.current_stepping_state_id
+    }
+
     /// Load from pending callback state's Rust memory.
     /// Used by SimProcedure callbacks to read the correct per-state memory.
     pub fn pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
@@ -2560,10 +2571,6 @@ impl RustExplorationManager {
                 }
             }
 
-            // Move state's memory into interpreter for per-state isolation.
-            let state_memory = state.take_memory();
-            interp.set_rust_memory(state_memory);
-
             // Run until event
             let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, 100);
 
@@ -2577,11 +2584,6 @@ impl RustExplorationManager {
             let mut new_reg_bytes = vec![0u8; reg_bytes.len()];
             interp.registers.copy_to_bytes(&mut new_reg_bytes);
             let new_pc = interp.get_pc();
-
-            // Return memory to state (now contains all VEX stores from this step)
-            if let Some(mem) = interp.take_rust_memory() {
-                state.replace_memory(mem);
-            }
 
             (result, deferred_forks, last_condition, stored_conditions, new_reg_bytes, new_pc)
         };

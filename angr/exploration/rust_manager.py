@@ -326,6 +326,8 @@ class RustExplorationManager:
 
         # Track the current callback state ID for memory tracking during callbacks
         self._current_callback_state_id: Optional[int] = None
+        # Track which Rust state is being stepped for per-fork memory isolation
+        self._current_stepping_state_id: Optional[int] = None
 
         # Track symbolic memory by address for state export recovery (P1 fix)
         # Maps state_id -> {addr -> (ast, size)}
@@ -361,11 +363,16 @@ class RustExplorationManager:
         """Set up Python callbacks for the Rust engine."""
         callbacks = PythonCallbacks()
 
-        # Memory load callback - use callback state if available for symbolic access
+        # Memory load callback - use per-fork state for correct isolation
         def memory_load(addr: int, size: int) -> tuple:
-            # Use callback state if available (not default state)
-            # This ensures hooks see the symbolic memory from the cached state
-            state = self._get_callback_state() or self._get_default_state()
+            state = self._get_callback_state()
+            if state is None:
+                # VEX execution: use the stepping state's cached copy
+                sid = self._current_stepping_state_id
+                if sid is not None and sid in self._state_cache:
+                    state = self._state_cache[sid]
+                else:
+                    state = self._get_default_state()
             if state is None:
                 return (bytes(size), False, None)
 
@@ -436,10 +443,17 @@ class RustExplorationManager:
                 l.warning(f"Memory load error at 0x{addr:x}: {e}")
                 return (bytes(size), False, None)
 
-        # Memory store callback - only writes during SimProcedure callbacks.
-        # VEX stores go to Rust's per-state SymbolicMemory instead.
+        # Memory store callback
         def memory_store(addr: int, data: bytes):
+            # Use per-fork state if available, else default
             state = self._get_callback_state()
+            if state is None:
+                # During VEX execution: use the stepping state's cached copy
+                sid = self._current_stepping_state_id
+                if sid is not None and sid in self._state_cache:
+                    state = self._state_cache[sid]
+                else:
+                    state = self._get_default_state()
             if state is None:
                 return
 
@@ -869,6 +883,12 @@ class RustExplorationManager:
             """
             state = self._get_callback_state()
             if state is None:
+                sid = self._current_stepping_state_id
+                if sid is not None and sid in self._state_cache:
+                    state = self._state_cache[sid]
+                else:
+                    state = self._get_default_state()
+            if state is None:
                 return
 
             for addr, data in stores:
@@ -1174,8 +1194,8 @@ class RustExplorationManager:
                         except Exception:
                             pass
 
-        # Add lazy regions for ALL loader objects (externs, TLS, kernel space).
-        # Pages are fetched from Python on demand via the fetch_page callback.
+        # Add lazy regions for ALL loader objects + stack so the fetch_page
+        # callback can populate any unmapped page on demand.
         for obj in self._project.loader.all_objects:
             try:
                 region_start = obj.min_addr & ~(page_size - 1)
@@ -1186,15 +1206,36 @@ class RustExplorationManager:
             except Exception:
                 pass
 
-        # Add lazy region for the stack
         arch = self._project.arch
         try:
             sp = angr_state.solver.eval(angr_state.regs.sp)
         except Exception:
             sp = 0x7fff_fff0_0000 if arch.bits == 64 else 0x7fff_0000
         stack_base = (sp & ~(page_size - 1)) + page_size
-        stack_start = stack_base - 0x11_0000  # 1MB + 64KB
+        stack_start = stack_base - 0x11_0000
         rust_state.add_lazy_region(stack_start, 0x11_0000)
+
+        # Pre-populate stack pages near SP from the Python state.
+        # This covers argv, environment, return addresses, and saved registers.
+        # Other regions use lazy fetching via fetch_page callback.
+        sp_page = sp & ~(page_size - 1)
+        pages_synced = 0
+        for page_addr in range(max(stack_start, sp_page - 32 * page_size),
+                               min(stack_base, sp_page + 8 * page_size),
+                               page_size):
+            try:
+                page_data = angr_state.memory.load(
+                    page_addr, page_size, endness='Iend_BE',
+                    inspect=False, disable_actions=True
+                )
+                if not page_data.symbolic:
+                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
+                    rust_state.map_memory_data(page_addr, concrete, 6)
+                    pages_synced += 1
+            except Exception:
+                pass
+        if pages_synced:
+            l.debug(f"Pre-populated {pages_synced} stack pages in Rust memory")
 
     def _concretize_stack_registers(self, state: "angr.SimState"):
         """Concretize stack registers for Rust memory mapping compatibility.
@@ -3663,6 +3704,8 @@ class RustExplorationManager:
             self._sync_hooks_before_step()
 
             event = self._rust_mgr.run()
+            # Track which state is being stepped for per-fork memory isolation
+            self._current_stepping_state_id = self._rust_mgr.get_current_stepping_state_id()
             steps_taken += 1
 
             if event.event_type == 'found' and event.found_count >= num_find:
