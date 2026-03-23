@@ -1303,13 +1303,10 @@ class RustExplorationManager:
             try:
                 reg_val = getattr(state.regs, bp_reg)
                 if reg_val.symbolic:
+                    # Use existing solver evaluation (respects any prior concretization)
                     concrete_val = state.solver.eval(reg_val)
-                    # Add constraint so Rust Z3 solver uses the same value.
-                    # Without this, Rust might concretize ebp to a different
-                    # value, breaking address calculations in hooks.
-                    state.solver.add(reg_val == concrete_val)
                     setattr(state.regs, bp_reg, concrete_val)
-                    l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x} (constraint added)")
+                    l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x}")
             except Exception as e:
                 l.debug(f"Could not concretize {bp_reg}: {e}")
 
