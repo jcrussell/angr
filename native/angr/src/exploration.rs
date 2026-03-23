@@ -2646,6 +2646,8 @@ impl RustExplorationManager {
         // pushes the return address via VEX stores, which need to be visible
         // in the state's memory for Python callbacks to work correctly.
         if !all_stores.is_empty() {
+            // Get SP to detect stack-region stores
+            let sp = state.get_sp().as_u64().unwrap_or(0);
             for (addr, data) in &all_stores {
                 let width = (data.len() * 8) as u32;
                 let mut val: u128 = 0;
@@ -2653,9 +2655,15 @@ impl RustExplorationManager {
                     val |= (b as u128) << (i * 8);
                 }
                 let bv = RustBV::concrete(val, width);
-                // Only store to already-mapped pages. Do NOT auto-map zero pages
-                // as that would overwrite Python state data with zeros.
-                let _ = state.memory_store(*addr, bv);
+                // For stack-region stores (within 1MB of SP), use automap to
+                // handle unmapped stack pages. For other stores, use plain
+                // store_concrete to avoid overwriting Python state data.
+                let near_stack = sp > 0 && (*addr as i64 - sp as i64).unsigned_abs() < 0x100000;
+                if near_stack {
+                    let _ = state.memory_mut().store_concrete_automap_internal(*addr, bv);
+                } else {
+                    let _ = state.memory_store(*addr, bv);
+                }
             }
         }
 
