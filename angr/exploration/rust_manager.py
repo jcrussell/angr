@@ -1175,7 +1175,29 @@ class RustExplorationManager:
         # Stack grows down, but we need space above SP for args and caller data
         stack_base = (sp & ~0xFFF) + 0x1000  # Align to next page above SP
         total_stack_size = stack_size_below + stack_size_above
-        rust_state.map_memory(stack_base - total_stack_size, total_stack_size, 6)  # RW
+        stack_start = stack_base - total_stack_size
+        rust_state.map_memory(stack_start, total_stack_size, 6)  # RW
+
+        # Populate stack pages with concrete data from Python state.
+        # This copies argv, environment, and other concrete stack data into
+        # Rust's memory, enabling per-state memory isolation when Rust memory
+        # is used for VEX execution.
+        page_size = 0x1000
+        pages_synced = 0
+        for page_addr in range(stack_start & ~(page_size - 1), stack_base, page_size):
+            try:
+                page_data = angr_state.memory.load(
+                    page_addr, page_size, endness='Iend_BE',
+                    inspect=False, disable_actions=True
+                )
+                if not page_data.symbolic:
+                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
+                    rust_state.map_memory_data(page_addr, concrete, 6)
+                    pages_synced += 1
+            except Exception:
+                pass  # Page not accessible or symbolic — skip
+        if pages_synced:
+            l.debug(f"Synced {pages_synced} concrete stack pages to Rust")
 
     def _concretize_stack_registers(self, state: "angr.SimState"):
         """Concretize stack registers for Rust memory mapping compatibility.

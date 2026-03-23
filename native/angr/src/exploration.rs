@@ -1961,6 +1961,54 @@ impl RustExplorationManager {
         }
     }
 
+    /// Load from pending callback state's Rust memory.
+    /// Used by SimProcedure callbacks to read the correct per-state memory.
+    pub fn pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
+        let pending = self.pending_callback.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        let solver_ref = pending.state.solver();
+        let ctx = solver_ref.borrow();
+        match pending.state.memory().load_concrete(addr, size, &*ctx) {
+            Ok(bv) => {
+                if let Some(val) = bv.as_u128() {
+                    let byte_count = (size as usize).min(16);
+                    Ok(val.to_le_bytes()[..byte_count].to_vec())
+                } else {
+                    let solver = pending.state.solver();
+                    let ctx = solver.borrow();
+                    if let Some(val) = ctx.eval(&bv) {
+                        let byte_count = (size as usize).min(16);
+                        Ok(val.to_le_bytes()[..byte_count].to_vec())
+                    } else {
+                        Ok(vec![0u8; size as usize])
+                    }
+                }
+            }
+            Err(_) => Ok(vec![0u8; size as usize]),
+        }
+    }
+
+    /// Store to pending callback state's Rust memory.
+    pub fn pending_memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
+        let pending = self.pending_callback.as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        let mut value: u128 = 0;
+        for (i, &byte) in data.iter().enumerate() {
+            if i < 16 { value |= (byte as u128) << (i * 8); }
+        }
+        let bv = RustBV::concrete(value, (data.len() * 8) as u32);
+        pending.state.memory_mut().store_concrete(addr, bv)
+            .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
+    }
+
+    /// Map memory with data in pending callback state.
+    pub fn pending_memory_map_data(&mut self, addr: u64, data: &[u8], perm: u8) -> PyResult<()> {
+        let pending = self.pending_callback.as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        pending.state.map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));
+        Ok(())
+    }
+
     /// Set address to skip hook check for on next step.
     ///
     /// This is used to prevent infinite loops with zero-length hooks.
