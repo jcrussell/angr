@@ -436,9 +436,10 @@ class RustExplorationManager:
                 l.warning(f"Memory load error at 0x{addr:x}: {e}")
                 return (bytes(size), False, None)
 
-        # Memory store callback
+        # Memory store callback - only writes during SimProcedure callbacks.
+        # VEX stores go to Rust's per-state SymbolicMemory instead.
         def memory_store(addr: int, data: bytes):
-            state = self._get_callback_state() or self._get_default_state()
+            state = self._get_callback_state()
             if state is None:
                 return
 
@@ -866,7 +867,7 @@ class RustExplorationManager:
             Args:
                 stores: List of (addr, data) tuples to write.
             """
-            state = self._get_callback_state() or self._get_default_state()
+            state = self._get_callback_state()
             if state is None:
                 return
 
@@ -1138,18 +1139,21 @@ class RustExplorationManager:
                 pass
 
     def _sync_memory_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
-        """Sync memory from angr state to Rust state."""
-        # Map main binary regions from the Python STATE's memory (not raw loader).
-        # The state has modifications applied by entry_state/full_init_state
-        # (e.g., GOT entries pointing to SimProcedure stub addresses).
+        """Sync memory from angr state to Rust state.
+
+        Strategy: map binary sections as concrete data (from Python state's
+        memory which includes relocations), and add lazy regions for all other
+        mapped objects. The fetch_page callback populates lazy pages on demand.
+        """
+        page_size = 0x1000
+
+        # Map binary sections from the Python STATE's memory (includes relocations)
         for obj in self._project.loader.all_objects:
             if obj.binary is None:
                 continue
-
             for section in obj.sections:
                 if section.memsize > 0:
                     try:
-                        # Try state memory first (has relocations applied)
                         val = angr_state.memory.load(
                             section.min_addr, section.memsize,
                             endness='Iend_BE', inspect=False,
@@ -1159,60 +1163,38 @@ class RustExplorationManager:
                             data = angr_state.solver.eval(val).to_bytes(section.memsize, 'big')
                             rust_state.map_memory_data(section.min_addr, data, 7)
                         else:
-                            # Section has symbolic data — use raw loader as fallback
                             data = self._project.loader.memory.load(
                                 section.min_addr, section.memsize)
                             rust_state.map_memory_data(section.min_addr, bytes(data), 7)
                     except Exception:
                         try:
-                            # Last resort: raw loader
                             data = self._project.loader.memory.load(
                                 section.min_addr, section.memsize)
                             rust_state.map_memory_data(section.min_addr, bytes(data), 7)
                         except Exception:
                             pass
 
-        # Map stack - architecture aware
-        # Use actual SP from state instead of hardcoded 64-bit address
-        arch = self._project.arch
-        stack_size_below = 0x10_0000  # 1MB below SP
-        stack_size_above = 0x1_0000   # 64KB above SP (for args, caller frame, etc.)
+        # Add lazy regions for ALL loader objects (externs, TLS, kernel space).
+        # Pages are fetched from Python on demand via the fetch_page callback.
+        for obj in self._project.loader.all_objects:
+            try:
+                region_start = obj.min_addr & ~(page_size - 1)
+                region_end = (obj.max_addr + page_size) & ~(page_size - 1)
+                region_size = region_end - region_start
+                if region_size > 0:
+                    rust_state.add_lazy_region(region_start, region_size)
+            except Exception:
+                pass
 
-        # Get the actual stack pointer from the state
+        # Add lazy region for the stack
+        arch = self._project.arch
         try:
             sp = angr_state.solver.eval(angr_state.regs.sp)
         except Exception:
-            # Fallback to architecture default
-            if arch.bits == 32:
-                sp = 0x7fff_0000  # Typical 32-bit stack
-            else:
-                sp = 0x7fff_fff0_0000  # Typical 64-bit stack
-
-        # Sync stack pages from the Python state's memory to Rust.
-        # Use add_lazy_region so the interpreter can fetch unmapped pages,
-        # but pre-populate concrete pages for performance.
-        stack_base = (sp & ~0xFFF) + 0x1000
-        total_stack_size = stack_size_below + stack_size_above
-        stack_start = stack_base - total_stack_size
-        rust_state.add_lazy_region(stack_start, total_stack_size)
-
-        # Pre-populate concrete stack pages (argv, environment, frame data).
-        # Only sync pages near SP (±16 pages) to avoid fetching the entire stack.
-        page_size = 0x1000
-        sp_page = sp & ~(page_size - 1)
-        for page_addr in range(max(stack_start, sp_page - 16 * page_size),
-                               min(stack_base, sp_page + 16 * page_size),
-                               page_size):
-            try:
-                page_data = angr_state.memory.load(
-                    page_addr, page_size, endness='Iend_BE',
-                    inspect=False, disable_actions=True
-                )
-                if not page_data.symbolic:
-                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
-                    rust_state.map_memory_data(page_addr, concrete, 6)
-            except Exception:
-                pass
+            sp = 0x7fff_fff0_0000 if arch.bits == 64 else 0x7fff_0000
+        stack_base = (sp & ~(page_size - 1)) + page_size
+        stack_start = stack_base - 0x11_0000  # 1MB + 64KB
+        rust_state.add_lazy_region(stack_start, 0x11_0000)
 
     def _concretize_stack_registers(self, state: "angr.SimState"):
         """Concretize stack registers for Rust memory mapping compatibility.

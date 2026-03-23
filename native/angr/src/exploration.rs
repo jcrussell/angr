@@ -2560,6 +2560,10 @@ impl RustExplorationManager {
                 }
             }
 
+            // Move state's memory into interpreter for per-state isolation.
+            let state_memory = state.take_memory();
+            interp.set_rust_memory(state_memory);
+
             // Run until event
             let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, 100);
 
@@ -2574,16 +2578,9 @@ impl RustExplorationManager {
             interp.registers.copy_to_bytes(&mut new_reg_bytes);
             let new_pc = interp.get_pc();
 
-            // Apply all stores from this step to the state's SymbolicMemory.
-            // This persists VEX stores across steps with per-state isolation via CoW.
-            let pending = interp.take_all_stores();
-            for (addr, data) in &pending {
-                let mut value: u128 = 0;
-                for (i, &byte) in data.iter().enumerate() {
-                    if i < 16 { value |= (byte as u128) << (i * 8); }
-                }
-                let bv = RustBV::concrete(value, (data.len() * 8) as u32);
-                let _ = state.memory_mut().store_concrete(*addr, bv);
+            // Return memory to state (now contains all VEX stores from this step)
+            if let Some(mem) = interp.take_rust_memory() {
+                state.replace_memory(mem);
             }
 
             (result, deferred_forks, last_condition, stored_conditions, new_reg_bytes, new_pc)
