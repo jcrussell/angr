@@ -3278,15 +3278,13 @@ class RustExplorationManager:
                 new_val = getattr(new_state.regs, reg_name)
 
                 if new_val.symbolic:
-                    # Symbolic register value - sync to Rust as claripy AST
+                    # Symbolic register value - sync to Rust
                     if reg_name in return_regs:
-                        # Return register is critical - sync symbolic value
                         try:
                             self._sync_symbolic_register_to_rust(reg_name, new_val)
                             l.debug(f"Synced symbolic return register {reg_name} to Rust")
                         except Exception as e:
                             l.debug(f"Could not sync symbolic {reg_name}: {e}")
-                            # Fallback: try to eval to concrete
                             try:
                                 new_concrete = new_state.solver.eval(new_val)
                                 data = new_concrete.to_bytes(size, 'little')
