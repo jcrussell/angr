@@ -895,40 +895,7 @@ impl<'a> CallbackInterpreter<'a> {
     }
 
     /// Get the return address for a function call.
-    ///
-    /// Checks pending_stores and all_flushed_stores first (since the call
-    /// instruction pushes the return address via pending_stores before
-    /// the interpreter detects the SimProcedure hook).
     pub fn get_return_addr(&self) -> Option<u64> {
-        let ptr_size = self.calling_convention.pointer_size();
-        let sp = self.registers.get(
-            self.registers.arch().sp_offset(),
-            ptr_size,
-            self.ctx,
-        );
-        let sp_val = sp.as_u64()?;
-
-        // Check pending_stores first (most recent writes)
-        for (addr, data) in self.pending_stores.iter().rev() {
-            if *addr == sp_val && data.len() >= ptr_size as usize {
-                let mut bytes = [0u8; 8];
-                let len = std::cmp::min(ptr_size as usize, 8);
-                bytes[..len].copy_from_slice(&data[..len]);
-                return Some(u64::from_le_bytes(bytes));
-            }
-        }
-
-        // Check all_flushed_stores (previously flushed writes)
-        if let Some(data) = self.all_flushed_stores.get(&sp_val) {
-            if data.len() >= ptr_size as usize {
-                let mut bytes = [0u8; 8];
-                let len = std::cmp::min(ptr_size as usize, 8);
-                bytes[..len].copy_from_slice(&data[..len]);
-                return Some(u64::from_le_bytes(bytes));
-            }
-        }
-
-        // Fall back to rust_memory
         self.calling_convention.get_return_addr(
             &self.registers,
             self.rust_memory.as_ref(),
@@ -2606,31 +2573,21 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRExpr::Triop { op, arg1, arg2, arg3 } => {
                 // Triops are float operations with rounding mode (arg1).
-                // Return fresh symbolic if any operand is symbolic, else zero.
-                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                // Evaluate args but return zero for the result (imprecise but continues execution).
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                let any_sym = v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic();
-                if any_sym {
-                    Ok(RustBV::symbolic(self.ctx, &format!("triop_{:x}", self.pc), width))
-                } else {
-                    Ok(RustBV::concrete(0, width))
-                }
+                Ok(RustBV::concrete(0, width))
             }
 
             IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
-                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
-                let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                let any_sym = v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
-                if any_sym {
-                    Ok(RustBV::symbolic(self.ctx, &format!("qop_{:x}", self.pc), width))
-                } else {
-                    Ok(RustBV::concrete(0, width))
-                }
+                Ok(RustBV::concrete(0, width))
             }
 
             IRExpr::CCall { cee, retty, args } => {
@@ -2643,13 +2600,7 @@ impl<'a> CallbackInterpreter<'a> {
                     return Ok(result);
                 }
 
-                // If any arg is symbolic, return fresh symbolic instead of concrete 0
-                let any_sym = arg_vals.iter().any(|v| v.is_symbolic());
-                if any_sym {
-                    Ok(RustBV::symbolic(self.ctx, &format!("ccall_{:x}", self.pc), retty.bits()))
-                } else {
-                    Ok(RustBV::concrete(0, retty.bits()))
-                }
+                Ok(RustBV::concrete(0, retty.bits()))
             }
 
             IRExpr::VECRET | IRExpr::GSPTR => {
