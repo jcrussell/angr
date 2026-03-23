@@ -1518,10 +1518,14 @@ impl<'a> CallbackInterpreter<'a> {
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
 
                     // Check if data is symbolic - use symbolic store callback
-                    // This preserves expression trees for proper claripy reconstruction
-                    if data_val.is_symbolic() {
-                    }
-                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                    // Skip for stack addresses (transient) to avoid expensive FFI calls.
+                    // Stack stores use pending_symbolic_stores for same-step forwarding.
+                    let sp = self.registers.get_sp_value();
+                    let is_stack = sp.map_or(false, |sp_val| {
+                        addr_concrete >= sp_val.saturating_sub(0x100000) &&
+                        addr_concrete <= sp_val.saturating_add(0x10000)
+                    });
+                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && !is_stack {
                         // Flush any pending concrete stores first
                         self.flush_stores(py, callbacks)?;
                         // Use symbolic value store to preserve expression tree
@@ -2483,13 +2487,34 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRExpr::Unop { op, arg } => {
                 let arg_val = self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?;
-                VEXOps::unop(*op, arg_val, self.ctx).map_err(|e| e.into())
+                let arg_is_sym = arg_val.is_symbolic();
+                VEXOps::unop(*op, arg_val, self.ctx).or_else(|_| {
+                    // Fallback for unsupported unary ops (e.g., float conversions).
+                    // Return fresh symbolic if input was symbolic, else zero.
+                    let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                    if arg_is_sym {
+                        Ok(RustBV::symbolic(self.ctx, &format!("unsup_unop_{:x}", self.pc), width))
+                    } else {
+                        Ok(RustBV::concrete(0, width))
+                    }
+                })
             }
 
             IRExpr::Binop { op, left, right } => {
                 let left_val = self.eval_expr_with_callbacks(py, callbacks, left, tyenv)?;
                 let right_val = self.eval_expr_with_callbacks(py, callbacks, right, tyenv)?;
-                VEXOps::binop(*op, left_val, right_val, self.ctx).map_err(|e| e.into())
+                let fallback_width = op.result_type().map(|t| t.bits()).unwrap_or(
+                    left_val.width().max(right_val.width())
+                );
+                let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
+                VEXOps::binop(*op, left_val, right_val, self.ctx).or_else(|_| {
+                    // Fallback for unsupported binary ops (e.g., vector float ops).
+                    if any_sym {
+                        Ok(RustBV::symbolic(self.ctx, &format!("unsup_binop_{:x}", self.pc), fallback_width))
+                    } else {
+                        Ok(RustBV::concrete(0, fallback_width))
+                    }
+                })
             }
 
             IRExpr::ITE { cond, iftrue, iffalse } => {
@@ -2525,9 +2550,24 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(self.registers.get(offset, elem_size, self.ctx))
             }
 
-            IRExpr::Triop { .. } => Err(CbExecutionError::Unsupported("triop".to_string())),
+            IRExpr::Triop { op, arg1, arg2, arg3 } => {
+                // Triops are float operations with rounding mode (arg1).
+                // Evaluate args but return zero for the result (imprecise but continues execution).
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                Ok(RustBV::concrete(0, width))
+            }
 
-            IRExpr::Qop { .. } => Err(CbExecutionError::Unsupported("qop".to_string())),
+            IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                let _ = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
+                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                Ok(RustBV::concrete(0, width))
+            }
 
             IRExpr::CCall { cee, retty, args } => {
                 let mut arg_vals = Vec::with_capacity(args.len());

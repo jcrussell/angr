@@ -211,6 +211,18 @@ impl RegisterFile {
         self.get(offset, size, ctx)
     }
 
+    /// Get the stack pointer as a concrete u64 value (for fast checks).
+    pub fn get_sp_value(&self) -> Option<u64> {
+        let offset = self.arch.sp_offset() as usize;
+        let size = self.arch.bytes() as usize;
+        if offset + size > self.data.len() { return None; }
+        let mut value: u64 = 0;
+        for i in 0..size.min(8) {
+            value |= (self.data[offset + i] as u64) << (i * 8);
+        }
+        Some(value)
+    }
+
     /// Set the stack pointer.
     pub fn set_sp(&mut self, value: RustBV) {
         let offset = self.arch.sp_offset();

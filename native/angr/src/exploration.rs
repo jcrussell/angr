@@ -28,6 +28,19 @@ use crate::state::{RustSimState, StateChanges};
 use crate::symbolic::{RustBV, RustSymbolTable, SymContext};
 use crate::vex::{VexArch, IRSB};
 
+use std::cell::Cell;
+
+/// Thread-local stepping state ID, accessible from callbacks without borrow conflicts.
+thread_local! {
+    static STEPPING_STATE_ID: Cell<Option<u64>> = Cell::new(None);
+}
+
+/// Get the current stepping state ID (safe to call from callbacks).
+#[pyfunction]
+pub fn get_stepping_state_id() -> Option<u64> {
+    STEPPING_STATE_ID.with(|cell| cell.get())
+}
+
 /// Reason for returning to Python.
 #[derive(Debug, Clone)]
 pub enum CallbackReason {
@@ -691,7 +704,9 @@ impl RustExplorationManager {
                 }
             }) {
                 Some(s) => {
-                    self.current_stepping_state_id = Some(s.state_id());
+                    let sid = s.state_id();
+                    self.current_stepping_state_id = Some(sid);
+                    STEPPING_STATE_ID.with(|cell| cell.set(Some(sid)));
                     s
                 },
                 None => {
@@ -2988,6 +3003,7 @@ impl RustExplorationManager {
 pub fn register_exploration(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustExplorationManager>()?;
     m.add_class::<ExplorationEvent>()?;
+    m.add_function(pyo3::wrap_pyfunction!(get_stepping_state_id, m)?)?;
     Ok(())
 }
 
