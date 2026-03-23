@@ -2653,8 +2653,9 @@ impl RustExplorationManager {
                     val |= (b as u128) << (i * 8);
                 }
                 let bv = RustBV::concrete(val, width);
-                // Use automap_internal to handle stack pages that weren't pre-mapped
-                let _ = state.memory_mut().store_concrete_automap_internal(*addr, bv);
+                // Only store to already-mapped pages. Do NOT auto-map zero pages
+                // as that would overwrite Python state data with zeros.
+                let _ = state.memory_store(*addr, bv);
             }
         }
 
