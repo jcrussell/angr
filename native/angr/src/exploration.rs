@@ -932,6 +932,29 @@ impl RustExplorationManager {
                     }
                 }
                 Err(StepError::NeedCallback(pending)) => {
+                    // Check if the callback address is a find/avoid address
+                    // (these were added as interpreter hooks to stop execution)
+                    let callback_addr = match &pending.reason {
+                        CallbackReason::SimProcedure { addr, .. } => Some(*addr),
+                        _ => None,
+                    };
+                    if let Some(addr) = callback_addr {
+                        if self.find_addrs.contains(&addr) {
+                            // State reached a find address — move to found stash
+                            self.stashes.entry("found".to_string())
+                                .or_insert_with(VecDeque::new)
+                                .push_back(pending.state);
+                            continue;
+                        }
+                        if self.avoid_addrs.contains(&addr) {
+                            // State reached an avoid address — move to avoid stash
+                            self.stashes.entry("avoid".to_string())
+                                .or_insert_with(VecDeque::new)
+                                .push_back(pending.state);
+                            continue;
+                        }
+                    }
+
                     // Need Python callback
                     let state_id = pending.state.state_id();
                     let event = match &pending.reason {
