@@ -1246,17 +1246,35 @@ class RustExplorationManager:
                     rust_state.map_memory_data(page_addr, concrete, 6)
                     pages_synced += 1
                 elif page_addr < sp_page:
-                    # Zero-fill symbolic stack pages BELOW SP in both Python
-                    # and Rust. These are uninitialized function frames.
-                    # Pages at/above SP may have argc/argv/environ data
-                    # and must NOT be zeroed.
+                    # Zero-fill symbolic stack pages BELOW SP in Python only.
+                    # Do NOT map in Rust concrete memory: VEX stores (return
+                    # addresses from call instructions) go to Python via
+                    # call_memory_store_batch. If Rust has concrete zeros,
+                    # loads hit the zeros before reaching the Python callback,
+                    # making the VEX stores invisible. By leaving these pages
+                    # unmapped in Rust, loads fall through to Python which
+                    # has the correct data.
                     zero_page = claripy.BVV(0, page_size * 8)
                     angr_state.memory.store(page_addr, zero_page, endness='Iend_BE',
                                            inspect=False, disable_actions=True)
-                    rust_state.map_memory_data(page_addr, bytes(page_size), 6)
                     pages_synced += 1
             except Exception:
                 pass
+
+        # Zero-fill the below-SP portion of the SP page in Python.
+        # The SP page has mixed content: concrete data above SP (argc, argv)
+        # and symbolic data below SP (uninitialized stack). We zero-fill
+        # below SP so ret through uninitialized frames gets 0 (clean deadend)
+        # instead of symbolic (unconstrained state).
+        sp_offset = sp & (page_size - 1)
+        if sp_offset > 0:
+            try:
+                zeros = claripy.BVV(0, sp_offset * 8)
+                angr_state.memory.store(sp_page, zeros, endness='Iend_BE',
+                                       inspect=False, disable_actions=True)
+            except Exception:
+                pass
+
         if pages_synced:
             l.debug(f"Pre-populated {pages_synced} stack pages in Rust memory")
 
