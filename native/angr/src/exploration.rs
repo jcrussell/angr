@@ -2614,7 +2614,7 @@ impl RustExplorationManager {
             }
 
             // Run until event
-            let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, 100);
+            let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, self.max_steps_per_run as u32);
 
             // Get last branch condition before dropping interpreter
             let last_condition = interp.take_last_branch_condition();

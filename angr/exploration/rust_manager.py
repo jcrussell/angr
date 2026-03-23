@@ -888,12 +888,11 @@ class RustExplorationManager:
 
             for addr, data in stores:
                 try:
-                    # Convert bytes to little-endian integer (same as individual store)
                     if isinstance(data, (bytes, list)):
                         int_val = int.from_bytes(bytes(data), 'little')
                         val = claripy.BVV(int_val, len(data) * 8)
                     else:
-                        val = claripy.BVV(data, 64)  # Fallback for raw integer
+                        val = claripy.BVV(data, 64)
                     state.memory.store(addr, val, endness='Iend_LE')
                 except Exception as e:
                     l.debug(f"Batch memory store failed at 0x{addr:x}: {e}")
