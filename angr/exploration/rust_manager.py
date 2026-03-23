@@ -367,8 +367,8 @@ class RustExplorationManager:
         def memory_load(addr: int, size: int) -> tuple:
             state = self._get_callback_state()
             if state is None:
-                # VEX execution: use the stepping state's cached copy
-                sid = self._current_stepping_state_id
+                # VEX execution: query Rust for the stepping state ID
+                sid = getattr(self, "_current_stepping_state_id", None)
                 if sid is not None and sid in self._state_cache:
                     state = self._state_cache[sid]
                 else:
@@ -445,11 +445,10 @@ class RustExplorationManager:
 
         # Memory store callback
         def memory_store(addr: int, data: bytes):
-            # Use per-fork state if available, else default
             state = self._get_callback_state()
             if state is None:
                 # During VEX execution: use the stepping state's cached copy
-                sid = self._current_stepping_state_id
+                sid = getattr(self, '_current_stepping_state_id', None)
                 if sid is not None and sid in self._state_cache:
                     state = self._state_cache[sid]
                 else:
@@ -883,7 +882,7 @@ class RustExplorationManager:
             """
             state = self._get_callback_state()
             if state is None:
-                sid = self._current_stepping_state_id
+                sid = getattr(self, "_current_stepping_state_id", None)
                 if sid is not None and sid in self._state_cache:
                     state = self._state_cache[sid]
                 else:
@@ -915,7 +914,13 @@ class RustExplorationManager:
             Returns:
                 List of (bytes, is_symbolic, ast_or_none) tuples.
             """
-            state = self._get_callback_state() or self._get_default_state()
+            state = self._get_callback_state()
+            if state is None:
+                sid = getattr(self, "_current_stepping_state_id", None)
+                if sid is not None and sid in self._state_cache:
+                    state = self._state_cache[sid]
+                else:
+                    state = self._get_default_state()
             if state is None:
                 return [(bytes(size), False, None) for _, size in loads]
 
@@ -3703,9 +3708,17 @@ class RustExplorationManager:
             # Sync any dynamically created hooks (continuations from self.call())
             self._sync_hooks_before_step()
 
+            # Pre-set stepping state ID by peeking at the next state to be popped.
+            # This ensures memory callbacks during run() use the right per-fork state.
+            try:
+                active_ids = list(self._rust_mgr.get_state_ids('active'))
+                if active_ids:
+                    # FIFO: first ID will be popped; LIFO: last
+                    self._current_stepping_state_id = active_ids[0]
+            except Exception:
+                pass
+
             event = self._rust_mgr.run()
-            # Track which state is being stepped for per-fork memory isolation
-            self._current_stepping_state_id = self._rust_mgr.get_current_stepping_state_id()
             steps_taken += 1
 
             if event.event_type == 'found' and event.found_count >= num_find:
