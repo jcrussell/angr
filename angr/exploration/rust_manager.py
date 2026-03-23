@@ -986,9 +986,8 @@ class RustExplorationManager:
             callbacks.set_memory_load_batch(memory_load_batch)
         if hasattr(callbacks, 'set_batch_fetch_pages'):
             callbacks.set_batch_fetch_pages(batch_fetch_pages)
-        # Symbolic store callback — re-enabled with stack address filtering.
-        # Disabled for now due to persistent performance regression on ais3_crackme.
-        # TODO: Move filtering logic entirely to Rust side to avoid any Python FFI.
+        # Symbolic store callback disabled — causes errors/slowdowns.
+        # Need Rust-native symbolic memory to properly preserve expressions.
         # if hasattr(callbacks, 'set_memory_store_symbolic_value'):
         #     callbacks.set_memory_store_symbolic_value(memory_store_symbolic_value)
 
@@ -1289,8 +1288,9 @@ class RustExplorationManager:
                 reg_val = getattr(state.regs, sp_reg)
                 if reg_val.symbolic:
                     sp_val = state.solver.eval(reg_val)
+                    state.solver.add(reg_val == sp_val)
                     setattr(state.regs, sp_reg, sp_val)
-                    l.debug(f"Concretized {sp_reg} to 0x{sp_val:x}")
+                    l.debug(f"Concretized {sp_reg} to 0x{sp_val:x} (constraint added)")
                 else:
                     sp_val = state.solver.eval(reg_val)
             except Exception as e:
@@ -1303,13 +1303,13 @@ class RustExplorationManager:
             try:
                 reg_val = getattr(state.regs, bp_reg)
                 if reg_val.symbolic:
-                    # Always use solver.eval() to get the value Python already used.
-                    # Even if unconstrained, Python may have evaluated it to
-                    # calculate addresses (e.g., ebp - 0x80004 for password buffer).
-                    # Using a different value breaks those address calculations.
                     concrete_val = state.solver.eval(reg_val)
-                    l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x}")
+                    # Add constraint so Rust Z3 solver uses the same value.
+                    # Without this, Rust might concretize ebp to a different
+                    # value, breaking address calculations in hooks.
+                    state.solver.add(reg_val == concrete_val)
                     setattr(state.regs, bp_reg, concrete_val)
+                    l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x} (constraint added)")
             except Exception as e:
                 l.debug(f"Could not concretize {bp_reg}: {e}")
 

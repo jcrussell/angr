@@ -1519,11 +1519,11 @@ impl<'a> CallbackInterpreter<'a> {
 
                     // Check if data is symbolic - use symbolic store callback.
                     // Skip for likely-stack addresses to avoid expensive FFI calls.
-                    let is_stack = if self.arch.pointer_size() == 64 {
-                        addr_concrete >= 0x7fff_0000_0000
-                    } else {
-                        addr_concrete >= 0x7f00_0000 || addr_concrete < 0x1000
-                    };
+                    // Use SP-relative check for accuracy across architectures.
+                    let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
+                        addr_concrete >= sp_val.saturating_sub(0x200000) &&
+                        addr_concrete <= sp_val.saturating_add(0x200000)
+                    });
                     if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && !is_stack {
                         // Flush any pending concrete stores first
                         self.flush_stores(py, callbacks)?;
