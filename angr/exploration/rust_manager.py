@@ -3130,14 +3130,14 @@ class RustExplorationManager:
                             try:
                                 new_concrete = new_state.solver.eval(new_val)
                                 data = new_concrete.to_bytes(size, 'little')
-                                changes.append((offset, size, list(data)))
+                                changes.append((offset, size, bytes(data)))
                             except Exception:
                                 pass
                 else:
                     new_concrete = new_state.solver.eval(new_val)
                     if old_val.symbolic or old_state.solver.eval(old_val) != new_concrete:
                         data = new_concrete.to_bytes(size, 'little')
-                        changes.append((offset, size, list(data)))
+                        changes.append((offset, size, bytes(data)))
             except Exception:
                 pass
 
@@ -3199,11 +3199,11 @@ class RustExplorationManager:
             for item in self._group_changed_bytes(new_state, changed):
                 if item[0] == 'concrete':
                     _, start, size, data = item
-                    concrete_changes.append((start, list(data)))
+                    concrete_changes.append((start, bytes(data)))
                 elif item[0] == 'symbolic':
                     _, start, size, data, handle_id, ast = item
                     # Provide concrete witness for Rust memory sync
-                    concrete_changes.append((start, list(data)))
+                    concrete_changes.append((start, bytes(data)))
                     # Cache symbolic value for later constraint sync
                     # The handle is already registered in _emit_memory_region
                     l.debug(f"Tracked symbolic memory change at 0x{start:x} (handle={handle_id})")
@@ -4197,6 +4197,14 @@ class RustExplorationManager:
                     pass  # State may have already been moved
 
         return self
+
+    def stash(self, filter_func=None, from_stash="active", to_stash="stashed") -> "RustExplorationManager":
+        """Stash some states. Alias for move() with different defaults."""
+        return self.move(from_stash, to_stash, filter_func=filter_func)
+
+    def unstash(self, filter_func=None, to_stash="active", from_stash="stashed") -> "RustExplorationManager":
+        """Unstash some states. Alias for move() with different defaults."""
+        return self.move(from_stash, to_stash, filter_func=filter_func)
 
     def filter(self, stash: str = 'active', filter_func=None) -> "RustExplorationManager":
         """Filter states in a stash by predicate.
