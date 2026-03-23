@@ -3673,15 +3673,17 @@ class RustExplorationManager:
             Self, for chaining.
         """
         # Set find addresses and store predicate for P2 callback handling
-        find_addrs = self._extract_addrs(find)
-        self._rust_mgr.set_find_addrs(find_addrs)
-        self._rust_mgr.set_find_needs_python(callable(find))
-        # P2 fix: Store the find predicate for callback evaluation
-        self._find_predicate = find if callable(find) else None
+        # Only override if explicitly provided (don't clear technique-set values)
+        if find is not None:
+            find_addrs = self._extract_addrs(find)
+            self._rust_mgr.set_find_addrs(find_addrs)
+            self._rust_mgr.set_find_needs_python(callable(find))
+            self._find_predicate = find if callable(find) else None
 
         # Set avoid addresses
-        avoid_addrs = self._extract_addrs(avoid)
-        self._rust_mgr.set_avoid_addrs(avoid_addrs)
+        if avoid is not None:
+            avoid_addrs = self._extract_addrs(avoid)
+            self._rust_mgr.set_avoid_addrs(avoid_addrs)
         self._rust_mgr.set_avoid_needs_python(callable(avoid))
         # P2 fix: Store the avoid predicate for callback evaluation
         self._avoid_predicate = avoid if callable(avoid) else None
@@ -4281,6 +4283,39 @@ class RustExplorationManager:
         # LoopSeer: Loop detection and handling
         elif tech_name == 'LoopSeer':
             l.debug("P9: LoopSeer technique registered (basic support)")
+
+        # Explorer: Extract find/avoid addresses
+        elif tech_name == 'Explorer':
+            # The Explorer technique stores find/avoid as lambdas or addresses.
+            # Extract static addresses from _extra_stop_points or find/avoid attrs.
+            find_addrs = []
+            avoid_addrs = []
+
+            # Try to extract find addresses
+            find = getattr(technique, 'find', None)
+            if find is not None:
+                if callable(find):
+                    self._rust_mgr.set_find_needs_python(True)
+                    self._find_predicate = find
+                else:
+                    find_addrs = self._extract_addrs(find)
+
+            # Try to extract avoid addresses
+            avoid = getattr(technique, 'avoid', None)
+            if avoid is not None:
+                if callable(avoid):
+                    self._rust_mgr.set_avoid_needs_python(True)
+                    self._avoid_predicate = avoid
+                else:
+                    avoid_addrs = self._extract_addrs(avoid)
+
+            if find_addrs:
+                self._rust_mgr.set_find_addrs(find_addrs)
+            if avoid_addrs:
+                self._rust_mgr.set_avoid_addrs(avoid_addrs)
+            num_find = getattr(technique, 'num_find', 1)
+            self._rust_mgr.set_num_find(num_find)
+            l.debug(f"P9: Explorer technique: find={find_addrs}, avoid={len(avoid_addrs)} addrs")
 
         # Other techniques
         else:
