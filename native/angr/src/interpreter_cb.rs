@@ -1518,19 +1518,29 @@ impl<'a> CallbackInterpreter<'a> {
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
 
                     // Check if data is symbolic - use symbolic store callback.
-                    // Skip for likely-stack addresses to avoid expensive FFI calls.
-                    // Use SP-relative check for accuracy across architectures.
-                    let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
-                        addr_concrete >= sp_val.saturating_sub(0x200000) &&
-                        addr_concrete <= sp_val.saturating_add(0x200000)
-                    });
-                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && !is_stack {
-                        // Flush any pending concrete stores first
-                        self.flush_stores(py, callbacks)?;
-                        // Use symbolic value store to preserve expression tree
-                        callbacks
-                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
-                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    // Only for 32-bit architectures where it's needed (e.g., flareon2015_5).
+                    // 64-bit: skip entirely (too many false positives from extern addresses).
+                    let use_sym_store = if self.arch.pointer_size() == 32 {
+                        let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
+                            addr_concrete >= sp_val.saturating_sub(0x200000) &&
+                            addr_concrete <= sp_val.saturating_add(0x200000)
+                        });
+                        !is_stack
+                    } else {
+                        false  // Skip for 64-bit — too expensive
+                    };
+                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
+                        // Try symbolic store callback (preserves expression tree)
+                        let sym_ok = (|| -> Result<(), CbExecutionError> {
+                            self.flush_stores(py, callbacks)?;
+                            callbacks.call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                        })();
+                        if sym_ok.is_err() {
+                            // Fall through to concrete store on failure
+                            let data_bytes = bv_to_bytes(&data_val);
+                            self.pending_stores.push((addr_concrete, data_bytes));
+                        }
                     } else {
                         // Fast path: buffer for batch processing
                         let data_bytes = bv_to_bytes(&data_val);

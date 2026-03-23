@@ -986,10 +986,10 @@ class RustExplorationManager:
             callbacks.set_memory_load_batch(memory_load_batch)
         if hasattr(callbacks, 'set_batch_fetch_pages'):
             callbacks.set_batch_fetch_pages(batch_fetch_pages)
-        # Symbolic store callback disabled — causes errors/slowdowns.
-        # Need Rust-native symbolic memory to properly preserve expressions.
-        # if hasattr(callbacks, 'set_memory_store_symbolic_value'):
-        #     callbacks.set_memory_store_symbolic_value(memory_store_symbolic_value)
+        # Symbolic store callback — preserves expression trees for non-stack
+        # addresses. Errors are caught gracefully (fall through to concrete store).
+        if hasattr(callbacks, 'set_memory_store_symbolic_value'):
+            callbacks.set_memory_store_symbolic_value(memory_store_symbolic_value)
 
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks
