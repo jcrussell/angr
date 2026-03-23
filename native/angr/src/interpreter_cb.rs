@@ -1536,7 +1536,7 @@ impl<'a> CallbackInterpreter<'a> {
                             callbacks.call_memory_store_symbolic_value(py, addr_concrete, &data_val)
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))
                         })();
-                        if sym_ok.is_err() {
+                        if let Err(_e) = sym_ok {
                             // Fall through to concrete store on failure
                             let data_bytes = bv_to_bytes(&data_val);
                             self.pending_stores.push((addr_concrete, data_bytes));
