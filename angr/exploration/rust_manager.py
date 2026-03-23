@@ -195,7 +195,7 @@ class CallbackMemoryTracker:
                                 size = data.size() // 8 if hasattr(data, 'size') else 8
                             data_bytes = concrete_val.to_bytes(size, 'little')
 
-                        tracker._writes.append((concrete_addr, list(data_bytes)))
+                        tracker._writes.append((concrete_addr, bytes(data_bytes)))
                 except Exception as e:
                     # P18: Log tracking errors for debugging instead of silently passing
                     l.debug(f"P18: Memory tracking error at addr={addr}: {e}")
@@ -3763,7 +3763,9 @@ class RustExplorationManager:
             state_ids = self._rust_mgr.get_state_ids(stash)
             for state_id in state_ids:
                 if state_id in self._state_cache:
-                    states.append(self._state_cache[state_id])
+                    state = self._state_cache[state_id]
+                    self._restore_plugins_to_state(state, state_id)
+                    states.append(state)
 
         return states
 

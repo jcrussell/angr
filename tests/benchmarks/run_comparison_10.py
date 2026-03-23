@@ -61,7 +61,7 @@ SELECTED_EXAMPLES = [
 ]
 
 # Default angr-examples path
-DEFAULT_EXAMPLES_DIR = Path("/home/vagrant/angr-examples/examples")
+DEFAULT_EXAMPLES_DIR = Path("/home/ubuntu/repos/angr-examples/examples")
 
 
 @dataclass

@@ -423,7 +423,7 @@ impl RustExplorationManager {
             steps: 0,
             errors: Vec::new(),
             num_find: 1,
-            max_steps_per_run: 100,
+            max_steps_per_run: 5000,
             native_procedures: NativeProcedureRegistry::new(),
             calling_convention: default_cc_for_arch(arch),
             native_proc_stats: NativeProcStats::default(),
