@@ -1514,7 +1514,6 @@ impl<'a> CallbackInterpreter<'a> {
                 if let Some(addr_concrete) = addr_val.as_u64() {
                     if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {
                     }
-                    // Invalidate prefetch cache for this address
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
 
                     // Check if data is symbolic - use symbolic store callback.
