@@ -438,7 +438,7 @@ class RustExplorationManager:
 
         # Memory store callback
         def memory_store(addr: int, data: bytes):
-            state = self._get_default_state()
+            state = self._get_callback_state() or self._get_default_state()
             if state is None:
                 return
 
@@ -2743,6 +2743,9 @@ class RustExplorationManager:
 
             # Resume Rust with the forked states
             # Pass constraints as lists for each branch
+            # Get active state IDs before fork
+            ids_before = set(self._rust_mgr.get_state_ids('active'))
+
             self._rust_mgr.resume_after_symbolic_branch(
                 true_target,
                 false_target,
@@ -2750,7 +2753,19 @@ class RustExplorationManager:
                 [false_constraint],
             )
 
-            l.debug(f"Resumed after symbolic branch with 2 forked states")
+            # Cache Python states for new forked Rust states
+            ids_after = set(self._rust_mgr.get_state_ids('active'))
+            new_ids = ids_after - ids_before
+            if new_ids and state_id in self._state_cache:
+                parent_state = self._state_cache[state_id]
+                for new_id in new_ids:
+                    forked_state = parent_state.copy()
+                    self._state_cache[new_id] = forked_state
+                    # Track lineage for plugin restoration
+                    root = self._state_roots.get(state_id, state_id)
+                    self._state_roots[new_id] = root
+
+            l.debug(f"Resumed after symbolic branch with {len(new_ids)} forked states")
 
         except Exception as e:
             l.warning(f"Symbolic branch handling error: {e}")

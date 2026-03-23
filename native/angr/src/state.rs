@@ -376,6 +376,17 @@ impl RustSimState {
         &mut self.memory
     }
 
+    /// Take ownership of the memory, replacing it with an empty SymbolicMemory.
+    pub fn take_memory(&mut self) -> SymbolicMemory {
+        let endness = self.memory.endness();
+        std::mem::replace(&mut self.memory, SymbolicMemory::new(endness))
+    }
+
+    /// Replace the memory with the given SymbolicMemory.
+    pub fn replace_memory(&mut self, memory: SymbolicMemory) {
+        self.memory = memory;
+    }
+
     /// Map a memory region.
     pub fn map_memory(&mut self, addr: u64, size: u64, permissions: Permission) {
         self.memory.map(addr, size, permissions);
