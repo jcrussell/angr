@@ -785,9 +785,12 @@ impl<'a> CallbackInterpreter<'a> {
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         // Accumulate flushed stores for cross-block load forwarding.
-        for (addr, data) in self.pending_stores.drain(..) {
-            self.all_flushed_stores.insert(addr, data);
+        // Keep a copy in all_flushed_stores so loads in later blocks
+        // can find data stored in earlier blocks of the same step.
+        for (addr, data) in &self.pending_stores {
+            self.all_flushed_stores.insert(*addr, data.clone());
         }
+        self.pending_stores.clear();
         self.pending_symbolic_stores.clear();
         Ok(())
     }
