@@ -948,6 +948,8 @@ impl<'a> CallbackInterpreter<'a> {
 
         for _ in 0..max_blocks {
             // Check for hook at current PC
+            if self.pc >= 0x4005fe && self.pc <= 0x400620 {
+            }
             if self.is_hooked(self.pc) {
                 let forks = self.take_deferred_forks();
                 // Check if this is a registered SimProcedure with known args
