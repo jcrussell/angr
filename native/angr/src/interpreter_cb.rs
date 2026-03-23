@@ -1517,14 +1517,13 @@ impl<'a> CallbackInterpreter<'a> {
                     // Invalidate prefetch cache for this address
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
 
-                    // Check if data is symbolic - use symbolic store callback
-                    // Skip for stack addresses (transient) to avoid expensive FFI calls.
-                    // Stack stores use pending_symbolic_stores for same-step forwarding.
-                    let sp = self.registers.get_sp_value();
-                    let is_stack = sp.map_or(false, |sp_val| {
-                        addr_concrete >= sp_val.saturating_sub(0x100000) &&
-                        addr_concrete <= sp_val.saturating_add(0x10000)
-                    });
+                    // Check if data is symbolic - use symbolic store callback.
+                    // Skip for likely-stack addresses to avoid expensive FFI calls.
+                    let is_stack = if self.arch.pointer_size() == 64 {
+                        addr_concrete >= 0x7fff_0000_0000
+                    } else {
+                        addr_concrete >= 0x7f00_0000 || addr_concrete < 0x1000
+                    };
                     if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && !is_stack {
                         // Flush any pending concrete stores first
                         self.flush_stores(py, callbacks)?;

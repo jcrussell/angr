@@ -986,11 +986,9 @@ class RustExplorationManager:
             callbacks.set_memory_load_batch(memory_load_batch)
         if hasattr(callbacks, 'set_batch_fetch_pages'):
             callbacks.set_batch_fetch_pages(batch_fetch_pages)
-        # NOTE: symbolic store callback disabled for performance.
-        # It causes ~4x slowdown due to rustbv_to_claripy FFI overhead.
-        # The per-fork state tracking + pending_symbolic_stores handles
-        # most symbolic store forwarding. Re-enable when needed for
-        # specific binaries (e.g., flareon2015_5's hash buffer).
+        # Symbolic store callback — re-enabled with stack address filtering.
+        # Disabled for now due to persistent performance regression on ais3_crackme.
+        # TODO: Move filtering logic entirely to Rust side to avoid any Python FFI.
         # if hasattr(callbacks, 'set_memory_store_symbolic_value'):
         #     callbacks.set_memory_store_symbolic_value(memory_store_symbolic_value)
 
