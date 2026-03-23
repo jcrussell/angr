@@ -387,6 +387,16 @@ impl RustSimState {
         self.memory = memory;
     }
 
+    /// Get a reference to the register file.
+    pub fn registers(&self) -> &RegisterFile {
+        &self.registers
+    }
+
+    /// Replace the register file (including symbolic entries).
+    pub fn set_registers(&mut self, registers: RegisterFile) {
+        self.registers = registers;
+    }
+
     /// Get dirty page numbers (page_num = addr >> 12) from the memory.
     pub fn get_dirty_page_nums(&self) -> Vec<u64> {
         self.memory.get_dirty_pages()

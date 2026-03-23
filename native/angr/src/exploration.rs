@@ -2555,15 +2555,13 @@ impl RustExplorationManager {
         mut state: RustSimState,
         skip_addr: Option<u64>,
     ) -> Result<Vec<RustSimState>, StepError> {
-        // Get state information before borrowing the solver
-        let reg_bytes = state.get_registers_raw();
         let initial_pc = state.pc();
 
         // Use the state's solver context for proper constraint handling
         let solver_rc = state.solver().clone();
 
         // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, new_reg_bytes, new_pc) = {
+        let (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc) = {
             let solver_ref = solver_rc.borrow();
 
             // Create interpreter with the state's solver
@@ -2573,8 +2571,8 @@ impl RustExplorationManager {
                 self.exec_config.clone(),
             );
 
-            // Copy state to interpreter
-            interp.registers.copy_from_bytes(&reg_bytes);
+            // Copy state registers to interpreter (including symbolic values)
+            interp.registers = state.registers().fork();
             interp.set_pc(initial_pc);
 
             // Set up hooks, skipping the one we just processed (for zero-length hooks)
@@ -2624,17 +2622,17 @@ impl RustExplorationManager {
             // Get stored conditions for deferred fork handling
             let stored_conditions = interp.take_stored_conditions();
 
-            // Extract register values
-            let mut new_reg_bytes = vec![0u8; reg_bytes.len()];
-            interp.registers.copy_to_bytes(&mut new_reg_bytes);
+            // Extract register state (including symbolic values)
+            let new_registers = interp.registers.fork();
             let new_pc = interp.get_pc();
 
-            (result, deferred_forks, last_condition, stored_conditions, new_reg_bytes, new_pc)
+            (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc)
         };
         // solver_ref dropped here, solver_rc borrow released
 
         // Update state from interpreter results
-        state.set_registers_raw(&new_reg_bytes);
+        // Restore registers (including symbolic values) from interpreter
+        state.set_registers(new_registers);
         state.set_pc(new_pc);
 
         // Add to history
