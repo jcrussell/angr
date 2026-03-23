@@ -2077,6 +2077,8 @@ class RustExplorationManager:
         name = event.callback_name
         state_id = event.callback_state_id
 
+        l.debug(f"SimProcedure callback: {name} at 0x{addr:x}, state={state_id}, ret=0x{event.callback_return_addr:x}")
+
         # Track current callback state ID for symbolic memory preservation
         self._current_callback_state_id = state_id
 
@@ -2159,6 +2161,18 @@ class RustExplorationManager:
 
             # Handle successors
             all_succs = successors.all_successors
+
+            # If all_succs is empty but there are unconstrained successors
+            # (from symbolic return addresses), and we have a valid return
+            # address from Rust, fix the successor's IP and use it.
+            if not all_succs and hasattr(successors, 'unconstrained_successors'):
+                uncon = successors.unconstrained_successors
+                ret_addr_from_event = event.callback_return_addr
+                if uncon and ret_addr_from_event and ret_addr_from_event != 0:
+                    for uc_succ in uncon:
+                        uc_succ.regs._ip = ret_addr_from_event
+                        all_succs.append(uc_succ)
+                    l.debug(f"Recovered {len(uncon)} unconstrained successors with return addr 0x{ret_addr_from_event:x}")
 
             # P1 fix: Capture procedure_data from successors that use self.call()
             # When a SimProcedure uses self.call() to invoke another function,
@@ -2325,13 +2339,17 @@ class RustExplorationManager:
             tracked_writes: GAP 5 - Memory writes tracked during callback execution.
             tracked_symbolic_writes: List of (addr, ast) for symbolic memory imports.
         """
-        # Handle symbolic IP: pick first concrete solution if symbolic
+        # Handle symbolic IP: use callback_return_addr if available, else try solver
         if succ_state.regs._ip.symbolic:
-            try:
-                new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
-            except Exception:
-                # Multiple solutions or other error - pick any valid one
-                new_pc = succ_state.solver.eval(succ_state.regs._ip)
+            ret_addr = event.callback_return_addr if hasattr(event, 'callback_return_addr') else 0
+            if ret_addr and ret_addr != 0:
+                new_pc = ret_addr
+                l.debug(f"Using callback return addr 0x{ret_addr:x} for symbolic IP")
+            else:
+                try:
+                    new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
+                except Exception:
+                    new_pc = succ_state.solver.eval(succ_state.regs._ip)
         else:
             new_pc = succ_state.addr
 
@@ -3278,7 +3296,9 @@ class RustExplorationManager:
                 new_val = getattr(new_state.regs, reg_name)
 
                 if new_val.symbolic:
-                    # Symbolic register value - sync to Rust
+                    # For return registers: try symbolic sync first so Rust
+                    # can fork on conditions involving the return value.
+                    # Fall back to concrete only if symbolic sync fails.
                     if reg_name in return_regs:
                         try:
                             self._sync_symbolic_register_to_rust(reg_name, new_val)
@@ -3291,6 +3311,8 @@ class RustExplorationManager:
                                 changes.append((offset, size, bytes(data)))
                             except Exception:
                                 pass
+                    # For non-return symbolic registers: skip (handled by
+                    # RegisterFile fork in step_state_with_skip)
                 else:
                     new_concrete = new_state.solver.eval(new_val)
                     if old_val.symbolic or old_state.solver.eval(old_val) != new_concrete:

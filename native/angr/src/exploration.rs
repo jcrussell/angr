@@ -2561,7 +2561,7 @@ impl RustExplorationManager {
         let solver_rc = state.solver().clone();
 
         // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc) = {
+        let (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc, all_stores) = {
             let solver_ref = solver_rc.borrow();
 
             // Create interpreter with the state's solver
@@ -2626,7 +2626,13 @@ impl RustExplorationManager {
             let new_registers = interp.registers.fork();
             let new_pc = interp.get_pc();
 
-            (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc)
+            // Extract pending stores so they can be applied to the state's memory.
+            // This is critical for SimProcedure callbacks: the call instruction
+            // pushes the return address via pending_stores, and the callback
+            // needs to see it in the state's memory.
+            let all_stores = interp.take_all_stores();
+
+            (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc, all_stores)
         };
         // solver_ref dropped here, solver_rc borrow released
 
@@ -2634,6 +2640,23 @@ impl RustExplorationManager {
         // Restore registers (including symbolic values) from interpreter
         state.set_registers(new_registers);
         state.set_pc(new_pc);
+
+        // Apply interpreter stores to state's memory.
+        // This is critical for SimProcedure callbacks: the call instruction
+        // pushes the return address via VEX stores, which need to be visible
+        // in the state's memory for Python callbacks to work correctly.
+        if !all_stores.is_empty() {
+            for (addr, data) in &all_stores {
+                let width = (data.len() * 8) as u32;
+                let mut val: u128 = 0;
+                for (i, &b) in data.iter().enumerate() {
+                    val |= (b as u128) << (i * 8);
+                }
+                let bv = RustBV::concrete(val, width);
+                // Use automap_internal to handle stack pages that weren't pre-mapped
+                let _ = state.memory_mut().store_concrete_automap_internal(*addr, bv);
+            }
+        }
 
         // Add to history
         state.add_to_history(state.pc());
