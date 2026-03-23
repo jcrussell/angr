@@ -3870,28 +3870,61 @@ class RustExplorationManager:
             List of angr SimStates converted from Rust states.
         """
         states = []
-        try:
-            # Use export_stash which returns ExplorationStateSnapshots
-            snapshots = self._rust_mgr.export_stash(stash)
-            for snapshot in snapshots:
-                try:
-                    angr_state = self._snapshot_to_angr(snapshot)
-                    states.append(angr_state)
-                except Exception as e:
-                    l.warning(f"Failed to convert state from {stash}: {e}")
-        except Exception as e:
-            l.warning(f"export_stash failed for {stash}: {e}")
 
-        # Fallback: if no states exported, try cache
-        if not states:
-            state_ids = self._rust_mgr.get_state_ids(stash)
-            for state_id in state_ids:
-                if state_id in self._state_cache:
-                    state = self._state_cache[state_id]
-                    self._restore_plugins_to_state(state, state_id)
-                    states.append(state)
+        # First try cached Python states (have proper memory from forking)
+        state_ids = self._rust_mgr.get_state_ids(stash)
+        for state_id in state_ids:
+            if state_id in self._state_cache:
+                state = self._state_cache[state_id]
+                self._restore_plugins_to_state(state, state_id)
+                # Sync constraints from Rust solver to Python state
+                self._sync_exported_constraints(state, state_id)
+                states.append(state)
+
+        # For states not in cache, try snapshot export + constraint sync
+        cached_ids = {sid for sid in state_ids if sid in self._state_cache}
+        uncached_ids = [sid for sid in state_ids if sid not in self._state_cache]
+
+        if uncached_ids:
+            try:
+                snapshots = self._rust_mgr.export_stash(stash)
+                for snapshot in snapshots:
+                    if snapshot.state_id not in cached_ids:
+                        try:
+                            angr_state = self._snapshot_to_angr(snapshot)
+                            self._sync_exported_constraints(angr_state, snapshot.state_id)
+                            states.append(angr_state)
+                        except Exception as e:
+                            l.warning(f"Failed to convert state from {stash}: {e}")
+            except Exception as e:
+                l.warning(f"export_stash failed for {stash}: {e}")
 
         return states
+
+    def _sync_exported_constraints(self, state, state_id):
+        """Sync constraints from Rust solver to Python state."""
+        try:
+            rust_constraints = self._rust_mgr.export_state_constraints(state_id)
+            synced = 0
+            for c in rust_constraints:
+                if c is None:
+                    continue
+                try:
+                    # Check if it's a Bool (from CmpEQ/CmpNE) or BV1
+                    if hasattr(c, 'op'):
+                        if getattr(c, 'length', None) is None:
+                            # It's a Bool — add directly
+                            state.solver.add(c)
+                        else:
+                            # It's a BV — assert != 0
+                            state.solver.add(c != 0)
+                        synced += 1
+                except Exception:
+                    pass
+            if synced:
+                l.debug(f"Synced {synced}/{len(rust_constraints)} constraints to state {state_id}")
+        except Exception as e:
+            l.debug(f"Could not sync constraints for state {state_id}: {e}")
 
     # =========================================================================
     # State Conversion Methods

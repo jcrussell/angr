@@ -214,6 +214,8 @@ impl SymContext {
     pub fn assume_true(&self, cond: &RustBV) {
         use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
+        // Track for export to Python
+        self.assumed_constraints.lock().push((cond.clone(), true));
         let ast = cond.to_z3_ast();
         let one = z3::ast::BV::from_u64(1, 1);
         let constraint = ast._eq(&one);
@@ -225,6 +227,8 @@ impl SymContext {
     pub fn assume_false(&self, cond: &RustBV) {
         use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
+        // Track for export to Python
+        self.assumed_constraints.lock().push((cond.clone(), false));
         let ast = cond.to_z3_ast();
         let zero = z3::ast::BV::from_u64(0, 1);
         let constraint = ast._eq(&zero);

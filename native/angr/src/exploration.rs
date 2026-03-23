@@ -1957,6 +1957,35 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Export constraints from a state in any stash as claripy ASTs.
+    pub fn export_state_constraints(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Vec<PyObject>> {
+        let claripy = py.import("claripy")?;
+        for stash in self.stashes.values() {
+            for state in stash.iter() {
+                if state.state_id() == state_id {
+                    let solver_ref = state.solver();
+                    let ctx = solver_ref.borrow();
+                    let assumed = ctx.get_assumed_constraints();
+                    let mut results = Vec::new();
+                    for (bv, _is_true) in &assumed {
+                        // Export the raw RustBV as claripy AST.
+                        // Python side will wrap as constraint.
+                        match rustbv_to_claripy(py, bv, claripy.as_any()) {
+                            Ok(ast) => results.push(ast),
+                            Err(_) => {}
+                        }
+                    }
+                    return Ok(results);
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Get the number of constraints in the pending state's solver.
     pub fn pending_constraint_count(&self) -> PyResult<usize> {
         if let Some(ref pending) = self.pending_callback {
