@@ -302,7 +302,7 @@ class RustExplorationManager:
         self._state_cache: Dict[int, "angr.SimState"] = {}
 
         # Maximum state cache size before cleanup
-        self._max_state_cache_size = 100
+        self._max_state_cache_size = 500
 
         # Track claripy AST handles for constraint sync
         # Maps handle_id -> claripy AST
@@ -4326,28 +4326,36 @@ class RustExplorationManager:
 
         # Explorer: Extract find/avoid addresses
         elif tech_name == 'Explorer':
-            # The Explorer technique stores find/avoid as lambdas or addresses.
-            # Extract static addresses from _extra_stop_points or find/avoid attrs.
             find_addrs = []
             avoid_addrs = []
+            find_func = getattr(technique, 'find', None)
+            avoid_func = getattr(technique, 'avoid', None)
 
-            # Try to extract find addresses
-            find = getattr(technique, 'find', None)
-            if find is not None:
-                if callable(find):
-                    self._rust_mgr.set_find_needs_python(True)
-                    self._find_predicate = find
-                else:
-                    find_addrs = self._extract_addrs(find)
+            # Extract addresses from _extra_stop_points by testing each
+            # against the find/avoid lambdas with a mock state
+            stop_points = getattr(technique, '_extra_stop_points', set())
+            if stop_points and callable(find_func) and callable(avoid_func):
+                class _MockState:
+                    def __init__(self, addr):
+                        self.addr = addr
+                        self._ip = addr
+                        self.regs = type('regs', (), {'ip': addr})()
+                    def block(self, *a, **kw):
+                        return type('block', (), {'size': 1})()
 
-            # Try to extract avoid addresses
-            avoid = getattr(technique, 'avoid', None)
-            if avoid is not None:
-                if callable(avoid):
-                    self._rust_mgr.set_avoid_needs_python(True)
-                    self._avoid_predicate = avoid
-                else:
-                    avoid_addrs = self._extract_addrs(avoid)
+                for addr in stop_points:
+                    mock = _MockState(addr)
+                    try:
+                        if find_func(mock):
+                            find_addrs.append(addr)
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        if avoid_func(mock):
+                            avoid_addrs.append(addr)
+                    except Exception:
+                        pass
 
             if find_addrs:
                 self._rust_mgr.set_find_addrs(find_addrs)
@@ -4355,7 +4363,8 @@ class RustExplorationManager:
                 self._rust_mgr.set_avoid_addrs(avoid_addrs)
             num_find = getattr(technique, 'num_find', 1)
             self._rust_mgr.set_num_find(num_find)
-            l.debug(f"P9: Explorer technique: find={find_addrs}, avoid={len(avoid_addrs)} addrs")
+            l.debug(f"P9: Explorer technique: find={[hex(a) for a in find_addrs]}, "
+                    f"avoid={len(avoid_addrs)} addrs")
 
         # Other techniques
         else:
