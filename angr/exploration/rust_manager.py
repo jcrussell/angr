@@ -3919,7 +3919,6 @@ class RustExplorationManager:
             if state_id in self._state_cache:
                 state = self._state_cache[state_id]
                 self._restore_plugins_to_state(state, state_id)
-                # Sync constraints from Rust solver to Python state
                 self._sync_exported_constraints(state, state_id)
                 states.append(state)
 
@@ -3970,27 +3969,37 @@ class RustExplorationManager:
         return states
 
     def _sync_exported_constraints(self, state, state_id):
-        """Sync constraints from Rust solver to Python state."""
+        """Sync constraints from Rust solver to Python state.
+
+        Skips constraints on register variables (reg_*) that might conflict
+        with Python's concretized register values.
+        """
         try:
             rust_constraints = self._rust_mgr.export_state_constraints(state_id)
             synced = 0
+            skipped = 0
             for c in rust_constraints:
                 if c is None:
                     continue
                 try:
-                    # Check if it's a Bool (from CmpEQ/CmpNE) or BV1
+                    # Skip register-related constraints (e.g., reg_ebp_0_32 == 0x80003)
+                    # These conflict with Python's concretized register values
+                    c_str = str(c)
+                    if 'reg_' in c_str:
+                        skipped += 1
+                        continue
+
                     if hasattr(c, 'op'):
                         if getattr(c, 'length', None) is None:
-                            # It's a Bool — add directly
                             state.solver.add(c)
                         else:
-                            # It's a BV — assert != 0
                             state.solver.add(c != 0)
                         synced += 1
                 except Exception:
                     pass
-            if synced:
-                l.debug(f"Synced {synced}/{len(rust_constraints)} constraints to state {state_id}")
+            if synced or skipped:
+                l.debug(f"Synced {synced} constraints to state {state_id} "
+                        f"({skipped} register constraints skipped)")
         except Exception as e:
             l.debug(f"Could not sync constraints for state {state_id}: {e}")
 
