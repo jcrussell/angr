@@ -2218,11 +2218,10 @@ class RustExplorationManager:
                 # Only deadend if the procedure has NO continuations
                 # (__libc_start_main has NO_RET but uses self.call() for continuations)
                 proc_no_ret = getattr(proc, 'NO_RET', False) if proc else False
-                has_continuation = any(
-                    getattr(getattr(s.callstack, 'top', None), 'procedure_data', None) is not None
-                    for s in all_succs
-                ) if all_succs else False
-                if proc_no_ret and not has_continuation and name not in ('__libc_start_main',):
+                # Only deadend for explicit termination procedures.
+                # Exclude internal angr procedures that have NO_RET for other reasons.
+                no_ret_names = {'exit', '_exit', 'abort', '__stack_chk_fail'}
+                if proc_no_ret and name in no_ret_names:
                     # Deadend the state by resuming at address 0
                     l.debug(f"No-return procedure {name} with successors — deadending")
                     self._rust_mgr.resume_after_simprocedure(0, None, None)
@@ -2333,10 +2332,9 @@ class RustExplorationManager:
         # Handle symbolic IP: pick first concrete solution if symbolic
         if succ_state.regs._ip.symbolic:
             try:
-                # Try to get one concrete value for the symbolic IP
                 new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
-            except claripy.errors.ClaripyError:
-                # Multiple solutions - pick any valid one
+            except Exception:
+                # Multiple solutions or other error - pick any valid one
                 new_pc = succ_state.solver.eval(succ_state.regs._ip)
         else:
             new_pc = succ_state.addr
