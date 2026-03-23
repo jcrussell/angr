@@ -961,18 +961,59 @@ pub fn rustbv_to_claripy(
                 let a1 = args[1].bind(py);
                 let w0: Option<u32> = a0.getattr("length").ok().and_then(|l| l.extract().ok());
                 let w1: Option<u32> = a1.getattr("length").ok().and_then(|l| l.extract().ok());
-                if let (Some(w0), Some(w1)) = (w0, w1) {
-                    if w0 != w1 {
-                        // Width mismatch — zero-extend the narrower one
-                        if w0 < w1 {
-                            let extended = claripy_mod.call_method1("ZeroExt", (w1 - w0, &args[0]))?;
-                            vec![extended.unbind(), args[1].clone()]
-                        } else {
-                            let extended = claripy_mod.call_method1("ZeroExt", (w0 - w1, &args[1]))?;
-                            vec![args[0].clone(), extended.unbind()]
-                        }
+                // Handle Bool/BV mismatch: convert Bool to BV(1)
+                let (w0, w1) = match (w0, w1) {
+                    (None, Some(w)) => {
+                        // arg0 is Bool, arg1 is BV — convert Bool to BV(1)
+                        let bv = claripy_mod.call_method1("If", (
+                            &args[0],
+                            claripy_mod.call_method1("BVV", (1i32, w))?,
+                            claripy_mod.call_method1("BVV", (0i32, w))?,
+                        ))?;
+                        return {
+                            // Redo the operation with the converted operand
+                            let args_fixed = vec![bv.unbind(), args[1].clone()];
+                            // Fall through to the match op block below
+                            // by replacing args
+                            match op {
+                                BVOp::And => args_fixed[0].bind(py).call_method1("__and__", (&args_fixed[1],)).map(|o| o.into()),
+                                BVOp::Or => args_fixed[0].bind(py).call_method1("__or__", (&args_fixed[1],)).map(|o| o.into()),
+                                BVOp::Xor => args_fixed[0].bind(py).call_method1("__xor__", (&args_fixed[1],)).map(|o| o.into()),
+                                _ => {
+                                    // For other ops, just use the converted args
+                                    let a = args_fixed[0].bind(py);
+                                    a.call_method1("__add__", (&args_fixed[1],)).map(|o| o.into())
+                                }
+                            }
+                        };
+                    }
+                    (Some(w), None) => {
+                        // arg0 is BV, arg1 is Bool
+                        let bv = claripy_mod.call_method1("If", (
+                            &args[1],
+                            claripy_mod.call_method1("BVV", (1i32, w))?,
+                            claripy_mod.call_method1("BVV", (0i32, w))?,
+                        ))?;
+                        return {
+                            let args_fixed = vec![args[0].clone(), bv.unbind()];
+                            match op {
+                                BVOp::And => args_fixed[0].bind(py).call_method1("__and__", (&args_fixed[1],)).map(|o| o.into()),
+                                BVOp::Or => args_fixed[0].bind(py).call_method1("__or__", (&args_fixed[1],)).map(|o| o.into()),
+                                BVOp::Xor => args_fixed[0].bind(py).call_method1("__xor__", (&args_fixed[1],)).map(|o| o.into()),
+                                _ => args_fixed[0].bind(py).call_method1("__add__", (&args_fixed[1],)).map(|o| o.into()),
+                            }
+                        };
+                    }
+                    (Some(a), Some(b)) => (a, b),
+                    (None, None) => { return Ok(args[0].clone()); }  // Both Bool — just return first
+                };
+                if w0 != w1 {
+                    if w0 < w1 {
+                        let extended = claripy_mod.call_method1("ZeroExt", (w1 - w0, &args[0]))?;
+                        vec![extended.unbind(), args[1].clone()]
                     } else {
-                        args
+                        let extended = claripy_mod.call_method1("ZeroExt", (w0 - w1, &args[1]))?;
+                        vec![args[0].clone(), extended.unbind()]
                     }
                 } else {
                     args
