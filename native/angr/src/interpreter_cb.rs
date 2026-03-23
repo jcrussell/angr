@@ -1512,6 +1512,8 @@ impl<'a> CallbackInterpreter<'a> {
 
                 // Store via callback - handle symbolic addresses
                 if let Some(addr_concrete) = addr_val.as_u64() {
+                    if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {
+                    }
                     // Invalidate prefetch cache for this address
                     self.load_prefetch_cache.remove(&(addr_concrete, data_size));
 
@@ -2368,9 +2370,9 @@ impl<'a> CallbackInterpreter<'a> {
                     // Symbolic address - try to concretize
                     match self.concretizer.concretize(&addr_val, self.ctx) {
                         ConcretizationResult::Single(addr_concrete) => {
-                            // Track concretization constraint for Python sync
+                            if self.arch.pointer_size() == 32 && addr_concrete >= 0x400000 && addr_concrete < 0x420000 {
+                            }
                             self.track_concretization_constraint(&addr_val, addr_concrete);
-                            // Check cached concrete memory first
                             if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
                                 return Ok(bytes_to_bv(data, (size * 8) as u32));
                             }
