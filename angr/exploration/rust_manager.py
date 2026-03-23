@@ -974,6 +974,30 @@ class RustExplorationManager:
 
             return results
 
+        # Symbolic value store callback — preserves symbolic expressions in Python memory
+        def memory_store_symbolic_value(addr: int, ast):
+            """Store a symbolic value (claripy AST) to Python state memory."""
+            state = self._get_callback_state()
+            if state is None:
+                sid = getattr(self, '_current_stepping_state_id', None)
+                if sid is not None and sid in self._state_cache:
+                    state = self._state_cache[sid]
+                else:
+                    state = self._get_default_state()
+            if state is None or ast is None:
+                return
+            try:
+                if hasattr(ast, 'length') and ast.length:
+                    size = ast.length // 8
+                    state.memory.store(addr, ast, endness=state.arch.memory_endness,
+                                       inspect=False, disable_actions=True)
+                    self._register_handle(id(ast), ast, addr=addr, size=size)
+                    l.debug(f"Symbolic store at 0x{addr:x}: {str(ast)[:60]}")
+                else:
+                    l.debug(f"Symbolic store at 0x{addr:x}: no length, skipping")
+            except Exception as e:
+                l.debug(f"Symbolic store at 0x{addr:x} failed: {e}")
+
         # Set batch callbacks if available
         if hasattr(callbacks, 'set_memory_store_batch'):
             callbacks.set_memory_store_batch(memory_store_batch)
@@ -981,6 +1005,8 @@ class RustExplorationManager:
             callbacks.set_memory_load_batch(memory_load_batch)
         if hasattr(callbacks, 'set_batch_fetch_pages'):
             callbacks.set_batch_fetch_pages(batch_fetch_pages)
+        if hasattr(callbacks, 'set_memory_store_symbolic_value'):
+            callbacks.set_memory_store_symbolic_value(memory_store_symbolic_value)
 
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks

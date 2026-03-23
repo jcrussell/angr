@@ -1519,6 +1519,8 @@ impl<'a> CallbackInterpreter<'a> {
 
                     // Check if data is symbolic - use symbolic store callback
                     // This preserves expression trees for proper claripy reconstruction
+                    if data_val.is_symbolic() {
+                    }
                     if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                         // Flush any pending concrete stores first
                         self.flush_stores(py, callbacks)?;
