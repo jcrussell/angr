@@ -1312,7 +1312,7 @@ class RustExplorationManager:
         # P1 fix: Check for stored procedure_data from a previous self.call()
         # This restores the full context (arguments, local vars) for continuations
         if addr_int in self._pending_procedure_data:
-            stored_data = self._pending_procedure_data.pop(addr_int)
+            stored_data = self._pending_procedure_data.get(addr_int)
             try:
                 if hasattr(state.callstack, 'top') and state.callstack.top is not None:
                     state.callstack.top.procedure_data = stored_data
