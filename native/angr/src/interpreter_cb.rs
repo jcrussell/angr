@@ -663,20 +663,25 @@ impl<'a> CallbackInterpreter<'a> {
                 // Slow path: claripy AST conversion
                 if is_claripy_ast(&ast) {
                     match claripy_to_rustbv(py, &ast, self.ctx) {
-                        Ok(bv) => return Ok(bv),
-                        Err(_e) => {
+                        Ok(bv) => {
+                            return Ok(bv);
+                        }
+                        Err(e) => {
                             // Fall back to creating a fresh symbolic value
                             // (claripy conversion can fail for complex/unsupported ops)
                         }
                     }
+                } else {
                 }
+            } else {
             }
             // Fallback: create a fresh symbolic value
-            Ok(RustBV::symbolic(
+            let bv = RustBV::symbolic(
                 self.ctx,
                 &format!("mem_{:x}_{}", addr_concrete, size),
                 (size * 8) as u32,
-            ))
+            );
+            Ok(bv)
         } else {
             // Convert bytes to concrete value
             Ok(bytes_to_bv(&data, (size * 8) as u32))
@@ -2258,6 +2263,19 @@ impl<'a> CallbackInterpreter<'a> {
                 }
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
+                    // FAST PATH 0: Check pending stores buffer
+                    // Stores within the same block are buffered in pending_stores.
+                    // We must check this buffer before falling through to Python
+                    // callbacks, which have stale state. Search in reverse order
+                    // to find the most recent store to this address.
+                    for &(store_addr, ref store_data) in self.pending_stores.iter().rev() {
+                        if store_addr <= addr_concrete && addr_concrete + size as u64 <= store_addr + store_data.len() as u64 {
+                            let offset = (addr_concrete - store_addr) as usize;
+                            let data = &store_data[offset..offset + size];
+                            return Ok(bytes_to_bv(data, (size * 8) as u32));
+                        }
+                    }
+
                     // FAST PATH 1: Check prefetch cache (batch-loaded values)
                     if let Some(prefetched) = self.load_prefetch_cache.get(&(addr_concrete, size)) {
                         return Ok(prefetched.value.clone());

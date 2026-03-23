@@ -106,10 +106,26 @@ impl RegisterFile {
 
     /// Read a register value by offset and size.
     pub fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
-        // Check for symbolic value first
+        // Check for symbolic value at this exact offset
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
                 return sym.clone();
+            }
+            // Partial read: extract low bytes from wider symbolic value
+            if sym.width() > size * 8 {
+                return sym.extract(size * 8 - 1, 0, ctx);
+            }
+        }
+
+        // Check if this offset is within a wider symbolic register
+        // E.g., reading al (offset=16, size=1) when rax (offset=16, size=8) is symbolic
+        // Already handled above. But also check for sub-register reads at higher offsets
+        // E.g., reading ah (offset=17, size=1) when rax (offset=16, size=8) is symbolic
+        for (&sym_offset, sym_val) in &self.symbolic {
+            if sym_offset < offset && offset + size <= sym_offset + sym_val.width() / 8 {
+                let bit_lo = (offset - sym_offset) * 8;
+                let bit_hi = bit_lo + size * 8 - 1;
+                return sym_val.extract(bit_hi, bit_lo, ctx);
             }
         }
 
