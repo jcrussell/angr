@@ -992,9 +992,6 @@ class RustExplorationManager:
                     state.memory.store(addr, ast, endness=state.arch.memory_endness,
                                        inspect=False, disable_actions=True)
                     self._register_handle(id(ast), ast, addr=addr, size=size)
-                    l.debug(f"Symbolic store at 0x{addr:x}: {str(ast)[:60]}")
-                else:
-                    l.debug(f"Symbolic store at 0x{addr:x}: no length, skipping")
             except Exception as e:
                 l.debug(f"Symbolic store at 0x{addr:x} failed: {e}")
 
