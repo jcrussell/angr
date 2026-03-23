@@ -836,7 +836,12 @@ fn ensure_claripy_ast(
     // Check if it's exactly a Python bool (not an int that happens to be 0 or 1)
     if type_name == "bool" {
         if let Ok(bool_val) = bound.extract::<bool>() {
-            log::debug!("ensure_claripy_ast: wrapping bool {} in BoolV", bool_val);
+            // If width hint is provided, wrap as BVV (for use in BV operations)
+            // Otherwise wrap as BoolV (for use in Bool operations)
+            if let Some(w) = width_hint {
+                let val: i64 = if bool_val { 1 } else { 0 };
+                return claripy_mod.call_method1("BVV", (val, w)).map(|o| o.into());
+            }
             return claripy_mod.call_method1("BoolV", (bool_val,)).map(|o| o.into());
         }
     }
@@ -942,14 +947,39 @@ pub fn rustbv_to_claripy(
                 .map(|operand| rustbv_to_claripy(py, operand.as_ref(), claripy_mod))
                 .collect::<Result<_, _>>()?;
 
-            // Validate all args to ensure they're claripy ASTs
-            // This handles cases where cache corruption or other issues return ints
+            // Validate all args to ensure they're claripy ASTs with correct widths
             let args: Vec<PyObject> = raw_args.iter().enumerate()
                 .map(|(i, arg)| {
                     let width = operands.get(i).map(|o| o.width());
                     ensure_claripy_ast(py, arg, claripy_mod, width)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+
+            // For binary ops, ensure operand widths match (resize if needed)
+            let args = if args.len() == 2 && !matches!(op, BVOp::Extract(_, _) | BVOp::Concat) {
+                let a0 = args[0].bind(py);
+                let a1 = args[1].bind(py);
+                let w0: Option<u32> = a0.getattr("length").ok().and_then(|l| l.extract().ok());
+                let w1: Option<u32> = a1.getattr("length").ok().and_then(|l| l.extract().ok());
+                if let (Some(w0), Some(w1)) = (w0, w1) {
+                    if w0 != w1 {
+                        // Width mismatch — zero-extend the narrower one
+                        if w0 < w1 {
+                            let extended = claripy_mod.call_method1("ZeroExt", (w1 - w0, &args[0]))?;
+                            vec![extended.unbind(), args[1].clone()]
+                        } else {
+                            let extended = claripy_mod.call_method1("ZeroExt", (w0 - w1, &args[1]))?;
+                            vec![args[0].clone(), extended.unbind()]
+                        }
+                    } else {
+                        args
+                    }
+                } else {
+                    args
+                }
+            } else {
+                args
+            };
 
             // Build the claripy expression based on the operation
             match op {
@@ -986,15 +1016,28 @@ pub fn rustbv_to_claripy(
                 // Bitwise operations
                 BVOp::And => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__and__", (&args[1],)).map(|o| o.into())
+                    let result = arg0.call_method1("__and__", (&args[1],))?;
+                    // Check for NotImplemented (width mismatch etc)
+                    if result.is_none() || result.get_type().name().map_or(false, |n| n == "NotImplementedType") {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err("__and__ returned NotImplemented"));
+                    }
+                    Ok(result.into())
                 }
                 BVOp::Or => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__or__", (&args[1],)).map(|o| o.into())
+                    let result = arg0.call_method1("__or__", (&args[1],))?;
+                    if result.is_none() || result.get_type().name().map_or(false, |n| n == "NotImplementedType") {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err("__or__ returned NotImplemented"));
+                    }
+                    Ok(result.into())
                 }
                 BVOp::Xor => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__xor__", (&args[1],)).map(|o| o.into())
+                    let result = arg0.call_method1("__xor__", (&args[1],))?;
+                    if result.is_none() || result.get_type().name().map_or(false, |n| n == "NotImplementedType") {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err("__xor__ returned NotImplemented"));
+                    }
+                    Ok(result.into())
                 }
                 BVOp::Not => {
                     let arg0 = args[0].bind(py);
