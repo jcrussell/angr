@@ -3170,22 +3170,6 @@ class RustExplorationManager:
             # the Python state's memory is stale. We sync dirty pages so
             # SimProcedures see current memory (e.g., stack variables,
             # function arguments).
-            try:
-                dirty_pages = self._rust_mgr.get_pending_dirty_pages()
-                for page_addr in dirty_pages:
-                    try:
-                        data = self._rust_mgr.pending_memory_load(page_addr, 0x1000)
-                        if data and len(data) == 0x1000:
-                            val = claripy.BVV(int.from_bytes(data, 'big'), 0x1000 * 8)
-                            state.memory.store(page_addr, val, endness='Iend_BE',
-                                               inspect=False, disable_actions=True)
-                    except Exception:
-                        pass
-                if dirty_pages:
-                    l.debug(f"Synced {len(dirty_pages)} dirty pages from Rust to callback state")
-            except Exception as e:
-                l.debug(f"Dirty page sync skipped: {e}")
-
             # CRITICAL: Fork the Rust solver context with all accumulated constraints
             # This ensures SimProcedures see the full constraint context from exploration
             try:
@@ -3200,6 +3184,23 @@ class RustExplorationManager:
                 l.warning(f"Could not fork solver context: {e}")
 
             self._sync_registers_from_rust_pending(state)
+
+            # Sync ONLY [SP] (return address) from Rust to Python.
+            # The SimProcedure's self.ret() pops from [SP] to determine
+            # where to return. Other stack data (buffers with symbolic input)
+            # must come from the Python cached state.
+            try:
+                sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
+                if sp:
+                    ptr_size = state.arch.bytes
+                    data = self._rust_mgr.pending_memory_load(sp, ptr_size)
+                    if data and len(data) == ptr_size:
+                        int_val = int.from_bytes(data, 'little')
+                        val = claripy.BVV(int_val, ptr_size * 8)
+                        state.memory.store(sp, val, endness='Iend_LE',
+                                           inspect=False, disable_actions=True)
+            except Exception:
+                pass
 
             # Restore symbolic memory regions that may have been lost during
             # Rust execution fallback. This is critical for callbacks that need

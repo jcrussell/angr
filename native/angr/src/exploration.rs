@@ -2028,6 +2028,21 @@ impl RustExplorationManager {
 
     /// Load from pending callback state's Rust memory.
     /// Used by SimProcedure callbacks to read the correct per-state memory.
+    /// Get all mapped page addresses from pending callback state's memory.
+    pub fn get_pending_mapped_pages(&self) -> PyResult<Vec<u64>> {
+        let pending = self.pending_callback.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        Ok(pending.state.memory().pages().keys().map(|&pn| pn << 12).collect())
+    }
+
+    /// Load an entire page (4096 bytes) from pending callback state's memory.
+    pub fn pending_memory_load_page(&self, page_addr: u64) -> PyResult<Vec<u8>> {
+        let pending = self.pending_callback.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        pending.state.memory().load_page_concrete(page_addr)
+            .map_err(|e| PyValueError::new_err(format!("page load failed: {}", e)))
+    }
+
     pub fn pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
         let pending = self.pending_callback.as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
