@@ -2265,9 +2265,13 @@ class RustExplorationManager:
             self._current_callback_state_id = None
             return
 
-        # Save original state for extracting changes after hook execution
-        # This is needed for no-successor hooks that modify state without creating successors
-        orig_state = state.copy()
+        # Save original state for extracting changes after SimProcedure execution.
+        # Only do the expensive copy for SimProcedures that write symbolic data
+        # to memory (read, recv, fgets, scanf). For others, use the modified state
+        # as orig_state (no memory diff needed).
+        writes_symbolic = name in ('read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
+                                    'fread', 'gets', 'getchar', 'fgetc', 'getc')
+        orig_state = state.copy() if writes_symbolic else state
 
         # GAP 2 fix: Save original constraints before hook execution
         # This allows extracting new constraints even for zero-length hooks
