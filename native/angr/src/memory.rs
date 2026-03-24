@@ -541,35 +541,54 @@ impl SymbolicMemory {
     ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
 
-        // Check if pages are mapped
+        // Check if pages are mapped (fast path for same-page stores)
         let start_page = addr >> 12;
-        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+        let end_page = (addr + size as u64 - 1) >> 12;
 
-        for page_num in start_page..end_page {
-            if !self.pages.contains_key(&page_num) {
+        if start_page == end_page {
+            if !self.pages.contains_key(&start_page) {
                 return Err(MemoryError::Unmapped {
-                    addr: page_num << 12,
+                    addr: start_page << 12,
                     size: PAGE_SIZE,
                 });
+            }
+        } else {
+            for page_num in start_page..=end_page {
+                if !self.pages.contains_key(&page_num) {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_num << 12,
+                        size: PAGE_SIZE,
+                    });
+                }
             }
         }
 
         // If symbolic, store in symbolic_objects
         if value.is_symbolic() {
             self.symbolic_objects.insert(addr, value.clone());
-            // Also mark pages as having symbolic bytes
+            // Mark pages as having symbolic bytes — batch per-page
+            let mut current_page_num = u64::MAX;
+            let mut current_page: Option<MemoryPage> = None;
             for i in 0..size {
                 let byte_addr = addr + i as u64;
                 let page_num = byte_addr >> 12;
                 let offset = (byte_addr & PAGE_MASK) as u16;
-
-                if let Some(page) = self.pages.get(&page_num) {
-                    let mut page = page.clone();
-                    page.mark_symbolic(offset, 1);
-                    self.pages.insert(page_num, page);
-                    // Mark page as dirty
-                    self.dirty_pages.insert(page_num);
+                if page_num != current_page_num {
+                    // Flush previous page
+                    if let Some(p) = current_page.take() {
+                        self.pages.insert(current_page_num, p);
+                        self.dirty_pages.insert(current_page_num);
+                    }
+                    current_page_num = page_num;
+                    current_page = self.pages.get(&page_num).cloned();
                 }
+                if let Some(ref mut p) = current_page {
+                    p.mark_symbolic(offset, 1);
+                }
+            }
+            if let Some(p) = current_page {
+                self.pages.insert(current_page_num, p);
+                self.dirty_pages.insert(current_page_num);
             }
             return Ok(());
         }
