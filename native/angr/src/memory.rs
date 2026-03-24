@@ -1662,9 +1662,6 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        let mut bytes = Vec::with_capacity(size as usize);
-        let mut has_symbolic = false;
-
         // Check for stored symbolic object first
         if let Some(sym) = self.symbolic_objects.get(&addr) {
             if sym.width() == size * 8 {
@@ -1672,28 +1669,62 @@ impl SymbolicMemory {
             }
         }
 
-        for i in 0..size {
-            let byte_addr = addr + i as u64;
-            let page_num = byte_addr >> 12;
-            let offset = (byte_addr & PAGE_MASK) as u16;
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 - 1) >> 12;
 
-            if let Some(page) = self.pages.get(&page_num) {
-                if page.is_symbolic(offset) {
-                    has_symbolic = true;
+        let mut bytes;
+        let mut has_symbolic = false;
+
+        if start_page == end_page {
+            // Fast path: single page
+            let page = match self.pages.get(&start_page) {
+                Some(p) => p,
+                None => {
+                    if self.is_in_lazy_region(start_page) {
+                        return Err(MemoryError::UnmappedPageInRegion {
+                            page_addr: start_page << 12,
+                        });
+                    } else {
+                        return Err(MemoryError::Unmapped {
+                            addr: start_page << 12,
+                            size: PAGE_SIZE,
+                        });
+                    }
                 }
-                let byte = page.load_concrete(offset, 1);
-                bytes.push(byte.get(0).copied().unwrap_or(0));
-            } else {
-                // Page not mapped - check if it's in a lazy region
-                if self.is_in_lazy_region(page_num) {
-                    return Err(MemoryError::UnmappedPageInRegion {
-                        page_addr: page_num << 12,
-                    });
+            };
+            let offset = (addr & PAGE_MASK) as u16;
+            bytes = page.load_concrete(offset, size as u16);
+            for i in 0..size as u16 {
+                if page.is_symbolic(offset + i) {
+                    has_symbolic = true;
+                    break;
+                }
+            }
+        } else {
+            // Slow path: cross-page load
+            bytes = Vec::with_capacity(size as usize);
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                let page_num = byte_addr >> 12;
+                let offset = (byte_addr & PAGE_MASK) as u16;
+
+                if let Some(page) = self.pages.get(&page_num) {
+                    if page.is_symbolic(offset) {
+                        has_symbolic = true;
+                    }
+                    let byte = page.load_concrete(offset, 1);
+                    bytes.push(byte.get(0).copied().unwrap_or(0));
                 } else {
-                    return Err(MemoryError::Unmapped {
-                        addr: byte_addr,
-                        size: 1,
-                    });
+                    if self.is_in_lazy_region(page_num) {
+                        return Err(MemoryError::UnmappedPageInRegion {
+                            page_addr: page_num << 12,
+                        });
+                    } else {
+                        return Err(MemoryError::Unmapped {
+                            addr: byte_addr,
+                            size: 1,
+                        });
+                    }
                 }
             }
         }
