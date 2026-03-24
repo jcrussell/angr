@@ -2406,20 +2406,15 @@ class RustExplorationManager:
                 succ_ip_symbolic = first_succ.regs._ip.symbolic
                 succ_addr_matches = (not succ_ip_symbolic and first_succ.addr == addr)
                 if is_zero_length_hook and succ_addr_matches:
-                    # Resume with skip_hook flag to prevent infinite loop
-                    # GAP 5: Pass tracked writes for memory sync
-                    self._resume_with_state(first_succ, state, event, skip_hook_addr=addr,
+                    self._resume_with_state(first_succ, orig_state, event, skip_hook_addr=addr,
                                            tracked_writes=tracked_writes,
                                            tracked_symbolic_writes=tracked_symbolic_writes)
                 elif succ_ip_symbolic:
-                    # Symbolic IP - let standard handling work
-                    # Fall through to normal resume without skip_hook
-                    self._resume_with_state(first_succ, state, event,
+                    self._resume_with_state(first_succ, orig_state, event,
                                            tracked_writes=tracked_writes,
                                            tracked_symbolic_writes=tracked_symbolic_writes)
                 else:
-                    # GAP 5: Pass tracked writes for memory sync
-                    self._resume_with_state(first_succ, state, event,
+                    self._resume_with_state(first_succ, orig_state, event,
                                            tracked_writes=tracked_writes,
                                            tracked_symbolic_writes=tracked_symbolic_writes)
 
@@ -3534,6 +3529,11 @@ class RustExplorationManager:
             changed = new_state.memory.changed_bytes(old_state.memory)
             if not changed:
                 return [], []
+
+            # Limit to prevent timeouts on large diffs (e.g., unconstrained fill)
+            if len(changed) > 10000:
+                l.debug(f"Too many changed bytes ({len(changed)}), truncating to 10000")
+                changed = set(sorted(changed)[:10000])
 
             # Group consecutive changed bytes into regions
             for item in self._group_changed_bytes(new_state, changed):
