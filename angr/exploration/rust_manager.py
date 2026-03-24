@@ -2228,6 +2228,8 @@ class RustExplorationManager:
         if state is None:
             l.warning(f"Could not create state for SimProcedure at 0x{addr:x}")
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
+            self._set_callback_state(None)
+            self._current_callback_state_id = None
             return
 
         # Save original state for extracting changes after hook execution
@@ -2342,6 +2344,8 @@ class RustExplorationManager:
                     # Deadend the state by resuming at address 0
                     l.debug(f"No-return procedure {name} with successors — deadending")
                     self._rust_mgr.resume_after_simprocedure(0, None, None)
+                    self._set_callback_state(None)
+                    self._current_callback_state_id = None
                     return
 
                 # First successor continues in Rust
