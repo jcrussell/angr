@@ -1511,17 +1511,8 @@ impl<'a> CallbackInterpreter<'a> {
                                     }
                                 };
 
-                                // CRITICAL: Sync symbolic stores to Python memory!
-                                // This ensures Python's memory model stays in sync with Rust
-                                // for proper constraint solving when using hooks/SimProcedures.
-                                if let Some(addr_concrete) = addr_concrete_opt {
-                                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                                        self.flush_stores(py, callbacks)?;
-                                        callbacks
-                                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
-                                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                                    }
-                                }
+                                // Rust owns memory — no need to sync stores to Python.
+                                // The symbolic data is already in Rust's SymbolicMemory.
                                 return Ok(StmtResult::Continue);
                             }
                             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
@@ -1556,15 +1547,6 @@ impl<'a> CallbackInterpreter<'a> {
                                                     }
                                                 };
 
-                                                // Sync symbolic stores to Python
-                                                if let Some(addr_concrete) = addr_concrete_opt {
-                                                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                                                        self.flush_stores(py, callbacks)?;
-                                                        callbacks
-                                                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
-                                                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                                                    }
-                                                }
                                                 return Ok(StmtResult::Continue);
                                             }
                                             Err(_e) => {
