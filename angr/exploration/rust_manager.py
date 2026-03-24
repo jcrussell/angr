@@ -1276,66 +1276,48 @@ class RustExplorationManager:
     def _sync_memory_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
         """Sync memory from angr state to Rust state.
 
-        Strategy: pre-populate ALL concrete pages from the Python state into
-        Rust's SymbolicMemory. This avoids lazy page fetches during VEX
-        execution, which are the main performance bottleneck.
+        Strategy: map pages for each loaded segment (not the entire address
+        space). Uses the Python state's memory for relocations/initialized data.
         """
         page_size = 0x1000
         pages_mapped = 0
 
-        # Map ALL pages from the loader's memory (binary code + data + relocations)
-        # This covers .text, .data, .bss, .got, .plt, extern objects, etc.
-        loader_mem = self._project.loader.memory
-        for addr in range(0, loader_mem.max_addr + page_size, page_size):
-            try:
-                data = loader_mem.load(addr, page_size)
-                if data and len(data) == page_size:
-                    rust_state.map_memory_data(addr, bytes(data), 7)
-                    pages_mapped += 1
-            except Exception:
-                pass
-
-        # Overlay Python state's memory on top (includes relocations,
-        # initialized globals, etc. that differ from the raw loader)
-        for obj in self._project.loader.all_objects:
-            if obj.binary is None:
-                continue
-            for section in obj.sections:
-                if section.memsize > 0 and section.memsize < 0x100000:
-                    try:
-                        val = angr_state.memory.load(
-                            section.min_addr, section.memsize,
-                            endness='Iend_BE', inspect=False,
-                            disable_actions=True
-                        )
-                        if not val.symbolic:
-                            data = angr_state.solver.eval(val).to_bytes(section.memsize, 'big')
-                            rust_state.map_memory_data(section.min_addr, data, 7)
-                    except Exception:
-                        pass
-
-        # Also map pages for extern objects, TLS, kernel that aren't in
-        # the loader's flat memory but are in the Python state
+        # Map pages for each loaded object's segments
         for obj in self._project.loader.all_objects:
             try:
-                for page_addr in range(obj.min_addr & ~(page_size-1),
-                                       obj.max_addr + page_size,
-                                       page_size):
+                start_page = obj.min_addr & ~(page_size - 1)
+                end_page = (obj.max_addr + page_size) & ~(page_size - 1)
+                for page_addr in range(start_page, end_page, page_size):
                     try:
-                        val = angr_state.memory.load(page_addr, page_size,
-                                                     endness='Iend_BE',
-                                                     inspect=False,
-                                                     disable_actions=True)
-                        if not val.symbolic:
-                            data = angr_state.solver.eval(val).to_bytes(page_size, 'big')
-                            rust_state.map_memory_data(page_addr, data, 7)
+                        # Use loader memory directly (fast, no Z3 eval)
+                        data = self._project.loader.memory.load(page_addr, page_size)
+                        if data and len(data) == page_size:
+                            rust_state.map_memory_data(page_addr, bytes(data), 7)
                             pages_mapped += 1
                     except Exception:
                         pass
             except Exception:
                 pass
 
-        l.debug(f"Pre-populated {pages_mapped} pages total")
+        # Overlay relocated data from Python state (GOT entries, etc.)
+        # Only do small concrete sections to avoid expensive Z3 eval
+        for obj in self._project.loader.all_objects:
+            if obj.binary is None or not hasattr(obj, 'sections'):
+                continue
+            for section in obj.sections:
+                if section.memsize > 0 and section.memsize < 0x10000:
+                    try:
+                        val = angr_state.memory.load(
+                            section.min_addr, section.memsize,
+                            endness='Iend_BE', inspect=False,
+                            disable_actions=True)
+                        if not val.symbolic:
+                            data = angr_state.solver.eval(val).to_bytes(section.memsize, 'big')
+                            rust_state.map_memory_data(section.min_addr, data, 7)
+                    except Exception:
+                        pass
+
+        l.debug(f"Pre-populated {pages_mapped} pages from loaded objects")
 
         # Add lazy regions for ALL loader objects + stack so the fetch_page
         # callback can populate any unmapped page on demand.
