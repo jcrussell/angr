@@ -357,6 +357,15 @@ class RustExplorationManager:
             if hasattr(active_states, 'solver'):  # Single SimState
                 active_states = [active_states]
             for state in active_states:
+                # Detect LAZY_SOLVES option
+                if hasattr(state, 'options'):
+                    try:
+                        from angr.sim_options import LAZY_SOLVES
+                        if LAZY_SOLVES in state.options:
+                            self._rust_mgr.set_lazy_solves(True)
+                            l.debug("Enabled lazy_solves mode from state options")
+                    except ImportError:
+                        pass
                 self._add_rust_state('active', state)
 
     def _setup_callbacks(self):
