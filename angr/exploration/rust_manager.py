@@ -2239,6 +2239,31 @@ class RustExplorationManager:
                 # First successor continues in Rust
                 first_succ = all_succs[0]
 
+                # When a SimProcedure uses self.call() (Ijk_Call jumpkind),
+                # the continuation address is in the callstack but NOT on the
+                # stack memory. Push it so the Rust engine's `ret` instruction
+                # can find it when the called function returns.
+                if first_succ.history.jumpkind == 'Ijk_Call':
+                    try:
+                        # Find continuation address from pending_procedure_data
+                        cont_addr = None
+                        for cont_a, pdata in self._pending_procedure_data.items():
+                            if cont_a != addr:  # Not the current address
+                                cont_addr = cont_a
+                                break
+                        if cont_addr is not None:
+                            sp = first_succ.solver.eval(first_succ.regs._sp)
+                            ptr_size = first_succ.arch.bytes
+                            # Push continuation address: decrement SP and store
+                            new_sp = sp - ptr_size
+                            first_succ.regs._sp = new_sp
+                            first_succ.memory.store(new_sp,
+                                claripy.BVV(cont_addr, ptr_size * 8),
+                                endness='Iend_LE')
+                            l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
+                    except Exception as e:
+                        l.debug(f"Could not push continuation addr: {e}")
+
                 # For zero-length hooks, if successor has same address as hook,
                 # the hook just modifies state and we should continue execution
                 # at the same address WITHOUT re-triggering the hook
