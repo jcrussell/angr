@@ -863,6 +863,16 @@ pub fn handle_ccall(
     args: &[RustBV],
     ret_bits: u32,
 ) -> Option<RustBV> {
+    handle_ccall_with_ctx(name, args, ret_bits, None)
+}
+
+/// Handle a CCall with optional symbolic context for symbolic condition codes.
+pub fn handle_ccall_with_ctx(
+    name: &str,
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
     // Check for x86g_calculate_condition or amd64g_calculate_condition
     if name == "amd64g_calculate_condition" || name == "x86g_calculate_condition" {
         // Args: cond, cc_op, cc_dep1, cc_dep2, cc_ndep
@@ -870,19 +880,89 @@ pub fn handle_ccall(
             return None;
         }
 
-        let cond = args[0].as_u64()?;
-        let cc_op = args[1].as_u64()?;
-        let cc_dep1 = args[2].as_u64()?;
-        let cc_dep2 = args[3].as_u64()?;
-        let cc_ndep = args[4].as_u64()?;
+        // Try concrete path first
+        if let (Some(cond), Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
+            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(),
+            args[3].as_u64(), args[4].as_u64(),
+        ) {
+            let result = if name == "amd64g_calculate_condition" {
+                amd64g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
+            } else {
+                x86g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
+            };
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
 
-        let result = if name == "amd64g_calculate_condition" {
-            amd64g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
-        } else {
-            x86g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
-        };
+        // Symbolic path: handle SUB/LOGIC with symbolic deps
+        // This enables symbolic branch detection for comparisons
+        if let (Some(cond), Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), args[1].as_u64(), ctx) {
+            let dep1 = &args[2];
+            let dep2 = &args[3];
+            let category = if name == "amd64g_calculate_condition" {
+                amd64_op_to_category(cc_op)
+            } else {
+                x86_op_to_category(cc_op)
+            };
 
-        return Some(RustBV::concrete(result as u128, ret_bits));
+            if let Some(cat) = category {
+                match cat {
+                    OpCategory::Sub => {
+                        // For SUB: ZF = (dep1 == dep2), CF = (dep1 < dep2 unsigned)
+                        use cond_type::*;
+                        let inv = (cond & 1) != 0;
+                        match cond & !1 {
+                            COND_Z => {
+                                let eq = dep1.eq(dep2, sym_ctx);
+                                let r = if inv { eq.not(sym_ctx) } else { eq };
+                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                            }
+                            COND_B => {
+                                let lt = dep1.ult(dep2, sym_ctx);
+                                let r = if inv { lt.not(sym_ctx) } else { lt };
+                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                            }
+                            COND_BE => {
+                                let le = dep1.ule(dep2, sym_ctx);
+                                let r = if inv { le.not(sym_ctx) } else { le };
+                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                            }
+                            COND_L => {
+                                let lt = dep1.slt(dep2, sym_ctx);
+                                let r = if inv { lt.not(sym_ctx) } else { lt };
+                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                            }
+                            COND_LE => {
+                                let le = dep1.sle(dep2, sym_ctx);
+                                let r = if inv { le.not(sym_ctx) } else { le };
+                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                            }
+                            _ => {}
+                        }
+                    }
+                    OpCategory::Logic => {
+                        // For LOGIC: ZF = (dep1 == 0)
+                        use cond_type::*;
+                        let inv = (cond & 1) != 0;
+                        if (cond & !1) == COND_Z {
+                            let nbits = if name == "amd64g_calculate_condition" {
+                                amd64_op_to_nbits(cc_op)
+                            } else {
+                                x86_op_to_nbits(cc_op)
+                            };
+                            if let Some(nb) = nbits {
+                                let zero = RustBV::concrete(0, nb);
+                                let eq = dep1.eq(&zero, sym_ctx);
+                                let r = if inv { eq.not(sym_ctx) } else { eq };
+                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                            }
+                        }
+                    }
+                    _ => {} // Other categories: fall through to None
+                }
+            }
+        }
+
+        return None;
     }
 
     // Check for x86g_calculate_eflags_c or amd64g_calculate_eflags_c

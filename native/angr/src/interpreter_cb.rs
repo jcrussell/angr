@@ -2605,22 +2605,31 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRExpr::Triop { op, arg1, arg2, arg3 } => {
-                // Triops are float operations with rounding mode (arg1).
-                // Evaluate args but return zero for the result (imprecise but continues execution).
-                let _ = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-                let _ = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-                let _ = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                // Triops are typically float operations with rounding mode.
+                // Return fresh symbolic if any operand is symbolic, so that
+                // branches depending on float results remain explorable.
+                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                Ok(RustBV::concrete(0, width))
+                if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() {
+                    Ok(RustBV::symbolic(self.ctx, &format!("triop_{:x}", self.pc), width))
+                } else {
+                    Ok(RustBV::concrete(0, width))
+                }
             }
 
             IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
-                let _ = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-                let _ = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-                let _ = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
-                let _ = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
+                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                Ok(RustBV::concrete(0, width))
+                if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic() {
+                    Ok(RustBV::symbolic(self.ctx, &format!("qop_{:x}", self.pc), width))
+                } else {
+                    Ok(RustBV::concrete(0, width))
+                }
             }
 
             IRExpr::CCall { cee, retty, args } => {
@@ -2629,8 +2638,29 @@ impl<'a> CallbackInterpreter<'a> {
                     arg_vals.push(self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?);
                 }
 
-                if let Some(result) = ccall::handle_ccall(&cee.name, &arg_vals, retty.bits()) {
+                if let Some(result) = ccall::handle_ccall_with_ctx(&cee.name, &arg_vals, retty.bits(), Some(self.ctx)) {
                     return Ok(result);
+                }
+
+                // For condition code CCalls with CC_OP_COPY (op=0) and symbolic
+                // deps: return symbolic. CC_OP_COPY is used for float comparisons
+                // (ucomisd/comisd) where flags are set directly from the result.
+                // For integer ops (cc_op > 0: ADD, SUB, etc.), return concrete 0
+                // to avoid state explosion.
+                let is_cond_ccall = cee.name.contains("calculate_condition")
+                    || cee.name.contains("calculate_eflags");
+                if is_cond_ccall && arg_vals.len() >= 4 {
+                    let cc_op = arg_vals[1].as_u64();
+                    let deps_symbolic = arg_vals.get(2).map_or(false, |v| v.is_symbolic())
+                        || arg_vals.get(3).map_or(false, |v| v.is_symbolic());
+                    // CC_OP_COPY = 0: flags were set directly (float comparison)
+                    if cc_op == Some(0) && deps_symbolic {
+                        return Ok(RustBV::symbolic(
+                            self.ctx,
+                            &format!("ccall_cond_{:x}", self.pc),
+                            retty.bits(),
+                        ));
+                    }
                 }
 
                 Ok(RustBV::concrete(0, retty.bits()))
