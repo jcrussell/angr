@@ -366,6 +366,13 @@ class RustExplorationManager:
                             l.debug("Enabled lazy_solves mode from state options")
                     except ImportError:
                         pass
+
+                # Hybrid init: if the state starts at a loader/init address
+                # (not in the main binary), run the init sequence in Python
+                # first. This handles C++ constructors, .init_array, etc.
+                # that the Rust engine can't execute correctly.
+                state = self._run_python_init_if_needed(state)
+
                 self._add_rust_state('active', state)
 
     def _setup_callbacks(self):
@@ -1075,6 +1082,79 @@ class RustExplorationManager:
         if procs:
             self._rust_mgr.register_simprocedures(procs)
             l.debug(f"Synced {len(procs)} dynamically created hooks")
+
+    def _run_python_init_if_needed(self, state: "angr.SimState") -> "angr.SimState":
+        """Run initialization in Python if the state starts at a loader address.
+
+        When a state starts at a loader/init address (e.g., from full_init_state),
+        the C++ init sequence (constructors, .init_array, etc.) is too complex for
+        the Rust engine. Run it in Python first, then return the state at main.
+        """
+        # Check if the state starts at a non-binary address (loader/SimProcedure)
+        main_obj = self._project.loader.main_object
+        addr = state.addr
+
+        # Only trigger for states outside ALL loaded binary objects
+        obj = self._project.loader.find_object_containing(addr)
+        if obj is not None and obj.binary is not None and not obj.binary.startswith('cle##'):
+            return state  # In a real binary, no init needed
+
+        # Also check if it's a known SimProcedure (LinuxLoader, etc.)
+        is_init_proc = addr in self._project._sim_procedures
+        if not is_init_proc:
+            return state  # Not a SimProcedure, don't pre-run
+
+        l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
+
+        try:
+            # Find main function address for target
+            main_sym = self._project.loader.find_symbol('main')
+            main_addr = main_sym.rebased_addr if main_sym else None
+
+            # Run in Python until we reach main (or any non-init binary code)
+            sm = self._project.factory.simulation_manager(state)
+            main_min = main_obj.min_addr
+            main_max = main_obj.max_addr
+
+            # Step until an active state reaches main
+            for step in range(500):  # Max 500 steps for init
+                if not sm.active:
+                    break
+
+                # Check if any active state is at main specifically
+                if main_addr is not None:
+                    at_main = [s for s in sm.active if s.addr == main_addr]
+                    if at_main:
+                        l.info(f"Python init complete: state reached main at 0x{main_addr:x} "
+                               f"after {step} steps")
+                        return at_main[0]
+
+                # If no main symbol, check for any state past init
+                # (address in main binary that's not _start or a PLT stub)
+                if main_addr is None:
+                    in_main = [s for s in sm.active
+                               if main_min <= s.addr <= main_max
+                               and s.addr != state.addr]
+                    if in_main:
+                        l.info(f"Python init complete: state at 0x{in_main[0].addr:x}")
+                        return in_main[0]
+
+                sm.step()
+
+            # If we couldn't reach main, use whatever we have
+            if sm.active:
+                best = sm.active[0]
+                l.warning(f"Python init: didn't reach main after 500 steps, "
+                          f"using state at 0x{best.addr:x}")
+                return best
+            elif sm.deadended:
+                l.warning(f"Python init: all states deadended")
+                return state
+            else:
+                return state
+        except Exception as e:
+            l.warning(f"Python init failed: {e}, using original state")
+            return state
 
     def _add_rust_state(self, stash: str, angr_state: "angr.SimState"):
         """Add an angr state to a Rust stash.
