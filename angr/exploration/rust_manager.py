@@ -3257,20 +3257,27 @@ class RustExplorationManager:
 
             self._sync_registers_from_rust_pending(state)
 
-            # Sync ONLY [SP] (return address) from Rust to Python.
-            # The SimProcedure's self.ret() pops from [SP] to determine
-            # where to return. Other stack data (buffers with symbolic input)
-            # must come from the Python cached state.
+            # Sync stack near SP from Rust to Python for SimProcedure use.
+            # [SP] has the return address (for self.ret()).
+            # [SP+4..SP+32] have function arguments (for 32-bit cdecl).
+            # Don't sync too much — large syncs overwrite symbolic buffers.
             try:
                 sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
                 if sp:
                     ptr_size = state.arch.bytes
-                    data = self._rust_mgr.pending_memory_load(sp, ptr_size)
-                    if data and len(data) == ptr_size:
-                        int_val = int.from_bytes(data, 'little')
-                        val = claripy.BVV(int_val, ptr_size * 8)
-                        state.memory.store(sp, val, endness='Iend_LE',
-                                           inspect=False, disable_actions=True)
+                    # Sync 8 stack slots: return addr + up to 7 arguments
+                    for i in range(8):
+                        addr = sp + i * ptr_size
+                        try:
+                            data = self._rust_mgr.pending_memory_load(addr, ptr_size)
+                            if data and len(data) == ptr_size:
+                                int_val = int.from_bytes(data, 'little')
+                                if int_val != 0:  # Don't overwrite with zeros
+                                    val = claripy.BVV(int_val, ptr_size * 8)
+                                    state.memory.store(addr, val, endness='Iend_LE',
+                                                       inspect=False, disable_actions=True)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
