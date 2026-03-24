@@ -1247,13 +1247,8 @@ class RustExplorationManager:
                     pages_synced += 1
                 elif page_addr < sp_page:
                     # Zero-fill symbolic stack pages BELOW SP in Python only.
-                    # Do NOT map in Rust concrete memory: VEX stores (return
-                    # addresses from call instructions) go to Python via
-                    # call_memory_store_batch. If Rust has concrete zeros,
-                    # loads hit the zeros before reaching the Python callback,
-                    # making the VEX stores invisible. By leaving these pages
-                    # unmapped in Rust, loads fall through to Python which
-                    # has the correct data.
+                    # Do NOT map in Rust: loads fall through to Python which
+                    # has both the zeros and VEX stores from previous steps.
                     zero_page = claripy.BVV(0, page_size * 8)
                     angr_state.memory.store(page_addr, zero_page, endness='Iend_BE',
                                            inspect=False, disable_actions=True)
