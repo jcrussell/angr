@@ -2393,6 +2393,12 @@ impl<'a> CallbackInterpreter<'a> {
                                     addr, unmapped_size
                                 );
                             }
+                            Err(MemoryError::SymbolicAddress { .. }) => {
+                                // Symbolic bytes not fully tracked - fall through to Python
+                                // This happens when symbolic values were imported per-byte
+                                // but the load is multi-byte, or when the symbolic import
+                                // didn't cover all bytes at this address.
+                            }
                             Err(e) => {
                                 return Err(CbExecutionError::Memory(e.to_string()));
                             }

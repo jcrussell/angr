@@ -413,11 +413,54 @@ impl SymbolicMemory {
         }
 
         if has_symbolic {
-            // Return stored symbolic object if available
+            // Return stored symbolic object if available at exact address+width
             if let Some(sym) = self.symbolic_objects.get(&addr) {
-                return Ok(sym.clone());
+                if sym.width() == size * 8 {
+                    return Ok(sym.clone());
+                }
             }
-            // Otherwise create a fresh symbolic value
+            // Try to reconstruct from per-byte symbolic objects
+            // by concatenating individual byte-level entries
+            let mut parts: Vec<RustBV> = Vec::new();
+            let mut all_found = true;
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
+                    if sym.width() == 8 {
+                        parts.push(sym.clone());
+                    } else if sym.width() > 8 {
+                        // Extract the relevant byte
+                        parts.push(sym.extract(7, 0, ctx));
+                    } else {
+                        all_found = false;
+                        break;
+                    }
+                } else {
+                    all_found = false;
+                    break;
+                }
+            }
+            if all_found && !parts.is_empty() {
+                // Concatenate bytes: first byte is at lowest address
+                // For little-endian: byte 0 is LSB, byte N is MSB
+                // Concat: MSB .. LSB  →  parts[N-1] .. parts[0]
+                let mut result = parts[parts.len() - 1].clone();
+                for i in (0..parts.len() - 1).rev() {
+                    result = result.concat(&parts[i], ctx);
+                }
+                return Ok(result);
+            }
+            // Check for wider symbolic objects that contain our range
+            for (&sym_addr, sym_val) in &self.symbolic_objects {
+                let sym_size = sym_val.width() / 8;
+                if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
+                    let offset = (addr - sym_addr) as u32;
+                    let high = (offset + size) * 8 - 1;
+                    let low = offset * 8;
+                    return Ok(sym_val.extract(high, low, ctx));
+                }
+            }
+            // Cannot reconstruct - return error for Python fallback
             return Err(MemoryError::SymbolicAddress {
                 description: "symbolic bytes not fully tracked".to_string(),
             });
