@@ -779,7 +779,31 @@ impl<'a> CallbackInterpreter<'a> {
             return Ok(());
         }
 
-        // Try batch callback first, fall back to individual stores
+        if self.use_rust_memory {
+            // When Rust owns memory, flush stores to rust_memory instead of Python.
+            // Stores already went to rust_memory in the store path (line 1435),
+            // but some code paths may still buffer stores in pending_stores.
+            if let Some(ref mut rust_mem) = self.rust_memory {
+                for (addr, data) in &self.pending_stores {
+                    let width = (data.len() * 8) as u32;
+                    let mut val: u128 = 0;
+                    for (i, &b) in data.iter().enumerate() {
+                        val |= (b as u128) << (i * 8);
+                    }
+                    let bv = RustBV::concrete(val, width);
+                    let _ = rust_mem.store_concrete_automap_internal(*addr, bv);
+                }
+            }
+            // Still accumulate for cross-block load forwarding
+            for (addr, data) in &self.pending_stores {
+                self.all_flushed_stores.insert(*addr, data.clone());
+            }
+            self.pending_stores.clear();
+            self.pending_symbolic_stores.clear();
+            return Ok(());
+        }
+
+        // Python callback path (when Rust memory is not used)
         callbacks
             .call_memory_store_batch(py, &self.pending_stores)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
@@ -791,6 +815,28 @@ impl<'a> CallbackInterpreter<'a> {
         self.pending_stores.clear();
         self.pending_symbolic_stores.clear();
         Ok(())
+    }
+
+    /// Flush all pending stores into rust_memory.
+    /// Called before extracting rust_memory back to the state.
+    pub fn flush_stores_to_rust_memory(&mut self) {
+        if let Some(ref mut rust_mem) = self.rust_memory {
+            // Flush concrete pending stores
+            for (addr, data) in self.pending_stores.drain(..) {
+                let width = (data.len() * 8) as u32;
+                let mut val: u128 = 0;
+                for (i, &b) in data.iter().enumerate() {
+                    val |= (b as u128) << (i * 8);
+                }
+                let bv = RustBV::concrete(val, width);
+                let _ = rust_mem.store_concrete_automap_internal(addr, bv);
+            }
+            // Flush symbolic pending stores
+            for (addr, bv) in self.pending_symbolic_stores.drain() {
+                rust_mem.import_symbolic_value(addr, bv, None);
+            }
+            self.all_flushed_stores.clear();
+        }
     }
 
     /// Take all stores from this step (both pending and previously flushed).

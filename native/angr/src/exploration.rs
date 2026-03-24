@@ -2571,7 +2571,7 @@ impl RustExplorationManager {
         let solver_rc = state.solver().clone();
 
         // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc) = {
+        let (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc, recovered_memory) = {
             let solver_ref = solver_rc.borrow();
 
             // Create interpreter with the state's solver
@@ -2607,21 +2607,16 @@ impl RustExplorationManager {
                 interp.add_hook(addr);
             }
 
-            // Copy binary regions for code
+            // Copy binary regions for code lifting
             for (base, data) in &self.binary_regions {
                 interp.add_concrete_memory(*base, data.clone());
             }
 
-            // Copy state's dirty memory pages so cross-step stores are visible.
-            // When VEX stores (from a previous step) are applied to the state's
-            // SymbolicMemory, they become dirty pages. Adding them as concrete
-            // memory makes them available for loads without Python callbacks.
-            for page_num in state.get_dirty_page_nums() {
-                let page_addr = page_num << 12;
-                if let Ok(data) = state.memory().load_page_concrete(page_addr) {
-                    interp.add_concrete_memory(page_addr, data);
-                }
-            }
+            // Transfer state's SymbolicMemory into the interpreter.
+            // This makes Rust the source of truth for all memory during
+            // VEX execution. Loads/stores go to SymbolicMemory directly
+            // instead of calling back to Python.
+            interp.set_rust_memory(state.take_memory());
 
             // Run until event
             let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, self.max_steps_per_run as u32);
@@ -2636,9 +2631,22 @@ impl RustExplorationManager {
             let new_registers = interp.registers.fork();
             let new_pc = interp.get_pc();
 
-            (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc)
+            // Flush any remaining pending stores to rust_memory
+            interp.flush_stores_to_rust_memory();
+
+            // Recover memory from interpreter back to state
+            let recovered_memory = interp.take_rust_memory();
+
+            (result, deferred_forks, last_condition, stored_conditions, new_registers, new_pc, recovered_memory)
         };
         // solver_ref dropped here, solver_rc borrow released
+
+        // Restore memory from interpreter back to state FIRST.
+        // This must happen before any PendingCallback creation
+        // because the state's memory was taken by set_rust_memory().
+        if let Some(mem) = recovered_memory {
+            state.replace_memory(mem);
+        }
 
         // Update state from interpreter results
         // Restore registers (including symbolic values) from interpreter
