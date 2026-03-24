@@ -2551,6 +2551,16 @@ class RustExplorationManager:
                     except Exception as e:
                         l.debug(f"Could not import tracked symbolic memory at 0x{addr:x}: {e}")
 
+        # Import symbolic memory changes that the SimProcedure wrote.
+        # Since _extract_memory_changes uses changed_bytes(orig_state) which
+        # may not detect changes (states share memory), we compare against
+        # the CACHED state instead. Use a targeted approach: only check
+        # memory regions where the SimProcedure is likely to have written
+        # (based on the callback type and arguments).
+        # For now, import from tracked_symbolic_writes and the existing
+        # symbolic_imports path. The full proxy (Phase 2.1) will fix this
+        # properly by routing SimProcedure memory access through Rust.
+
         # Extract any new constraints added during callback
         new_constraints = self._extract_new_constraints(orig_state, succ_state)
         if new_constraints:
