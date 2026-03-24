@@ -1237,15 +1237,16 @@ class RustExplorationManager:
         stack_start = stack_base - 0x11_0000
         rust_state.add_lazy_region(stack_start, 0x11_0000)
 
-        # Pre-populate stack pages near SP from the Python state.
-        # This covers argv, environment, return addresses, and saved registers.
-        # Other regions use lazy fetching via fetch_page callback.
+        # Zero-fill below-SP stack in Python for clean deadends.
+        # Do NOT pre-populate stack pages in Rust's concrete memory:
+        # VEX stores during execution go to Python only (via
+        # call_memory_store_batch). If Rust has pre-populated pages,
+        # interpreter loads find stale data before reaching Python.
+        # By leaving stack pages unmapped in Rust, all stack loads
+        # fall through to the Python callback (ground truth).
         sp_page = sp & ~(page_size - 1)
 
-        # Zero-fill below-SP stack regions in Python BEFORE the mapping loop.
-        # This makes the SP page fully concrete so it can be mapped in Rust.
-        # Below-SP pages get zero-filled so uninitialized return addresses
-        # cause clean deadends (jump to 0) instead of unconstrained states.
+        # Zero-fill below-SP portion of SP page in Python
         sp_offset = sp & (page_size - 1)
         if sp_offset > 0:
             try:
@@ -1255,23 +1256,17 @@ class RustExplorationManager:
             except Exception:
                 pass
 
+        # Zero-fill full pages below SP in Python
         pages_synced = 0
         for page_addr in range(max(stack_start, sp_page - 32 * page_size),
-                               min(stack_base, sp_page + 8 * page_size),
+                               sp_page,
                                page_size):
             try:
                 page_data = angr_state.memory.load(
                     page_addr, page_size, endness='Iend_BE',
                     inspect=False, disable_actions=True
                 )
-                if not page_data.symbolic:
-                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
-                    rust_state.map_memory_data(page_addr, concrete, 6)
-                    pages_synced += 1
-                elif page_addr < sp_page:
-                    # Zero-fill symbolic stack pages BELOW SP in Python only.
-                    # Do NOT map in Rust: loads fall through to Python which
-                    # has both the zeros and VEX stores from previous steps.
+                if page_data.symbolic:
                     zero_page = claripy.BVV(0, page_size * 8)
                     angr_state.memory.store(page_addr, zero_page, endness='Iend_BE',
                                            inspect=False, disable_actions=True)
