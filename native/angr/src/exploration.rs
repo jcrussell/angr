@@ -1263,10 +1263,9 @@ impl RustExplorationManager {
         // Add all successors (original state + forks) to stashes
         // P13: Check satisfiability for each before adding
         // Note: We split the loops to avoid double mutable borrow of self.stashes
-        let skip_sat_resume = self.lazy_solves || self.active_count() < 20;
         let mut final_successors = Vec::new();
         for successor in successors {
-            if skip_sat_resume || successor.satisfiable() {
+            if self.lazy_solves || successor.satisfiable() {
                 final_successors.push(successor);
             } else {
                 log::debug!(
@@ -1441,20 +1440,14 @@ impl RustExplorationManager {
         let mut active_states = Vec::new();
         let mut pruned_states = Vec::new();
 
-        // Skip satisfiability check when lazy_solves is set or when there
-        // are few active states (< 20). For small state counts, the cost of
-        // Z3 checks outweighs the benefit of pruning. UNSAT states will
-        // deadend naturally when they hit infeasible constraints later.
-        let skip_sat = self.lazy_solves || self.active_count() < 20;
-
-        if skip_sat || true_state.satisfiable() {
+        if self.lazy_solves || true_state.satisfiable() {
             active_states.push(true_state);
         } else {
             log::debug!("P13: True branch at 0x{:x} is UNSAT, moving to pruned stash", true_pc);
             pruned_states.push(true_state);
         }
 
-        if skip_sat || false_state.satisfiable() {
+        if self.lazy_solves || false_state.satisfiable() {
             active_states.push(false_state);
         } else {
             log::debug!("P13: False branch at 0x{:x} is UNSAT, moving to pruned stash", false_pc);
