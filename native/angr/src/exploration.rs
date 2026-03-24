@@ -1668,7 +1668,32 @@ impl RustExplorationManager {
     ///
     /// Called after a hook writes symbolic memory. Converts the claripy AST
     /// to RustBV and imports it into the pending state's SymbolicMemory.
-    #[pyo3(signature = (addr, ast))]
+    /// Import symbolic memory into a state by ID (for init-time symbolic data).
+    #[pyo3(signature = (state_id, addr, ast))]
+    pub fn import_symbolic_to_state(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        // Find the state in any stash
+        for stash in self.stashes.values_mut() {
+            for state in stash.iter_mut() {
+                if state.state_id() == state_id {
+                    let solver_ref = state.solver();
+                    let sym_ctx = solver_ref.borrow();
+                    let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
+                        .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?;
+                    drop(sym_ctx);
+                    state.memory_mut().import_symbolic_value(addr, bv, None);
+                    return Ok(());
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     pub fn import_symbolic_memory(
         &mut self,
         py: Python<'_>,

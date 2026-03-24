@@ -1213,6 +1213,19 @@ class RustExplorationManager:
                 self._symbolic_pages[actual_state_id] = symbolic_pages
                 self._cleanup_symbolic_pages_cache()  # Enforce cache limit
                 l.debug(f"Cached {len(symbolic_pages)} symbolic pages for state {actual_state_id}")
+            # Import pending symbolic values to Rust SymbolicMemory
+            if hasattr(self, '_pending_symbolic_imports') and self._pending_symbolic_imports:
+                imported = 0
+                for addr, ast in self._pending_symbolic_imports:
+                    try:
+                        self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, ast)
+                        imported += 1
+                    except Exception as e:
+                        l.debug(f"Symbolic import at 0x{addr:x} failed: {e}")
+                if imported:
+                    l.debug(f"Imported {imported} symbolic values to Rust state {actual_state_id}")
+                self._pending_symbolic_imports = []
+
             # Enforce state cache limit
             self._cleanup_state_cache()
             l.debug(f"Cached angr state with Rust state ID {actual_state_id}")
@@ -1322,6 +1335,7 @@ class RustExplorationManager:
         # Other regions use lazy fetching via fetch_page callback.
         sp_page = sp & ~(page_size - 1)
         pages_synced = 0
+        symbolic_regions = []  # (addr, claripy_ast) pairs to import
         for page_addr in range(max(stack_start, sp_page - 32 * page_size),
                                min(stack_base, sp_page + 8 * page_size),
                                page_size):
@@ -1330,14 +1344,53 @@ class RustExplorationManager:
                     page_addr, page_size, endness='Iend_BE',
                     inspect=False, disable_actions=True
                 )
-                if not page_data.symbolic:
-                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
-                    rust_state.map_memory_data(page_addr, concrete, 6)
-                    pages_synced += 1
+                # Map concrete representation of the page
+                concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
+                rust_state.map_memory_data(page_addr, concrete, 6)
+                pages_synced += 1
+
+                # Track MEANINGFUL symbolic regions for import.
+                # Only import from pages ABOVE SP (argv/environ area),
+                # not below SP (unconstrained fill from entry_state).
+                if page_data.symbolic and page_addr >= sp_page:
+                    self._extract_symbolic_regions(
+                        angr_state, page_addr, page_size,
+                        arch.bytes, symbolic_regions)
             except Exception:
                 pass
         if pages_synced:
             l.debug(f"Pre-populated {pages_synced} stack pages in Rust memory")
+
+        if symbolic_regions:
+            self._pending_symbolic_imports = symbolic_regions
+            l.debug(f"Found {len(symbolic_regions)} symbolic regions for import")
+
+    def _extract_symbolic_regions(self, angr_state, page_addr, page_size, ptr_size, out):
+        """Extract symbolic memory regions from a page for import to Rust.
+
+        Only imports BYTE-LEVEL symbolic values that contain user-defined
+        symbols (BVS with names not starting with 'mem_' or 'reg_').
+        Skips unconstrained fill variables.
+        """
+        for offset in range(0, page_size, 1):
+            addr = page_addr + offset
+            try:
+                val = angr_state.memory.load(addr, 1,
+                                             endness='Iend_BE',
+                                             inspect=False, disable_actions=True)
+                if val.symbolic:
+                    # Check if this contains a user-defined variable
+                    # (not just unconstrained fill from entry_state)
+                    leaf_names = list(val.variables)
+                    is_user_sym = any(
+                        not n.startswith('mem_') and not n.startswith('reg_')
+                        and not n.startswith('unconstrained')
+                        for n in leaf_names
+                    )
+                    if is_user_sym:
+                        out.append((addr, val))
+            except Exception:
+                pass
 
     def _concretize_stack_registers(self, state: "angr.SimState"):
         """Concretize stack registers for Rust memory mapping compatibility.
