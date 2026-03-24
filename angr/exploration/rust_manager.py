@@ -1232,6 +1232,20 @@ class RustExplorationManager:
         # This covers argv, environment, return addresses, and saved registers.
         # Other regions use lazy fetching via fetch_page callback.
         sp_page = sp & ~(page_size - 1)
+
+        # Zero-fill below-SP stack regions in Python BEFORE the mapping loop.
+        # This makes the SP page fully concrete so it can be mapped in Rust.
+        # Below-SP pages get zero-filled so uninitialized return addresses
+        # cause clean deadends (jump to 0) instead of unconstrained states.
+        sp_offset = sp & (page_size - 1)
+        if sp_offset > 0:
+            try:
+                zeros = claripy.BVV(0, sp_offset * 8)
+                angr_state.memory.store(sp_page, zeros, endness='Iend_BE',
+                                       inspect=False, disable_actions=True)
+            except Exception:
+                pass
+
         pages_synced = 0
         for page_addr in range(max(stack_start, sp_page - 32 * page_size),
                                min(stack_base, sp_page + 8 * page_size),
@@ -1253,20 +1267,6 @@ class RustExplorationManager:
                     angr_state.memory.store(page_addr, zero_page, endness='Iend_BE',
                                            inspect=False, disable_actions=True)
                     pages_synced += 1
-            except Exception:
-                pass
-
-        # Zero-fill the below-SP portion of the SP page in Python.
-        # The SP page has mixed content: concrete data above SP (argc, argv)
-        # and symbolic data below SP (uninitialized stack). We zero-fill
-        # below SP so ret through uninitialized frames gets 0 (clean deadend)
-        # instead of symbolic (unconstrained state).
-        sp_offset = sp & (page_size - 1)
-        if sp_offset > 0:
-            try:
-                zeros = claripy.BVV(0, sp_offset * 8)
-                angr_state.memory.store(sp_page, zeros, endness='Iend_BE',
-                                       inspect=False, disable_actions=True)
             except Exception:
                 pass
 
