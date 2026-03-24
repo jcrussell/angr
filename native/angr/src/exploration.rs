@@ -2612,16 +2612,15 @@ impl RustExplorationManager {
                 interp.add_concrete_memory(*base, data.clone());
             }
 
-            // Copy state's dirty memory pages so cross-step stores are visible.
-            // When VEX stores (from a previous step) are applied to the state's
-            // SymbolicMemory, they become dirty pages. Adding them as concrete
-            // memory makes them available for loads without Python callbacks.
-            for page_num in state.get_dirty_page_nums() {
-                let page_addr = page_num << 12;
-                if let Ok(data) = state.memory().load_page_concrete(page_addr) {
-                    interp.add_concrete_memory(page_addr, data);
-                }
-            }
+            // NOTE: Dirty page loading removed. Previously this copied dirty pages
+            // from the Rust state's SymbolicMemory into the interpreter's concrete
+            // memory. However, dirty pages only contain data from SimProcedure
+            // apply_changes writes - they do NOT contain VEX stores from previous
+            // steps (which go to Python only). Loading these stale dirty pages
+            // preempts the Python callback (which has the correct data including
+            // VEX stores), causing stale data bugs for stack return addresses.
+            // All data in dirty pages is also available via the Python callback,
+            // so removing this has no correctness impact.
 
             // Run until event
             let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, self.max_steps_per_run as u32);
