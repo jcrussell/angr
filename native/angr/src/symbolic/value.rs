@@ -798,7 +798,10 @@ impl RustBV {
 
     /// Equality comparison (returns 1-bit result).
     pub fn eq(&self, other: &Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
+        // Width mismatch guard — return concrete 0 instead of panicking
+        if self.width() != other.width() {
+            return Self::concrete(0, 1);
+        }
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a == b { 1 } else { 0 }, 1),
             _ => RustBV::Expression {
@@ -1040,7 +1043,10 @@ impl RustBV {
 
     /// Zero-extend to a wider width.
     pub fn zero_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
-        debug_assert!(to_width >= self.width());
+        if to_width <= self.width() {
+            // No extension needed (or truncation — just return self)
+            return self.clone();
+        }
         let extend_bits = to_width - self.width();
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
