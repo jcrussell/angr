@@ -398,6 +398,10 @@ pub struct RustExplorationManager {
     /// P9 fix: Use LIFO (stack) state selection instead of FIFO (queue).
     /// When true, states are popped from the back (DFS). Default is false (BFS).
     use_lifo: bool,
+    /// When true, skip satisfiability checks on forked states (LAZY_SOLVES).
+    /// This improves performance for binaries with many branches by deferring
+    /// constraint solving until values are actually needed.
+    lazy_solves: bool,
 }
 
 #[pymethods]
@@ -446,6 +450,7 @@ impl RustExplorationManager {
             skip_hook_stack: Vec::new(),
             state_roots: HashMap::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
+            lazy_solves: false,
         })
     }
 
@@ -522,6 +527,11 @@ impl RustExplorationManager {
     /// Set maximum steps per run iteration.
     pub fn set_max_steps_per_run(&mut self, n: u32) {
         self.max_steps_per_run = n;
+    }
+
+    /// Enable lazy solves mode (skip satisfiability checks on forks).
+    pub fn set_lazy_solves(&mut self, enabled: bool) {
+        self.lazy_solves = enabled;
     }
 
     /// Set Python callbacks for memory/lifting.
@@ -1207,7 +1217,7 @@ impl RustExplorationManager {
                 // Adding callback constraints would pollute unexplored branches.
 
                 // P13: Check satisfiability before adding to successors
-                if forked.satisfiable() {
+                if self.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                     if reconstructed_condition.is_some() {
                         log::debug!(
@@ -1238,7 +1248,7 @@ impl RustExplorationManager {
                 self.state_roots.insert(forked.state_id(), root_state_id);
 
                 // P13: Still check satisfiability
-                if forked.satisfiable() {
+                if self.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
                     log::debug!(
@@ -1255,7 +1265,7 @@ impl RustExplorationManager {
         // Note: We split the loops to avoid double mutable borrow of self.stashes
         let mut final_successors = Vec::new();
         for successor in successors {
-            if successor.satisfiable() {
+            if self.lazy_solves || successor.satisfiable() {
                 final_successors.push(successor);
             } else {
                 log::debug!(
@@ -1430,14 +1440,14 @@ impl RustExplorationManager {
         let mut active_states = Vec::new();
         let mut pruned_states = Vec::new();
 
-        if true_state.satisfiable() {
+        if self.lazy_solves || true_state.satisfiable() {
             active_states.push(true_state);
         } else {
             log::debug!("P13: True branch at 0x{:x} is UNSAT, moving to pruned stash", true_pc);
             pruned_states.push(true_state);
         }
 
-        if false_state.satisfiable() {
+        if self.lazy_solves || false_state.satisfiable() {
             active_states.push(false_state);
         } else {
             log::debug!("P13: False branch at 0x{:x} is UNSAT, moving to pruned stash", false_pc);
@@ -2675,7 +2685,7 @@ impl RustExplorationManager {
                         self.state_roots.insert(forked.state_id(), root_state_id);
 
                         // P13: Check satisfiability before adding to successors
-                        if forked.satisfiable() {
+                        if self.lazy_solves || forked.satisfiable() {
                             successors.push(forked);
                         } else {
                             log::debug!(
@@ -2697,7 +2707,7 @@ impl RustExplorationManager {
                         self.state_roots.insert(forked.state_id(), root_state_id);
 
                         // P13: Still check satisfiability
-                        if forked.satisfiable() {
+                        if self.lazy_solves || forked.satisfiable() {
                             successors.push(forked);
                         } else {
                             log::debug!(
