@@ -3381,15 +3381,29 @@ class RustExplorationManager:
             return None
 
     def _sync_registers_from_rust_pending(self, state: "angr.SimState"):
-        """Sync concrete register values from Rust pending state to angr state."""
+        """Sync register values from Rust pending state to angr state.
+
+        Handles both concrete and symbolic registers. Concrete values are
+        set directly. Symbolic values are converted from Rust Z3 BVs to
+        claripy ASTs via rustbv_to_claripy, preserving symbolic identity.
+        """
         arch = self._project.arch
         reg_names = self._get_arch_register_names(arch)
 
         for reg_name in reg_names:
             try:
+                # Try concrete first (fast path)
                 val = self._rust_mgr.get_pending_register(reg_name)
                 if val is not None:
                     setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
+                else:
+                    # Register is symbolic — convert to claripy AST
+                    try:
+                        ast = self._rust_mgr.get_pending_register_ast(reg_name)
+                        if ast is not None:
+                            setattr(state.regs, reg_name, ast)
+                    except Exception:
+                        pass  # Skip if conversion fails
             except Exception:
                 pass
 

@@ -1572,7 +1572,7 @@ impl RustExplorationManager {
             .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {}", e)))
     }
 
-    /// Get register value from pending state.
+    /// Get register value from pending state (concrete only).
     pub fn get_pending_register(&self, name: &str) -> PyResult<Option<u128>> {
         if let Some(ref pending) = self.pending_callback {
             pending.state.get_register(name)
@@ -1581,6 +1581,17 @@ impl RustExplorationManager {
         } else {
             Err(PyRuntimeError::new_err("no pending callback state"))
         }
+    }
+
+    /// Get register as claripy AST from pending state (handles symbolic).
+    pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+        let pending = self.pending_callback.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        let bv = pending.state.get_register(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+        let claripy = py.import("claripy")?;
+        rustbv_to_claripy(py, &bv, claripy.as_any())
+            .map_err(|e| PyRuntimeError::new_err(format!("register conversion: {}", e)))
     }
 
     /// Get history (BBL addresses) from pending callback state.
