@@ -8,11 +8,11 @@ Python init → Rust SymbolicMemory → VEX execution → Python callbacks for e
 
 - **Init**: Python state pages + symbolic values imported to Rust SymbolicMemory
 - **Execute**: VEX loads/stores go directly to Rust (no Python FFI for memory)
-- **Callback**: SimProcedures get [SP] + 8 args synced from Rust, plus Python cached state
+- **Callback**: Stack synced from Rust + symbolic registers converted to claripy ASTs
 - **Fork**: Rust CoW SymbolicMemory fork (O(1))
 - **Export**: Found states use Python cached state with Rust constraints
 
-## Passing Examples (8)
+## Passing Examples (11)
 
 | Example | Time | Output |
 |---------|------|--------|
@@ -24,12 +24,27 @@ Python init → Rust SymbolicMemory → VEX execution → Python callbacks for e
 | crackme0x01 | 1.3s | 5274 |
 | crackme0x02 | 1.3s | 338724 |
 | crackme0x03 | 1.2s | 338724 |
+| asisctffinals2015_fake | 0.9s | correct |
+| sharif7_rev50 | 1.0s | correct |
+| hitcon2017_sakura | 1.6s | correct |
 
 ## Performance Profile
 
 - 94% time in Rust VEX+Z3 interpreter
 - 6% time in Python callbacks
 - Python boundary is NOT the bottleneck
+- Concrete VEX execution: ~0.06ms/block (3.2s for 50K blocks)
+
+## Key Commits (29 total)
+
+- Phase 1: Wire Rust memory into interpreter (fauxware)
+- Phase 2: Symbolic value import + SimProcedure memory sync (ais3)
+- Phase 3: State export (ekoparty)
+- Phase 4-6: Testing, optimization, per-example diagnosis
+- Phase 7: Memory proxy attempt (reverted — needs MemoryMixin)
+- Symbolic register sync via rustbv_to_claripy
+- Sat check on found states
+- load_concrete/store_concrete single-page optimization
 
 ## Build & Test
 
@@ -38,19 +53,39 @@ export PATH="$HOME/.cargo/bin:$PATH"
 cargo build --release
 cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so
 
-# Quick test:
+# Quick regression (8 examples, ~30s):
 python -c "
-import angr; from angr.exploration import RustExplorationManager
-p = angr.Project('path/to/fauxware', auto_load_libs=False)
-m = RustExplorationManager(p, [p.factory.entry_state()])
-m.explore(find=0x4006ed, avoid=0x40073d)
-print('PASS' if m.found else 'FAIL')
+import angr, claripy; from angr.exploration import RustExplorationManager
+tests = [
+    ('fauxware', 'fauxware/fauxware', None, 0x4006ed, 0x40073d),
+    ('ais3', 'ais3_crackme/ais3_crackme', ['./c', claripy.BVS('a',800)], 0x400602, None),
+    ('crackme0x01', 'CSCI-4968-MBE/challenges/crackme0x01/crackme0x01', None, 0x0804844e, 0x08048434),
+]
+base = '/home/ubuntu/repos/angr-examples/examples/'
+for name, path, args, find, avoid in tests:
+    p = angr.Project(base+path, auto_load_libs=False)
+    s = p.factory.entry_state(args=args) if args else p.factory.entry_state()
+    m = RustExplorationManager(p, [s])
+    m.explore(find=find, avoid=avoid, max_steps=5000)
+    assert m.found, f'{name} failed'
+print('ALL PASS')
 "
 ```
 
-## Next Steps (Rust-side engineering)
+## Remaining Work
 
-1. **Concrete execution fast-path**: skip Z3 for all-concrete VEX blocks
-2. **Z3 result caching**: cache solver results for repeated constraint patterns
-3. **Unicorn integration**: hardware-accelerated concrete execution
-4. **Incremental solving**: reuse Z3 solver state across steps
+### Performance (Rust-side)
+- Concrete fast-path: unicorn or native execution for all-concrete blocks
+- Z3 caching: reuse solver results for repeated constraint patterns
+- Incremental solving: reuse Z3 state across steps
+
+### Correctness
+- Dual-solver constraint propagation (Rust Z3 vs Python claripy)
+- Full memory proxy (MemoryMixin, not monkey-patch)
+- Windows PE support (different init sequence)
+- ARM architecture support
+
+### Features
+- Callable find/avoid predicates
+- Custom ExplorationTechniques with filter()
+- SimFile support for file-based symbolic input
