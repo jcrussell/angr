@@ -816,10 +816,20 @@ impl RustExplorationManager {
 
             // Check find addresses (address-based, only when NOT using callable predicate)
             if self.find_addrs.contains(&pc) {
-                self.stashes
-                    .entry("found".to_string())
-                    .or_insert_with(VecDeque::new)
-                    .push_back(state);
+                // Only add to found if the state is satisfiable
+                // (UNSAT states reached the address via infeasible paths)
+                if self.lazy_solves || state.satisfiable() {
+                    self.stashes
+                        .entry("found".to_string())
+                        .or_insert_with(VecDeque::new)
+                        .push_back(state);
+                } else {
+                    log::debug!("State at find address 0x{:x} is UNSAT, pruning", pc);
+                    self.stashes
+                        .entry("pruned".to_string())
+                        .or_insert_with(VecDeque::new)
+                        .push_back(state);
+                }
                 continue;
             }
 
@@ -971,10 +981,17 @@ impl RustExplorationManager {
                     };
                     if let Some(addr) = callback_addr {
                         if self.find_addrs.contains(&addr) {
-                            // State reached a find address — move to found stash
-                            self.stashes.entry("found".to_string())
-                                .or_insert_with(VecDeque::new)
-                                .push_back(pending.state);
+                            // State reached a find address — check sat before adding
+                            if self.lazy_solves || pending.state.satisfiable() {
+                                self.stashes.entry("found".to_string())
+                                    .or_insert_with(VecDeque::new)
+                                    .push_back(pending.state);
+                            } else {
+                                log::debug!("State at find address 0x{:x} is UNSAT, pruning", addr);
+                                self.stashes.entry("pruned".to_string())
+                                    .or_insert_with(VecDeque::new)
+                                    .push_back(pending.state);
+                            }
                             continue;
                         }
                         if self.avoid_addrs.contains(&addr) {
