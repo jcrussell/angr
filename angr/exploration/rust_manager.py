@@ -1111,13 +1111,20 @@ class RustExplorationManager:
             main_sym = self._project.loader.find_symbol('main')
             main_addr = main_sym.rebased_addr if main_sym else None
 
-            # Run in Python until we reach main (or any non-init binary code)
+            # Known init addresses to skip past (not main)
+            entry = self._project.entry
+            init_addrs = {entry}
+            # Also skip PLT stubs and known init functions
+            for obj in self._project.loader.all_objects:
+                if hasattr(obj, 'entry') and obj.entry:
+                    init_addrs.add(obj.entry)
+
+            # Run in Python until we reach main
             sm = self._project.factory.simulation_manager(state)
             main_min = main_obj.min_addr
             main_max = main_obj.max_addr
 
-            # Step until an active state reaches main
-            for step in range(500):  # Max 500 steps for init
+            for step in range(500):
                 if not sm.active:
                     break
 
@@ -1129,14 +1136,19 @@ class RustExplorationManager:
                                f"after {step} steps")
                         return at_main[0]
 
-                # If no main symbol, check for any state past init
-                # (address in main binary that's not _start or a PLT stub)
-                if main_addr is None:
+                # If no main symbol, look for states that are:
+                # 1. In the main binary
+                # 2. NOT at _start or entry point
+                # 3. NOT at a SimProcedure address
+                # 4. Past the first few steps (skip _start prologue)
+                if main_addr is None and step > 10:
                     in_main = [s for s in sm.active
                                if main_min <= s.addr <= main_max
-                               and s.addr != state.addr]
+                               and s.addr not in init_addrs
+                               and s.addr not in self._project._sim_procedures]
                     if in_main:
-                        l.info(f"Python init complete: state at 0x{in_main[0].addr:x}")
+                        l.info(f"Python init complete: state at 0x{in_main[0].addr:x} "
+                               f"after {step} steps")
                         return in_main[0]
 
                 sm.step()
