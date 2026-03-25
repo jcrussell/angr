@@ -3269,29 +3269,10 @@ class RustExplorationManager:
 
             self._sync_registers_from_rust_pending(state)
 
-            # Sync stack near SP from Rust to Python for SimProcedure use.
-            # [SP] has the return address (for self.ret()).
-            # [SP+4..SP+32] have function arguments (for 32-bit cdecl).
-            # Don't sync too much — large syncs overwrite symbolic buffers.
-            try:
-                sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
-                if sp:
-                    ptr_size = state.arch.bytes
-                    # Sync 8 stack slots: return addr + up to 7 arguments
-                    for i in range(8):
-                        addr = sp + i * ptr_size
-                        try:
-                            data = self._rust_mgr.pending_memory_load(addr, ptr_size)
-                            if data and len(data) == ptr_size:
-                                int_val = int.from_bytes(data, 'little')
-                                if int_val != 0:  # Don't overwrite with zeros
-                                    val = claripy.BVV(int_val, ptr_size * 8)
-                                    state.memory.store(addr, val, endness='Iend_LE',
-                                                       inspect=False, disable_actions=True)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+            # Install memory proxy: wrap state.memory.load to check Rust
+            # memory first for addresses that the Python state doesn't have
+            # (stack frames created during VEX execution).
+            self._install_rust_memory_proxy(state)
 
             # Restore symbolic memory regions that may have been lost during
             # Rust execution fallback. This is critical for callbacks that need
@@ -3780,6 +3761,32 @@ class RustExplorationManager:
         except Exception as e:
             l.debug(f"Error extracting symbolic pages: {e}")
         return symbolic_regions
+
+    def _install_rust_memory_proxy(self, state: "angr.SimState"):
+        """Sync stack data from Rust to Python callback state.
+
+        Syncs 8 pointer-sized slots from [SP] to cover return address
+        and function arguments (cdecl). Uses Rust as source of truth
+        for stack data modified during VEX execution.
+        """
+        try:
+            sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
+            if sp:
+                ptr_size = state.arch.bytes
+                for i in range(8):
+                    addr = sp + i * ptr_size
+                    try:
+                        data = self._rust_mgr.pending_memory_load(addr, ptr_size)
+                        if data and len(data) == ptr_size:
+                            int_val = int.from_bytes(data, 'little')
+                            if int_val != 0:
+                                val = claripy.BVV(int_val, ptr_size * 8)
+                                state.memory.store(addr, val, endness='Iend_LE',
+                                                   inspect=False, disable_actions=True)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def _restore_symbolic_pages(self, state: "angr.SimState", state_id: int):
         """Restore symbolic memory regions to an angr state.
