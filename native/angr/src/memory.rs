@@ -1779,6 +1779,17 @@ impl SymbolicMemory {
                 }
             }
 
+            // Try to extract from a wider symbolic object that contains our range
+            for (&sym_addr, sym_val) in &self.symbolic_objects {
+                let sym_size = sym_val.width() / 8;
+                if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
+                    let byte_offset = (addr - sym_addr) as u32;
+                    let high = (byte_offset + size) * 8 - 1;
+                    let low = byte_offset * 8;
+                    return Ok(sym_val.extract(high, low, ctx));
+                }
+            }
+
             // Cannot reconstruct - return error for Python fallback
             return Err(MemoryError::SymbolicAddress {
                 description: "symbolic bytes not fully tracked".to_string(),

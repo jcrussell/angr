@@ -980,25 +980,65 @@ impl RustExplorationManager {
                         _ => None,
                     };
                     if let Some(addr) = callback_addr {
-                        if self.find_addrs.contains(&addr) {
-                            // State reached a find address — check sat before adding
-                            if self.lazy_solves || pending.state.satisfiable() {
-                                self.stashes.entry("found".to_string())
-                                    .or_insert_with(VecDeque::new)
-                                    .push_back(pending.state);
+                        if self.find_addrs.contains(&addr) || self.avoid_addrs.contains(&addr) {
+                            let is_find = self.find_addrs.contains(&addr);
+
+                            // Process deferred forks BEFORE handling the find/avoid state.
+                            // These represent unexplored branches that diverged before
+                            // reaching the find/avoid address and must not be dropped.
+                            let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| pending.state.fork());
+                            let original_state_id = pending.state.state_id();
+                            let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+
+                            for fork in pending.deferred_forks {
+                                let condition = pending.stored_conditions.get(&fork.condition_id);
+                                let reconstructed = if condition.is_none() {
+                                    if let Some(ref py_ast) = fork.condition_ast {
+                                        Python::with_gil(|py| {
+                                            let ast = py_ast.bind(py);
+                                            let solver_ref = fork_base.solver();
+                                            let ctx: &SymContext = &*solver_ref.borrow();
+                                            claripy_to_rustbv(py, ast, ctx).ok()
+                                        })
+                                    } else { None }
+                                } else { None };
+
+                                if let Some(cond) = condition.or(reconstructed.as_ref()) {
+                                    let forked = if fork.path_taken {
+                                        let mut f = fork_base.fork_false(cond);
+                                        f.set_pc(fork.unexplored_target);
+                                        f
+                                    } else {
+                                        let mut f = fork_base.fork_true(cond);
+                                        f.set_pc(fork.unexplored_target);
+                                        f
+                                    };
+                                    self.state_roots.insert(forked.state_id(), root_state_id);
+                                    if self.lazy_solves || forked.satisfiable() {
+                                        self.stashes.entry("active".to_string())
+                                            .or_insert_with(VecDeque::new)
+                                            .push_back(forked);
+                                    }
+                                }
+                            }
+
+                            // Now handle the main state
+                            if is_find {
+                                if self.lazy_solves || pending.state.satisfiable() {
+                                    self.stashes.entry("found".to_string())
+                                        .or_insert_with(VecDeque::new)
+                                        .push_back(pending.state);
+                                } else {
+                                    log::debug!("State at find address 0x{:x} is UNSAT, pruning", addr);
+                                    self.stashes.entry("pruned".to_string())
+                                        .or_insert_with(VecDeque::new)
+                                        .push_back(pending.state);
+                                }
                             } else {
-                                log::debug!("State at find address 0x{:x} is UNSAT, pruning", addr);
-                                self.stashes.entry("pruned".to_string())
+                                self.stashes.entry("avoid".to_string())
                                     .or_insert_with(VecDeque::new)
                                     .push_back(pending.state);
                             }
-                            continue;
-                        }
-                        if self.avoid_addrs.contains(&addr) {
-                            // State reached an avoid address — move to avoid stash
-                            self.stashes.entry("avoid".to_string())
-                                .or_insert_with(VecDeque::new)
-                                .push_back(pending.state);
                             continue;
                         }
                     }
@@ -2385,6 +2425,32 @@ impl RustExplorationManager {
             }
         }
 
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Debug: Get symbolic object info for a state.
+    pub fn state_symbolic_info(&self, state_id: u64, addr: u64) -> PyResult<String> {
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    let mem = state.memory();
+                    let total = mem.symbolic_object_count();
+                    let has_at_addr = mem.get_symbolic_object(addr).map(|bv| bv.width());
+                    // Check if page is mapped and has symbolic markers
+                    let page_num = addr >> 12;
+                    let offset = (addr & 0xFFF) as u16;
+                    let page_info = if let Some(page) = mem.pages().get(&page_num) {
+                        format!("page=mapped sym_at_offset={}", page.is_symbolic(offset))
+                    } else {
+                        "page=unmapped".to_string()
+                    };
+                    return Ok(format!(
+                        "total_sym_objs={} at_0x{:x}={:?} {}",
+                        total, addr, has_at_addr, page_info
+                    ));
+                }
+            }
+        }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 

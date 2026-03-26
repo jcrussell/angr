@@ -173,7 +173,12 @@ class CallbackMemoryTracker:
                         # For symbolic addresses, we can't easily track
                         pass
                     else:
-                        concrete_addr = addr if isinstance(addr, int) else int(addr)
+                        if isinstance(addr, int):
+                            concrete_addr = addr
+                        elif hasattr(addr, 'args') and isinstance(addr.args[0], int):
+                            concrete_addr = addr.args[0]
+                        else:
+                            concrete_addr = tracker._state.solver.eval(addr)
 
                         # Get concrete data
                         if hasattr(data, 'symbolic') and data.symbolic:
@@ -2288,12 +2293,14 @@ class RustExplorationManager:
             return
 
         # Save original state for extracting changes after SimProcedure execution.
-        # Only do the expensive copy for SimProcedures that write symbolic data
-        # to memory (read, recv, fgets, scanf). For others, use the modified state
-        # as orig_state (no memory diff needed).
-        writes_symbolic = name in ('read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
-                                    'fread', 'gets', 'getchar', 'fgetc', 'getc')
-        orig_state = state.copy() if writes_symbolic else state
+        # Copy the state for any SimProcedure that writes to memory, so
+        # changed_bytes() can detect modifications. The CallbackMemoryTracker
+        # also captures writes, but changed_bytes() serves as a backup.
+        writes_memory = name in ('read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
+                                  'fread', 'gets', 'getchar', 'fgetc', 'getc',
+                                  'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
+                                  'strcat', 'strncat', 'sprintf', 'snprintf')
+        orig_state = state.copy() if writes_memory else state
 
         # GAP 2 fix: Save original constraints before hook execution
         # This allows extracting new constraints even for zero-length hooks
@@ -2551,37 +2558,6 @@ class RustExplorationManager:
         if all_symbolic_addrs:
             mem_changes = [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
 
-        # Import symbolic memory to Rust before resume
-        # This ensures Rust's symbolic_objects is populated for later loads
-        # First import from _extract_memory_changes()
-        for addr, ast in symbolic_imports:
-            try:
-                self._rust_mgr.import_symbolic_memory(addr, ast)
-                l.debug(f"Imported symbolic memory at 0x{addr:x} to Rust")
-            except Exception as e:
-                l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
-
-        # Then import from tracked symbolic writes (from CallbackMemoryTracker)
-        if tracked_symbolic_writes:
-            existing_sym_addrs = {addr for addr, _ in symbolic_imports}
-            for addr, ast in tracked_symbolic_writes:
-                if addr not in existing_sym_addrs:
-                    try:
-                        self._rust_mgr.import_symbolic_memory(addr, ast)
-                        l.debug(f"Imported tracked symbolic memory at 0x{addr:x} to Rust")
-                    except Exception as e:
-                        l.debug(f"Could not import tracked symbolic memory at 0x{addr:x}: {e}")
-
-        # Import symbolic memory changes that the SimProcedure wrote.
-        # Since _extract_memory_changes uses changed_bytes(orig_state) which
-        # may not detect changes (states share memory), we compare against
-        # the CACHED state instead. Use a targeted approach: only check
-        # memory regions where the SimProcedure is likely to have written
-        # (based on the callback type and arguments).
-        # For now, import from tracked_symbolic_writes and the existing
-        # symbolic_imports path. The full proxy (Phase 2.1) will fix this
-        # properly by routing SimProcedure memory access through Rust.
-
         # Extract any new constraints added during callback
         new_constraints = self._extract_new_constraints(orig_state, succ_state)
         if new_constraints:
@@ -2595,11 +2571,34 @@ class RustExplorationManager:
             except Exception as e:
                 l.debug(f"Could not set skip_hook_addr: {e}")
 
-        # Resume Rust with the changes and any new constraints
-        # This enables bidirectional constraint flow: Rust -> Python -> Rust
+        # Resume Rust with the changes and any new constraints.
+        # IMPORTANT: This must happen BEFORE symbolic imports, because
+        # apply_changes writes concrete data which clears symbolic page markers.
+        # Importing symbolic values after resume re-sets the markers correctly.
         self._rust_mgr.resume_after_simprocedure(
             new_pc, reg_changes, mem_changes or None, new_constraints or None
         )
+
+        # Import symbolic memory to Rust AFTER resume.
+        # The resume's apply_changes writes concrete witnesses which clear
+        # symbolic page markers. Re-importing symbolic values here restores
+        # the markers and stores the symbolic objects for VEX loads.
+        # Use import_symbolic_to_state (by state_id) since pending_callback
+        # was consumed by resume_after_simprocedure.
+        state_id = event.callback_state_id
+        all_sym_imports = list(symbolic_imports)
+        if tracked_symbolic_writes:
+            existing_sym_addrs = {addr for addr, _ in symbolic_imports}
+            for addr, ast in tracked_symbolic_writes:
+                if addr not in existing_sym_addrs:
+                    all_sym_imports.append((addr, ast))
+
+        for addr, ast in all_sym_imports:
+            try:
+                self._rust_mgr.import_symbolic_to_state(state_id, addr, ast)
+                l.debug(f"Imported symbolic memory at 0x{addr:x} to state {state_id}")
+            except Exception as e:
+                l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
 
         # Update cache for future callbacks
         state_id = event.callback_state_id
@@ -2681,27 +2680,6 @@ class RustExplorationManager:
         if all_symbolic_addrs:
             mem_changes = [(write_addr, data) for write_addr, data in mem_changes if write_addr not in all_symbolic_addrs]
 
-        # Import symbolic memory to Rust before resume
-        # This ensures Rust's symbolic_objects is populated for later loads
-        # First import from _extract_memory_changes()
-        for sym_addr, ast in symbolic_imports:
-            try:
-                self._rust_mgr.import_symbolic_memory(sym_addr, ast)
-                l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to Rust")
-            except Exception as e:
-                l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
-
-        # Then import from tracked symbolic writes (from CallbackMemoryTracker)
-        if tracked_symbolic_writes:
-            existing_sym_addrs = {sym_addr for sym_addr, _ in symbolic_imports}
-            for sym_addr, ast in tracked_symbolic_writes:
-                if sym_addr not in existing_sym_addrs:
-                    try:
-                        self._rust_mgr.import_symbolic_memory(sym_addr, ast)
-                        l.debug(f"Imported tracked symbolic memory at 0x{sym_addr:x} to Rust")
-                    except Exception as e:
-                        l.debug(f"Could not import tracked symbolic memory at 0x{sym_addr:x}: {e}")
-
         # Extract new constraints added during hook execution
         new_constraints = None
         if orig_constraints is not None and hasattr(state, 'solver'):
@@ -2713,7 +2691,8 @@ class RustExplorationManager:
             except Exception as e:
                 l.debug(f"Could not extract constraints: {e}")
 
-        # Resume Rust with all extracted changes
+        # Resume Rust with all extracted changes.
+        # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
         self._rust_mgr.resume_after_simprocedure(
             new_pc,
             reg_changes or None,
@@ -2721,8 +2700,23 @@ class RustExplorationManager:
             new_constraints or None
         )
 
-        # Update cache with modified state for future callbacks
+        # Import symbolic memory AFTER resume (see _resume_with_state for rationale)
         state_id = event.callback_state_id
+        all_sym_imports = list(symbolic_imports)
+        if tracked_symbolic_writes:
+            existing_sym_addrs = {sym_addr for sym_addr, _ in symbolic_imports}
+            for sym_addr, ast in tracked_symbolic_writes:
+                if sym_addr not in existing_sym_addrs:
+                    all_sym_imports.append((sym_addr, ast))
+
+        for sym_addr, ast in all_sym_imports:
+            try:
+                self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, ast)
+                l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to state {state_id}")
+            except Exception as e:
+                l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
+
+        # Update cache with modified state for future callbacks
         if state_id is not None:
             self._state_cache[state_id] = state
 
