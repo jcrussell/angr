@@ -1432,65 +1432,63 @@ impl RustExplorationManager {
         let pending = self.pending_callback.take()
             .ok_or_else(|| PyRuntimeError::new_err("no pending symbolic branch callback"))?;
 
-        // Create the true state (fork of original)
-        let mut true_state = pending.state.fork();
-        true_state.set_pc(true_pc);
-
-        // Add true branch constraints
-        if let Some(constraints) = true_constraints {
-            // Convert all constraints first, then add them
-            let mut converted_constraints = Vec::new();
-            {
-                let solver_ref = true_state.solver();
-                let sym_ctx = solver_ref.borrow();
-                let ctx_ref: &SymContext = &*sym_ctx;
-
-                for item in constraints.iter() {
-                    match claripy_to_rustbv(py, &item, ctx_ref) {
-                        Ok(bv) => {
-                            converted_constraints.push(bv);
-                        }
-                        Err(e) => {
-                            log::debug!("Failed to convert true constraint: {}", e);
-                        }
-                    }
-                }
+        // Get the branch condition from stored_conditions (set by interpreter)
+        let branch_condition = match &pending.reason {
+            CallbackReason::SymbolicBranch { condition_id, .. } => {
+                pending.stored_conditions.get(condition_id).cloned()
             }
-            // Now add constraints (solver borrow is dropped)
-            for bv in converted_constraints {
-                true_state.add_constraint(bv);
-            }
-        }
+            _ => None,
+        };
 
-        // Create the false state (use original)
-        let mut false_state = pending.state;
-        false_state.set_pc(false_pc);
-
-        // Add false branch constraints
-        if let Some(constraints) = false_constraints {
-            // Convert all constraints first, then add them
-            let mut converted_constraints = Vec::new();
-            {
-                let solver_ref = false_state.solver();
-                let sym_ctx = solver_ref.borrow();
-                let ctx_ref: &SymContext = &*sym_ctx;
-
-                for item in constraints.iter() {
-                    match claripy_to_rustbv(py, &item, ctx_ref) {
-                        Ok(bv) => {
-                            converted_constraints.push(bv);
-                        }
-                        Err(e) => {
-                            log::debug!("Failed to convert false constraint: {}", e);
+        // Create the true state using fork_true if we have the condition
+        let mut true_state = if let Some(ref cond) = branch_condition {
+            let mut s = pending.state.fork_true(cond);
+            s.set_pc(true_pc);
+            s
+        } else {
+            let mut s = pending.state.fork();
+            s.set_pc(true_pc);
+            // Fall back to Python-provided constraints
+            if let Some(constraints) = true_constraints {
+                let mut converted = Vec::new();
+                {
+                    let solver_ref = s.solver();
+                    let ctx = solver_ref.borrow();
+                    for item in constraints.iter() {
+                        if let Ok(bv) = claripy_to_rustbv(py, &item, &*ctx) {
+                            converted.push(bv);
                         }
                     }
                 }
+                for bv in converted { s.add_constraint(bv); }
             }
-            // Now add constraints (solver borrow is dropped)
-            for bv in converted_constraints {
-                false_state.add_constraint(bv);
+            s
+        };
+
+        // Create the false state using fork_false if we have the condition
+        let mut false_state = if let Some(ref cond) = branch_condition {
+            let mut s = pending.state.fork_false(cond);
+            s.set_pc(false_pc);
+            s
+        } else {
+            let mut s = pending.state;
+            s.set_pc(false_pc);
+            // Fall back to Python-provided constraints
+            if let Some(constraints) = false_constraints {
+                let mut converted = Vec::new();
+                {
+                    let solver_ref = s.solver();
+                    let ctx = solver_ref.borrow();
+                    for item in constraints.iter() {
+                        if let Ok(bv) = claripy_to_rustbv(py, &item, &*ctx) {
+                            converted.push(bv);
+                        }
+                    }
+                }
+                for bv in converted { s.add_constraint(bv); }
             }
-        }
+            s
+        };
 
         // P13: Add states to stashes based on satisfiability
         // Collect to local vectors first to avoid double mutable borrow

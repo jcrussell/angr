@@ -3077,7 +3077,7 @@ class RustExplorationManager:
         except Exception as e:
             l.warning(f"Symbolic branch handling error: {e}")
             import traceback
-            l.debug(traceback.format_exc())
+            l.warning(traceback.format_exc())
 
             # Fallback: just fork without proper constraints
             # This is less accurate but at least continues exploration
@@ -3088,7 +3088,7 @@ class RustExplorationManager:
                     None,
                     None,
                 )
-                l.debug("Resumed after symbolic branch with fallback (no constraints)")
+                l.warning("Resumed after symbolic branch with fallback (no constraints)")
             except Exception as e2:
                 l.error(f"Failed to resume after symbolic branch: {e2}")
                 # Recovery: Move the pending state to errored stash to avoid hanging

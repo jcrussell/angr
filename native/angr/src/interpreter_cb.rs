@@ -1768,6 +1768,14 @@ impl<'a> CallbackInterpreter<'a> {
                     };
                     self.deferred_forks.push(deferred);
 
+                    // Add constraint for the taken path to the solver.
+                    // The main state continues on the true branch, so
+                    // assume the guard is true. Without this, path
+                    // constraints from symbolic branches are never added
+                    // to the solver, and the found state has no useful
+                    // constraints for solution extraction.
+                    self.ctx.assume_true(&guard_val);
+
                     // Continue execution on the true branch
                     return Ok(StmtResult::Exit {
                         target: *dst,

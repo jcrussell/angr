@@ -182,8 +182,9 @@ impl Default for ExecutionConfig {
         ExecutionConfig {
             max_deferred_forks: 500,  // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
-            // Default to false: always return to Python for symbolic branches
-            // This ensures proper state forking even when hooks/callbacks occur
+            // Default to false: return to Python for symbolic branches.
+            // This ensures proper state forking even when hooks/callbacks occur.
+            // Path constraints are added via assume_true before returning.
             use_deferred_forks: false,
             enable_eager_prefetch: true,
             max_prefetch_batch: 256,        // 256 pages = 1MB
