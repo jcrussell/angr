@@ -3622,13 +3622,14 @@ class RustExplorationManager:
         - ('concrete', start_addr, size, data_bytes) for concrete values
         - ('symbolic', start_addr, size, data_bytes, handle_id, ast) for symbolic values
 
-        The concrete witness is always provided for Rust memory sync, but symbolic
-        values also include the handle_id and AST for later constraint propagation.
+        For symbolic regions, emits byte-by-byte to produce simple ASTs
+        (individual BVS or Extract) that convert cleanly to RustBV. This
+        avoids complex Concat trees from multi-byte loads that may fail
+        in claripy_to_rustbv conversion.
         """
         # Limit region size to avoid memory issues
         MAX_REGION_SIZE = 4096
         if size > MAX_REGION_SIZE:
-            # Split into smaller chunks
             for offset in range(0, size, MAX_REGION_SIZE):
                 chunk_size = min(MAX_REGION_SIZE, size - offset)
                 yield from self._emit_memory_region(state, start + offset, chunk_size)
@@ -3638,24 +3639,36 @@ class RustExplorationManager:
             val = state.memory.load(start, size, endness=state.arch.memory_endness)
             if not val.symbolic:
                 concrete = state.solver.eval(val)
-                # Convert to little-endian bytes
                 data = concrete.to_bytes(size, 'little')
                 yield ('concrete', start, size, data)
             else:
-                # For symbolic values, register handle for later reconstruction
-                handle_id = id(val)
-                self._register_handle(handle_id, val)
-
-                # Get concrete witness that satisfies current constraints
-                try:
-                    concrete = state.solver.eval(val)
-                    data = concrete.to_bytes(size, 'little')
-                except Exception:
-                    # Cannot concretize - use zeros as placeholder
-                    data = bytes(size)
-
-                # Yield symbolic tuple with handle info for constraint propagation
-                yield ('symbolic', start, size, data, handle_id, val)
+                # Emit byte-by-byte for symbolic regions. Each byte produces
+                # a simple AST that converts cleanly to RustBV, avoiding
+                # complex Concat trees from multi-byte loads.
+                for byte_offset in range(size):
+                    byte_addr = start + byte_offset
+                    try:
+                        byte_val = state.memory.load(
+                            byte_addr, 1, endness='Iend_BE',
+                            inspect=False, disable_actions=True)
+                        if byte_val.symbolic:
+                            handle_id = id(byte_val)
+                            self._register_handle(handle_id, byte_val)
+                            try:
+                                concrete_byte = state.solver.eval(byte_val)
+                                data = bytes([concrete_byte & 0xff])
+                            except Exception:
+                                data = bytes(1)
+                            yield ('symbolic', byte_addr, 1, data, handle_id, byte_val)
+                        else:
+                            try:
+                                concrete_byte = state.solver.eval(byte_val)
+                                data = bytes([concrete_byte & 0xff])
+                            except Exception:
+                                data = bytes(1)
+                            yield ('concrete', byte_addr, 1, data)
+                    except Exception:
+                        yield ('concrete', byte_addr, 1, bytes(1))
         except Exception as e:
             l.debug(f"Error emitting memory region at 0x{start:x}: {e}")
             pass
@@ -3773,26 +3786,32 @@ class RustExplorationManager:
     def _install_rust_memory_proxy(self, state: "angr.SimState"):
         """Sync stack data from Rust to Python callback state.
 
-        Syncs 8 pointer-sized slots from [SP] to cover return address
-        and function arguments (cdecl). Uses Rust as source of truth
-        for stack data modified during VEX execution.
+        Syncs stack memory from [SP] upward to cover return address,
+        function arguments (cdecl/sysv), and local buffers used by
+        SimProcedures like scanf. Uses Rust as source of truth for
+        stack data modified during VEX execution.
         """
         try:
             sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
-            if sp:
-                ptr_size = state.arch.bytes
-                for i in range(8):
-                    addr = sp + i * ptr_size
-                    try:
-                        data = self._rust_mgr.pending_memory_load(addr, ptr_size)
-                        if data and len(data) == ptr_size:
-                            int_val = int.from_bytes(data, 'little')
-                            if int_val != 0:
-                                val = claripy.BVV(int_val, ptr_size * 8)
-                                state.memory.store(addr, val, endness='Iend_LE',
-                                                   inspect=False, disable_actions=True)
-                    except Exception:
-                        pass
+            if not sp:
+                return
+            ptr_size = state.arch.bytes
+
+            # Sync pointer-sized slots for arguments and frame data (64 slots
+            # covers ~512 bytes on x64 / ~256 bytes on x86, enough for most
+            # calling conventions and local buffers used by scanf et al.)
+            for i in range(64):
+                addr = sp + i * ptr_size
+                try:
+                    data = self._rust_mgr.pending_memory_load(addr, ptr_size)
+                    if data and len(data) == ptr_size:
+                        int_val = int.from_bytes(data, 'little')
+                        if int_val != 0:
+                            val = claripy.BVV(int_val, ptr_size * 8)
+                            state.memory.store(addr, val, endness='Iend_LE',
+                                               inspect=False, disable_actions=True)
+                except Exception:
+                    pass
         except Exception:
             pass
 
