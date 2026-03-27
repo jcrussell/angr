@@ -1458,23 +1458,31 @@ impl RustExplorationManager {
             solver_ref.borrow().assume_false(cond);
         }
 
-        // P13: Add states to stashes based on satisfiability
-        // Collect to local vectors first to avoid double mutable borrow
+        // Add states to stashes.
+        // When branch_condition is present, the interpreter already proved
+        // both paths feasible via can_be_true/can_be_false. Prime the sat
+        // cache so downstream satisfiable() checks are free (cache hits)
+        // instead of doing redundant Z3 check() calls.
         let mut active_states = Vec::new();
         let mut pruned_states = Vec::new();
 
-        if self.lazy_solves || true_state.satisfiable() {
+        if branch_condition.is_some() {
+            true_state.set_sat_cache(true);
+            false_state.set_sat_cache(true);
             active_states.push(true_state);
-        } else {
-            log::debug!("P13: True branch at 0x{:x} is UNSAT, moving to pruned stash", true_pc);
-            pruned_states.push(true_state);
-        }
-
-        if self.lazy_solves || false_state.satisfiable() {
             active_states.push(false_state);
         } else {
-            log::debug!("P13: False branch at 0x{:x} is UNSAT, moving to pruned stash", false_pc);
-            pruned_states.push(false_state);
+            // Fallback: no stored condition, need actual sat checks
+            if self.lazy_solves || true_state.satisfiable() {
+                active_states.push(true_state);
+            } else {
+                pruned_states.push(true_state);
+            }
+            if self.lazy_solves || false_state.satisfiable() {
+                active_states.push(false_state);
+            } else {
+                pruned_states.push(false_state);
+            }
         }
 
         // Add to active stash

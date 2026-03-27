@@ -471,6 +471,11 @@ impl RustSimState {
         ctx.is_sat()
     }
 
+    /// Prime the SAT cache (avoids redundant Z3 checks after branch forking).
+    pub fn set_sat_cache(&self, value: bool) {
+        self.solver.borrow().set_sat_cache(value);
+    }
+
     /// Evaluate an expression to a concrete value.
     pub fn eval(&self, expr: &RustBV) -> Option<u128> {
         let ctx = self.solver.borrow();

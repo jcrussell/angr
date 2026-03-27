@@ -252,42 +252,64 @@ impl SymContext {
         result
     }
 
+    /// Prime the SAT cache with a known value.
+    /// Used after symbolic branch forking where the interpreter already
+    /// proved feasibility — avoids redundant Z3 check() calls.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn set_sat_cache(&self, value: bool) {
+        self.sat_cache.set(Some(value));
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn set_sat_cache(&self, _value: bool) {}
+
     /// Check if a bitvector condition can be true.
     #[cfg(feature = "vex-engine-z3")]
     pub fn can_be_true(&self, cond: &RustBV) -> bool {
-        use z3::ast::Ast;
-        debug_assert_eq!(cond.width(), 1);
-        // Quick check for concrete values
-        if let Some(v) = cond.as_u128() {
-            return v != 0;
-        }
-        let ast = cond.to_z3_ast();
-        let one = z3::ast::BV::from_u64(1, 1);
-        let constraint = ast._eq(&one);
-        self.solver.lock().push();
-        self.solver.lock().assert(&constraint);
-        let result = matches!(self.solver.lock().check(), z3::SatResult::Sat);
-        self.solver.lock().pop(1);
-        result
+        self.check_branch_feasibility(cond).0
     }
 
     /// Check if a bitvector condition can be false.
     #[cfg(feature = "vex-engine-z3")]
     pub fn can_be_false(&self, cond: &RustBV) -> bool {
+        self.check_branch_feasibility(cond).1
+    }
+
+    /// Check both branch directions in a single solver session.
+    /// Returns (can_be_true, can_be_false). Holds the solver lock once
+    /// for both checks, reducing lock acquisitions from 8 to 2.
+    /// When only one direction is feasible, skips the second Z3 check.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn check_branch_feasibility(&self, cond: &RustBV) -> (bool, bool) {
         use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
         // Quick check for concrete values
         if let Some(v) = cond.as_u128() {
-            return v == 0;
+            return (v != 0, v == 0);
         }
         let ast = cond.to_z3_ast();
+        let one = z3::ast::BV::from_u64(1, 1);
         let zero = z3::ast::BV::from_u64(0, 1);
-        let constraint = ast._eq(&zero);
-        self.solver.lock().push();
-        self.solver.lock().assert(&constraint);
-        let result = matches!(self.solver.lock().check(), z3::SatResult::Sat);
-        self.solver.lock().pop(1);
-        result
+
+        let solver = self.solver.lock();
+
+        // Check true branch
+        solver.push();
+        solver.assert(&ast._eq(&one));
+        let can_true = matches!(solver.check(), z3::SatResult::Sat);
+        solver.pop(1);
+
+        if !can_true {
+            return (false, true); // Must be false-only
+        }
+
+        // Check false branch
+        solver.push();
+        solver.assert(&ast._eq(&zero));
+        let can_false = matches!(solver.check(), z3::SatResult::Sat);
+        solver.pop(1);
+
+        (can_true, can_false)
     }
 
     /// Evaluate a bitvector to a concrete value if possible.

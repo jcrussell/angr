@@ -1723,21 +1723,29 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                 }
 
-                // Guard is symbolic - check both possibilities
-                let can_be_true = self.ctx.can_be_true(&guard_val);
-                let can_be_false = self.ctx.can_be_false(&guard_val);
+                // Guard is symbolic — handle based on deferred fork mode
+                if !self.config.use_deferred_forks {
+                    // Non-deferred mode: return to Python immediately for forking.
+                    // Skip can_be_true/can_be_false Z3 checks — Python's
+                    // resume_after_symbolic_branch will add constraints and the
+                    // sat_cache optimization avoids redundant checks there.
+                    let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
+                    // Store condition for Rust-side constraint addition during resume
+                    let cond_id = self.next_cond_id();
+                    self.stored_conditions.insert(cond_id, guard_val.clone());
+                    let result_cond = guard_val.clone();
+                    self.last_branch_condition = Some(guard_val);
+                    return Ok(StmtResult::SymbolicBranch {
+                        condition: result_cond,
+                        true_target: *dst,
+                        false_target: fallthrough,
+                    });
+                }
+
+                // Deferred fork mode: check feasibility to decide which paths to explore
+                let (can_be_true, can_be_false) = self.ctx.check_branch_feasibility(&guard_val);
 
                 if can_be_true && can_be_false {
-                    // Both paths are feasible
-                    if !self.config.use_deferred_forks {
-                        // Deferred forks disabled - return to Python for proper state forking
-                        let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
-                        return Ok(StmtResult::SymbolicBranch {
-                            condition: guard_val,
-                            true_target: *dst,
-                            false_target: fallthrough,
-                        });
-                    }
 
                     // Create a deferred fork for the untaken path
                     let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
