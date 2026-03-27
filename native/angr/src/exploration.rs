@@ -1440,55 +1440,23 @@ impl RustExplorationManager {
             _ => None,
         };
 
-        // Create the true state using fork_true if we have the condition
-        let mut true_state = if let Some(ref cond) = branch_condition {
-            let mut s = pending.state.fork_true(cond);
-            s.set_pc(true_pc);
-            s
-        } else {
-            let mut s = pending.state.fork();
-            s.set_pc(true_pc);
-            // Fall back to Python-provided constraints
-            if let Some(constraints) = true_constraints {
-                let mut converted = Vec::new();
-                {
-                    let solver_ref = s.solver();
-                    let ctx = solver_ref.borrow();
-                    for item in constraints.iter() {
-                        if let Ok(bv) = claripy_to_rustbv(py, &item, &*ctx) {
-                            converted.push(bv);
-                        }
-                    }
-                }
-                for bv in converted { s.add_constraint(bv); }
-            }
-            s
-        };
+        // Create the true state (fork of original) and add constraint
+        let mut true_state = pending.state.fork();
+        true_state.set_pc(true_pc);
+        if let Some(ref cond) = branch_condition {
+            // Add assume_true: guard is true → exit taken
+            let solver_ref = true_state.solver();
+            solver_ref.borrow().assume_true(cond);
+        }
 
-        // Create the false state using fork_false if we have the condition
-        let mut false_state = if let Some(ref cond) = branch_condition {
-            let mut s = pending.state.fork_false(cond);
-            s.set_pc(false_pc);
-            s
-        } else {
-            let mut s = pending.state;
-            s.set_pc(false_pc);
-            // Fall back to Python-provided constraints
-            if let Some(constraints) = false_constraints {
-                let mut converted = Vec::new();
-                {
-                    let solver_ref = s.solver();
-                    let ctx = solver_ref.borrow();
-                    for item in constraints.iter() {
-                        if let Ok(bv) = claripy_to_rustbv(py, &item, &*ctx) {
-                            converted.push(bv);
-                        }
-                    }
-                }
-                for bv in converted { s.add_constraint(bv); }
-            }
-            s
-        };
+        // Create the false state (use original) and add constraint
+        let mut false_state = pending.state;
+        false_state.set_pc(false_pc);
+        if let Some(ref cond) = branch_condition {
+            // Add assume_false: guard is false → fallthrough
+            let solver_ref = false_state.solver();
+            solver_ref.borrow().assume_false(cond);
+        }
 
         // P13: Add states to stashes based on satisfiability
         // Collect to local vectors first to avoid double mutable borrow
