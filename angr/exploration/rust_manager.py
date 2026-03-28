@@ -1116,6 +1116,33 @@ class RustExplorationManager:
             main_sym = self._project.loader.find_symbol('main')
             main_addr = main_sym.rebased_addr if main_sym else None
 
+            # If no main symbol (stripped binary), extract from _start's
+            # __libc_start_main call: rdi = main address
+            if main_addr is None:
+                try:
+                    entry_block = self._project.factory.block(self._project.entry)
+                    vex = entry_block.vex
+                    # Look for PUT(rdi) = constant before the call exit
+                    rdi_offset = self._project.arch.registers.get('rdi', (None,))[0]
+                    if rdi_offset is None:
+                        rdi_offset = self._project.arch.registers.get('edi', (None,))[0]
+                    if rdi_offset is not None:
+                        for stmt in reversed(vex.statements):
+                            s = str(stmt)
+                            if f'PUT(offset={rdi_offset})' in s or 'PUT(rdi)' in s:
+                                # Extract the constant value
+                                import re
+                                m_const = re.search(r'0x([0-9a-fA-F]+)', s)
+                                if m_const:
+                                    candidate = int(m_const.group(1), 16)
+                                    main_obj = self._project.loader.main_object
+                                    if main_obj.min_addr <= candidate <= main_obj.max_addr:
+                                        main_addr = candidate
+                                        l.info(f"Extracted main=0x{main_addr:x} from _start's rdi")
+                                break
+                except Exception as e:
+                    l.debug(f"Could not extract main from _start: {e}")
+
             # Known init addresses to skip past (not main)
             entry = self._project.entry
             init_addrs = {entry}
