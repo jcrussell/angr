@@ -2616,7 +2616,6 @@ class RustExplorationManager:
 
         # GAP 5: Merge tracked writes with extracted memory changes
         if tracked_writes:
-            # Create a set of existing addresses to avoid duplicates
             existing_addrs = {addr for addr, _ in mem_changes}
             for addr, data in tracked_writes:
                 if addr not in existing_addrs:
@@ -3718,9 +3717,22 @@ class RustExplorationManager:
                 data = concrete.to_bytes(size, 'little')
                 yield ('concrete', start, size, data)
             else:
-                # Emit byte-by-byte for symbolic regions. Each byte produces
-                # a simple AST that converts cleanly to RustBV, avoiding
-                # complex Concat trees from multi-byte loads.
+                # For small symbolic regions (typical SimProcedure writes),
+                # emit byte-by-byte for simple ASTs. For large regions,
+                # emit as one chunk to avoid 1000s of solver.eval() calls.
+                if size > 128:
+                    # Large region: emit whole (may produce complex AST)
+                    handle_id = id(val)
+                    self._register_handle(handle_id, val)
+                    try:
+                        concrete = state.solver.eval(val)
+                        data = concrete.to_bytes(size, 'little')
+                    except Exception:
+                        data = bytes(size)
+                    yield ('symbolic', start, size, data, handle_id, val)
+                    return
+
+                # Small region: byte-by-byte for simple ASTs
                 for byte_offset in range(size):
                     byte_addr = start + byte_offset
                     try:
