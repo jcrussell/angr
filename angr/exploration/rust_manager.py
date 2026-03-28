@@ -4114,7 +4114,39 @@ class RustExplorationManager:
         start_time = time.time()
         steps_taken = 0
 
-        # Run exploration loop
+        # When callable predicates are active, use step-by-step exploration
+        # so predicates are evaluated between individual state steps.
+        # This catches stdout changes from printf before states are forked/consumed.
+        has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
+        if has_predicates:
+            # Disable Rust-side predicate callbacks — we handle predicates
+            # on the Python cached states (which have stdout from printf).
+            # Rust's pending state doesn't have stdout content.
+            self._rust_mgr.set_find_needs_python(False)
+            self._rust_mgr.set_avoid_needs_python(False)
+            while True:
+                if timeout is not None and (time.time() - start_time) > timeout:
+                    break
+                if max_steps is not None and steps_taken >= max_steps:
+                    break
+                # Use cheap Rust-side check instead of self.active (creates Python states)
+                if not self._rust_mgr.get_state_ids('active'):
+                    break
+                self.step()
+                steps_taken += 1
+                self._evaluate_predicates_on_active()
+                pf = getattr(self, '_predicate_found', [])
+                if pf and len(pf) >= num_find:
+                    break
+                if until is not None:
+                    try:
+                        if until(self):
+                            break
+                    except Exception:
+                        pass
+            return self
+
+        # Run exploration loop (address-based find/avoid)
         while True:
             # Phase 3 Fix: Check timeout
             if timeout is not None and (time.time() - start_time) > timeout:
