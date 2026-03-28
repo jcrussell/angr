@@ -1841,52 +1841,60 @@ class RustExplorationManager:
             l.debug(f"Cleaned up {len(to_remove)} symbolic page cache entries")
 
     def _evaluate_predicates_on_active(self):
-        """Evaluate callable find/avoid predicates on active and deadended states.
+        """Evaluate callable find/avoid predicates on cached Python states.
 
         When find/avoid are callables (not addresses), the Rust engine can't
-        evaluate them. This method checks states after each step and
-        moves matching states to the found/avoid stashes.
+        evaluate them. This method checks ALL cached states (including ones
+        consumed by forking) since stdout content persists in the cache.
+        Matching states are added to the Python-side found/avoid lists.
         """
-        all_ids = list(self._rust_mgr.get_state_ids('active'))
-        all_ids.extend(self._rust_mgr.get_state_ids('deadended'))
-        if not all_ids:
+        if not self._state_cache:
             return
 
-        for state_id in all_ids:
-            # Get or create Python state for this Rust state
-            if state_id not in self._state_cache:
-                continue
-            state = self._state_cache[state_id]
+        found_sids = set()
+        avoid_sids = set()
 
-            # Restore plugins so posix.dumps() works
-            self._restore_plugins_to_state(state, state_id)
-
+        for state_id, state in list(self._state_cache.items()):
             try:
-                # Check find predicate
+                self._restore_plugins_to_state(state, state_id)
+
                 if self._find_predicate is not None:
                     try:
                         if self._find_predicate(state):
-                            # Move state to found stash — try active first, then deadended
-                            moved = self._rust_mgr.move_state(state_id, 'active', 'found')
-                            if not moved:
-                                self._rust_mgr.move_state(state_id, 'deadended', 'found')
-                            l.debug(f"Callable find matched state {state_id}")
-                            continue  # Don't also check avoid
-                    except Exception as e:
-                        l.debug(f"Find predicate error on state {state_id}: {e}")
+                            found_sids.add(state_id)
+                            continue
+                    except Exception:
+                        pass
 
-                # Check avoid predicate
                 if self._avoid_predicate is not None:
                     try:
                         if self._avoid_predicate(state):
-                            moved = self._rust_mgr.move_state(state_id, 'active', 'avoid')
-                            if not moved:
-                                self._rust_mgr.move_state(state_id, 'deadended', 'avoid')
-                            l.debug(f"Callable avoid matched state {state_id}")
-                    except Exception as e:
-                        l.debug(f"Avoid predicate error on state {state_id}: {e}")
-            except Exception as e:
-                l.debug(f"Predicate evaluation error on state {state_id}: {e}")
+                            avoid_sids.add(state_id)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Move matched states to found/avoid stashes
+        for sid in found_sids:
+            for stash in ('active', 'deadended'):
+                try:
+                    if self._rust_mgr.move_state(sid, stash, 'found'):
+                        break
+                except Exception:
+                    pass
+            # Even if not in any Rust stash, record in Python-side found
+            if not hasattr(self, '_predicate_found'):
+                self._predicate_found = []
+            if sid in self._state_cache:
+                self._predicate_found.append(self._state_cache[sid])
+
+        for sid in avoid_sids:
+            for stash in ('active', 'deadended'):
+                try:
+                    self._rust_mgr.move_state(sid, stash, 'avoid')
+                except Exception:
+                    pass
 
     def _cleanup_state_cache(self):
         """Enforce the state cache size limit.
@@ -3321,7 +3329,13 @@ class RustExplorationManager:
                         break
 
         if cached_state is not None:
-            state = cached_state  # Use directly (cache updated after callback)
+            # Copy when callable predicates need stdout history, skip otherwise
+            has_predicates = (getattr(self, '_find_predicate', None) is not None or
+                             getattr(self, '_avoid_predicate', None) is not None)
+            if has_predicates:
+                state = cached_state.copy()
+            else:
+                state = cached_state
 
             # Sync dirty memory pages from Rust state to Python state.
             # VEX execution stores to Rust's per-state SymbolicMemory;
@@ -4245,8 +4259,16 @@ class RustExplorationManager:
 
         For SimulationManager API compatibility, this returns full angr states
         that can be used with state.solver.eval(), state.posix.dumps(), etc.
+        Includes states found via callable predicates.
         """
-        return self._get_stash_states('found')
+        states = self._get_stash_states('found')
+        # Include states found via callable predicates that may not be in Rust stash
+        if hasattr(self, '_predicate_found') and self._predicate_found:
+            existing_ids = {id(s) for s in states}
+            for s in self._predicate_found:
+                if id(s) not in existing_ids:
+                    states.append(s)
+        return states
 
     @property
     def avoid(self) -> list:
