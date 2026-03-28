@@ -1342,12 +1342,19 @@ impl RustExplorationManager {
             }
         }
 
-        // Add to active stash
-        let active = self.stashes
-            .entry("active".to_string())
-            .or_insert_with(VecDeque::new);
+        // Add to active stash, checking find/avoid first
         for s in final_successors {
-            active.push_back(s);
+            let spc = s.pc();
+            if self.find_addrs.contains(&spc) {
+                self.stashes.entry("found".to_string())
+                    .or_insert_with(VecDeque::new).push_back(s);
+            } else if self.avoid_addrs.contains(&spc) {
+                self.stashes.entry("avoid".to_string())
+                    .or_insert_with(VecDeque::new).push_back(s);
+            } else {
+                self.stashes.entry("active".to_string())
+                    .or_insert_with(VecDeque::new).push_back(s);
+            }
         }
 
         // Add to pruned stash

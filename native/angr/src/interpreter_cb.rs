@@ -1308,8 +1308,18 @@ impl<'a> CallbackInterpreter<'a> {
                     if addr >= region.base && addr < region.base + region.size {
                         let offset = (addr - region.base) as usize;
                         let available = region.size as usize - offset;
-                        // Use up to 4096 bytes for lifting (typical max block size)
-                        let max_bytes = available.min(4096);
+                        // Limit block size to stop at hook/avoid/find addresses.
+                        // Without this, blocks can span past these addresses,
+                        // and the hook check at block boundaries misses them.
+                        let mut max_bytes = available.min(4096);
+                        for &hook_addr in &self.hook_addrs {
+                            if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
+                                let limit = (hook_addr - addr) as usize;
+                                if limit > 0 && limit < max_bytes {
+                                    max_bytes = limit;
+                                }
+                            }
+                        }
                         if max_bytes >= 1 {
                             let bytes = &region.data[offset..offset + max_bytes];
                             match crate::vex::libpyvex_ffi::lift_native(
