@@ -4214,23 +4214,40 @@ class RustExplorationManager:
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
 
-        Skips constraints on register variables (reg_*) that might conflict
-        with Python's concretized register values.
+        Skips constraints that would conflict with the Python state's existing
+        constraints. Rust-exported symbols may duplicate Python SimProcedure
+        symbols (same name, different identity), causing UNSAT if both are added.
         """
         try:
             rust_constraints = self._rust_mgr.export_state_constraints(state_id)
             synced = 0
             skipped = 0
+
+            # Collect variable names already in Python state to detect conflicts.
+            # If a Rust constraint references a variable that already has constraints
+            # in Python (e.g., strncmp_ret from a SimProcedure callback), skip it
+            # to avoid identity mismatch causing UNSAT.
+            existing_vars = set()
+            for c in state.solver.constraints:
+                if hasattr(c, 'variables'):
+                    existing_vars.update(c.variables)
+
             for c in rust_constraints:
                 if c is None:
                     continue
                 try:
-                    # Skip register-related constraints (e.g., reg_ebp_0_32 == 0x80003)
-                    # These conflict with Python's concretized register values
                     c_str = str(c)
+                    # Skip register-related constraints
                     if 'reg_' in c_str:
                         skipped += 1
                         continue
+
+                    # Skip constraints with variables that overlap existing Python
+                    # constraints — these would create duplicate/conflicting symbols
+                    if hasattr(c, 'variables') and existing_vars:
+                        if c.variables & existing_vars:
+                            skipped += 1
+                            continue
 
                     if hasattr(c, 'op'):
                         if getattr(c, 'length', None) is None:
@@ -4242,7 +4259,7 @@ class RustExplorationManager:
                     pass
             if synced or skipped:
                 l.debug(f"Synced {synced} constraints to state {state_id} "
-                        f"({skipped} register constraints skipped)")
+                        f"({skipped} skipped for conflict/register)")
         except Exception as e:
             l.debug(f"Could not sync constraints for state {state_id}: {e}")
 
