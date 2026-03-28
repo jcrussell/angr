@@ -1841,17 +1841,18 @@ class RustExplorationManager:
             l.debug(f"Cleaned up {len(to_remove)} symbolic page cache entries")
 
     def _evaluate_predicates_on_active(self):
-        """Evaluate callable find/avoid predicates on all active states.
+        """Evaluate callable find/avoid predicates on active and deadended states.
 
         When find/avoid are callables (not addresses), the Rust engine can't
-        evaluate them. This method checks active states after each step and
+        evaluate them. This method checks states after each step and
         moves matching states to the found/avoid stashes.
         """
-        active_ids = self._rust_mgr.get_state_ids('active')
-        if not active_ids:
+        all_ids = list(self._rust_mgr.get_state_ids('active'))
+        all_ids.extend(self._rust_mgr.get_state_ids('deadended'))
+        if not all_ids:
             return
 
-        for state_id in active_ids:
+        for state_id in all_ids:
             # Get or create Python state for this Rust state
             if state_id not in self._state_cache:
                 continue
@@ -1865,8 +1866,10 @@ class RustExplorationManager:
                 if self._find_predicate is not None:
                     try:
                         if self._find_predicate(state):
-                            # Move state to found stash in Rust
-                            self._rust_mgr.move_state(state_id, 'active', 'found')
+                            # Move state to found stash — try active first, then deadended
+                            moved = self._rust_mgr.move_state(state_id, 'active', 'found')
+                            if not moved:
+                                self._rust_mgr.move_state(state_id, 'deadended', 'found')
                             l.debug(f"Callable find matched state {state_id}")
                             continue  # Don't also check avoid
                     except Exception as e:
@@ -1876,7 +1879,9 @@ class RustExplorationManager:
                 if self._avoid_predicate is not None:
                     try:
                         if self._avoid_predicate(state):
-                            self._rust_mgr.move_state(state_id, 'active', 'avoid')
+                            moved = self._rust_mgr.move_state(state_id, 'active', 'avoid')
+                            if not moved:
+                                self._rust_mgr.move_state(state_id, 'deadended', 'avoid')
                             l.debug(f"Callable avoid matched state {state_id}")
                     except Exception as e:
                         l.debug(f"Avoid predicate error on state {state_id}: {e}")
