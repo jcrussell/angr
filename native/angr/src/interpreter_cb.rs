@@ -3002,7 +3002,8 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Handle the default exit (end of block).
     fn handle_default_exit(&mut self, irsb: &IRSB) -> Result<BlockResult, CbExecutionError> {
-        match self.eval_next_addr_concretized(irsb)? {
+        let concretized = self.eval_next_addr_concretized(irsb)?;
+        match concretized {
             ConcretizedJump::Single(addr) => {
                 Ok(self.handle_exit(addr, irsb.jumpkind))
             }
