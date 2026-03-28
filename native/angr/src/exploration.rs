@@ -964,12 +964,21 @@ impl RustExplorationManager {
             let skip_addr_for_step = if should_skip_hook { Some(pc) } else { None };
             match self.step_state_with_skip(py, &callbacks, state, skip_addr_for_step) {
                 Ok(successors) => {
-                    // Add successors back to active stash
-                    let active = self.stashes
-                        .entry("active".to_string())
-                        .or_insert_with(VecDeque::new);
+                    // Add successors to appropriate stashes, checking find/avoid
                     for successor in successors {
-                        active.push_back(successor);
+                        let spc = successor.pc();
+                        if self.find_addrs.contains(&spc) {
+                            if self.lazy_solves || successor.satisfiable() {
+                                self.stashes.entry("found".to_string())
+                                    .or_insert_with(VecDeque::new).push_back(successor);
+                            }
+                        } else if self.avoid_addrs.contains(&spc) {
+                            self.stashes.entry("avoid".to_string())
+                                .or_insert_with(VecDeque::new).push_back(successor);
+                        } else {
+                            self.stashes.entry("active".to_string())
+                                .or_insert_with(VecDeque::new).push_back(successor);
+                        }
                     }
                 }
                 Err(StepError::NeedCallback(pending)) => {
