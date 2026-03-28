@@ -1134,29 +1134,50 @@ impl SymContext {
     /// Fork the context, creating a new context with all constraints preserved.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
-        // Clone solver, preserving all assertions via Z3_solver_translate
-        let cloned_solver = self.solver.lock().clone();
-        // Set unsat_core param on cloned solver
+        // Create a fresh Z3 solver and replay constraints instead of using
+        // Z3_solver_translate (Solver::clone). Replaying is much faster:
+        // assert_and_track is O(1) per constraint vs Z3_solver_translate
+        // which copies internal solver state.
+        let new_solver = z3::Solver::new();
         let mut params = z3::Params::new();
         params.set_bool("unsat_core", true);
-        cloned_solver.set_params(&params);
-        // Clone constraint tracking list for unsat core
-        let cloned_trackers = self.constraint_trackers.lock().clone();
+        params.set_u32("timeout", 30000);
+        new_solver.set_params(&params);
 
-        // Phase 2 Fix: Clone assumed constraints for proper export
+        // Clone assumed constraints for the fork
         let cloned_assumed = self.assumed_constraints.lock().clone();
+
+        // Replay all constraints on the fresh solver
+        let mut new_trackers = Vec::with_capacity(cloned_assumed.len());
+        {
+            use z3::ast::Ast;
+            for (idx, (cond, is_true)) in cloned_assumed.iter().enumerate() {
+                let ast = cond.to_z3_ast();
+                let constraint = if *is_true {
+                    let one = z3::ast::BV::from_u64(1, 1);
+                    ast._eq(&one)
+                } else {
+                    let zero = z3::ast::BV::from_u64(0, 1);
+                    ast._eq(&zero)
+                };
+                let track_name = format!("__track_{}", idx);
+                let track_bool = z3::ast::Bool::new_const(track_name.as_str());
+                new_solver.assert_and_track(&constraint, &track_bool);
+                new_trackers.push(track_bool);
+            }
+        }
 
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
-            constraint_count: AtomicUsize::new(self.constraint_count.load(Ordering::SeqCst)),
+            constraint_count: AtomicUsize::new(cloned_assumed.len()),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
-            push_level: AtomicUsize::new(0), // Fresh transaction state for fork
+            push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
             assumed_constraints: Mutex::new(cloned_assumed),
-            solver: Mutex::new(cloned_solver),
-            sat_cache: Cell::new(None),    // Fresh cache for fork
-            model_cache: RefCell::new(None), // Fresh cache for fork
-            constraint_trackers: Mutex::new(cloned_trackers),
+            solver: Mutex::new(new_solver),
+            sat_cache: Cell::new(None),
+            model_cache: RefCell::new(None),
+            constraint_trackers: Mutex::new(new_trackers),
         }
     }
 
