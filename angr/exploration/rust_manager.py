@@ -4164,6 +4164,36 @@ class RustExplorationManager:
             event = self._rust_mgr.run()
             steps_taken += 1
 
+            # When avoid addresses are set, cap active states and periodically
+            # clear accumulated stashes to prevent OOM. Without this, binaries
+            # with many avoid addresses (ekoparty: 100) accumulate states and OOM.
+            if avoid is not None and not callable(avoid):
+                try:
+                    # Cap active states at 5
+                    active_ids = self._rust_mgr.get_state_ids('active')
+                    if len(active_ids) > 5:
+                        for sid in active_ids[5:]:
+                            try:
+                                self._rust_mgr.move_state(sid, 'active', '_drop')
+                            except Exception:
+                                pass
+                        self._rust_mgr.clear_stash('_drop')
+
+                    # Periodically clear avoid/pruned stashes to free Z3 memory
+                    if steps_taken % 50 == 0:
+                        self._rust_mgr.clear_stash('avoid')
+                        self._rust_mgr.clear_stash('pruned')
+                        self._rust_mgr.clear_stash('deadended')
+                        # Clear Python state cache for non-active states
+                        active_set = set(self._rust_mgr.get_state_ids('active'))
+                        found_set = set(self._rust_mgr.get_state_ids('found'))
+                        keep = active_set | found_set
+                        for sid in list(self._state_cache.keys()):
+                            if sid not in keep:
+                                del self._state_cache[sid]
+                except Exception:
+                    pass
+
             if event.event_type == 'found' and event.found_count >= num_find:
                 break
             elif event.event_type == 'need_callback':
