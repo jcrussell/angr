@@ -3316,7 +3316,7 @@ class RustExplorationManager:
                         break
 
         if cached_state is not None:
-            state = cached_state.copy()  # Copy to preserve original
+            state = cached_state  # Use directly (cache updated after callback)
 
             # Sync dirty memory pages from Rust state to Python state.
             # VEX execution stores to Rust's per-state SymbolicMemory;
