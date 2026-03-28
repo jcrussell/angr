@@ -1668,7 +1668,13 @@ class RustExplorationManager:
                             skipped += 1
                             continue
 
-                        state.solver.add(ast)
+                        # Convert BV constraints to Bool for Python's Z3 backend.
+                        # Rust's assume_true produces 1-bit BV constraints that
+                        # Z3 can't cast to Bool directly.
+                        if getattr(ast, 'length', None) is not None:
+                            state.solver.add(ast != 0)
+                        else:
+                            state.solver.add(ast)
                         existing_hashes.add(ast_hash)
                         synced += 1
                     except Exception as e:
