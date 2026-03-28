@@ -1469,8 +1469,21 @@ impl RustExplorationManager {
         if branch_condition.is_some() {
             true_state.set_sat_cache(true);
             false_state.set_sat_cache(true);
-            active_states.push(true_state);
-            active_states.push(false_state);
+            // Check find/avoid on new states before adding to active
+            if self.find_addrs.contains(&true_pc) {
+                self.stashes.entry("found".to_string()).or_insert_with(VecDeque::new).push_back(true_state);
+            } else if self.avoid_addrs.contains(&true_pc) {
+                self.stashes.entry("avoid".to_string()).or_insert_with(VecDeque::new).push_back(true_state);
+            } else {
+                active_states.push(true_state);
+            }
+            if self.find_addrs.contains(&false_pc) {
+                self.stashes.entry("found".to_string()).or_insert_with(VecDeque::new).push_back(false_state);
+            } else if self.avoid_addrs.contains(&false_pc) {
+                self.stashes.entry("avoid".to_string()).or_insert_with(VecDeque::new).push_back(false_state);
+            } else {
+                active_states.push(false_state);
+            }
         } else {
             // Fallback: no stored condition, need actual sat checks
             if self.lazy_solves || true_state.satisfiable() {
