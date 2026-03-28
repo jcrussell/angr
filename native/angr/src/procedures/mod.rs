@@ -20,6 +20,8 @@
 pub mod strlen;
 pub mod memcpy;
 pub mod strcmp;
+pub mod puts;
+pub mod printf;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -145,6 +147,8 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(strcmp::NativeStrcmp));
         registry.register(Arc::new(strcmp::NativeStrncmp));
         registry.register(Arc::new(strcmp::NativeStrcasecmp));
+        registry.register(Arc::new(puts::NativePuts));
+        registry.register(Arc::new(printf::NativePrintf));
 
         registry
     }

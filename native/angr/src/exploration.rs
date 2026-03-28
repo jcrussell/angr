@@ -2902,28 +2902,89 @@ impl RustExplorationManager {
                 }))
             }
             RunResult::SimProcedure { addr, name, num_args, return_addr } => {
-                state.set_pc(addr);
-                // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
-                state.add_to_history(addr);
-                // Save pre-callback snapshot for deferred forks
-                let pre_callback_snapshot = Some(state.fork());
-                // Fork solver context for Python callback use
-                let solver_ref = state.solver();
-                let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
-                Err(StepError::NeedCallback(PendingCallback {
-                    state,
-                    pre_callback_snapshot,
-                    reason: CallbackReason::SimProcedure {
-                        addr,
-                        name,
-                        num_args,
-                        return_addr,
-                    },
-                    jumpkind: Some("Ijk_Call".to_string()),
-                    solver_ctx: Some(forked_ctx),
-                    deferred_forks,
-                    stored_conditions,
-                }))
+                // Try native procedure first — avoids Python callback overhead
+                let native_succeeded = if let Some(native_proc) = self.native_procedures.get(&name) {
+                    let args = self.extract_procedure_args(&state, num_args);
+                    match native_proc.call(&mut state, &args) {
+                        Ok(ret_val) => {
+                            self.native_proc_stats.native_calls += 1;
+                            *self.native_proc_stats.call_counts
+                                .entry(name.clone())
+                                .or_insert(0) += 1;
+
+                            if let Some(rv) = ret_val {
+                                let ret_reg = self.calling_convention.return_register();
+                                state.set_register_by_offset(ret_reg, rv);
+                            }
+
+                            // Set PC to return address and pop stack
+                            state.set_pc(return_addr);
+                            let sp = state.get_sp().as_u64().unwrap_or(0);
+                            let ptr_size = state.arch().bytes() as u64;
+                            state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
+                            true
+                        }
+                        Err(_) => {
+                            self.native_proc_stats.python_fallbacks += 1;
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+
+                if native_succeeded {
+                    // Handle deferred forks same as normal successors
+                    let original_state_id = state.state_id();
+                    let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+                    let mut successors = vec![state];
+
+                    // Process deferred forks with fork_base from first successor
+                    if !deferred_forks.is_empty() {
+                        let fork_base = successors[0].fork();
+                        for fork in deferred_forks {
+                            let condition = stored_conditions.get(&fork.condition_id);
+                            if let Some(cond) = condition {
+                                let forked = if fork.path_taken {
+                                    let mut f = fork_base.fork_false(cond);
+                                    f.set_pc(fork.unexplored_target);
+                                    f
+                                } else {
+                                    let mut f = fork_base.fork_true(cond);
+                                    f.set_pc(fork.unexplored_target);
+                                    f
+                                };
+                                self.state_roots.insert(forked.state_id(), root_state_id);
+                                if self.lazy_solves || forked.satisfiable() {
+                                    successors.push(forked);
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(successors)
+                } else {
+                    // Fall through to Python callback
+                    state.set_pc(addr);
+                    state.add_to_history(addr);
+                    let pre_callback_snapshot = Some(state.fork());
+                    let solver_ref = state.solver();
+                    let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
+                    Err(StepError::NeedCallback(PendingCallback {
+                        state,
+                        pre_callback_snapshot,
+                        reason: CallbackReason::SimProcedure {
+                            addr,
+                            name,
+                            num_args,
+                            return_addr,
+                        },
+                        jumpkind: Some("Ijk_Call".to_string()),
+                        solver_ctx: Some(forked_ctx),
+                        deferred_forks,
+                        stored_conditions,
+                    }))
+                }
             }
             RunResult::Syscall { num, pc } => {
                 state.set_pc(pc);
