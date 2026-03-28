@@ -4380,6 +4380,18 @@ class RustExplorationManager:
                 state = self._state_cache[state_id]
                 self._restore_plugins_to_state(state, state_id)
                 self._sync_exported_constraints(state, state_id)
+                # Sync Rust PC to the Python state so multi-stage exploration
+                # (re-init from found state) gets the correct program counter.
+                try:
+                    # Find state's index in the stash
+                    all_ids = self._rust_mgr.get_state_ids(stash)
+                    idx = all_ids.index(state_id) if state_id in all_ids else -1
+                    if idx >= 0:
+                        pc = self._rust_mgr.get_state_pc(stash, idx)
+                        if pc is not None:
+                            state.regs._ip = pc
+                except Exception:
+                    pass
                 states.append(state)
 
         # For states not in cache, try parent state or snapshot export
