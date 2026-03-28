@@ -4273,23 +4273,22 @@ class RustExplorationManager:
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
 
-        Skips constraints that would conflict with the Python state's existing
-        constraints. Rust-exported symbols may duplicate Python SimProcedure
-        symbols (same name, different identity), causing UNSAT if both are added.
+        Adds Rust-exported constraints to the Python state. Skips register
+        constraints and constraints that use symbols with different identity
+        than existing Python symbols (which would cause UNSAT).
         """
         try:
             rust_constraints = self._rust_mgr.export_state_constraints(state_id)
             synced = 0
             skipped = 0
 
-            # Collect variable names already in Python state to detect conflicts.
-            # If a Rust constraint references a variable that already has constraints
-            # in Python (e.g., strncmp_ret from a SimProcedure callback), skip it
-            # to avoid identity mismatch causing UNSAT.
-            existing_vars = set()
+            # Build a map of existing Python leaf ASTs by variable name.
+            # Used to detect identity mismatches: same name, different object.
+            existing_leaves = {}
             for c in state.solver.constraints:
-                if hasattr(c, 'variables'):
-                    existing_vars.update(c.variables)
+                for leaf in c.leaf_asts():
+                    if hasattr(leaf, 'args') and len(leaf.args) > 0 and isinstance(leaf.args[0], str):
+                        existing_leaves[leaf.args[0]] = leaf
 
             for c in rust_constraints:
                 if c is None:
@@ -4301,12 +4300,20 @@ class RustExplorationManager:
                         skipped += 1
                         continue
 
-                    # Skip constraints with variables that overlap existing Python
-                    # constraints — these would create duplicate/conflicting symbols
-                    if hasattr(c, 'variables') and existing_vars:
-                        if c.variables & existing_vars:
-                            skipped += 1
-                            continue
+                    # Check for identity mismatch: if a Rust constraint uses
+                    # a symbol with the same NAME as a Python symbol but a
+                    # DIFFERENT object identity, skip it to prevent UNSAT.
+                    identity_conflict = False
+                    if existing_leaves:
+                        for leaf in c.leaf_asts():
+                            if hasattr(leaf, 'args') and len(leaf.args) > 0 and isinstance(leaf.args[0], str):
+                                name = leaf.args[0]
+                                if name in existing_leaves and existing_leaves[name] is not leaf:
+                                    identity_conflict = True
+                                    break
+                    if identity_conflict:
+                        skipped += 1
+                        continue
 
                     if hasattr(c, 'op'):
                         if getattr(c, 'length', None) is None:
@@ -4318,7 +4325,7 @@ class RustExplorationManager:
                     pass
             if synced or skipped:
                 l.debug(f"Synced {synced} constraints to state {state_id} "
-                        f"({skipped} skipped for conflict/register)")
+                        f"({skipped} skipped for identity/register)")
         except Exception as e:
             l.debug(f"Could not sync constraints for state {state_id}: {e}")
 
