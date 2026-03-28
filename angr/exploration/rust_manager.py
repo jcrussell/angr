@@ -1807,6 +1807,49 @@ class RustExplorationManager:
         if to_remove:
             l.debug(f"Cleaned up {len(to_remove)} symbolic page cache entries")
 
+    def _evaluate_predicates_on_active(self):
+        """Evaluate callable find/avoid predicates on all active states.
+
+        When find/avoid are callables (not addresses), the Rust engine can't
+        evaluate them. This method checks active states after each step and
+        moves matching states to the found/avoid stashes.
+        """
+        active_ids = self._rust_mgr.get_state_ids('active')
+        if not active_ids:
+            return
+
+        for state_id in active_ids:
+            # Get or create Python state for this Rust state
+            if state_id not in self._state_cache:
+                continue
+            state = self._state_cache[state_id]
+
+            # Restore plugins so posix.dumps() works
+            self._restore_plugins_to_state(state, state_id)
+
+            try:
+                # Check find predicate
+                if self._find_predicate is not None:
+                    try:
+                        if self._find_predicate(state):
+                            # Move state to found stash in Rust
+                            self._rust_mgr.move_state(state_id, 'active', 'found')
+                            l.debug(f"Callable find matched state {state_id}")
+                            continue  # Don't also check avoid
+                    except Exception as e:
+                        l.debug(f"Find predicate error on state {state_id}: {e}")
+
+                # Check avoid predicate
+                if self._avoid_predicate is not None:
+                    try:
+                        if self._avoid_predicate(state):
+                            self._rust_mgr.move_state(state_id, 'active', 'avoid')
+                            l.debug(f"Callable avoid matched state {state_id}")
+                    except Exception as e:
+                        l.debug(f"Avoid predicate error on state {state_id}: {e}")
+            except Exception as e:
+                l.debug(f"Predicate evaluation error on state {state_id}: {e}")
+
     def _cleanup_state_cache(self):
         """Enforce the state cache size limit.
 
@@ -4024,6 +4067,12 @@ class RustExplorationManager:
                 else:
                     l.warning(f"Unknown callback reason: {event.callback_reason}")
                     break
+                # Evaluate callable find/avoid after each callback
+                if self._find_predicate is not None or self._avoid_predicate is not None:
+                    self._evaluate_predicates_on_active()
+                    if self._find_predicate and len(self.found) >= num_find:
+                        break
+
                 # Check `until` predicate after callback handling (needed for run(until=...))
                 if until is not None:
                     try:
@@ -4040,6 +4089,16 @@ class RustExplorationManager:
             elif event.event_type == 'step_complete':
                 # Periodic cleanup to prevent memory leaks
                 self._cleanup_symbolic_pages_cache()
+
+                # Evaluate callable find/avoid predicates on active states.
+                # Since Rust can't evaluate Python callables, we check after
+                # each step and move matching states to found/avoid stashes.
+                if self._find_predicate is not None or self._avoid_predicate is not None:
+                    self._evaluate_predicates_on_active()
+                    # Check if we found enough
+                    if self._find_predicate and len(self.found) >= num_find:
+                        break
+
                 # Check the `until` predicate after each step
                 if until is not None:
                     try:
