@@ -4121,9 +4121,12 @@ class RustExplorationManager:
         if has_predicates:
             # Disable Rust-side predicate callbacks — we handle predicates
             # on the Python cached states (which have stdout from printf).
-            # Rust's pending state doesn't have stdout content.
             self._rust_mgr.set_find_needs_python(False)
             self._rust_mgr.set_avoid_needs_python(False)
+            # Disable native puts/printf so stdout content flows through Python
+            # callbacks (needed for predicates that check state.posix.dumps(1)).
+            self._rust_mgr.disable_native_procedure("puts")
+            self._rust_mgr.disable_native_procedure("printf")
             while True:
                 if timeout is not None and (time.time() - start_time) > timeout:
                     break
@@ -4144,6 +4147,8 @@ class RustExplorationManager:
                             break
                     except Exception:
                         pass
+            # Final predicate check on deadended/remaining states
+            self._evaluate_predicates_on_active()
             return self
 
         # Run exploration loop (address-based find/avoid)
