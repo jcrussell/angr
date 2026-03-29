@@ -198,10 +198,10 @@ class RustRegisterProxy:
             val = self._mgr.get_state_register(self._state_id, name)
         except Exception:
             raise AttributeError(f"register '{name}' not found")
-        if val is None:
-            raise AttributeError(f"register '{name}' not found")
-        # Determine register width from architecture
         width = self._get_register_width(name)
+        if val is None:
+            # Register is symbolic — return a symbolic BVS
+            return claripy.BVS(f"reg_{name}_{self._state_id}", width)
         return claripy.BVV(val, width)
 
     def _get_register_width(self, name):
@@ -584,6 +584,20 @@ class RustSimulationManagerProxy:
     def stashes(self):
         """Dict-like access to all stashes."""
         return _StashDict(self)
+
+    @property
+    def _stashes(self):
+        """Direct stash dict access (for techniques that access simgr._stashes)."""
+        return self.stashes
+
+    def filter(self, state, filter_func=None):
+        """Default filter — delegates to filter_func or returns None.
+
+        Techniques call simgr.filter(state) to delegate to the next technique.
+        """
+        if filter_func is not None:
+            return filter_func(state)
+        return None
 
     def move(self, from_stash="active", to_stash="stashed", filter_func=None):
         """Move states between stashes."""

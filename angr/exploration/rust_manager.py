@@ -4097,6 +4097,12 @@ class RustExplorationManager:
         Returns:
             Self, for chaining.
         """
+        # Ensure predicate attributes exist (may not be set if find/avoid not provided)
+        if not hasattr(self, '_find_predicate'):
+            self._find_predicate = None
+        if not hasattr(self, '_avoid_predicate'):
+            self._avoid_predicate = None
+
         # Set find addresses and store predicate for P2 callback handling
         # Only override if explicitly provided (don't clear technique-set values)
         if find is not None:
@@ -4143,6 +4149,11 @@ class RustExplorationManager:
                     break
                 self.step()
                 steps_taken += 1
+                # Apply technique callbacks after each step
+                if self._active_techniques:
+                    self._apply_technique_filters()
+                    if self._check_technique_complete():
+                        break
                 self._evaluate_predicates_on_active()
                 pf = getattr(self, '_predicate_found', [])
                 if pf and len(pf) >= num_find:
@@ -4229,6 +4240,12 @@ class RustExplorationManager:
                     if self._find_predicate and len(self.found) >= num_find:
                         break
 
+                # Apply ExplorationTechnique callbacks after each Rust event
+                if self._active_techniques:
+                    self._apply_technique_filters()
+                    if self._check_technique_complete():
+                        break
+
                 # Check `until` predicate after callback handling (needed for run(until=...))
                 if until is not None:
                     try:
@@ -4245,6 +4262,15 @@ class RustExplorationManager:
             elif event.event_type == 'step_complete':
                 # Periodic cleanup to prevent memory leaks
                 self._cleanup_symbolic_pages_cache()
+
+                # Apply ExplorationTechnique filter() callbacks via proxy
+                if self._active_techniques:
+                    self._apply_technique_filters()
+
+                # Check ExplorationTechnique complete() callbacks
+                if self._active_techniques:
+                    if self._check_technique_complete():
+                        break
 
                 # Evaluate callable find/avoid predicates on active states.
                 # Since Rust can't evaluate Python callables, we check after
@@ -4312,6 +4338,9 @@ class RustExplorationManager:
                 break
             elif event.event_type in ('step_complete', 'found'):
                 steps_taken += 1
+                # Apply technique filters after each step
+                if self._active_techniques:
+                    self._apply_technique_filters()
             else:
                 # Unknown event type, count as a step
                 steps_taken += 1
@@ -4946,6 +4975,76 @@ class RustExplorationManager:
             return True
         except ValueError:
             return False
+
+    def _apply_technique_filters(self):
+        """Apply ExplorationTechnique filter() callbacks via proxy.
+
+        After each step, iterate active states through each technique's
+        filter() method. If filter() returns a stash name other than
+        'active', move the state to that stash in Rust.
+        """
+        from angr.exploration.rust_state_proxy import RustStateProxy, RustSimulationManagerProxy
+
+        if not self._active_techniques:
+            return
+
+        simgr_proxy = RustSimulationManagerProxy(
+            self._rust_mgr,
+            project=self._project,
+            stdin_vars=getattr(self, '_stdin_vars', None),
+            stdout_tracker=getattr(self, '_stdout_tracker', {}),
+        )
+
+        active_ids = list(self._rust_mgr.get_state_ids('active'))
+        for sid in active_ids:
+            state_proxy = RustStateProxy(
+                self._rust_mgr, sid, project=self._project,
+            )
+            # Run through each technique's filter in order
+            goto = None
+            for tech in self._active_techniques:
+                if hasattr(tech, 'filter'):
+                    try:
+                        result = tech.filter(simgr_proxy, state_proxy)
+                        if result is not None and result != 'active':
+                            goto = result
+                            break
+                    except Exception as e:
+                        l.debug(f"Technique {type(tech).__name__}.filter() error: {e}")
+
+            if goto is not None and goto != 'active':
+                try:
+                    self._rust_mgr.move_state(sid, 'active', goto)
+                except Exception as e:
+                    l.debug(f"Failed to move state {sid} to {goto}: {e}")
+
+    def _check_technique_complete(self) -> bool:
+        """Check ExplorationTechnique complete() callbacks.
+
+        Returns True if any technique says exploration is complete.
+        """
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+
+        if not self._active_techniques:
+            return False
+
+        simgr_proxy = RustSimulationManagerProxy(
+            self._rust_mgr,
+            project=self._project,
+            stdin_vars=getattr(self, '_stdin_vars', None),
+            stdout_tracker=getattr(self, '_stdout_tracker', {}),
+        )
+
+        for tech in self._active_techniques:
+            if hasattr(tech, 'complete'):
+                try:
+                    if tech.complete(simgr_proxy):
+                        l.debug(f"Technique {type(tech).__name__}.complete() returned True")
+                        return True
+                except Exception as e:
+                    l.debug(f"Technique {type(tech).__name__}.complete() error: {e}")
+
+        return False
 
     def run(self, **kwargs) -> "RustExplorationManager":
         """Alias for explore() for SimulationManager compatibility."""
