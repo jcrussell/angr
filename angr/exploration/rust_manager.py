@@ -4368,6 +4368,27 @@ class RustExplorationManager:
         """
         return self._get_stash_states('unconstrained')
 
+    @property
+    def proxy(self):
+        """Get a RustSimulationManagerProxy for lightweight state access.
+
+        Returns proxy objects that delegate reads directly to Rust via PyO3,
+        without creating full angr SimStates or syncing caches. Use this for
+        ExplorationTechnique callbacks, predicates, and fast state queries.
+
+        Example:
+            mgr.proxy.found[0].solver.eval(x)  # evaluates via Rust Z3 directly
+            mgr.proxy.found[0].addr             # reads PC from Rust state
+            mgr.proxy.found[0].regs.rax         # reads register from Rust state
+        """
+        from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
+        return RustSimulationManagerProxy(
+            self._rust_mgr,
+            project=self._project,
+            stdin_vars=getattr(self, '_stdin_vars', None),
+            stdout_tracker=getattr(self, '_stdout_tracker', {}),
+        )
+
     def _get_stash_states(self, stash: str) -> list:
         """Get states from a stash as angr SimStates.
 

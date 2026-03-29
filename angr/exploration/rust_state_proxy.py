@@ -1,0 +1,643 @@
+"""
+Lightweight proxy objects that expose Rust symex state via PyO3 bindings.
+
+Instead of creating full angr SimState objects and syncing bidirectionally,
+these proxies delegate reads directly to the Rust engine. This eliminates
+caching, sync bugs, and the dual-solver problem for non-SimProcedure paths.
+
+Full SimState creation is only needed for SimProcedure execution (which
+requires angr plugins like posix, filesystem, etc.).
+"""
+
+import logging
+
+import claripy
+
+l = logging.getLogger(__name__)
+
+
+class RustSolverProxy:
+    """
+    Wraps a RustSolverContext to present a claripy-compatible solver interface.
+
+    Delegates satisfiability checks, evaluation, and constraint operations
+    directly to the Rust Z3 solver — no claripy frontend sync needed.
+    """
+
+    def __init__(self, rust_mgr, state_id):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._solver_ctx = None  # lazy — forked on first access
+
+    def _ensure_solver(self):
+        if self._solver_ctx is None:
+            self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+
+    def satisfiable(self, extra_constraints=(), **kwargs):
+        """Check if the state's constraints are satisfiable."""
+        self._ensure_solver()
+        if extra_constraints:
+            self._solver_ctx.push()
+            try:
+                for c in extra_constraints:
+                    self._solver_ctx.add_constraint_ast(c)
+                return self._solver_ctx.satisfiable()
+            finally:
+                self._solver_ctx.pop()
+        return self._solver_ctx.satisfiable()
+
+    def eval(self, expr, n=1, cast_to=None, extra_constraints=(), **kwargs):
+        """Evaluate a symbolic expression to concrete value(s)."""
+        self._ensure_solver()
+        if extra_constraints:
+            self._solver_ctx.push()
+            try:
+                for c in extra_constraints:
+                    self._solver_ctx.add_constraint_ast(c)
+                return self._eval_inner(expr, n, cast_to)
+            finally:
+                self._solver_ctx.pop()
+        return self._eval_inner(expr, n, cast_to)
+
+    def _eval_inner(self, expr, n, cast_to):
+        if n == 1:
+            result = self._solver_ctx.eval(expr)
+            if result is None:
+                raise claripy.errors.UnsatError("unsat")
+            if cast_to is not None:
+                result = cast_to(result)
+            return (result,)
+        else:
+            results = self._solver_ctx.eval_upto(expr, n)
+            if cast_to is not None:
+                results = tuple(cast_to(r) for r in results)
+            else:
+                results = tuple(results)
+            return results
+
+    def eval_one(self, expr, **kwargs):
+        """Evaluate expression expecting exactly one solution."""
+        results = self.eval(expr, n=2, **kwargs)
+        if len(results) != 1:
+            raise claripy.errors.ClaripyError(
+                f"expected 1 solution, got {len(results)}"
+            )
+        return results[0]
+
+    def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), **kwargs):
+        """Evaluate expression for up to n solutions."""
+        return self.eval(expr, n=n, cast_to=cast_to,
+                        extra_constraints=extra_constraints, **kwargs)
+
+    def eval_exact(self, expr, n, **kwargs):
+        """Evaluate expression expecting exactly n solutions."""
+        results = self.eval(expr, n=n + 1, **kwargs)
+        if len(results) != n:
+            raise claripy.errors.ClaripyError(
+                f"expected {n} solutions, got {len(results)}"
+            )
+        return results
+
+    def eval_atleast(self, expr, n, **kwargs):
+        """Evaluate expression expecting at least n solutions."""
+        results = self.eval(expr, n=n, **kwargs)
+        if len(results) < n:
+            raise claripy.errors.ClaripyError(
+                f"expected at least {n} solutions, got {len(results)}"
+            )
+        return results
+
+    def min(self, expr, extra_constraints=(), signed=False, **kwargs):
+        """Get minimum value of expression."""
+        self._ensure_solver()
+        if extra_constraints:
+            self._solver_ctx.push()
+            try:
+                for c in extra_constraints:
+                    self._solver_ctx.add_constraint_ast(c)
+                result = self._solver_ctx.min(expr, signed=signed)
+            finally:
+                self._solver_ctx.pop()
+        else:
+            result = self._solver_ctx.min(expr, signed=signed)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return result
+
+    def max(self, expr, extra_constraints=(), signed=False, **kwargs):
+        """Get maximum value of expression."""
+        self._ensure_solver()
+        if extra_constraints:
+            self._solver_ctx.push()
+            try:
+                for c in extra_constraints:
+                    self._solver_ctx.add_constraint_ast(c)
+                result = self._solver_ctx.max(expr, signed=signed)
+            finally:
+                self._solver_ctx.pop()
+        else:
+            result = self._solver_ctx.max(expr, signed=signed)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return result
+
+    def add(self, *constraints):
+        """Add constraint(s) to the solver."""
+        self._ensure_solver()
+        for c in constraints:
+            if isinstance(c, (list, tuple)):
+                for cc in c:
+                    self._solver_ctx.add_constraint_ast(cc)
+            else:
+                self._solver_ctx.add_constraint_ast(c)
+
+    def is_true(self, expr, **kwargs):
+        """Check if expression is definitely true."""
+        self._ensure_solver()
+        return self._solver_ctx.is_true(expr)
+
+    def is_false(self, expr, **kwargs):
+        """Check if expression is definitely false."""
+        self._ensure_solver()
+        return self._solver_ctx.is_false(expr)
+
+    def symbolic(self, expr):
+        """Check if expression contains symbolic variables."""
+        if isinstance(expr, claripy.ast.Base):
+            return expr.symbolic
+        return False
+
+    def solution(self, expr, value, **kwargs):
+        """Check if value is a valid solution for expr."""
+        self._ensure_solver()
+        return self._solver_ctx.solution(expr, value)
+
+    @property
+    def constraints(self):
+        """Get all constraints as claripy ASTs."""
+        return self._mgr.export_state_constraints(self._state_id)
+
+
+class RustRegisterProxy:
+    """
+    Provides `state.regs.rax`-style access by delegating to Rust.
+
+    Register values are returned as claripy BVVs for compatibility
+    with code that expects symbolic bitvectors.
+    """
+
+    def __init__(self, rust_mgr, state_id, arch):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._arch = arch
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            val = self._mgr.get_state_register(self._state_id, name)
+        except Exception:
+            raise AttributeError(f"register '{name}' not found")
+        if val is None:
+            raise AttributeError(f"register '{name}' not found")
+        # Determine register width from architecture
+        width = self._get_register_width(name)
+        return claripy.BVV(val, width)
+
+    def _get_register_width(self, name):
+        """Get the bit width for a named register."""
+        # Common register widths by name pattern
+        if self._arch.name in ("AMD64", "X86_64"):
+            if name in ("rax", "rbx", "rcx", "rdx", "rsi", "rdi",
+                        "rbp", "rsp", "rip", "r8", "r9", "r10",
+                        "r11", "r12", "r13", "r14", "r15"):
+                return 64
+            if name in ("eax", "ebx", "ecx", "edx", "esi", "edi",
+                        "ebp", "esp", "eip"):
+                return 32
+            if name in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp"):
+                return 16
+            if name in ("al", "ah", "bl", "bh", "cl", "ch", "dl", "dh"):
+                return 8
+        elif self._arch.name in ("X86",):
+            if name in ("eax", "ebx", "ecx", "edx", "esi", "edi",
+                        "ebp", "esp", "eip"):
+                return 32
+            if name in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp"):
+                return 16
+            if name in ("al", "ah", "bl", "bh", "cl", "ch", "dl", "dh"):
+                return 8
+        elif "ARM" in self._arch.name or "AARCH" in self._arch.name:
+            if name.startswith("x") or name in ("sp", "lr", "pc"):
+                return 64 if "64" in self._arch.name else 32
+            if name.startswith("r") or name.startswith("w"):
+                return 32
+        elif "MIPS" in self._arch.name:
+            if name.startswith("v") or name.startswith("a") or name.startswith("t") or name.startswith("s"):
+                return 64 if "64" in self._arch.name else 32
+        # Default: use architecture word size
+        return self._arch.bits
+
+    def load(self, reg_name_or_offset, size=None):
+        """Load register by name."""
+        if isinstance(reg_name_or_offset, str):
+            return getattr(self, reg_name_or_offset)
+        raise NotImplementedError("register load by offset not yet supported in proxy")
+
+
+class RustMemoryProxy:
+    """
+    Provides `state.memory.load(addr, size)`-style access via Rust.
+
+    Returns bytes as claripy BVVs for compatibility.
+    """
+
+    def __init__(self, rust_mgr, state_id, arch):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._arch = arch
+
+    def load(self, addr, size=None, endness=None, **kwargs):
+        """Load memory from the Rust state."""
+        if isinstance(addr, claripy.ast.Base):
+            # Concrete address extraction
+            if addr.concrete:
+                addr = addr.concrete_value
+            else:
+                raise NotImplementedError(
+                    "symbolic memory load not supported in proxy"
+                )
+        if size is None:
+            size = self._arch.bytes
+        if isinstance(size, claripy.ast.Base):
+            size = size.concrete_value
+
+        data = self._mgr.get_state_memory(self._state_id, addr, size)
+        if data is None:
+            return claripy.BVV(0, size * 8)
+
+        # Convert bytes to BVV (default big-endian like angr)
+        if endness is None:
+            endness = self._arch.memory_endness
+        if endness == "Iend_LE":
+            val = int.from_bytes(data, "little")
+        else:
+            val = int.from_bytes(data, "big")
+        return claripy.BVV(val, size * 8)
+
+    def store(self, addr, data, **kwargs):
+        """Store not supported on proxy (read-only view)."""
+        raise NotImplementedError(
+            "memory store not supported on RustStateProxy (read-only)"
+        )
+
+
+class RustHistoryProxy:
+    """Provides state.history.recent_bbl_addrs and similar."""
+
+    def __init__(self, rust_mgr, state_id):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._bbl_addrs = None
+
+    @property
+    def recent_bbl_addrs(self):
+        if self._bbl_addrs is None:
+            snapshot = self._mgr.export_state(self._state_id)
+            self._bbl_addrs = snapshot.get_history()
+        return self._bbl_addrs
+
+    @property
+    def bbl_addrs(self):
+        return self.recent_bbl_addrs
+
+
+class RustPosixProxy:
+    """
+    Provides state.posix.dumps(fd) for stdin/stdout extraction.
+
+    For stdout (fd=1): reads from a Rust-side or Python-side buffer
+    of accumulated write/puts/printf output.
+
+    For stdin (fd=0): evaluates stdin symbolic variables under the
+    state's constraints to extract the concrete input.
+    """
+
+    def __init__(self, rust_mgr, state_id, stdin_vars=None, stdout_data=None):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._stdin_vars = stdin_vars or []  # list of (claripy BVS, offset) for stdin
+        self._stdout_data = stdout_data or b""  # accumulated stdout bytes
+
+    def dumps(self, fd):
+        """Dump file descriptor contents."""
+        if fd == 1:
+            # stdout — return accumulated output
+            return self._stdout_data
+        elif fd == 0:
+            # stdin — evaluate symbolic variables under constraints
+            return self._eval_stdin()
+        else:
+            l.warning("RustPosixProxy: fd %d not tracked, returning empty", fd)
+            return b""
+
+    def _eval_stdin(self):
+        """Evaluate stdin symbolic variables to concrete bytes."""
+        if not self._stdin_vars:
+            return b""
+        try:
+            solver_ctx = self._mgr.fork_state_solver(self._state_id)
+            result = bytearray()
+            for var, _offset in sorted(self._stdin_vars, key=lambda x: x[1]):
+                val = solver_ctx.eval(var)
+                if val is not None:
+                    # Convert to bytes
+                    byte_len = max(1, var.length // 8)
+                    result.extend(val.to_bytes(byte_len, "big"))
+            return bytes(result)
+        except Exception as e:
+            l.warning("RustPosixProxy: failed to evaluate stdin: %s", e)
+            return b""
+
+
+class RustStateProxy:
+    """
+    Lightweight read-through proxy to a Rust symex state.
+
+    Delegates property reads to Rust via PyO3 bindings. No caching,
+    no state sync — reads directly from the Rust engine.
+
+    Use this for:
+    - ExplorationTechnique filter()/complete() callbacks
+    - Callable find/avoid predicates
+    - Found-state export and solution extraction
+
+    Full SimState is only needed for SimProcedure execution.
+    """
+
+    def __init__(self, rust_mgr, state_id, project=None, stdin_vars=None,
+                 stdout_data=None):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._project = project
+        self._stdin_vars = stdin_vars
+        self._stdout_data = stdout_data or b""
+        # Lazy-initialized sub-proxies
+        self._solver_proxy = None
+        self._regs_proxy = None
+        self._mem_proxy = None
+        self._history_proxy = None
+        self._posix_proxy = None
+
+    @property
+    def state_id(self):
+        """Rust-side state identifier."""
+        return self._state_id
+
+    @property
+    def addr(self):
+        """Current program counter."""
+        try:
+            snapshot = self._mgr.export_state(self._state_id)
+            return snapshot.pc
+        except Exception:
+            return 0
+
+    @property
+    def ip(self):
+        """Alias for addr, as claripy BVV."""
+        return claripy.BVV(self.addr, self.arch.bits)
+
+    @property
+    def arch(self):
+        """Architecture object from the project."""
+        if self._project is not None:
+            return self._project.arch
+        # Fallback: get arch name from Rust and resolve
+        arch_name = self._mgr.arch
+        import archinfo
+        return archinfo.arch_from_id(arch_name)
+
+    @property
+    def project(self):
+        """The angr Project."""
+        return self._project
+
+    @property
+    def solver(self):
+        """Solver proxy — delegates to Rust Z3 via PyO3."""
+        if self._solver_proxy is None:
+            self._solver_proxy = RustSolverProxy(self._mgr, self._state_id)
+        return self._solver_proxy
+
+    @property
+    def se(self):
+        """Legacy alias for solver."""
+        return self.solver
+
+    @property
+    def regs(self):
+        """Register proxy — reads registers from Rust state."""
+        if self._regs_proxy is None:
+            self._regs_proxy = RustRegisterProxy(
+                self._mgr, self._state_id, self.arch
+            )
+        return self._regs_proxy
+
+    @property
+    def registers(self):
+        """Alias for regs."""
+        return self.regs
+
+    @property
+    def memory(self):
+        """Memory proxy — reads memory from Rust state."""
+        if self._mem_proxy is None:
+            self._mem_proxy = RustMemoryProxy(
+                self._mgr, self._state_id, self.arch
+            )
+        return self._mem_proxy
+
+    @property
+    def mem(self):
+        """Alias for memory."""
+        return self.memory
+
+    @property
+    def history(self):
+        """History proxy."""
+        if self._history_proxy is None:
+            self._history_proxy = RustHistoryProxy(
+                self._mgr, self._state_id
+            )
+        return self._history_proxy
+
+    @property
+    def posix(self):
+        """Posix proxy for stdin/stdout dumps."""
+        if self._posix_proxy is None:
+            self._posix_proxy = RustPosixProxy(
+                self._mgr, self._state_id,
+                stdin_vars=self._stdin_vars,
+                stdout_data=self._stdout_data,
+            )
+        return self._posix_proxy
+
+    @property
+    def options(self):
+        """Return empty set — options are managed by the Rust engine."""
+        return set()
+
+    @property
+    def globals(self):
+        """Return empty dict — globals not tracked in Rust proxy."""
+        return {}
+
+    def add_constraints(self, *constraints):
+        """Add constraints to the solver."""
+        self.solver.add(*constraints)
+
+    def satisfiable(self, **kwargs):
+        """Check if this state is satisfiable."""
+        return self.solver.satisfiable(**kwargs)
+
+    def copy(self):
+        """Create a shallow copy of the proxy (same Rust state)."""
+        return RustStateProxy(
+            self._mgr, self._state_id,
+            project=self._project,
+            stdin_vars=self._stdin_vars,
+            stdout_data=self._stdout_data,
+        )
+
+    def __repr__(self):
+        return f"<RustStateProxy id={self._state_id} addr={hex(self.addr)}>"
+
+
+class RustSimulationManagerProxy:
+    """
+    Presents a SimulationManager-like interface backed by Rust stashes.
+
+    Used by ExplorationTechniques that need simgr.stashes, simgr.found, etc.
+    States are returned as RustStateProxy objects (O(1) creation, no sync).
+    """
+
+    def __init__(self, rust_mgr, project=None, stdin_vars=None,
+                 stdout_tracker=None):
+        self._mgr = rust_mgr
+        self._project = project
+        self._stdin_vars = stdin_vars
+        self._stdout_tracker = stdout_tracker or {}  # state_id -> bytes
+        self._errored = []
+
+    def _wrap_state(self, state_id):
+        """Wrap a Rust state ID in a RustStateProxy."""
+        return RustStateProxy(
+            self._mgr, state_id,
+            project=self._project,
+            stdin_vars=self._stdin_vars,
+            stdout_data=self._stdout_tracker.get(state_id, b""),
+        )
+
+    def _get_stash(self, name):
+        """Get all states in a stash as proxy objects."""
+        state_ids = self._mgr.get_state_ids(name)
+        return [self._wrap_state(sid) for sid in state_ids]
+
+    @property
+    def active(self):
+        return self._get_stash("active")
+
+    @active.setter
+    def active(self, states):
+        l.warning("RustSimulationManagerProxy: setting active is not yet supported")
+
+    @property
+    def found(self):
+        return self._get_stash("found")
+
+    @property
+    def deadended(self):
+        return self._get_stash("deadended")
+
+    @property
+    def avoid(self):
+        return self._get_stash("avoid")
+
+    @property
+    def errored(self):
+        return self._errored
+
+    @property
+    def one_found(self):
+        """Return first found state or None."""
+        found = self.found
+        return found[0] if found else None
+
+    @property
+    def one_active(self):
+        """Return first active state or None."""
+        active = self.active
+        return active[0] if active else None
+
+    @property
+    def stashes(self):
+        """Dict-like access to all stashes."""
+        return _StashDict(self)
+
+    def move(self, from_stash="active", to_stash="stashed", filter_func=None):
+        """Move states between stashes."""
+        if filter_func is None:
+            count = self._mgr.move_states(from_stash, to_stash)
+        else:
+            # Move states that match filter
+            state_ids = self._mgr.get_state_ids(from_stash)
+            moved = 0
+            for sid in state_ids:
+                proxy = self._wrap_state(sid)
+                if filter_func(proxy):
+                    self._mgr.move_state(sid, from_stash, to_stash)
+                    moved += 1
+            count = moved
+        return count
+
+    def __repr__(self):
+        counts = self._mgr.stash_counts()
+        parts = [f"<RustSimulationManagerProxy"]
+        for name, count in sorted(counts.items()):
+            if count > 0:
+                parts.append(f" {name}:{count}")
+        parts.append(">")
+        return "".join(parts)
+
+
+class _StashDict:
+    """Dict-like wrapper for stash access: simgr.stashes['found']."""
+
+    def __init__(self, simgr_proxy):
+        self._simgr = simgr_proxy
+
+    def __getitem__(self, key):
+        return self._simgr._get_stash(key)
+
+    def __setitem__(self, key, value):
+        l.warning("_StashDict.__setitem__ not yet supported for key '%s'", key)
+
+    def __contains__(self, key):
+        counts = self._simgr._mgr.stash_counts()
+        return key in counts
+
+    def keys(self):
+        return self._simgr._mgr.stash_counts().keys()
+
+    def values(self):
+        return [self._simgr._get_stash(k) for k in self.keys()]
+
+    def items(self):
+        return [(k, self._simgr._get_stash(k)) for k in self.keys()]
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except Exception:
+            return default

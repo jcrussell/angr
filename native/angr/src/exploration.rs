@@ -2107,6 +2107,27 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Fork the solver context of an arbitrary state (by ID).
+    ///
+    /// Returns a new RustSolverContext with all of the state's constraints,
+    /// allowing Python to evaluate/solve against any state — not just the
+    /// pending callback state.  This is used by RustStateProxy.
+    pub fn fork_state_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
+        for stash in self.stashes.values() {
+            for state in stash.iter() {
+                if state.state_id() == state_id {
+                    let solver_ref = state.solver();
+                    let forked_ctx = solver_ref.borrow().fork();
+                    return Ok(RustSolverContext::from_sym_context(forked_ctx));
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!(
+            "fork_state_solver: state {} not found",
+            state_id
+        )))
+    }
+
     /// Get the number of constraints in the pending state's solver.
     pub fn pending_constraint_count(&self) -> PyResult<usize> {
         if let Some(ref pending) = self.pending_callback {
