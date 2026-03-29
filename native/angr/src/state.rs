@@ -940,6 +940,9 @@ pub struct ExplorationStateSnapshot {
     pub constraint_count: usize,
     /// Basic block history.
     history: Vec<u64>,
+    /// Named register values: (name, concrete_value, size_bits).
+    /// Pre-computed at export time so Python doesn't need offset tables.
+    named_registers: Vec<(String, u128, u32)>,
 }
 
 #[pymethods]
@@ -947,6 +950,17 @@ impl ExplorationStateSnapshot {
     /// Get raw register bytes.
     pub fn get_registers_raw(&self) -> Vec<u8> {
         self.registers_raw.clone()
+    }
+
+    /// Get named register values as a dict: {name: (value, size_bits)}.
+    ///
+    /// Pre-computed at export time using Rust's register tables,
+    /// so Python doesn't need architecture-specific offset mapping.
+    pub fn get_registers_named(&self) -> std::collections::HashMap<String, (u128, u32)> {
+        self.named_registers
+            .iter()
+            .map(|(name, value, bits)| (name.clone(), (*value, *bits)))
+            .collect()
     }
 
     /// Get history (basic block addresses visited).
@@ -1010,6 +1024,21 @@ impl RustSimState {
         // Export registers
         let registers_raw = self.get_registers_raw();
 
+        // Export named registers: read each GP register by name
+        let mut named_registers = Vec::new();
+        let ctx = self.solver.borrow();
+        for &name in self.arch.register_names() {
+            if let Some(size) = self.arch.register_size(name) {
+                let bv = self.registers.get_reg(name, &ctx);
+                if let Some(bv) = bv {
+                    if let Some(val) = bv.as_u128() {
+                        named_registers.push((name.to_string(), val, size * 8));
+                    }
+                    // Skip symbolic registers (they'll need AST recovery)
+                }
+            }
+        }
+
         // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
         let mut memory_pages: Vec<PageData> = Vec::new();
         for (page_num, page) in self.memory.pages().iter() {
@@ -1033,6 +1062,7 @@ impl RustSimState {
             memory_pages,
             constraint_count,
             history: self.history.clone(),
+            named_registers,
         }
     }
 }

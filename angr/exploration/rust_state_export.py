@@ -223,39 +223,17 @@ class RustStateExportMixin:
         # Create a blank state with the correct address
         state = self._project.factory.blank_state(addr=snapshot.pc)
 
-        # Set register values from raw bytes
-        reg_bytes = snapshot.get_registers_raw()
-        arch = self._project.arch
+        # Set register values from Rust's named register export.
+        # This uses Rust's architecture register tables directly,
+        # eliminating Python-side offset mapping.
+        named_regs = snapshot.get_registers_named()
+        for reg_name, (value, size_bits) in named_regs.items():
+            try:
+                setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
+            except Exception:
+                pass  # Skip VEX internal registers that angr doesn't expose
 
-        # Common register mappings for AMD64
-        if arch.name in ('AMD64', 'X86_64'):
-            reg_offsets = {
-                'rax': (16, 8), 'rcx': (24, 8), 'rdx': (32, 8), 'rbx': (40, 8),
-                'rsp': (48, 8), 'rbp': (56, 8), 'rsi': (64, 8), 'rdi': (72, 8),
-                'r8': (80, 8), 'r9': (88, 8), 'r10': (96, 8), 'r11': (104, 8),
-                'r12': (112, 8), 'r13': (120, 8), 'r14': (128, 8), 'r15': (136, 8),
-                'rip': (184, 8),
-            }
-            for reg_name, (offset, size) in reg_offsets.items():
-                if offset + size <= len(reg_bytes):
-                    value = int.from_bytes(reg_bytes[offset:offset+size], 'little')
-                    try:
-                        setattr(state.regs, reg_name, claripy.BVV(value, size * 8))
-                    except Exception as e:
-                        l.warning(f"Failed to set register {reg_name}: {e}")
-        elif arch.name == 'X86':
-            reg_offsets = {
-                'eax': (8, 4), 'ecx': (12, 4), 'edx': (16, 4), 'ebx': (20, 4),
-                'esp': (24, 4), 'ebp': (28, 4), 'esi': (32, 4), 'edi': (36, 4),
-                'eip': (68, 4),
-            }
-            for reg_name, (offset, size) in reg_offsets.items():
-                if offset + size <= len(reg_bytes):
-                    value = int.from_bytes(reg_bytes[offset:offset+size], 'little')
-                    try:
-                        setattr(state.regs, reg_name, claripy.BVV(value, size * 8))
-                    except Exception as e:
-                        l.warning(f"Failed to set register {reg_name}: {e}")
+        arch = self._project.arch
 
         # Load memory pages
         for i in range(snapshot.page_count()):
