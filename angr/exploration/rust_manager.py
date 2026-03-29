@@ -1099,17 +1099,23 @@ class RustExplorationManager:
         main_obj = self._project.loader.main_object
         addr = state.addr
 
-        # Only trigger for states outside ALL loaded binary objects
-        obj = self._project.loader.find_object_containing(addr)
-        if obj is not None and obj.binary is not None and not obj.binary.startswith('cle##'):
-            return state  # In a real binary, no init needed
+        # If state is at the entry point, always run Python init.
+        # This handles blank_state() at entry (C++ binaries need constructors)
+        # and entry_state() for binaries that need full libc initialization.
+        if addr == self._project.entry:
+            l.info(f"State at entry point 0x{addr:x}, running Python init to main")
+        else:
+            # Only trigger for states outside ALL loaded binary objects
+            obj = self._project.loader.find_object_containing(addr)
+            if obj is not None and obj.binary is not None and not obj.binary.startswith('cle##'):
+                return state  # In a real binary (not entry), no init needed
 
-        # Also check if it's a known SimProcedure (LinuxLoader, etc.)
-        is_init_proc = addr in self._project._sim_procedures
-        if not is_init_proc:
-            return state  # Not a SimProcedure, don't pre-run
+            # Also check if it's a known SimProcedure (LinuxLoader, etc.)
+            is_init_proc = addr in self._project._sim_procedures
+            if not is_init_proc:
+                return state  # Not a SimProcedure, don't pre-run
 
-        l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
+            l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
 
         try:
             # Find main function address for target
