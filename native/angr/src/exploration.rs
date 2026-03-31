@@ -848,7 +848,12 @@ impl RustExplorationManager {
             if self.hooks.contains(&pc) && !should_skip_hook {
                 // Check if this is a registered SimProcedure
                 if let Some((name, num_args, no_return)) = self.simprocedures.get(&pc).cloned() {
-                    // Try native procedure first
+                    // Skip native for addresses inside the binary (user-placed hooks)
+                    let is_in_binary = self.binary_regions.iter().any(|(base, data)| {
+                        pc >= *base && pc < *base + data.len() as u64
+                    });
+                    // Try native procedure first (only for external/library hooks)
+                    if !is_in_binary {
                     if let Some(native_proc) = self.native_procedures.get(&name) {
                         // Extract arguments from state registers and stack
                         let args = self.extract_procedure_args(&state, num_args);
@@ -918,6 +923,7 @@ impl RustExplorationManager {
                             }
                         }
                     }
+                    } // if !is_in_binary
 
                     // Fall back to Python for SimProcedure execution
                     let state_id = state.state_id();
@@ -2923,8 +2929,15 @@ impl RustExplorationManager {
                 }))
             }
             RunResult::SimProcedure { addr, name, num_args, return_addr } => {
-                // Try native procedure first — avoids Python callback overhead
-                let native_succeeded = if let Some(native_proc) = self.native_procedures.get(&name) {
+                // Try native procedure first — avoids Python callback overhead.
+                // Skip native for addresses inside the binary — these are user-placed
+                // hooks where the Python SimProcedure should always run (the user hooked
+                // a specific function for a reason, e.g., hooking strings_not_equal with strcmp).
+                let is_in_binary = self.binary_regions.iter().any(|(base, data)| {
+                    addr >= *base && addr < *base + data.len() as u64
+                });
+                let native_succeeded = if !is_in_binary {
+                    if let Some(native_proc) = self.native_procedures.get(&name) {
                     let args = self.extract_procedure_args(&state, num_args);
                     match native_proc.call(&mut state, &args) {
                         Ok(ret_val) => {
@@ -2952,8 +2965,11 @@ impl RustExplorationManager {
                     }
                 } else {
                     false
+                }} else {
+                    false
                 };
 
+                // Trace removed
                 if native_succeeded {
                     // Handle deferred forks same as normal successors
                     let original_state_id = state.state_id();

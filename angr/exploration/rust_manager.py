@@ -68,6 +68,10 @@ class RustExplorationManager(RustStateExportMixin):
             print(state.solver.eval(state.posix.dumps(0)))
     """
 
+    # Class-level cache for Python init results per binary
+    _init_cache: Dict[str, "angr.SimState"] = {}
+    _init_cache_max = 10
+
     def __init__(
         self,
         project: "angr.Project",
@@ -88,6 +92,31 @@ class RustExplorationManager(RustStateExportMixin):
         self._project = project
         self._rust_mgr = _RustExplorationManager(project.arch.name)
 
+        # Performance profiling counters
+        self._perf_stats = {
+            'init_total_ns': 0,
+            'init_setup_callbacks_ns': 0,
+            'init_load_binary_ns': 0,
+            'init_register_simprocedures_ns': 0,
+            'init_python_run_ns': 0,
+            'init_add_rust_state_ns': 0,
+            'init_memory_sync_ns': 0,
+            'init_register_sync_ns': 0,
+            'init_hook_register_ns': 0,
+            'callback_simprocedure_count': 0,
+            'callback_simprocedure_total_ns': 0,
+            'callback_simprocedure_state_create_ns': 0,
+            'callback_simprocedure_execute_ns': 0,
+            'callback_simprocedure_sync_back_ns': 0,
+            'callback_memory_load_count': 0,
+            'callback_memory_load_total_ns': 0,
+            'callback_fetch_page_count': 0,
+            'callback_fetch_page_total_ns': 0,
+            'callback_lift_block_count': 0,
+            'callback_lift_block_total_ns': 0,
+        }
+        _init_start = time.perf_counter_ns()
+
         # Track registered hooks to detect dynamically created continuations
         # SimProcedures can create continuation hooks via self.call() which
         # need to be registered with Rust before exploration continues
@@ -95,13 +124,19 @@ class RustExplorationManager(RustStateExportMixin):
         self._registered_hooks: set = set()
 
         # Set up callbacks
+        _t0 = time.perf_counter_ns()
         self._setup_callbacks()
+        self._perf_stats['init_setup_callbacks_ns'] = time.perf_counter_ns() - _t0
 
         # Load binary regions
+        _t0 = time.perf_counter_ns()
         self._load_binary_regions()
+        self._perf_stats['init_load_binary_ns'] = time.perf_counter_ns() - _t0
 
         # Register SimProcedures
+        _t0 = time.perf_counter_ns()
         self._register_simprocedures()
+        self._perf_stats['init_register_simprocedures_ns'] = time.perf_counter_ns() - _t0
 
         # Symbolic identity tracker for preserving AST identity across FFI
         # This is critical: BVS("x", 32) must stay the same object after round-trip
@@ -181,9 +216,44 @@ class RustExplorationManager(RustStateExportMixin):
                 # (not in the main binary), run the init sequence in Python
                 # first. This handles C++ constructors, .init_array, etc.
                 # that the Rust engine can't execute correctly.
+                _t0 = time.perf_counter_ns()
                 state = self._run_python_init_if_needed(state)
+                self._perf_stats['init_python_run_ns'] += time.perf_counter_ns() - _t0
 
+                _t0 = time.perf_counter_ns()
                 self._add_rust_state('active', state)
+                self._perf_stats['init_add_rust_state_ns'] += time.perf_counter_ns() - _t0
+
+        self._perf_stats['init_total_ns'] = time.perf_counter_ns() - _init_start
+
+    def perf_report(self) -> str:
+        """Return a formatted performance report."""
+        s = self._perf_stats
+        lines = ["=== Rust Engine Performance Report ==="]
+        lines.append(f"Init total: {s['init_total_ns']/1e6:.1f}ms")
+        lines.append(f"  Setup callbacks: {s['init_setup_callbacks_ns']/1e6:.1f}ms")
+        lines.append(f"  Load binary regions: {s['init_load_binary_ns']/1e6:.1f}ms")
+        lines.append(f"  Register SimProcedures: {s['init_register_simprocedures_ns']/1e6:.1f}ms")
+        lines.append(f"  Python init: {s['init_python_run_ns']/1e6:.1f}ms")
+        lines.append(f"  Add Rust state: {s['init_add_rust_state_ns']/1e6:.1f}ms")
+        lines.append(f"    Memory sync: {s['init_memory_sync_ns']/1e6:.1f}ms")
+        lines.append(f"    Register sync: {s['init_register_sync_ns']/1e6:.1f}ms")
+        lines.append(f"SimProcedure callbacks: {s['callback_simprocedure_count']}")
+        lines.append(f"  Total time: {s['callback_simprocedure_total_ns']/1e6:.1f}ms")
+        lines.append(f"  State create: {s['callback_simprocedure_state_create_ns']/1e6:.1f}ms")
+        lines.append(f"  Execute: {s['callback_simprocedure_execute_ns']/1e6:.1f}ms")
+        lines.append(f"  Sync back: {s['callback_simprocedure_sync_back_ns']/1e6:.1f}ms")
+        lines.append(f"Memory load callbacks: {s['callback_memory_load_count']}")
+        lines.append(f"  Total time: {s['callback_memory_load_total_ns']/1e6:.1f}ms")
+        if s['callback_memory_load_count'] > 0:
+            lines.append(f"  Avg per call: {s['callback_memory_load_total_ns']/s['callback_memory_load_count']/1e3:.1f}us")
+        lines.append(f"Fetch page callbacks: {s['callback_fetch_page_count']}")
+        lines.append(f"  Total time: {s['callback_fetch_page_total_ns']/1e6:.1f}ms")
+        lines.append(f"Lift block callbacks: {s['callback_lift_block_count']}")
+        lines.append(f"  Total time: {s['callback_lift_block_total_ns']/1e6:.1f}ms")
+        if s['callback_lift_block_count'] > 0:
+            lines.append(f"  Avg per call: {s['callback_lift_block_total_ns']/s['callback_lift_block_count']/1e3:.1f}us")
+        return "\n".join(lines)
 
     def _setup_callbacks(self):
         """Set up Python callbacks for the Rust engine."""
@@ -207,76 +277,81 @@ class RustExplorationManager(RustStateExportMixin):
 
         # Memory load callback - use per-fork state for correct isolation
         def memory_load(addr: int, size: int) -> tuple:
-            state = _get_per_fork_state()
-            if state is None:
-                return (bytes(size), False, None)
-
+            _ml_start = time.perf_counter_ns()
             try:
-                # Check preserved hook symbolic memory first
-                # This is critical for preserving symbolic relationships when
-                # hooks manipulate symbolic memory (like flareon2015_5)
-                # P5 fix: Use effective state ID to find parent's symbolic memory
-                state_id = self._current_callback_state_id
-                effective_state_id = self._get_effective_state_id(state_id) if state_id is not None else None
-                lookup_id = effective_state_id if effective_state_id is not None else state_id
-                if lookup_id is not None and lookup_id in self._hook_symbolic_memory:
-                    hook_mem = self._hook_symbolic_memory[lookup_id]
-                    for mem_addr, (ast, mem_size) in hook_mem.items():
-                        # Check if the requested address overlaps with tracked symbolic memory
-                        if mem_addr <= addr < mem_addr + mem_size:
-                            # Found symbolic memory at this address
-                            offset = addr - mem_addr
-                            if offset == 0 and size == mem_size:
-                                # Exact match - return the full AST
-                                concrete = state.solver.eval(ast).to_bytes(size, 'little')
-                                self._register_handle(id(ast), ast, addr=addr, size=size, state_id=lookup_id)
-                                l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
-                                return (concrete, True, ast)
-                            elif offset == 0 and size < mem_size:
-                                # Partial read from start - extract bytes
-                                extracted = claripy.Extract(size * 8 - 1, 0, ast)
-                                concrete = state.solver.eval(extracted).to_bytes(size, 'little')
-                                self._register_handle(id(extracted), extracted, addr=addr, size=size, state_id=lookup_id)
-                                return (concrete, True, extracted)
-
-                # Standard memory load from state
-                val = state.memory.load(addr, size, endness=state.arch.memory_endness)
-
-                # Fix 1C: Coerce thunks/callables to actual values
-                # Some memory loads can return callable thunks instead of proper ASTs
-                coerce_attempts = 0
-                while callable(val) and not hasattr(val, 'op') and coerce_attempts < 3:
-                    try:
-                        val = val()
-                        coerce_attempts += 1
-                    except Exception:
-                        l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
-                        val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
-                        break
-
-                # Validate we have a proper claripy AST
-                if not hasattr(val, 'op'):
-                    l.warning(f"Memory load at 0x{addr:x} returned invalid type: {type(val)}")
+                state = _get_per_fork_state()
+                if state is None:
                     return (bytes(size), False, None)
 
-                # Safe check for symbolic (handles callables)
-                is_symbolic = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
-                if is_symbolic:
-                    # Register the handle for later constraint reconstruction
-                    # This is critical for bidirectional constraint sync - when Rust
-                    # concretizes this address and syncs constraints back, we can
-                    # look up the original AST and properly constrain it
-                    handle_id = id(val)
-                    # Track address mapping for state export recovery (P1 fix)
-                    self._register_handle(handle_id, val, addr=addr, size=size, state_id=state_id)
-                    concrete = state.solver.eval(val).to_bytes(size, 'little')
-                    return (concrete, True, val)  # Return claripy AST for symbolic values
-                else:
-                    concrete = state.solver.eval(val).to_bytes(size, 'little')
-                    return (concrete, False, None)
-            except Exception as e:
-                l.warning(f"Memory load error at 0x{addr:x}: {e}")
-                return (bytes(size), False, None)
+                try:
+                    # Check preserved hook symbolic memory first
+                    # This is critical for preserving symbolic relationships when
+                    # hooks manipulate symbolic memory (like flareon2015_5)
+                    # P5 fix: Use effective state ID to find parent's symbolic memory
+                    state_id = self._current_callback_state_id
+                    effective_state_id = self._get_effective_state_id(state_id) if state_id is not None else None
+                    lookup_id = effective_state_id if effective_state_id is not None else state_id
+                    if lookup_id is not None and lookup_id in self._hook_symbolic_memory:
+                        hook_mem = self._hook_symbolic_memory[lookup_id]
+                        for mem_addr, (ast, mem_size) in hook_mem.items():
+                            # Check if the requested address overlaps with tracked symbolic memory
+                            if mem_addr <= addr < mem_addr + mem_size:
+                                # Found symbolic memory at this address
+                                offset = addr - mem_addr
+                                if offset == 0 and size == mem_size:
+                                    # Exact match - return the full AST
+                                    concrete = state.solver.eval(ast).to_bytes(size, 'little')
+                                    self._register_handle(id(ast), ast, addr=addr, size=size, state_id=lookup_id)
+                                    l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
+                                    return (concrete, True, ast)
+                                elif offset == 0 and size < mem_size:
+                                    # Partial read from start - extract bytes
+                                    extracted = claripy.Extract(size * 8 - 1, 0, ast)
+                                    concrete = state.solver.eval(extracted).to_bytes(size, 'little')
+                                    self._register_handle(id(extracted), extracted, addr=addr, size=size, state_id=lookup_id)
+                                    return (concrete, True, extracted)
+
+                    # Standard memory load from state
+                    val = state.memory.load(addr, size, endness=state.arch.memory_endness)
+
+                    # Fix 1C: Coerce thunks/callables to actual values
+                    # Some memory loads can return callable thunks instead of proper ASTs
+                    coerce_attempts = 0
+                    while callable(val) and not hasattr(val, 'op') and coerce_attempts < 3:
+                        try:
+                            val = val()
+                            coerce_attempts += 1
+                        except Exception:
+                            l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
+                            val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
+                            break
+
+                    # Validate we have a proper claripy AST
+                    if not hasattr(val, 'op'):
+                        l.warning(f"Memory load at 0x{addr:x} returned invalid type: {type(val)}")
+                        return (bytes(size), False, None)
+
+                    # Safe check for symbolic (handles callables)
+                    is_symbolic = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                    if is_symbolic:
+                        # Register the handle for later constraint reconstruction
+                        # This is critical for bidirectional constraint sync - when Rust
+                        # concretizes this address and syncs constraints back, we can
+                        # look up the original AST and properly constrain it
+                        handle_id = id(val)
+                        # Track address mapping for state export recovery (P1 fix)
+                        self._register_handle(handle_id, val, addr=addr, size=size, state_id=state_id)
+                        concrete = state.solver.eval(val).to_bytes(size, 'little')
+                        return (concrete, True, val)  # Return claripy AST for symbolic values
+                    else:
+                        concrete = state.solver.eval(val).to_bytes(size, 'little')
+                        return (concrete, False, None)
+                except Exception as e:
+                    l.warning(f"Memory load error at 0x{addr:x}: {e}")
+                    return (bytes(size), False, None)
+            finally:
+                self._perf_stats['callback_memory_load_count'] += 1
+                self._perf_stats['callback_memory_load_total_ns'] += time.perf_counter_ns() - _ml_start
 
         # Memory store callback
         def memory_store(addr: int, data: bytes):
@@ -292,28 +367,38 @@ class RustExplorationManager(RustStateExportMixin):
 
         # Block lifting callback
         def lift_block(addr: int) -> str:
-            import json
+            _lb_start = time.perf_counter_ns()
             try:
-                block = self._project.factory.block(addr)
-                irsb = block.vex
-                # Serialize to JSON
-                return self._serialize_irsb(irsb)
-            except Exception as e:
-                l.warning(f"Lift error at 0x{addr:x}: {e}")
-                return '{}'
+                import json
+                try:
+                    block = self._project.factory.block(addr)
+                    irsb = block.vex
+                    # Serialize to JSON
+                    return self._serialize_irsb(irsb)
+                except Exception as e:
+                    l.warning(f"Lift error at 0x{addr:x}: {e}")
+                    return '{}'
+            finally:
+                self._perf_stats['callback_lift_block_count'] += 1
+                self._perf_stats['callback_lift_block_total_ns'] += time.perf_counter_ns() - _lb_start
 
         # Page fetch callback
         def fetch_page(page_addr: int) -> tuple:
-            state = self._get_default_state()
-            if state is None:
-                return (bytes(4096), 0, False)
-
+            _fp_start = time.perf_counter_ns()
             try:
-                data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
-                concrete = state.solver.eval(data).to_bytes(4096, 'little')
-                return (concrete, 7, True)  # RWX permissions
-            except Exception as e:
-                return (bytes(4096), 0, False)
+                state = self._get_default_state()
+                if state is None:
+                    return (bytes(4096), 0, False)
+
+                try:
+                    data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
+                    concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                    return (concrete, 7, True)  # RWX permissions
+                except Exception as e:
+                    return (bytes(4096), 0, False)
+            finally:
+                self._perf_stats['callback_fetch_page_count'] += 1
+                self._perf_stats['callback_fetch_page_total_ns'] += time.perf_counter_ns() - _fp_start
 
         # Constraint sync callback - receives constraints from Rust before Python fallback
         def sync_constraints(constraints: list) -> bool:
@@ -904,10 +989,18 @@ class RustExplorationManager(RustStateExportMixin):
         main_obj = self._project.loader.main_object
         addr = state.addr
 
-        # If state is at the entry point, always run Python init.
-        # This handles blank_state() at entry (C++ binaries need constructors)
-        # and entry_state() for binaries that need full libc initialization.
+        # If state is at the entry point, run init to reach main.
         if addr == self._project.entry:
+            # Check init cache first — avoids ~180ms of Python simulation
+            cache_key = getattr(main_obj, 'binary', None) or ''
+            if cache_key and cache_key in RustExplorationManager._init_cache:
+                cached = RustExplorationManager._init_cache[cache_key]
+                l.info(f"Init cache hit for {cache_key}, copying state at 0x{cached.addr:x}")
+                new_state = cached.copy()
+                # Transfer solver constraints from original state
+                for c in state.solver.constraints:
+                    new_state.solver.add(c)
+                return new_state
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
             # Only trigger for states outside ALL loaded binary objects
@@ -921,6 +1014,7 @@ class RustExplorationManager(RustStateExportMixin):
                 return state  # Not a SimProcedure, don't pre-run
 
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
+            cache_key = getattr(main_obj, 'binary', None) or ''
 
         try:
             # Find main function address for target
@@ -962,8 +1056,11 @@ class RustExplorationManager(RustStateExportMixin):
                 if hasattr(obj, 'entry') and obj.entry:
                     init_addrs.add(obj.entry)
 
-            # Run in Python until we reach main
-            sm = self._project.factory.simulation_manager(state)
+            # Run in Python until we reach main.
+            # Use the REAL SimulationManager (not the monkey-patched factory)
+            # to avoid infinite recursion when the factory is patched.
+            from angr import SimulationManager
+            sm = SimulationManager(project=self._project, active_states=[state])
             main_min = main_obj.min_addr
             main_max = main_obj.max_addr
 
@@ -977,7 +1074,11 @@ class RustExplorationManager(RustStateExportMixin):
                     if at_main:
                         l.info(f"Python init complete: state reached main at 0x{main_addr:x} "
                                f"after {step} steps")
-                        return at_main[0]
+                        result = at_main[0]
+                        # Cache for future use
+                        if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
+                            RustExplorationManager._init_cache[cache_key] = result.copy()
+                        return result
 
                 # If no main symbol, look for states that are:
                 # 1. In the main binary
@@ -992,7 +1093,10 @@ class RustExplorationManager(RustStateExportMixin):
                     if in_main:
                         l.info(f"Python init complete: state at 0x{in_main[0].addr:x} "
                                f"after {step} steps")
-                        return in_main[0]
+                        result = in_main[0]
+                        if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
+                            RustExplorationManager._init_cache[cache_key] = result.copy()
+                        return result
 
                 sm.step()
 
@@ -1027,10 +1131,14 @@ class RustExplorationManager(RustStateExportMixin):
         rust_state.pc = angr_state.addr
 
         # Sync registers
+        _t_reg = time.perf_counter_ns()
         self._sync_registers_to_rust(angr_state, rust_state)
+        self._perf_stats['init_register_sync_ns'] += time.perf_counter_ns() - _t_reg
 
         # Map memory regions
+        _t_mem = time.perf_counter_ns()
         self._sync_memory_to_rust(angr_state, rust_state)
+        self._perf_stats['init_memory_sync_ns'] += time.perf_counter_ns() - _t_mem
 
         # Get state IDs before adding (to find the new one)
         ids_before = set(self._rust_mgr.get_state_ids(stash))
@@ -1075,6 +1183,9 @@ class RustExplorationManager(RustStateExportMixin):
                     try:
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, ast)
                         imported += 1
+                        # Track original AST for identity preservation during export
+                        self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8,
+                                              state_id=actual_state_id)
                     except Exception as e:
                         l.debug(f"Symbolic import at 0x{addr:x} failed: {e}")
                 if imported:
@@ -1119,10 +1230,11 @@ class RustExplorationManager(RustStateExportMixin):
         for reg_name in reg_names:
             try:
                 reg_val = getattr(regs, reg_name)
-                # Sync ALL registers, including symbolic ones
-                # For symbolic registers, evaluate to get a concrete value
-                # This ensures Rust has consistent state with Python
-                concrete_val = angr_state.solver.eval(reg_val)
+                # Fast path: if concrete, extract directly without solver
+                if not reg_val.symbolic:
+                    concrete_val = reg_val.args[0] if reg_val.op == 'BVV' else angr_state.solver.eval(reg_val)
+                else:
+                    concrete_val = angr_state.solver.eval(reg_val)
                 rust_state.set_register(reg_name, concrete_val)
             except (AttributeError, KeyError, Exception):
                 # Skip if register doesn't exist or can't be evaluated
@@ -1195,15 +1307,15 @@ class RustExplorationManager(RustStateExportMixin):
         stack_start = stack_base - 0x11_0000
         rust_state.add_lazy_region(stack_start, 0x11_0000)
 
-        # Pre-populate stack pages near SP from the Python state.
-        # This covers argv, environment, return addresses, and saved registers.
-        # Other regions use lazy fetching via fetch_page callback.
+        # Pre-populate stack page at SP from the Python state.
+        # Only load the page containing SP - this has the active stack frame
+        # with return addresses and saved registers. All other stack pages
+        # use lazy fetching via fetch_page callback when actually accessed.
+        # This avoids expensive solver.eval() on unconstrained fill pages.
         sp_page = sp & ~(page_size - 1)
         pages_synced = 0
         symbolic_regions = []  # (addr, claripy_ast) pairs to import
-        for page_addr in range(max(stack_start, sp_page - 32 * page_size),
-                               min(stack_base, sp_page + 8 * page_size),
-                               page_size):
+        for page_addr in [sp_page]:
             try:
                 page_data = angr_state.memory.load(
                     page_addr, page_size, endness='Iend_BE',
@@ -1214,21 +1326,118 @@ class RustExplorationManager(RustStateExportMixin):
                 rust_state.map_memory_data(page_addr, concrete, 6)
                 pages_synced += 1
 
-                # Track MEANINGFUL symbolic regions for import.
-                # Only import from pages ABOVE SP (argv/environ area),
-                # not below SP (unconstrained fill from entry_state).
-                if page_data.symbolic and page_addr >= sp_page:
-                    self._extract_symbolic_regions(
-                        angr_state, page_addr, page_size,
-                        arch.bytes, symbolic_regions)
+                # Only extract symbolic regions for meaningful symbols.
+                # Skip the expensive byte-by-byte scan for pages that only
+                # contain unconstrained fill (common for stack pages at init).
+                if page_data.symbolic:
+                    leaf_names = list(page_data.variables)
+                    has_user_sym = any(
+                        not n.startswith('mem_') and not n.startswith('reg_')
+                        and not n.startswith('unconstrained')
+                        for n in leaf_names
+                    )
+                    if has_user_sym:
+                        self._extract_symbolic_regions(
+                            angr_state, page_addr, page_size,
+                            arch.bytes, symbolic_regions)
             except Exception:
                 pass
         if pages_synced:
             l.debug(f"Pre-populated {pages_synced} stack pages in Rust memory")
 
+        # Scan non-stack memory pages for user-written symbolic data.
+        # Import WIDE symbolic objects (not byte-by-byte) to preserve identity.
+        # This ensures the Rust engine creates a single symbol that can be
+        # unified with the original user-created BVS during state export.
+        try:
+            pages = getattr(angr_state.memory, '_pages', {})
+            for page_no in sorted(pages.keys()):
+                page_addr = page_no * page_size
+                if stack_start <= page_addr < stack_base:
+                    continue  # Skip stack pages
+                try:
+                    page_data = angr_state.memory.load(
+                        page_addr, page_size, endness='Iend_BE',
+                        inspect=False, disable_actions=True)
+                    if page_data.symbolic:
+                        leaf_names = list(page_data.variables)
+                        has_user_sym = any(
+                            not n.startswith('mem_') and not n.startswith('reg_')
+                            and not n.startswith('unconstrained')
+                            for n in leaf_names
+                        )
+                        if has_user_sym:
+                            # Find contiguous symbolic regions and import them as
+                            # wide objects to preserve identity. Scan byte-by-byte
+                            # to find start/end of each symbolic region.
+                            self._extract_wide_symbolic_regions(
+                                angr_state, page_addr, page_size, symbolic_regions)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         if symbolic_regions:
             self._pending_symbolic_imports = symbolic_regions
             l.debug(f"Found {len(symbolic_regions)} symbolic regions for import")
+
+    def _extract_wide_symbolic_regions(self, angr_state, page_addr, page_size, out):
+        """Extract WIDE symbolic regions from a page.
+
+        Groups contiguous symbolic bytes that share the same variable and
+        imports them as a single wide object. This preserves symbolic identity
+        across the Rust/Python boundary (avoids creating rust_sym_XXX aliases).
+        """
+        offset = 0
+        while offset < page_size:
+            addr = page_addr + offset
+            try:
+                val = angr_state.memory.load(addr, 1, endness='Iend_BE',
+                                              inspect=False, disable_actions=True)
+                if not val.symbolic:
+                    offset += 1
+                    continue
+                leaf_names = list(val.variables)
+                is_user = any(
+                    not n.startswith('mem_') and not n.startswith('reg_')
+                    and not n.startswith('unconstrained')
+                    for n in leaf_names
+                )
+                if not is_user:
+                    offset += 1
+                    continue
+
+                # Found a symbolic byte — scan forward to find the full region
+                # that shares the same variable set
+                region_start = addr
+                region_vars = frozenset(leaf_names)
+                region_len = 1
+                while offset + region_len < page_size:
+                    next_addr = page_addr + offset + region_len
+                    try:
+                        next_val = angr_state.memory.load(
+                            next_addr, 1, endness='Iend_BE',
+                            inspect=False, disable_actions=True)
+                        if next_val.symbolic and frozenset(next_val.variables) == region_vars:
+                            region_len += 1
+                        else:
+                            break
+                    except Exception:
+                        break
+
+                # Load the full region as a single wide object
+                try:
+                    wide_val = angr_state.memory.load(
+                        region_start, region_len, endness='Iend_BE',
+                        inspect=False, disable_actions=True)
+                    out.append((region_start, wide_val))
+                except Exception:
+                    # Fall back to byte-by-byte
+                    out.append((addr, val))
+
+                offset += region_len
+            except Exception:
+                offset += 1
 
     def _extract_symbolic_regions(self, angr_state, page_addr, page_size, ptr_size, out):
         """Extract symbolic memory regions from a page for import to Rust.
@@ -2142,6 +2351,7 @@ class RustExplorationManager(RustStateExportMixin):
         - But we must NOT re-trigger the hook (which would cause infinite loop)
         - Solution: Tell Rust to skip the hook for this address on next step
         """
+        _sp_total_start = time.perf_counter_ns()
         addr = event.callback_addr
         name = event.callback_name
         state_id = event.callback_state_id
@@ -2154,6 +2364,8 @@ class RustExplorationManager(RustStateExportMixin):
             l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
             # Resume execution at this address, no SimProcedure to run
             self._rust_mgr.resume_after_simprocedure(addr, None, None)
+            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
 
         # Find the SimProcedure - first by address, then by name
@@ -2169,12 +2381,16 @@ class RustExplorationManager(RustStateExportMixin):
         if proc is None:
             l.warning(f"SimProcedure not found at 0x{addr:x} (name={name})")
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
+            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
 
         # Defensive type check
         if isinstance(proc, (list, tuple)):
             l.error(f"Invalid SimProcedure at 0x{addr:x}: got {type(proc).__name__}, expected callable")
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
+            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
 
         # Get hook length - this determines if the hook replaces code
@@ -2184,13 +2400,18 @@ class RustExplorationManager(RustStateExportMixin):
         is_zero_length_hook = (hook_length == 0)
 
         # Create angr state for the SimProcedure (uses cached state if available)
+        _sp_state_create_start = time.perf_counter_ns()
         state = self._create_state_for_callback(event)
         if state is None:
             l.warning(f"Could not create state for SimProcedure at 0x{addr:x}")
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
             self._set_callback_state(None)
             self._current_callback_state_id = None
+            self._perf_stats['callback_simprocedure_state_create_ns'] += time.perf_counter_ns() - _sp_state_create_start
+            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
+        self._perf_stats['callback_simprocedure_state_create_ns'] += time.perf_counter_ns() - _sp_state_create_start
 
         # Save original state for extracting changes after SimProcedure execution.
         # Copy the state for any SimProcedure that writes to memory, so
@@ -2210,6 +2431,7 @@ class RustExplorationManager(RustStateExportMixin):
         memory_tracker = CallbackMemoryTracker(state)
 
         # Run the SimProcedure
+        _sp_execute_start = time.perf_counter_ns()
         try:
             from angr.engines.successors import SimSuccessors
 
@@ -2225,6 +2447,7 @@ class RustExplorationManager(RustStateExportMixin):
                     # It's a class, instantiate it
                     proc_instance = proc()
                     proc_instance.execute(state, successors)
+            self._perf_stats['callback_simprocedure_execute_ns'] += time.perf_counter_ns() - _sp_execute_start
 
             # Get tracked memory writes from callback execution
             tracked_writes = memory_tracker.get_writes()
@@ -2234,7 +2457,8 @@ class RustExplorationManager(RustStateExportMixin):
             if tracked_symbolic_writes:
                 l.debug(f"Tracked {len(tracked_symbolic_writes)} symbolic memory writes during callback")
 
-            # Handle successors
+            # Handle successors - this includes sync back to Rust
+            _sp_sync_start = time.perf_counter_ns()
             all_succs = successors.all_successors
 
             # P1 fix: Capture procedure_data from successors that use self.call()
@@ -2341,15 +2565,18 @@ class RustExplorationManager(RustStateExportMixin):
                 if is_zero_length_hook and succ_addr_matches:
                     self._resume_with_state(first_succ, orig_state, event, skip_hook_addr=addr,
                                            tracked_writes=tracked_writes,
-                                           tracked_symbolic_writes=tracked_symbolic_writes)
+                                           tracked_symbolic_writes=tracked_symbolic_writes,
+                                           orig_constraints=orig_constraints)
                 elif succ_ip_symbolic:
                     self._resume_with_state(first_succ, orig_state, event,
                                            tracked_writes=tracked_writes,
-                                           tracked_symbolic_writes=tracked_symbolic_writes)
+                                           tracked_symbolic_writes=tracked_symbolic_writes,
+                                           orig_constraints=orig_constraints)
                 else:
                     self._resume_with_state(first_succ, orig_state, event,
                                            tracked_writes=tracked_writes,
-                                           tracked_symbolic_writes=tracked_symbolic_writes)
+                                           tracked_symbolic_writes=tracked_symbolic_writes,
+                                           orig_constraints=orig_constraints)
 
                 # Additional successors are added as new active states
                 for succ in all_succs[1:]:
@@ -2394,11 +2621,16 @@ class RustExplorationManager(RustStateExportMixin):
             # P19: Clear callback state since we've handled the error
             self._set_callback_state(None)
             self._current_callback_state_id = None
+            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
         # P19: Only clear callback state on success, not in finally
         # This ensures state isn't lost if resume fails
         self._set_callback_state(None)
         self._current_callback_state_id = None
+        self._perf_stats['callback_simprocedure_sync_back_ns'] += time.perf_counter_ns() - _sp_sync_start
+        self._perf_stats['callback_simprocedure_count'] += 1
+        self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
 
     def _resume_with_state(
         self,
@@ -2407,7 +2639,8 @@ class RustExplorationManager(RustStateExportMixin):
         event: "_ExplorationEvent",
         skip_hook_addr: Optional[int] = None,
         tracked_writes: Optional[list] = None,
-        tracked_symbolic_writes: Optional[list] = None
+        tracked_symbolic_writes: Optional[list] = None,
+        orig_constraints: Optional[set] = None
     ):
         """Resume Rust execution with a successor state.
 
@@ -2458,7 +2691,8 @@ class RustExplorationManager(RustStateExportMixin):
             mem_changes = [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
 
         # Extract any new constraints added during callback
-        new_constraints = self._extract_new_constraints(orig_state, succ_state)
+        new_constraints = self._extract_new_constraints(orig_state, succ_state,
+                                                        orig_constraints=orig_constraints)
         if new_constraints:
             l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
 
@@ -2622,26 +2856,31 @@ class RustExplorationManager(RustStateExportMixin):
     def _extract_new_constraints(
         self,
         orig_state: "angr.SimState",
-        new_state: "angr.SimState"
+        new_state: "angr.SimState",
+        orig_constraints: Optional[set] = None
     ) -> list:
         """Extract constraints added during callback execution.
 
         Compares constraint sets between original and successor states,
         returning any new constraints that were added during the callback.
 
-        Also checks the forked Rust solver context for any constraints that
-        were added there, ensuring bidirectional constraint flow.
-
-        Returns:
-            List of new claripy constraint ASTs.
+        Args:
+            orig_constraints: Pre-captured set of constraints from before the
+                callback. Use this instead of orig_state.solver.constraints
+                when orig_state may alias the successor (no copy was made).
         """
         new_constraints = []
 
         # Extract constraints from Python's claripy solver
         try:
-            orig_constraints = set(orig_state.solver.constraints)
+            # Use pre-captured constraints if available (critical when
+            # orig_state aliases succ_state — no copy was made)
+            if orig_constraints is not None:
+                prior = orig_constraints
+            else:
+                prior = set(orig_state.solver.constraints)
             state_constraints = set(new_state.solver.constraints)
-            python_added = state_constraints - orig_constraints
+            python_added = state_constraints - prior
             if python_added:
                 l.debug(f"Callback added {len(python_added)} new Python constraints")
                 new_constraints.extend(python_added)

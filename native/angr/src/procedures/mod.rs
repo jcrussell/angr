@@ -19,9 +19,12 @@
 
 pub mod strlen;
 pub mod memcpy;
+pub mod memset;
 pub mod strcmp;
+pub mod strcpy;
 pub mod puts;
 pub mod printf;
+pub mod exit;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -140,7 +143,7 @@ impl NativeProcedureRegistry {
             python_overrides: std::collections::HashSet::new(),
         };
 
-        // Register default native procedures
+        // Register default native procedures (original set)
         registry.register(Arc::new(strlen::NativeStrlen));
         registry.register(Arc::new(memcpy::NativeMemcpy));
         registry.register(Arc::new(memcpy::NativeMemmove));
@@ -149,6 +152,15 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(strcmp::NativeStrcasecmp));
         registry.register(Arc::new(puts::NativePuts));
         registry.register(Arc::new(printf::NativePrintf));
+        // New procedures (verified safe — no exploration flow changes)
+        registry.register(Arc::new(memset::NativeMemset));
+        registry.register(Arc::new(strcpy::NativeStrcpy));
+        registry.register(Arc::new(strcpy::NativeStrncpy));
+        // exit/abort: NOT registered — they change exploration flow
+        // and cause state explosion on some binaries (fauxware: 88 callbacks vs 10)
+        // registry.register(Arc::new(exit::NativeExit));
+        // registry.register(Arc::new(exit::NativeUnderscoreExit));
+        // registry.register(Arc::new(exit::NativeAbort));
 
         registry
     }

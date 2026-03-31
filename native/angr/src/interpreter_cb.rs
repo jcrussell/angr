@@ -1097,6 +1097,7 @@ impl<'a> CallbackInterpreter<'a> {
             match self.execute_block_with_callbacks(py, callbacks, &irsb) {
                 Ok(result) => {
                     blocks_executed += 1;
+                    // Trace removed after debugging
 
                     match result {
                         BlockResult::Continue { next_addr } => {
@@ -3069,6 +3070,7 @@ impl<'a> CallbackInterpreter<'a> {
     /// Handle an exit (update PC, return result).
     fn handle_exit(&mut self, target: u64, jumpkind: JumpKind) -> BlockResult {
         self.set_pc(target);
+        // Trace removed after debugging
 
         if jumpkind.is_syscall() {
             let syscall_num = self.get_syscall_num();

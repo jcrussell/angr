@@ -128,6 +128,16 @@ class RustStateExportMixin:
                     if hasattr(leaf, 'args') and len(leaf.args) > 0 and isinstance(leaf.args[0], str):
                         existing_leaves[leaf.args[0]] = leaf
 
+            # Build substitution map: rust_sym_ADDR → original AST
+            # This unifies Rust-created symbols with user-created ones
+            rust_sym_to_original = {}
+            root_id = self._state_roots.get(state_id, state_id)
+            for lookup_id in [state_id, root_id]:
+                addr_map = self._addr_to_ast.get(lookup_id, {})
+                for addr, (ast, size) in addr_map.items():
+                    rust_name = f"rust_sym_{addr:x}"
+                    rust_sym_to_original[rust_name] = ast
+
             for c in rust_constraints:
                 if c is None:
                     continue
@@ -137,6 +147,21 @@ class RustStateExportMixin:
                     if 'reg_' in c_str:
                         skipped += 1
                         continue
+
+                    # Replace rust_sym_XXXX references with original ASTs
+                    # This is critical for constraint identity unification
+                    if rust_sym_to_original and 'rust_sym_' in c_str:
+                        try:
+                            for rust_name, orig_ast in rust_sym_to_original.items():
+                                for leaf in c.leaf_asts():
+                                    if hasattr(leaf, 'args') and len(leaf.args) > 0:
+                                        leaf_name = leaf.args[0] if isinstance(leaf.args[0], str) else ''
+                                        if leaf_name.startswith(rust_name):
+                                            # Substitute: replace rust symbol with original
+                                            c = c.replace(leaf, orig_ast)
+                                            break
+                        except Exception:
+                            pass  # Substitution failed, use constraint as-is
 
                     # Check for identity mismatch: if a Rust constraint uses
                     # a symbol with the same NAME as a Python symbol but a
@@ -278,7 +303,7 @@ class RustStateExportMixin:
                                     original_ast = tracked_ast
                                     l.debug(f"Recovered original AST at 0x{sym_addr:x} for state {snapshot.state_id}")
 
-                            # Also check parent state for inherited symbolic values
+                            # Also check parent and root states for inherited symbolic values
                             if original_ast is None and snapshot.parent_id >= 0:
                                 parent_addr_map = self._addr_to_ast.get(snapshot.parent_id, {})
                                 if sym_addr in parent_addr_map:
@@ -286,6 +311,16 @@ class RustStateExportMixin:
                                     if tracked_size == size:
                                         original_ast = tracked_ast
                                         l.debug(f"Recovered original AST from parent at 0x{sym_addr:x}")
+
+                            # Check root state (for deeply forked states)
+                            if original_ast is None:
+                                root_id = self._state_roots.get(snapshot.state_id)
+                                if root_id is not None and root_id != snapshot.state_id:
+                                    root_addr_map = self._addr_to_ast.get(root_id, {})
+                                    if sym_addr in root_addr_map:
+                                        tracked_ast, tracked_size = root_addr_map[sym_addr]
+                                        if tracked_size == size:
+                                            original_ast = tracked_ast
 
                             # Also check hook symbolic memory
                             hook_mem = self._hook_symbolic_memory.get(snapshot.state_id, {})

@@ -20,7 +20,7 @@ use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyTuple};
+use pyo3::types::{PyBytes, PyInt, PyTuple};
 
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext, global_registry};
 
@@ -900,17 +900,21 @@ pub fn rustbv_to_claripy(
                 claripy_mod
                     .call_method1("BVV", (*value as i64, *width))
                     .map(|obj| obj.into())
-            } else {
-                // P3 Fix: Use big-endian for claripy compatibility
-                // Phase 1 Fix: Round up byte count for non-byte-aligned widths
-                // e.g., width=70 needs 9 bytes, not 8
-                let byte_count = (*width as usize + 7) / 8;
+            } else if *width % 8 == 0 {
+                // Byte-aligned: use bytes for exact representation
+                let byte_count = *width as usize / 8;
                 let bytes = value.to_be_bytes();
-                // Take the least significant bytes (from the end of big-endian representation)
                 let start = bytes.len().saturating_sub(byte_count);
                 let py_bytes = PyBytes::new(py, &bytes[start..]);
                 claripy_mod
                     .call_method1("BVV", (py_bytes, *width))
+                    .map(|obj| obj.into())
+            } else {
+                // Non-byte-aligned: use Python int to avoid string/size mismatch
+                // claripy.BVV(int_value, width) works for any width
+                let py_int = PyInt::new(py, *value);
+                claripy_mod
+                    .call_method1("BVV", (py_int, *width))
                     .map(|obj| obj.into())
             }
         }
@@ -927,16 +931,19 @@ pub fn rustbv_to_claripy(
                 claripy_mod
                     .call_method1("BVV", (*value as i64, *width))
                     .map(|obj| obj.into())
-            } else {
-                // P3 Fix: Use big-endian for claripy compatibility
-                // Phase 1 Fix: Round up byte count for non-byte-aligned widths
-                let byte_count = (*width as usize + 7) / 8;
+            } else if *width % 8 == 0 {
+                let byte_count = *width as usize / 8;
                 let bytes = value.to_be_bytes();
-                // Take the least significant bytes (from the end of big-endian representation)
                 let start = bytes.len().saturating_sub(byte_count);
                 let py_bytes = PyBytes::new(py, &bytes[start..]);
                 claripy_mod
                     .call_method1("BVV", (py_bytes, *width))
+                    .map(|obj| obj.into())
+            } else {
+                // Non-byte-aligned: use Python int
+                let py_int = PyInt::new(py, *value);
+                claripy_mod
+                    .call_method1("BVV", (py_int, *width))
                     .map(|obj| obj.into())
             }
         }

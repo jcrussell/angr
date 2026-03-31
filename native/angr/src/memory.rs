@@ -383,10 +383,35 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        // Check for stored symbolic object first
+        // Check for stored symbolic object at exact address first
         if let Some(sym) = self.symbolic_objects.get(&addr) {
             if sym.width() == size * 8 {
                 return Ok(sym.clone());
+            }
+            // Partial read from a wider symbolic object
+            // e.g., reading 1 byte from a 128-byte BVS
+            if sym.width() > size * 8 {
+                let total_bits = sym.width();
+                // Big-endian extraction: byte 0 is the MSB (highest bits)
+                let hi = total_bits - 1;
+                let lo = total_bits - size * 8;
+                return Ok(sym.extract(hi, lo, ctx));
+            }
+        }
+        // Check if this address falls WITHIN a wider symbolic object
+        // stored at a lower address (e.g., reading byte 5 of a 128-byte BVS)
+        for base_offset in 1..=256u64 {
+            let base_addr = addr.wrapping_sub(base_offset);
+            if let Some(sym) = self.symbolic_objects.get(&base_addr) {
+                let sym_bytes = sym.width() / 8;
+                if base_offset < sym_bytes as u64
+                    && base_offset + size as u64 <= sym_bytes as u64
+                {
+                    let total_bits = sym.width();
+                    let hi = total_bits - (base_offset as u32 * 8) - 1;
+                    let lo = hi + 1 - size * 8;
+                    return Ok(sym.extract(hi, lo, ctx));
+                }
             }
         }
 
