@@ -1181,9 +1181,16 @@ class RustExplorationManager(RustStateExportMixin):
                 imported = 0
                 for addr, ast in self._pending_symbolic_imports:
                     try:
-                        self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, ast)
+                        # Byte-reverse multi-byte symbolic values before importing to Rust.
+                        # Rust's memory model extracts addr+0 as the LSB (little-endian),
+                        # but the wide values were loaded with Iend_BE (MSB at lowest addr).
+                        # Reversing ensures the Rust byte extraction matches Python's.
+                        import_ast = ast
+                        if hasattr(ast, 'length') and ast.length > 8:
+                            import_ast = claripy.Reverse(ast)
+                        self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported += 1
-                        # Track original AST for identity preservation during export
+                        # Track the ORIGINAL (non-reversed) AST for identity preservation
                         self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8,
                                               state_id=actual_state_id)
                     except Exception as e:
@@ -2728,7 +2735,9 @@ class RustExplorationManager(RustStateExportMixin):
 
         for addr, ast in all_sym_imports:
             try:
-                self._rust_mgr.import_symbolic_to_state(state_id, addr, ast)
+                # Byte-reverse multi-byte values for Rust's LE internal memory model
+                import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
+                self._rust_mgr.import_symbolic_to_state(state_id, addr, import_ast)
                 l.debug(f"Imported symbolic memory at 0x{addr:x} to state {state_id}")
             except Exception as e:
                 l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
@@ -2844,7 +2853,9 @@ class RustExplorationManager(RustStateExportMixin):
 
         for sym_addr, ast in all_sym_imports:
             try:
-                self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, ast)
+                # Byte-reverse multi-byte values for Rust's LE internal memory model
+                import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
+                self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, import_ast)
                 l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to state {state_id}")
             except Exception as e:
                 l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
@@ -4281,7 +4292,7 @@ class RustExplorationManager(RustStateExportMixin):
                 # Evaluate callable find/avoid after each callback
                 if self._find_predicate is not None or self._avoid_predicate is not None:
                     self._evaluate_predicates_on_active()
-                    if self._find_predicate and len(self.found) >= num_find:
+                    if self._find_predicate and self._found_count() >= num_find:
                         break
 
                 # Apply ExplorationTechnique callbacks after each Rust event
@@ -4322,7 +4333,7 @@ class RustExplorationManager(RustStateExportMixin):
                 if self._find_predicate is not None or self._avoid_predicate is not None:
                     self._evaluate_predicates_on_active()
                     # Check if we found enough
-                    if self._find_predicate and len(self.found) >= num_find:
+                    if self._find_predicate and self._found_count() >= num_find:
                         break
 
                 # Check the `until` predicate after each step
@@ -4390,6 +4401,13 @@ class RustExplorationManager(RustStateExportMixin):
                 steps_taken += 1
 
         return self
+
+    def _found_count(self) -> int:
+        """Fast count of found states without triggering full state export/sync."""
+        count = len(self._rust_mgr.get_state_ids('found'))
+        if hasattr(self, '_predicate_found') and self._predicate_found:
+            count += len(self._predicate_found)
+        return count
 
     @property
     def active(self) -> list:
@@ -4750,6 +4768,35 @@ class RustExplorationManager(RustStateExportMixin):
         if found:
             return found[0]
         return None
+
+    def copy(self) -> "RustExplorationManager":
+        """Return self for SimulationManager API compatibility.
+
+        RustExplorationManager is stateful and backed by a single Rust object,
+        so a true deep copy isn't possible. Return self to satisfy callers like
+        angr.callable that store a reference to the manager.
+        """
+        return self
+
+    def merge(self, stash: str = 'active', **kwargs) -> "RustExplorationManager":
+        """Merge states in a stash (best-effort for SimulationManager compatibility).
+
+        True state merging requires claripy merge which isn't supported across
+        the Rust/Python boundary. This is a no-op that keeps the first state.
+        """
+        state_ids = list(self._rust_mgr.get_state_ids(stash))
+        if len(state_ids) > 1:
+            # Keep first, drop rest
+            for sid in state_ids[1:]:
+                try:
+                    self._rust_mgr.move_state(sid, stash, '_drop')
+                except Exception:
+                    pass
+            try:
+                self._rust_mgr.clear_stash('_drop')
+            except Exception:
+                pass
+        return self
 
     def __len__(self) -> int:
         """Return total number of active states."""

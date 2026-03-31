@@ -393,6 +393,7 @@ impl SymbolicMemory {
             if sym.width() > size * 8 {
                 let total_bits = sym.width();
                 // Big-endian extraction: byte 0 is the MSB (highest bits)
+                // This matches angr's Python convention for memory.store with Iend_BE
                 let hi = total_bits - 1;
                 let lo = total_bits - size * 8;
                 return Ok(sym.extract(hi, lo, ctx));
