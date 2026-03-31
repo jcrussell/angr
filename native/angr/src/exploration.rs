@@ -638,6 +638,12 @@ impl RustExplorationManager {
             .unwrap_or_default()
     }
 
+    /// Get the root state ID for any state.
+    /// Returns the original (initial) state from which this state was forked.
+    pub fn get_state_root(&self, state_id: u64) -> Option<u64> {
+        self.state_roots.get(&state_id).copied()
+    }
+
     /// Set the PC of the pending callback state (for external initialization).
     pub fn set_pending_state_pc(&mut self, pc: u64) -> PyResult<()> {
         if let Some(ref mut pending) = self.pending_callback {
@@ -2098,11 +2104,21 @@ impl RustExplorationManager {
                     let ctx = solver_ref.borrow();
                     let assumed = ctx.get_assumed_constraints();
                     let mut results = Vec::new();
-                    for (bv, _is_true) in &assumed {
+                    for (bv, is_true) in &assumed {
                         // Export the raw RustBV as claripy AST.
-                        // Python side will wrap as constraint.
+                        // For false-assumed constraints, negate: cond == 0.
                         match rustbv_to_claripy(py, bv, claripy.as_any()) {
-                            Ok(ast) => results.push(ast),
+                            Ok(ast) => {
+                                if *is_true {
+                                    results.push(ast);
+                                } else {
+                                    // Negate: wrap as `Not(cond)` via claripy
+                                    match claripy.call_method1("Not", (ast,)) {
+                                        Ok(negated) => results.push(negated.unbind()),
+                                        Err(_) => {} // skip if negation fails
+                                    }
+                                }
+                            }
                             Err(_) => {}
                         }
                     }

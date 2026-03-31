@@ -70,6 +70,11 @@ class RustStateExportMixin:
             # First try: look up parent state in cache (for intercepted find/avoid states)
             for sid in uncached_ids:
                 root = self._state_roots.get(sid)
+                if root is None:
+                    try:
+                        root = self._rust_mgr.get_state_root(sid)
+                    except Exception:
+                        pass
                 if root is not None and root in self._state_cache:
                     state = self._state_cache[root].copy()
                     self._restore_plugins_to_state(state, sid)
@@ -132,6 +137,13 @@ class RustStateExportMixin:
             # This unifies Rust-created symbols with user-created ones
             rust_sym_to_original = {}
             root_id = self._state_roots.get(state_id, state_id)
+            if root_id == state_id:
+                try:
+                    rust_root = self._rust_mgr.get_state_root(state_id)
+                    if rust_root is not None:
+                        root_id = rust_root
+                except Exception:
+                    pass
             for lookup_id in [state_id, root_id]:
                 addr_map = self._addr_to_ast.get(lookup_id, {})
                 for addr, (ast, size) in addr_map.items():
@@ -315,6 +327,11 @@ class RustStateExportMixin:
                             # Check root state (for deeply forked states)
                             if original_ast is None:
                                 root_id = self._state_roots.get(snapshot.state_id)
+                                if root_id is None:
+                                    try:
+                                        root_id = self._rust_mgr.get_state_root(snapshot.state_id)
+                                    except Exception:
+                                        pass
                                 if root_id is not None and root_id != snapshot.state_id:
                                     root_addr_map = self._addr_to_ast.get(root_id, {})
                                     if sym_addr in root_addr_map:
@@ -392,6 +409,13 @@ class RustStateExportMixin:
 
         # Try to find root state ID
         root_id = self._state_roots.get(state_id, state_id)
+        if root_id == state_id:
+            try:
+                rust_root = self._rust_mgr.get_state_root(state_id)
+                if rust_root is not None:
+                    root_id = rust_root
+            except Exception:
+                pass
         if root_id in self._state_cache:
             template = self._state_cache[root_id]
 
