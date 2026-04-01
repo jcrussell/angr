@@ -1182,12 +1182,10 @@ class RustExplorationManager(RustStateExportMixin):
                 for addr, ast in self._pending_symbolic_imports:
                     try:
                         # Byte-reverse multi-byte symbolic values before importing to Rust.
-                        # Rust's memory model extracts addr+0 as the LSB (little-endian),
-                        # but the wide values were loaded with Iend_BE (MSB at lowest addr).
-                        # Reversing ensures the Rust byte extraction matches Python's.
-                        import_ast = ast
-                        if hasattr(ast, 'length') and ast.length > 8:
-                            import_ast = claripy.Reverse(ast)
+                        # Wide values are loaded with Iend_BE (preserving original BVS identity).
+                        # Rust's memory model uses LE byte extraction internally, so we
+                        # apply Reverse() to match.
+                        import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported += 1
                         # Track the ORIGINAL (non-reversed) AST for identity preservation
@@ -2735,9 +2733,7 @@ class RustExplorationManager(RustStateExportMixin):
 
         for addr, ast in all_sym_imports:
             try:
-                # Byte-reverse multi-byte values for Rust's LE internal memory model
-                import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
-                self._rust_mgr.import_symbolic_to_state(state_id, addr, import_ast)
+                self._rust_mgr.import_symbolic_to_state(state_id, addr, ast)
                 l.debug(f"Imported symbolic memory at 0x{addr:x} to state {state_id}")
             except Exception as e:
                 l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
@@ -2853,9 +2849,7 @@ class RustExplorationManager(RustStateExportMixin):
 
         for sym_addr, ast in all_sym_imports:
             try:
-                # Byte-reverse multi-byte values for Rust's LE internal memory model
-                import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
-                self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, import_ast)
+                self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, ast)
                 l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to state {state_id}")
             except Exception as e:
                 l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
@@ -4551,8 +4545,16 @@ class RustExplorationManager(RustStateExportMixin):
         return check_technique_complete(self)
 
     def run(self, **kwargs) -> "RustExplorationManager":
-        """Alias for explore() for SimulationManager compatibility."""
-        return self.explore(**kwargs)
+        """Alias for explore() for SimulationManager compatibility.
+
+        Handles step_func: if provided, called after exploration completes
+        as a maintenance function (prune, stash management, etc.).
+        """
+        step_func = kwargs.pop('step_func', None)
+        result = self.explore(**kwargs)
+        if step_func is not None:
+            return step_func(result)
+        return result
 
     def move(self, from_stash: str, to_stash: str, filter_func=None) -> "RustExplorationManager":
         """Move states between stashes.
@@ -4634,6 +4636,9 @@ class RustExplorationManager(RustStateExportMixin):
 
                 if filter_func(py_state):
                     keep_ids.append(state_id)
+                    # Cache the snapshot-exported state so _get_stash_states
+                    # can find it later (avoids falling back to stale root copy)
+                    self._state_cache[state_id] = py_state
                 else:
                     prune_ids.append(state_id)
             except Exception as e:

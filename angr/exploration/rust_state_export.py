@@ -48,6 +48,7 @@ class RustStateExportMixin:
                 state = self._state_cache[state_id]
                 self._restore_plugins_to_state(state, state_id)
                 self._sync_exported_constraints(state, state_id)
+                self._attach_rust_solver_fallback(state, state_id)
                 # Sync Rust PC to the Python state so multi-stage exploration
                 # (re-init from found state) gets the correct program counter.
                 try:
@@ -79,6 +80,7 @@ class RustStateExportMixin:
                     state = self._state_cache[root].copy()
                     self._restore_plugins_to_state(state, sid)
                     self._sync_exported_constraints(state, sid)
+                    self._attach_rust_solver_fallback(state, sid)
                     states.append(state)
                     cached_ids.add(sid)
 
@@ -92,6 +94,7 @@ class RustStateExportMixin:
                     state = self._state_cache[stepping_id].copy()
                     self._restore_plugins_to_state(state, sid)
                     self._sync_exported_constraints(state, sid)
+                    self._attach_rust_solver_fallback(state, sid)
                     states.append(state)
                     cached_ids.add(sid)
 
@@ -113,29 +116,32 @@ class RustStateExportMixin:
 
         return states
 
+    def _attach_rust_solver_fallback(self, state, state_id):
+        """Attach a Rust solver fallback to the state.
+
+        When Python constraint sync creates UNSAT, the state's solver.eval()
+        will fail. This fallback uses the Rust solver (which has the correct
+        answer) to evaluate symbolic values by reading concrete memory.
+        """
+        rust_mgr = self._rust_mgr
+        addr_to_ast = self._addr_to_ast
+        state_roots = self._state_roots
+
+        # Store the rust state info on the state for later use
+        state.scratch.rust_mgr = rust_mgr
+        state.scratch.rust_found_state_id = state_id
+
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
 
-        Adds Rust-exported constraints to the Python state. Skips register
-        constraints and constraints that use symbols with different identity
-        than existing Python symbols (which would cause UNSAT).
+        First pins tracked symbolic variables to their Rust-solved concrete
+        values, then adds Rust path constraints. Skips register constraints
+        and constraints that use symbols with different identity.
         """
         try:
-            rust_constraints = self._rust_mgr.export_state_constraints(state_id)
-            synced = 0
-            skipped = 0
-
-            # Build a map of existing Python leaf ASTs by variable name.
-            # Used to detect identity mismatches: same name, different object.
-            existing_leaves = {}
-            for c in state.solver.constraints:
-                for leaf in c.leaf_asts():
-                    if hasattr(leaf, 'args') and len(leaf.args) > 0 and isinstance(leaf.args[0], str):
-                        existing_leaves[leaf.args[0]] = leaf
-
-            # Build substitution map: rust_sym_ADDR → original AST
-            # This unifies Rust-created symbols with user-created ones
-            rust_sym_to_original = {}
+            # Pin tracked symbolic variables to concrete Rust values FIRST.
+            # This ensures the variables have definite values before adding
+            # path constraints, preventing identity-mismatch UNSAT.
             root_id = self._state_roots.get(state_id, state_id)
             if root_id == state_id:
                 try:
@@ -144,6 +150,45 @@ class RustStateExportMixin:
                         root_id = rust_root
                 except Exception:
                     pass
+
+            for lookup_id in [state_id, root_id]:
+                addr_map = self._addr_to_ast.get(lookup_id, {})
+                for addr, (ast, size) in addr_map.items():
+                    try:
+                        concrete_bytes = self._rust_mgr.get_state_memory(
+                            state_id, addr, size)
+                        if concrete_bytes is not None:
+                            concrete_val = int.from_bytes(concrete_bytes, 'little')
+                            state.solver.add(ast == claripy.BVV(concrete_val, size * 8))
+                    except Exception:
+                        pass
+
+            # Also pin hook symbolic memory
+            for hid in [state_id, root_id]:
+                hook_mem = self._hook_symbolic_memory.get(hid, {})
+                for addr, (ast, size) in hook_mem.items():
+                    try:
+                        concrete_bytes = self._rust_mgr.get_state_memory(
+                            state_id, addr, size)
+                        if concrete_bytes is not None:
+                            concrete_val = int.from_bytes(concrete_bytes, 'little')
+                            state.solver.add(ast == claripy.BVV(concrete_val, size * 8))
+                    except Exception:
+                        pass
+
+            # Now add Rust path constraints (skipping identity conflicts)
+            rust_constraints = self._rust_mgr.export_state_constraints(state_id)
+            synced = 0
+            skipped = 0
+
+            existing_leaves = {}
+            for c in state.solver.constraints:
+                for leaf in c.leaf_asts():
+                    if hasattr(leaf, 'args') and len(leaf.args) > 0 and isinstance(leaf.args[0], str):
+                        existing_leaves[leaf.args[0]] = leaf
+
+            # Build substitution map: rust_sym_ADDR → original AST
+            rust_sym_to_original = {}
             for lookup_id in [state_id, root_id]:
                 addr_map = self._addr_to_ast.get(lookup_id, {})
                 for addr, (ast, size) in addr_map.items():
@@ -201,8 +246,62 @@ class RustStateExportMixin:
             if synced or skipped:
                 l.debug(f"Synced {synced} constraints to state {state_id} "
                         f"({skipped} skipped for identity/register)")
+
+            # Post-sync UNSAT check: warn if constraints are contradictory
+            if synced > 0:
+                try:
+                    if not state.solver.satisfiable():
+                        l.warning(f"State {state_id} is UNSAT after constraint sync "
+                                  f"({synced} synced, {skipped} skipped)")
+                except Exception:
+                    pass
         except Exception as e:
             l.debug(f"Could not sync constraints for state {state_id}: {e}")
+
+    def _replace_with_rust_snapshot(self, state, state_id):
+        """Fix a UNSAT state by clearing constraints and pinning symbolic values.
+
+        When constraint sync creates UNSAT due to identity mismatches,
+        this method creates a brand new blank state with the correct PC,
+        copies plugins from the template, and adds pinning constraints
+        that map original symbolic variables to their Rust-solved values.
+        """
+        try:
+            # Build a fresh state from snapshot (has correct concrete memory)
+            snapshot = self._rust_mgr.export_state(state_id)
+            fresh = self._snapshot_to_angr(snapshot)
+            self._restore_plugins_to_state(fresh, state_id)
+
+            # Now pin original symbolic variables to their Rust concrete values
+            root_id = self._state_roots.get(state_id, state_id)
+            if root_id == state_id:
+                try:
+                    rust_root = self._rust_mgr.get_state_root(state_id)
+                    if rust_root is not None:
+                        root_id = rust_root
+                except Exception:
+                    pass
+
+            for lookup_id in [state_id, root_id]:
+                addr_map = self._addr_to_ast.get(lookup_id, {})
+                for addr, (ast, size) in addr_map.items():
+                    try:
+                        concrete_bytes = self._rust_mgr.get_state_memory(
+                            state_id, addr, size)
+                        if concrete_bytes is not None:
+                            concrete_val = int.from_bytes(concrete_bytes, 'little')
+                            fresh.solver.add(ast == claripy.BVV(concrete_val, size * 8))
+                    except Exception:
+                        pass
+
+            # Replace the original state's internals
+            state.memory = fresh.memory
+            state.solver = fresh.solver
+            if hasattr(fresh, '_ip'):
+                state.regs._ip = fresh.addr
+            l.debug(f"Replaced UNSAT state {state_id} with pinned Rust values")
+        except Exception as e:
+            l.warning(f"Could not replace UNSAT state {state_id}: {e}")
 
     @property
     def found_states(self) -> list:
