@@ -156,14 +156,15 @@ class RustStateExportMixin:
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
 
-        First pins tracked symbolic variables to their Rust-solved concrete
-        values, then adds Rust path constraints. Skips register constraints
-        and constraints that use symbols with different identity.
+        Adds Rust-exported constraints to the Python state. Skips register
+        constraints and constraints that use symbols with different identity
+        than existing Python symbols (which would cause UNSAT).
+
+        Note: if constraint sync causes UNSAT due to identity mismatches,
+        the Rust solver fallback in _attach_rust_solver_fallback handles
+        eval() calls by delegating to Rust's Z3 solver directly.
         """
         try:
-            # Pin tracked symbolic variables to concrete Rust values FIRST.
-            # This ensures the variables have definite values before adding
-            # path constraints, preventing identity-mismatch UNSAT.
             root_id = self._state_roots.get(state_id, state_id)
             if root_id == state_id:
                 try:
@@ -173,32 +174,6 @@ class RustStateExportMixin:
                 except Exception:
                     pass
 
-            for lookup_id in [state_id, root_id]:
-                addr_map = self._addr_to_ast.get(lookup_id, {})
-                for addr, (ast, size) in addr_map.items():
-                    try:
-                        concrete_bytes = self._rust_mgr.get_state_memory(
-                            state_id, addr, size)
-                        if concrete_bytes is not None:
-                            concrete_val = int.from_bytes(concrete_bytes, 'little')
-                            state.solver.add(ast == claripy.BVV(concrete_val, size * 8))
-                    except Exception:
-                        pass
-
-            # Also pin hook symbolic memory
-            for hid in [state_id, root_id]:
-                hook_mem = self._hook_symbolic_memory.get(hid, {})
-                for addr, (ast, size) in hook_mem.items():
-                    try:
-                        concrete_bytes = self._rust_mgr.get_state_memory(
-                            state_id, addr, size)
-                        if concrete_bytes is not None:
-                            concrete_val = int.from_bytes(concrete_bytes, 'little')
-                            state.solver.add(ast == claripy.BVV(concrete_val, size * 8))
-                    except Exception:
-                        pass
-
-            # Now add Rust path constraints (skipping identity conflicts)
             rust_constraints = self._rust_mgr.export_state_constraints(state_id)
             synced = 0
             skipped = 0
