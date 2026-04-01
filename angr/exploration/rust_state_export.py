@@ -108,6 +108,7 @@ class RustStateExportMixin:
                             try:
                                 angr_state = self._snapshot_to_angr(snapshot)
                                 self._sync_exported_constraints(angr_state, snapshot.state_id)
+                                self._attach_rust_solver_fallback(angr_state, snapshot.state_id)
                                 states.append(angr_state)
                             except Exception as e:
                                 l.warning(f"Failed to convert state from {stash}: {e}")
@@ -117,19 +118,40 @@ class RustStateExportMixin:
         return states
 
     def _attach_rust_solver_fallback(self, state, state_id):
-        """Attach a Rust solver fallback to the state.
+        """Monkey-patch state.solver.eval to fallback to Rust solver on UNSAT.
 
-        When Python constraint sync creates UNSAT, the state's solver.eval()
-        will fail. This fallback uses the Rust solver (which has the correct
-        answer) to evaluate symbolic values by reading concrete memory.
+        When Python constraint sync creates UNSAT due to variable identity
+        mismatches, the Rust solver (which has the correct answer) is used
+        as a fallback for eval() calls.
         """
-        rust_mgr = self._rust_mgr
-        addr_to_ast = self._addr_to_ast
-        state_roots = self._state_roots
+        import types
 
-        # Store the rust state info on the state for later use
+        rust_mgr = self._rust_mgr
         state.scratch.rust_mgr = rust_mgr
         state.scratch.rust_found_state_id = state_id
+
+        original_eval = state.solver.eval
+
+        def eval_with_fallback(expr, cast_to=None, **kwargs):
+            try:
+                return original_eval(expr, cast_to=cast_to, **kwargs)
+            except Exception as orig_err:
+                # Python solver failed (likely UNSAT), try Rust solver
+                try:
+                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    result = rust_ctx.eval(expr)
+                    if result is not None:
+                        if cast_to == bytes:
+                            nbytes = (expr.length + 7) // 8
+                            # Rust solver returns LE bytes; reverse for BE user variables
+                            raw = result.to_bytes(nbytes, 'little')
+                            return raw[::-1]
+                        return (result,) if isinstance(result, int) else result
+                except Exception:
+                    pass
+                raise orig_err  # Re-raise original if Rust also fails
+
+        state.solver.eval = eval_with_fallback
 
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
