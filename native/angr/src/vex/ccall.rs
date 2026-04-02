@@ -965,8 +965,10 @@ pub fn handle_ccall_with_ctx(
         return None;
     }
 
-    // Check for x86g_calculate_eflags_c or amd64g_calculate_eflags_c
-    if name == "amd64g_calculate_eflags_c" || name == "x86g_calculate_eflags_c" {
+    // Check for eflags_c / rflags_c CCall.
+    // Handle both "eflags" and "rflags" naming variants.
+    if name == "amd64g_calculate_eflags_c" || name == "amd64g_calculate_rflags_c"
+        || name == "x86g_calculate_eflags_c" || name == "x86g_calculate_rflags_c" {
         // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
         if args.len() < 4 {
             return None;
@@ -977,7 +979,8 @@ pub fn handle_ccall_with_ctx(
         let cc_dep2 = args[2].as_u64()?;
         let cc_ndep = args[3].as_u64()?;
 
-        let result = if name == "amd64g_calculate_eflags_c" {
+        let is_amd64 = name.starts_with("amd64g");
+        let result = if is_amd64 {
             calculate_eflags_c_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
         } else {
             calculate_eflags_c_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
@@ -986,25 +989,50 @@ pub fn handle_ccall_with_ctx(
         return Some(RustBV::concrete(result as u128, ret_bits));
     }
 
-    // Check for x86g_calculate_eflags_all or amd64g_calculate_eflags_all
-    if name == "amd64g_calculate_eflags_all" || name == "x86g_calculate_eflags_all" {
+    // Check for eflags_all / rflags_all CCall.
+    // VEX emits both "amd64g_calculate_rflags_all" and "amd64g_calculate_eflags_all"
+    // depending on the context. We need to handle both names.
+    if name == "amd64g_calculate_eflags_all" || name == "amd64g_calculate_rflags_all"
+        || name == "x86g_calculate_eflags_all" || name == "x86g_calculate_rflags_all" {
         // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
         if args.len() < 4 {
             return None;
         }
 
-        let cc_op = args[0].as_u64()?;
-        let cc_dep1 = args[1].as_u64()?;
-        let cc_dep2 = args[2].as_u64()?;
-        let cc_ndep = args[3].as_u64()?;
+        // Try concrete path first
+        if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
+            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+        ) {
+            let is_amd64 = name.starts_with("amd64g");
+            let result = if is_amd64 {
+                calculate_eflags_all_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+            } else {
+                calculate_eflags_all_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+            };
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
 
-        let result = if name == "amd64g_calculate_eflags_all" {
-            calculate_eflags_all_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
-        } else {
-            calculate_eflags_all_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
-        };
+        // Symbolic path: handle CC_OP_COPY (op=0) with symbolic deps.
+        // For COPY, result = cc_dep1 & flags_mask. This is common at function
+        // entry where cc_dep1 is unconstrained.
+        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+            if cc_op == 0 {
+                // CC_OP_COPY: result = cc_dep1 & flags_mask
+                let flags_mask: u128 = 0xD5; // O|S|Z|A|P|C flags
+                let mask = RustBV::concrete(flags_mask, args[1].width());
+                let result = args[1].and(&mask, sym_ctx);
+                // Zero-extend or truncate to ret_bits
+                if result.width() < ret_bits {
+                    return Some(result.zero_extend(ret_bits, sym_ctx));
+                } else if result.width() > ret_bits {
+                    return Some(result.extract(ret_bits - 1, 0, sym_ctx));
+                }
+                return Some(result);
+            }
+        }
 
-        return Some(RustBV::concrete(result as u128, ret_bits));
+        // Other symbolic cc_ops: return None (falls through to concrete 0 fallback)
+        return None;
     }
 
     // Not a supported CCall

@@ -2708,7 +2708,8 @@ impl<'a> CallbackInterpreter<'a> {
                 // For integer ops (cc_op > 0: ADD, SUB, etc.), return concrete 0
                 // to avoid state explosion.
                 let is_cond_ccall = cee.name.contains("calculate_condition")
-                    || cee.name.contains("calculate_eflags");
+                    || cee.name.contains("calculate_eflags")
+                    || cee.name.contains("calculate_rflags");
                 if is_cond_ccall && arg_vals.len() >= 4 {
                     let cc_op = arg_vals[1].as_u64();
                     let deps_symbolic = arg_vals.get(2).map_or(false, |v| v.is_symbolic())
