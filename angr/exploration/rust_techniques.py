@@ -146,28 +146,32 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
         stdout_tracker=getattr(mgr, '_stdout_tracker', {}),
     )
 
-    active_ids = list(mgr._rust_mgr.get_state_ids('active'))
-    for sid in active_ids:
-        state_proxy = RustStateProxy(
-            mgr._rust_mgr, sid, project=mgr._project,
-        )
-        # Run through each technique's filter in order
-        goto = None
-        for tech in mgr._active_techniques:
-            if hasattr(tech, 'filter'):
-                try:
-                    result = tech.filter(simgr_proxy, state_proxy)
-                    if result is not None and result != 'active':
-                        goto = result
-                        break
-                except Exception as e:
-                    l.debug(f"Technique {type(tech).__name__}.filter() error: {e}")
+    # Apply filters to active, errored, and deadended states.
+    # Some techniques (e.g., SearchForNull) catch states at invalid
+    # addresses (like addr 0) that the Rust engine moved to errored/deadended.
+    for stash in ('active', 'errored', 'deadended'):
+        state_ids = list(mgr._rust_mgr.get_state_ids(stash))
+        for sid in state_ids:
+            state_proxy = RustStateProxy(
+                mgr._rust_mgr, sid, project=mgr._project,
+            )
+            # Run through each technique's filter in order
+            goto = None
+            for tech in mgr._active_techniques:
+                if hasattr(tech, 'filter'):
+                    try:
+                        result = tech.filter(simgr_proxy, state_proxy)
+                        if result is not None and result != stash:
+                            goto = result
+                            break
+                    except Exception as e:
+                        l.debug(f"Technique {type(tech).__name__}.filter() error: {e}")
 
-        if goto is not None and goto != 'active':
-            try:
-                mgr._rust_mgr.move_state(sid, 'active', goto)
-            except Exception as e:
-                l.debug(f"Failed to move state {sid} to {goto}: {e}")
+            if goto is not None and goto != stash:
+                try:
+                    mgr._rust_mgr.move_state(sid, stash, goto)
+                except Exception as e:
+                    l.debug(f"Failed to move state {sid} from {stash} to {goto}: {e}")
 
 
 def check_technique_complete(mgr: "RustExplorationManager") -> bool:

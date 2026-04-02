@@ -4306,8 +4306,15 @@ class RustExplorationManager(RustStateExportMixin):
             elif event.event_type == 'active_empty':
                 break
             elif event.event_type == 'errored':
-                l.warning(f"Exploration error: {event.callback_reason}")
-                break
+                l.debug(f"Exploration error (state deadended): {event.callback_reason}")
+                # Don't break — the errored state was already moved to deadended
+                # by the Rust engine. Apply technique filters in case a technique
+                # wants to catch this state (e.g., SearchForNull at addr 0).
+                if self._active_techniques:
+                    self._apply_technique_filters()
+                    if self._check_technique_complete():
+                        break
+                continue
             elif event.event_type == 'step_complete':
                 # Periodic cleanup to prevent memory leaks
                 self._cleanup_symbolic_pages_cache()
