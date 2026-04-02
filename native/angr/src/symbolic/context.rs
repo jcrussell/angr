@@ -113,10 +113,10 @@ impl SymContext {
     /// All Z3 operations on this thread will use the same context.
     #[cfg(feature = "vex-engine-z3")]
     pub fn new() -> Self {
-        // Create solver with unsat_core support enabled and timeout
+        // Create solver with timeout (unsat_core disabled for performance —
+        // tracking booleans add significant overhead per constraint)
         let solver = z3::Solver::new();
         let mut params = z3::Params::new();
-        params.set_bool("unsat_core", true);
         // Phase 2 Fix: Add 30 second timeout to prevent indefinite hangs
         params.set_u32("timeout", 30000);
         solver.set_params(&params);
@@ -171,24 +171,34 @@ impl SymContext {
     // Constraint Management (Z3-backed)
     // =========================================================================
 
-    /// Add a constraint.
+    /// Add a constraint (fast path: no tracking overhead).
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint(&self, constraint: z3::ast::Bool) {
-        // Create a tracking boolean for unsat core extraction
+        // Use plain assert for fast path (no unsat_core tracking overhead).
+        // This avoids creating tracking booleans, string formatting, and
+        // mutex acquisition on constraint_trackers for every constraint.
+        self.solver.lock().assert(&constraint);
+        self.constraint_count.fetch_add(1, Ordering::SeqCst);
+        // Invalidate caches - constraint set has changed
+        self.sat_cache.set(None);
+        *self.model_cache.borrow_mut() = None;
+    }
+
+    /// Add a constraint with tracking for unsat_core extraction.
+    /// Use this only when unsat_core analysis is needed.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn add_constraint_tracked(&self, constraint: z3::ast::Bool) {
         let idx = self.constraint_count.load(Ordering::SeqCst);
         let track_name = format!("__track_{}", idx);
         let track_bool = z3::ast::Bool::new_const(track_name.as_str());
 
-        // Track the boolean for unsat core mapping
         {
             let mut trackers = self.constraint_trackers.lock();
             trackers.push(track_bool.clone());
         }
 
-        // Use assert_and_track to enable unsat core extraction
         self.solver.lock().assert_and_track(&constraint, &track_bool);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
-        // Invalidate caches - constraint set has changed
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
     }
@@ -279,6 +289,10 @@ impl SymContext {
     /// Returns (can_be_true, can_be_false). Holds the solver lock once
     /// for both checks, reducing lock acquisitions from 8 to 2.
     /// When only one direction is feasible, skips the second Z3 check.
+    ///
+    /// Note: In deferred fork mode, this is NOT called — the interpreter
+    /// skips feasibility checks and assumes both branches are feasible.
+    /// This method is only used in non-deferred mode and for explicit checks.
     #[cfg(feature = "vex-engine-z3")]
     pub fn check_branch_feasibility(&self, cond: &RustBV) -> (bool, bool) {
         use z3::ast::Ast;
@@ -802,10 +816,11 @@ impl SymContext {
 
         let constraint = ast._eq(&val_ast);
 
-        self.solver.lock().push();
-        self.solver.lock().assert(&constraint);
-        let result = matches!(self.solver.lock().check(), z3::SatResult::Sat);
-        self.solver.lock().pop(1);
+        let solver = self.solver.lock();
+        solver.push();
+        solver.assert(&constraint);
+        let result = matches!(solver.check(), z3::SatResult::Sat);
+        solver.pop(1);
 
         result
     }
@@ -1134,38 +1149,16 @@ impl SymContext {
     /// Fork the context, creating a new context with all constraints preserved.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
-        // Create a fresh Z3 solver and replay constraints instead of using
-        // Z3_solver_translate (Solver::clone). Replaying is much faster:
-        // assert_and_track is O(1) per constraint vs Z3_solver_translate
-        // which copies internal solver state.
-        let new_solver = z3::Solver::new();
+        // Use Z3_solver_translate (Solver::clone) for O(1) fork.
+        // This copies the solver's internal state in one operation,
+        // avoiding the O(n) constraint replay that rebuilds Z3 ASTs.
+        let cloned_solver = self.solver.lock().clone();
         let mut params = z3::Params::new();
-        params.set_bool("unsat_core", true);
         params.set_u32("timeout", 30000);
-        new_solver.set_params(&params);
+        cloned_solver.set_params(&params);
 
         // Clone assumed constraints for the fork
         let cloned_assumed = self.assumed_constraints.lock().clone();
-
-        // Replay all constraints on the fresh solver
-        let mut new_trackers = Vec::with_capacity(cloned_assumed.len());
-        {
-            use z3::ast::Ast;
-            for (idx, (cond, is_true)) in cloned_assumed.iter().enumerate() {
-                let ast = cond.to_z3_ast();
-                let constraint = if *is_true {
-                    let one = z3::ast::BV::from_u64(1, 1);
-                    ast._eq(&one)
-                } else {
-                    let zero = z3::ast::BV::from_u64(0, 1);
-                    ast._eq(&zero)
-                };
-                let track_name = format!("__track_{}", idx);
-                let track_bool = z3::ast::Bool::new_const(track_name.as_str());
-                new_solver.assert_and_track(&constraint, &track_bool);
-                new_trackers.push(track_bool);
-            }
-        }
 
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
@@ -1174,10 +1167,10 @@ impl SymContext {
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
             assumed_constraints: Mutex::new(cloned_assumed),
-            solver: Mutex::new(new_solver),
+            solver: Mutex::new(cloned_solver),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
-            constraint_trackers: Mutex::new(new_trackers),
+            constraint_trackers: Mutex::new(Vec::new()),
         }
     }
 

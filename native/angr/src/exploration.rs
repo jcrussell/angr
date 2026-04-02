@@ -3059,16 +3059,11 @@ impl RustExplorationManager {
                 }))
             }
             RunResult::SymbolicBranch { condition_id, true_target, false_target } => {
-                // Return to Python for proper state forking with constraints
-                // This ensures symbolic branches are handled correctly even when
-                // hooks/callbacks occur, preventing lost forks.
-                let pre_callback_snapshot = Some(state.fork());
-                let solver_ref = state.solver();
-                let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
-
-                // Store the condition in stored_conditions for Python to retrieve
-                // The condition was already stored in the interpreter under condition_id
-                // We pass it through so Python can look it up
+                // Return to Python for proper state forking with constraints.
+                // No pre_callback_snapshot or solver_ctx fork needed here —
+                // resume_after_symbolic_branch forks from pending.state directly.
+                // Skipping these 2 unnecessary state forks eliminates O(n)
+                // constraint replay per symbolic branch.
                 let mut branch_conditions = stored_conditions;
                 if let Some(cond) = last_condition {
                     branch_conditions.insert(condition_id, cond);
@@ -3076,14 +3071,14 @@ impl RustExplorationManager {
 
                 Err(StepError::NeedCallback(PendingCallback {
                     state,
-                    pre_callback_snapshot,
+                    pre_callback_snapshot: None,
                     reason: CallbackReason::SymbolicBranch {
                         condition_id,
                         true_target,
                         false_target,
                     },
                     jumpkind: Some("Ijk_Boring".to_string()),
-                    solver_ctx: Some(forked_ctx),
+                    solver_ctx: None,
                     deferred_forks,
                     stored_conditions: branch_conditions,
                 }))

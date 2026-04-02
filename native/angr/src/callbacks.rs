@@ -183,12 +183,15 @@ impl Default for ExecutionConfig {
             max_deferred_forks: 500,  // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
             // Default to false: return to Python for symbolic branches.
-            // Deferred forks are faster but commit to one branch direction
-            // (TakeTrue), which deadends when the correct path is fallthrough.
-            // Non-deferred mode explores both paths reliably.
+            // Deferred forks have a constraint ordering issue: fork states
+            // are created from the final state with ALL branch constraints,
+            // but should only have constraints up to the fork point.
             use_deferred_forks: false,
-            enable_eager_prefetch: true,
-            max_prefetch_batch: 256,        // 256 pages = 1MB
+            // Eager prefetch disabled: fetching entire regions (e.g. 256 stack
+            // pages) on first access is extremely slow due to Python callbacks.
+            // Individual pages are fetched on demand instead.
+            enable_eager_prefetch: false,
+            max_prefetch_batch: 256,        // 256 pages = 1MB (unused when eager disabled)
             max_concretization_range: 65536,
             enable_stride_detection: true,
             max_symbolic_ip_targets: 257,   // Match Python angr default

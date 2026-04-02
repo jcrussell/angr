@@ -1097,7 +1097,6 @@ impl<'a> CallbackInterpreter<'a> {
             match self.execute_block_with_callbacks(py, callbacks, &irsb) {
                 Ok(result) => {
                     blocks_executed += 1;
-                    // Trace removed after debugging
 
                     match result {
                         BlockResult::Continue { next_addr } => {

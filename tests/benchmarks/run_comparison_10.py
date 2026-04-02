@@ -196,7 +196,30 @@ def verify_results_match(py_output: str, rust_output: str) -> tuple[bool, str]:
                 if line in rust_lines:
                     return True, "Key result line matches"
 
+        # Check for set-equivalent array outputs (different valid Z3 solutions)
+        # e.g. "[51, 57, 60, ...]" where order differs but elements are the same
+        for py_line, rust_line in zip(py_lines, rust_lines):
+            if py_line != rust_line:
+                py_set = _extract_number_set(py_line)
+                rust_set = _extract_number_set(rust_line)
+                if py_set is not None and rust_set is not None and py_set == rust_set:
+                    continue  # This line is set-equivalent
+                else:
+                    return False, "Mismatch"
+        return True, "Set-equivalent match"
+
     return False, f"Mismatch"
+
+
+def _extract_number_set(line: str):
+    """Extract a set of numbers from an array-like string, e.g. '[51, 57, 60]'.
+    Returns a set of ints if the line looks like a number array, None otherwise."""
+    import re
+    # Match lines that are predominantly comma-separated integers (possibly within brackets)
+    numbers = re.findall(r'\b(\d+)\b', line)
+    if len(numbers) >= 5:  # Only treat as array if enough numbers
+        return set(int(n) for n in numbers)
+    return None
 
 
 def _run_example_with_metrics(args: tuple) -> dict:
