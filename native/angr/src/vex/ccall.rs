@@ -5,6 +5,7 @@
 //! dispatches to the appropriate helper based on the callee name.
 
 use crate::symbolic::RustBV;
+use crate::symbolic::SymContext;
 
 /// CC_OP values for AMD64 (from VEX's libvex_guest_amd64.h)
 pub mod amd64_cc_op {
@@ -156,6 +157,120 @@ struct Flags {
     sf: u8, // Sign flag
     of: u8, // Overflow flag
 }
+
+// ============================================================
+// Symbolic flag computation helpers
+// ============================================================
+
+/// Extract the low `nbits` from a value that may be wider (e.g. 64-bit AMD64 args for 8/16/32-bit ops).
+fn extract_to_nbits(val: &RustBV, nbits: u32, ctx: &SymContext) -> RustBV {
+    if val.width() == nbits {
+        val.clone()
+    } else if val.width() > nbits {
+        val.extract(nbits - 1, 0, ctx)
+    } else {
+        val.zero_extend(nbits, ctx)
+    }
+}
+
+/// Compute parity flag symbolically: PF = 1 if even number of 1-bits in low byte.
+/// PF = NOT(b0 XOR b1 XOR b2 XOR b3 XOR b4 XOR b5 XOR b6 XOR b7)
+fn symbolic_parity(result: &RustBV, ctx: &SymContext) -> RustBV {
+    let b0 = result.extract(0, 0, ctx);
+    let b1 = result.extract(1, 1, ctx);
+    let b2 = result.extract(2, 2, ctx);
+    let b3 = result.extract(3, 3, ctx);
+    let b4 = result.extract(4, 4, ctx);
+    let b5 = result.extract(5, 5, ctx);
+    let b6 = result.extract(6, 6, ctx);
+    let b7 = result.extract(7, 7, ctx);
+    let xor_all = b0.xor(&b1, ctx).xor(&b2, ctx).xor(&b3, ctx)
+        .xor(&b4, ctx).xor(&b5, ctx).xor(&b6, ctx).xor(&b7, ctx);
+    // PF=1 means even parity (even number of set bits), so NOT the XOR
+    xor_all.not(ctx)
+}
+
+/// Pack individual 1-bit flags into EFLAGS format bitvector.
+/// Bit positions: OF@11, SF@7, ZF@6, PF@2, CF@0
+fn symbolic_pack_eflags(
+    of: &RustBV, sf: &RustBV, zf: &RustBV, pf: &RustBV, cf: &RustBV,
+    ret_bits: u32, ctx: &SymContext,
+) -> RustBV {
+    let of_ext = of.zero_extend(ret_bits, ctx);
+    let sf_ext = sf.zero_extend(ret_bits, ctx);
+    let zf_ext = zf.zero_extend(ret_bits, ctx);
+    let pf_ext = pf.zero_extend(ret_bits, ctx);
+    let cf_ext = cf.zero_extend(ret_bits, ctx);
+
+    let shift_11 = RustBV::concrete(11, ret_bits);
+    let shift_7 = RustBV::concrete(7, ret_bits);
+    let shift_6 = RustBV::concrete(6, ret_bits);
+    let shift_2 = RustBV::concrete(2, ret_bits);
+
+    of_ext.shl(&shift_11, ctx)
+        .or(&sf_ext.shl(&shift_7, ctx), ctx)
+        .or(&zf_ext.shl(&shift_6, ctx), ctx)
+        .or(&pf_ext.shl(&shift_2, ctx), ctx)
+        .or(&cf_ext, ctx)
+}
+
+/// Symbolic eflags computation for SUB/CMP: flags from dep1 - dep2
+fn symbolic_eflags_sub(nbits: u32, dep1: &RustBV, dep2: &RustBV, ctx: &SymContext, ret_bits: u32) -> RustBV {
+    let d1 = extract_to_nbits(dep1, nbits, ctx);
+    let d2 = extract_to_nbits(dep2, nbits, ctx);
+    let result = d1.sub(&d2, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    // ZF = (result == 0)
+    let zf = result.eq(&zero, ctx);
+    // SF = result[msb]
+    let sf = result.extract(nbits - 1, nbits - 1, ctx);
+    // CF = (dep1 < dep2) unsigned — borrow
+    let cf = d1.ult(&d2, ctx);
+    // OF = ((dep1 ^ dep2) & (dep1 ^ result))[msb] — different signs & result sign differs from dep1
+    let of = d1.xor(&d2, ctx).and(&d1.xor(&result, ctx), ctx).extract(nbits - 1, nbits - 1, ctx);
+    // PF = parity of low byte of result
+    let pf = symbolic_parity(&result, ctx);
+
+    symbolic_pack_eflags(&of, &sf, &zf, &pf, &cf, ret_bits, ctx)
+}
+
+/// Symbolic eflags computation for ADD: flags from dep1 + dep2
+fn symbolic_eflags_add(nbits: u32, dep1: &RustBV, dep2: &RustBV, ctx: &SymContext, ret_bits: u32) -> RustBV {
+    let d1 = extract_to_nbits(dep1, nbits, ctx);
+    let d2 = extract_to_nbits(dep2, nbits, ctx);
+    let result = d1.add(&d2, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    let zf = result.eq(&zero, ctx);
+    let sf = result.extract(nbits - 1, nbits - 1, ctx);
+    // CF = (result < dep1) unsigned — carry out
+    let cf = result.ult(&d1, ctx);
+    // OF = (~(dep1 ^ dep2) & (dep1 ^ result))[msb] — same sign operands, different sign result
+    let of = d1.xor(&d2, ctx).not(ctx).and(&d1.xor(&result, ctx), ctx).extract(nbits - 1, nbits - 1, ctx);
+    let pf = symbolic_parity(&result, ctx);
+
+    symbolic_pack_eflags(&of, &sf, &zf, &pf, &cf, ret_bits, ctx)
+}
+
+/// Symbolic eflags computation for LOGIC (AND/OR/XOR): flags from result in dep1
+fn symbolic_eflags_logic(nbits: u32, dep1: &RustBV, ctx: &SymContext, ret_bits: u32) -> RustBV {
+    let result = extract_to_nbits(dep1, nbits, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    let zf = result.eq(&zero, ctx);
+    let sf = result.extract(nbits - 1, nbits - 1, ctx);
+    // CF = 0, OF = 0 for logic ops
+    let cf = RustBV::concrete(0, 1);
+    let of = RustBV::concrete(0, 1);
+    let pf = symbolic_parity(&result, ctx);
+
+    symbolic_pack_eflags(&of, &sf, &zf, &pf, &cf, ret_bits, ctx)
+}
+
+// ============================================================
+// Concrete flag computation
+// ============================================================
 
 /// Calculate parity bit (1 if even parity in low 8 bits)
 fn calc_parity(val: u64) -> u8 {
@@ -940,20 +1055,62 @@ pub fn handle_ccall_with_ctx(
                         }
                     }
                     OpCategory::Logic => {
-                        // For LOGIC: ZF = (dep1 == 0)
                         use cond_type::*;
                         let inv = (cond & 1) != 0;
-                        if (cond & !1) == COND_Z {
-                            let nbits = if name == "amd64g_calculate_condition" {
-                                amd64_op_to_nbits(cc_op)
-                            } else {
-                                x86_op_to_nbits(cc_op)
-                            };
-                            if let Some(nb) = nbits {
-                                let zero = RustBV::concrete(0, nb);
-                                let eq = dep1.eq(&zero, sym_ctx);
-                                let r = if inv { eq.not(sym_ctx) } else { eq };
-                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                        let nbits = if name == "amd64g_calculate_condition" {
+                            amd64_op_to_nbits(cc_op)
+                        } else {
+                            x86_op_to_nbits(cc_op)
+                        };
+                        if let Some(nb) = nbits {
+                            let d1 = extract_to_nbits(dep1, nb, sym_ctx);
+                            match cond & !1 {
+                                COND_Z => {
+                                    let zero = RustBV::concrete(0, nb);
+                                    let eq = d1.eq(&zero, sym_ctx);
+                                    let r = if inv { eq.not(sym_ctx) } else { eq };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                COND_S => {
+                                    let sf = d1.extract(nb - 1, nb - 1, sym_ctx);
+                                    let r = if inv { sf.not(sym_ctx) } else { sf };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    OpCategory::Add => {
+                        use cond_type::*;
+                        let inv = (cond & 1) != 0;
+                        let nbits = if name == "amd64g_calculate_condition" {
+                            amd64_op_to_nbits(cc_op)
+                        } else {
+                            x86_op_to_nbits(cc_op)
+                        };
+                        if let Some(nb) = nbits {
+                            let d1 = extract_to_nbits(dep1, nb, sym_ctx);
+                            let d2 = extract_to_nbits(dep2, nb, sym_ctx);
+                            let result = d1.add(&d2, sym_ctx);
+                            match cond & !1 {
+                                COND_Z => {
+                                    let zero = RustBV::concrete(0, nb);
+                                    let eq = result.eq(&zero, sym_ctx);
+                                    let r = if inv { eq.not(sym_ctx) } else { eq };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                COND_B => {
+                                    // CF = result < dep1 (unsigned overflow)
+                                    let cf = result.ult(&d1, sym_ctx);
+                                    let r = if inv { cf.not(sym_ctx) } else { cf };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                COND_S => {
+                                    let sf = result.extract(nb - 1, nb - 1, sym_ctx);
+                                    let r = if inv { sf.not(sym_ctx) } else { sf };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -974,19 +1131,53 @@ pub fn handle_ccall_with_ctx(
             return None;
         }
 
-        let cc_op = args[0].as_u64()?;
-        let cc_dep1 = args[1].as_u64()?;
-        let cc_dep2 = args[2].as_u64()?;
-        let cc_ndep = args[3].as_u64()?;
+        // Try concrete path first
+        if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
+            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+        ) {
+            let is_amd64 = name.starts_with("amd64g");
+            let result = if is_amd64 {
+                calculate_eflags_c_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+            } else {
+                calculate_eflags_c_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+            };
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
 
-        let is_amd64 = name.starts_with("amd64g");
-        let result = if is_amd64 {
-            calculate_eflags_c_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
-        } else {
-            calculate_eflags_c_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
-        };
+        // Symbolic path for carry flag
+        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+            let is_amd64 = name.starts_with("amd64g");
+            let category = if is_amd64 { amd64_op_to_category(cc_op) } else { x86_op_to_category(cc_op) };
+            let nbits = if is_amd64 { amd64_op_to_nbits(cc_op) } else { x86_op_to_nbits(cc_op) };
+            if let (Some(cat), Some(nb)) = (category, nbits) {
+                let cf = match cat {
+                    OpCategory::Copy => {
+                        // CF = (dep1 >> SHIFT_C) & 1
+                        let shift = RustBV::concrete(flag_shift::G_CC_SHIFT_C as u128, args[1].width());
+                        let one = RustBV::concrete(1, args[1].width());
+                        Some(args[1].lshr(&shift, sym_ctx).and(&one, sym_ctx).extract(0, 0, sym_ctx))
+                    }
+                    OpCategory::Sub => {
+                        let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
+                        let d2 = extract_to_nbits(&args[2], nb, sym_ctx);
+                        Some(d1.ult(&d2, sym_ctx))
+                    }
+                    OpCategory::Add => {
+                        let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
+                        let d2 = extract_to_nbits(&args[2], nb, sym_ctx);
+                        let result = d1.add(&d2, sym_ctx);
+                        Some(result.ult(&d1, sym_ctx))
+                    }
+                    OpCategory::Logic => Some(RustBV::concrete(0, 1)),
+                    _ => None,
+                };
+                if let Some(c) = cf {
+                    return Some(c.zero_extend(ret_bits, sym_ctx));
+                }
+            }
+        }
 
-        return Some(RustBV::concrete(result as u128, ret_bits));
+        return None;
     }
 
     // Check for eflags_all / rflags_all CCall.
@@ -1012,16 +1203,13 @@ pub fn handle_ccall_with_ctx(
             return Some(RustBV::concrete(result as u128, ret_bits));
         }
 
-        // Symbolic path: handle CC_OP_COPY (op=0) with symbolic deps.
-        // For COPY, result = cc_dep1 & flags_mask. This is common at function
-        // entry where cc_dep1 is unconstrained.
+        // Symbolic path: handle various cc_ops with symbolic deps
         if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
             if cc_op == 0 {
                 // CC_OP_COPY: result = cc_dep1 & flags_mask
                 let flags_mask: u128 = 0xD5; // O|S|Z|A|P|C flags
                 let mask = RustBV::concrete(flags_mask, args[1].width());
                 let result = args[1].and(&mask, sym_ctx);
-                // Zero-extend or truncate to ret_bits
                 if result.width() < ret_bits {
                     return Some(result.zero_extend(ret_bits, sym_ctx));
                 } else if result.width() > ret_bits {
@@ -1029,9 +1217,25 @@ pub fn handle_ccall_with_ctx(
                 }
                 return Some(result);
             }
+
+            // Symbolic SUB/ADD/LOGIC eflags computation
+            let is_amd64 = name.starts_with("amd64g");
+            let category = if is_amd64 { amd64_op_to_category(cc_op) } else { x86_op_to_category(cc_op) };
+            let nbits = if is_amd64 { amd64_op_to_nbits(cc_op) } else { x86_op_to_nbits(cc_op) };
+            if let (Some(cat), Some(nb)) = (category, nbits) {
+                let result = match cat {
+                    OpCategory::Sub => Some(symbolic_eflags_sub(nb, &args[1], &args[2], sym_ctx, ret_bits)),
+                    OpCategory::Add => Some(symbolic_eflags_add(nb, &args[1], &args[2], sym_ctx, ret_bits)),
+                    OpCategory::Logic => Some(symbolic_eflags_logic(nb, &args[1], sym_ctx, ret_bits)),
+                    _ => None,
+                };
+                if result.is_some() {
+                    return result;
+                }
+            }
         }
 
-        // Other symbolic cc_ops: return None (falls through to concrete 0 fallback)
+        // Unsupported symbolic cc_ops: return None (falls through to fallback)
         return None;
     }
 

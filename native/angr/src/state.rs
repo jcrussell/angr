@@ -594,6 +594,13 @@ impl RustSimState {
         }
     }
 
+    /// Replace the solver context with a different one.
+    /// Used for deferred fork processing where the alternate path needs a solver
+    /// snapshot from before the branch constraint was added.
+    pub fn replace_solver(&mut self, ctx: crate::symbolic::SymContext) {
+        self.solver = Rc::new(RefCell::new(ctx));
+    }
+
     // =========================================================================
     // Incremental State Changes
     // =========================================================================

@@ -487,6 +487,10 @@ pub struct CallbackInterpreter<'a> {
     /// When a deferred fork is created, we store the condition here so
     /// callers can retrieve it to properly constrain forked states.
     stored_conditions: HashMap<u64, RustBV>,
+    /// Solver snapshots taken BEFORE branch constraints were added.
+    /// Keyed by condition_id, these enable correct alternate-path forking
+    /// without inheriting the taken-path constraint.
+    solver_snapshots: HashMap<u64, crate::symbolic::SymContext>,
     /// Execution statistics for profiling.
     stats: ExecutionStats,
     /// Whether profiling is enabled.
@@ -542,6 +546,7 @@ impl<'a> CallbackInterpreter<'a> {
             last_branch_condition: None,
             pending_python_constraints: Vec::new(),
             stored_conditions: HashMap::new(),
+            solver_snapshots: HashMap::new(),
             stats: ExecutionStats::default(),
             profiling_enabled: false,
             concrete_memory_sorted: false,
@@ -1020,6 +1025,14 @@ impl<'a> CallbackInterpreter<'a> {
     /// This is useful for bulk retrieval when processing multiple deferred forks.
     pub fn take_stored_conditions(&mut self) -> HashMap<u64, RustBV> {
         std::mem::take(&mut self.stored_conditions)
+    }
+
+    /// Take all solver snapshots for deferred forks.
+    ///
+    /// Returns solver contexts captured BEFORE branch constraints were added,
+    /// keyed by condition_id. Used for correct alternate-path forking.
+    pub fn take_solver_snapshots(&mut self) -> HashMap<u64, crate::symbolic::SymContext> {
+        std::mem::take(&mut self.solver_snapshots)
     }
 
     /// Run the execution loop until an event requires Python handling.
@@ -1775,6 +1788,11 @@ impl<'a> CallbackInterpreter<'a> {
                     let cond_id = self.next_cond_id();
                     // Store the Rust condition for later retrieval when processing forks
                     self.stored_conditions.insert(cond_id, guard_val.clone());
+
+                    // Snapshot the solver BEFORE adding the branch constraint.
+                    // This enables correct alternate-path forking: the false branch
+                    // should not inherit the taken-path constraint.
+                    self.solver_snapshots.insert(cond_id, self.ctx.fork());
 
                     let deferred = DeferredFork {
                         branch_addr: self.current_insn_addr,
@@ -2702,26 +2720,23 @@ impl<'a> CallbackInterpreter<'a> {
                     return Ok(result);
                 }
 
-                // For condition code CCalls with CC_OP_COPY (op=0) and symbolic
-                // deps: return symbolic. CC_OP_COPY is used for float comparisons
-                // (ucomisd/comisd) where flags are set directly from the result.
-                // For integer ops (cc_op > 0: ADD, SUB, etc.), return concrete 0
-                // to avoid state explosion.
+                // For eflags/rflags CCalls that we couldn't handle symbolically,
+                // return a fresh symbolic variable rather than concrete 0.
+                // Concrete 0 corrupts register values; a symbolic variable is sound
+                // (unconstrained) and lets the solver handle it.
                 let is_cond_ccall = cee.name.contains("calculate_condition")
                     || cee.name.contains("calculate_eflags")
                     || cee.name.contains("calculate_rflags");
-                if is_cond_ccall && arg_vals.len() >= 4 {
-                    let cc_op = arg_vals[1].as_u64();
-                    let deps_symbolic = arg_vals.get(2).map_or(false, |v| v.is_symbolic())
-                        || arg_vals.get(3).map_or(false, |v| v.is_symbolic());
-                    // CC_OP_COPY = 0: flags were set directly (float comparison)
-                    if cc_op == Some(0) && deps_symbolic {
-                        return Ok(RustBV::symbolic(
-                            self.ctx,
-                            &format!("ccall_cond_{:x}", self.pc),
-                            retty.bits(),
-                        ));
-                    }
+                if is_cond_ccall {
+                    log::debug!(
+                        "CCall '{}' not handled symbolically at 0x{:x}, returning symbolic variable",
+                        cee.name, self.pc
+                    );
+                    return Ok(RustBV::symbolic(
+                        self.ctx,
+                        &format!("ccall_unsupported_{:x}", self.pc),
+                        retty.bits(),
+                    ));
                 }
 
                 Ok(RustBV::concrete(0, retty.bits()))
@@ -3175,6 +3190,7 @@ impl<'a> CallbackInterpreter<'a> {
             last_branch_condition: None, // Fresh for fork
             pending_python_constraints: Vec::new(), // Fresh constraints for fork
             stored_conditions: HashMap::new(), // Fresh for fork
+            solver_snapshots: HashMap::new(), // Fresh for fork
             stats: ExecutionStats::default(), // Fresh stats for fork
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
