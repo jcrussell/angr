@@ -309,9 +309,9 @@ struct PendingCallback {
     deferred_forks: Vec<DeferredFork>,
     /// Stored conditions for deferred fork handling.
     stored_conditions: HashMap<u64, RustBV>,
-    /// Solver snapshots from before branch constraints were added.
+    /// Full state snapshots from before branch constraints were added.
     /// Keyed by condition_id, enables correct alternate-path forking.
-    solver_snapshots: HashMap<u64, crate::symbolic::SymContext>,
+    fork_snapshots: HashMap<u64, crate::interpreter_cb::BranchSnapshot>,
 }
 
 /// Statistics for native procedure execution.
@@ -761,7 +761,7 @@ impl RustExplorationManager {
                     solver_ctx: None,
                     deferred_forks: Vec::new(),
                     stored_conditions: HashMap::new(),
-                    solver_snapshots: HashMap::new(),
+                    fork_snapshots: HashMap::new(),
                 });
 
                 return Ok(ExplorationEvent {
@@ -804,7 +804,7 @@ impl RustExplorationManager {
                     solver_ctx: None,
                     deferred_forks: Vec::new(),
                     stored_conditions: HashMap::new(),
-                    solver_snapshots: HashMap::new(),
+                    fork_snapshots: HashMap::new(),
                 });
 
                 return Ok(ExplorationEvent {
@@ -962,7 +962,7 @@ impl RustExplorationManager {
                         solver_ctx: Some(forked_ctx),
                         deferred_forks: Vec::new(),
                         stored_conditions: HashMap::new(),
-                        solver_snapshots: HashMap::new(),
+                        fork_snapshots: HashMap::new(),
                     });
 
                     return Ok(ExplorationEvent::need_simprocedure(
@@ -1017,7 +1017,7 @@ impl RustExplorationManager {
                             let original_state_id = pending.state.state_id();
                             let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
 
-                            let mut snapshots = pending.solver_snapshots;
+                            let mut snapshots = pending.fork_snapshots;
                             for fork in pending.deferred_forks {
                                 let condition = pending.stored_conditions.get(&fork.condition_id);
                                 let reconstructed = if condition.is_none() {
@@ -1033,8 +1033,7 @@ impl RustExplorationManager {
 
                                 if let Some(cond) = condition.or(reconstructed.as_ref()) {
                                     let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                                        let mut f = fork_base.fork();
-                                        f.replace_solver(snapshot);
+                                        let mut f = fork_base.fork_from_snapshot(snapshot);
                                         if fork.path_taken {
                                             f.solver().borrow().assume_false(cond);
                                         } else {
@@ -1266,7 +1265,7 @@ impl RustExplorationManager {
         } else {
             (vec![state], Vec::new())
         };
-        let mut snapshots = pending.solver_snapshots;
+        let mut snapshots = pending.fork_snapshots;
         for fork in pending.deferred_forks {
             // Look up the condition for this deferred fork
             let condition = pending.stored_conditions.get(&fork.condition_id);
@@ -1293,8 +1292,7 @@ impl RustExplorationManager {
             if let Some(cond) = effective_condition {
                 // Use solver snapshot (from before branch constraint) if available
                 let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                    let mut f = fork_base.fork();
-                    f.replace_solver(snapshot);
+                    let mut f = fork_base.fork_from_snapshot(snapshot);
                     if fork.path_taken {
                         f.solver().borrow().assume_false(cond);
                     } else {
@@ -2776,7 +2774,7 @@ impl RustExplorationManager {
         let solver_rc = state.solver().clone();
 
         // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, mut solver_snapshots, new_registers, new_pc, recovered_memory) = {
+        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, recovered_memory) = {
             let solver_ref = solver_rc.borrow();
 
             // Create interpreter with the state's solver
@@ -2831,7 +2829,7 @@ impl RustExplorationManager {
 
             // Get stored conditions for deferred fork handling
             let stored_conditions = interp.take_stored_conditions();
-            let solver_snapshots = interp.take_solver_snapshots();
+            let fork_snapshots = interp.take_fork_snapshots();
 
             // Extract register state (including symbolic values)
             let new_registers = interp.registers.fork();
@@ -2843,7 +2841,7 @@ impl RustExplorationManager {
             // Recover memory from interpreter back to state
             let recovered_memory = interp.take_rust_memory();
 
-            (result, deferred_forks, last_condition, stored_conditions, solver_snapshots, new_registers, new_pc, recovered_memory)
+            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, recovered_memory)
         };
         // solver_ref dropped here, solver_rc borrow released
 
@@ -2885,9 +2883,8 @@ impl RustExplorationManager {
                         // Use solver snapshot (from before branch constraint) if available
                         // to avoid inheriting the taken-path constraint (which would make
                         // the opposite constraint UNSAT).
-                        let forked = if let Some(snapshot) = solver_snapshots.remove(&fork.condition_id) {
-                            let mut f = successors[0].fork();
-                            f.replace_solver(snapshot);
+                        let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
+                            let mut f = successors[0].fork_from_snapshot(snapshot);
                             if fork.path_taken {
                                 f.solver().borrow().assume_false(condition);
                             } else {
@@ -2977,7 +2974,7 @@ impl RustExplorationManager {
                     solver_ctx: Some(forked_ctx),
                     deferred_forks,
                     stored_conditions,
-                    solver_snapshots,
+                    fork_snapshots,
                 }))
             }
             RunResult::SimProcedure { addr, name, num_args, return_addr } => {
@@ -3031,13 +3028,12 @@ impl RustExplorationManager {
                     // Process deferred forks with fork_base from first successor
                     if !deferred_forks.is_empty() {
                         let fork_base = successors[0].fork();
-                        let mut snapshots = solver_snapshots;
+                        let mut snapshots = fork_snapshots;
                         for fork in deferred_forks {
                             let condition = stored_conditions.get(&fork.condition_id);
                             if let Some(cond) = condition {
                                 let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                                    let mut f = fork_base.fork();
-                                    f.replace_solver(snapshot);
+                                    let mut f = fork_base.fork_from_snapshot(snapshot);
                                     if fork.path_taken {
                                         f.solver().borrow().assume_false(cond);
                                     } else {
@@ -3083,7 +3079,7 @@ impl RustExplorationManager {
                         solver_ctx: Some(forked_ctx),
                         deferred_forks,
                         stored_conditions,
-                        solver_snapshots,
+                        fork_snapshots,
                     }))
                 }
             }
@@ -3104,7 +3100,7 @@ impl RustExplorationManager {
                     solver_ctx: Some(forked_ctx),
                     deferred_forks,
                     stored_conditions,
-                    solver_snapshots,
+                    fork_snapshots,
                 }))
             }
             RunResult::SymbolicBranch { condition_id, true_target, false_target } => {
@@ -3130,7 +3126,7 @@ impl RustExplorationManager {
                     solver_ctx: None,
                     deferred_forks,
                     stored_conditions: branch_conditions,
-                    solver_snapshots,
+                    fork_snapshots,
                 }))
             }
             RunResult::Error { message, addr } => {
@@ -3256,7 +3252,7 @@ impl RustExplorationManager {
                                 solver_ctx: Some(forked_ctx),
                                 deferred_forks,
                                 stored_conditions,
-                                solver_snapshots,
+                                fork_snapshots,
                             }))
                         }
                         Ok(None) => {

@@ -24,6 +24,15 @@ use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeE
 use crate::vex::ops::{OpError, VEXOps};
 use crate::vex::{deserialize_irsb, Endness};
 
+/// Full state snapshot at a symbolic branch point.
+/// Used by deferred forks to create correct alternate-path states
+/// with solver, registers, and memory from the branch point.
+pub struct BranchSnapshot {
+    pub solver: SymContext,
+    pub registers: RegisterFile,
+    pub memory: Option<SymbolicMemory>,
+}
+
 /// Execution statistics for profiling.
 ///
 /// Tracks timing and counts for various operations during VEX execution.
@@ -487,10 +496,10 @@ pub struct CallbackInterpreter<'a> {
     /// When a deferred fork is created, we store the condition here so
     /// callers can retrieve it to properly constrain forked states.
     stored_conditions: HashMap<u64, RustBV>,
-    /// Solver snapshots taken BEFORE branch constraints were added.
+    /// Full state snapshots taken BEFORE branch constraints were added.
     /// Keyed by condition_id, these enable correct alternate-path forking
-    /// without inheriting the taken-path constraint.
-    solver_snapshots: HashMap<u64, crate::symbolic::SymContext>,
+    /// with solver, registers, and memory from the branch point.
+    fork_snapshots: HashMap<u64, BranchSnapshot>,
     /// Execution statistics for profiling.
     stats: ExecutionStats,
     /// Whether profiling is enabled.
@@ -546,7 +555,7 @@ impl<'a> CallbackInterpreter<'a> {
             last_branch_condition: None,
             pending_python_constraints: Vec::new(),
             stored_conditions: HashMap::new(),
-            solver_snapshots: HashMap::new(),
+            fork_snapshots: HashMap::new(),
             stats: ExecutionStats::default(),
             profiling_enabled: false,
             concrete_memory_sorted: false,
@@ -1027,12 +1036,12 @@ impl<'a> CallbackInterpreter<'a> {
         std::mem::take(&mut self.stored_conditions)
     }
 
-    /// Take all solver snapshots for deferred forks.
+    /// Take all branch snapshots for deferred forks.
     ///
-    /// Returns solver contexts captured BEFORE branch constraints were added,
+    /// Returns full state snapshots captured BEFORE branch constraints were added,
     /// keyed by condition_id. Used for correct alternate-path forking.
-    pub fn take_solver_snapshots(&mut self) -> HashMap<u64, crate::symbolic::SymContext> {
-        std::mem::take(&mut self.solver_snapshots)
+    pub fn take_fork_snapshots(&mut self) -> HashMap<u64, BranchSnapshot> {
+        std::mem::take(&mut self.fork_snapshots)
     }
 
     /// Run the execution loop until an event requires Python handling.
@@ -1789,10 +1798,14 @@ impl<'a> CallbackInterpreter<'a> {
                     // Store the Rust condition for later retrieval when processing forks
                     self.stored_conditions.insert(cond_id, guard_val.clone());
 
-                    // Snapshot the solver BEFORE adding the branch constraint.
-                    // This enables correct alternate-path forking: the false branch
-                    // should not inherit the taken-path constraint.
-                    self.solver_snapshots.insert(cond_id, self.ctx.fork());
+                    // Snapshot full state BEFORE adding the branch constraint.
+                    // This enables correct alternate-path forking with solver,
+                    // registers, and memory from the branch point.
+                    self.fork_snapshots.insert(cond_id, BranchSnapshot {
+                        solver: self.ctx.fork(),
+                        registers: self.registers.fork(),
+                        memory: self.rust_memory.as_ref().map(|m| m.fork()),
+                    });
 
                     let deferred = DeferredFork {
                         branch_addr: self.current_insn_addr,
@@ -3190,7 +3203,7 @@ impl<'a> CallbackInterpreter<'a> {
             last_branch_condition: None, // Fresh for fork
             pending_python_constraints: Vec::new(), // Fresh constraints for fork
             stored_conditions: HashMap::new(), // Fresh for fork
-            solver_snapshots: HashMap::new(), // Fresh for fork
+            fork_snapshots: HashMap::new(), // Fresh for fork
             stats: ExecutionStats::default(), // Fresh stats for fork
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag

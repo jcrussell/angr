@@ -601,6 +601,29 @@ impl RustSimState {
         self.solver = Rc::new(RefCell::new(ctx));
     }
 
+    /// Create a forked state using a full branch snapshot (solver + registers + memory).
+    /// The resulting state has the correct state from the branch point, not from
+    /// the continuation of the taken path.
+    pub fn fork_from_snapshot(&self, snapshot: crate::interpreter_cb::BranchSnapshot) -> Self {
+        let forked_solver = Rc::new(RefCell::new(snapshot.solver));
+        RustSimState {
+            arch: self.arch.clone(),
+            vex_arch: self.vex_arch,
+            registers: snapshot.registers,
+            memory: snapshot.memory.unwrap_or_else(|| self.memory.fork()),
+            solver: forked_solver,
+            pc: self.pc,
+            state_id: next_state_id(),
+            parent_id: Some(self.state_id),
+            history: self.history.clone(),
+            max_history: self.max_history,
+            hooks: self.hooks.clone(),
+            concretizer: self.concretizer.clone(),
+            dirty_registers: 0,
+            track_history: self.track_history,
+        }
+    }
+
     // =========================================================================
     // Incremental State Changes
     // =========================================================================
