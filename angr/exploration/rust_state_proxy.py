@@ -635,7 +635,14 @@ class _StashDict:
         return self._simgr._get_stash(key)
 
     def __setitem__(self, key, value):
-        l.warning("_StashDict.__setitem__ not yet supported for key '%s'", key)
+        if isinstance(value, list) and len(value) == 0:
+            # Clear the stash — common pattern: simgr.stashes['found'] = []
+            try:
+                self._simgr._mgr.clear_stash(key)
+            except Exception:
+                pass
+        else:
+            l.warning("_StashDict.__setitem__ only supports clearing (empty list) for key '%s'", key)
 
     def __contains__(self, key):
         counts = self._simgr._mgr.stash_counts()

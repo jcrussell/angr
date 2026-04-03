@@ -1798,6 +1798,10 @@ impl<'a> CallbackInterpreter<'a> {
                     // Store the Rust condition for later retrieval when processing forks
                     self.stored_conditions.insert(cond_id, guard_val.clone());
 
+                    // Flush pending stores before snapshotting so the memory
+                    // snapshot includes all writes up to this branch point.
+                    self.flush_stores_to_rust_memory();
+
                     // Snapshot full state BEFORE adding the branch constraint.
                     // This enables correct alternate-path forking with solver,
                     // registers, and memory from the branch point.

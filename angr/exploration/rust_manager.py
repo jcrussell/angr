@@ -4232,7 +4232,11 @@ class RustExplorationManager(RustStateExportMixin):
             # Sync any dynamically created hooks (continuations from self.call())
             self._sync_hooks_before_step()
 
-            event = self._rust_mgr.run()
+            # When until predicates or techniques are active, step one state at
+            # a time so Python can check between steps. Otherwise, let Rust run
+            # its full batch for performance.
+            need_per_step = (until is not None) or bool(self._active_techniques)
+            event = self._rust_mgr.run(1) if need_per_step else self._rust_mgr.run()
             steps_taken += 1
 
             # When avoid addresses are set, cap active states and periodically
@@ -4265,7 +4269,12 @@ class RustExplorationManager(RustStateExportMixin):
                 except Exception:
                     pass
 
+            # --- Dispatch event ---
+            should_break = False
+
             if event.event_type == 'found' and event.found_count >= num_find:
+                break
+            elif event.event_type == 'active_empty':
                 break
             elif event.event_type == 'need_callback':
                 if event.callback_reason == 'simprocedure':
@@ -4275,78 +4284,39 @@ class RustExplorationManager(RustStateExportMixin):
                 elif event.callback_reason == 'symbolic_branch':
                     self._handle_symbolic_branch_callback(event)
                 elif event.callback_reason == 'find_predicate':
-                    # P2 fix: Handle callable find predicate evaluation
                     self._handle_find_predicate_callback(event)
                 elif event.callback_reason == 'avoid_predicate':
-                    # P7 fix: Handle callable avoid predicate evaluation
                     self._handle_avoid_predicate_callback(event)
                 else:
                     l.warning(f"Unknown callback reason: {event.callback_reason}")
                     break
-                # Evaluate callable find/avoid after each callback
-                if self._find_predicate is not None or self._avoid_predicate is not None:
-                    self._evaluate_predicates_on_active()
-                    if self._find_predicate and self._found_count() >= num_find:
-                        break
-
-                # Apply ExplorationTechnique callbacks after each Rust event
-                if self._active_techniques:
-                    self._apply_technique_filters()
-                    if self._check_technique_complete():
-                        break
-
-                # Check `until` predicate after callback handling (needed for run(until=...))
-                if until is not None:
-                    try:
-                        if until(self):
-                            l.debug("until predicate returned True after callback, stopping")
-                            break
-                    except Exception as e:
-                        l.warning(f"until predicate error: {e}")
-            elif event.event_type == 'active_empty':
-                break
             elif event.event_type == 'errored':
                 l.debug(f"Exploration error (state deadended): {event.callback_reason}")
-                # Don't break — the errored state was already moved to deadended
-                # by the Rust engine. Apply technique filters in case a technique
-                # wants to catch this state (e.g., SearchForNull at addr 0).
-                if self._active_techniques:
-                    self._apply_technique_filters()
-                    if self._check_technique_complete():
-                        break
-                continue
             elif event.event_type == 'step_complete':
-                # Periodic cleanup to prevent memory leaks
                 self._cleanup_symbolic_pages_cache()
 
-                # Apply ExplorationTechnique filter() callbacks via proxy
-                if self._active_techniques:
-                    self._apply_technique_filters()
+            # --- Common post-event checks (run after EVERY event) ---
 
-                # Check ExplorationTechnique complete() callbacks
-                if self._active_techniques:
-                    if self._check_technique_complete():
+            # Apply ExplorationTechnique filter/complete callbacks
+            if self._active_techniques:
+                self._apply_technique_filters()
+                if self._check_technique_complete():
+                    break
+
+            # Evaluate callable find/avoid predicates
+            if self._find_predicate is not None or self._avoid_predicate is not None:
+                self._evaluate_predicates_on_active()
+                if self._find_predicate and self._found_count() >= num_find:
+                    break
+
+            # Check `until` predicate
+            if until is not None:
+                try:
+                    if until(self):
+                        l.debug("until predicate returned True, stopping exploration")
                         break
-
-                # Evaluate callable find/avoid predicates on active states.
-                # Since Rust can't evaluate Python callables, we check after
-                # each step and move matching states to found/avoid stashes.
-                if self._find_predicate is not None or self._avoid_predicate is not None:
-                    self._evaluate_predicates_on_active()
-                    # Check if we found enough
-                    if self._find_predicate and self._found_count() >= num_find:
-                        break
-
-                # Check the `until` predicate after each step
-                if until is not None:
-                    try:
-                        if until(self):
-                            l.debug("until predicate returned True, stopping exploration")
-                            break
-                    except Exception as e:
-                        l.warning(f"until predicate error: {e}")
-                # Continue exploration
-                continue
+                except Exception as e:
+                    l.warning(f"until predicate error: {e}")
 
         return self
 
