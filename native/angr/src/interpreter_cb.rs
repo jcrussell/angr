@@ -421,6 +421,8 @@ pub struct CallbackInterpreter<'a> {
     pub pc: u64,
     /// Current instruction address (within block).
     current_insn_addr: u64,
+    /// Current instruction length (from IMark).
+    current_insn_len: u32,
     /// Hook addresses (return to Python when hit).
     hook_addrs: HashSet<u64>,
     /// VEX architecture.
@@ -432,6 +434,10 @@ pub struct CallbackInterpreter<'a> {
     /// Deferred forks collected during execution.
     /// Each fork represents a branch where we took one path and deferred the other.
     deferred_forks: Vec<DeferredFork>,
+    /// Whether a deferred fork was already created this step.
+    /// Limits to one deferred fork per run_until_event call to prevent
+    /// solver corruption from under-constrained multi-block execution.
+    deferred_fork_this_step: bool,
     /// Execution configuration.
     config: ExecutionConfig,
     /// Counter for alternating branch policy.
@@ -468,6 +474,9 @@ pub struct CallbackInterpreter<'a> {
     /// Whether to use Rust-native memory (vs Python callbacks).
     /// When true and rust_memory is Some, memory ops use Rust directly.
     use_rust_memory: bool,
+    /// When true, skip Z3 feasibility checks during deferred fork creation.
+    /// This mirrors angr's LAZY_SOLVES option for binaries with expensive constraints.
+    pub lazy_solves: bool,
     /// Prefetch cache for batched memory loads.
     /// Key is (address, size), value is the prefetched result.
     /// This is populated at block start and used during Load expression evaluation.
@@ -528,11 +537,13 @@ impl<'a> CallbackInterpreter<'a> {
             symbol_table: None,  // Set via set_symbol_table() when using handles
             pc: 0,
             current_insn_addr: 0,
+            current_insn_len: 0,
             hook_addrs: HashSet::new(),
             arch,
             block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()),
             use_memory_callbacks: true,
             deferred_forks: Vec::new(),
+            deferred_fork_this_step: false,
             config,
             branch_counter: 0,
             next_condition_id: 0,
@@ -546,6 +557,7 @@ impl<'a> CallbackInterpreter<'a> {
             max_pending_stores: 256,
             rust_memory: None,
             use_rust_memory: false,
+            lazy_solves: false,
             load_prefetch_cache: HashMap::new(),
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
@@ -1063,13 +1075,12 @@ impl<'a> CallbackInterpreter<'a> {
         // Sort concrete memory regions for binary search if needed
         self.sort_concrete_memory();
 
-        // Clear any previous deferred forks
+        // Clear any previous deferred forks and reset per-step limit
         self.deferred_forks.clear();
+        self.deferred_fork_this_step = false;
 
         for _ in 0..max_blocks {
             // Check for hook at current PC
-            if self.pc >= 0x4005fe && self.pc <= 0x400620 {
-            }
             if self.is_hooked(self.pc) {
                 let forks = self.take_deferred_forks();
                 // Check if this is a registered SimProcedure with known args
@@ -1467,8 +1478,9 @@ impl<'a> CallbackInterpreter<'a> {
         match stmt {
             IRStmt::NoOp => Ok(StmtResult::Continue),
 
-            IRStmt::IMark { addr, .. } => {
+            IRStmt::IMark { addr, len, .. } => {
                 self.current_insn_addr = *addr;
+                self.current_insn_len = *len;
                 // Check for hooks at this address
                 if self.is_hooked(*addr) {
                     return Ok(StmtResult::Exit {
@@ -1774,13 +1786,45 @@ impl<'a> CallbackInterpreter<'a> {
                     });
                 }
 
-                // Deferred fork mode: check feasibility to decide which paths to explore
-                let (can_be_true, can_be_false) = self.ctx.check_branch_feasibility(&guard_val);
-
+                // Deferred fork mode: check feasibility to decide which paths to explore.
+                // Determine branch feasibility. When lazy_solves is active,
+                // skip Z3 queries entirely and assume both paths are feasible.
+                let (can_be_true, can_be_false) = if self.lazy_solves {
+                    (true, true)
+                } else {
+                    // Use push/pop to temporarily add taken-path constraints from
+                    // previous deferred forks so feasibility checks account for the
+                    // execution path. Without these, the solver would report both paths
+                    // feasible for every exit, causing exponential state growth.
+                    // The push/pop ensures the main solver stays clean (snapshots
+                    // capture the unconstrained state for correct alternate-path forking).
+                    let has_prior_forks = !self.deferred_forks.is_empty();
+                    if has_prior_forks {
+                        self.ctx.push();
+                        for prev_fork in &self.deferred_forks {
+                            if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                                if prev_fork.path_taken {
+                                    self.ctx.assume_true(cond);
+                                } else {
+                                    self.ctx.assume_false(cond);
+                                }
+                            }
+                        }
+                    }
+                    let result = self.ctx.check_branch_feasibility(&guard_val);
+                    if has_prior_forks {
+                        self.ctx.pop();
+                    }
+                    result
+                };
                 if can_be_true && can_be_false {
 
-                    // Create a deferred fork for the untaken path
-                    let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
+                    // The unexplored path (guard=false) should resume at the
+                    // next instruction after this conditional jump, NOT the
+                    // block's default exit. When a VEX IRSB contains multiple
+                    // Ist_Exit statements, using the block fallthrough would
+                    // skip all code between this exit and the end of the block.
+                    let false_target = self.current_insn_addr + self.current_insn_len as u64;
 
                     // Convert guard to claripy AST for constraint tracking
                     let condition_ast = match py.import("claripy") {
@@ -1793,7 +1837,7 @@ impl<'a> CallbackInterpreter<'a> {
                         Err(_) => None, // Claripy not available
                     };
 
-                    // Take the "true" path (jump to dst), defer the "false" path (fallthrough)
+                    // Take the "true" path (jump to dst), defer the "false" path
                     let cond_id = self.next_cond_id();
                     // Store the Rust condition for later retrieval when processing forks
                     self.stored_conditions.insert(cond_id, guard_val.clone());
@@ -1811,29 +1855,31 @@ impl<'a> CallbackInterpreter<'a> {
                         memory: self.rust_memory.as_ref().map(|m| m.fork()),
                     });
 
+                    // Take the FALLTHROUGH path (continue block execution) and
+                    // defer the EXIT path (*dst). VEX inverts many branch
+                    // conditions (e.g., `jne target` becomes `if (eq) goto exit;
+                    // NEXT: target`), so taking the exit would follow the wrong
+                    // direction for loops and comparisons. Fallthrough follows
+                    // the natural execution flow.
                     let deferred = DeferredFork {
                         branch_addr: self.current_insn_addr,
-                        path_taken: true,
-                        unexplored_target: fallthrough,
+                        path_taken: false,          // we took the fallthrough (guard=false) path
+                        unexplored_target: *dst,    // the exit target is deferred
                         condition_id: cond_id,
                         push_level: self.push_level,
                         condition_ast,
                     };
                     self.deferred_forks.push(deferred);
+                    self.deferred_fork_this_step = true;
 
-                    // Add constraint for the taken path to the solver.
-                    // The main state continues on the true branch, so
-                    // assume the guard is true. Without this, path
-                    // constraints from symbolic branches are never added
-                    // to the solver, and the found state has no useful
-                    // constraints for solution extraction.
-                    self.ctx.assume_true(&guard_val);
+                    // NOTE: We intentionally do NOT call assume_false() permanently.
+                    // The solver stays clean so snapshots capture unconstrained state.
+                    // Taken-path constraints are temporarily added via push/pop for
+                    // check_branch_feasibility() (above), then applied permanently
+                    // during fork processing in exploration.rs after the step completes.
 
-                    // Continue execution on the true branch
-                    return Ok(StmtResult::Exit {
-                        target: *dst,
-                        jumpkind: *jk,
-                    });
+                    // Continue execution on the fallthrough path
+                    return Ok(StmtResult::Continue);
                 } else if can_be_true {
                     return Ok(StmtResult::Exit {
                         target: *dst,
@@ -2490,7 +2536,6 @@ impl<'a> CallbackInterpreter<'a> {
                     if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
                         return Ok(bytes_to_bv(data, (size * 8) as u32));
                     }
-
                     // SLOW PATH: Fall back to Python callback
                     self.load_from_callback(py, callbacks, addr_concrete, size)
                 } else {
@@ -3179,11 +3224,13 @@ impl<'a> CallbackInterpreter<'a> {
             symbol_table: self.symbol_table, // Share symbol table reference
             pc: self.pc,
             current_insn_addr: self.current_insn_addr,
+            current_insn_len: self.current_insn_len,
             hook_addrs: self.hook_addrs.clone(),
             arch: self.arch,
             block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()), // Fresh cache for fork
             use_memory_callbacks: self.use_memory_callbacks,
             deferred_forks: Vec::new(), // Fresh deferred forks for fork
+            deferred_fork_this_step: false,
             config: self.config.clone(),
             branch_counter: self.branch_counter,
             next_condition_id: self.next_condition_id,
@@ -3198,6 +3245,7 @@ impl<'a> CallbackInterpreter<'a> {
             // Fork Rust memory with O(1) CoW
             rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),
             use_rust_memory: self.use_rust_memory,
+            lazy_solves: self.lazy_solves,
             load_prefetch_cache: HashMap::new(), // Fresh prefetch cache for fork
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count

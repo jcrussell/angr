@@ -81,6 +81,9 @@ class RustStateExportMixin:
                     self._restore_plugins_to_state(state, sid)
                     self._sync_exported_constraints(state, sid)
                     self._attach_rust_solver_fallback(state, sid)
+                    # Cache the copy so it stays alive (prevents weakref death
+                    # during chained attribute access like sm.active[1].posix.dumps())
+                    self._state_cache[sid] = state
                     states.append(state)
                     cached_ids.add(sid)
 
@@ -95,6 +98,7 @@ class RustStateExportMixin:
                     self._restore_plugins_to_state(state, sid)
                     self._sync_exported_constraints(state, sid)
                     self._attach_rust_solver_fallback(state, sid)
+                    self._state_cache[sid] = state
                     states.append(state)
                     cached_ids.add(sid)
 
@@ -109,13 +113,43 @@ class RustStateExportMixin:
                                 angr_state = self._snapshot_to_angr(snapshot)
                                 self._sync_exported_constraints(angr_state, snapshot.state_id)
                                 self._attach_rust_solver_fallback(angr_state, snapshot.state_id)
+                                self._state_cache[snapshot.state_id] = angr_state
                                 states.append(angr_state)
                             except Exception as e:
                                 l.warning(f"Failed to convert state from {stash}: {e}")
                 except Exception as e:
                     l.warning(f"export_stash failed for {stash}: {e}")
 
+        # Fix posix nested weakrefs on all returned states
+        # This ensures stdin/stdout/stderr have valid state references
+        # regardless of which code path created the state
+        for s in states:
+            self._fix_posix_weakrefs(s)
+
         return states
+
+    @staticmethod
+    def _fix_posix_weakrefs(state):
+        """Fix weakrefs in posix plugin's nested stream objects.
+
+        After state caching, copying, or export, the weakrefs from
+        SimPacketsStream objects (stdin/stdout/stderr) to their parent
+        state can become stale. This refreshes them.
+        """
+        try:
+            posix = getattr(state, 'posix', None)
+            if posix is None:
+                return
+            for attr in ('stdin', 'stdout', 'stderr'):
+                child = getattr(posix, attr, None)
+                if child is not None and hasattr(child, 'set_state'):
+                    child.set_state(state)
+            if hasattr(posix, 'fd') and posix.fd:
+                for fd_obj in posix.fd.values():
+                    if fd_obj is not None and hasattr(fd_obj, 'set_state'):
+                        fd_obj.set_state(state)
+        except Exception:
+            pass
 
     def _attach_rust_solver_fallback(self, state, state_id):
         """Monkey-patch state.solver.eval to fallback to Rust solver on UNSAT.
@@ -538,6 +572,24 @@ class RustStateExportMixin:
                             l.debug(f"P10: Restored {plugin_name} plugin to state")
             except Exception as e:
                 l.debug(f"P10: Could not restore {plugin_name} plugin: {e}")
+
+        # Fix nested plugin state references for posix (stdin/stdout/stderr)
+        # These nested SimPacketsStream objects hold weakrefs to the state that
+        # can become stale after state caching/export cycles
+        try:
+            posix = getattr(state, 'posix', None)
+            if posix is not None:
+                for attr in ('stdin', 'stdout', 'stderr'):
+                    child = getattr(posix, attr, None)
+                    if child is not None and hasattr(child, 'set_state'):
+                        child.set_state(state)
+                # Also fix fd entries
+                if hasattr(posix, 'fd') and posix.fd:
+                    for fd_obj in posix.fd.values():
+                        if fd_obj is not None and hasattr(fd_obj, 'set_state'):
+                            fd_obj.set_state(state)
+        except Exception as e:
+            l.debug(f"P10: Could not fix posix nested state refs: {e}")
 
     def eval_memory(self, state_id: int, addr: int, size: int) -> Optional[bytes]:
         """Evaluate memory from a Rust state's solver context.

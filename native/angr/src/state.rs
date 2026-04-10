@@ -242,8 +242,12 @@ impl RustSimState {
     }
 
     /// Set the program counter.
+    /// Also updates the IP register in the register file so that
+    /// get_register("rip"/"eip") returns the current PC.
     pub fn set_pc(&mut self, pc: u64) {
         self.pc = pc;
+        let width = self.arch.bits();
+        self.registers.set_ip(RustBV::concrete(pc as u128, width));
     }
 
     /// Get the VEX architecture.

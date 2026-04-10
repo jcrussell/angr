@@ -392,6 +392,13 @@ class RustExplorationManager(RustStateExportMixin):
 
                 try:
                     data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
+                    # If the page contains symbolic data, return failure so the
+                    # Rust engine falls back to per-access memory_load callback
+                    # which returns the symbolic AST (enabling symbolic forking)
+                    is_symbolic = getattr(data, 'symbolic', False)
+                    if is_symbolic:
+                        l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
+                        return (bytes(4096), 0, False)
                     concrete = state.solver.eval(data).to_bytes(4096, 'little')
                     return (concrete, 7, True)  # RWX permissions
                 except Exception as e:
@@ -978,6 +985,30 @@ class RustExplorationManager(RustStateExportMixin):
             self._rust_mgr.register_simprocedures(procs)
             l.debug(f"Synced {len(procs)} dynamically created hooks")
 
+    def _extract_continuation_data(self, state: "angr.SimState"):
+        """Extract SimProcedure continuation data from a state's callstack.
+
+        When __libc_start_main uses self.call() to invoke main(), it stores
+        procedure_data (local_vars) on the callstack frame. When main() returns,
+        the continuation (after_main) needs these args. This method captures
+        that data so the Rust engine can restore it when the continuation fires.
+        """
+        frame = state.callstack.top if hasattr(state, 'callstack') else None
+        while frame is not None:
+            pdata = getattr(frame, 'procedure_data', None)
+            if pdata is not None and len(pdata) >= 5:
+                cont_addr = pdata[4]  # ideal_addr = continuation address
+                try:
+                    cont_addr_int = int(cont_addr)
+                except (TypeError, ValueError):
+                    frame = getattr(frame, 'next', None)
+                    continue
+                if cont_addr_int > 0:
+                    self._pending_procedure_data[cont_addr_int] = pdata
+                    l.debug(f"Extracted continuation data for 0x{cont_addr_int:x} "
+                            f"({len(pdata[2]) if len(pdata) > 2 and pdata[2] else 0} local_vars)")
+            frame = getattr(frame, 'next', None)
+
     def _run_python_init_if_needed(self, state: "angr.SimState") -> "angr.SimState":
         """Run initialization in Python if the state starts at a loader address.
 
@@ -1075,6 +1106,7 @@ class RustExplorationManager(RustStateExportMixin):
                         l.info(f"Python init complete: state reached main at 0x{main_addr:x} "
                                f"after {step} steps")
                         result = at_main[0]
+                        self._extract_continuation_data(result)
                         # Cache for future use
                         if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
                             RustExplorationManager._init_cache[cache_key] = result.copy()
@@ -1094,6 +1126,7 @@ class RustExplorationManager(RustStateExportMixin):
                         l.info(f"Python init complete: state at 0x{in_main[0].addr:x} "
                                f"after {step} steps")
                         result = in_main[0]
+                        self._extract_continuation_data(result)
                         if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
                             RustExplorationManager._init_cache[cache_key] = result.copy()
                         return result
@@ -1103,6 +1136,7 @@ class RustExplorationManager(RustStateExportMixin):
             # If we couldn't reach main, use whatever we have
             if sm.active:
                 best = sm.active[0]
+                self._extract_continuation_data(best)
                 l.warning(f"Python init: didn't reach main after 500 steps, "
                           f"using state at 0x{best.addr:x}")
                 return best
@@ -1176,6 +1210,21 @@ class RustExplorationManager(RustStateExportMixin):
                 self._symbolic_pages[actual_state_id] = symbolic_pages
                 self._cleanup_symbolic_pages_cache()  # Enforce cache limit
                 l.debug(f"Cached {len(symbolic_pages)} symbolic pages for state {actual_state_id}")
+                # Also import symbolic regions to Rust's symbolic memory so the
+                # Rust engine can handle them natively without Python callbacks
+                imported_sym = 0
+                for addr, ast in symbolic_pages.items():
+                    try:
+                        import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
+                        self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
+                        imported_sym += 1
+                        self._register_handle(id(ast), ast, addr=addr,
+                                              size=ast.length // 8 if hasattr(ast, 'length') else 1,
+                                              state_id=actual_state_id)
+                    except Exception as e:
+                        l.debug(f"Symbolic page import at 0x{addr:x} failed: {e}")
+                if imported_sym:
+                    l.debug(f"Imported {imported_sym} symbolic page entries to Rust state {actual_state_id}")
             # Import pending symbolic values to Rust SymbolicMemory
             if hasattr(self, '_pending_symbolic_imports') and self._pending_symbolic_imports:
                 imported = 0
@@ -1209,6 +1258,16 @@ class RustExplorationManager(RustStateExportMixin):
             if symbolic_pages:
                 self._symbolic_pages[rust_state.state_id] = symbolic_pages
                 self._cleanup_symbolic_pages_cache()  # Enforce cache limit
+                # Import symbolic regions to Rust's symbolic memory
+                for addr, ast in symbolic_pages.items():
+                    try:
+                        import_ast = claripy.Reverse(ast) if hasattr(ast, 'length') and ast.length > 8 else ast
+                        self._rust_mgr.import_symbolic_to_state(rust_state.state_id, addr, import_ast)
+                        self._register_handle(id(ast), ast, addr=addr,
+                                              size=ast.length // 8 if hasattr(ast, 'length') else 1,
+                                              state_id=rust_state.state_id)
+                    except Exception:
+                        pass
             # Enforce state cache limit
             self._cleanup_state_cache()
             l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
@@ -1254,12 +1313,37 @@ class RustExplorationManager(RustStateExportMixin):
         page_size = 0x1000
         pages_mapped = 0
 
+        # Identify pages containing user-written symbolic data. These pages
+        # should NOT be pre-populated with concrete loader data, so that Rust
+        # falls back to the Python memory_load callback which returns the
+        # symbolic AST (enabling symbolic forking on comparisons).
+        symbolic_pages = set()
+        if hasattr(angr_state.memory, 'get_symbolic_addrs'):
+            try:
+                for addr in angr_state.memory.get_symbolic_addrs():
+                    symbolic_pages.add(addr & ~(page_size - 1))
+            except Exception:
+                pass
+        if not symbolic_pages and hasattr(angr_state.memory, '_pages'):
+            # Fallback: scan pages for symbolic content
+            mem_page_size = getattr(angr_state.memory, 'page_size', page_size)
+            for page_num in list(angr_state.memory._pages.keys()):
+                page = angr_state.memory._pages.get(page_num)
+                if page is not None and hasattr(page, 'symbolic_bitmap'):
+                    sb = page.symbolic_bitmap
+                    if sb is not None and any(sb):
+                        symbolic_pages.add(page_num * mem_page_size)
+        if symbolic_pages:
+            l.debug(f"Skipping {len(symbolic_pages)} pages with symbolic data during memory sync")
+
         # Map pages for each loaded object's segments
         for obj in self._project.loader.all_objects:
             try:
                 start_page = obj.min_addr & ~(page_size - 1)
                 end_page = (obj.max_addr + page_size) & ~(page_size - 1)
                 for page_addr in range(start_page, end_page, page_size):
+                    if page_addr in symbolic_pages:
+                        continue  # Don't overwrite symbolic data with concrete
                     try:
                         # Use loader memory directly (fast, no Z3 eval)
                         data = self._project.loader.memory.load(page_addr, page_size)
@@ -1651,6 +1735,132 @@ class RustExplorationManager(RustStateExportMixin):
                 l.debug(f"Initialized callstack procedure_data at 0x{addr:x}")
         except Exception as e:
             l.debug(f"Could not initialize callstack procedure_data: {e}")
+
+    def _install_rust_solver_on_callback_state(self, state: "angr.SimState"):
+        """Make the Rust solver the single source of truth for callback states.
+
+        Instead of syncing constraints from Rust to Python (which can create
+        UNSAT due to variable identity mismatches across the FFI boundary),
+        this method monkey-patches the Python state's solver to delegate all
+        solving operations to the forked Rust solver context.
+
+        This covers:
+        - state.solver.eval() — used by SimProcedures and concretization strategies
+        - state.solver.satisfiable() — used by concretization and feasibility checks
+        - state.solver.min()/max() — used by concretization strategies
+        - state.solver.eval_upto() — used by concretization strategies
+        - state.solver.add() — forwards constraints to both Python and Rust
+        """
+        rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
+        if rust_ctx is None:
+            # No Rust solver available, fall back to constraint sync
+            self._sync_rust_constraints_to_python(state)
+            return
+
+        original_eval = state.solver.eval
+        original_satisfiable = state.solver.satisfiable
+        original_min = state.solver.min
+        original_max = state.solver.max
+        original_eval_upto = state.solver.eval_upto
+        original_add = state.solver.add
+
+        def _rust_eval(expr, cast_to=None, **kwargs):
+            kwargs.pop('exact', None)
+            extra = kwargs.pop('extra_constraints', ())
+            try:
+                if extra:
+                    rust_ctx.push()
+                    try:
+                        for c in extra:
+                            rust_ctx.add_constraint_ast(c)
+                        result = rust_ctx.eval(expr)
+                    finally:
+                        rust_ctx.pop()
+                else:
+                    result = rust_ctx.eval(expr)
+                if result is None:
+                    raise claripy.errors.UnsatError("UNSAT in Rust solver")
+                if cast_to == bytes:
+                    nbytes = (expr.length + 7) // 8
+                    return result.to_bytes(nbytes, 'big')
+                return result
+            except claripy.errors.UnsatError:
+                raise
+            except Exception:
+                return original_eval(expr, cast_to=cast_to, **kwargs)
+
+        def _rust_satisfiable(**kwargs):
+            kwargs.pop('exact', None)
+            extra = kwargs.pop('extra_constraints', ())
+            try:
+                if extra:
+                    rust_ctx.push()
+                    try:
+                        for c in extra:
+                            rust_ctx.add_constraint_ast(c)
+                        return rust_ctx.satisfiable()
+                    finally:
+                        rust_ctx.pop()
+                return rust_ctx.satisfiable()
+            except Exception:
+                return original_satisfiable(**kwargs)
+
+        def _rust_min(expr, **kwargs):
+            kwargs.pop('exact', None)
+            kwargs.pop('extra_constraints', None)
+            kwargs.pop('signed', None)
+            try:
+                return rust_ctx.min(expr, signed=False)
+            except Exception:
+                return original_min(expr, **kwargs)
+
+        def _rust_max(expr, **kwargs):
+            kwargs.pop('exact', None)
+            kwargs.pop('extra_constraints', None)
+            kwargs.pop('signed', None)
+            try:
+                return rust_ctx.max(expr, signed=False)
+            except Exception:
+                return original_max(expr, **kwargs)
+
+        def _rust_eval_upto(expr, n, cast_to=None, **kwargs):
+            kwargs.pop('exact', None)
+            extra = kwargs.pop('extra_constraints', ())
+            try:
+                if extra:
+                    rust_ctx.push()
+                    try:
+                        for c in extra:
+                            rust_ctx.add_constraint_ast(c)
+                        results = rust_ctx.eval_upto(expr, n)
+                    finally:
+                        rust_ctx.pop()
+                else:
+                    results = rust_ctx.eval_upto(expr, n)
+                if cast_to is not None:
+                    results = tuple(cast_to(r) for r in results)
+                return results
+            except Exception:
+                return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
+
+        def _rust_add(*constraints):
+            # Forward to both Rust and Python solvers
+            for c in constraints:
+                try:
+                    rust_ctx.add_constraint_ast(c)
+                except Exception:
+                    pass
+            original_add(*constraints)
+
+        state.solver.eval = _rust_eval
+        state.solver.satisfiable = _rust_satisfiable
+        state.solver.min = _rust_min
+        state.solver.max = _rust_max
+        state.solver.eval_upto = _rust_eval_upto
+        state.solver.add = _rust_add
+
+        l.debug(f"Installed Rust solver delegation on callback state "
+                f"({rust_ctx.num_constraints()} Rust constraints)")
 
     def _sync_rust_constraints_to_python(self, state: "angr.SimState"):
         """Sync constraints from Rust solver to Python state.
@@ -2422,10 +2632,13 @@ class RustExplorationManager(RustStateExportMixin):
         # Copy the state for any SimProcedure that writes to memory, so
         # changed_bytes() can detect modifications. The CallbackMemoryTracker
         # also captures writes, but changed_bytes() serves as a backup.
-        writes_memory = name in ('read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
-                                  'fread', 'gets', 'getchar', 'fgetc', 'getc',
-                                  'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
-                                  'strcat', 'strncat', 'sprintf', 'snprintf')
+        # Zero-length hooks (UserHook) may also write memory (e.g., storing
+        # known bytes before a function call), so always copy for those.
+        writes_memory = is_zero_length_hook or name in (
+            'read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
+            'fread', 'gets', 'getchar', 'fgetc', 'getc',
+            'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
+            'strcat', 'strncat', 'sprintf', 'snprintf')
         orig_state = state.copy() if writes_memory else state
 
         # GAP 2 fix: Save original constraints before hook execution
@@ -2588,8 +2801,27 @@ class RustExplorationManager(RustStateExportMixin):
                     self._add_forked_state(succ, event)
 
             else:
-                # No successors - for zero-length hooks, execute the instruction
-                if is_zero_length_hook:
+                # No successors — check if this is a known terminal procedure.
+                # Only deadend for specific terminal names (not all NO_RET),
+                # because UserHook also has NO_RET=True but should continue
+                # execution at the same address for zero-length hooks.
+                # CallReturn is the terminal hook used by factory.callable().
+                no_ret_terminal = name in ('exit', '_exit', 'abort', '__stack_chk_fail', 'CallReturn')
+                if no_ret_terminal:
+                    l.debug(f"Terminal procedure {name} — deadending state at 0x{addr:x}")
+                    if is_zero_length_hook:
+                        # For zero-length terminal hooks (e.g., CallReturn at callable's
+                        # return address), skip the hook and resume at addr. The Rust
+                        # engine can't lift code there, so it deadends with PC=addr.
+                        # This preserves the PC for code that checks state.addr.
+                        try:
+                            self._rust_mgr.set_skip_hook_addr(addr)
+                        except Exception:
+                            pass
+                        self._rust_mgr.resume_after_simprocedure(addr, None, None)
+                    else:
+                        self._rust_mgr.resume_after_simprocedure(0, None, None)
+                elif is_zero_length_hook:
                     # Tell Rust to skip the hook and execute from addr
                     # GAP 2: Pass original constraints for constraint sync
                     # GAP 5: Pass tracked writes for memory sync
@@ -2597,11 +2829,9 @@ class RustExplorationManager(RustStateExportMixin):
                                                tracked_writes=tracked_writes,
                                                tracked_symbolic_writes=tracked_symbolic_writes)
                 else:
-                    # No successors — check if this is a no-return procedure
-                    # (e.g., exit, abort, _exit). If so, deadend the state.
+                    # Non-zero-length, non-terminal: check NO_RET as fallback
                     proc_no_ret = getattr(proc, 'NO_RET', False)
-                    if proc_no_ret or name in ('exit', '_exit', 'abort', '__stack_chk_fail'):
-                        # Deadend the state by resuming at address 0 (triggers deadend)
+                    if proc_no_ret:
                         l.debug(f"No-return procedure {name} — deadending state")
                         self._rust_mgr.resume_after_simprocedure(0, None, None)
                     else:
@@ -2613,6 +2843,26 @@ class RustExplorationManager(RustStateExportMixin):
                                 pass
                         self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
 
+        except TypeError as e:
+            # Continuation procedure missing local_vars (e.g., after_main without args).
+            # This happens when the init phase's procedure_data wasn't captured.
+            # Treat as a graceful exit (deadend) rather than a hard error.
+            if 'missing' in str(e) and 'positional argument' in str(e):
+                l.warning(f"Continuation at 0x{addr:x} missing args (likely after_main) — deadending")
+                try:
+                    self._rust_mgr.resume_after_simprocedure(0, None, None, None)
+                except Exception:
+                    try:
+                        self._rust_mgr.resume_after_error(str(e))
+                    except Exception:
+                        pass
+                self._set_callback_state(None)
+                self._current_callback_state_id = None
+                self._perf_stats['callback_simprocedure_count'] += 1
+                self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+                return
+            # Other TypeErrors fall through to generic handler
+            raise
         except Exception as e:
             # P17: On exception, move state to errored stash instead of resuming with corrupted state
             l.warning(f"P17: SimProcedure execution error at 0x{addr:x}: {e}")
@@ -3444,8 +3694,11 @@ class RustExplorationManager(RustStateExportMixin):
             # Set callback state for memory access during this callback
             self._set_callback_state(state)
 
-            # Sync Rust constraints to Python state
-            self._sync_rust_constraints_to_python(state)
+            # Make the Rust solver the single source of truth for this callback.
+            # Instead of syncing constraints (which can create UNSAT due to
+            # variable identity mismatches), delegate solver operations to the
+            # forked Rust solver context.
+            self._install_rust_solver_on_callback_state(state)
 
             # Phase 3 Fix: Ensure critical plugins are present
             # Some scripts assume posix/libc plugins exist - restore if missing
@@ -4175,11 +4428,12 @@ class RustExplorationManager(RustStateExportMixin):
         start_time = time.time()
         steps_taken = 0
 
-        # When callable predicates are active, use step-by-step exploration
-        # so predicates are evaluated between individual state steps.
-        # This catches stdout changes from printf before states are forked/consumed.
+        # When callable predicates or techniques are active, use step-by-step
+        # exploration so Python callbacks are properly dispatched between steps.
+        # The address-based path below handles run() events directly but can
+        # miss callback dispatch that step() handles correctly.
         has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
-        if has_predicates:
+        if has_predicates or bool(self._active_techniques):
             # Disable Rust-side predicate callbacks — we handle predicates
             # on the Python cached states (which have stdout from printf).
             self._rust_mgr.set_find_needs_python(False)
@@ -4239,30 +4493,23 @@ class RustExplorationManager(RustStateExportMixin):
             event = self._rust_mgr.run(1) if need_per_step else self._rust_mgr.run()
             steps_taken += 1
 
-            # When avoid addresses are set, cap active states and periodically
-            # clear accumulated stashes to prevent OOM. Without this, binaries
-            # with many avoid addresses (ekoparty: 100) accumulate states and OOM.
-            if avoid is not None and not callable(avoid):
+            # When avoid addresses are set, periodically clear accumulated
+            # stashes to prevent OOM.
+            has_avoid = (avoid is not None and not callable(avoid)) or getattr(self, '_has_technique_avoids', False)
+            if has_avoid:
                 try:
-                    # Cap active states at 5
-                    active_ids = self._rust_mgr.get_state_ids('active')
-                    if len(active_ids) > 5:
-                        for sid in active_ids[5:]:
-                            try:
-                                self._rust_mgr.move_state(sid, 'active', '_drop')
-                            except Exception:
-                                pass
-                        self._rust_mgr.clear_stash('_drop')
-
                     # Periodically clear avoid/pruned stashes to free Z3 memory
                     if steps_taken % 50 == 0:
                         self._rust_mgr.clear_stash('avoid')
                         self._rust_mgr.clear_stash('pruned')
                         self._rust_mgr.clear_stash('deadended')
-                        # Clear Python state cache for non-active states
+                        # Clear Python state cache for non-active states,
+                        # but keep root states that active/found descendants need
                         active_set = set(self._rust_mgr.get_state_ids('active'))
                         found_set = set(self._rust_mgr.get_state_ids('found'))
                         keep = active_set | found_set
+                        # Also keep root states referenced by active/found states
+                        keep.update(self._state_roots.get(sid, sid) for sid in keep)
                         for sid in list(self._state_cache.keys()):
                             if sid not in keep:
                                 del self._state_cache[sid]
@@ -4275,6 +4522,16 @@ class RustExplorationManager(RustStateExportMixin):
             if event.event_type == 'found' and event.found_count >= num_find:
                 break
             elif event.event_type == 'active_empty':
+                # Before exiting, apply technique filters one last time.
+                # Techniques like SearchForNull need to check deadended states
+                # and may move them to 'found' before we conclude exploration.
+                if self._active_techniques:
+                    self._apply_technique_filters()
+                    if self._check_technique_complete():
+                        break
+                    # If techniques moved states back to active, continue
+                    if self._rust_mgr.get_state_ids('active'):
+                        continue
                 break
             elif event.event_type == 'need_callback':
                 if event.callback_reason == 'simprocedure':

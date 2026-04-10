@@ -182,10 +182,11 @@ impl Default for ExecutionConfig {
         ExecutionConfig {
             max_deferred_forks: 500,  // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
-            // Deferred forks: handle symbolic branches in Rust without
-            // returning to Python. The constraint ordering bug (fork states
-            // inheriting all branch constraints) is fixed via per-fork
-            // solver snapshots taken before assume_true().
+            // Deferred forks enabled with one-per-step limit:
+            // interpreter_cb.rs limits to one deferred fork per
+            // run_until_event call, then falls back to non-deferred
+            // mode. This gives single-exit blocks the performance
+            // benefit while multi-exit blocks are handled by Python.
             use_deferred_forks: true,
             // Eager prefetch disabled: fetching entire regions (e.g. 256 stack
             // pages) on first access is extremely slow due to Python callbacks.

@@ -1247,6 +1247,19 @@ impl RustExplorationManager {
             );
         }
 
+        // Add taken-path constraints from deferred forks to the main state.
+        // Without these, the solver doesn't know which branch was taken,
+        // causing incorrect results for subsequent symbolic operations.
+        for fork in &pending.deferred_forks {
+            if let Some(cond) = pending.stored_conditions.get(&fork.condition_id) {
+                if fork.path_taken {
+                    state.solver().borrow().assume_true(cond);
+                } else {
+                    state.solver().borrow().assume_false(cond);
+                }
+            }
+        }
+
         // Process deferred forks that were stored during the step
         // These represent unexplored branches that should be added to active
         //
@@ -1491,8 +1504,28 @@ impl RustExplorationManager {
             _ => None,
         };
 
+        // Add taken-path constraints from deferred forks to the main state
+        // BEFORE forking for the symbolic branch. Since fork() creates an
+        // independent solver copy, both true_state and false_state will
+        // inherit these constraints. Without this, the solver wouldn't know
+        // which deferred-fork branch was taken.
+        for fork in &pending.deferred_forks {
+            if let Some(cond) = pending.stored_conditions.get(&fork.condition_id) {
+                if fork.path_taken {
+                    pending.state.solver().borrow().assume_true(cond);
+                } else {
+                    pending.state.solver().borrow().assume_false(cond);
+                }
+            }
+        }
+
+        // Track root state ID for lineage
+        let original_state_id = pending.state.state_id();
+        let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+
         // Create the true state (fork of original) and add constraint
         let mut true_state = pending.state.fork();
+        self.state_roots.insert(true_state.state_id(), root_state_id);
         true_state.set_pc(true_pc);
         if let Some(ref cond) = branch_condition {
             // Add assume_true: guard is true → exit taken
@@ -1507,6 +1540,84 @@ impl RustExplorationManager {
             // Add assume_false: guard is false → fallthrough
             let solver_ref = false_state.solver();
             solver_ref.borrow().assume_false(cond);
+        }
+
+        // Process deferred forks that were accumulated before this symbolic branch.
+        // These represent unexplored branches from earlier in the step that must
+        // not be silently dropped.
+        let mut deferred_successors = Vec::new();
+        let mut deferred_pruned = Vec::new();
+        if !pending.deferred_forks.is_empty() {
+            let mut snapshots = pending.fork_snapshots;
+            for fork in pending.deferred_forks {
+                let condition = pending.stored_conditions.get(&fork.condition_id);
+
+                // P11 fix: reconstruct from condition_ast if not in stored_conditions
+                let reconstructed_condition = if condition.is_none() {
+                    if let Some(ref py_ast) = fork.condition_ast {
+                        Python::with_gil(|py| {
+                            let ast = py_ast.bind(py);
+                            let solver_ref = true_state.solver();
+                            let ctx: &crate::symbolic::SymContext = &*solver_ref.borrow();
+                            crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let effective_condition = condition.or(reconstructed_condition.as_ref());
+
+                if let Some(cond) = effective_condition {
+                    // Use solver snapshot if available (from before branch constraint)
+                    let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
+                        let mut f = true_state.fork_from_snapshot(snapshot);
+                        if fork.path_taken {
+                            f.solver().borrow().assume_false(cond);
+                        } else {
+                            f.solver().borrow().assume_true(cond);
+                        }
+                        f.set_pc(fork.unexplored_target);
+                        f
+                    } else if fork.path_taken {
+                        let mut f = true_state.fork_false(cond);
+                        f.set_pc(fork.unexplored_target);
+                        f
+                    } else {
+                        let mut f = true_state.fork_true(cond);
+                        f.set_pc(fork.unexplored_target);
+                        f
+                    };
+
+                    self.state_roots.insert(forked.state_id(), root_state_id);
+
+                    if self.lazy_solves || forked.satisfiable() {
+                        deferred_successors.push(forked);
+                    } else {
+                        log::debug!(
+                            "Deferred fork at 0x{:x} is UNSAT, adding to pruned",
+                            fork.unexplored_target
+                        );
+                        deferred_pruned.push(forked);
+                    }
+                } else {
+                    // Missing condition: create conservative fork
+                    log::warn!(
+                        "Missing condition for deferred fork at 0x{:x} in symbolic branch handler",
+                        fork.branch_addr
+                    );
+                    let mut forked = true_state.fork();
+                    forked.set_pc(fork.unexplored_target);
+                    self.state_roots.insert(forked.state_id(), root_state_id);
+                    if self.lazy_solves || forked.satisfiable() {
+                        deferred_successors.push(forked);
+                    } else {
+                        deferred_pruned.push(forked);
+                    }
+                }
+            }
         }
 
         // Add states to stashes.
@@ -1549,6 +1660,20 @@ impl RustExplorationManager {
             }
         }
 
+        // Add deferred fork states, checking find/avoid
+        for s in deferred_successors {
+            let spc = s.pc();
+            if self.find_addrs.contains(&spc) {
+                self.stashes.entry("found".to_string())
+                    .or_insert_with(VecDeque::new).push_back(s);
+            } else if self.avoid_addrs.contains(&spc) {
+                self.stashes.entry("avoid".to_string())
+                    .or_insert_with(VecDeque::new).push_back(s);
+            } else {
+                active_states.push(s);
+            }
+        }
+
         // Add to active stash
         let active = self.stashes
             .entry("active".to_string())
@@ -1558,6 +1683,7 @@ impl RustExplorationManager {
         }
 
         // Add to pruned stash
+        pruned_states.extend(deferred_pruned);
         if !pruned_states.is_empty() {
             let pruned = self.stashes
                 .entry("pruned".to_string())
@@ -2784,6 +2910,9 @@ impl RustExplorationManager {
                 self.exec_config.clone(),
             );
 
+            // Propagate lazy_solves to skip Z3 feasibility checks
+            interp.lazy_solves = self.lazy_solves;
+
             // Copy state registers to interpreter (including symbolic values)
             interp.registers = state.registers().fork();
             interp.set_pc(initial_pc);
@@ -2879,6 +3008,16 @@ impl RustExplorationManager {
                 for fork in deferred_forks {
                     // Look up the condition for this deferred fork
                     if let Some(condition) = stored_conditions.get(&fork.condition_id) {
+                        // Add the taken-path constraint to the main state.
+                        // This was NOT done during block execution to avoid
+                        // polluting subsequent feasibility checks within the
+                        // same IRSB.
+                        if fork.path_taken {
+                            successors[0].solver().borrow().assume_true(condition);
+                        } else {
+                            successors[0].solver().borrow().assume_false(condition);
+                        }
+
                         // Create forked state for the unexplored path.
                         // Use solver snapshot (from before branch constraint) if available
                         // to avoid inheriting the taken-path constraint (which would make
@@ -3032,6 +3171,12 @@ impl RustExplorationManager {
                         for fork in deferred_forks {
                             let condition = stored_conditions.get(&fork.condition_id);
                             if let Some(cond) = condition {
+                                // Add taken-path constraint to main state
+                                if fork.path_taken {
+                                    successors[0].solver().borrow().assume_true(cond);
+                                } else {
+                                    successors[0].solver().borrow().assume_false(cond);
+                                }
                                 let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
                                     let mut f = fork_base.fork_from_snapshot(snapshot);
                                     if fork.path_taken {

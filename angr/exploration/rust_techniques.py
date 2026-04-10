@@ -65,39 +65,57 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
     elif tech_name == 'Explorer':
         find_addrs = []
         avoid_addrs = []
-        find_func = getattr(technique, 'find', None)
-        avoid_func = getattr(technique, 'avoid', None)
 
-        # Extract addresses from _extra_stop_points by testing each
-        # against the find/avoid lambdas with a mock state
-        stop_points = getattr(technique, '_extra_stop_points', set())
-        if stop_points and callable(find_func) and callable(avoid_func):
-            class _MockState:
-                def __init__(self, addr):
-                    self.addr = addr
-                    self._ip = addr
-                    self.regs = type('regs', (), {'ip': addr})()
-                def block(self, *a, **kw):
-                    return type('block', (), {'size': 1})()
+        # Extract find addresses directly from the technique
+        raw_find = getattr(technique, 'find', None)
+        if raw_find is not None:
+            if isinstance(raw_find, int):
+                find_addrs = [raw_find]
+            elif isinstance(raw_find, (list, tuple, set)):
+                find_addrs = [a for a in raw_find if isinstance(a, int)]
+            # Callable find predicates can't be turned into addresses
 
-            for addr in stop_points:
-                mock = _MockState(addr)
-                try:
-                    if find_func(mock):
-                        find_addrs.append(addr)
-                        continue
-                except Exception:
-                    pass
-                try:
-                    if avoid_func(mock):
-                        avoid_addrs.append(addr)
-                except Exception:
-                    pass
+        # Extract avoid addresses directly from the technique
+        raw_avoid = getattr(technique, 'avoid', None)
+        if raw_avoid is not None:
+            if isinstance(raw_avoid, int):
+                avoid_addrs = [raw_avoid]
+            elif isinstance(raw_avoid, (list, tuple, set)):
+                avoid_addrs = [a for a in raw_avoid if isinstance(a, int)]
+
+        # Fallback: try _extra_stop_points with mock state for callable find/avoid
+        if not find_addrs and not avoid_addrs:
+            find_func = getattr(technique, 'find', None)
+            avoid_func = getattr(technique, 'avoid', None)
+            stop_points = getattr(technique, '_extra_stop_points', set())
+            if stop_points and callable(find_func) and callable(avoid_func):
+                class _MockState:
+                    def __init__(self, addr):
+                        self.addr = addr
+                        self._ip = addr
+                        self.regs = type('regs', (), {'ip': addr})()
+                    def block(self, *a, **kw):
+                        return type('block', (), {'size': 1})()
+
+                for addr in stop_points:
+                    mock = _MockState(addr)
+                    try:
+                        if find_func(mock):
+                            find_addrs.append(addr)
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        if avoid_func(mock):
+                            avoid_addrs.append(addr)
+                    except Exception:
+                        pass
 
         if find_addrs:
             mgr._rust_mgr.set_find_addrs(find_addrs)
         if avoid_addrs:
             mgr._rust_mgr.set_avoid_addrs(avoid_addrs)
+            mgr._has_technique_avoids = True
         num_find = getattr(technique, 'num_find', 1)
         mgr._rust_mgr.set_num_find(num_find)
         l.debug(f"P9: Explorer technique: find={[hex(a) for a in find_addrs]}, "
@@ -130,14 +148,24 @@ def remove_technique(mgr: "RustExplorationManager", technique) -> bool:
 def apply_technique_filters(mgr: "RustExplorationManager"):
     """Apply ExplorationTechnique filter() callbacks via proxy.
 
-    After each step, iterate active states through each technique's
+    After each step, iterate NEW states through each technique's
     filter() method. If filter() returns a stash name other than
     'active', move the state to that stash in Rust.
+
+    IMPORTANT: Only filter states that haven't been filtered yet.
+    Techniques like CheckUniqueness maintain monotonic sets — re-checking
+    already-filtered states causes them to be incorrectly pruned.
     """
     from angr.exploration.rust_state_proxy import RustStateProxy, RustSimulationManagerProxy
 
     if not mgr._active_techniques:
         return
+
+    # Track which states have already been filtered to avoid re-checking.
+    # States moved to other stashes get new IDs or are removed from active,
+    # so they won't be re-checked. New fork children get new IDs.
+    if not hasattr(mgr, '_filtered_state_ids'):
+        mgr._filtered_state_ids = set()
 
     simgr_proxy = RustSimulationManagerProxy(
         mgr._rust_mgr,
@@ -152,6 +180,9 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
     for stash in ('active', 'errored', 'deadended'):
         state_ids = list(mgr._rust_mgr.get_state_ids(stash))
         for sid in state_ids:
+            if sid in mgr._filtered_state_ids:
+                continue  # Already filtered — skip to avoid duplicate pruning
+
             state_proxy = RustStateProxy(
                 mgr._rust_mgr, sid, project=mgr._project,
             )
@@ -167,9 +198,21 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                     except Exception as e:
                         l.debug(f"Technique {type(tech).__name__}.filter() error: {e}")
 
+            # Mark as filtered regardless of outcome
+            mgr._filtered_state_ids.add(sid)
+
             if goto is not None and goto != stash:
                 try:
                     mgr._rust_mgr.move_state(sid, stash, goto)
+                    # Ensure the moved state can be reconstructed later by
+                    # tracking its root state for plugin/constraint restoration
+                    if sid not in mgr._state_cache:
+                        try:
+                            root = mgr._rust_mgr.get_state_root(sid)
+                            if root is not None:
+                                mgr._state_roots[sid] = root
+                        except Exception:
+                            pass
                 except Exception as e:
                     l.debug(f"Failed to move state {sid} from {stash} to {goto}: {e}")
 

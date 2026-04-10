@@ -156,7 +156,12 @@ class CallbackMemoryTracker:
                             concrete_addr = tracker._state.solver.eval(addr)
 
                         # Get concrete data
-                        if hasattr(data, 'symbolic') and data.symbolic:
+                        if isinstance(data, (bytes, bytearray)):
+                            # Raw bytes — track directly
+                            data_bytes = bytes(data)
+                            if size is None:
+                                size = len(data_bytes)
+                        elif hasattr(data, 'symbolic') and data.symbolic:
                             # For symbolic data, get a concrete witness
                             concrete_data = tracker._state.solver.eval(data)
                             if size is None:
