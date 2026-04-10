@@ -10,7 +10,29 @@ pub mod segmentlist;
 
 // VEX Engine modules (requires vex-engine feature, enabled by default)
 #[cfg(feature = "vex-engine")]
+pub mod arch;
+#[cfg(feature = "vex-engine")]
+pub mod callbacks;
+#[cfg(feature = "vex-engine")]
+pub mod claripy_bridge;
+#[cfg(feature = "vex-engine")]
+pub mod concretize;
+#[cfg(feature = "vex-engine")]
 pub mod engine;
+#[cfg(feature = "vex-engine")]
+pub mod exploration;
+#[cfg(feature = "vex-engine")]
+pub mod interpreter;
+#[cfg(feature = "vex-engine")]
+pub mod interpreter_cb;
+#[cfg(feature = "vex-engine")]
+pub mod memory;
+#[cfg(feature = "vex-engine")]
+pub mod procedures;
+#[cfg(feature = "vex-engine")]
+pub mod solver;
+#[cfg(feature = "vex-engine")]
+pub mod state;
 #[cfg(feature = "vex-engine")]
 pub mod symbolic;
 #[cfg(feature = "vex-engine")]
