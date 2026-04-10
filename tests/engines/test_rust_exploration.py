@@ -21,7 +21,13 @@ except ImportError:
     RUST_EXPLORATION_AVAILABLE = False
 
 # Get test binary path
-TEST_BINARIES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "binaries")
+# Try multiple locations for test binaries
+_candidates = [
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "binaries"),
+    os.path.expanduser("~/repos/angr-examples/examples/fauxware"),
+    os.path.expanduser("~/angr-examples/examples/fauxware"),
+]
+TEST_BINARIES_DIR = next((d for d in _candidates if os.path.isdir(d)), _candidates[0])
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
