@@ -11,6 +11,10 @@ pub mod segmentlist;
 // VEX Engine modules (requires vex-engine feature, enabled by default)
 #[cfg(feature = "vex-engine")]
 pub mod engine;
+#[cfg(feature = "vex-engine")]
+pub mod symbolic;
+#[cfg(feature = "vex-engine")]
+pub mod vex;
 
 use pyo3::prelude::*;
 

@@ -1,0 +1,991 @@
+//! VEX Intermediate Representation types.
+//!
+//! This module defines the VEX IR in Rust, matching the libVEX specification.
+//! The key difference from libVEX is that operations are parameterized by width
+//! rather than having separate opcodes for each width (DRY principle).
+
+use std::fmt;
+
+use crate::symbolic::BitWidth;
+
+/// A VEX IR Super Block (IRSB) - a sequence of statements ending in a jump.
+#[derive(Debug, Clone)]
+pub struct IRSB {
+    /// The address of this block.
+    pub addr: u64,
+    /// The architecture this block was lifted for.
+    pub arch: VexArch,
+    /// Statements in execution order.
+    pub statements: Vec<IRStmt>,
+    /// The default exit (fallthrough) expression.
+    pub next: IRExpr,
+    /// Jump kind for the default exit.
+    pub jumpkind: JumpKind,
+    /// Offset into the guest state for the IP register.
+    pub offsIP: u32,
+    /// Number of temporary variables used.
+    pub tyenv: TypeEnv,
+}
+
+impl IRSB {
+    /// Create a new empty IRSB.
+    pub fn new(addr: u64, arch: VexArch) -> Self {
+        IRSB {
+            addr,
+            arch,
+            statements: Vec::new(),
+            next: IRExpr::Const(IRConst::U64(addr)),
+            jumpkind: JumpKind::Boring,
+            offsIP: 0,
+            tyenv: TypeEnv::new(),
+        }
+    }
+
+    /// Get the number of instructions in this block.
+    pub fn num_instructions(&self) -> usize {
+        self.statements
+            .iter()
+            .filter(|s| matches!(s, IRStmt::IMark { .. }))
+            .count()
+    }
+
+    /// Get the byte size of this block.
+    pub fn size(&self) -> u32 {
+        self.statements
+            .iter()
+            .filter_map(|s| {
+                if let IRStmt::IMark { len, .. } = s {
+                    Some(*len)
+                } else {
+                    None
+                }
+            })
+            .sum()
+    }
+}
+
+/// Type environment for temporary variables.
+#[derive(Debug, Clone, Default)]
+pub struct TypeEnv {
+    /// Types of temporary variables, indexed by temp number.
+    pub types: Vec<IRType>,
+}
+
+impl TypeEnv {
+    pub fn new() -> Self {
+        TypeEnv { types: Vec::new() }
+    }
+
+    pub fn new_temp(&mut self, ty: IRType) -> u32 {
+        let tmp = self.types.len() as u32;
+        self.types.push(ty);
+        tmp
+    }
+
+    pub fn get(&self, tmp: u32) -> Option<IRType> {
+        self.types.get(tmp as usize).copied()
+    }
+}
+
+/// VEX architectures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VexArch {
+    X86,
+    AMD64,
+    ARM,
+    ARM64,
+    MIPS32,
+    MIPS64,
+    PPC32,
+    PPC64,
+    S390X,
+}
+
+impl VexArch {
+    /// Get the pointer size for this architecture in bits.
+    pub fn pointer_size(&self) -> u32 {
+        match self {
+            VexArch::X86 | VexArch::ARM | VexArch::MIPS32 | VexArch::PPC32 => 32,
+            VexArch::AMD64 | VexArch::ARM64 | VexArch::MIPS64 | VexArch::PPC64 | VexArch::S390X => {
+                64
+            }
+        }
+    }
+
+    /// Get the endianness.
+    pub fn endness(&self) -> Endness {
+        match self {
+            VexArch::X86 | VexArch::AMD64 | VexArch::ARM | VexArch::ARM64 => Endness::Little,
+            VexArch::MIPS32 | VexArch::MIPS64 | VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X => {
+                Endness::Big
+            }
+        }
+    }
+}
+
+/// IR statement types.
+#[derive(Debug, Clone)]
+pub enum IRStmt {
+    /// No operation.
+    NoOp,
+
+    /// Instruction marker - marks the start of a guest instruction.
+    IMark {
+        /// Address of the instruction.
+        addr: u64,
+        /// Length of the instruction in bytes.
+        len: u32,
+        /// Delta from block start (usually 0).
+        delta: u8,
+    },
+
+    /// ABI hint (no semantic effect).
+    AbiHint {
+        base: Box<IRExpr>,
+        len: u32,
+        nia: Box<IRExpr>,
+    },
+
+    /// Write to a guest register.
+    Put {
+        /// Offset into guest state.
+        offset: u32,
+        /// Data to write.
+        data: IRExpr,
+    },
+
+    /// Write to a guest register with a guard.
+    PutI {
+        descr: IRRegArray,
+        ix: Box<IRExpr>,
+        bias: u32,
+        data: Box<IRExpr>,
+    },
+
+    /// Write to a temporary variable.
+    WrTmp {
+        /// Temporary variable number.
+        tmp: u32,
+        /// Data to write.
+        data: IRExpr,
+    },
+
+    /// Store to memory.
+    Store {
+        /// Target address.
+        addr: IRExpr,
+        /// Data to store.
+        data: IRExpr,
+        /// Endianness.
+        endness: Endness,
+    },
+
+    /// Store with guard (conditional store).
+    StoreG {
+        addr: Box<IRExpr>,
+        data: Box<IRExpr>,
+        guard: Box<IRExpr>,
+        endness: Endness,
+    },
+
+    /// Load with guard (conditional load).
+    LoadG {
+        dst: u32,
+        addr: Box<IRExpr>,
+        alt: Box<IRExpr>,
+        guard: Box<IRExpr>,
+        cvt: IRLoadGOp,
+        endness: Endness,
+    },
+
+    /// Compare and swap.
+    CAS {
+        /// Temporary for old value.
+        old_hi: Option<u32>,
+        old_lo: u32,
+        /// Address.
+        addr: Box<IRExpr>,
+        /// Expected values.
+        expdHi: Option<Box<IRExpr>>,
+        expdLo: Box<IRExpr>,
+        /// New values.
+        dataHi: Option<Box<IRExpr>>,
+        dataLo: Box<IRExpr>,
+        endness: Endness,
+    },
+
+    /// Load-linked (for LL/SC memory).
+    LLSC {
+        storedata: Option<Box<IRExpr>>,
+        result: u32,
+        addr: Box<IRExpr>,
+        endness: Endness,
+    },
+
+    /// Memory barrier/fence.
+    MBE(MBusEvent),
+
+    /// Dirty call to a helper function.
+    Dirty(IRDirty),
+
+    /// Conditional exit (branch).
+    Exit {
+        /// Guard condition.
+        guard: IRExpr,
+        /// Target address (constant).
+        dst: u64,
+        /// Jump kind.
+        jk: JumpKind,
+        /// Offset of IP in guest state.
+        offsIP: u32,
+    },
+}
+
+/// IR expression types.
+#[derive(Debug, Clone)]
+pub enum IRExpr {
+    /// A constant value.
+    Const(IRConst),
+
+    /// Read from a temporary variable.
+    RdTmp(u32),
+
+    /// Read from a guest register.
+    Get {
+        /// Offset into guest state.
+        offset: u32,
+        /// Type of the value.
+        ty: IRType,
+    },
+
+    /// Read from a rotating guest register array.
+    GetI {
+        descr: IRRegArray,
+        ix: Box<IRExpr>,
+        bias: u32,
+    },
+
+    /// Load from memory.
+    Load {
+        /// Address to load from.
+        addr: Box<IRExpr>,
+        /// Type of the loaded value.
+        ty: IRType,
+        /// Endianness.
+        endness: Endness,
+    },
+
+    /// Unary operation.
+    Unop {
+        /// The operation.
+        op: IROp,
+        /// The argument.
+        arg: Box<IRExpr>,
+    },
+
+    /// Binary operation.
+    Binop {
+        /// The operation.
+        op: IROp,
+        /// Left argument.
+        left: Box<IRExpr>,
+        /// Right argument.
+        right: Box<IRExpr>,
+    },
+
+    /// Ternary operation.
+    Triop {
+        op: IROp,
+        arg1: Box<IRExpr>,
+        arg2: Box<IRExpr>,
+        arg3: Box<IRExpr>,
+    },
+
+    /// Quaternary operation.
+    Qop {
+        op: IROp,
+        arg1: Box<IRExpr>,
+        arg2: Box<IRExpr>,
+        arg3: Box<IRExpr>,
+        arg4: Box<IRExpr>,
+    },
+
+    /// If-then-else expression.
+    ITE {
+        /// Condition (1-bit).
+        cond: Box<IRExpr>,
+        /// Value if true.
+        iftrue: Box<IRExpr>,
+        /// Value if false.
+        iffalse: Box<IRExpr>,
+    },
+
+    /// Call to a clean helper function.
+    CCall {
+        /// Callee information.
+        cee: IRCallee,
+        /// Return type.
+        retty: IRType,
+        /// Arguments.
+        args: Vec<IRExpr>,
+    },
+
+    /// Undefined value (for modeling undefined behavior).
+    VECRET,
+    GSPTR,
+}
+
+impl IRExpr {
+    /// Get the type of this expression (requires type environment).
+    pub fn get_type(&self, tyenv: &TypeEnv) -> Option<IRType> {
+        match self {
+            IRExpr::Const(c) => Some(c.get_type()),
+            IRExpr::RdTmp(tmp) => tyenv.get(*tmp),
+            IRExpr::Get { ty, .. } => Some(*ty),
+            IRExpr::GetI { descr, .. } => Some(descr.elemTy),
+            IRExpr::Load { ty, .. } => Some(*ty),
+            IRExpr::Unop { op, .. } => op.result_type(),
+            IRExpr::Binop { op, .. } => op.result_type(),
+            IRExpr::Triop { op, .. } => op.result_type(),
+            IRExpr::Qop { op, .. } => op.result_type(),
+            IRExpr::ITE { iftrue, .. } => iftrue.get_type(tyenv),
+            IRExpr::CCall { retty, .. } => Some(*retty),
+            IRExpr::VECRET | IRExpr::GSPTR => None,
+        }
+    }
+}
+
+/// IR constant values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IRConst {
+    U1(bool),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    U128(u128),
+    F32(f32),
+    F64(f64),
+    V128(u128),
+    V256([u64; 4]),
+}
+
+impl IRConst {
+    /// Get the type of this constant.
+    pub fn get_type(&self) -> IRType {
+        match self {
+            IRConst::U1(_) => IRType::I1,
+            IRConst::U8(_) => IRType::I8,
+            IRConst::U16(_) => IRType::I16,
+            IRConst::U32(_) => IRType::I32,
+            IRConst::U64(_) => IRType::I64,
+            IRConst::U128(_) => IRType::I128,
+            IRConst::F32(_) => IRType::F32,
+            IRConst::F64(_) => IRType::F64,
+            IRConst::V128(_) => IRType::V128,
+            IRConst::V256(_) => IRType::V256,
+        }
+    }
+
+    /// Get the value as u128.
+    pub fn as_u128(&self) -> u128 {
+        match self {
+            IRConst::U1(v) => *v as u128,
+            IRConst::U8(v) => *v as u128,
+            IRConst::U16(v) => *v as u128,
+            IRConst::U32(v) => *v as u128,
+            IRConst::U64(v) => *v as u128,
+            IRConst::U128(v) => *v,
+            IRConst::F32(v) => v.to_bits() as u128,
+            IRConst::F64(v) => v.to_bits() as u128,
+            IRConst::V128(v) => *v,
+            IRConst::V256(v) => {
+                // Only return lower 128 bits
+                v[0] as u128 | ((v[1] as u128) << 64)
+            }
+        }
+    }
+}
+
+/// IR types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IRType {
+    /// 1-bit integer (boolean).
+    I1,
+    /// 8-bit integer.
+    I8,
+    /// 16-bit integer.
+    I16,
+    /// 32-bit integer.
+    I32,
+    /// 64-bit integer.
+    I64,
+    /// 128-bit integer.
+    I128,
+    /// 32-bit float (IEEE 754).
+    F32,
+    /// 64-bit float (IEEE 754).
+    F64,
+    /// 80-bit float (x87).
+    F80,
+    /// 16-bit float (IEEE 754).
+    F16,
+    /// 128-bit vector.
+    V128,
+    /// 256-bit vector.
+    V256,
+}
+
+impl IRType {
+    /// Get the size in bits.
+    pub fn bits(&self) -> u32 {
+        match self {
+            IRType::I1 => 1,
+            IRType::I8 => 8,
+            IRType::I16 => 16,
+            IRType::I32 => 32,
+            IRType::I64 => 64,
+            IRType::I128 => 128,
+            IRType::F16 => 16,
+            IRType::F32 => 32,
+            IRType::F64 => 64,
+            IRType::F80 => 80,
+            IRType::V128 => 128,
+            IRType::V256 => 256,
+        }
+    }
+
+    /// Get the size in bytes (rounded up).
+    pub fn bytes(&self) -> u32 {
+        (self.bits() + 7) / 8
+    }
+
+    /// Convert to BitWidth if applicable.
+    pub fn to_bit_width(&self) -> Option<BitWidth> {
+        match self {
+            IRType::I1 => Some(BitWidth::W1),
+            IRType::I8 => Some(BitWidth::W8),
+            IRType::I16 => Some(BitWidth::W16),
+            IRType::I32 => Some(BitWidth::W32),
+            IRType::I64 => Some(BitWidth::W64),
+            IRType::I128 | IRType::V128 => Some(BitWidth::W128),
+            _ => None,
+        }
+    }
+
+    /// Check if this is an integer type.
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            IRType::I1 | IRType::I8 | IRType::I16 | IRType::I32 | IRType::I64 | IRType::I128
+        )
+    }
+
+    /// Check if this is a float type.
+    pub fn is_float(&self) -> bool {
+        matches!(
+            self,
+            IRType::F16 | IRType::F32 | IRType::F64 | IRType::F80
+        )
+    }
+
+    /// Check if this is a vector type.
+    pub fn is_vector(&self) -> bool {
+        matches!(self, IRType::V128 | IRType::V256)
+    }
+}
+
+/// IR operations.
+///
+/// Unlike libVEX which has ~200 separate opcodes (e.g., Iop_Add8, Iop_Add16, ...),
+/// we use parameterized operations to reduce code duplication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IROp {
+    // =========================================================================
+    // Arithmetic (parameterized by width)
+    // =========================================================================
+    Add(IRType),
+    Sub(IRType),
+    Mul(IRType),
+    MullS(IRType), // Signed widening multiply
+    MullU(IRType), // Unsigned widening multiply
+    DivS(IRType),  // Signed division
+    DivU(IRType),  // Unsigned division
+    ModS(IRType),  // Signed modulo
+    ModU(IRType),  // Unsigned modulo
+    Neg(IRType),   // Negation
+
+    /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit (low=quotient, high=remainder)
+    DivModU64to32, // Unsigned
+    DivModS64to32, // Signed
+
+    // =========================================================================
+    // Bitwise (parameterized by width)
+    // =========================================================================
+    And(IRType),
+    Or(IRType),
+    Xor(IRType),
+    Not(IRType),
+
+    // =========================================================================
+    // Shifts (parameterized by width)
+    // =========================================================================
+    Shl(IRType),  // Logical left shift
+    Shr(IRType),  // Logical right shift
+    Sar(IRType),  // Arithmetic right shift
+
+    // =========================================================================
+    // Comparisons (return I1)
+    // =========================================================================
+    CmpEQ(IRType),  // Equal
+    CmpNE(IRType),  // Not equal
+    CmpLT(IRType),  // Less than (signed)
+    CmpLE(IRType),  // Less or equal (signed)
+    CmpLTU(IRType), // Less than (unsigned)
+    CmpLEU(IRType), // Less or equal (unsigned)
+
+    // =========================================================================
+    // Conversions
+    // =========================================================================
+    /// Widen with sign extension.
+    SignExtend { from: IRType, to: IRType },
+    /// Widen with zero extension.
+    ZeroExtend { from: IRType, to: IRType },
+    /// Narrow (truncate).
+    Truncate { from: IRType, to: IRType },
+
+    // =========================================================================
+    // Bit manipulation
+    // =========================================================================
+    Clz(IRType),      // Count leading zeros
+    Ctz(IRType),      // Count trailing zeros
+    PopCount(IRType), // Population count
+
+    // =========================================================================
+    // Floating point operations
+    // =========================================================================
+    FAdd(IRType),
+    FSub(IRType),
+    FMul(IRType),
+    FDiv(IRType),
+    FNeg(IRType),
+    FAbs(IRType),
+    FSqrt(IRType),
+
+    // Float comparisons
+    FCmpEQ(IRType),
+    FCmpLT(IRType),
+    FCmpLE(IRType),
+
+    // Float conversions
+    F32toF64,
+    F64toF32,
+    I32StoF32,
+    I32StoF64,
+    I64StoF32,
+    I64StoF64,
+    I32UtoF32,
+    I32UtoF64,
+    I64UtoF32,
+    I64UtoF64,
+    F32toI32S,
+    F64toI32S,
+    F32toI64S,
+    F64toI64S,
+    F32toI32U,
+    F64toI32U,
+    F32toI64U,
+    F64toI64U,
+
+    // Rounding mode operations
+    RoundF32toInt,
+    RoundF64toInt,
+
+    // =========================================================================
+    // Scalar-in-vector float operations (SSE scalar ops)
+    // These operate on element 0 only, passing through other elements.
+    // =========================================================================
+    /// Scalar float add in vector (e.g., Add32F0x4 for ADDSS)
+    VFAddS { elem: IRType },
+    /// Scalar float sub in vector (e.g., Sub32F0x4 for SUBSS)
+    VFSubS { elem: IRType },
+    /// Scalar float mul in vector (e.g., Mul32F0x4 for MULSS)
+    VFMulS { elem: IRType },
+    /// Scalar float div in vector (e.g., Div32F0x4 for DIVSS)
+    VFDivS { elem: IRType },
+    /// Scalar float sqrt in vector (e.g., Sqrt32F0x4 for SQRTSS)
+    VFSqrtS { elem: IRType },
+    /// Scalar float max in vector (e.g., Max32F0x4 for MAXSS)
+    VFMaxS { elem: IRType },
+    /// Scalar float min in vector (e.g., Min32F0x4 for MINSS)
+    VFMinS { elem: IRType },
+    /// Set low 32 bits of V128 (used by SSE scalar ops)
+    SetV128lo32,
+    /// Set low 64 bits of V128
+    SetV128lo64,
+
+    // =========================================================================
+    // SIMD / Vector operations (parameterized)
+    // =========================================================================
+    /// Vector add: (element_type, num_elements)
+    VAdd { elem: IRType, count: u8 },
+    /// Vector sub
+    VSub { elem: IRType, count: u8 },
+    /// Vector mul
+    VMul { elem: IRType, count: u8 },
+    /// Vector multiply keeping low half (PMULLD)
+    VMulLo { elem: IRType, count: u8 },
+    /// Vector and
+    VAnd(IRType), // V128 or V256
+    /// Vector or
+    VOr(IRType),
+    /// Vector xor
+    VXor(IRType),
+    /// Vector not
+    VNot(IRType),
+    /// Vector shift left (by immediate)
+    VShlN { elem: IRType, count: u8 },
+    /// Vector shift right logical
+    VShrN { elem: IRType, count: u8 },
+    /// Vector shift right arithmetic
+    VSarN { elem: IRType, count: u8 },
+    /// Vector compare equal
+    VCmpEQ { elem: IRType, count: u8 },
+    /// Vector compare greater than
+    VCmpGT { elem: IRType, count: u8 },
+    /// Interleave high
+    VInterleaveLO { elem: IRType },
+    VInterleaveHI { elem: IRType },
+    /// Permute/shuffle
+    VPerm { elem: IRType },
+
+    // =========================================================================
+    // Special operations
+    // =========================================================================
+    /// Reinterpret bits as different type.
+    Reinterpret { from: IRType, to: IRType },
+
+    /// High half of multiplication result.
+    MulHi { ty: IRType, signed: bool },
+
+    /// Concatenate two values.
+    Concat { ty: IRType },
+
+    /// Extract bits.
+    Extract {
+        from: IRType,
+        to: IRType,
+        low_bit: u8,
+    },
+
+    // =========================================================================
+    // x86-specific operations
+    // =========================================================================
+    /// x86 PCLMUL (carry-less multiply)
+    PclmulLQLQ,
+    PclmulHQHQ,
+    PclmulLQHQ,
+    PclmulHQLQ,
+
+    /// x86 CRC32
+    Crc32C,
+
+    // =========================================================================
+    // Raw VEX opcode (for unhandled operations)
+    // =========================================================================
+    /// Fallback for operations not yet implemented.
+    Raw(u32),
+}
+
+impl IROp {
+    /// Get the result type of this operation.
+    pub fn result_type(&self) -> Option<IRType> {
+        match self {
+            // Arithmetic ops return same type as input
+            IROp::Add(t)
+            | IROp::Sub(t)
+            | IROp::Mul(t)
+            | IROp::DivS(t)
+            | IROp::DivU(t)
+            | IROp::ModS(t)
+            | IROp::ModU(t)
+            | IROp::Neg(t) => Some(*t),
+
+            // Widening multiply
+            IROp::MullS(t) | IROp::MullU(t) => match t {
+                IRType::I8 => Some(IRType::I16),
+                IRType::I16 => Some(IRType::I32),
+                IRType::I32 => Some(IRType::I64),
+                IRType::I64 => Some(IRType::I128),
+                _ => None,
+            },
+
+            // DivMod: 64-bit / 32-bit -> 64-bit
+            IROp::DivModU64to32 | IROp::DivModS64to32 => Some(IRType::I64),
+
+            // Bitwise ops return same type
+            IROp::And(t)
+            | IROp::Or(t)
+            | IROp::Xor(t)
+            | IROp::Not(t)
+            | IROp::Shl(t)
+            | IROp::Shr(t)
+            | IROp::Sar(t) => Some(*t),
+
+            // Comparisons return I1
+            IROp::CmpEQ(_)
+            | IROp::CmpNE(_)
+            | IROp::CmpLT(_)
+            | IROp::CmpLE(_)
+            | IROp::CmpLTU(_)
+            | IROp::CmpLEU(_) => Some(IRType::I1),
+
+            // Conversions
+            IROp::SignExtend { to, .. }
+            | IROp::ZeroExtend { to, .. }
+            | IROp::Truncate { to, .. } => Some(*to),
+
+            // Bit manipulation returns same type
+            IROp::Clz(t) | IROp::Ctz(t) | IROp::PopCount(t) => Some(*t),
+
+            // Float ops
+            IROp::FAdd(t)
+            | IROp::FSub(t)
+            | IROp::FMul(t)
+            | IROp::FDiv(t)
+            | IROp::FNeg(t)
+            | IROp::FAbs(t)
+            | IROp::FSqrt(t) => Some(*t),
+
+            IROp::FCmpEQ(_) | IROp::FCmpLT(_) | IROp::FCmpLE(_) => Some(IRType::I1),
+
+            // Scalar-in-vector float ops return V128
+            IROp::VFAddS { elem } | IROp::VFSubS { elem } | IROp::VFMulS { elem } | IROp::VFDivS { elem }
+            | IROp::VFSqrtS { elem } | IROp::VFMaxS { elem } | IROp::VFMinS { elem } => {
+                Some(IRType::V128)
+            }
+
+            // SetV128lo ops return V128
+            IROp::SetV128lo32 | IROp::SetV128lo64 => Some(IRType::V128),
+
+            // Float conversions
+            IROp::F32toF64 => Some(IRType::F64),
+            IROp::F64toF32 => Some(IRType::F32),
+            IROp::I32StoF32 | IROp::I32UtoF32 | IROp::I64StoF32 | IROp::I64UtoF32 => {
+                Some(IRType::F32)
+            }
+            IROp::I32StoF64 | IROp::I32UtoF64 | IROp::I64StoF64 | IROp::I64UtoF64 => {
+                Some(IRType::F64)
+            }
+            IROp::F32toI32S | IROp::F64toI32S | IROp::F32toI32U | IROp::F64toI32U => {
+                Some(IRType::I32)
+            }
+            IROp::F32toI64S | IROp::F64toI64S | IROp::F32toI64U | IROp::F64toI64U => {
+                Some(IRType::I64)
+            }
+            IROp::RoundF32toInt => Some(IRType::F32),
+            IROp::RoundF64toInt => Some(IRType::F64),
+
+            // Vector ops
+            IROp::VAnd(t) | IROp::VOr(t) | IROp::VXor(t) | IROp::VNot(t) => Some(*t),
+            IROp::VAdd { .. }
+            | IROp::VSub { .. }
+            | IROp::VMul { .. }
+            | IROp::VMulLo { .. }
+            | IROp::VShlN { .. }
+            | IROp::VShrN { .. }
+            | IROp::VSarN { .. }
+            | IROp::VCmpEQ { .. }
+            | IROp::VCmpGT { .. } => Some(IRType::V128),
+            IROp::VInterleaveLO { .. }
+            | IROp::VInterleaveHI { .. }
+            | IROp::VPerm { .. } => Some(IRType::V128),
+
+            IROp::Reinterpret { to, .. } => Some(*to),
+            IROp::MulHi { ty, .. } => Some(*ty),
+            IROp::Concat { ty } => Some(*ty),
+            IROp::Extract { to, .. } => Some(*to),
+
+            IROp::PclmulLQLQ
+            | IROp::PclmulHQHQ
+            | IROp::PclmulLQHQ
+            | IROp::PclmulHQLQ
+            | IROp::Crc32C => Some(IRType::I64),
+
+            IROp::Raw(_) => None,
+        }
+    }
+
+    /// Check if this operation is commutative.
+    pub fn is_commutative(&self) -> bool {
+        matches!(
+            self,
+            IROp::Add(_)
+                | IROp::Mul(_)
+                | IROp::MullS(_)
+                | IROp::MullU(_)
+                | IROp::And(_)
+                | IROp::Or(_)
+                | IROp::Xor(_)
+                | IROp::CmpEQ(_)
+                | IROp::CmpNE(_)
+        )
+    }
+}
+
+/// Jump kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JumpKind {
+    /// Normal jump (fallthrough or unconditional).
+    Boring,
+    /// Function call.
+    Call,
+    /// Function return.
+    Ret,
+    /// System call.
+    Sys_syscall,
+    Sys_int128,
+    Sys_int129,
+    Sys_int130,
+    Sys_int145,
+    Sys_int210,
+    Sys_sysenter,
+    /// Client request (Valgrind).
+    ClientReq,
+    /// Yield (threading).
+    Yield,
+    /// Emit warning.
+    EmWarn,
+    /// Emit fail.
+    EmFail,
+    /// No redirect.
+    NoDecode,
+    /// Map fail.
+    MapFail,
+    /// Invalid instruction.
+    InvalICache,
+    /// Flush dcache.
+    FlushDCache,
+    /// Flush dcache line.
+    FlushDCacheLine,
+    /// Vectorized exit.
+    ExtV128,
+    /// Extended exit.
+    Extension,
+}
+
+impl JumpKind {
+    /// Check if this is a syscall.
+    pub fn is_syscall(&self) -> bool {
+        matches!(
+            self,
+            JumpKind::Sys_syscall
+                | JumpKind::Sys_int128
+                | JumpKind::Sys_int129
+                | JumpKind::Sys_int130
+                | JumpKind::Sys_int145
+                | JumpKind::Sys_int210
+                | JumpKind::Sys_sysenter
+        )
+    }
+
+    /// Check if this is a function call.
+    pub fn is_call(&self) -> bool {
+        matches!(self, JumpKind::Call)
+    }
+
+    /// Check if this is a function return.
+    pub fn is_ret(&self) -> bool {
+        matches!(self, JumpKind::Ret)
+    }
+}
+
+/// Endianness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Endness {
+    Little,
+    Big,
+}
+
+/// Memory bus event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MBusEvent {
+    Fence,
+    SFence,
+    LFence,
+    MFence,
+}
+
+/// Guarded load operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IRLoadGOp {
+    WidenS,
+    WidenZ,
+    Identity,
+}
+
+/// Register array descriptor.
+#[derive(Debug, Clone, Copy)]
+pub struct IRRegArray {
+    pub base: u32,
+    pub elemTy: IRType,
+    pub nElems: u32,
+}
+
+/// Clean helper callee info.
+#[derive(Debug, Clone)]
+pub struct IRCallee {
+    pub name: String,
+    pub addr: u64,
+    pub mcx_mask: u32,
+}
+
+/// Dirty call info.
+#[derive(Debug, Clone)]
+pub struct IRDirty {
+    pub cee: IRCallee,
+    pub guard: Option<Box<IRExpr>>,
+    pub tmp: Option<u32>,
+    pub mFx: DirtyFx,
+    pub mAddr: Option<Box<IRExpr>>,
+    pub mSize: u32,
+    pub nFxState: u32,
+    pub args: Vec<IRExpr>,
+}
+
+/// Dirty call side effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirtyFx {
+    None,
+    Read,
+    Write,
+    Modify,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ir_type_sizes() {
+        assert_eq!(IRType::I1.bits(), 1);
+        assert_eq!(IRType::I8.bits(), 8);
+        assert_eq!(IRType::I32.bits(), 32);
+        assert_eq!(IRType::I64.bits(), 64);
+        assert_eq!(IRType::V128.bits(), 128);
+    }
+
+    #[test]
+    fn test_ir_const_types() {
+        assert_eq!(IRConst::U8(42).get_type(), IRType::I8);
+        assert_eq!(IRConst::U32(42).get_type(), IRType::I32);
+        assert_eq!(IRConst::U64(42).get_type(), IRType::I64);
+    }
+
+    #[test]
+    fn test_irsb_creation() {
+        let irsb = IRSB::new(0x1000, VexArch::AMD64);
+        assert_eq!(irsb.addr, 0x1000);
+        assert_eq!(irsb.num_instructions(), 0);
+    }
+}
