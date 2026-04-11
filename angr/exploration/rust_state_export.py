@@ -172,6 +172,11 @@ class RustStateExportMixin:
             if page is None:
                 continue
             page_addr, data, _perms, symbolic_offsets = page
+            # Skip pages with symbolic data — concrete bytes are just
+            # fallback values and would overwrite Python's proper symbolic
+            # representations (e.g., BVS password bytes in flareon2015_5).
+            if symbolic_offsets:
+                continue
             try:
                 # Raw bytes from Rust are in memory order; use Iend_BE so angr
                 # stores them as-is without byte-reversing.
