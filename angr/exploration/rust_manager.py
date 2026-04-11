@@ -1460,9 +1460,36 @@ class RustExplorationManager(RustStateExportMixin):
         # Import WIDE symbolic objects (not byte-by-byte) to preserve identity.
         # This ensures the Rust engine creates a single symbol that can be
         # unified with the original user-created BVS during state export.
+        #
+        # OPTIMIZATION: Only scan pages with actual user symbolic data, NOT
+        # unconstrained fill pages. After Python init, thousands of pages get
+        # filled with mem_*/unconstrained symbols. Calling memory.load() on
+        # each is ~0.3ms/page = 600ms+ for 2000 pages. Instead:
+        # 1. get_symbolic_addrs() returns only user-written addresses (fast)
+        # 2. Fall back to page.symbolic_data dict (O(1) per page, non-empty
+        #    only for pages with explicit stores, not default fill)
         try:
             pages = getattr(angr_state.memory, '_pages', {})
-            for page_no in sorted(pages.keys()):
+            # Build set of page numbers worth scanning
+            user_sym_pages = set()
+            if hasattr(angr_state.memory, 'get_symbolic_addrs'):
+                try:
+                    for addr in angr_state.memory.get_symbolic_addrs():
+                        user_sym_pages.add(addr // page_size)
+                except Exception:
+                    pass
+            if not user_sym_pages:
+                # Cheap filter: check symbolic_data dict on each page object.
+                # symbolic_data is non-empty only for pages with explicit stores,
+                # not for unconstrained fill from the default filler mixin.
+                for page_no in pages:
+                    page = pages[page_no]
+                    if hasattr(page, 'symbolic_data'):
+                        sd = page.symbolic_data
+                        if sd and len(sd) > 0:
+                            user_sym_pages.add(page_no)
+
+            for page_no in sorted(user_sym_pages):
                 page_addr = page_no * page_size
                 if stack_start <= page_addr < stack_base:
                     continue  # Skip stack pages
@@ -1478,9 +1505,6 @@ class RustExplorationManager(RustStateExportMixin):
                             for n in leaf_names
                         )
                         if has_user_sym:
-                            # Find contiguous symbolic regions and import them as
-                            # wide objects to preserve identity. Scan byte-by-byte
-                            # to find start/end of each symbolic region.
                             self._extract_wide_symbolic_regions(
                                 angr_state, page_addr, page_size, symbolic_regions)
                 except Exception:

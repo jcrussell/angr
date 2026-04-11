@@ -25,3 +25,8 @@ repository = "https://github.com/angr/angr.git"
 [workspace.lints.clippy]
 all = "warn"
 cargo = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
