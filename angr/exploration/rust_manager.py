@@ -1665,13 +1665,18 @@ class RustExplorationManager(RustStateExportMixin):
             state: The angr callback state to initialize.
             event: The exploration event that triggered the callback.
         """
-        try:
-            # Get history from Rust pending state
-            rust_history = self._rust_mgr.get_pending_history()
-            rust_jumpkind = self._rust_mgr.get_pending_jumpkind()
-        except Exception as e:
-            l.debug(f"Could not get Rust history: {e}")
-            rust_history = []
+        # Use cached bundle data if available (avoids 2 extra FFI calls)
+        rust_history = getattr(state.scratch, '_rust_bundle_history', None)
+        rust_jumpkind = getattr(state.scratch, '_rust_bundle_jumpkind', None)
+        if rust_history is None:
+            try:
+                rust_history = self._rust_mgr.get_pending_history()
+                rust_jumpkind = self._rust_mgr.get_pending_jumpkind()
+            except Exception as e:
+                l.debug(f"Could not get Rust history: {e}")
+                rust_history = []
+                rust_jumpkind = "Ijk_Boring"
+        if rust_jumpkind is None:
             rust_jumpkind = "Ijk_Boring"
 
         # Ensure history has at least one entry (the callback address)
@@ -3698,25 +3703,48 @@ class RustExplorationManager(RustStateExportMixin):
             else:
                 state = cached_state
 
-            # Sync dirty memory pages from Rust state to Python state.
-            # VEX execution stores to Rust's per-state SymbolicMemory;
-            # the Python state's memory is stale. We sync dirty pages so
-            # SimProcedures see current memory (e.g., stack variables,
-            # function arguments).
-            # CRITICAL: Fork the Rust solver context with all accumulated constraints
-            # This ensures SimProcedures see the full constraint context from exploration
+            # Use the callback bundle API to get registers + solver + history
+            # in a single FFI call instead of ~20 individual calls.
             try:
-                forked_solver = self._rust_mgr.fork_pending_solver()
-                # Attach forked Rust solver to state for constraint evaluation
-                # Store as scratch attribute for use by SimProcedures
-                state.scratch.rust_solver_ctx = forked_solver
-                constraint_count = forked_solver.num_constraints()
-                l.debug(f"Forked Rust solver context for callback state {state_id} "
-                        f"({constraint_count} constraints)")
-            except Exception as e:
-                l.warning(f"Could not fork solver context: {e}")
+                arch = self._project.arch
+                reg_names = self._get_arch_register_names(arch)
+                bundle = self._rust_mgr.export_callback_bundle(reg_names)
 
-            self._sync_registers_from_rust_pending(state)
+                # Apply solver from bundle
+                forked_solver = bundle['solver']
+                state.scratch.rust_solver_ctx = forked_solver
+                constraint_count = bundle['constraint_count']
+                l.debug(f"Bundle: solver with {constraint_count} constraints for state {state_id}")
+
+                # Apply registers from bundle (batch)
+                registers = bundle['registers']
+                for reg_name, val in registers.items():
+                    try:
+                        if val is not None:
+                            setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
+                        else:
+                            # Symbolic register — fetch AST individually
+                            try:
+                                ast = self._rust_mgr.get_pending_register_ast(reg_name)
+                                if ast is not None:
+                                    setattr(state.regs, reg_name, ast)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                # Cache history and jumpkind from bundle for later use
+                state.scratch._rust_bundle_history = bundle.get('history', [])
+                state.scratch._rust_bundle_jumpkind = bundle.get('jumpkind', 'Ijk_Boring')
+            except Exception as e:
+                l.debug(f"Bundle API failed, falling back to individual calls: {e}")
+                # Fallback to individual calls
+                try:
+                    forked_solver = self._rust_mgr.fork_pending_solver()
+                    state.scratch.rust_solver_ctx = forked_solver
+                except Exception as e2:
+                    l.warning(f"Could not fork solver context: {e2}")
+                self._sync_registers_from_rust_pending(state)
 
             # Install memory proxy: wrap state.memory.load to check Rust
             # memory first for addresses that the Python state doesn't have

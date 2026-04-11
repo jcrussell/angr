@@ -2139,6 +2139,66 @@ impl RustExplorationManager {
     /// This is critical for proper constraint propagation: without it,
     /// callbacks would create fresh solver contexts without parent
     /// constraints, leading to incorrect symbolic evaluation.
+    /// Export a callback bundle: registers, solver context, history, jumpkind
+    /// in a single FFI call. Reduces ~20 individual calls to 1.
+    ///
+    /// Returns a Python dict with:
+    /// - "registers": dict of register_name -> concrete u128 value (None if symbolic)
+    /// - "solver": forked RustSolverContext
+    /// - "history": list of u64 BBL addresses
+    /// - "jumpkind": string
+    /// - "constraint_count": u64
+    /// - "stdout": bytes (accumulated stdout buffer)
+    pub fn export_callback_bundle<'py>(
+        &self,
+        py: Python<'py>,
+        register_names: Vec<String>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let pending = self.pending_callback.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+
+        let dict = PyDict::new(py);
+
+        // Registers: batch export all requested registers
+        let reg_dict = PyDict::new(py);
+        for name in &register_names {
+            match pending.state.get_register(name) {
+                Some(bv) => {
+                    if let Some(val) = bv.as_u128() {
+                        reg_dict.set_item(name, val)?;
+                    } else {
+                        // Symbolic — set to None, Python will fetch AST if needed
+                        reg_dict.set_item(name, py.None())?;
+                    }
+                }
+                None => {
+                    reg_dict.set_item(name, py.None())?;
+                }
+            }
+        }
+        dict.set_item("registers", reg_dict)?;
+
+        // Fork solver context
+        let solver_ref = pending.state.solver();
+        let forked_ctx = solver_ref.borrow().fork();
+        let rust_ctx = RustSolverContext::from_sym_context(forked_ctx);
+        let constraint_count = rust_ctx.num_constraints();
+        dict.set_item("solver", Py::new(py, rust_ctx)?)?;
+        dict.set_item("constraint_count", constraint_count)?;
+
+        // History
+        dict.set_item("history", pending.state.history().to_vec())?;
+
+        // Jumpkind
+        dict.set_item("jumpkind",
+            pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))?;
+
+        // Stdout buffer
+        dict.set_item("stdout", pending.state.stdout_buffer().to_vec())?;
+
+        Ok(dict)
+    }
+
     pub fn fork_pending_solver(&self) -> PyResult<RustSolverContext> {
         if let Some(ref pending) = self.pending_callback {
             // Fork the pending state's solver context
