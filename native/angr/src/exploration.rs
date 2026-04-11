@@ -550,6 +550,13 @@ impl RustExplorationManager {
         self.lazy_solves = enabled;
     }
 
+    /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
+    /// When true (default), terminal states are dropped to save memory.
+    /// Set to false when states need to be recovered (e.g., factory.callable()).
+    pub fn set_drop_terminal_states(&mut self, enabled: bool) {
+        self.drop_terminal_states = enabled;
+    }
+
     /// Set Python callbacks for memory/lifting.
     pub fn set_callbacks(&mut self, callbacks: PythonCallbacks) {
         self.callbacks = Some(callbacks);

@@ -49,6 +49,9 @@ class RustStateExportMixin:
                 self._restore_plugins_to_state(state, state_id)
                 self._sync_exported_constraints(state, state_id)
                 self._attach_rust_solver_fallback(state, state_id)
+                # Sync concrete memory from Rust to Python state so that
+                # memory modified during Rust execution is visible to the user
+                self._sync_rust_memory_to_state(state, state_id)
                 # Sync Rust PC to the Python state so multi-stage exploration
                 # (re-init from found state) gets the correct program counter.
                 try:
@@ -150,6 +153,37 @@ class RustStateExportMixin:
                         fd_obj.set_state(state)
         except Exception:
             pass
+
+    def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
+        """Sync concrete memory from Rust state to Python state.
+
+        After Rust executes code, memory modified during execution is only in
+        Rust's memory. This method exports the Rust state's memory pages and
+        applies them to the Python state so that state.memory.load() returns
+        current values.
+        """
+        try:
+            snapshot = self._rust_mgr.export_state(state_id)
+        except Exception:
+            return  # State may not be in Rust stashes anymore
+
+        for i in range(snapshot.page_count()):
+            page = snapshot.get_page(i)
+            if page is None:
+                continue
+            page_addr, data, _perms, symbolic_offsets = page
+            try:
+                # Raw bytes from Rust are in memory order; use Iend_BE so angr
+                # stores them as-is without byte-reversing.
+                state.memory.store(
+                    page_addr,
+                    claripy.BVV(data, len(data) * 8),
+                    endness="Iend_BE",
+                    inspect=False,
+                    disable_actions=True,
+                )
+            except Exception:
+                pass
 
     def _attach_rust_solver_fallback(self, state, state_id):
         """Monkey-patch state.solver.eval to fallback to Rust solver on UNSAT.

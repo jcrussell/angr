@@ -646,15 +646,23 @@ impl RustSimState {
             self.set_register_by_offset(*offset, bv);
         }
 
-        // Apply memory writes
+        // Apply memory writes — split into 16-byte chunks since RustBV
+        // uses u128 internally (max 128 bits per concrete value)
         for (addr, bytes) in &changes.memory_writes {
-            let width = (bytes.len() * 8) as u32;
-            let mut value: u128 = 0;
-            for (i, &b) in bytes.iter().enumerate() {
-                value |= (b as u128) << (i * 8);
+            let mut offset = 0usize;
+            while offset < bytes.len() {
+                let remaining = bytes.len() - offset;
+                let chunk_size = remaining.min(16);
+                let chunk = &bytes[offset..offset + chunk_size];
+                let width = (chunk_size * 8) as u32;
+                let mut value: u128 = 0;
+                for (i, &b) in chunk.iter().enumerate() {
+                    value |= (b as u128) << (i * 8);
+                }
+                let bv = RustBV::concrete(value, width);
+                let _ = self.memory.store_concrete(*addr + offset as u64, bv);
+                offset += chunk_size;
             }
-            let bv = RustBV::concrete(value, width);
-            let _ = self.memory.store_concrete(*addr, bv);
         }
 
         // Apply PC change

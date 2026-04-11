@@ -4828,14 +4828,34 @@ class RustExplorationManager(RustStateExportMixin):
     def run(self, **kwargs) -> "RustExplorationManager":
         """Alias for explore() for SimulationManager compatibility.
 
-        Handles step_func: if provided, called after exploration completes
-        as a maintenance function (prune, stash management, etc.).
+        Handles step_func: if provided, called after EACH step (matching
+        Python SimulationManager behavior). Without step_func, delegates
+        to explore() for batch execution.
         """
         step_func = kwargs.pop('step_func', None)
-        result = self.explore(**kwargs)
-        if step_func is not None:
-            return step_func(result)
-        return result
+        if step_func is None:
+            return self.explore(**kwargs)
+
+        # step_func mode: step one at a time with step_func applied after
+        # each step, matching Python SimulationManager.run() behavior.
+        # This is used by Callable for concrete_only pruning.
+        # Keep terminal states since step_func may need deadended states.
+        self._rust_mgr.set_drop_terminal_states(False)
+        try:
+            n = kwargs.pop('n', None)
+            stash = kwargs.pop('stash', 'active')
+            until = kwargs.pop('until', None)
+            import itertools
+            for _ in itertools.count() if n is None else range(n):
+                if not self._rust_mgr.get_state_ids(stash):
+                    break
+                self.step(**kwargs)
+                step_func(self)
+                if until and until(self):
+                    break
+        finally:
+            self._rust_mgr.set_drop_terminal_states(True)
+        return self
 
     def move(self, from_stash: str, to_stash: str, filter_func=None) -> "RustExplorationManager":
         """Move states between stashes.
