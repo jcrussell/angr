@@ -4527,21 +4527,71 @@ class RustExplorationManager(RustStateExportMixin):
             # Native puts/printf stay enabled — they write to Rust's per-state
             # stdout_buffer. We inject this into posix.stdout during predicate
             # evaluation via _inject_rust_stdout().
+            #
+            # Batch predicate mode: run N steps in Rust between predicate
+            # evaluations instead of 1 step at a time. Callbacks are still
+            # handled immediately when run() returns need_callback events.
+            batch_size = 50  # Steps between predicate evaluations
             while True:
                 if timeout is not None and (time.time() - start_time) > timeout:
                     break
                 if max_steps is not None and steps_taken >= max_steps:
                     break
-                # Use cheap Rust-side check instead of self.active (creates Python states)
                 if not self._rust_mgr.get_state_ids('active'):
                     break
-                self.step()
-                steps_taken += 1
-                # Apply technique callbacks after each step
+
+                # Run a batch of steps, handling callbacks as they arise.
+                # run(N) processes up to N steps but returns early on callbacks.
+                batch_limit = batch_size
+                if max_steps is not None:
+                    batch_limit = min(batch_limit, max_steps - steps_taken)
+
+                batch_done = False
+                batch_steps_start = steps_taken
+                while not batch_done and (steps_taken - batch_steps_start) < batch_limit:
+                    self._sync_hooks_before_step()
+                    self._stats_ffi_crossings += 1
+                    remaining = batch_limit - (steps_taken - batch_steps_start)
+                    event = self._rust_mgr.run(remaining)
+
+                    if event.event_type == 'need_callback':
+                        self._stats_callback_count += 1
+                        _cb_start = time.perf_counter_ns()
+                        if event.callback_reason == 'simprocedure':
+                            self._handle_simprocedure_callback(event)
+                        elif event.callback_reason == 'syscall':
+                            self._handle_syscall_callback(event)
+                        elif event.callback_reason == 'symbolic_branch':
+                            self._handle_symbolic_branch_callback(event)
+                        elif event.callback_reason == 'find_predicate':
+                            self._handle_find_predicate_callback(event)
+                        elif event.callback_reason == 'avoid_predicate':
+                            self._handle_avoid_predicate_callback(event)
+                        else:
+                            l.warning(f"Unknown callback reason: {event.callback_reason}")
+                            batch_done = True
+                        self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
+                        steps_taken += 1
+                    elif event.event_type == 'active_empty':
+                        batch_done = True
+                    elif event.event_type in ('step_complete', 'found'):
+                        # run(N) completed N steps or found a solution
+                        steps_taken += remaining
+                        batch_done = True
+                    else:
+                        steps_taken += 1
+                        batch_done = True
+
+                # Ensure at least 1 step counted per batch iteration
+                if steps_taken == batch_steps_start:
+                    steps_taken += 1
+
+                # Apply technique callbacks after the batch
                 if self._active_techniques:
                     self._apply_technique_filters()
                     if self._check_technique_complete():
                         break
+                # Evaluate predicates on all states after the batch
                 self._evaluate_predicates_on_active()
                 pf = getattr(self, '_predicate_found', [])
                 if pf and len(pf) >= num_find:
