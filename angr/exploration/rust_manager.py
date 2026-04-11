@@ -4513,26 +4513,18 @@ class RustExplorationManager(RustStateExportMixin):
             event = self._rust_mgr.run(1) if need_per_step else self._rust_mgr.run()
             steps_taken += 1
 
-            # When avoid addresses are set, periodically clear accumulated
-            # stashes to prevent OOM.
-            has_avoid = (avoid is not None and not callable(avoid)) or getattr(self, '_has_technique_avoids', False)
-            if has_avoid:
+            # Terminal states (avoid/pruned/deadended) are now dropped immediately
+            # in Rust (drop_terminal_states=true), so no periodic cleanup needed.
+            # Periodically clean Python state cache to prevent memory leaks.
+            if steps_taken % 100 == 0:
                 try:
-                    # Periodically clear avoid/pruned stashes to free Z3 memory
-                    if steps_taken % 50 == 0:
-                        self._rust_mgr.clear_stash('avoid')
-                        self._rust_mgr.clear_stash('pruned')
-                        self._rust_mgr.clear_stash('deadended')
-                        # Clear Python state cache for non-active states,
-                        # but keep root states that active/found descendants need
-                        active_set = set(self._rust_mgr.get_state_ids('active'))
-                        found_set = set(self._rust_mgr.get_state_ids('found'))
-                        keep = active_set | found_set
-                        # Also keep root states referenced by active/found states
-                        keep.update(self._state_roots.get(sid, sid) for sid in keep)
-                        for sid in list(self._state_cache.keys()):
-                            if sid not in keep:
-                                del self._state_cache[sid]
+                    active_set = set(self._rust_mgr.get_state_ids('active'))
+                    found_set = set(self._rust_mgr.get_state_ids('found'))
+                    keep = active_set | found_set
+                    keep.update(self._state_roots.get(sid, sid) for sid in keep)
+                    for sid in list(self._state_cache.keys()):
+                        if sid not in keep:
+                            del self._state_cache[sid]
                 except Exception:
                     pass
 

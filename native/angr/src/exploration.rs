@@ -405,6 +405,15 @@ pub struct RustExplorationManager {
     /// This improves performance for binaries with many branches by deferring
     /// constraint solving until values are actually needed.
     lazy_solves: bool,
+    /// When true, drop avoided/pruned/deadended states immediately instead of
+    /// storing them. This prevents Z3 solver clones from accumulating memory.
+    drop_terminal_states: bool,
+    /// Counter for states dropped/stored in the avoid stash.
+    avoided_count: u64,
+    /// Counter for states dropped/stored in the pruned stash.
+    pruned_count: u64,
+    /// Counter for states dropped/stored in the deadended stash.
+    deadended_count: u64,
 }
 
 #[pymethods]
@@ -454,6 +463,10 @@ impl RustExplorationManager {
             state_roots: HashMap::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
             lazy_solves: false,
+            drop_terminal_states: true,
+            avoided_count: 0,
+            pruned_count: 0,
+            deadended_count: 0,
         })
     }
 
@@ -784,10 +797,7 @@ impl RustExplorationManager {
 
             // Check avoid addresses (address-based, only when NOT using callable predicate)
             if self.avoid_addrs.contains(&pc) {
-                self.stashes
-                    .entry("avoid".to_string())
-                    .or_insert_with(VecDeque::new)
-                    .push_back(state);
+                self.push_or_drop_terminal("avoid", state);
                 continue;
             }
 
@@ -836,10 +846,7 @@ impl RustExplorationManager {
                         .push_back(state);
                 } else {
                     log::debug!("State at find address 0x{:x} is UNSAT, pruning", pc);
-                    self.stashes
-                        .entry("pruned".to_string())
-                        .or_insert_with(VecDeque::new)
-                        .push_back(state);
+                    self.push_or_drop_terminal("pruned", state);
                 }
                 continue;
             }
@@ -915,10 +922,7 @@ impl RustExplorationManager {
 
                                 // If no_return, put state in deadended
                                 if no_return {
-                                    self.stashes
-                                        .entry("deadended".to_string())
-                                        .or_insert_with(VecDeque::new)
-                                        .push_back(state);
+                                    self.push_or_drop_terminal("deadended", state);
                                 } else {
                                     // Add back to active stash
                                     self.stashes
@@ -991,8 +995,7 @@ impl RustExplorationManager {
                                     .or_insert_with(VecDeque::new).push_back(successor);
                             }
                         } else if self.avoid_addrs.contains(&spc) {
-                            self.stashes.entry("avoid".to_string())
-                                .or_insert_with(VecDeque::new).push_back(successor);
+                            self.push_or_drop_terminal("avoid", successor);
                         } else {
                             self.stashes.entry("active".to_string())
                                 .or_insert_with(VecDeque::new).push_back(successor);
@@ -1067,14 +1070,10 @@ impl RustExplorationManager {
                                         .push_back(pending.state);
                                 } else {
                                     log::debug!("State at find address 0x{:x} is UNSAT, pruning", addr);
-                                    self.stashes.entry("pruned".to_string())
-                                        .or_insert_with(VecDeque::new)
-                                        .push_back(pending.state);
+                                    self.push_or_drop_terminal("pruned", pending.state);
                                 }
                             } else {
-                                self.stashes.entry("avoid".to_string())
-                                    .or_insert_with(VecDeque::new)
-                                    .push_back(pending.state);
+                                self.push_or_drop_terminal("avoid", pending.state);
                             }
                             continue;
                         }
@@ -1137,10 +1136,7 @@ impl RustExplorationManager {
                     return Ok(event);
                 }
                 Err(StepError::Deadended(state)) => {
-                    self.stashes
-                        .entry("deadended".to_string())
-                        .or_insert_with(VecDeque::new)
-                        .push_back(state);
+                    self.push_or_drop_terminal("deadended", state);
                 }
                 Err(StepError::Error(state, message)) => {
                     let pc = state.pc();
@@ -1397,8 +1393,7 @@ impl RustExplorationManager {
                 self.stashes.entry("found".to_string())
                     .or_insert_with(VecDeque::new).push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
-                self.stashes.entry("avoid".to_string())
-                    .or_insert_with(VecDeque::new).push_back(s);
+                self.push_or_drop_terminal("avoid", s);
             } else {
                 self.stashes.entry("active".to_string())
                     .or_insert_with(VecDeque::new).push_back(s);
@@ -1406,13 +1401,8 @@ impl RustExplorationManager {
         }
 
         // Add to pruned stash
-        if !pruned_states.is_empty() {
-            let pruned = self.stashes
-                .entry("pruned".to_string())
-                .or_insert_with(VecDeque::new);
-            for s in pruned_states {
-                pruned.push_back(s);
-            }
+        for s in pruned_states {
+            self.push_or_drop_terminal("pruned", s);
         }
 
         Ok(())
@@ -1635,14 +1625,14 @@ impl RustExplorationManager {
             if self.find_addrs.contains(&true_pc) {
                 self.stashes.entry("found".to_string()).or_insert_with(VecDeque::new).push_back(true_state);
             } else if self.avoid_addrs.contains(&true_pc) {
-                self.stashes.entry("avoid".to_string()).or_insert_with(VecDeque::new).push_back(true_state);
+                self.push_or_drop_terminal("avoid", true_state);
             } else {
                 active_states.push(true_state);
             }
             if self.find_addrs.contains(&false_pc) {
                 self.stashes.entry("found".to_string()).or_insert_with(VecDeque::new).push_back(false_state);
             } else if self.avoid_addrs.contains(&false_pc) {
-                self.stashes.entry("avoid".to_string()).or_insert_with(VecDeque::new).push_back(false_state);
+                self.push_or_drop_terminal("avoid", false_state);
             } else {
                 active_states.push(false_state);
             }
@@ -1667,8 +1657,7 @@ impl RustExplorationManager {
                 self.stashes.entry("found".to_string())
                     .or_insert_with(VecDeque::new).push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
-                self.stashes.entry("avoid".to_string())
-                    .or_insert_with(VecDeque::new).push_back(s);
+                self.push_or_drop_terminal("avoid", s);
             } else {
                 active_states.push(s);
             }
@@ -1684,13 +1673,8 @@ impl RustExplorationManager {
 
         // Add to pruned stash
         pruned_states.extend(deferred_pruned);
-        if !pruned_states.is_empty() {
-            let pruned = self.stashes
-                .entry("pruned".to_string())
-                .or_insert_with(VecDeque::new);
-            for s in pruned_states {
-                pruned.push_back(s);
-            }
+        for s in pruned_states {
+            self.push_or_drop_terminal("pruned", s);
         }
 
         log::debug!("Resumed after symbolic branch: true_pc=0x{:x}, false_pc=0x{:x}",
@@ -1736,10 +1720,7 @@ impl RustExplorationManager {
 
         if matched {
             log::debug!("Avoid predicate matched - moving state to avoid stash");
-            self.stashes
-                .entry("avoid".to_string())
-                .or_insert_with(VecDeque::new)
-                .push_back(pending.state);
+            self.push_or_drop_terminal("avoid", pending.state);
         } else {
             log::debug!("Avoid predicate did not match - continuing exploration");
             self.stashes
@@ -2480,6 +2461,10 @@ impl RustExplorationManager {
         dict.set_item("block_cache_size", self.block_cache.len())?;
         dict.set_item("native_proc_calls", self.native_proc_stats.native_calls)?;
         dict.set_item("native_proc_fallbacks", self.native_proc_stats.python_fallbacks)?;
+        dict.set_item("avoided_count", self.avoided_count)?;
+        dict.set_item("pruned_count", self.pruned_count)?;
+        dict.set_item("deadended_count", self.deadended_count)?;
+        dict.set_item("drop_terminal_states", self.drop_terminal_states)?;
         Ok(dict)
     }
 
@@ -2705,6 +2690,24 @@ impl RustExplorationManager {
 }
 
 impl RustExplorationManager {
+    /// Push a state to a terminal stash (avoid/pruned/deadended), or drop it
+    /// if `drop_terminal_states` is enabled. Increments the appropriate counter.
+    fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
+        match stash_name {
+            "avoid" => self.avoided_count += 1,
+            "pruned" => self.pruned_count += 1,
+            "deadended" => self.deadended_count += 1,
+            _ => {}
+        }
+        if !self.drop_terminal_states {
+            self.stashes
+                .entry(stash_name.to_string())
+                .or_insert_with(VecDeque::new)
+                .push_back(state);
+        }
+        // else: state is dropped here, freeing its Z3 solver clone
+    }
+
     /// Sync constraints from Python callbacks back to the Rust state's solver.
     ///
     /// This is the critical piece for bidirectional constraint flow:
@@ -3079,13 +3082,8 @@ impl RustExplorationManager {
                 }
 
                 // Add pruned states to pruned stash
-                if !pruned_states.is_empty() {
-                    let pruned = self.stashes
-                        .entry("pruned".to_string())
-                        .or_insert_with(VecDeque::new);
-                    for s in pruned_states {
-                        pruned.push_back(s);
-                    }
+                for s in pruned_states {
+                    self.push_or_drop_terminal("pruned", s);
                 }
 
                 Ok(successors)
