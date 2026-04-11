@@ -121,6 +121,33 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
         l.debug(f"P9: Explorer technique: find={[hex(a) for a in find_addrs]}, "
                 f"avoid={len(avoid_addrs)} addrs")
 
+    # CheckUniqueness: Native register uniqueness filter in Rust
+    elif tech_name == 'CheckUniqueness':
+        # Detect register list from the technique's filter method
+        # The common pattern checks specific register names
+        regs = getattr(technique, '_register_names', None)
+        if regs is None:
+            # Try to detect from source inspection — common grub pattern
+            # uses ('eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp', 'eip')
+            arch = mgr._project.arch if mgr._project else None
+            if arch and arch.name in ("X86",):
+                regs = ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp', 'eip']
+            elif arch and arch.name in ("AMD64", "X86_64"):
+                regs = ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp', 'rip']
+            else:
+                regs = None
+
+        if regs:
+            try:
+                mgr._rust_mgr.register_uniqueness_filter(regs)
+                # Mark as natively handled so filter() is skipped in Python
+                technique._native_uniqueness = True
+                l.debug(f"P9: CheckUniqueness registered natively with {len(regs)} registers")
+            except Exception as e:
+                l.debug(f"P9: Failed to register native uniqueness: {e}")
+        else:
+            l.debug(f"P9: CheckUniqueness registered (Python fallback)")
+
     # Other techniques
     else:
         l.debug(f"P9: Technique {tech_name} registered (limited support)")
@@ -196,6 +223,9 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
             # Run through each technique's filter in order
             goto = None
             for tech in mgr._active_techniques:
+                # Skip techniques handled natively in Rust
+                if getattr(tech, '_native_uniqueness', False):
+                    continue
                 if hasattr(tech, 'filter'):
                     try:
                         result = tech.filter(simgr_proxy, state_proxy)

@@ -414,6 +414,10 @@ pub struct RustExplorationManager {
     pruned_count: u64,
     /// Counter for states dropped/stored in the deadended stash.
     deadended_count: u64,
+    /// Native uniqueness filter: register names to check.
+    uniqueness_registers: Vec<String>,
+    /// Set of seen register tuple hashes for uniqueness checking.
+    uniqueness_set: HashSet<u64>,
 }
 
 #[pymethods]
@@ -467,6 +471,8 @@ impl RustExplorationManager {
             avoided_count: 0,
             pruned_count: 0,
             deadended_count: 0,
+            uniqueness_registers: Vec::new(),
+            uniqueness_set: HashSet::new(),
         })
     }
 
@@ -1165,6 +1171,9 @@ impl RustExplorationManager {
             }
 
             self.steps += 1;
+
+            // Apply native uniqueness filter if enabled
+            self.apply_uniqueness_filter();
         }
 
         // Max steps reached
@@ -1411,6 +1420,9 @@ impl RustExplorationManager {
         for s in pruned_states {
             self.push_or_drop_terminal("pruned", s);
         }
+
+        // Apply native uniqueness filter if enabled
+        self.apply_uniqueness_filter();
 
         Ok(())
     }
@@ -1686,6 +1698,9 @@ impl RustExplorationManager {
 
         log::debug!("Resumed after symbolic branch: true_pc=0x{:x}, false_pc=0x{:x}",
                     true_pc, false_pc);
+
+        // Apply native uniqueness filter if enabled
+        self.apply_uniqueness_filter();
 
         Ok(())
     }
@@ -2545,6 +2560,38 @@ impl RustExplorationManager {
     }
 
     // =========================================================================
+    // Native Uniqueness Filter
+    // =========================================================================
+
+    /// Enable native uniqueness filter with given register names.
+    ///
+    /// After each step in run(), states with duplicate register tuples
+    /// are moved to 'not_unique' stash. This replaces the Python
+    /// CheckUniqueness technique with zero FFI overhead.
+    pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) {
+        self.uniqueness_registers = register_names;
+        self.uniqueness_set.clear();
+        // Ensure not_unique stash exists
+        self.stashes.entry("not_unique".to_string()).or_insert_with(VecDeque::new);
+    }
+
+    /// Disable the native uniqueness filter.
+    pub fn disable_uniqueness_filter(&mut self) {
+        self.uniqueness_registers.clear();
+        self.uniqueness_set.clear();
+    }
+
+    /// Check if native uniqueness filter is enabled.
+    pub fn uniqueness_filter_enabled(&self) -> bool {
+        !self.uniqueness_registers.is_empty()
+    }
+
+    /// Get the number of unique register tuples seen.
+    pub fn uniqueness_set_size(&self) -> usize {
+        self.uniqueness_set.len()
+    }
+
+    // =========================================================================
     // State Export Methods
     // =========================================================================
 
@@ -2733,6 +2780,86 @@ impl RustExplorationManager {
 }
 
 impl RustExplorationManager {
+    /// Compute a hash for a state's register tuple for uniqueness checking.
+    ///
+    /// For each register in uniqueness_registers, gets the concrete value
+    /// (or uses u64::MAX as sentinel for symbolic). Hashes the tuple.
+    fn compute_register_tuple_hash(&self, state: &RustSimState) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        let mut hasher = DefaultHasher::new();
+        for reg_name in &self.uniqueness_registers {
+            match state.get_register(reg_name) {
+                Some(bv) => {
+                    if let Some(val) = bv.as_u64() {
+                        val.hash(&mut hasher);
+                    } else {
+                        // Symbolic register — use sentinel
+                        u64::MAX.hash(&mut hasher);
+                        // Also hash 1 to distinguish from concrete u64::MAX
+                        1u8.hash(&mut hasher);
+                    }
+                }
+                None => {
+                    // Register not found — hash 0
+                    0u64.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Apply the native uniqueness filter to the active stash.
+    ///
+    /// Moves states with duplicate register tuples to 'not_unique'.
+    /// Called after each step in the run() loop.
+    fn apply_uniqueness_filter(&mut self) {
+        if self.uniqueness_registers.is_empty() {
+            return;
+        }
+
+        // First pass: compute hashes and find duplicates (immutable borrow of active)
+        let to_remove = {
+            let active = match self.stashes.get("active") {
+                Some(s) => s,
+                None => return,
+            };
+
+            let mut remove_indices = Vec::new();
+            for (i, state) in active.iter().enumerate() {
+                let hash = self.compute_register_tuple_hash(state);
+                if !self.uniqueness_set.insert(hash) {
+                    remove_indices.push(i);
+                }
+            }
+            remove_indices
+        };
+
+        if to_remove.is_empty() {
+            return;
+        }
+
+        // Second pass: remove duplicates (mutable borrow of stashes)
+        let active = self.stashes.get_mut("active").unwrap();
+        let mut removed_states = Vec::new();
+        for &idx in to_remove.iter().rev() {
+            if let Some(state) = active.remove(idx) {
+                removed_states.push(state);
+            }
+        }
+
+        if !self.drop_terminal_states {
+            let not_unique = self.stashes
+                .entry("not_unique".to_string())
+                .or_insert_with(VecDeque::new);
+            for state in removed_states {
+                not_unique.push_back(state);
+            }
+        }
+        // else dropped states are simply discarded
+    }
+
     /// Push a state to a terminal stash (avoid/pruned/deadended), or drop it
     /// if `drop_terminal_states` is enabled. Increments the appropriate counter.
     fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
