@@ -233,9 +233,9 @@ def _run_example_with_metrics(args: tuple) -> dict:
     """
     solve_script_path, example_name, engine, timeout = args
 
-    # Cap virtual memory to 6 GB to prevent OOM-killing the orchestrator.
-    # The subprocess gets a MemoryError instead of crashing the machine.
-    _MEM_LIMIT_BYTES = 6 * 1024 * 1024 * 1024  # 6 GB
+    # Cap virtual memory to 4 GB to prevent OOM-killing the orchestrator.
+    # Leaves 4 GB for parent process + OS on an 8GB/0-swap machine.
+    _MEM_LIMIT_BYTES = 4 * 1024 * 1024 * 1024  # 4 GB
     _soft, _hard = resource.getrlimit(resource.RLIMIT_AS)
     resource.setrlimit(resource.RLIMIT_AS, (_MEM_LIMIT_BYTES, _hard))
 
