@@ -34,9 +34,15 @@ For each task, follow this loop:
 6. If Rust changed: pip install -e . --no-build-isolation --no-deps
 7. Test: python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 8. If tests pass: git add <changed files> && git commit -m "<description>"
-9. If you discover something important: bd remember "<insight>" --key <key>
-10. If you discover new work needed: bd create --title="<title>" --body="<desc>" --type=task --parent=angr-34w
-11. bd close <id> --reason="<what was done>"
+9. bd close <id> --reason="<what was done>"
+10. MANDATORY — save what you learned. Run bd remember for EACH of these that applies:
+    - Root cause was surprising or non-obvious? Save it. (--key <topic>-root-cause)
+    - An approach FAILED before the one that worked? Save why. (--key avoid-<thing>)
+    - A constraint/invariant that future work must respect? Save it. (--key invariant-<thing>)
+    - Profiling showed the bottleneck was NOT where expected? Save it. (--key <topic>-bottleneck)
+    - A benchmark number changed significantly? Save before/after. (--key benchmark-<topic>)
+    Do NOT skip this step. Context dies between sessions; memories are the only bridge.
+11. If you discover new work needed: bd create --title="<title>" --description="<desc>" --type=task --parent=angr-34w
 12. If budget remains, pick the next task from bd ready
 
 IMPORTANT: Read the detailed plan before implementing:
