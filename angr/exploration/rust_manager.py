@@ -115,6 +115,17 @@ class RustExplorationManager(RustStateExportMixin):
             'callback_lift_block_count': 0,
             'callback_lift_block_total_ns': 0,
         }
+
+        # High-level instrumentation counters for optimization tracking
+        self._stats_callback_count = 0       # total Python callbacks invoked
+        self._stats_ffi_crossings = 0        # total FFI calls to Rust (run/get/set)
+        self._stats_state_creations = 0      # full SimState objects created
+        self._stats_cache_hits = 0           # state cache hits
+        self._stats_cache_misses = 0         # state cache misses
+        self._stats_technique_filter_calls = 0  # technique filter invocations
+        self._stats_hook_sync_calls = 0      # _sync_hooks_before_step invocations
+        self._stats_hook_sync_skips = 0      # fast-path skips (no new hooks)
+        self._stats_time_in_callbacks_ns = 0 # cumulative time in callback code
         _init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -961,13 +972,17 @@ class RustExplorationManager(RustStateExportMixin):
         This is critical for __libc_start_main and other procedures that use
         continuations to chain function calls (init -> main -> fini).
         """
+        self._stats_hook_sync_calls += 1
+
         if not hasattr(self._project, '_sim_procedures'):
+            self._stats_hook_sync_skips += 1
             return
 
         current_hooks = set(self._project._sim_procedures.keys())
         new_hooks = current_hooks - self._registered_hooks
 
         if not new_hooks:
+            self._stats_hook_sync_skips += 1
             return
 
         # Register newly created hooks with Rust
@@ -3634,10 +3649,12 @@ class RustExplorationManager(RustStateExportMixin):
                         break
 
         if cached_state is not None:
+            self._stats_cache_hits += 1
             # Copy when callable predicates need stdout history, skip otherwise
             has_predicates = (getattr(self, '_find_predicate', None) is not None or
                              getattr(self, '_avoid_predicate', None) is not None)
             if has_predicates:
+                self._stats_state_creations += 1
                 state = cached_state.copy()
             else:
                 state = cached_state
@@ -3681,6 +3698,8 @@ class RustExplorationManager(RustStateExportMixin):
             l.debug(f"Using cached state {state_id} for callback (lookup_id={lookup_state_id})")
         else:
             # Fallback to blank state (original behavior)
+            self._stats_cache_misses += 1
+            self._stats_state_creations += 1
             l.warning(f"No cached state for ID {state_id}, using blank state fallback")
             state = self._create_blank_state_fallback(event)
 
@@ -4490,6 +4509,7 @@ class RustExplorationManager(RustStateExportMixin):
             # a time so Python can check between steps. Otherwise, let Rust run
             # its full batch for performance.
             need_per_step = (until is not None) or bool(self._active_techniques)
+            self._stats_ffi_crossings += 1
             event = self._rust_mgr.run(1) if need_per_step else self._rust_mgr.run()
             steps_taken += 1
 
@@ -4534,6 +4554,8 @@ class RustExplorationManager(RustStateExportMixin):
                         continue
                 break
             elif event.event_type == 'need_callback':
+                self._stats_callback_count += 1
+                _cb_start = time.perf_counter_ns()
                 if event.callback_reason == 'simprocedure':
                     self._handle_simprocedure_callback(event)
                 elif event.callback_reason == 'syscall':
@@ -4547,6 +4569,7 @@ class RustExplorationManager(RustStateExportMixin):
                 else:
                     l.warning(f"Unknown callback reason: {event.callback_reason}")
                     break
+                self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
             elif event.event_type == 'errored':
                 l.debug(f"Exploration error (state deadended): {event.callback_reason}")
             elif event.event_type == 'step_complete':
@@ -4592,9 +4615,12 @@ class RustExplorationManager(RustStateExportMixin):
             # Sync any dynamically created hooks (continuations from self.call())
             self._sync_hooks_before_step()
 
+            self._stats_ffi_crossings += 1
             event = self._rust_mgr.run(1)
 
             if event.event_type == 'need_callback':
+                self._stats_callback_count += 1
+                _cb_start = time.perf_counter_ns()
                 # Handle callback and continue
                 if event.callback_reason == 'simprocedure':
                     self._handle_simprocedure_callback(event)
@@ -4611,6 +4637,7 @@ class RustExplorationManager(RustStateExportMixin):
                 else:
                     l.warning(f"Unknown callback reason: {event.callback_reason}")
                     break
+                self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
                 # After callback, increment step count
                 steps_taken += 1
             elif event.event_type == 'active_empty':
@@ -4752,9 +4779,21 @@ class RustExplorationManager(RustStateExportMixin):
         """Get state counts for all stashes."""
         return dict(self._rust_mgr.stash_counts())
 
+    @property
     def stats(self) -> dict:
-        """Get exploration statistics."""
-        return dict(self._rust_mgr.stats())
+        """Get exploration statistics including instrumentation counters."""
+        result = dict(self._rust_mgr.stats())
+        # Add Python-side instrumentation counters
+        result['callback_count'] = self._stats_callback_count
+        result['ffi_crossings'] = self._stats_ffi_crossings
+        result['state_creations'] = self._stats_state_creations
+        result['cache_hits'] = self._stats_cache_hits
+        result['cache_misses'] = self._stats_cache_misses
+        result['technique_filter_calls'] = self._stats_technique_filter_calls
+        result['hook_sync_calls'] = self._stats_hook_sync_calls
+        result['hook_sync_skips'] = self._stats_hook_sync_skips
+        result['time_in_callbacks'] = self._stats_time_in_callbacks_ns / 1e9  # seconds
+        return result
 
     # Compatibility methods for SimulationManager API
 
@@ -4770,6 +4809,7 @@ class RustExplorationManager(RustStateExportMixin):
 
     def _apply_technique_filters(self):
         """Apply ExplorationTechnique filter() callbacks via proxy."""
+        self._stats_technique_filter_calls += 1
         from angr.exploration.rust_techniques import apply_technique_filters
         apply_technique_filters(self)
 

@@ -218,7 +218,7 @@ class TestRustExplorationPython:
         try:
             mgr.explore(find=find_addr)
             # If we get here, exploration completed
-            stats = mgr.stats()
+            stats = mgr.stats
             print(f"Exploration stats: {stats}")
         except Exception as e:
             # Exploration might fail due to missing SimProcedures
