@@ -4561,6 +4561,10 @@ class RustExplorationManager(RustStateExportMixin):
             # on the Python cached states (which have stdout from printf).
             self._rust_mgr.set_find_needs_python(False)
             self._rust_mgr.set_avoid_needs_python(False)
+            # Keep terminal states alive so predicates can check them.
+            # Without this, states that output "win" then exit() get dropped
+            # before the predicate evaluation can check stdout content.
+            self._rust_mgr.set_drop_terminal_states(False)
             # Native puts/printf stay enabled — they write to Rust's per-state
             # stdout_buffer. We inject this into posix.stdout during predicate
             # evaluation via _inject_rust_stdout().
@@ -4641,6 +4645,8 @@ class RustExplorationManager(RustStateExportMixin):
                         pass
             # Final predicate check on deadended/remaining states
             self._evaluate_predicates_on_active()
+            # Re-enable drop_terminal_states for future exploration
+            self._rust_mgr.set_drop_terminal_states(True)
             return self
 
         # Run exploration loop (address-based find/avoid)
