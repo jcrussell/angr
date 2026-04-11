@@ -978,6 +978,13 @@ class RustExplorationManager(RustStateExportMixin):
             self._stats_hook_sync_skips += 1
             return
 
+        # Fast path: if dict length hasn't changed, no new hooks were added.
+        # This avoids O(n) set construction on every step.
+        proc_len = len(self._project._sim_procedures)
+        if proc_len == len(self._registered_hooks):
+            self._stats_hook_sync_skips += 1
+            return
+
         current_hooks = set(self._project._sim_procedures.keys())
         new_hooks = current_hooks - self._registered_hooks
 
@@ -2094,17 +2101,24 @@ class RustExplorationManager(RustStateExportMixin):
         """Evaluate callable find/avoid predicates on cached Python states.
 
         When find/avoid are callables (not addresses), the Rust engine can't
-        evaluate them. This method checks ALL cached states (including ones
-        consumed by forking) since stdout content persists in the cache.
-        Matching states are added to the Python-side found/avoid lists.
+        evaluate them. Only evaluates states not yet checked (tracked via
+        _evaluated_state_ids). New forked states get evaluated; already-checked
+        states are skipped.
         """
         if not self._state_cache:
             return
+
+        if not hasattr(self, '_evaluated_state_ids'):
+            self._evaluated_state_ids = set()
 
         found_sids = set()
         avoid_sids = set()
 
         for state_id, state in list(self._state_cache.items()):
+            if state_id in self._evaluated_state_ids:
+                continue
+            self._evaluated_state_ids.add(state_id)
+
             try:
                 self._restore_plugins_to_state(state, state_id)
 
@@ -4567,10 +4581,11 @@ class RustExplorationManager(RustStateExportMixin):
             elif event.event_type == 'step_complete':
                 self._cleanup_symbolic_pages_cache()
 
-            # --- Common post-event checks (run after EVERY event) ---
+            # --- Common post-event checks ---
 
-            # Apply ExplorationTechnique filter/complete callbacks
-            if self._active_techniques:
+            # Apply ExplorationTechnique filter/complete callbacks only after
+            # step events (not callbacks — callbacks don't change the active stash)
+            if self._active_techniques and event.event_type in ('step_complete', 'found', 'steps_exhausted'):
                 self._apply_technique_filters()
                 if self._check_technique_complete():
                     break
