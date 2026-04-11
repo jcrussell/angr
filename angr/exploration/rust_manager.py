@@ -2724,9 +2724,11 @@ class RustExplorationManager(RustStateExportMixin):
             'strcat', 'strncat', 'sprintf', 'snprintf')
         orig_state = state.copy() if writes_memory else state
 
-        # GAP 2 fix: Save original constraints before hook execution
-        # This allows extracting new constraints even for zero-length hooks
-        orig_constraints = set(state.solver.constraints) if hasattr(state, 'solver') else set()
+        # GAP 2 fix: Save original constraint COUNT before hook execution.
+        # Building set(constraints) is expensive (~6ms per call with many constraints).
+        # Save just the count; only build the full set if count changes after callback.
+        orig_constraint_count = len(state.solver.constraints) if hasattr(state, 'solver') else 0
+        orig_constraints = None  # Deferred — only built if needed
 
         # GAP 5: Track memory writes during callback execution
         memory_tracker = CallbackMemoryTracker(state)
@@ -2867,17 +2869,20 @@ class RustExplorationManager(RustStateExportMixin):
                     self._resume_with_state(first_succ, orig_state, event, skip_hook_addr=addr,
                                            tracked_writes=tracked_writes,
                                            tracked_symbolic_writes=tracked_symbolic_writes,
-                                           orig_constraints=orig_constraints)
+                                           orig_constraints=orig_constraints,
+                                           orig_constraint_count=orig_constraint_count)
                 elif succ_ip_symbolic:
                     self._resume_with_state(first_succ, orig_state, event,
                                            tracked_writes=tracked_writes,
                                            tracked_symbolic_writes=tracked_symbolic_writes,
-                                           orig_constraints=orig_constraints)
+                                           orig_constraints=orig_constraints,
+                                           orig_constraint_count=orig_constraint_count)
                 else:
                     self._resume_with_state(first_succ, orig_state, event,
                                            tracked_writes=tracked_writes,
                                            tracked_symbolic_writes=tracked_symbolic_writes,
-                                           orig_constraints=orig_constraints)
+                                           orig_constraints=orig_constraints,
+                                           orig_constraint_count=orig_constraint_count)
 
                 # Additional successors are added as new active states
                 for succ in all_succs[1:]:
@@ -2910,7 +2915,8 @@ class RustExplorationManager(RustStateExportMixin):
                     # GAP 5: Pass tracked writes for memory sync
                     self._resume_with_skip_hook(addr, state, orig_state, event, orig_constraints,
                                                tracked_writes=tracked_writes,
-                                               tracked_symbolic_writes=tracked_symbolic_writes)
+                                               tracked_symbolic_writes=tracked_symbolic_writes,
+                                               orig_constraint_count=orig_constraint_count)
                 else:
                     # Non-zero-length, non-terminal: check NO_RET as fallback
                     proc_no_ret = getattr(proc, 'NO_RET', False)
@@ -2978,7 +2984,8 @@ class RustExplorationManager(RustStateExportMixin):
         skip_hook_addr: Optional[int] = None,
         tracked_writes: Optional[list] = None,
         tracked_symbolic_writes: Optional[list] = None,
-        orig_constraints: Optional[set] = None
+        orig_constraints: Optional[set] = None,
+        orig_constraint_count: Optional[int] = None
     ):
         """Resume Rust execution with a successor state.
 
@@ -3030,7 +3037,8 @@ class RustExplorationManager(RustStateExportMixin):
 
         # Extract any new constraints added during callback
         new_constraints = self._extract_new_constraints(orig_state, succ_state,
-                                                        orig_constraints=orig_constraints)
+                                                        orig_constraints=orig_constraints,
+                                                        orig_constraint_count=orig_constraint_count)
         if new_constraints:
             l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
 
@@ -3084,7 +3092,8 @@ class RustExplorationManager(RustStateExportMixin):
         event: "_ExplorationEvent",
         orig_constraints: Optional[set] = None,
         tracked_writes: Optional[list] = None,
-        tracked_symbolic_writes: Optional[list] = None
+        tracked_symbolic_writes: Optional[list] = None,
+        orig_constraint_count: Optional[int] = None
     ):
         """Resume Rust execution after a zero-length hook with no successors.
 
@@ -3153,12 +3162,24 @@ class RustExplorationManager(RustStateExportMixin):
 
         # Extract new constraints added during hook execution
         new_constraints = None
-        if orig_constraints is not None and hasattr(state, 'solver'):
+        if hasattr(state, 'solver'):
             try:
-                current_constraints = set(state.solver.constraints)
-                new_constraints = list(current_constraints - orig_constraints)
-                if new_constraints:
-                    l.debug(f"Extracted {len(new_constraints)} constraints from hook")
+                current_count = len(state.solver.constraints)
+                # Fast path: if count unchanged, skip expensive set construction
+                if orig_constraint_count is not None and current_count == orig_constraint_count:
+                    pass  # No new constraints
+                elif orig_constraints is not None:
+                    current_constraints = set(state.solver.constraints)
+                    new_constraints = list(current_constraints - orig_constraints)
+                    if new_constraints:
+                        l.debug(f"Extracted {len(new_constraints)} constraints from hook")
+                elif orig_constraint_count is not None:
+                    # Count changed — need full diff
+                    prior = set(orig_state.solver.constraints)
+                    current_constraints = set(state.solver.constraints)
+                    new_constraints = list(current_constraints - prior)
+                    if new_constraints:
+                        l.debug(f"Extracted {len(new_constraints)} constraints from hook")
             except Exception as e:
                 l.debug(f"Could not extract constraints: {e}")
 
@@ -3195,7 +3216,8 @@ class RustExplorationManager(RustStateExportMixin):
         self,
         orig_state: "angr.SimState",
         new_state: "angr.SimState",
-        orig_constraints: Optional[set] = None
+        orig_constraints: Optional[set] = None,
+        orig_constraint_count: Optional[int] = None
     ) -> list:
         """Extract constraints added during callback execution.
 
@@ -3206,54 +3228,45 @@ class RustExplorationManager(RustStateExportMixin):
             orig_constraints: Pre-captured set of constraints from before the
                 callback. Use this instead of orig_state.solver.constraints
                 when orig_state may alias the successor (no copy was made).
+            orig_constraint_count: Fast-path: just the count before callback.
+                If count hasn't changed, skip expensive set construction.
         """
         new_constraints = []
 
         # Extract constraints from Python's claripy solver
         try:
-            # Use pre-captured constraints if available (critical when
-            # orig_state aliases succ_state — no copy was made)
-            if orig_constraints is not None:
+            new_constraint_list = new_state.solver.constraints
+
+            # Fast path: if constraint count hasn't changed, no new constraints
+            # were added. Skip expensive set construction.
+            if orig_constraint_count is not None and orig_constraints is None:
+                if len(new_constraint_list) == orig_constraint_count:
+                    # No new constraints — skip the expensive set diff
+                    pass
+                else:
+                    # Count changed — build sets and diff
+                    prior = set(orig_state.solver.constraints)
+                    state_constraints = set(new_constraint_list)
+                    python_added = state_constraints - prior
+                    if python_added:
+                        l.debug(f"Callback added {len(python_added)} new Python constraints")
+                        new_constraints.extend(python_added)
+            elif orig_constraints is not None:
                 prior = orig_constraints
+                state_constraints = set(new_constraint_list)
+                python_added = state_constraints - prior
+                if python_added:
+                    l.debug(f"Callback added {len(python_added)} new Python constraints")
+                    new_constraints.extend(python_added)
             else:
                 prior = set(orig_state.solver.constraints)
-            state_constraints = set(new_state.solver.constraints)
-            python_added = state_constraints - prior
-            if python_added:
-                l.debug(f"Callback added {len(python_added)} new Python constraints")
-                new_constraints.extend(python_added)
+                state_constraints = set(new_constraint_list)
+                python_added = state_constraints - prior
+                if python_added:
+                    l.debug(f"Callback added {len(python_added)} new Python constraints")
+                    new_constraints.extend(python_added)
         except Exception as e:
             l.debug(f"Could not extract Python constraints: {e}")
-
-        # Check if the new state has a forked Rust solver context
-        # If constraints were added there, we need to verify they're in sync
-        if hasattr(new_state, 'scratch') and hasattr(new_state.scratch, 'rust_solver_ctx'):
-            try:
-                forked_solver = new_state.scratch.rust_solver_ctx
-                # Track the constraint count for debugging
-                rust_count = forked_solver.num_constraints()
-
-                # Check original state's forked solver count (if any)
-                orig_count = 0
-                if hasattr(orig_state, 'scratch') and hasattr(orig_state.scratch, 'rust_solver_ctx'):
-                    orig_count = orig_state.scratch.rust_solver_ctx.num_constraints()
-
-                if rust_count > orig_count:
-                    delta = rust_count - orig_count
-                    l.debug(f"Forked Rust solver has {delta} new constraints "
-                            f"(total: {rust_count})")
-
-                    # Get constraint info for debugging
-                    if hasattr(forked_solver, 'export_constraint_info'):
-                        try:
-                            info = forked_solver.export_constraint_info()
-                            if len(info) > 0:
-                                l.debug(f"Rust solver constraint types: {len(info)}")
-                        except Exception as e:
-                            l.debug(f"Could not export Rust constraint info: {e}")
-
-            except Exception as e:
-                l.debug(f"Could not check Rust solver constraints: {e}")
 
         if new_constraints:
             l.debug(f"Total new constraints to sync: {len(new_constraints)}")
