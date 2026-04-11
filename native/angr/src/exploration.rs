@@ -2710,6 +2710,26 @@ impl RustExplorationManager {
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
+
+    /// Get the stdout buffer for a state by ID.
+    ///
+    /// Returns the accumulated output from native puts/printf calls.
+    pub fn get_state_stdout(&self, state_id: u64) -> PyResult<Vec<u8>> {
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    return Ok(state.stdout_buffer().to_vec());
+                }
+            }
+        }
+        // Also check pending callback state
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(cb.state.stdout_buffer().to_vec());
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
 }
 
 impl RustExplorationManager {

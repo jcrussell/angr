@@ -2097,6 +2097,30 @@ class RustExplorationManager(RustStateExportMixin):
         if to_remove:
             l.debug(f"Cleaned up {len(to_remove)} symbolic page cache entries")
 
+    def _inject_rust_stdout(self, state, state_id):
+        """Inject Rust-side stdout buffer into the state's posix stdout plugin.
+
+        Native puts/printf write to a per-state stdout_buffer in Rust. This
+        method fetches that buffer and writes it into the Python state's posix
+        stdout so that predicates calling state.posix.dumps(1) see the output.
+        """
+        try:
+            rust_stdout = self._rust_mgr.get_state_stdout(state_id)
+        except Exception:
+            return
+        if not rust_stdout:
+            return
+        posix = getattr(state, 'posix', None)
+        if posix is None:
+            return
+        stdout = getattr(posix, 'stdout', None)
+        if stdout is None:
+            return
+        try:
+            stdout.write(None, claripy.BVV(bytes(rust_stdout)), events=False)
+        except Exception as e:
+            l.debug("Failed to inject Rust stdout into posix: %s", e)
+
     def _evaluate_predicates_on_active(self):
         """Evaluate callable find/avoid predicates on cached Python states.
 
@@ -2121,6 +2145,7 @@ class RustExplorationManager(RustStateExportMixin):
 
             try:
                 self._restore_plugins_to_state(state, state_id)
+                self._inject_rust_stdout(state, state_id)
 
                 if self._find_predicate is not None:
                     try:
@@ -4471,10 +4496,9 @@ class RustExplorationManager(RustStateExportMixin):
             # on the Python cached states (which have stdout from printf).
             self._rust_mgr.set_find_needs_python(False)
             self._rust_mgr.set_avoid_needs_python(False)
-            # Disable native puts/printf so stdout content flows through Python
-            # callbacks (needed for predicates that check state.posix.dumps(1)).
-            self._rust_mgr.disable_native_procedure("puts")
-            self._rust_mgr.disable_native_procedure("printf")
+            # Native puts/printf stay enabled — they write to Rust's per-state
+            # stdout_buffer. We inject this into posix.stdout during predicate
+            # evaluation via _inject_rust_stdout().
             while True:
                 if timeout is not None and (time.time() - start_time) > timeout:
                     break

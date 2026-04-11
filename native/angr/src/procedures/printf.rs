@@ -1,14 +1,17 @@
 //! Native printf implementation (simplified).
 //!
-//! For address-based find/avoid exploration, printf's exact output is
-//! irrelevant. We return a plausible non-negative value without parsing
-//! the format string or writing to stdout.
+//! Reads the format string from memory and appends it to the state's
+//! stdout buffer. Does NOT perform format string substitution — just
+//! writes the raw format string. This is sufficient for predicates that
+//! check for fixed output strings (the common CTF pattern).
 //!
-//! Falls back to Python when callable predicates check stdout content.
+//! Falls back to Python when the format address is symbolic.
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use super::{NativeSimProcedure, ProcedureError};
+
+const MAX_PRINTF_LEN: usize = 4096;
 
 /// Native printf implementation.
 ///
@@ -17,7 +20,6 @@ use super::{NativeSimProcedure, ProcedureError};
 /// ```
 ///
 /// Returns a non-negative value (number of characters printed).
-/// We return 1 as a minimal plausible value.
 pub struct NativePrintf;
 
 impl NativeSimProcedure for NativePrintf {
@@ -26,21 +28,42 @@ impl NativeSimProcedure for NativePrintf {
     }
 
     fn num_args(&self) -> usize {
-        1  // Variadic, but we only check the format string address
+        1 // Variadic, but we only read the format string
     }
 
     fn call(
         &self,
-        _state: &mut RustSimState,
+        state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // Verify format string address is concrete (sanity check)
-        let _fmt_addr = args[0].as_u64().ok_or_else(|| {
+        let fmt_addr = args[0].as_u64().ok_or_else(|| {
             ProcedureError::SymbolicArgument("format".to_string())
         })?;
 
-        // Return 1 (plausible printf return value)
-        let width = 32; // printf returns int (32-bit)
-        Ok(Some(RustBV::concrete(1, width)))
+        // Read the format string byte-by-byte from memory
+        let mut buf = Vec::new();
+        for i in 0..MAX_PRINTF_LEN {
+            match state.memory_load(fmt_addr + i as u64, 1) {
+                Ok(bv) => {
+                    if let Some(val) = bv.as_u64() {
+                        let byte = val as u8;
+                        if byte == 0 {
+                            break;
+                        }
+                        buf.push(byte);
+                    } else {
+                        // Symbolic byte — stop reading
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Append to stdout buffer
+        state.write_stdout(&buf);
+
+        let len = buf.len() as u128;
+        Ok(Some(RustBV::concrete(if len == 0 { 1 } else { len }, 32)))
     }
 }

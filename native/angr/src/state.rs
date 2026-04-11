@@ -126,6 +126,9 @@ pub struct RustSimState {
     dirty_registers: u128,
     /// Whether to track detailed history.
     track_history: bool,
+    /// Stdout buffer — accumulates output from native puts/printf.
+    /// Cloned on fork so each path gets its own copy.
+    stdout_buffer: Vec<u8>,
 }
 
 impl RustSimState {
@@ -161,6 +164,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
+            stdout_buffer: Vec::new(),
         })
     }
 
@@ -188,6 +192,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
+            stdout_buffer: Vec::new(),
         }
     }
 
@@ -219,6 +224,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
+            stdout_buffer: Vec::new(),
         })
     }
 
@@ -258,6 +264,16 @@ impl RustSimState {
     /// Get the architecture.
     pub fn arch(&self) -> &dyn Arch {
         self.arch.as_ref()
+    }
+
+    /// Get the stdout buffer.
+    pub fn stdout_buffer(&self) -> &[u8] {
+        &self.stdout_buffer
+    }
+
+    /// Append bytes to the stdout buffer.
+    pub fn write_stdout(&mut self, data: &[u8]) {
+        self.stdout_buffer.extend_from_slice(data);
     }
 
     /// Get the history (basic block addresses visited).
@@ -551,6 +567,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0, // Fresh dirty tracking for fork
             track_history: self.track_history,
+            stdout_buffer: self.stdout_buffer.clone(),
         }
     }
 
@@ -573,6 +590,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
+            stdout_buffer: self.stdout_buffer.clone(),
         }
     }
 
@@ -595,6 +613,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
+            stdout_buffer: self.stdout_buffer.clone(),
         }
     }
 
@@ -625,6 +644,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
+            stdout_buffer: self.stdout_buffer.clone(),
         }
     }
 

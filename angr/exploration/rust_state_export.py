@@ -47,6 +47,7 @@ class RustStateExportMixin:
             if state_id in self._state_cache:
                 state = self._state_cache[state_id]
                 self._restore_plugins_to_state(state, state_id)
+                self._inject_rust_stdout(state, state_id)
                 self._sync_exported_constraints(state, state_id)
                 self._attach_rust_solver_fallback(state, state_id)
                 # Sync concrete memory from Rust to Python state so that
@@ -82,6 +83,7 @@ class RustStateExportMixin:
                 if root is not None and root in self._state_cache:
                     state = self._state_cache[root].copy()
                     self._restore_plugins_to_state(state, sid)
+                    self._inject_rust_stdout(state, sid)
                     self._sync_exported_constraints(state, sid)
                     self._attach_rust_solver_fallback(state, sid)
                     # Cache the copy so it stays alive (prevents weakref death
@@ -99,6 +101,7 @@ class RustStateExportMixin:
                 if stepping_id is not None and stepping_id in self._state_cache:
                     state = self._state_cache[stepping_id].copy()
                     self._restore_plugins_to_state(state, sid)
+                    self._inject_rust_stdout(state, sid)
                     self._sync_exported_constraints(state, sid)
                     self._attach_rust_solver_fallback(state, sid)
                     self._state_cache[sid] = state
@@ -114,6 +117,7 @@ class RustStateExportMixin:
                         if snapshot.state_id not in cached_ids:
                             try:
                                 angr_state = self._snapshot_to_angr(snapshot)
+                                self._inject_rust_stdout(angr_state, snapshot.state_id)
                                 self._sync_exported_constraints(angr_state, snapshot.state_id)
                                 self._attach_rust_solver_fallback(angr_state, snapshot.state_id)
                                 self._state_cache[snapshot.state_id] = angr_state
