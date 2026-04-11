@@ -2665,6 +2665,22 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Get multiple register values from a state in one FFI call.
+    /// Returns a list of Option<u128> in the same order as the input names.
+    pub fn get_state_registers_batch(&self, state_id: u64, names: Vec<String>) -> PyResult<Vec<Option<u128>>> {
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    let results: Vec<Option<u128>> = names.iter()
+                        .map(|name| state.get_register(name).and_then(|bv| bv.as_u128()))
+                        .collect();
+                    return Ok(results);
+                }
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Get memory from a state.
     pub fn get_state_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
         for stash in self.stashes.values() {

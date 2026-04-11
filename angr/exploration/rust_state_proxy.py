@@ -190,19 +190,37 @@ class RustRegisterProxy:
         self._mgr = rust_mgr
         self._state_id = state_id
         self._arch = arch
+        self._cache = {}  # name -> claripy BVV/BVS
+
+    def prefetch(self, names):
+        """Batch-fetch multiple registers in one FFI call and cache them."""
+        try:
+            values = self._mgr.get_state_registers_batch(self._state_id, names)
+        except Exception:
+            return
+        for name, val in zip(names, values):
+            width = self._get_register_width(name)
+            if val is None:
+                self._cache[name] = claripy.BVS(f"reg_{name}_{self._state_id}", width)
+            else:
+                self._cache[name] = claripy.BVV(val, width)
 
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
+        if name in self._cache:
+            return self._cache[name]
         try:
             val = self._mgr.get_state_register(self._state_id, name)
         except Exception:
             raise AttributeError(f"register '{name}' not found")
         width = self._get_register_width(name)
         if val is None:
-            # Register is symbolic — return a symbolic BVS
-            return claripy.BVS(f"reg_{name}_{self._state_id}", width)
-        return claripy.BVV(val, width)
+            result = claripy.BVS(f"reg_{name}_{self._state_id}", width)
+        else:
+            result = claripy.BVV(val, width)
+        self._cache[name] = result
+        return result
 
     def _get_register_width(self, name):
         """Get the bit width for a named register."""

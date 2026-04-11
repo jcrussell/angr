@@ -186,6 +186,13 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
             state_proxy = RustStateProxy(
                 mgr._rust_mgr, sid, project=mgr._project,
             )
+            # Prefetch common registers in one FFI call for technique filter efficiency
+            arch = mgr._project.arch if mgr._project else None
+            if arch and hasattr(state_proxy.regs, 'prefetch'):
+                if arch.name in ("AMD64", "X86_64"):
+                    state_proxy.regs.prefetch(["rip", "rsp", "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp"])
+                elif arch.name == "X86":
+                    state_proxy.regs.prefetch(["eip", "esp", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp"])
             # Run through each technique's filter in order
             goto = None
             for tech in mgr._active_techniques:
