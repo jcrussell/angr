@@ -1696,21 +1696,26 @@ impl<'a> CallbackInterpreter<'a> {
                             }
                         }
                         ConcretizationResult::Multiple(addrs) => {
-                            // Sync constraints before delegating to Python
                             self.sync_before_callback(py, callbacks)?;
-                            // Delegate to Python for conditional stores
-                            callbacks
-                                .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            // Build ITE chain in Rust for ≤16 addresses
+                            if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
+                                self.build_ite_store_from_callbacks(py, callbacks, &addrs, &addr_val, &data_val)?;
+                            } else {
+                                callbacks
+                                    .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
                         }
                         ConcretizationResult::Strided { base, stride, count } => {
-                            // Sync constraints before delegating to Python
                             self.sync_before_callback(py, callbacks)?;
-                            // Strided access pattern - generate addresses and delegate to Python
                             let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
-                            callbacks
-                                .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
+                                self.build_ite_store_from_callbacks(py, callbacks, &addrs, &addr_val, &data_val)?;
+                            } else {
+                                callbacks
+                                    .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
                             // Address range too large - delegate to Python's memory model
@@ -2937,6 +2942,84 @@ impl<'a> CallbackInterpreter<'a> {
 
         // Build balanced ITE tree for better solver performance
         Ok(build_balanced_ite(&pairs[..pairs.len()-1], default_value, self.ctx))
+    }
+
+    /// Build ITE chain stores for symbolic memory writes with multiple candidate addresses.
+    ///
+    /// For each candidate address `a_i`, computes:
+    ///   `mem[a_i] = ITE(addr == a_i, new_data, mem[a_i])`
+    /// This keeps the ITE construction in Rust's Z3 context, avoiding FFI round-trips
+    /// for the ITE chain building that Python would otherwise do.
+    fn build_ite_store_from_callbacks(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addrs: &[u64],
+        addr_expr: &RustBV,
+        data_val: &RustBV,
+    ) -> Result<(), CbExecutionError> {
+        if addrs.is_empty() {
+            return Ok(());
+        }
+
+        let size = (data_val.width() / 8) as usize;
+        let addr_width = addr_expr.width();
+
+        // Batch load current values at all candidate addresses
+        let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
+        let load_results = callbacks
+            .call_memory_load_batch(py, &load_requests)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        // For each candidate address, build ITE and store back
+        for (i, &addr) in addrs.iter().enumerate() {
+            // Build condition: addr_expr == this address
+            let addr_const = RustBV::concrete(addr as u128, addr_width);
+            let cond = addr_expr.eq(&addr_const, self.ctx);
+
+            // Get current value at this address
+            let current = if i < load_results.len() {
+                let (data, is_symbolic, symbolic_ast) = &load_results[i];
+                if *is_symbolic {
+                    if let Some(ast_obj) = symbolic_ast {
+                        let ast = ast_obj.bind(py);
+                        if let Some(ref table) = self.symbol_table {
+                            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                bv
+                            } else if is_claripy_ast(&ast) {
+                                claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
+                                    RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                                })
+                            } else {
+                                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                            }
+                        } else if is_claripy_ast(&ast) {
+                            claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
+                                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                            })
+                        } else {
+                            RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                        }
+                    } else {
+                        RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                    }
+                } else {
+                    bytes_to_bv(data, data_val.width())
+                }
+            } else {
+                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+            };
+
+            // Build ITE: if (addr == candidate) then new_data else current
+            let ite_value = cond.ite(data_val, &current, self.ctx);
+
+            // Store via symbolic value callback
+            callbacks
+                .call_memory_store_symbolic_value(py, addr, &ite_value)
+                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+        }
+
+        Ok(())
     }
 
     /// Evaluate an IR constant.
