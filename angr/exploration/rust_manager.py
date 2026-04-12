@@ -1045,9 +1045,12 @@ class RustExplorationManager(RustStateExportMixin):
     def _state_has_user_symbolic(state) -> bool:
         """Check if state has user-created symbolic data in memory.
 
-        Detects symbolic argv, symbolic input buffers, etc. by scanning the
-        stack page near SP for BVS variables that aren't unconstrained fill.
+        Detects symbolic argv, symbolic input buffers, etc. by scanning:
+        1. The stack page near SP for BVS variables that aren't unconstrained fill.
+        2. All memory pages with symbolic_data for user-created variables
+           (e.g., state.memory.store(addr, BVS(...))).
         """
+        _user_prefixes = ('mem_', 'reg_', 'unconstrained')
         try:
             sp = state.solver.eval(state.regs.sp)
             sp_page = sp & ~0xfff
@@ -1056,10 +1059,24 @@ class RustExplorationManager(RustStateExportMixin):
                 inspect=False, disable_actions=True)
             if page_data.symbolic:
                 for name in page_data.variables:
-                    if (not name.startswith('mem_') and
-                            not name.startswith('reg_') and
-                            not name.startswith('unconstrained')):
+                    if not name.startswith(_user_prefixes):
                         return True
+        except Exception:
+            pass
+        # Also check non-stack pages with symbolic_data (e.g., user stores
+        # a BVS into .data/.bss segment via state.memory.store()).
+        try:
+            mem = state.memory
+            for page_num, page in mem._pages.items():
+                sd = getattr(page, 'symbolic_data', None)
+                if not sd:
+                    continue
+                # Page has symbolic data — check if any variable is user-created
+                for offset, bv in sd.items():
+                    if hasattr(bv, 'variables'):
+                        for name in bv.variables:
+                            if not name.startswith(_user_prefixes):
+                                return True
         except Exception:
             pass
         return False
