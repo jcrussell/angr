@@ -3756,12 +3756,18 @@ class RustExplorationManager(RustStateExportMixin):
                 constraint_count = bundle['constraint_count']
                 l.debug(f"Bundle: solver with {constraint_count} constraints for state {state_id}")
 
-                # Apply registers from bundle (batch)
+                # Apply registers from bundle using direct store (bypasses claripy BVV creation)
                 registers = bundle['registers']
+                reg_map = self._get_register_offset_map(arch)
                 for reg_name, val in registers.items():
                     try:
                         if val is not None:
-                            setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
+                            offset_size = reg_map.get(reg_name)
+                            if offset_size is not None:
+                                offset, size = offset_size
+                                state.registers.store(offset, val, size=size)
+                            else:
+                                setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
                         else:
                             # Symbolic register — fetch AST individually
                             try:
@@ -3791,16 +3797,13 @@ class RustExplorationManager(RustStateExportMixin):
             # (stack frames created during VEX execution).
             self._install_rust_memory_proxy(state)
 
-            # Restore symbolic memory regions that may have been lost during
-            # Rust execution fallback. This is critical for callbacks that need
-            # to read symbolic values from memory (e.g., symbolic buffer access)
-            # Use lookup_state_id to find cached pages (handles forked states)
-            self._restore_symbolic_pages(state, lookup_state_id)
-
-            # Also restore any hook-tracked symbolic memory
-            # This handles symbolic memory written by previous hooks that needs
-            # to be preserved across multiple callbacks
-            self._restore_hook_symbolic_memory(state, lookup_state_id)
+            # Restore symbolic memory regions — only needed for copied states
+            # (predicates case) or on first callback for a new state.
+            # When reusing the same state object, symbolic pages persist.
+            if has_predicates or not getattr(state, '_rust_sympage_restored', False):
+                self._restore_symbolic_pages(state, lookup_state_id)
+                self._restore_hook_symbolic_memory(state, lookup_state_id)
+                state._rust_sympage_restored = True
 
             l.debug(f"Using cached state {state_id} for callback (lookup_id={lookup_state_id})")
         else:
@@ -3912,12 +3915,17 @@ class RustExplorationManager(RustStateExportMixin):
         arch = self._project.arch
         reg_names = self._get_arch_register_names(arch)
 
+        reg_map = self._get_register_offset_map(arch)
         for reg_name in reg_names:
             try:
-                # Try concrete first (fast path)
+                # Try concrete first (fast path — direct store bypasses claripy)
                 val = self._rust_mgr.get_pending_register(reg_name)
                 if val is not None:
-                    setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
+                    offset_size = reg_map.get(reg_name)
+                    if offset_size is not None:
+                        state.registers.store(offset_size[0], val, size=offset_size[1])
+                    else:
+                        setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
                 else:
                     # Register is symbolic — convert to claripy AST
                     try:
@@ -3928,6 +3936,23 @@ class RustExplorationManager(RustStateExportMixin):
                         pass  # Skip if conversion fails
             except Exception:
                 pass
+
+    def _get_register_offset_map(self, arch) -> dict:
+        """Get cached {name: (offset, size)} mapping for register fast-path writes."""
+        if not hasattr(self, '_reg_offset_cache'):
+            self._reg_offset_cache = {}
+        arch_name = arch.name
+        if arch_name not in self._reg_offset_cache:
+            mapping = {}
+            for name in self._get_arch_register_names(arch):
+                try:
+                    info = arch.registers.get(name)
+                    if info is not None:
+                        mapping[name] = (info[0], info[1])  # (offset, size_bytes)
+                except Exception:
+                    pass
+            self._reg_offset_cache[arch_name] = mapping
+        return self._reg_offset_cache[arch_name]
 
     def _get_arch_register_names(self, arch) -> list:
         """Get register names for an architecture."""
