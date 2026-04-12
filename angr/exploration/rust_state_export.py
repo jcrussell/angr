@@ -216,9 +216,20 @@ class RustStateExportMixin:
         original_max = state.solver.max
         original_satisfiable = state.solver.satisfiable
 
+        # Cache the forked Rust solver to avoid re-forking on every eval call.
+        # fork_state_solver() clones the Z3 solver (~3ms), so caching saves
+        # significant time when the solve script calls eval() many times
+        # (e.g., ais3 evaluates ~100 flag bytes → ~100 eval calls).
+        _cached_rust_ctx = [None]
+
+        def _get_rust_ctx():
+            if _cached_rust_ctx[0] is None:
+                _cached_rust_ctx[0] = rust_mgr.fork_state_solver(state_id)
+            return _cached_rust_ctx[0]
+
         def _rust_eval(expr, cast_to=None):
             """Evaluate using Rust solver."""
-            rust_ctx = rust_mgr.fork_state_solver(state_id)
+            rust_ctx = _get_rust_ctx()
             result = rust_ctx.eval(expr)
             if result is not None:
                 if cast_to == bytes:
@@ -245,7 +256,7 @@ class RustStateExportMixin:
                 return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
             except Exception as orig_err:
                 try:
-                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    rust_ctx = _get_rust_ctx()
                     results = rust_ctx.eval_upto(expr, n)
                     if results is not None:
                         if cast_to == bytes:
@@ -261,7 +272,7 @@ class RustStateExportMixin:
                 return original_min(expr, **kwargs)
             except Exception as orig_err:
                 try:
-                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    rust_ctx = _get_rust_ctx()
                     result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
                     if result is not None:
                         return result
@@ -274,7 +285,7 @@ class RustStateExportMixin:
                 return original_max(expr, **kwargs)
             except Exception as orig_err:
                 try:
-                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    rust_ctx = _get_rust_ctx()
                     result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
                     if result is not None:
                         return result
@@ -287,7 +298,7 @@ class RustStateExportMixin:
                 return original_satisfiable(**kwargs)
             except Exception:
                 try:
-                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    rust_ctx = _get_rust_ctx()
                     return rust_ctx.satisfiable()
                 except Exception:
                     return False
