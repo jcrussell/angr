@@ -688,6 +688,19 @@ impl RustExplorationManager {
         self.stashes.get(stash).and_then(|s| s.get(index)).map(|s| s.pc())
     }
 
+    /// Get the PC of a state by its ID (O(1) via state index, no full export).
+    pub fn get_state_pc_by_id(&self, state_id: u64) -> Option<u64> {
+        if let Some(state) = self.find_state(state_id) {
+            return Some(state.pc());
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Some(cb.state.pc());
+            }
+        }
+        None
+    }
+
     /// Get state IDs in a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn get_state_ids(&self, stash: &str) -> Vec<u64> {
@@ -2867,6 +2880,19 @@ impl RustExplorationManager {
             }
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Check if a state has stdout output (dirty flag check, no allocation).
+    pub fn has_state_stdout(&self, state_id: u64) -> bool {
+        if let Some(state) = self.find_state(state_id) {
+            return state.has_stdout();
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return cb.state.has_stdout();
+            }
+        }
+        false
     }
 
     /// Get the stdout buffer for a state by ID.

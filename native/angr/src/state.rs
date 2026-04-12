@@ -130,6 +130,8 @@ pub struct RustSimState {
     /// Stdout buffer — accumulates output from native puts/printf.
     /// Cloned on fork so each path gets its own copy.
     stdout_buffer: Vec<u8>,
+    /// Whether stdout_buffer has been written to (dirty flag).
+    stdout_dirty: bool,
 }
 
 impl RustSimState {
@@ -166,6 +168,7 @@ impl RustSimState {
             track_history: true,
             arch,
             stdout_buffer: Vec::new(),
+            stdout_dirty: false,
         })
     }
 
@@ -194,6 +197,7 @@ impl RustSimState {
             track_history: true,
             arch,
             stdout_buffer: Vec::new(),
+            stdout_dirty: false,
         }
     }
 
@@ -226,6 +230,7 @@ impl RustSimState {
             track_history: true,
             arch,
             stdout_buffer: Vec::new(),
+            stdout_dirty: false,
         })
     }
 
@@ -275,6 +280,12 @@ impl RustSimState {
     /// Append bytes to the stdout buffer.
     pub fn write_stdout(&mut self, data: &[u8]) {
         self.stdout_buffer.extend_from_slice(data);
+        self.stdout_dirty = true;
+    }
+
+    /// Check if stdout has been written to.
+    pub fn has_stdout(&self) -> bool {
+        self.stdout_dirty
     }
 
     /// Get the history (basic block addresses visited).
@@ -570,6 +581,7 @@ impl RustSimState {
             dirty_registers: 0, // Fresh dirty tracking for fork
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
+            stdout_dirty: self.stdout_dirty,
         }
     }
 
@@ -593,6 +605,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
+            stdout_dirty: self.stdout_dirty,
         }
     }
 
@@ -616,6 +629,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
+            stdout_dirty: self.stdout_dirty,
         }
     }
 
@@ -647,6 +661,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
+            stdout_dirty: self.stdout_dirty,
         }
     }
 

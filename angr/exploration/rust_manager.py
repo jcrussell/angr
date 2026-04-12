@@ -2459,6 +2459,9 @@ class RustExplorationManager(RustStateExportMixin):
         method fetches that buffer and writes it into the Python state's posix
         stdout so that predicates calling state.posix.dumps(1) see the output.
         """
+        # Fast check: skip FFI if this state never wrote to stdout
+        if not self._rust_mgr.has_state_stdout(state_id):
+            return
         try:
             rust_stdout = self._rust_mgr.get_state_stdout(state_id)
         except Exception:

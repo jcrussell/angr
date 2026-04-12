@@ -414,12 +414,14 @@ class RustStateProxy:
 
     @property
     def addr(self):
-        """Current program counter."""
+        """Current program counter (O(1) via state index, no full export)."""
         try:
-            snapshot = self._mgr.export_state(self._state_id)
-            return snapshot.pc
+            pc = self._mgr.get_state_pc_by_id(self._state_id)
+            if pc is not None:
+                return pc
         except Exception:
-            return 0
+            pass
+        return 0
 
     @property
     def ip(self):
