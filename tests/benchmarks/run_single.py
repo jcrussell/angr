@@ -63,6 +63,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
             else:
                 states = [thing]
             rust_mgr_instance = RustExplorationManager(factory_self.project, states)
+            rust_mgr_instance.enable_profiling()
             return rust_mgr_instance
 
         angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
@@ -116,9 +117,14 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
 
         # Collect stats if available
         stats = None
+        perf_report = None
         if engine == "rust" and rust_mgr_instance is not None:
             try:
                 stats = dict(rust_mgr_instance.stats)
+            except Exception:
+                pass
+            try:
+                perf_report = rust_mgr_instance.perf_report()
             except Exception:
                 pass
 
@@ -127,6 +133,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
             "elapsed": elapsed,
             "output": output,
             "stats": stats,
+            "perf_report": perf_report,
         }
 
     finally:
@@ -168,6 +175,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
     elapsed = result["elapsed"]
     output = result.get("output", "")
     stats = result.get("stats")
+    perf_report = result.get("perf_report")
 
     print(f"OK {engine} {example_name} {elapsed:.2f}s")
     if output.strip():
@@ -183,6 +191,8 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
             "callback_count", "ffi_crossings", "state_creations",
             "cache_hits", "cache_misses", "technique_filter_calls",
             "hook_sync_calls", "time_in_callbacks",
+            "time_in_rust_run", "time_in_predicate_eval", "time_in_active_check",
+            "time_in_explore",
         ]:
             if key in stats:
                 val = stats[key]
@@ -192,6 +202,29 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
                     parts.append(f"{key}={val}")
         if parts:
             print(f"  stats: {' '.join(parts)}")
+
+        # Print Rust-side execution profiling breakdown
+        rust_keys = [k for k in stats if k.startswith("rust_")]
+        if rust_keys:
+            print(f"  rust profiling:")
+            # Time breakdowns (convert ns to seconds)
+            for key in sorted(rust_keys):
+                val = stats[key]
+                if val == 0:
+                    continue
+                if key.endswith("_time_ns"):
+                    label = key[5:-8]  # strip "rust_" and "_time_ns"
+                    print(f"    {label}: {val/1e9:.3f}s")
+                elif key.endswith("_count"):
+                    label = key[5:-6]  # strip "rust_" and "_count"
+                    print(f"    {label}: {val}")
+                elif key == "rust_blocks_executed":
+                    print(f"    blocks_executed: {val}")
+                elif key == "rust_step_count":
+                    print(f"    step_count: {val}")
+
+    if engine == "rust" and perf_report:
+        print(f"  {perf_report}")
 
 
 def main():

@@ -21,7 +21,7 @@ use pyo3::types::PyDict;
 use crate::arch::{arch_from_name, default_cc_for_arch, CallingConvention};
 use crate::callbacks::{ExecutionConfig, PythonCallbacks, RunResult, DeferredFork};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
-use crate::interpreter_cb::CallbackInterpreter;
+use crate::interpreter_cb::{CallbackInterpreter, ExecutionStats};
 use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcedureError};
 use crate::solver::RustSolverContext;
@@ -419,6 +419,10 @@ pub struct RustExplorationManager {
     uniqueness_registers: Vec<String>,
     /// Set of seen register tuple hashes for uniqueness checking.
     uniqueness_set: HashSet<u64>,
+    /// Whether Rust-side profiling is enabled.
+    profiling_enabled: bool,
+    /// Accumulated execution statistics across all steps.
+    accumulated_stats: ExecutionStats,
 }
 
 #[pymethods]
@@ -474,6 +478,8 @@ impl RustExplorationManager {
             deadended_count: 0,
             uniqueness_registers: Vec::new(),
             uniqueness_set: HashSet::new(),
+            profiling_enabled: false,
+            accumulated_stats: ExecutionStats::default(),
         })
     }
 
@@ -562,6 +568,22 @@ impl RustExplorationManager {
     /// Set to false when states need to be recovered (e.g., factory.callable()).
     pub fn set_drop_terminal_states(&mut self, enabled: bool) {
         self.drop_terminal_states = enabled;
+    }
+
+    /// Enable or disable Rust-side profiling.
+    /// When enabled, per-step timing and counters are accumulated.
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.profiling_enabled = enabled;
+    }
+
+    /// Get accumulated execution statistics as a dict.
+    pub fn get_execution_stats(&self) -> HashMap<String, u64> {
+        self.accumulated_stats.to_hashmap()
+    }
+
+    /// Reset accumulated execution statistics.
+    pub fn reset_execution_stats(&mut self) {
+        self.accumulated_stats.reset();
     }
 
     /// Set Python callbacks for memory/lifting.
@@ -3130,13 +3152,14 @@ impl RustExplorationManager {
         mut state: RustSimState,
         skip_addr: Option<u64>,
     ) -> Result<Vec<RustSimState>, StepError> {
+        let setup_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
         let initial_pc = state.pc();
 
         // Use the state's solver context for proper constraint handling
         let solver_rc = state.solver().clone();
 
         // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, recovered_memory) = {
+        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, recovered_memory, step_stats) = {
             let solver_ref = solver_rc.borrow();
 
             // Create interpreter with the state's solver
@@ -3148,6 +3171,7 @@ impl RustExplorationManager {
 
             // Propagate lazy_solves to skip Z3 feasibility checks
             interp.lazy_solves = self.lazy_solves;
+            interp.set_profiling(self.profiling_enabled);
 
             // Copy state registers to interpreter (including symbolic values)
             interp.registers = state.registers().fork();
@@ -3186,6 +3210,11 @@ impl RustExplorationManager {
             // instead of calling back to Python.
             interp.set_rust_memory(state.take_memory());
 
+            // Record setup time before execution
+            if let Some(start) = setup_start {
+                interp.stats_mut().step_setup_time_ns += start.elapsed().as_nanos() as u64;
+            }
+
             // Run until event
             let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, self.max_steps_per_run as u32);
 
@@ -3206,9 +3235,19 @@ impl RustExplorationManager {
             // Recover memory from interpreter back to state
             let recovered_memory = interp.take_rust_memory();
 
-            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, recovered_memory)
+            // Take profiling stats before interpreter is dropped
+            let step_stats = interp.take_stats();
+
+            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, recovered_memory, step_stats)
         };
         // solver_ref dropped here, solver_rc borrow released
+
+        // Accumulate profiling stats
+        if self.profiling_enabled {
+            let mut stats = step_stats;
+            stats.step_count = 1;
+            self.accumulated_stats.merge(&stats);
+        }
 
         // Restore memory from interpreter back to state FIRST.
         // This must happen before any PendingCallback creation

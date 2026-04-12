@@ -4549,6 +4549,7 @@ class RustExplorationManager(RustStateExportMixin):
 
         # Phase 3 Fix: Track timeout and steps
         start_time = time.time()
+        _explore_start_ns = time.perf_counter_ns()
         steps_taken = 0
 
         # When callable predicates or techniques are active, use step-by-step
@@ -4573,13 +4574,19 @@ class RustExplorationManager(RustStateExportMixin):
             # evaluations instead of 1 step at a time. Callbacks are still
             # handled immediately when run() returns need_callback events.
             batch_size = 50  # Steps between predicate evaluations
+            _time_in_rust_run = 0
+            _time_in_predicate_eval = 0
+            _time_in_active_check = 0
             while True:
                 if timeout is not None and (time.time() - start_time) > timeout:
                     break
                 if max_steps is not None and steps_taken >= max_steps:
                     break
+                _t0 = time.perf_counter_ns()
                 if not self._rust_mgr.get_state_ids('active'):
+                    _time_in_active_check += time.perf_counter_ns() - _t0
                     break
+                _time_in_active_check += time.perf_counter_ns() - _t0
 
                 # Run a batch of steps, handling callbacks as they arise.
                 # run(N) processes up to N steps but returns early on callbacks.
@@ -4593,7 +4600,9 @@ class RustExplorationManager(RustStateExportMixin):
                     self._sync_hooks_before_step()
                     self._stats_ffi_crossings += 1
                     remaining = batch_limit - (steps_taken - batch_steps_start)
+                    _t1 = time.perf_counter_ns()
                     event = self._rust_mgr.run(remaining)
+                    _time_in_rust_run += time.perf_counter_ns() - _t1
 
                     if event.event_type == 'need_callback':
                         self._stats_callback_count += 1
@@ -4633,7 +4642,9 @@ class RustExplorationManager(RustStateExportMixin):
                     if self._check_technique_complete():
                         break
                 # Evaluate predicates on all states after the batch
+                _t2 = time.perf_counter_ns()
                 self._evaluate_predicates_on_active()
+                _time_in_predicate_eval += time.perf_counter_ns() - _t2
                 pf = getattr(self, '_predicate_found', [])
                 if pf and len(pf) >= num_find:
                     break
@@ -4647,6 +4658,11 @@ class RustExplorationManager(RustStateExportMixin):
             self._evaluate_predicates_on_active()
             # Re-enable drop_terminal_states for future exploration
             self._rust_mgr.set_drop_terminal_states(True)
+            # Store timing breakdown for stats
+            self._time_in_rust_run_ns = _time_in_rust_run
+            self._time_in_predicate_eval_ns = _time_in_predicate_eval
+            self._time_in_active_check_ns = _time_in_active_check
+            self._time_in_explore_ns = time.perf_counter_ns() - _explore_start_ns
             return self
 
         # Run exploration loop (address-based find/avoid)
@@ -4945,7 +4961,29 @@ class RustExplorationManager(RustStateExportMixin):
         result['hook_sync_calls'] = self._stats_hook_sync_calls
         result['hook_sync_skips'] = self._stats_hook_sync_skips
         result['time_in_callbacks'] = self._stats_time_in_callbacks_ns / 1e9  # seconds
+        # Add timing breakdown for predicate-mode exploration loop
+        if hasattr(self, '_time_in_rust_run_ns'):
+            result['time_in_rust_run'] = self._time_in_rust_run_ns / 1e9
+            result['time_in_predicate_eval'] = self._time_in_predicate_eval_ns / 1e9
+            result['time_in_active_check'] = self._time_in_active_check_ns / 1e9
+        if hasattr(self, '_time_in_explore_ns'):
+            result['time_in_explore'] = self._time_in_explore_ns / 1e9
+        # Include Rust execution profiling stats if available
+        try:
+            rust_exec_stats = self._rust_mgr.get_execution_stats()
+            for k, v in rust_exec_stats.items():
+                result[f'rust_{k}'] = v
+        except Exception:
+            pass
         return result
+
+    def enable_profiling(self):
+        """Enable Rust-side execution profiling for detailed timing breakdown."""
+        self._rust_mgr.set_profiling(True)
+
+    def disable_profiling(self):
+        """Disable Rust-side execution profiling."""
+        self._rust_mgr.set_profiling(False)
 
     # Compatibility methods for SimulationManager API
 

@@ -81,6 +81,20 @@ pub struct ExecutionStats {
     pub blocks_executed: u64,
     /// Total execution time (nanoseconds).
     pub total_time_ns: u64,
+    /// Time spent setting up interpreter per step (nanoseconds).
+    pub step_setup_time_ns: u64,
+    /// Number of exploration steps executed.
+    pub step_count: u64,
+    /// Number of solver satisfiability checks.
+    pub solver_sat_count: u64,
+    /// Time spent in solver satisfiability checks (nanoseconds).
+    pub solver_sat_time_ns: u64,
+    /// Time spent executing blocks (nanoseconds) — the inner VEX execution.
+    pub block_exec_time_ns: u64,
+    /// Time spent in prefetch loads per block (nanoseconds).
+    pub prefetch_time_ns: u64,
+    /// Number of statements executed.
+    pub stmt_count: u64,
 }
 
 impl ExecutionStats {
@@ -108,6 +122,13 @@ impl ExecutionStats {
         map.insert("expr_eval_time_ns".to_string(), self.expr_eval_time_ns);
         map.insert("blocks_executed".to_string(), self.blocks_executed);
         map.insert("total_time_ns".to_string(), self.total_time_ns);
+        map.insert("step_setup_time_ns".to_string(), self.step_setup_time_ns);
+        map.insert("step_count".to_string(), self.step_count);
+        map.insert("solver_sat_count".to_string(), self.solver_sat_count);
+        map.insert("solver_sat_time_ns".to_string(), self.solver_sat_time_ns);
+        map.insert("block_exec_time_ns".to_string(), self.block_exec_time_ns);
+        map.insert("prefetch_time_ns".to_string(), self.prefetch_time_ns);
+        map.insert("stmt_count".to_string(), self.stmt_count);
         map
     }
 
@@ -139,6 +160,13 @@ impl ExecutionStats {
         self.expr_eval_time_ns += other.expr_eval_time_ns;
         self.blocks_executed += other.blocks_executed;
         self.total_time_ns += other.total_time_ns;
+        self.step_setup_time_ns += other.step_setup_time_ns;
+        self.step_count += other.step_count;
+        self.solver_sat_count += other.solver_sat_count;
+        self.solver_sat_time_ns += other.solver_sat_time_ns;
+        self.block_exec_time_ns += other.block_exec_time_ns;
+        self.prefetch_time_ns += other.prefetch_time_ns;
+        self.stmt_count += other.stmt_count;
     }
 }
 
@@ -1135,9 +1163,13 @@ impl<'a> CallbackInterpreter<'a> {
             };
 
             // Execute the block
+            let block_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
             match self.execute_block_with_callbacks(py, callbacks, &irsb) {
                 Ok(result) => {
                     blocks_executed += 1;
+                    if let Some(start) = block_start {
+                        self.stats.block_exec_time_ns += start.elapsed().as_nanos() as u64;
+                    }
 
                     match result {
                         BlockResult::Continue { next_addr } => {
@@ -1433,10 +1465,15 @@ impl<'a> CallbackInterpreter<'a> {
         self.current_insn_addr = irsb.addr;
 
         // Prefetch loads for this block (reduces individual FFI calls)
+        let prefetch_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
         self.prefetch_loads_for_block(py, callbacks, irsb)?;
+        if let Some(start) = prefetch_start {
+            self.stats.prefetch_time_ns += start.elapsed().as_nanos() as u64;
+        }
 
         // Execute statements
         for stmt in &irsb.statements {
+            if self.profiling_enabled { self.stats.stmt_count += 1; }
             match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {
                 StmtResult::Continue => continue,
                 StmtResult::Exit { target, jumpkind } => {
@@ -1525,9 +1562,11 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRStmt::Store { addr, data, .. } => {
+                let store_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                 let data_size = ((data_val.width() + 7) / 8) as usize;
+                if self.profiling_enabled { self.stats.store_stmt_count += 1; }
 
                 // Try Rust-native memory first if enabled - use unified method
                 if self.use_rust_memory {

@@ -48,7 +48,11 @@ class RustStateExportMixin:
                 state = self._state_cache[state_id]
                 self._restore_plugins_to_state(state, state_id)
                 self._inject_rust_stdout(state, state_id)
-                self._sync_exported_constraints(state, state_id)
+                # Attach Rust solver fallback BEFORE constraint sync.
+                # The Rust solver has the correct constraints from exploration.
+                # Constraint sync is expensive (5.9s for sym-write) and often
+                # causes identity mismatches. The fallback handles eval/eval_upto/
+                # min/max/satisfiable directly via Rust solver.
                 self._attach_rust_solver_fallback(state, state_id)
                 # Sync concrete memory from Rust to Python state so that
                 # memory modified during Rust execution is visible to the user
@@ -195,40 +199,104 @@ class RustStateExportMixin:
                 pass
 
     def _attach_rust_solver_fallback(self, state, state_id):
-        """Monkey-patch state.solver.eval to fallback to Rust solver on UNSAT.
+        """Monkey-patch state.solver to use Rust solver as primary for eval operations.
 
-        When Python constraint sync creates UNSAT due to variable identity
-        mismatches, the Rust solver (which has the correct answer) is used
-        as a fallback for eval() calls.
+        The Rust solver has the correct constraints from exploration. Rather than
+        syncing all constraints to Python (which is expensive and can cause identity
+        mismatches), we use the Rust solver directly for eval/eval_upto/min/max/
+        satisfiable calls.
         """
-        import types
-
         rust_mgr = self._rust_mgr
         state.scratch.rust_mgr = rust_mgr
         state.scratch.rust_found_state_id = state_id
 
         original_eval = state.solver.eval
+        original_eval_upto = state.solver.eval_upto
+        original_min = state.solver.min
+        original_max = state.solver.max
+        original_satisfiable = state.solver.satisfiable
+
+        def _rust_eval(expr, cast_to=None):
+            """Evaluate using Rust solver."""
+            rust_ctx = rust_mgr.fork_state_solver(state_id)
+            result = rust_ctx.eval(expr)
+            if result is not None:
+                if cast_to == bytes:
+                    nbytes = (expr.length + 7) // 8
+                    raw = result.to_bytes(nbytes, 'little')
+                    return raw[::-1]
+                return result
+            return None
 
         def eval_with_fallback(expr, cast_to=None, **kwargs):
             try:
                 return original_eval(expr, cast_to=cast_to, **kwargs)
             except Exception as orig_err:
-                # Python solver failed (likely UNSAT), try Rust solver
                 try:
-                    rust_ctx = rust_mgr.fork_state_solver(state_id)
-                    result = rust_ctx.eval(expr)
+                    result = _rust_eval(expr, cast_to=cast_to)
                     if result is not None:
-                        if cast_to == bytes:
-                            nbytes = (expr.length + 7) // 8
-                            # Rust solver returns LE bytes; reverse for BE user variables
-                            raw = result.to_bytes(nbytes, 'little')
-                            return raw[::-1]
                         return (result,) if isinstance(result, int) else result
                 except Exception:
                     pass
-                raise orig_err  # Re-raise original if Rust also fails
+                raise orig_err
+
+        def eval_upto_with_fallback(expr, n, cast_to=None, **kwargs):
+            try:
+                return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
+            except Exception as orig_err:
+                try:
+                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    results = rust_ctx.eval_upto(expr, n)
+                    if results is not None:
+                        if cast_to == bytes:
+                            nbytes = (expr.length + 7) // 8
+                            return [r.to_bytes(nbytes, 'little')[::-1] for r in results]
+                        return results
+                except Exception:
+                    pass
+                raise orig_err
+
+        def min_with_fallback(expr, **kwargs):
+            try:
+                return original_min(expr, **kwargs)
+            except Exception as orig_err:
+                try:
+                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
+                    if result is not None:
+                        return result
+                except Exception:
+                    pass
+                raise orig_err
+
+        def max_with_fallback(expr, **kwargs):
+            try:
+                return original_max(expr, **kwargs)
+            except Exception as orig_err:
+                try:
+                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
+                    if result is not None:
+                        return result
+                except Exception:
+                    pass
+                raise orig_err
+
+        def satisfiable_with_fallback(**kwargs):
+            try:
+                return original_satisfiable(**kwargs)
+            except Exception:
+                try:
+                    rust_ctx = rust_mgr.fork_state_solver(state_id)
+                    return rust_ctx.satisfiable()
+                except Exception:
+                    return False
 
         state.solver.eval = eval_with_fallback
+        state.solver.eval_upto = eval_upto_with_fallback
+        state.solver.min = min_with_fallback
+        state.solver.max = max_with_fallback
+        state.solver.satisfiable = satisfiable_with_fallback
 
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
