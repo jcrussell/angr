@@ -2760,25 +2760,41 @@ class RustExplorationManager(RustStateExportMixin):
         self._perf_stats['callback_simprocedure_state_create_ns'] += time.perf_counter_ns() - _sp_state_create_start
 
         # Save original state for extracting changes after SimProcedure execution.
-        # Copy the state for any SimProcedure that writes to memory, so
-        # changed_bytes() can detect modifications. The CallbackMemoryTracker
-        # also captures writes, but changed_bytes() serves as a backup.
-        # Zero-length hooks (UserHook) may also write memory (e.g., storing
-        # known bytes before a function call), so always copy for those.
-        writes_memory = is_zero_length_hook or name in (
+        # Full state.copy() is only needed when the SimProcedure writes memory,
+        # so changed_bytes() can detect modifications. For non-memory-writing
+        # extern SimProcedures (most common case for zero-length hooks like
+        # __libc_start_main, puts, malloc, etc.), a lightweight register
+        # snapshot is sufficient — we only need to detect register changes.
+        _memory_writing_procs = {
             'read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
             'fread', 'gets', 'getchar', 'fgetc', 'getc',
             'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
-            'strcat', 'strncat', 'sprintf', 'snprintf')
+            'strcat', 'strncat', 'sprintf', 'snprintf'}
+        is_user_hook = (proc.__class__.__name__ == 'UserHook')
+        needs_full_copy = is_user_hook or name in _memory_writing_procs
         _sp_copy_start = time.perf_counter_ns()
-        orig_state = state.copy() if writes_memory else state
+        if needs_full_copy:
+            orig_state = state.copy()
+        elif is_zero_length_hook:
+            # Lightweight register snapshot for non-memory-writing extern stubs.
+            # ~10x cheaper than state.copy() (~0.1ms vs ~1ms).
+            orig_state = self._snapshot_registers(state)
+        else:
+            orig_state = state
         self._perf_stats['callback_simprocedure_state_copy_ns'] += time.perf_counter_ns() - _sp_copy_start
 
         # GAP 2 fix: Save original constraint COUNT before hook execution.
         # Building set(constraints) is expensive (~6ms per call with many constraints).
         # Save just the count; only build the full set if count changes after callback.
+        # When using a register snapshot (no full state copy), eagerly capture
+        # constraints since we can't access orig_state.solver.constraints later.
         orig_constraint_count = len(state.solver.constraints) if hasattr(state, 'solver') else 0
-        orig_constraints = None  # Deferred — only built if needed
+        if isinstance(orig_state, dict):
+            # Snapshot mode: capture constraints eagerly for the rare case
+            # where a non-memory-writing proc adds constraints
+            orig_constraints = set(state.solver.constraints) if hasattr(state, 'solver') else set()
+        else:
+            orig_constraints = None  # Deferred — only built if needed
 
         # GAP 5: Track memory writes during callback execution
         memory_tracker = CallbackMemoryTracker(state)
@@ -3070,8 +3086,16 @@ class RustExplorationManager(RustStateExportMixin):
             new_pc = succ_state.addr
 
         # Extract changes
+        is_snapshot = isinstance(orig_state, dict)
         reg_changes = self._extract_register_changes(orig_state, succ_state)
-        mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, succ_state)
+
+        # Skip memory extraction when orig_state is a register snapshot
+        # (non-memory-writing extern SimProcedures don't modify memory)
+        if is_snapshot:
+            mem_changes = []
+            symbolic_imports = []
+        else:
+            mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, succ_state)
 
         # GAP 5: Merge tracked writes with extracted memory changes
         if tracked_writes:
@@ -3093,9 +3117,11 @@ class RustExplorationManager(RustStateExportMixin):
             mem_changes = [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
 
         # Extract any new constraints added during callback
-        new_constraints = self._extract_new_constraints(orig_state, succ_state,
-                                                        orig_constraints=orig_constraints,
-                                                        orig_constraint_count=orig_constraint_count)
+        # When orig_state is a snapshot, rely on orig_constraint_count fast path
+        new_constraints = self._extract_new_constraints(
+            succ_state if is_snapshot else orig_state, succ_state,
+            orig_constraints=orig_constraints,
+            orig_constraint_count=orig_constraint_count)
         if new_constraints:
             l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
 
@@ -3192,10 +3218,16 @@ class RustExplorationManager(RustStateExportMixin):
 
         # Extract register changes between original and modified state
         # This syncs all register modifications made by the hook
+        is_snapshot = isinstance(orig_state, dict)
         reg_changes = self._extract_register_changes(orig_state, state)
 
-        # Extract memory changes between original and modified state
-        mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, state)
+        # Skip memory extraction when orig_state is a register snapshot
+        # (non-memory-writing extern SimProcedures don't modify memory)
+        if is_snapshot:
+            mem_changes = []
+            symbolic_imports = []
+        else:
+            mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, state)
 
         # Merge tracked writes with extracted memory changes
         # Tracked writes capture symbolic stores that _extract_memory_changes might miss
@@ -3230,8 +3262,8 @@ class RustExplorationManager(RustStateExportMixin):
                     new_constraints = list(current_constraints - orig_constraints)
                     if new_constraints:
                         l.debug(f"Extracted {len(new_constraints)} constraints from hook")
-                elif orig_constraint_count is not None:
-                    # Count changed — need full diff
+                elif orig_constraint_count is not None and not is_snapshot:
+                    # Count changed — need full diff (only when orig_state is a real state)
                     prior = set(orig_state.solver.constraints)
                     current_constraints = set(state.solver.constraints)
                     new_constraints = list(current_constraints - prior)
@@ -4045,25 +4077,13 @@ class RustExplorationManager(RustStateExportMixin):
         else:
             return []
 
-    def _extract_register_changes(
-        self,
-        old_state: "angr.SimState",
-        new_state: "angr.SimState"
-    ) -> list:
-        """Extract register changes between states.
-
-        Handles both concrete and symbolic register values. For symbolic
-        values (especially return registers like RAX), the value is converted
-        to a claripy AST and stored in Rust's pending symbolic state.
+    @staticmethod
+    def _get_reg_map_and_return_regs(arch):
+        """Get architecture-specific register map and return registers.
 
         Returns:
-            List of (offset, size, data_bytes) tuples for concrete changes.
+            Tuple of (reg_map, return_regs) or (None, None) if unsupported.
         """
-        changes = []
-        arch = old_state.arch
-
-        # Architecture-specific register offset maps
-        # Offsets verified against native/angr/src/arch/*.rs
         if arch.name in ('AMD64', 'X86_64'):
             reg_map = {
                 'rax': (16, 8), 'rcx': (24, 8), 'rdx': (32, 8), 'rbx': (40, 8),
@@ -4074,7 +4094,6 @@ class RustExplorationManager(RustStateExportMixin):
             }
             return_regs = {'rax'}
         elif arch.name == 'X86':
-            # X86 32-bit (verified: native/angr/src/arch/x86.rs)
             reg_map = {
                 'eax': (8, 4), 'ecx': (12, 4), 'edx': (16, 4), 'ebx': (20, 4),
                 'esp': (24, 4), 'ebp': (28, 4), 'esi': (32, 4), 'edi': (36, 4),
@@ -4082,7 +4101,6 @@ class RustExplorationManager(RustStateExportMixin):
             }
             return_regs = {'eax'}
         elif arch.name in ('ARMEL', 'ARMHF', 'ARM'):
-            # ARM 32-bit (verified: native/angr/src/arch/arm.rs)
             reg_map = {
                 'r0': (8, 4), 'r1': (12, 4), 'r2': (16, 4), 'r3': (20, 4),
                 'r4': (24, 4), 'r5': (28, 4), 'r6': (32, 4), 'r7': (36, 4),
@@ -4091,19 +4109,81 @@ class RustExplorationManager(RustStateExportMixin):
             }
             return_regs = {'r0'}
         elif arch.name == 'AARCH64':
-            # ARM 64-bit - not yet implemented
             l.warning(f"AARCH64 register extraction not yet implemented")
-            return []
+            return None, None
         else:
             l.warning(f"Unknown architecture {arch.name} for register extraction")
-            return []
+            return None, None
+        return reg_map, return_regs
 
-        # Return register is critical - always sync it
+    def _snapshot_registers(self, state) -> dict:
+        """Snapshot register values as a lightweight dict for later comparison.
+
+        Much cheaper than state.copy() — only reads register values (~0.1ms
+        vs ~1ms for full state copy). Used for non-memory-writing extern
+        SimProcedures where we only need to detect register changes.
+
+        Returns:
+            Dict mapping reg_name -> (is_symbolic, concrete_value_or_None, offset, size).
+        """
+        reg_map, _ = self._get_reg_map_and_return_regs(state.arch)
+        if reg_map is None:
+            return {}
+
+        snapshot = {}
+        for reg_name, (offset, size) in reg_map.items():
+            try:
+                val = getattr(state.regs, reg_name)
+                if val.symbolic:
+                    snapshot[reg_name] = (True, None, offset, size)
+                else:
+                    snapshot[reg_name] = (False, state.solver.eval(val), offset, size)
+            except Exception:
+                pass
+        return snapshot
+
+    def _extract_register_changes(
+        self,
+        old_state,
+        new_state: "angr.SimState"
+    ) -> list:
+        """Extract register changes between states.
+
+        Handles both concrete and symbolic register values. For symbolic
+        values (especially return registers like RAX), the value is converted
+        to a claripy AST and stored in Rust's pending symbolic state.
+
+        Args:
+            old_state: Either a SimState or a register snapshot dict from
+                       _snapshot_registers(). Using a snapshot avoids the
+                       cost of state.copy() for non-memory-writing callbacks.
+            new_state: The successor SimState after callback execution.
+
+        Returns:
+            List of (offset, size, data_bytes) tuples for concrete changes.
+        """
+        changes = []
+        is_snapshot = isinstance(old_state, dict)
+        arch = new_state.arch
+
+        reg_map, return_regs = self._get_reg_map_and_return_regs(arch)
+        if reg_map is None:
+            return []
 
         for reg_name, (offset, size) in reg_map.items():
             try:
-                old_val = getattr(old_state.regs, reg_name)
                 new_val = getattr(new_state.regs, reg_name)
+
+                # Get old value from snapshot or state
+                if is_snapshot:
+                    entry = old_state.get(reg_name)
+                    if entry is None:
+                        continue
+                    old_is_symbolic, old_concrete, _, _ = entry
+                else:
+                    old_val = getattr(old_state.regs, reg_name)
+                    old_is_symbolic = old_val.symbolic
+                    old_concrete = None if old_is_symbolic else old_state.solver.eval(old_val)
 
                 if new_val.symbolic:
                     # Symbolic register value - sync to Rust
@@ -4121,7 +4201,7 @@ class RustExplorationManager(RustStateExportMixin):
                                 pass
                 else:
                     new_concrete = new_state.solver.eval(new_val)
-                    if old_val.symbolic or old_state.solver.eval(old_val) != new_concrete:
+                    if old_is_symbolic or old_concrete != new_concrete:
                         data = new_concrete.to_bytes(size, 'little')
                         changes.append((offset, size, bytes(data)))
             except Exception:
