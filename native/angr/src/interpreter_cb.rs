@@ -17,7 +17,7 @@ use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallba
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, is_rust_handle, python_to_rustbv, rustbv_to_claripy, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory, PAGE_SIZE};
-use crate::symbolic::{RustBV, RustSymbolTable, SymContext};
+use crate::symbolic::{BVOp, RustBV, RustSymbolTable, SymContext};
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;
 use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
@@ -3230,6 +3230,18 @@ impl<'a> CallbackInterpreter<'a> {
             }
         }
 
+        // ITE fast path: extract concrete targets from nested ITE chains
+        // without solver queries. Pattern: if(c1, addr1, if(c2, addr2, ...))
+        if let Some(targets) = extract_ite_targets(&next_val, self.config.max_symbolic_ip_targets) {
+            if targets.len() == 1 {
+                return Ok(ConcretizedJump::Single(targets[0]));
+            }
+            return Ok(ConcretizedJump::Multiple {
+                targets,
+                expr: next_val,
+            });
+        }
+
         // Symbolic address - use AddressConcretizer
         match self.concretizer.concretize(&next_val, self.ctx) {
             ConcretizationResult::Single(addr) => {
@@ -4073,6 +4085,54 @@ impl<'a> CallbackInterpreter<'a> {
             self.clear_pending_constraints();
         }
         Ok(())
+    }
+}
+
+/// Extract concrete target addresses from a nested ITE (if-then-else) tree.
+///
+/// Pattern: `ITE(c1, addr1, ITE(c2, addr2, ITE(c3, addr3, default)))`
+/// Returns unique concrete addresses if all leaves are concrete.
+/// Returns None if the expression is not an ITE tree, any leaf is symbolic,
+/// or there are too many targets.
+fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec<u64>> {
+    let mut targets = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack: Vec<&RustBV> = vec![bv];
+
+    while let Some(current) = stack.pop() {
+        if targets.len() > max_targets {
+            return None; // Too many targets
+        }
+
+        match current {
+            RustBV::Concrete { value, .. } => {
+                let addr = *value as u64;
+                if seen.insert(addr) {
+                    targets.push(addr);
+                }
+            }
+            RustBV::Constrained { value, .. } => {
+                let addr = *value as u64;
+                if seen.insert(addr) {
+                    targets.push(addr);
+                }
+            }
+            RustBV::Expression { op: BVOp::Ite, operands, .. } if operands.len() == 3 => {
+                // ITE: operands[0] = condition, operands[1] = true_val, operands[2] = false_val
+                stack.push(&operands[1]); // true branch
+                stack.push(&operands[2]); // false branch
+            }
+            _ => {
+                // Non-ITE symbolic expression — can't extract targets
+                return None;
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        None
+    } else {
+        Some(targets)
     }
 }
 
