@@ -4233,10 +4233,13 @@ class RustExplorationManager(RustStateExportMixin):
             state: The state to check/fix.
             state_id: The state ID for root state lookup.
         """
-        # Check if critical plugins are missing
+        # Check if critical plugins are missing.
+        # IMPORTANT: Use state.plugins dict directly instead of hasattr/getattr.
+        # hasattr() triggers __getattr__ which may lazy-initialize plugins
+        # (e.g., 'heap' takes ~80ms to initialize on first access).
         missing_plugins = []
-        for plugin_name in ['posix', 'libc', 'heap']:
-            if not hasattr(state, plugin_name) or getattr(state, plugin_name) is None:
+        for plugin_name in ['posix', 'libc']:
+            if plugin_name not in state.plugins:
                 missing_plugins.append(plugin_name)
 
         if not missing_plugins:
