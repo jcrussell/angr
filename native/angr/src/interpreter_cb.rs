@@ -95,6 +95,18 @@ pub struct ExecutionStats {
     pub prefetch_time_ns: u64,
     /// Number of statements executed.
     pub stmt_count: u64,
+    /// Number of deferred forks processed in exploration loop.
+    pub deferred_fork_count: u64,
+    /// Time spent processing deferred forks (nanoseconds).
+    pub deferred_fork_time_ns: u64,
+    /// Time spent in solver fork/clone operations (nanoseconds).
+    pub solver_fork_time_ns: u64,
+    /// Number of solver fork operations.
+    pub solver_fork_count: u64,
+    /// Number of active states at end of run.
+    pub active_states_count: u64,
+    /// Time spent in the main run() loop overhead (nanoseconds).
+    pub run_loop_time_ns: u64,
 }
 
 impl ExecutionStats {
@@ -129,6 +141,12 @@ impl ExecutionStats {
         map.insert("block_exec_time_ns".to_string(), self.block_exec_time_ns);
         map.insert("prefetch_time_ns".to_string(), self.prefetch_time_ns);
         map.insert("stmt_count".to_string(), self.stmt_count);
+        map.insert("deferred_fork_count".to_string(), self.deferred_fork_count);
+        map.insert("deferred_fork_time_ns".to_string(), self.deferred_fork_time_ns);
+        map.insert("solver_fork_time_ns".to_string(), self.solver_fork_time_ns);
+        map.insert("solver_fork_count".to_string(), self.solver_fork_count);
+        map.insert("active_states_count".to_string(), self.active_states_count);
+        map.insert("run_loop_time_ns".to_string(), self.run_loop_time_ns);
         map
     }
 
@@ -167,6 +185,12 @@ impl ExecutionStats {
         self.block_exec_time_ns += other.block_exec_time_ns;
         self.prefetch_time_ns += other.prefetch_time_ns;
         self.stmt_count += other.stmt_count;
+        self.deferred_fork_count += other.deferred_fork_count;
+        self.deferred_fork_time_ns += other.deferred_fork_time_ns;
+        self.solver_fork_time_ns += other.solver_fork_time_ns;
+        self.solver_fork_count += other.solver_fork_count;
+        self.active_states_count = other.active_states_count; // snapshot, not sum
+        self.run_loop_time_ns += other.run_loop_time_ns;
     }
 }
 

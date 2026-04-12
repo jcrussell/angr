@@ -298,6 +298,88 @@ class RustStateExportMixin:
         state.solver.max = max_with_fallback
         state.solver.satisfiable = satisfiable_with_fallback
 
+    def _attach_rust_solver_primary(self, state, state_id):
+        """Monkey-patch state.solver to use Rust solver as PRIMARY for all operations.
+
+        Used for uncached states where constraint sync was skipped. The Rust
+        solver has the correct constraints from exploration. Python solver is
+        only used as a fallback (e.g., for expressions with Python-only symbols).
+        """
+        rust_mgr = self._rust_mgr
+        state.scratch.rust_mgr = rust_mgr
+        state.scratch.rust_found_state_id = state_id
+
+        original_eval = state.solver.eval
+        original_eval_upto = state.solver.eval_upto
+        original_min = state.solver.min
+        original_max = state.solver.max
+        original_satisfiable = state.solver.satisfiable
+
+        def eval_rust_primary(expr, cast_to=None, **kwargs):
+            try:
+                rust_ctx = rust_mgr.fork_state_solver(state_id)
+                result = rust_ctx.eval(expr)
+                if result is not None:
+                    if cast_to == bytes:
+                        nbytes = (expr.length + 7) // 8
+                        raw = result.to_bytes(nbytes, 'little')
+                        return raw[::-1]
+                    return (result,)
+            except Exception:
+                pass
+            # Fallback to Python solver
+            return original_eval(expr, cast_to=cast_to, **kwargs)
+
+        def eval_upto_rust_primary(expr, n, cast_to=None, **kwargs):
+            try:
+                rust_ctx = rust_mgr.fork_state_solver(state_id)
+                results = rust_ctx.eval_upto(expr, n)
+                if results is not None:
+                    if cast_to == bytes:
+                        nbytes = (expr.length + 7) // 8
+                        return [r.to_bytes(nbytes, 'little')[::-1] for r in results]
+                    return results
+            except Exception:
+                pass
+            return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
+
+        def min_rust_primary(expr, **kwargs):
+            try:
+                rust_ctx = rust_mgr.fork_state_solver(state_id)
+                result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+            return original_min(expr, **kwargs)
+
+        def max_rust_primary(expr, **kwargs):
+            try:
+                rust_ctx = rust_mgr.fork_state_solver(state_id)
+                result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+            return original_max(expr, **kwargs)
+
+        def satisfiable_rust_primary(**kwargs):
+            try:
+                rust_ctx = rust_mgr.fork_state_solver(state_id)
+                return rust_ctx.satisfiable()
+            except Exception:
+                pass
+            try:
+                return original_satisfiable(**kwargs)
+            except Exception:
+                return False
+
+        state.solver.eval = eval_rust_primary
+        state.solver.eval_upto = eval_upto_rust_primary
+        state.solver.min = min_rust_primary
+        state.solver.max = max_rust_primary
+        state.solver.satisfiable = satisfiable_rust_primary
+
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
 
@@ -389,14 +471,10 @@ class RustStateExportMixin:
                 l.debug(f"Synced {synced} constraints to state {state_id} "
                         f"({skipped} skipped for identity/register)")
 
-            # Post-sync UNSAT check: warn if constraints are contradictory
-            if synced > 0:
-                try:
-                    if not state.solver.satisfiable():
-                        l.warning(f"State {state_id} is UNSAT after constraint sync "
-                                  f"({synced} synced, {skipped} skipped)")
-                except Exception:
-                    pass
+            # Post-sync UNSAT check removed — it was a diagnostic that
+            # called satisfiable() on the full constraint set, which for
+            # LAZY_SOLVES examples (hackcon) takes 60s+ with zero benefit.
+            # The Rust solver fallback handles eval() correctly regardless.
         except Exception as e:
             l.debug(f"Could not sync constraints for state {state_id}: {e}")
 

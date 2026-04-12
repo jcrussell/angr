@@ -754,6 +754,8 @@ impl RustExplorationManager {
             return Err(PyRuntimeError::new_err("callbacks not ready"));
         }
 
+        let run_loop_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+
         for _ in 0..max_steps {
             // Check if we have enough solutions
             if self.found_count() >= self.num_find {
@@ -1059,6 +1061,8 @@ impl RustExplorationManager {
                             let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
 
                             let mut snapshots = pending.fork_snapshots;
+                            let cb_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                            let cb_fork_total = pending.deferred_forks.len() as u64;
                             for fork in pending.deferred_forks {
                                 let condition = pending.stored_conditions.get(&fork.condition_id);
                                 let reconstructed = if condition.is_none() {
@@ -1073,6 +1077,7 @@ impl RustExplorationManager {
                                 } else { None };
 
                                 if let Some(cond) = condition.or(reconstructed.as_ref()) {
+                                    let fork_op_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                                     let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
                                         let mut f = fork_base.fork_from_snapshot(snapshot);
                                         if fork.path_taken {
@@ -1091,13 +1096,29 @@ impl RustExplorationManager {
                                         f.set_pc(fork.unexplored_target);
                                         f
                                     };
+                                    if let Some(start) = fork_op_start {
+                                        self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                                        self.accumulated_stats.solver_fork_count += 1;
+                                    }
                                     self.state_roots.insert(forked.state_id(), root_state_id);
+                                    let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                                     if self.lazy_solves || forked.satisfiable() {
+                                        if let Some(start) = sat_start {
+                                            self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                            self.accumulated_stats.solver_sat_count += 1;
+                                        }
                                         self.stashes.entry("active".to_string())
                                             .or_insert_with(VecDeque::new)
                                             .push_back(forked);
+                                    } else if let Some(start) = sat_start {
+                                        self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                        self.accumulated_stats.solver_sat_count += 1;
                                     }
                                 }
+                            }
+                            if let Some(start) = cb_fork_start {
+                                self.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+                                self.accumulated_stats.deferred_fork_count += cb_fork_total;
                             }
 
                             // Now handle the main state
@@ -1199,6 +1220,12 @@ impl RustExplorationManager {
 
             // Apply native uniqueness filter if enabled
             self.apply_uniqueness_filter();
+        }
+
+        // Record run loop timing and active state count
+        if let Some(start) = run_loop_start {
+            self.accumulated_stats.run_loop_time_ns += start.elapsed().as_nanos() as u64;
+            self.accumulated_stats.active_states_count = self.active_count() as u64;
         }
 
         // Max steps reached
@@ -3279,6 +3306,8 @@ impl RustExplorationManager {
                 // P13: Track UNSAT states for pruning
                 let mut successors = vec![state];
                 let mut pruned_states = Vec::new();
+                let deferred_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let deferred_fork_total = deferred_forks.len() as u64;
 
                 for fork in deferred_forks {
                     // Look up the condition for this deferred fork
@@ -3297,6 +3326,7 @@ impl RustExplorationManager {
                         // Use solver snapshot (from before branch constraint) if available
                         // to avoid inheriting the taken-path constraint (which would make
                         // the opposite constraint UNSAT).
+                        let fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                         let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
                             let mut f = successors[0].fork_from_snapshot(snapshot);
                             if fork.path_taken {
@@ -3315,13 +3345,26 @@ impl RustExplorationManager {
                             f.set_pc(fork.unexplored_target);
                             f
                         };
+                        if let Some(start) = fork_start {
+                            self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                            self.accumulated_stats.solver_fork_count += 1;
+                        }
                         // Track root state ID for this forked state
                         self.state_roots.insert(forked.state_id(), root_state_id);
 
                         // P13: Check satisfiability before adding to successors
+                        let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                         if self.lazy_solves || forked.satisfiable() {
+                            if let Some(start) = sat_start {
+                                self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                self.accumulated_stats.solver_sat_count += 1;
+                            }
                             successors.push(forked);
                         } else {
+                            if let Some(start) = sat_start {
+                                self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                self.accumulated_stats.solver_sat_count += 1;
+                            }
                             log::debug!(
                                 "P13: Deferred fork at 0x{:x} is UNSAT, will be pruned",
                                 fork.unexplored_target
@@ -3352,6 +3395,10 @@ impl RustExplorationManager {
                         }
                     }
                 }
+                if let Some(start) = deferred_fork_start {
+                    self.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+                    self.accumulated_stats.deferred_fork_count += deferred_fork_total;
+                }
 
                 // Add pruned states to pruned stash
                 for s in pruned_states {
@@ -3365,10 +3412,15 @@ impl RustExplorationManager {
                 // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
                 state.add_to_history(addr);
                 // Save pre-callback snapshot for deferred forks
+                let hook_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                 let pre_callback_snapshot = Some(state.fork());
                 // Fork solver context for Python callback use
                 let solver_ref = state.solver();
                 let forked_ctx = RustSolverContext::from_sym_context(solver_ref.borrow().fork());
+                if let Some(start) = hook_fork_start {
+                    self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                    self.accumulated_stats.solver_fork_count += 2; // state fork + solver fork
+                }
                 // Return to Python for hook - store deferred forks for later processing
                 Err(StepError::NeedCallback(PendingCallback {
                     state,
