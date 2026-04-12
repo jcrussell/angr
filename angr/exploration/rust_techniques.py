@@ -193,6 +193,7 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
     # so they won't be re-checked. New fork children get new IDs.
     if not hasattr(mgr, '_filtered_state_ids'):
         mgr._filtered_state_ids = set()
+        mgr._filtered_cleanup_counter = 0
 
     simgr_proxy = RustSimulationManagerProxy(
         mgr._rust_mgr,
@@ -252,6 +253,19 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                             pass
                 except Exception as e:
                     l.debug(f"Failed to move state {sid} from {stash} to {goto}: {e}")
+
+    # Periodic cleanup: remove dead state IDs from _filtered_state_ids
+    # to prevent unbounded growth in long-running explorations.
+    mgr._filtered_cleanup_counter = getattr(mgr, '_filtered_cleanup_counter', 0) + 1
+    if mgr._filtered_cleanup_counter >= 100:
+        mgr._filtered_cleanup_counter = 0
+        try:
+            live = set()
+            for stash_name in ('active', 'found', 'errored', 'deadended', 'avoid'):
+                live.update(mgr._rust_mgr.get_state_ids(stash_name))
+            mgr._filtered_state_ids &= live
+        except Exception:
+            pass
 
 
 def check_technique_complete(mgr: "RustExplorationManager") -> bool:
