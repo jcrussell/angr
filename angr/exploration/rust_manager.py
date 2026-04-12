@@ -1257,8 +1257,16 @@ class RustExplorationManager(RustStateExportMixin):
                 for c in state.solver.constraints:
                     new_state.solver.add(c)
                 return new_state
-            # Check persistent disk cache (survives across processes)
-            disk_key = self._disk_cache_key(cache_key) if cache_key else ''
+            # Check persistent disk cache (survives across processes).
+            # Only use when state has no symbolic memory data — blank_state
+            # from cache can't preserve symbolic arguments (e.g., argv BVS).
+            has_symbolic = False
+            try:
+                sym_addrs = list(state.memory.get_symbolic_addrs())
+                has_symbolic = len(sym_addrs) > 0
+            except Exception:
+                pass
+            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_symbolic else ''
             if disk_key:
                 disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
                 if disk_state is not None:
@@ -1281,7 +1289,13 @@ class RustExplorationManager(RustStateExportMixin):
 
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
             cache_key = getattr(main_obj, 'binary', None) or ''
-            disk_key = self._disk_cache_key(cache_key) if cache_key else ''
+            has_symbolic = False
+            try:
+                sym_addrs = list(state.memory.get_symbolic_addrs())
+                has_symbolic = len(sym_addrs) > 0
+            except Exception:
+                pass
+            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_symbolic else ''
             if disk_key:
                 disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
                 if disk_state is not None:
