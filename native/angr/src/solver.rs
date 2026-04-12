@@ -13,7 +13,7 @@ use pyo3::types::PyList;
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
-use crate::claripy_bridge::{claripy_to_rustbv, BridgeError};
+use crate::claripy_bridge::{claripy_to_rustbv, try_extract_bvv, BridgeError};
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
 /// Convert a BridgeError to a PyErr.
@@ -144,6 +144,11 @@ impl RustSolverContext {
     /// Returns None if unsatisfiable or the expression cannot be evaluated.
     /// For values > 128 bits, use eval_wide which returns a Python int.
     pub fn eval(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Option<PyObject>> {
+        // Fast path: concrete BVV doesn't need solver
+        if let Some((value, _width)) = try_extract_bvv(ast) {
+            return Ok(Some(value.into_pyobject(py)?.into()));
+        }
+
         let ctx = self.inner.ctx();
         let bv = claripy_to_rustbv(py, ast, &*ctx)?;
         let width = bv.width();
@@ -176,6 +181,13 @@ impl RustSolverContext {
         ast: &Bound<'_, PyAny>,
         n: usize,
     ) -> PyResult<Vec<u128>> {
+        // Fast path: concrete BVV has exactly one solution
+        if n > 0 {
+            if let Some((value, _width)) = try_extract_bvv(ast) {
+                return Ok(vec![value]);
+            }
+        }
+
         let ctx = self.inner.ctx();
         let bv = claripy_to_rustbv(py, ast, &*ctx)?;
         Ok(ctx.eval_upto(&bv, n))
@@ -189,6 +201,10 @@ impl RustSolverContext {
         ast: &Bound<'_, PyAny>,
         signed: bool,
     ) -> PyResult<Option<u128>> {
+        // Fast path: concrete BVV
+        if let Some((value, _width)) = try_extract_bvv(ast) {
+            return Ok(Some(value));
+        }
         let ctx = self.inner.ctx();
         let bv = claripy_to_rustbv(py, ast, &*ctx)?;
         Ok(ctx.min(&bv, signed))
@@ -202,6 +218,10 @@ impl RustSolverContext {
         ast: &Bound<'_, PyAny>,
         signed: bool,
     ) -> PyResult<Option<u128>> {
+        // Fast path: concrete BVV
+        if let Some((value, _width)) = try_extract_bvv(ast) {
+            return Ok(Some(value));
+        }
         let ctx = self.inner.ctx();
         let bv = claripy_to_rustbv(py, ast, &*ctx)?;
         Ok(ctx.max(&bv, signed))

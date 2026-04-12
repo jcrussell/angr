@@ -270,6 +270,22 @@ pub fn python_to_rustbv(
     }
 }
 
+/// Try to extract a concrete BVV value directly from a claripy AST.
+/// Returns Some((value, width)) if the AST is a BVV, None otherwise.
+/// This is much cheaper than full claripy_to_rustbv conversion.
+#[inline]
+pub fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
+    let op: String = ast.getattr("op").ok()?.extract().ok()?;
+    if op != "BVV" {
+        return None;
+    }
+    let args = ast.getattr("args").ok()?;
+    let args_tuple = args.downcast::<PyTuple>().ok()?;
+    let value: u128 = extract_int_value(args_tuple.get_item(0).ok()?).ok()?;
+    let width: u32 = args_tuple.get_item(1).ok()?.extract().ok()?;
+    Some((value, width))
+}
+
 /// Convert a claripy AST to a RustBV.
 ///
 /// This recursively converts the claripy expression tree to RustBV operations.

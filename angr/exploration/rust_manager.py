@@ -5093,7 +5093,7 @@ class RustExplorationManager(RustStateExportMixin):
                 if max_steps is not None and steps_taken >= max_steps:
                     break
                 _t0 = time.perf_counter_ns()
-                if not self._rust_mgr.get_state_ids('active'):
+                if not self._rust_mgr.has_active_states():
                     _time_in_active_check += time.perf_counter_ns() - _t0
                     break
                 _time_in_active_check += time.perf_counter_ns() - _t0
@@ -5113,6 +5113,7 @@ class RustExplorationManager(RustStateExportMixin):
                     _t1 = time.perf_counter_ns()
                     event = self._rust_mgr.run(remaining)
                     _time_in_rust_run += time.perf_counter_ns() - _t1
+                    self._rust_mgr.sync_state_index()
 
                     if event.event_type == 'need_callback':
                         self._stats_callback_count += 1
@@ -5196,6 +5197,7 @@ class RustExplorationManager(RustStateExportMixin):
             need_per_step = (until is not None) or bool(self._active_techniques)
             self._stats_ffi_crossings += 1
             event = self._rust_mgr.run(1) if need_per_step else self._rust_mgr.run()
+            self._rust_mgr.sync_state_index()
             steps_taken += 1
 
             # Terminal states (avoid/pruned/deadended) are now dropped immediately
@@ -5295,6 +5297,7 @@ class RustExplorationManager(RustStateExportMixin):
 
             self._stats_ffi_crossings += 1
             event = self._rust_mgr.run(1)
+            self._rust_mgr.sync_state_index()
 
             if event.event_type == 'need_callback':
                 self._stats_callback_count += 1

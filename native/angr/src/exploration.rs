@@ -423,6 +423,8 @@ pub struct RustExplorationManager {
     profiling_enabled: bool,
     /// Accumulated execution statistics across all steps.
     accumulated_stats: ExecutionStats,
+    /// Index mapping state_id -> stash name for O(1) lookups.
+    state_index: HashMap<u64, String>,
 }
 
 #[pymethods]
@@ -480,6 +482,7 @@ impl RustExplorationManager {
             uniqueness_set: HashSet::new(),
             profiling_enabled: false,
             accumulated_stats: ExecutionStats::default(),
+            state_index: HashMap::new(),
         })
     }
 
@@ -653,6 +656,7 @@ impl RustExplorationManager {
             // State hooks are checked during execution
         }
 
+        self.index_state(state_id, stash);
         self.stashes
             .entry(stash.to_string())
             .or_insert_with(VecDeque::new)
@@ -671,6 +675,7 @@ impl RustExplorationManager {
         // Track this state as its own root (it was added via Python)
         self.state_roots.insert(state_id, state_id);
 
+        self.index_state(state_id, stash);
         self.stashes
             .entry(stash.to_string())
             .or_insert_with(VecDeque::new)
@@ -690,6 +695,23 @@ impl RustExplorationManager {
             .get(stash)
             .map(|s| s.iter().map(|state| state.state_id()).collect())
             .unwrap_or_default()
+    }
+
+    /// Check if there are any active states (O(1), no allocation).
+    pub fn has_active_states(&self) -> bool {
+        self.stashes.get("active").map_or(false, |s| !s.is_empty())
+    }
+
+    /// Get the number of states in a stash (O(1), no allocation).
+    #[pyo3(signature = (stash="active"))]
+    pub fn stash_count(&self, stash: &str) -> usize {
+        self.stashes.get(stash).map_or(0, |s| s.len())
+    }
+
+    /// Rebuild the state index after run() modifies stashes internally.
+    /// Call from Python after run() returns to keep index up to date.
+    pub fn sync_state_index(&mut self) {
+        self.rebuild_state_index();
     }
 
     /// Get the root state ID for any state.
@@ -1961,19 +1983,14 @@ impl RustExplorationManager {
         addr: u64,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        // Find the state in any stash
-        for stash in self.stashes.values_mut() {
-            for state in stash.iter_mut() {
-                if state.state_id() == state_id {
-                    let solver_ref = state.solver();
-                    let sym_ctx = solver_ref.borrow();
-                    let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
-                        .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?;
-                    drop(sym_ctx);
-                    state.memory_mut().import_symbolic_value(addr, bv, None);
-                    return Ok(());
-                }
-            }
+        if let Some(state) = self.find_state_mut(state_id) {
+            let solver_ref = state.solver();
+            let sym_ctx = solver_ref.borrow();
+            let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
+                .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?;
+            drop(sym_ctx);
+            state.memory_mut().import_symbolic_value(addr, bv, None);
+            return Ok(());
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
@@ -2344,36 +2361,31 @@ impl RustExplorationManager {
         state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<bool> {
-        // Find the state in any stash
-        for stash in self.stashes.values_mut() {
-            for state in stash.iter_mut() {
-                if state.state_id() == state_id {
-                    let solver_ref = state.solver();
-                    let sym_ctx = solver_ref.borrow();
-                    let ctx_ref: &SymContext = &*sym_ctx;
+        if let Some(state) = self.find_state_mut(state_id) {
+            let solver_ref = state.solver();
+            let sym_ctx = solver_ref.borrow();
+            let ctx_ref: &SymContext = &*sym_ctx;
 
-                    let mut added = 0u32;
-                    for item in constraints.iter() {
-                        match claripy_to_rustbv(py, &item, ctx_ref) {
-                            Ok(bv) => {
-                                if bv.width() == 1 {
-                                    sym_ctx.assume_true(&bv);
-                                } else {
-                                    let zero = RustBV::concrete(0, bv.width());
-                                    let neq = bv.ne(&zero, ctx_ref);
-                                    sym_ctx.assume_true(&neq);
-                                }
-                                added += 1;
-                            }
-                            Err(e) => {
-                                log::debug!("Could not convert initial constraint: {}", e);
-                            }
+            let mut added = 0u32;
+            for item in constraints.iter() {
+                match claripy_to_rustbv(py, &item, ctx_ref) {
+                    Ok(bv) => {
+                        if bv.width() == 1 {
+                            sym_ctx.assume_true(&bv);
+                        } else {
+                            let zero = RustBV::concrete(0, bv.width());
+                            let neq = bv.ne(&zero, ctx_ref);
+                            sym_ctx.assume_true(&neq);
                         }
+                        added += 1;
                     }
-                    log::debug!("Added {} initial constraints to state {}", added, state_id);
-                    return Ok(state.satisfiable());
+                    Err(e) => {
+                        log::debug!("Could not convert initial constraint: {}", e);
+                    }
                 }
             }
+            log::debug!("Added {} initial constraints to state {}", added, state_id);
+            return Ok(state.satisfiable());
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
@@ -2385,34 +2397,27 @@ impl RustExplorationManager {
         state_id: u64,
     ) -> PyResult<Vec<PyObject>> {
         let claripy = py.import("claripy")?;
-        for stash in self.stashes.values() {
-            for state in stash.iter() {
-                if state.state_id() == state_id {
-                    let solver_ref = state.solver();
-                    let ctx = solver_ref.borrow();
-                    let assumed = ctx.get_assumed_constraints();
-                    let mut results = Vec::new();
-                    for (bv, is_true) in &assumed {
-                        // Export the raw RustBV as claripy AST.
-                        // For false-assumed constraints, negate: cond == 0.
-                        match rustbv_to_claripy(py, bv, claripy.as_any()) {
-                            Ok(ast) => {
-                                if *is_true {
-                                    results.push(ast);
-                                } else {
-                                    // Negate: wrap as `Not(cond)` via claripy
-                                    match claripy.call_method1("Not", (ast,)) {
-                                        Ok(negated) => results.push(negated.unbind()),
-                                        Err(_) => {} // skip if negation fails
-                                    }
-                                }
+        if let Some(state) = self.find_state(state_id) {
+            let solver_ref = state.solver();
+            let ctx = solver_ref.borrow();
+            let assumed = ctx.get_assumed_constraints();
+            let mut results = Vec::new();
+            for (bv, is_true) in &assumed {
+                match rustbv_to_claripy(py, bv, claripy.as_any()) {
+                    Ok(ast) => {
+                        if *is_true {
+                            results.push(ast);
+                        } else {
+                            match claripy.call_method1("Not", (ast,)) {
+                                Ok(negated) => results.push(negated.unbind()),
+                                Err(_) => {}
                             }
-                            Err(_) => {}
                         }
                     }
-                    return Ok(results);
+                    Err(_) => {}
                 }
             }
+            return Ok(results);
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
@@ -2423,14 +2428,10 @@ impl RustExplorationManager {
     /// allowing Python to evaluate/solve against any state — not just the
     /// pending callback state.  This is used by RustStateProxy.
     pub fn fork_state_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
-        for stash in self.stashes.values() {
-            for state in stash.iter() {
-                if state.state_id() == state_id {
-                    let solver_ref = state.solver();
-                    let forked_ctx = solver_ref.borrow().fork();
-                    return Ok(RustSolverContext::from_sym_context(forked_ctx));
-                }
-            }
+        if let Some(state) = self.find_state(state_id) {
+            let solver_ref = state.solver();
+            let forked_ctx = solver_ref.borrow().fork();
+            return Ok(RustSolverContext::from_sym_context(forked_ctx));
         }
         Err(PyValueError::new_err(format!(
             "fork_state_solver: state {} not found",
@@ -2558,6 +2559,10 @@ impl RustExplorationManager {
         if filter_fn.is_none() {
             if let Some(mut from) = self.stashes.remove(from_stash) {
                 let count = from.len();
+                // Update index for all moved states
+                for state in from.iter() {
+                    self.state_index.insert(state.state_id(), to_stash.to_string());
+                }
                 let to = self.stashes.entry(to_stash.to_string()).or_insert_with(VecDeque::new);
                 to.append(&mut from);
                 self.stashes.insert(from_stash.to_string(), VecDeque::new());
@@ -2590,6 +2595,7 @@ impl RustExplorationManager {
 
         // Add to destination stash if found
         if let Some(state) = found_state {
+            self.index_state(state_id, to_stash);
             let to = self.stashes.entry(to_stash.to_string()).or_insert_with(VecDeque::new);
             to.push_back(state);
             Ok(true)
@@ -2601,6 +2607,9 @@ impl RustExplorationManager {
     /// P8 fix: Clear all states from a stash.
     pub fn clear_stash(&mut self, stash: &str) {
         if let Some(s) = self.stashes.get_mut(stash) {
+            for state in s.iter() {
+                self.state_index.remove(&state.state_id());
+            }
             s.clear();
         }
     }
@@ -2736,13 +2745,8 @@ impl RustExplorationManager {
     /// This searches all stashes for the state with the given ID and returns
     /// a complete snapshot that can be used to reconstruct an angr SimState.
     pub fn export_state(&self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        // Search all stashes for the state
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    return Ok(state.export_full());
-                }
-            }
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.export_full());
         }
 
         // Also check pending callback state
@@ -2773,25 +2777,18 @@ impl RustExplorationManager {
     /// This allows Python to get concrete values for symbolic inputs
     /// that were found during exploration.
     pub fn eval_in_state(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
-        // Search for the state
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    // Try to load and evaluate from memory
-                    match state.memory_load(addr, size) {
-                        Ok(bv) => {
-                            // Try to evaluate to concrete value
-                            if let Some(val) = state.eval(&bv) {
-                                let bytes: Vec<u8> = (0..size as usize)
-                                    .map(|i| (val >> (i * 8)) as u8)
-                                    .collect();
-                                return Ok(Some(bytes));
-                            }
-                            return Ok(None);
-                        }
-                        Err(_) => return Ok(None),
+        if let Some(state) = self.find_state(state_id) {
+            match state.memory_load(addr, size) {
+                Ok(bv) => {
+                    if let Some(val) = state.eval(&bv) {
+                        let bytes: Vec<u8> = (0..size as usize)
+                            .map(|i| (val >> (i * 8)) as u8)
+                            .collect();
+                        return Ok(Some(bytes));
                     }
+                    return Ok(None);
                 }
+                Err(_) => return Ok(None),
             }
         }
 
@@ -2800,50 +2797,37 @@ impl RustExplorationManager {
 
     /// Debug: Get symbolic object info for a state.
     pub fn state_symbolic_info(&self, state_id: u64, addr: u64) -> PyResult<String> {
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    let mem = state.memory();
-                    let total = mem.symbolic_object_count();
-                    let has_at_addr = mem.get_symbolic_object(addr).map(|bv| bv.width());
-                    // Check if page is mapped and has symbolic markers
-                    let page_num = addr >> 12;
-                    let offset = (addr & 0xFFF) as u16;
-                    let page_info = if let Some(page) = mem.pages().get(&page_num) {
-                        format!("page=mapped sym_at_offset={}", page.is_symbolic(offset))
-                    } else {
-                        "page=unmapped".to_string()
-                    };
-                    return Ok(format!(
-                        "total_sym_objs={} at_0x{:x}={:?} {}",
-                        total, addr, has_at_addr, page_info
-                    ));
-                }
-            }
+        if let Some(state) = self.find_state(state_id) {
+            let mem = state.memory();
+            let total = mem.symbolic_object_count();
+            let has_at_addr = mem.get_symbolic_object(addr).map(|bv| bv.width());
+            let page_num = addr >> 12;
+            let offset = (addr & 0xFFF) as u16;
+            let page_info = if let Some(page) = mem.pages().get(&page_num) {
+                format!("page=mapped sym_at_offset={}", page.is_symbolic(offset))
+            } else {
+                "page=unmapped".to_string()
+            };
+            return Ok(format!(
+                "total_sym_objs={} at_0x{:x}={:?} {}",
+                total, addr, has_at_addr, page_info
+            ));
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
     /// Check if constraints are satisfiable for a state.
     pub fn state_satisfiable(&self, state_id: u64) -> PyResult<bool> {
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    return Ok(state.satisfiable());
-                }
-            }
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.satisfiable());
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
     /// Get a register value from a state.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    return Ok(state.get_register(name).and_then(|bv| bv.as_u128()));
-                }
-            }
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.get_register(name).and_then(|bv| bv.as_u128()));
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
@@ -2851,44 +2835,35 @@ impl RustExplorationManager {
     /// Get multiple register values from a state in one FFI call.
     /// Returns a list of Option<u128> in the same order as the input names.
     pub fn get_state_registers_batch(&self, state_id: u64, names: Vec<String>) -> PyResult<Vec<Option<u128>>> {
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    let results: Vec<Option<u128>> = names.iter()
-                        .map(|name| state.get_register(name).and_then(|bv| bv.as_u128()))
-                        .collect();
-                    return Ok(results);
-                }
-            }
+        if let Some(state) = self.find_state(state_id) {
+            let results: Vec<Option<u128>> = names.iter()
+                .map(|name| state.get_register(name).and_then(|bv| bv.as_u128()))
+                .collect();
+            return Ok(results);
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
     /// Get memory from a state.
     pub fn get_state_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    match state.memory_load(addr, size) {
-                        Ok(bv) => {
-                            if let Some(val) = bv.as_u128() {
-                                let bytes: Vec<u8> = (0..size as usize)
-                                    .map(|i| (val >> (i * 8)) as u8)
-                                    .collect();
-                                return Ok(Some(bytes));
-                            }
-                            // Try to evaluate symbolic value
-                            if let Some(val) = state.eval(&bv) {
-                                let bytes: Vec<u8> = (0..size as usize)
-                                    .map(|i| (val >> (i * 8)) as u8)
-                                    .collect();
-                                return Ok(Some(bytes));
-                            }
-                            return Ok(None);
-                        }
-                        Err(_) => return Ok(None),
+        if let Some(state) = self.find_state(state_id) {
+            match state.memory_load(addr, size) {
+                Ok(bv) => {
+                    if let Some(val) = bv.as_u128() {
+                        let bytes: Vec<u8> = (0..size as usize)
+                            .map(|i| (val >> (i * 8)) as u8)
+                            .collect();
+                        return Ok(Some(bytes));
                     }
+                    if let Some(val) = state.eval(&bv) {
+                        let bytes: Vec<u8> = (0..size as usize)
+                            .map(|i| (val >> (i * 8)) as u8)
+                            .collect();
+                        return Ok(Some(bytes));
+                    }
+                    return Ok(None);
                 }
+                Err(_) => return Ok(None),
             }
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
@@ -2898,12 +2873,8 @@ impl RustExplorationManager {
     ///
     /// Returns the accumulated output from native puts/printf calls.
     pub fn get_state_stdout(&self, state_id: u64) -> PyResult<Vec<u8>> {
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    return Ok(state.stdout_buffer().to_vec());
-                }
-            }
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.stdout_buffer().to_vec());
         }
         // Also check pending callback state
         if let Some(ref cb) = self.pending_callback {
@@ -2916,6 +2887,87 @@ impl RustExplorationManager {
 }
 
 impl RustExplorationManager {
+    /// Track a state in the state_index.
+    #[inline]
+    fn index_state(&mut self, state_id: u64, stash: &str) {
+        self.state_index.insert(state_id, stash.to_string());
+    }
+
+    /// Remove a state from the state_index.
+    #[inline]
+    fn unindex_state(&mut self, state_id: u64) {
+        self.state_index.remove(&state_id);
+    }
+
+    /// Rebuild the state_index from scratch by scanning all stashes.
+    /// Called after run() to ensure index is up to date for Python API calls.
+    fn rebuild_state_index(&mut self) {
+        self.state_index.clear();
+        for (stash_name, stash) in &self.stashes {
+            for state in stash {
+                self.state_index.insert(state.state_id(), stash_name.clone());
+            }
+        }
+    }
+
+    /// Find an immutable reference to a state by ID using the index.
+    /// Falls back to linear scan if the index is stale.
+    fn find_state(&self, state_id: u64) -> Option<&RustSimState> {
+        // Fast path: use index to find the right stash
+        if let Some(stash_name) = self.state_index.get(&state_id) {
+            if let Some(stash) = self.stashes.get(stash_name) {
+                for state in stash {
+                    if state.state_id() == state_id {
+                        return Some(state);
+                    }
+                }
+            }
+        }
+        // Slow fallback: linear scan all stashes (index may be stale)
+        for stash in self.stashes.values() {
+            for state in stash {
+                if state.state_id() == state_id {
+                    return Some(state);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find a mutable reference to a state by ID using the index.
+    /// Falls back to linear scan if the index is stale.
+    fn find_state_mut(&mut self, state_id: u64) -> Option<&mut RustSimState> {
+        // Try index first, then fallback to linear scan.
+        // We need to determine the stash name first, then do mutable borrow.
+        let stash_name = if let Some(name) = self.state_index.get(&state_id) {
+            Some(name.clone())
+        } else {
+            // Linear scan to find which stash contains this state
+            let mut found_name = None;
+            for (name, stash) in &self.stashes {
+                for state in stash {
+                    if state.state_id() == state_id {
+                        found_name = Some(name.clone());
+                        break;
+                    }
+                }
+                if found_name.is_some() { break; }
+            }
+            found_name
+        };
+
+        if let Some(name) = stash_name {
+            if let Some(stash) = self.stashes.get_mut(&name) {
+                for state in stash.iter_mut() {
+                    if state.state_id() == state_id {
+                        return Some(state);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Compute a hash for a state's register tuple for uniqueness checking.
     ///
     /// For each register in uniqueness_registers, gets the concrete value
