@@ -3137,14 +3137,21 @@ class RustExplorationManager(RustStateExportMixin):
         if all_symbolic_addrs:
             mem_changes = [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
 
-        # Extract any new constraints added during callback
-        # When orig_state is a snapshot, rely on orig_constraint_count fast path
-        new_constraints = self._extract_new_constraints(
-            succ_state if is_snapshot else orig_state, succ_state,
-            orig_constraints=orig_constraints,
-            orig_constraint_count=orig_constraint_count)
-        if new_constraints:
-            l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
+        # Extract any new constraints added during callback.
+        # Skip when using shared solver — constraints go directly to the pending
+        # state's solver, so syncing them again would double-add.
+        rust_ctx = getattr(succ_state.scratch, 'rust_solver_ctx', None)
+        using_shared_solver = rust_ctx is not None and hasattr(rust_ctx, 'is_shared') and rust_ctx.is_shared()
+        if using_shared_solver:
+            new_constraints = []
+        else:
+            # When orig_state is a snapshot, rely on orig_constraint_count fast path
+            new_constraints = self._extract_new_constraints(
+                succ_state if is_snapshot else orig_state, succ_state,
+                orig_constraints=orig_constraints,
+                orig_constraint_count=orig_constraint_count)
+            if new_constraints:
+                l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
 
         # For zero-length hooks, tell Rust to skip the hook on next step
         if skip_hook_addr is not None:
@@ -3894,12 +3901,16 @@ class RustExplorationManager(RustStateExportMixin):
             except Exception as e:
                 l.debug(f"Bundle API failed, falling back to individual calls: {e}")
                 self._last_bundle_registers = None  # Clear on fallback
-                # Fallback to individual calls
+                # Fallback to individual calls — try shared (borrow) first, fork as last resort
                 try:
-                    forked_solver = self._rust_mgr.fork_pending_solver()
-                    state.scratch.rust_solver_ctx = forked_solver
-                except Exception as e2:
-                    l.warning(f"Could not fork solver context: {e2}")
+                    shared_solver = self._rust_mgr.borrow_pending_solver()
+                    state.scratch.rust_solver_ctx = shared_solver
+                except Exception:
+                    try:
+                        forked_solver = self._rust_mgr.fork_pending_solver()
+                        state.scratch.rust_solver_ctx = forked_solver
+                    except Exception as e2:
+                        l.warning(f"Could not fork solver context: {e2}")
                 self._sync_registers_from_rust_pending(state)
 
             # Install memory proxy: wrap state.memory.load to check Rust

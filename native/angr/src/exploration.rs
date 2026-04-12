@@ -2201,10 +2201,12 @@ impl RustExplorationManager {
     /// - "jumpkind": string
     /// - "constraint_count": u64
     /// - "stdout": bytes (accumulated stdout buffer)
+    #[pyo3(signature = (register_names, shared_solver=true))]
     pub fn export_callback_bundle<'py>(
         &self,
         py: Python<'py>,
         register_names: Vec<String>,
+        shared_solver: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let pending = self.pending_callback.as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
@@ -2230,13 +2232,20 @@ impl RustExplorationManager {
         }
         dict.set_item("registers", reg_dict)?;
 
-        // Fork solver context
+        // Solver context: shared (O(1) Rc clone) or forked (~3ms Z3 clone)
         let solver_ref = pending.state.solver();
-        let forked_ctx = solver_ref.borrow().fork();
-        let rust_ctx = RustSolverContext::from_sym_context(forked_ctx);
-        let constraint_count = rust_ctx.num_constraints();
-        dict.set_item("solver", Py::new(py, rust_ctx)?)?;
-        dict.set_item("constraint_count", constraint_count)?;
+        if shared_solver {
+            let rust_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+            let constraint_count = rust_ctx.num_constraints();
+            dict.set_item("solver", Py::new(py, rust_ctx)?)?;
+            dict.set_item("constraint_count", constraint_count)?;
+        } else {
+            let forked_ctx = solver_ref.borrow().fork();
+            let rust_ctx = RustSolverContext::from_sym_context(forked_ctx);
+            let constraint_count = rust_ctx.num_constraints();
+            dict.set_item("solver", Py::new(py, rust_ctx)?)?;
+            dict.set_item("constraint_count", constraint_count)?;
+        }
 
         // History
         dict.set_item("history", pending.state.history().to_vec())?;
@@ -2258,6 +2267,24 @@ impl RustExplorationManager {
             let forked_ctx = solver_ref.borrow().fork();
             // Create a new RustSolverContext wrapping the forked SymContext
             Ok(RustSolverContext::from_sym_context(forked_ctx))
+        } else {
+            Err(PyRuntimeError::new_err("no pending callback state"))
+        }
+    }
+
+    /// Borrow the pending state's solver context without forking.
+    ///
+    /// Returns a RustSolverContext that shares the same Z3 solver as the
+    /// pending state via Rc reference counting. This is O(1) instead of
+    /// the ~3ms Z3 solver clone in fork_pending_solver().
+    ///
+    /// Constraints added through this solver go directly to the pending state,
+    /// so post-callback constraint sync via add_constraints_to_pending() should
+    /// be skipped to avoid double-adding.
+    pub fn borrow_pending_solver(&self) -> PyResult<RustSolverContext> {
+        if let Some(ref pending) = self.pending_callback {
+            let solver_rc = pending.state.solver().clone();
+            Ok(RustSolverContext::from_shared_sym_context(solver_rc))
         } else {
             Err(PyRuntimeError::new_err("no pending callback state"))
         }
