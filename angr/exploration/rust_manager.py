@@ -114,7 +114,10 @@ class RustExplorationManager(RustStateExportMixin):
             'callback_fetch_page_total_ns': 0,
             'callback_lift_block_count': 0,
             'callback_lift_block_total_ns': 0,
+            'callback_simprocedure_state_copy_ns': 0,
         }
+        # Per-procedure timing: {name: {'count': int, 'execute_ns': int}}
+        self._procedure_times: Dict[str, Dict[str, int]] = {}
 
         # High-level instrumentation counters for optimization tracking
         self._stats_callback_count = 0       # total Python callbacks invoked
@@ -253,7 +256,12 @@ class RustExplorationManager(RustStateExportMixin):
         lines.append(f"  Total time: {s['callback_simprocedure_total_ns']/1e6:.1f}ms")
         lines.append(f"  State create: {s['callback_simprocedure_state_create_ns']/1e6:.1f}ms")
         lines.append(f"  Execute: {s['callback_simprocedure_execute_ns']/1e6:.1f}ms")
+        lines.append(f"  State copy: {s['callback_simprocedure_state_copy_ns']/1e6:.1f}ms")
         lines.append(f"  Sync back: {s['callback_simprocedure_sync_back_ns']/1e6:.1f}ms")
+        if self._procedure_times:
+            lines.append(f"  Per-procedure breakdown:")
+            for pname, pt in sorted(self._procedure_times.items(), key=lambda x: -x[1]['execute_ns']):
+                lines.append(f"    {pname}: {pt['count']}x {pt['execute_ns']/1e6:.1f}ms")
         lines.append(f"Memory load callbacks: {s['callback_memory_load_count']}")
         lines.append(f"  Total time: {s['callback_memory_load_total_ns']/1e6:.1f}ms")
         if s['callback_memory_load_count'] > 0:
@@ -2694,6 +2702,22 @@ class RustExplorationManager(RustStateExportMixin):
             self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
 
+        # Fast path for NO_RET termination procedures (exit, abort, etc.)
+        # Skip expensive state creation — just tell Rust to deadend the state
+        no_ret_names = {'exit', '_exit', 'abort', '__stack_chk_fail'}
+        proc_no_ret = getattr(proc, 'NO_RET', False)
+        if proc_no_ret and name in no_ret_names:
+            l.debug(f"Fast path: no-return procedure {name} at 0x{addr:x} — deadending")
+            self._rust_mgr.resume_after_simprocedure(0, None, None)
+            self._current_callback_state_id = None
+            _proc_name = name or proc.__class__.__name__
+            if _proc_name not in self._procedure_times:
+                self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
+            self._procedure_times[_proc_name]['count'] += 1
+            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+            return
+
         # Get hook length - this determines if the hook replaces code
         hook_length = getattr(proc, 'kwargs', {}).get('length', 0)
         if hook_length == 0:
@@ -2725,7 +2749,9 @@ class RustExplorationManager(RustStateExportMixin):
             'fread', 'gets', 'getchar', 'fgetc', 'getc',
             'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
             'strcat', 'strncat', 'sprintf', 'snprintf')
+        _sp_copy_start = time.perf_counter_ns()
         orig_state = state.copy() if writes_memory else state
+        self._perf_stats['callback_simprocedure_state_copy_ns'] += time.perf_counter_ns() - _sp_copy_start
 
         # GAP 2 fix: Save original constraint COUNT before hook execution.
         # Building set(constraints) is expensive (~6ms per call with many constraints).
@@ -2753,7 +2779,14 @@ class RustExplorationManager(RustStateExportMixin):
                     # It's a class, instantiate it
                     proc_instance = proc()
                     proc_instance.execute(state, successors)
-            self._perf_stats['callback_simprocedure_execute_ns'] += time.perf_counter_ns() - _sp_execute_start
+            _sp_exec_elapsed = time.perf_counter_ns() - _sp_execute_start
+            self._perf_stats['callback_simprocedure_execute_ns'] += _sp_exec_elapsed
+            # Per-procedure timing
+            _proc_name = name or proc.__class__.__name__
+            if _proc_name not in self._procedure_times:
+                self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
+            self._procedure_times[_proc_name]['count'] += 1
+            self._procedure_times[_proc_name]['execute_ns'] += _sp_exec_elapsed
 
             # Get tracked memory writes from callback execution
             tracked_writes = memory_tracker.get_writes()
