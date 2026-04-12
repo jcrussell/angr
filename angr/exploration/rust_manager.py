@@ -9,7 +9,10 @@ to the Rust exploration loop that achieves ~3x speedup by:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import pickle
 import time
 import weakref
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
@@ -1026,6 +1029,111 @@ class RustExplorationManager(RustStateExportMixin):
             self._rust_mgr.register_simprocedures(procs)
             l.debug(f"Synced {len(procs)} dynamically created hooks")
 
+    # =========================================================================
+    # Persistent disk cache for Python init results
+    # =========================================================================
+
+    @staticmethod
+    def _disk_cache_dir() -> str:
+        """Return the disk cache directory for init state data."""
+        return os.path.join(os.path.expanduser("~"), ".cache", "angr_rust_init")
+
+    @staticmethod
+    def _disk_cache_key(binary_path: str) -> str:
+        """Compute a cache key from binary file content hash."""
+        try:
+            h = hashlib.md5()
+            with open(binary_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(65536), b''):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return ""
+
+    def _save_init_to_disk_cache(self, cache_key: str, state: "angr.SimState"):
+        """Save essential post-init state data to disk cache."""
+        try:
+            cache_dir = self._disk_cache_dir()
+            os.makedirs(cache_dir, exist_ok=True)
+
+            arch = self._project.arch
+            data = {'addr': state.addr, 'registers': {}, 'stack_page': None,
+                    'continuation_addrs': []}
+
+            # Extract concrete register values
+            for reg_name in arch.register_names.values():
+                try:
+                    val = getattr(state.regs, reg_name)
+                    if not val.symbolic:
+                        data['registers'][reg_name] = state.solver.eval(val)
+                except Exception:
+                    pass
+
+            # Extract stack page at SP
+            try:
+                sp = state.solver.eval(state.regs.sp)
+                sp_page = sp & ~0xfff
+                page_val = state.memory.load(
+                    sp_page, 0x1000, endness='Iend_BE',
+                    inspect=False, disable_actions=True)
+                if not page_val.symbolic:
+                    concrete = state.solver.eval(page_val).to_bytes(0x1000, 'big')
+                    data['stack_page'] = (sp_page, concrete)
+            except Exception:
+                pass
+
+            # Extract continuation addresses from callstack
+            frame = state.callstack.top if hasattr(state, 'callstack') else None
+            while frame is not None:
+                pdata = getattr(frame, 'procedure_data', None)
+                if pdata is not None and len(pdata) >= 5:
+                    try:
+                        data['continuation_addrs'].append(int(pdata[4]))
+                    except (TypeError, ValueError):
+                        pass
+                frame = getattr(frame, 'next', None)
+
+            cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
+            with open(cache_path, 'wb') as f:
+                pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            l.debug(f"Saved init cache to {cache_path} ({os.path.getsize(cache_path)} bytes)")
+        except Exception as e:
+            l.debug(f"Failed to save disk cache: {e}")
+
+    def _load_init_from_disk_cache(self, cache_key: str) -> "Optional[angr.SimState]":
+        """Load post-init state from disk cache, return None on miss."""
+        try:
+            cache_path = os.path.join(self._disk_cache_dir(), f"{cache_key}.pkl")
+            if not os.path.exists(cache_path):
+                return None
+
+            with open(cache_path, 'rb') as f:
+                data = pickle.load(f)
+
+            # Restore to a blank state
+            state = self._project.factory.blank_state(addr=data['addr'])
+            for reg_name, val in data['registers'].items():
+                try:
+                    setattr(state.regs, reg_name, val)
+                except Exception:
+                    pass
+            if data.get('stack_page'):
+                sp_page, page_bytes = data['stack_page']
+                state.memory.store(
+                    sp_page, claripy.BVV(page_bytes), endness='Iend_BE',
+                    inspect=False, disable_actions=True)
+
+            # Restore continuation data
+            for cont_addr in data.get('continuation_addrs', []):
+                if cont_addr > 0:
+                    self._pending_procedure_data.setdefault(cont_addr, None)
+
+            l.info(f"Disk cache hit: restored state at 0x{data['addr']:x}")
+            return state
+        except Exception as e:
+            l.debug(f"Disk cache load failed: {e}")
+            return None
+
     def _extract_continuation_data(self, state: "angr.SimState"):
         """Extract SimProcedure continuation data from a state's callstack.
 
@@ -1063,16 +1171,24 @@ class RustExplorationManager(RustStateExportMixin):
 
         # If state is at the entry point, run init to reach main.
         if addr == self._project.entry:
-            # Check init cache first — avoids ~180ms of Python simulation
+            # Check in-process cache first — avoids ~180ms of Python simulation
             cache_key = getattr(main_obj, 'binary', None) or ''
             if cache_key and cache_key in RustExplorationManager._init_cache:
                 cached = RustExplorationManager._init_cache[cache_key]
                 l.info(f"Init cache hit for {cache_key}, copying state at 0x{cached.addr:x}")
                 new_state = cached.copy()
-                # Transfer solver constraints from original state
                 for c in state.solver.constraints:
                     new_state.solver.add(c)
                 return new_state
+            # Check persistent disk cache (survives across processes)
+            disk_key = self._disk_cache_key(cache_key) if cache_key else ''
+            if disk_key:
+                disk_state = self._load_init_from_disk_cache(disk_key)
+                if disk_state is not None:
+                    for c in state.solver.constraints:
+                        disk_state.solver.add(c)
+                    self._extract_continuation_data(disk_state)
+                    return disk_state
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
             # Only trigger for states outside ALL loaded binary objects
@@ -1087,6 +1203,14 @@ class RustExplorationManager(RustStateExportMixin):
 
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
             cache_key = getattr(main_obj, 'binary', None) or ''
+            disk_key = self._disk_cache_key(cache_key) if cache_key else ''
+            if disk_key:
+                disk_state = self._load_init_from_disk_cache(disk_key)
+                if disk_state is not None:
+                    for c in state.solver.constraints:
+                        disk_state.solver.add(c)
+                    self._extract_continuation_data(disk_state)
+                    return disk_state
 
         try:
             # Find main function address for target
@@ -1148,9 +1272,11 @@ class RustExplorationManager(RustStateExportMixin):
                                f"after {step} steps")
                         result = at_main[0]
                         self._extract_continuation_data(result)
-                        # Cache for future use
+                        # Cache for future use (in-process + disk)
                         if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
                             RustExplorationManager._init_cache[cache_key] = result.copy()
+                        if disk_key:
+                            self._save_init_to_disk_cache(disk_key, result)
                         return result
 
                 # If no main symbol, look for states that are:
@@ -1170,6 +1296,8 @@ class RustExplorationManager(RustStateExportMixin):
                         self._extract_continuation_data(result)
                         if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
                             RustExplorationManager._init_cache[cache_key] = result.copy()
+                        if disk_key:
+                            self._save_init_to_disk_cache(disk_key, result)
                         return result
 
                 sm.step()
