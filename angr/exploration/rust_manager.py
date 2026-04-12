@@ -1369,23 +1369,35 @@ class RustExplorationManager(RustStateExportMixin):
         if symbolic_pages:
             l.debug(f"Skipping {len(symbolic_pages)} pages with symbolic data during memory sync")
 
-        # Map pages for each loaded object's segments (batch for fewer FFI calls)
+        # Map pages for each loaded object's segments (batch for fewer FFI calls).
+        # Use segment ranges for ELF objects to avoid iterating empty gaps
+        # (e.g., ais3 has 553 pages in full range but only 12 in segments).
         batch_pages = []
+        mapped_page_addrs = set()
         for obj in self._project.loader.all_objects:
             try:
-                start_page = obj.min_addr & ~(page_size - 1)
-                end_page = (obj.max_addr + page_size) & ~(page_size - 1)
-                for page_addr in range(start_page, end_page, page_size):
-                    if page_addr in symbolic_pages:
-                        continue  # Don't overwrite symbolic data with concrete
-                    try:
-                        # Use loader memory directly (fast, no Z3 eval)
-                        data = self._project.loader.memory.load(page_addr, page_size)
-                        if data and len(data) == page_size:
-                            batch_pages.append((page_addr, bytes(data), 7))
-                            pages_mapped += 1
-                    except Exception:
-                        pass
+                # Prefer segments for ELF objects (avoids iterating gaps)
+                if hasattr(obj, 'segments') and obj.segments:
+                    ranges = []
+                    for seg in obj.segments:
+                        if seg.memsize > 0:
+                            ranges.append((seg.min_addr & ~(page_size - 1),
+                                          (seg.max_addr + page_size) & ~(page_size - 1)))
+                else:
+                    ranges = [(obj.min_addr & ~(page_size - 1),
+                              (obj.max_addr + page_size) & ~(page_size - 1))]
+                for start_page, end_page in ranges:
+                    for page_addr in range(start_page, end_page, page_size):
+                        if page_addr in symbolic_pages or page_addr in mapped_page_addrs:
+                            continue
+                        try:
+                            data = self._project.loader.memory.load(page_addr, page_size)
+                            if data and len(data) == page_size:
+                                batch_pages.append((page_addr, bytes(data), 7))
+                                mapped_page_addrs.add(page_addr)
+                                pages_mapped += 1
+                        except Exception:
+                            pass
             except Exception:
                 pass
         # Single FFI call for all pages
