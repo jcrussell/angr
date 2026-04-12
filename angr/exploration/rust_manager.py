@@ -4161,7 +4161,9 @@ class RustExplorationManager(RustStateExportMixin):
                 if val.symbolic:
                     snapshot[reg_name] = (True, None, offset, size)
                 else:
-                    snapshot[reg_name] = (False, state.solver.eval(val), offset, size)
+                    # Fast path: BVV values have concrete int in args[0]
+                    concrete = val.args[0] if val.op == 'BVV' else state.solver.eval(val)
+                    snapshot[reg_name] = (False, concrete, offset, size)
             except Exception:
                 pass
         return snapshot
@@ -4207,7 +4209,7 @@ class RustExplorationManager(RustStateExportMixin):
                 else:
                     old_val = getattr(old_state.regs, reg_name)
                     old_is_symbolic = old_val.symbolic
-                    old_concrete = None if old_is_symbolic else old_state.solver.eval(old_val)
+                    old_concrete = None if old_is_symbolic else (old_val.args[0] if old_val.op == 'BVV' else old_state.solver.eval(old_val))
 
                 if new_val.symbolic:
                     # Symbolic register value - sync to Rust
@@ -4224,7 +4226,9 @@ class RustExplorationManager(RustStateExportMixin):
                             except Exception:
                                 pass
                 else:
-                    new_concrete = new_state.solver.eval(new_val)
+                    # Fast path: extract concrete value without solver.eval()
+                    # BVV values have the concrete int in args[0]
+                    new_concrete = new_val.args[0] if new_val.op == 'BVV' else new_state.solver.eval(new_val)
                     if old_is_symbolic or old_concrete != new_concrete:
                         data = new_concrete.to_bytes(size, 'little')
                         changes.append((offset, size, bytes(data)))
