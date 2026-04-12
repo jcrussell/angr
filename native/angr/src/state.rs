@@ -12,6 +12,7 @@ use std::cell::RefCell;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::types::PyDict;
 
 use crate::arch::{arch_from_name, arch_from_vex, Arch, RegisterFile};
 use crate::memory::{MemoryError, Permission, SymbolicMemory, PAGE_SIZE};
@@ -453,6 +454,7 @@ impl RustSimState {
     pub fn memory_store_symbolic(&mut self, addr: RustBV, value: RustBV) -> Result<(), MemoryError> {
         let ctx = self.solver.borrow();
         self.memory.store_symbolic_unified(addr, value, &ctx, &self.concretizer)
+            .map(|_| ())
     }
 
     /// Add a lazy region for on-demand page fetching.
@@ -829,6 +831,20 @@ impl PyRustSimState {
         } else {
             Err(PyValueError::new_err(format!("failed to set register: {}", name)))
         }
+    }
+
+    /// Set multiple registers in a single FFI call.
+    /// Takes a dict of {name: value} pairs.
+    pub fn set_registers_bulk(&mut self, registers: &Bound<'_, PyDict>) -> PyResult<()> {
+        for (key, val) in registers.iter() {
+            let name: String = key.extract()?;
+            let value: u128 = val.extract()?;
+            let size = self.inner.arch().register_size(&name)
+                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+            let bv = RustBV::concrete(value, size * 8);
+            self.inner.set_register(&name, bv);
+        }
+        Ok(())
     }
 
     /// Get all register bytes.

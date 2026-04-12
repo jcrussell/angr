@@ -1229,39 +1229,71 @@ impl SymbolicMemory {
         value: RustBV,
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
-    ) -> Result<(), MemoryError> {
+    ) -> Result<Option<ConcretizationResult>, MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.store_concrete_automap(concrete_addr, value);
+            self.store_concrete_automap(concrete_addr, value)?;
+            return Ok(Some(ConcretizationResult::Single(concrete_addr)));
         }
 
         // Try to concretize the address
-        match concretizer.concretize(&addr, ctx) {
+        let result = concretizer.concretize(&addr, ctx);
+        match &result {
             ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete_automap(concrete_addr, value)
+                self.store_concrete_automap(*concrete_addr, value)?;
+                Ok(Some(result))
             }
             ConcretizationResult::Multiple(addrs) => {
                 // Prepare addresses by auto-mapping
-                let ready_addrs = self.prepare_addresses_for_ite(&addrs, value.width() / 8);
+                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
 
                 // Perform conditional stores for each ready address
-                self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)
+                self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)?;
+                Ok(Some(result))
             }
             ConcretizationResult::Strided { base, stride, count } => {
+                let (base, stride, count) = (*base, *stride, *count);
                 // Prepare strided region
                 self.prepare_strided_region(base, stride, count, value.width() / 8);
                 // Use existing strided store
-                self.store_strided(&addr, &value, base, stride, count, ctx)
+                self.store_strided(&addr, &value, base, stride, count, ctx)?;
+                Ok(Some(result))
             }
             ConcretizationResult::TooLarge { .. } => {
-                // For truly unbounded addresses, we can't do much.
-                // Log a warning and treat as a no-op to avoid unsoundness.
-                // This is better than crashing or corrupting state.
-                // A more sophisticated approach would track symbolic writes.
+                Ok(Some(result))
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress { description: reason.clone() })
+            }
+        }
+    }
+
+    /// Store using a pre-computed concretization result.
+    /// Avoids redundant Z3 calls when the caller has already concretized the address.
+    pub fn store_with_concretization(
+        &mut self,
+        addr: &RustBV,
+        value: RustBV,
+        conc_result: &ConcretizationResult,
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        match conc_result {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete_automap(*concrete_addr, value)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
+                self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
+                self.store_strided(addr, &value, *base, *stride, *count, ctx)
+            }
+            ConcretizationResult::TooLarge { .. } => {
                 Ok(())
             }
             ConcretizationResult::Failed(reason) => {
-                Err(MemoryError::SymbolicAddress { description: reason })
+                Err(MemoryError::SymbolicAddress { description: reason.clone() })
             }
         }
     }

@@ -1313,6 +1313,8 @@ class RustExplorationManager(RustStateExportMixin):
         else:
             reg_names = []
 
+        # Build dict of all register values, then send in single FFI call
+        bulk_regs = {}
         for reg_name in reg_names:
             try:
                 reg_val = getattr(regs, reg_name)
@@ -1321,10 +1323,11 @@ class RustExplorationManager(RustStateExportMixin):
                     concrete_val = reg_val.args[0] if reg_val.op == 'BVV' else angr_state.solver.eval(reg_val)
                 else:
                     concrete_val = angr_state.solver.eval(reg_val)
-                rust_state.set_register(reg_name, concrete_val)
+                bulk_regs[reg_name] = concrete_val
             except (AttributeError, KeyError, Exception):
-                # Skip if register doesn't exist or can't be evaluated
                 pass
+        if bulk_regs:
+            rust_state.set_registers_bulk(bulk_regs)
 
     def _sync_memory_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
         """Sync memory from angr state to Rust state.
