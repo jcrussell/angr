@@ -4377,8 +4377,9 @@ class RustExplorationManager(RustStateExportMixin):
                             int_val = int.from_bytes(chunk, 'little')
                             if int_val != 0:
                                 addr = sp_page + off
-                                val = claripy.BVV(int_val, ptr_size * 8)
-                                state.memory.store(addr, val, endness='Iend_LE',
+                                # Pass int directly — UltraPage fast path avoids claripy BVV
+                                state.memory.store(addr, int_val, size=ptr_size,
+                                                   endness='Iend_LE',
                                                    inspect=False, disable_actions=True)
                     return
             except Exception:
