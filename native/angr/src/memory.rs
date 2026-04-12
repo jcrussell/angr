@@ -144,9 +144,10 @@ pub struct MemoryPage {
     permissions: Permission,
     /// Base address of the page.
     base_addr: u64,
-    /// Symbolic bytes (offset -> marker).
-    /// We store these separately from the concrete data.
-    symbolic: Arc<HashMap<u16, u8>>,
+    /// Bitmap tracking symbolic bytes: bit i set means byte i is symbolic.
+    /// 64 u64s = 4096 bits = one bit per byte in a 4KB page.
+    /// Boxed to keep MemoryPage small when not needed (None = fully concrete).
+    symbolic_bitmap: Option<Box<[u64; 64]>>,
 }
 
 impl MemoryPage {
@@ -156,7 +157,7 @@ impl MemoryPage {
             data: Arc::new(vec![0u8; PAGE_SIZE as usize]),
             permissions,
             base_addr,
-            symbolic: Arc::new(HashMap::new()),
+            symbolic_bitmap: None,
         }
     }
 
@@ -170,7 +171,7 @@ impl MemoryPage {
             data: Arc::new(page_data),
             permissions,
             base_addr,
-            symbolic: Arc::new(HashMap::new()),
+            symbolic_bitmap: None,
         }
     }
 
@@ -190,13 +191,29 @@ impl MemoryPage {
     }
 
     /// Check if this page has any symbolic bytes.
+    #[inline]
     pub fn has_symbolic(&self) -> bool {
-        !self.symbolic.is_empty()
+        self.symbolic_bitmap.is_some()
     }
 
     /// Get the symbolic byte offsets.
     pub fn symbolic_offsets(&self) -> Vec<u16> {
-        self.symbolic.keys().copied().collect()
+        let bitmap = match &self.symbolic_bitmap {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+        let mut offsets = Vec::new();
+        for (word_idx, &word) in bitmap.iter().enumerate() {
+            if word == 0 { continue; }
+            let base = (word_idx as u16) * 64;
+            let mut bits = word;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as u16;
+                offsets.push(base + bit);
+                bits &= bits - 1; // Clear lowest set bit
+            }
+        }
+        offsets
     }
 
     /// Load bytes from this page (concrete only).
@@ -214,33 +231,50 @@ impl MemoryPage {
         let end = (start + bytes.len()).min(PAGE_SIZE as usize);
         data[start..end].copy_from_slice(&bytes[..(end - start)]);
 
-        // Clear symbolic markers for overwritten bytes
-        let sym = Arc::make_mut(&mut self.symbolic);
-        for i in offset..(offset + bytes.len() as u16) {
-            sym.remove(&i);
+        // Clear symbolic bitmap bits for overwritten bytes
+        if let Some(ref mut bitmap) = self.symbolic_bitmap {
+            for i in offset..(offset + bytes.len() as u16) {
+                let word_idx = (i / 64) as usize;
+                let bit_idx = i % 64;
+                bitmap[word_idx] &= !(1u64 << bit_idx);
+            }
+            // If bitmap is now empty, drop it
+            if bitmap.iter().all(|&w| w == 0) {
+                self.symbolic_bitmap = None;
+            }
         }
     }
 
     /// Mark bytes as symbolic.
     pub fn mark_symbolic(&mut self, offset: u16, size: u16) {
-        let sym = Arc::make_mut(&mut self.symbolic);
+        let bitmap = self.symbolic_bitmap.get_or_insert_with(|| Box::new([0u64; 64]));
         for i in offset..(offset + size) {
-            sym.insert(i, 1);
+            let word_idx = (i / 64) as usize;
+            let bit_idx = i % 64;
+            bitmap[word_idx] |= 1u64 << bit_idx;
         }
     }
 
     /// Check if a byte is symbolic.
+    #[inline]
     pub fn is_symbolic(&self, offset: u16) -> bool {
-        self.symbolic.contains_key(&offset)
+        match &self.symbolic_bitmap {
+            None => false,
+            Some(bitmap) => {
+                let word_idx = (offset / 64) as usize;
+                let bit_idx = offset % 64;
+                bitmap[word_idx] & (1u64 << bit_idx) != 0
+            }
+        }
     }
 
-    /// Fork this page (O(1) via Arc).
+    /// Fork this page (O(1) for concrete pages, bitmap clone for symbolic).
     pub fn fork(&self) -> Self {
         MemoryPage {
             data: Arc::clone(&self.data),
             permissions: self.permissions,
             base_addr: self.base_addr,
-            symbolic: Arc::clone(&self.symbolic),
+            symbolic_bitmap: self.symbolic_bitmap.clone(),
         }
     }
 }
