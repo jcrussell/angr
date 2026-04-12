@@ -879,6 +879,14 @@ impl PyRustSimState {
         self.inner.map_memory_data(addr, data, Permission::from_bits(permissions));
     }
 
+    /// Map multiple memory pages in a single FFI call.
+    /// pages is a list of (addr, data, permissions) tuples.
+    pub fn map_memory_batch(&mut self, pages: Vec<(u64, Vec<u8>, u8)>) {
+        for (addr, data, permissions) in pages {
+            self.inner.map_memory_data(addr, &data, Permission::from_bits(permissions));
+        }
+    }
+
     /// Load from memory.
     pub fn memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
         let bv = self.inner.memory_load(addr, size)

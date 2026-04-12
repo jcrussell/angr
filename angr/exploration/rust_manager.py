@@ -1369,7 +1369,8 @@ class RustExplorationManager(RustStateExportMixin):
         if symbolic_pages:
             l.debug(f"Skipping {len(symbolic_pages)} pages with symbolic data during memory sync")
 
-        # Map pages for each loaded object's segments
+        # Map pages for each loaded object's segments (batch for fewer FFI calls)
+        batch_pages = []
         for obj in self._project.loader.all_objects:
             try:
                 start_page = obj.min_addr & ~(page_size - 1)
@@ -1381,12 +1382,20 @@ class RustExplorationManager(RustStateExportMixin):
                         # Use loader memory directly (fast, no Z3 eval)
                         data = self._project.loader.memory.load(page_addr, page_size)
                         if data and len(data) == page_size:
-                            rust_state.map_memory_data(page_addr, bytes(data), 7)
+                            batch_pages.append((page_addr, bytes(data), 7))
                             pages_mapped += 1
                     except Exception:
                         pass
             except Exception:
                 pass
+        # Single FFI call for all pages
+        if batch_pages:
+            try:
+                rust_state.map_memory_batch(batch_pages)
+            except AttributeError:
+                # Fallback for older Rust builds without batch API
+                for page_addr, data, perms in batch_pages:
+                    rust_state.map_memory_data(page_addr, data, perms)
 
         # Overlay relocated data from Python state (GOT entries, etc.)
         # Only do small concrete sections to avoid expensive Z3 eval
