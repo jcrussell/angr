@@ -224,6 +224,9 @@ class RustExplorationManager(RustStateExportMixin):
         # Techniques are applied during exploration steps
         self._active_techniques: list = []
 
+        # Cached memory layout from disk cache for fast _sync_memory_to_rust
+        self._mem_cache: Optional[dict] = None
+
         # Add initial states
         if active_states:
             # Handle single state or list of states
@@ -1051,14 +1054,19 @@ class RustExplorationManager(RustStateExportMixin):
             return ""
 
     def _save_init_to_disk_cache(self, cache_key: str, state: "angr.SimState"):
-        """Save essential post-init state data to disk cache."""
+        """Save essential post-init state data to disk cache.
+
+        Stores: addr, registers, stack page, continuation addrs, and loader
+        memory pages + lazy regions for fast memory sync on warm runs.
+        """
         try:
             cache_dir = self._disk_cache_dir()
             os.makedirs(cache_dir, exist_ok=True)
 
             arch = self._project.arch
+            page_size = 0x1000
             data = {'addr': state.addr, 'registers': {}, 'stack_page': None,
-                    'continuation_addrs': []}
+                    'continuation_addrs': [], 'batch_pages': [], 'lazy_regions': []}
 
             # Extract concrete register values
             for reg_name in arch.register_names.values():
@@ -1069,18 +1077,70 @@ class RustExplorationManager(RustStateExportMixin):
                 except Exception:
                     pass
 
-            # Extract stack page at SP
+            # Extract stack page at SP (always concretize, even if symbolic)
             try:
                 sp = state.solver.eval(state.regs.sp)
-                sp_page = sp & ~0xfff
+                sp_page = sp & ~(page_size - 1)
                 page_val = state.memory.load(
-                    sp_page, 0x1000, endness='Iend_BE',
+                    sp_page, page_size, endness='Iend_BE',
                     inspect=False, disable_actions=True)
-                if not page_val.symbolic:
-                    concrete = state.solver.eval(page_val).to_bytes(0x1000, 'big')
-                    data['stack_page'] = (sp_page, concrete)
+                concrete = state.solver.eval(page_val).to_bytes(page_size, 'big')
+                data['stack_page'] = (sp_page, concrete)
+                # Store stack lazy region
+                stack_base = (sp & ~(page_size - 1)) + page_size
+                stack_start = stack_base - 0x11_0000
+                data['lazy_regions'].append((stack_start, 0x11_0000))
             except Exception:
                 pass
+
+            # Extract loader pages (same logic as _sync_memory_to_rust)
+            mapped_page_addrs = set()
+            for obj in self._project.loader.all_objects:
+                try:
+                    if hasattr(obj, 'segments') and obj.segments:
+                        ranges = [(s.min_addr & ~(page_size - 1),
+                                   (s.max_addr + page_size) & ~(page_size - 1))
+                                  for s in obj.segments if s.memsize > 0]
+                    else:
+                        ranges = [(obj.min_addr & ~(page_size - 1),
+                                   (obj.max_addr + page_size) & ~(page_size - 1))]
+                    for start_page, end_page in ranges:
+                        for page_addr in range(start_page, end_page, page_size):
+                            if page_addr in mapped_page_addrs:
+                                continue
+                            try:
+                                page_data = self._project.loader.memory.load(page_addr, page_size)
+                                if page_data and len(page_data) == page_size:
+                                    data['batch_pages'].append((page_addr, bytes(page_data), 7))
+                                    mapped_page_addrs.add(page_addr)
+                            except Exception:
+                                pass
+                    # Lazy region for this object
+                    region_start = obj.min_addr & ~(page_size - 1)
+                    region_end = (obj.max_addr + page_size) & ~(page_size - 1)
+                    if region_end - region_start > 0:
+                        data['lazy_regions'].append((region_start, region_end - region_start))
+                except Exception:
+                    pass
+
+            # Section overlay: capture post-init section data (GOT fixups etc.)
+            section_patches = []
+            for obj in self._project.loader.all_objects:
+                if obj.binary is None or not hasattr(obj, 'sections'):
+                    continue
+                for section in obj.sections:
+                    if 0 < section.memsize < 0x10000:
+                        try:
+                            val = state.memory.load(
+                                section.min_addr, section.memsize,
+                                endness='Iend_BE', inspect=False, disable_actions=True)
+                            if not val.symbolic:
+                                section_patches.append(
+                                    (section.min_addr,
+                                     state.solver.eval(val).to_bytes(section.memsize, 'big')))
+                        except Exception:
+                            pass
+            data['section_patches'] = section_patches
 
             # Extract continuation addresses from callstack
             frame = state.callstack.top if hasattr(state, 'callstack') else None
@@ -1096,16 +1156,23 @@ class RustExplorationManager(RustStateExportMixin):
             cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
             with open(cache_path, 'wb') as f:
                 pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-            l.debug(f"Saved init cache to {cache_path} ({os.path.getsize(cache_path)} bytes)")
+            l.debug(f"Saved init cache to {cache_path} "
+                    f"({os.path.getsize(cache_path)} bytes, "
+                    f"{len(data['batch_pages'])} pages)")
         except Exception as e:
             l.debug(f"Failed to save disk cache: {e}")
 
-    def _load_init_from_disk_cache(self, cache_key: str) -> "Optional[angr.SimState]":
-        """Load post-init state from disk cache, return None on miss."""
+    def _load_init_from_disk_cache(self, cache_key: str):
+        """Load post-init state from disk cache.
+
+        Returns (SimState, memory_cache_data) on hit, (None, None) on miss.
+        memory_cache_data contains pre-computed loader pages and lazy regions
+        for fast memory sync.
+        """
         try:
             cache_path = os.path.join(self._disk_cache_dir(), f"{cache_key}.pkl")
             if not os.path.exists(cache_path):
-                return None
+                return None, None
 
             with open(cache_path, 'rb') as f:
                 data = pickle.load(f)
@@ -1128,11 +1195,21 @@ class RustExplorationManager(RustStateExportMixin):
                 if cont_addr > 0:
                     self._pending_procedure_data.setdefault(cont_addr, None)
 
+            # Extract memory cache data for fast sync
+            mem_cache = None
+            if data.get('batch_pages') is not None:
+                mem_cache = {
+                    'batch_pages': data['batch_pages'],
+                    'lazy_regions': data.get('lazy_regions', []),
+                    'section_patches': data.get('section_patches', []),
+                    'stack_page': data.get('stack_page'),
+                }
+
             l.info(f"Disk cache hit: restored state at 0x{data['addr']:x}")
-            return state
+            return state, mem_cache
         except Exception as e:
             l.debug(f"Disk cache load failed: {e}")
-            return None
+            return None, None
 
     def _extract_continuation_data(self, state: "angr.SimState"):
         """Extract SimProcedure continuation data from a state's callstack.
@@ -1183,11 +1260,12 @@ class RustExplorationManager(RustStateExportMixin):
             # Check persistent disk cache (survives across processes)
             disk_key = self._disk_cache_key(cache_key) if cache_key else ''
             if disk_key:
-                disk_state = self._load_init_from_disk_cache(disk_key)
+                disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
                 if disk_state is not None:
                     for c in state.solver.constraints:
                         disk_state.solver.add(c)
                     self._extract_continuation_data(disk_state)
+                    self._mem_cache = mem_cache  # For fast _sync_memory_to_rust
                     return disk_state
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
@@ -1205,11 +1283,12 @@ class RustExplorationManager(RustStateExportMixin):
             cache_key = getattr(main_obj, 'binary', None) or ''
             disk_key = self._disk_cache_key(cache_key) if cache_key else ''
             if disk_key:
-                disk_state = self._load_init_from_disk_cache(disk_key)
+                disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
                 if disk_state is not None:
                     for c in state.solver.constraints:
                         disk_state.solver.add(c)
                     self._extract_continuation_data(disk_state)
+                    self._mem_cache = mem_cache
                     return disk_state
 
         try:
@@ -1483,6 +1562,25 @@ class RustExplorationManager(RustStateExportMixin):
         Strategy: map pages for each loaded segment (not the entire address
         space). Uses the Python state's memory for relocations/initialized data.
         """
+        # Fast path: use cached memory layout from disk cache
+        if self._mem_cache is not None:
+            mem = self._mem_cache
+            self._mem_cache = None  # Consume once
+            try:
+                if mem.get('batch_pages'):
+                    rust_state.map_memory_batch(mem['batch_pages'])
+                for addr, patch_bytes in mem.get('section_patches', []):
+                    rust_state.map_memory_data(addr, patch_bytes, 7)
+                if mem.get('stack_page'):
+                    sp_page, page_bytes = mem['stack_page']
+                    rust_state.map_memory_data(sp_page, page_bytes, 6)
+                for start, size in mem.get('lazy_regions', []):
+                    rust_state.add_lazy_region(start, size)
+                l.debug(f"Fast memory sync from cache: {len(mem.get('batch_pages', []))} pages")
+                return
+            except Exception as e:
+                l.debug(f"Fast memory sync failed, falling back: {e}")
+
         page_size = 0x1000
         pages_mapped = 0
 
