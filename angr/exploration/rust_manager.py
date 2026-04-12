@@ -72,6 +72,13 @@ class RustExplorationManager(RustStateExportMixin):
     _init_cache: Dict[str, "angr.SimState"] = {}
     _init_cache_max = 10
 
+    # SimProcedures known to write memory (need full state.copy() for changed_bytes)
+    _MEMORY_WRITING_PROCS = frozenset({
+        'read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
+        'fread', 'gets', 'getchar', 'fgetc', 'getc',
+        'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
+        'strcat', 'strncat', 'sprintf', 'snprintf'})
+
     def __init__(
         self,
         project: "angr.Project",
@@ -170,6 +177,10 @@ class RustExplorationManager(RustStateExportMixin):
         # Track current callback state for memory access during callbacks
         # This allows memory_load callback to access the correct symbolic state
         self._callback_state: Optional["angr.SimState"] = None
+
+        # Cache bundle register values from _create_state_for_callback for
+        # reuse as register snapshot (avoids reading registers back from state)
+        self._last_bundle_registers: Optional[dict] = None
 
         # Track symbolic memory regions per state for preservation during fallback
         # Maps state_id -> dict[addr -> claripy.AST]
@@ -2765,20 +2776,30 @@ class RustExplorationManager(RustStateExportMixin):
         # extern SimProcedures (most common case for zero-length hooks like
         # __libc_start_main, puts, malloc, etc.), a lightweight register
         # snapshot is sufficient — we only need to detect register changes.
-        _memory_writing_procs = {
-            'read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
-            'fread', 'gets', 'getchar', 'fgetc', 'getc',
-            'strncpy', 'strcpy', 'memcpy', 'memmove', 'memset',
-            'strcat', 'strncat', 'sprintf', 'snprintf'}
         is_user_hook = (proc.__class__.__name__ == 'UserHook')
-        needs_full_copy = is_user_hook or name in _memory_writing_procs
+        needs_full_copy = is_user_hook or name in self._MEMORY_WRITING_PROCS
         _sp_copy_start = time.perf_counter_ns()
         if needs_full_copy:
             orig_state = state.copy()
         elif is_zero_length_hook:
-            # Lightweight register snapshot for non-memory-writing extern stubs.
-            # ~10x cheaper than state.copy() (~0.1ms vs ~1ms).
-            orig_state = self._snapshot_registers(state)
+            # Use bundle register values directly as snapshot instead of reading
+            # them back from state. _create_state_for_callback just stored these
+            # values, so _snapshot_registers would read back the same thing.
+            bundle_regs = getattr(self, '_last_bundle_registers', None)
+            if bundle_regs is not None:
+                reg_map = self._get_register_offset_map(self._project.arch)
+                orig_state = {}
+                for reg_name, val in bundle_regs.items():
+                    offset_size = reg_map.get(reg_name)
+                    if offset_size is not None:
+                        offset, size = offset_size
+                        if val is not None:
+                            orig_state[reg_name] = (False, val, offset, size)
+                        else:
+                            orig_state[reg_name] = (True, None, offset, size)
+                self._last_bundle_registers = None
+            else:
+                orig_state = self._snapshot_registers(state)
         else:
             orig_state = state
         self._perf_stats['callback_simprocedure_state_copy_ns'] += time.perf_counter_ns() - _sp_copy_start
@@ -3843,7 +3864,9 @@ class RustExplorationManager(RustStateExportMixin):
                 l.debug(f"Bundle: solver with {constraint_count} constraints for state {state_id}")
 
                 # Apply registers from bundle using direct store (bypasses claripy BVV creation)
+                # Save bundle registers for snapshot reuse in _handle_simprocedure_callback
                 registers = bundle['registers']
+                self._last_bundle_registers = registers
                 reg_map = self._get_register_offset_map(arch)
                 for reg_name, val in registers.items():
                     try:
@@ -3870,6 +3893,7 @@ class RustExplorationManager(RustStateExportMixin):
                 state.scratch._rust_bundle_jumpkind = bundle.get('jumpkind', 'Ijk_Boring')
             except Exception as e:
                 l.debug(f"Bundle API failed, falling back to individual calls: {e}")
+                self._last_bundle_registers = None  # Clear on fallback
                 # Fallback to individual calls
                 try:
                     forked_solver = self._rust_mgr.fork_pending_solver()
