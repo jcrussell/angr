@@ -1852,27 +1852,39 @@ class RustExplorationManager(RustStateExportMixin):
             self._sync_rust_constraints_to_python(state)
             return
 
+        # Use a mutable container so closures see the latest rust_ctx
+        # without recreating closures on every callback.
+        ctx_ref = getattr(state.scratch, '_rust_solver_ref', None)
+        if ctx_ref is not None:
+            # Already installed — just update the solver reference
+            ctx_ref[0] = rust_ctx
+            return
+
+        # First time: save real originals and create closures once
         original_eval = state.solver.eval
         original_satisfiable = state.solver.satisfiable
         original_min = state.solver.min
         original_max = state.solver.max
         original_eval_upto = state.solver.eval_upto
         original_add = state.solver.add
+        ctx_ref = [rust_ctx]
+        state.scratch._rust_solver_ref = ctx_ref
 
         def _rust_eval(expr, cast_to=None, **kwargs):
+            _ctx = ctx_ref[0]
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
                 if extra:
-                    rust_ctx.push()
+                    _ctx.push()
                     try:
                         for c in extra:
-                            rust_ctx.add_constraint_ast(c)
-                        result = rust_ctx.eval(expr)
+                            _ctx.add_constraint_ast(c)
+                        result = _ctx.eval(expr)
                     finally:
-                        rust_ctx.pop()
+                        _ctx.pop()
                 else:
-                    result = rust_ctx.eval(expr)
+                    result = _ctx.eval(expr)
                 if result is None:
                     raise claripy.errors.UnsatError("UNSAT in Rust solver")
                 if cast_to == bytes:
@@ -1885,18 +1897,19 @@ class RustExplorationManager(RustStateExportMixin):
                 return original_eval(expr, cast_to=cast_to, **kwargs)
 
         def _rust_satisfiable(**kwargs):
+            _ctx = ctx_ref[0]
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
                 if extra:
-                    rust_ctx.push()
+                    _ctx.push()
                     try:
                         for c in extra:
-                            rust_ctx.add_constraint_ast(c)
-                        return rust_ctx.satisfiable()
+                            _ctx.add_constraint_ast(c)
+                        return _ctx.satisfiable()
                     finally:
-                        rust_ctx.pop()
-                return rust_ctx.satisfiable()
+                        _ctx.pop()
+                return _ctx.satisfiable()
             except Exception:
                 return original_satisfiable(**kwargs)
 
@@ -1905,7 +1918,7 @@ class RustExplorationManager(RustStateExportMixin):
             kwargs.pop('extra_constraints', None)
             kwargs.pop('signed', None)
             try:
-                return rust_ctx.min(expr, signed=False)
+                return ctx_ref[0].min(expr, signed=False)
             except Exception:
                 return original_min(expr, **kwargs)
 
@@ -1914,24 +1927,25 @@ class RustExplorationManager(RustStateExportMixin):
             kwargs.pop('extra_constraints', None)
             kwargs.pop('signed', None)
             try:
-                return rust_ctx.max(expr, signed=False)
+                return ctx_ref[0].max(expr, signed=False)
             except Exception:
                 return original_max(expr, **kwargs)
 
         def _rust_eval_upto(expr, n, cast_to=None, **kwargs):
+            _ctx = ctx_ref[0]
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
                 if extra:
-                    rust_ctx.push()
+                    _ctx.push()
                     try:
                         for c in extra:
-                            rust_ctx.add_constraint_ast(c)
-                        results = rust_ctx.eval_upto(expr, n)
+                            _ctx.add_constraint_ast(c)
+                        results = _ctx.eval_upto(expr, n)
                     finally:
-                        rust_ctx.pop()
+                        _ctx.pop()
                 else:
-                    results = rust_ctx.eval_upto(expr, n)
+                    results = _ctx.eval_upto(expr, n)
                 if cast_to is not None:
                     results = tuple(cast_to(r) for r in results)
                 return results
@@ -1939,10 +1953,11 @@ class RustExplorationManager(RustStateExportMixin):
                 return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
 
         def _rust_add(*constraints):
+            _ctx = ctx_ref[0]
             # Forward to both Rust and Python solvers
             for c in constraints:
                 try:
-                    rust_ctx.add_constraint_ast(c)
+                    _ctx.add_constraint_ast(c)
                 except Exception:
                     pass
             original_add(*constraints)
@@ -1953,9 +1968,6 @@ class RustExplorationManager(RustStateExportMixin):
         state.solver.max = _rust_max
         state.solver.eval_upto = _rust_eval_upto
         state.solver.add = _rust_add
-
-        l.debug(f"Installed Rust solver delegation on callback state "
-                f"({rust_ctx.num_constraints()} Rust constraints)")
 
     def _sync_rust_constraints_to_python(self, state: "angr.SimState"):
         """Sync constraints from Rust solver to Python state.
