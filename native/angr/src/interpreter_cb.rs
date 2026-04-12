@@ -1138,6 +1138,11 @@ impl<'a> CallbackInterpreter<'a> {
         self.block_cache.get(&addr).map(|arc| arc.as_ref())
     }
 
+    /// Swap in a shared block cache, returning the interpreter's current cache.
+    pub fn swap_block_cache(&mut self, cache: LruCache<u64, Arc<IRSB>>) -> LruCache<u64, Arc<IRSB>> {
+        std::mem::replace(&mut self.block_cache, cache)
+    }
+
     /// Take the last branch condition, if any.
     ///
     /// This is set when a SymbolicBranch result is created, and can be retrieved
@@ -3424,7 +3429,7 @@ impl<'a> CallbackInterpreter<'a> {
             current_insn_len: self.current_insn_len,
             hook_addrs: self.hook_addrs.clone(),
             arch: self.arch,
-            block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()), // Fresh cache for fork
+            block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
             use_memory_callbacks: self.use_memory_callbacks,
             deferred_forks: Vec::new(), // Fresh deferred forks for fork
             deferred_fork_this_step: false,

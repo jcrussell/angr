@@ -369,8 +369,8 @@ pub struct RustExplorationManager {
     simprocedures: HashMap<u64, (String, usize, bool)>,
     /// Binary code regions for native lifting.
     binary_regions: Vec<(u64, Arc<Vec<u8>>)>,
-    /// Block cache (shared across states).
-    block_cache: LruCache<u64, IRSB>,
+    /// Block cache (shared across states, passed to each interpreter).
+    block_cache: LruCache<u64, Arc<IRSB>>,
     /// Pending state waiting for Python callback result.
     pending_callback: Option<PendingCallback>,
     /// ID of the state currently being stepped (for Python callbacks to identify)
@@ -3186,7 +3186,7 @@ impl RustExplorationManager {
         let solver_rc = state.solver().clone();
 
         // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, recovered_memory, step_stats) = {
+        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, recovered_memory, step_stats, updated_block_cache) = {
             let solver_ref = solver_rc.borrow();
 
             // Create interpreter with the state's solver
@@ -3237,6 +3237,15 @@ impl RustExplorationManager {
             // instead of calling back to Python.
             interp.set_rust_memory(state.take_memory());
 
+            // Share the exploration-level block cache with the interpreter
+            // so lifted blocks persist across steps (avoids re-lifting).
+            // Swap exploration's populated cache into interp, stash interp's empty one.
+            let interp_empty_cache = interp.swap_block_cache(
+                std::mem::replace(&mut self.block_cache, LruCache::new(NonZeroUsize::new(4096).unwrap()))
+            );
+            // interp now has the exploration's cache; self.block_cache is a temporary empty placeholder
+            let _ = interp_empty_cache; // drop the empty cache
+
             // Record setup time before execution
             if let Some(start) = setup_start {
                 interp.stats_mut().step_setup_time_ns += start.elapsed().as_nanos() as u64;
@@ -3262,12 +3271,18 @@ impl RustExplorationManager {
             // Recover memory from interpreter back to state
             let recovered_memory = interp.take_rust_memory();
 
+            // Return shared block cache to exploration before interpreter is dropped
+            let updated_cache = interp.swap_block_cache(LruCache::new(NonZeroUsize::new(4096).unwrap()));
+
             // Take profiling stats before interpreter is dropped
             let step_stats = interp.take_stats();
 
-            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, recovered_memory, step_stats)
+            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, recovered_memory, step_stats, updated_cache)
         };
         // solver_ref dropped here, solver_rc borrow released
+
+        // Restore the shared block cache (now populated with any newly-lifted blocks)
+        self.block_cache = updated_block_cache;
 
         // Accumulate profiling stats
         if self.profiling_enabled {
