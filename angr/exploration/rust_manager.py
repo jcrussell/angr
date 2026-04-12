@@ -1042,6 +1042,29 @@ class RustExplorationManager(RustStateExportMixin):
         return os.path.join(os.path.expanduser("~"), ".cache", "angr_rust_init")
 
     @staticmethod
+    def _state_has_user_symbolic(state) -> bool:
+        """Check if state has user-created symbolic data in memory.
+
+        Detects symbolic argv, symbolic input buffers, etc. by scanning the
+        stack page near SP for BVS variables that aren't unconstrained fill.
+        """
+        try:
+            sp = state.solver.eval(state.regs.sp)
+            sp_page = sp & ~0xfff
+            page_data = state.memory.load(
+                sp_page, 0x1000, endness='Iend_BE',
+                inspect=False, disable_actions=True)
+            if page_data.symbolic:
+                for name in page_data.variables:
+                    if (not name.startswith('mem_') and
+                            not name.startswith('reg_') and
+                            not name.startswith('unconstrained')):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def _disk_cache_key(binary_path: str) -> str:
         """Compute a cache key from binary file content hash."""
         try:
@@ -1258,15 +1281,10 @@ class RustExplorationManager(RustStateExportMixin):
                     new_state.solver.add(c)
                 return new_state
             # Check persistent disk cache (survives across processes).
-            # Only use when state has no symbolic memory data — blank_state
+            # Only use when state has no user symbolic data — blank_state
             # from cache can't preserve symbolic arguments (e.g., argv BVS).
-            has_symbolic = False
-            try:
-                sym_addrs = list(state.memory.get_symbolic_addrs())
-                has_symbolic = len(sym_addrs) > 0
-            except Exception:
-                pass
-            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_symbolic else ''
+            has_user_symbolic = self._state_has_user_symbolic(state)
+            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_user_symbolic else ''
             if disk_key:
                 disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
                 if disk_state is not None:
@@ -1289,13 +1307,8 @@ class RustExplorationManager(RustStateExportMixin):
 
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
             cache_key = getattr(main_obj, 'binary', None) or ''
-            has_symbolic = False
-            try:
-                sym_addrs = list(state.memory.get_symbolic_addrs())
-                has_symbolic = len(sym_addrs) > 0
-            except Exception:
-                pass
-            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_symbolic else ''
+            has_user_symbolic = self._state_has_user_symbolic(state)
+            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_user_symbolic else ''
             if disk_key:
                 disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
                 if disk_state is not None:
