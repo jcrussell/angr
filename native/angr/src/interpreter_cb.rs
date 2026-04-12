@@ -280,14 +280,15 @@ pub enum BlockResult {
 }
 
 /// A concrete memory region cached locally in Rust.
+/// Uses Arc<Vec<u8>> for O(1) cloning — binary data is shared, not copied.
 #[derive(Clone)]
 pub struct ConcreteMemoryRegion {
     /// Base address of the region.
     pub base: u64,
     /// Size of the region in bytes.
     pub size: u64,
-    /// The concrete data.
-    pub data: Vec<u8>,
+    /// The concrete data (shared via Arc to avoid copying per step).
+    pub data: Arc<Vec<u8>>,
 }
 
 impl ConcreteMemoryRegion {
@@ -597,6 +598,13 @@ impl<'a> CallbackInterpreter<'a> {
     /// This allows the interpreter to read from binary sections (e.g., .text, .rodata)
     /// without going through Python callbacks, significantly improving performance.
     pub fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
+        let size = data.len() as u64;
+        self.concrete_memory.push(ConcreteMemoryRegion { base, size, data: Arc::new(data) });
+        self.concrete_memory_sorted = false;
+    }
+
+    /// Add a concrete memory region using pre-shared Arc data (O(1) clone).
+    pub fn add_concrete_memory_shared(&mut self, base: u64, data: Arc<Vec<u8>>) {
         let size = data.len() as u64;
         self.concrete_memory.push(ConcreteMemoryRegion { base, size, data });
         self.concrete_memory_sorted = false;

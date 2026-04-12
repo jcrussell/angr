@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use lru::LruCache;
 use pyo3::prelude::*;
@@ -367,7 +368,7 @@ pub struct RustExplorationManager {
     /// SimProcedures: address -> (name, num_args, no_return).
     simprocedures: HashMap<u64, (String, usize, bool)>,
     /// Binary code regions for native lifting.
-    binary_regions: Vec<(u64, Vec<u8>)>,
+    binary_regions: Vec<(u64, Arc<Vec<u8>>)>,
     /// Block cache (shared across states).
     block_cache: LruCache<u64, IRSB>,
     /// Pending state waiting for Python callback result.
@@ -613,7 +614,9 @@ impl RustExplorationManager {
 
     /// Load binary code regions.
     pub fn load_binary_regions(&mut self, regions: Vec<(u64, Vec<u8>)>) {
-        self.binary_regions = regions;
+        self.binary_regions = regions.into_iter()
+            .map(|(base, data)| (base, Arc::new(data)))
+            .collect();
     }
 
     /// Create a new RustSimState and add it to a stash.
@@ -3172,9 +3175,9 @@ impl RustExplorationManager {
                 interp.add_hook(addr);
             }
 
-            // Copy binary regions for code lifting
+            // Copy binary regions for code lifting (O(1) Arc clone per region)
             for (base, data) in &self.binary_regions {
-                interp.add_concrete_memory(*base, data.clone());
+                interp.add_concrete_memory_shared(*base, Arc::clone(data));
             }
 
             // Transfer state's SymbolicMemory into the interpreter.

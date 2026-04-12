@@ -258,15 +258,13 @@ pub enum RustBV {
     ///
     /// This variant stores the operation and operands that created this value,
     /// enabling accurate conversion back to claripy ASTs without creating
-    /// fresh symbolic variables.
+    /// fresh symbolic variables. Z3 ASTs are computed lazily on demand
+    /// via `to_z3_ast()` rather than eagerly at construction time.
     Expression {
         /// Unique identifier (typically EXPRESSION_ID sentinel).
         id: u64,
         /// Width in bits.
         width: u32,
-        /// Z3 AST when z3 feature is enabled.
-        #[cfg(feature = "vex-engine-z3")]
-        ast: z3::ast::BV,
         /// The operation that created this expression.
         op: BVOp,
         /// The operands to this operation. Uses Arc for subtree sharing.
@@ -473,8 +471,6 @@ impl RustBV {
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width: self.width(),
-                    #[cfg(feature = "vex-engine-z3")]
-                    ast: self.to_z3_ast().bvadd(&other.to_z3_ast()),
                     op: BVOp::Add,
                     operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
                 }
@@ -490,8 +486,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvsub(&other.to_z3_ast()),
                 op: BVOp::Sub,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -506,8 +500,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvmul(&other.to_z3_ast()),
                 op: BVOp::Mul,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -528,8 +520,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvudiv(&other.to_z3_ast()),
                 op: BVOp::UDiv,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -552,8 +542,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvsdiv(&other.to_z3_ast()),
                 op: BVOp::SDiv,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -574,8 +562,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvurem(&other.to_z3_ast()),
                 op: BVOp::URem,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -598,8 +584,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvsrem(&other.to_z3_ast()),
                 op: BVOp::SRem,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -613,8 +597,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvneg(),
                 op: BVOp::Neg,
                 operands: vec![Arc::new(self.clone())],
             },
@@ -633,8 +615,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvand(&other.to_z3_ast()),
                 op: BVOp::And,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -649,8 +629,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvor(&other.to_z3_ast()),
                 op: BVOp::Or,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -665,8 +643,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvxor(&other.to_z3_ast()),
                 op: BVOp::Xor,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -680,8 +656,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvnot(),
                 op: BVOp::Not,
                 operands: vec![Arc::new(self.clone())],
             },
@@ -703,8 +677,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvshl(&amount.to_z3_ast()),
                 op: BVOp::Shl,
                 operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
@@ -722,8 +694,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvlshr(&amount.to_z3_ast()),
                 op: BVOp::Lshr,
                 operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
@@ -742,8 +712,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvashr(&amount.to_z3_ast()),
                 op: BVOp::Ashr,
                 operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
@@ -763,8 +731,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvrotl(&amount.to_z3_ast()),
                 op: BVOp::RotL,
                 operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
@@ -784,8 +750,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().bvrotr(&amount.to_z3_ast()),
                 op: BVOp::RotR,
                 operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
             },
@@ -807,15 +771,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    use z3::ast::Ast;
-                    let eq = self.to_z3_ast()._eq(&other.to_z3_ast());
-                    eq.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Eq,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -830,15 +785,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    use z3::ast::Ast;
-                    let eq = self.to_z3_ast()._eq(&other.to_z3_ast()).not();
-                    eq.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Ne,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -853,14 +799,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let lt = self.to_z3_ast().bvult(&other.to_z3_ast());
-                    lt.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Ult,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -875,14 +813,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let le = self.to_z3_ast().bvule(&other.to_z3_ast());
-                    le.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Ule,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -897,14 +827,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let gt = self.to_z3_ast().bvugt(&other.to_z3_ast());
-                    gt.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Ugt,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -919,14 +841,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let ge = self.to_z3_ast().bvuge(&other.to_z3_ast());
-                    ge.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Uge,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -945,14 +859,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let lt = self.to_z3_ast().bvslt(&other.to_z3_ast());
-                    lt.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Slt,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -971,14 +877,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let le = self.to_z3_ast().bvsle(&other.to_z3_ast());
-                    le.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Sle,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -997,14 +895,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let gt = self.to_z3_ast().bvsgt(&other.to_z3_ast());
-                    gt.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Sgt,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -1023,14 +913,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: 1,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    let ge = self.to_z3_ast().bvsge(&other.to_z3_ast());
-                    ge.ite(
-                        &z3::ast::BV::from_u64(1, 1),
-                        &z3::ast::BV::from_u64(0, 1),
-                    )
-                },
                 op: BVOp::Sge,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -1053,8 +935,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().zero_ext(extend_bits),
                 op: BVOp::ZeroExt(extend_bits),
                 operands: vec![Arc::new(self.clone())],
             },
@@ -1073,8 +953,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().sign_ext(extend_bits),
                 op: BVOp::SignExt(extend_bits),
                 operands: vec![Arc::new(self.clone())],
             },
@@ -1089,8 +967,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().extract(to_width - 1, 0),
                 op: BVOp::Extract(to_width - 1, 0),
                 operands: vec![Arc::new(self.clone())],
             },
@@ -1110,8 +986,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: result_width,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().extract(high, low),
                 op: BVOp::Extract(high, low),
                 operands: vec![Arc::new(self.clone())],
             },
@@ -1129,8 +1003,6 @@ impl RustBV {
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: result_width,
-                #[cfg(feature = "vex-engine-z3")]
-                ast: self.to_z3_ast().concat(&other.to_z3_ast()),
                 op: BVOp::Concat,
                 operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
             },
@@ -1155,15 +1027,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: then_val.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    use z3::ast::Ast;
-                    let cond = self
-                        .to_z3_ast()
-                        ._eq(&z3::ast::BV::from_u64(0, self.width()))
-                        .not();
-                    cond.ite(&then_val.to_z3_ast(), &else_val.to_z3_ast())
-                },
                 op: BVOp::Ite,
                 operands: vec![
                     Arc::new(self.clone()),
@@ -1188,12 +1051,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: {
-                    // Build CLZ symbolically - this is complex
-                    // For now, just return a symbolic value
-                    z3::ast::BV::new_const("clz", self.width())
-                },
                 op: BVOp::Clz,
                 operands: vec![Arc::new(self.clone())],
             },
@@ -1214,8 +1071,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: z3::ast::BV::new_const("ctz", self.width()),
                 op: BVOp::Ctz,
                 operands: vec![Arc::new(self.clone())],
             },
@@ -1229,8 +1084,6 @@ impl RustBV {
             None => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
-                #[cfg(feature = "vex-engine-z3")]
-                ast: z3::ast::BV::new_const("popcount", self.width()),
                 op: BVOp::Popcount,
                 operands: vec![Arc::new(self.clone())],
             },
@@ -1243,8 +1096,10 @@ impl RustBV {
 
     /// Convert this RustBV to a Z3 AST.
     ///
-    /// With z3-rs 0.19+, the context is thread-local so we don't need
-    /// to pass it explicitly.
+    /// For Expression nodes, the Z3 AST is computed lazily by recursively
+    /// building from the operation tree. This avoids creating Z3 ASTs for
+    /// intermediate results that never become constraints (matching claripy's
+    /// lazy evaluation approach).
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_ast(&self) -> z3::ast::BV {
         use z3::ast::Ast;
@@ -1268,7 +1123,123 @@ impl RustBV {
                     hi.concat(&lo)
                 }
             }
-            RustBV::Expression { ast, .. } => ast.clone(),
+            RustBV::Expression { op, operands, width, .. } => {
+                // Lazily compute Z3 AST from operation tree
+                Self::build_z3_ast(op, operands, *width)
+            }
+        }
+    }
+
+    /// Build a Z3 AST from an operation and its operands.
+    /// Called lazily when a Z3 AST is actually needed (e.g., for constraint solving).
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_z3_ast(op: &BVOp, operands: &[Arc<RustBV>], _width: u32) -> z3::ast::BV {
+        use z3::ast::Ast;
+
+        match op {
+            // Arithmetic
+            BVOp::Add => operands[0].to_z3_ast().bvadd(&operands[1].to_z3_ast()),
+            BVOp::Sub => operands[0].to_z3_ast().bvsub(&operands[1].to_z3_ast()),
+            BVOp::Mul => operands[0].to_z3_ast().bvmul(&operands[1].to_z3_ast()),
+            BVOp::UDiv => operands[0].to_z3_ast().bvudiv(&operands[1].to_z3_ast()),
+            BVOp::SDiv => operands[0].to_z3_ast().bvsdiv(&operands[1].to_z3_ast()),
+            BVOp::URem => operands[0].to_z3_ast().bvurem(&operands[1].to_z3_ast()),
+            BVOp::SRem => operands[0].to_z3_ast().bvsrem(&operands[1].to_z3_ast()),
+            BVOp::Neg => operands[0].to_z3_ast().bvneg(),
+
+            // Bitwise
+            BVOp::And => operands[0].to_z3_ast().bvand(&operands[1].to_z3_ast()),
+            BVOp::Or => operands[0].to_z3_ast().bvor(&operands[1].to_z3_ast()),
+            BVOp::Xor => operands[0].to_z3_ast().bvxor(&operands[1].to_z3_ast()),
+            BVOp::Not => operands[0].to_z3_ast().bvnot(),
+
+            // Shifts
+            BVOp::Shl => operands[0].to_z3_ast().bvshl(&operands[1].to_z3_ast()),
+            BVOp::Lshr => operands[0].to_z3_ast().bvlshr(&operands[1].to_z3_ast()),
+            BVOp::Ashr => operands[0].to_z3_ast().bvashr(&operands[1].to_z3_ast()),
+            BVOp::RotL => operands[0].to_z3_ast().bvrotl(&operands[1].to_z3_ast()),
+            BVOp::RotR => operands[0].to_z3_ast().bvrotr(&operands[1].to_z3_ast()),
+
+            // Comparisons (return 1-bit BV: If(cmp, BV(1,1), BV(0,1)))
+            BVOp::Eq => {
+                let cmp = operands[0].to_z3_ast()._eq(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ne => {
+                let cmp = operands[0].to_z3_ast()._eq(&operands[1].to_z3_ast()).not();
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ult => {
+                let cmp = operands[0].to_z3_ast().bvult(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ule => {
+                let cmp = operands[0].to_z3_ast().bvule(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ugt => {
+                let cmp = operands[0].to_z3_ast().bvugt(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Uge => {
+                let cmp = operands[0].to_z3_ast().bvuge(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Slt => {
+                let cmp = operands[0].to_z3_ast().bvslt(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Sle => {
+                let cmp = operands[0].to_z3_ast().bvsle(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Sgt => {
+                let cmp = operands[0].to_z3_ast().bvsgt(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Sge => {
+                let cmp = operands[0].to_z3_ast().bvsge(&operands[1].to_z3_ast());
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+
+            // Conversions
+            BVOp::ZeroExt(bits) => operands[0].to_z3_ast().zero_ext(*bits),
+            BVOp::SignExt(bits) => operands[0].to_z3_ast().sign_ext(*bits),
+            BVOp::Extract(high, low) => operands[0].to_z3_ast().extract(*high, *low),
+            BVOp::Concat => operands[0].to_z3_ast().concat(&operands[1].to_z3_ast()),
+
+            // Conditional
+            BVOp::Ite => {
+                let cond = operands[0].to_z3_ast()
+                    ._eq(&z3::ast::BV::from_u64(0, operands[0].width()))
+                    .not();
+                cond.ite(&operands[1].to_z3_ast(), &operands[2].to_z3_ast())
+            }
+
+            // Byte reverse
+            BVOp::Reverse => {
+                let ast = operands[0].to_z3_ast();
+                let w = operands[0].width();
+                if w % 8 == 0 && w >= 16 {
+                    let bytes = w / 8;
+                    let mut parts: Vec<z3::ast::BV> = (0..bytes)
+                        .map(|i| ast.extract(i * 8 + 7, i * 8))
+                        .collect();
+                    parts.reverse();
+                    let mut result = parts[0].clone();
+                    for part in &parts[1..] {
+                        result = result.concat(part);
+                    }
+                    result
+                } else {
+                    ast
+                }
+            }
+
+            // Bit counting ops - create fresh symbolic (can't express in Z3 BV theory)
+            BVOp::Clz => z3::ast::BV::new_const("clz", _width),
+            BVOp::Ctz => z3::ast::BV::new_const("ctz", _width),
+            BVOp::Popcount => z3::ast::BV::new_const("popcount", _width),
         }
     }
 }
