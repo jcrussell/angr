@@ -5177,6 +5177,20 @@ class RustExplorationManager(RustStateExportMixin):
 
         for state_id in state_ids:
             try:
+                # Try lightweight proxy first (avoids expensive full state export).
+                # Falls back to full export if the filter accesses something
+                # the proxy doesn't support.
+                from angr.exploration.rust_state_proxy import RustStateProxy
+                proxy = RustStateProxy(self._rust_mgr, state_id, self._project)
+                try:
+                    if filter_func(proxy):
+                        keep_ids.append(state_id)
+                    else:
+                        prune_ids.append(state_id)
+                    continue  # Proxy worked, skip full export
+                except (AttributeError, TypeError, NotImplementedError):
+                    pass  # Proxy didn't support something, fall back
+
                 snapshot = self._rust_mgr.export_state(state_id)
                 py_state = self._snapshot_to_angr(snapshot)
 
@@ -5214,8 +5228,22 @@ class RustExplorationManager(RustStateExportMixin):
             Self, for chaining.
         """
         if filter_func is None:
-            # Default: prune unsatisfiable states
-            filter_func = lambda s: s.solver.satisfiable()
+            # Fast path: check satisfiability via Rust solver directly,
+            # avoiding expensive state export + _snapshot_to_angr conversion.
+            state_ids = list(self._rust_mgr.get_state_ids(stash))
+            prune_ids = []
+            for state_id in state_ids:
+                try:
+                    if not self._rust_mgr.state_satisfiable(state_id):
+                        prune_ids.append(state_id)
+                except Exception:
+                    pass  # Keep on error
+            for state_id in prune_ids:
+                try:
+                    self._rust_mgr.move_state(state_id, stash, 'pruned')
+                except Exception:
+                    pass
+            return self
 
         return self.filter(stash=stash, filter_func=filter_func)
 
