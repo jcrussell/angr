@@ -1332,17 +1332,18 @@ class RustExplorationManager(RustStateExportMixin):
         else:
             reg_names = []
 
-        # Build dict of all register values, then send in single FFI call
+        # Build dict of all register values, then send in single FFI call.
+        # Skip symbolic registers — Rust falls back to Python callbacks for
+        # symbolic values, so the Z3 eval cost (~6ms each) is wasted.
         bulk_regs = {}
         for reg_name in reg_names:
             try:
                 reg_val = getattr(regs, reg_name)
-                # Fast path: if concrete, extract directly without solver
-                if not reg_val.symbolic:
-                    concrete_val = reg_val.args[0] if reg_val.op == 'BVV' else angr_state.solver.eval(reg_val)
-                else:
-                    concrete_val = angr_state.solver.eval(reg_val)
-                bulk_regs[reg_name] = concrete_val
+                if reg_val.op == 'BVV':
+                    bulk_regs[reg_name] = reg_val.args[0]
+                elif not reg_val.symbolic:
+                    bulk_regs[reg_name] = angr_state.solver.eval(reg_val)
+                # else: symbolic — skip, Rust uses callback for these
             except (AttributeError, KeyError, Exception):
                 pass
         if bulk_regs:
