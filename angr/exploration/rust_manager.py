@@ -2606,11 +2606,14 @@ class RustExplorationManager(RustStateExportMixin):
         states (created by Rust forking without SimProcedure callbacks).
         Only evaluates states not yet checked (tracked via _evaluated_state_ids).
         """
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
         if not hasattr(self, '_evaluated_state_ids'):
             self._evaluated_state_ids = set()
 
         found_sids = set()
         avoid_sids = set()
+        _proxy_states = {}  # state_id -> RustStateProxy for uncached states
 
         # Collect all state IDs from active + deadended Rust stashes
         all_state_ids = set()
@@ -2629,18 +2632,26 @@ class RustExplorationManager(RustStateExportMixin):
                 continue
             self._evaluated_state_ids.add(state_id)
 
-            # Get or create a Python state for predicate evaluation
+            # Get or create a state for predicate evaluation
             state = self._state_cache.get(state_id)
             if state is None:
-                # Uncached state — create from root parent
-                state = self._create_state_for_predicate(state_id)
-                if state is None:
-                    continue
-                self._state_cache[state_id] = state
+                # Uncached state — use RustStateProxy for live register/memory access
+                stdout_data = b""
+                try:
+                    stdout_data = bytes(self._rust_mgr.get_state_stdout(state_id))
+                except Exception:
+                    pass
+                state = RustStateProxy(
+                    self._rust_mgr, state_id,
+                    project=self._project,
+                    stdin_vars=getattr(self, '_stdin_vars', None),
+                    stdout_data=stdout_data,
+                )
+                _proxy_states[state_id] = state
 
             try:
-                self._restore_plugins_to_state(state, state_id)
-                self._inject_rust_stdout(state, state_id)
+                if not isinstance(state, RustStateProxy):
+                    self._inject_rust_stdout(state, state_id)
 
                 if self._find_predicate is not None:
                     try:
@@ -2667,11 +2678,13 @@ class RustExplorationManager(RustStateExportMixin):
                         break
                 except Exception:
                     pass
-            # Even if not in any Rust stash, record in Python-side found
+            # Record in Python-side found for predicate-matched states
             if not hasattr(self, '_predicate_found'):
                 self._predicate_found = []
             if sid in self._state_cache:
                 self._predicate_found.append(self._state_cache[sid])
+            elif sid in _proxy_states:
+                self._predicate_found.append(_proxy_states[sid])
 
         for sid in avoid_sids:
             for stash in ('active', 'deadended'):
@@ -4054,106 +4067,95 @@ class RustExplorationManager(RustStateExportMixin):
     def _handle_find_predicate_callback(self, event: "_ExplorationEvent"):
         """Handle callable find predicate evaluation callback from Rust.
 
-        P2 fix: When find is a callable (lambda/function), Rust cannot evaluate
-        it directly. This handler creates an angr state and evaluates the
-        predicate, then tells Rust whether the state matched.
+        Uses a lightweight RustStateProxy to evaluate the predicate without
+        creating a full SimState. This avoids the ~30ms per-callback overhead
+        of _create_state_for_callback while providing live register/memory
+        access from the Rust pending state.
 
         Args:
             event: The exploration event from Rust.
         """
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
         state_id = event.callback_state_id
         addr = event.callback_addr
 
-        # Track current callback state ID
-        self._current_callback_state_id = state_id
+        if self._find_predicate is None:
+            self._rust_mgr.resume_find_predicate(False)
+            return
 
         try:
-            # Create angr state for predicate evaluation
-            state = self._create_state_for_callback(event)
-            if state is None:
-                l.warning(f"Could not create state for find predicate at 0x{addr:x}")
-                self._rust_mgr.resume_find_predicate(False)
-                return
-
-            # Evaluate the find predicate
-            if self._find_predicate is None:
-                l.warning("Find predicate callback but no predicate stored")
-                self._rust_mgr.resume_find_predicate(False)
-                return
+            # Use lightweight proxy — reads registers/memory directly from
+            # Rust pending state. No SimState creation needed.
+            # Build a proxy with the pending state's PC for ip access.
+            proxy = RustStateProxy(
+                self._rust_mgr, state_id,
+                project=self._project,
+                stdin_vars=getattr(self, '_stdin_vars', None),
+            )
+            # Override IP to use the callback address (the PLT/hook address),
+            # since the pending state may not be in the state index yet.
+            proxy._override_addr = addr
 
             try:
-                result = self._find_predicate(state)
+                result = self._find_predicate(proxy)
                 matched = bool(result) if result is not None else False
-                if _DBG:
-                    l.debug(f"Find predicate at 0x{addr:x} returned: {matched}")
             except Exception as e:
-                l.warning(f"Find predicate evaluation error at 0x{addr:x}: {e}")
+                if _DBG:
+                    l.debug(f"Find predicate at 0x{addr:x}: {e}")
                 matched = False
 
-            # Tell Rust the result
             self._rust_mgr.resume_find_predicate(matched)
 
-            # If matched, update state cache for later retrieval
-            if matched and state_id is not None:
-                self._state_cache[state_id] = state
+            # If matched, store the proxy as the found state
+            if matched:
+                if not hasattr(self, '_predicate_found'):
+                    self._predicate_found = []
+                self._predicate_found.append(proxy)
 
         except Exception as e:
             l.warning(f"Find predicate callback error: {e}")
             self._rust_mgr.resume_find_predicate(False)
-        finally:
-            # Clear callback state to avoid stale references
-            self._set_callback_state(None)
-            self._current_callback_state_id = None
 
     def _handle_avoid_predicate_callback(self, event: "_ExplorationEvent"):
         """Handle callable avoid predicate evaluation callback from Rust.
 
-        P7 fix: When avoid is a callable (lambda/function), Rust cannot evaluate
-        it directly. This handler creates an angr state and evaluates the
-        predicate, then tells Rust whether the state should be avoided.
+        Uses a lightweight RustStateProxy to evaluate the predicate without
+        creating a full SimState.
 
         Args:
             event: The exploration event from Rust.
         """
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
         state_id = event.callback_state_id
         addr = event.callback_addr
 
-        # Track current callback state ID
-        self._current_callback_state_id = state_id
+        if self._avoid_predicate is None:
+            self._rust_mgr.resume_avoid_predicate(False)
+            return
 
         try:
-            # Create angr state for predicate evaluation
-            state = self._create_state_for_callback(event)
-            if state is None:
-                l.warning(f"Could not create state for avoid predicate at 0x{addr:x}")
-                self._rust_mgr.resume_avoid_predicate(False)
-                return
-
-            # Evaluate the avoid predicate
-            if self._avoid_predicate is None:
-                l.warning("Avoid predicate callback but no predicate stored")
-                self._rust_mgr.resume_avoid_predicate(False)
-                return
+            proxy = RustStateProxy(
+                self._rust_mgr, state_id,
+                project=self._project,
+                stdin_vars=getattr(self, '_stdin_vars', None),
+            )
+            proxy._override_addr = addr
 
             try:
-                result = self._avoid_predicate(state)
+                result = self._avoid_predicate(proxy)
                 matched = bool(result) if result is not None else False
-                if _DBG:
-                    l.debug(f"Avoid predicate at 0x{addr:x} returned: {matched}")
             except Exception as e:
-                l.warning(f"Avoid predicate evaluation error at 0x{addr:x}: {e}")
+                if _DBG:
+                    l.debug(f"Avoid predicate at 0x{addr:x}: {e}")
                 matched = False
 
-            # Tell Rust the result
             self._rust_mgr.resume_avoid_predicate(matched)
 
         except Exception as e:
             l.warning(f"Avoid predicate callback error: {e}")
             self._rust_mgr.resume_avoid_predicate(False)
-        finally:
-            # Clear callback state to avoid stale references
-            self._set_callback_state(None)
-            self._current_callback_state_id = None
 
     def _handle_symbolic_branch_callback(self, event: "_ExplorationEvent"):
         """Handle symbolic branch callback from Rust.
@@ -5366,9 +5368,10 @@ class RustExplorationManager(RustStateExportMixin):
         # miss callback dispatch that step() handles correctly.
         has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
         if has_predicates or bool(self._active_techniques):
-            # Disable Rust-side predicate callbacks — we handle predicates
-            # on the Python cached states (which have stdout from printf).
-            self._rust_mgr.set_find_needs_python(False)
+            # Enable Rust-side find predicate callbacks to evaluate predicates
+            # at EVERY state PC, including PLT addresses that are only visible
+            # before hook resolution. Uses lightweight RustStateProxy.
+            self._rust_mgr.set_find_needs_python(self._find_predicate is not None)
             self._rust_mgr.set_avoid_needs_python(False)
             # Keep terminal states alive so predicates can check them.
             # Without this, states that output "win" then exit() get dropped

@@ -419,6 +419,13 @@ pub struct RustExplorationManager {
     uniqueness_registers: Vec<String>,
     /// Set of seen register tuple hashes for uniqueness checking.
     uniqueness_set: HashSet<u64>,
+    /// State IDs to skip find predicate check for on next pop.
+    /// Set after resume_find_predicate(false) to prevent infinite loop —
+    /// states are already checked and should continue to hook/step.
+    /// Cleared per-state after it advances (executes a VEX block).
+    skip_find_predicate_states: HashSet<u64>,
+    /// State IDs to skip avoid predicate check for on next pop.
+    skip_avoid_predicate_states: HashSet<u64>,
     /// Whether Rust-side profiling is enabled.
     profiling_enabled: bool,
     /// Accumulated execution statistics across all steps.
@@ -480,6 +487,8 @@ impl RustExplorationManager {
             deadended_count: 0,
             uniqueness_registers: Vec::new(),
             uniqueness_set: HashSet::new(),
+            skip_find_predicate_states: HashSet::new(),
+            skip_avoid_predicate_states: HashSet::new(),
             profiling_enabled: false,
             accumulated_stats: ExecutionStats::default(),
             state_index: HashMap::new(),
@@ -839,8 +848,13 @@ impl RustExplorationManager {
             // P7 fix: Check if callable avoid predicate needs Python evaluation
             // When avoid is a callable (lambda/function), we must return to Python
             // to evaluate it for each state, not just check addresses.
+            // Skip if this state was just checked (resume_avoid_predicate(false)
+            // sets skip_avoid_predicate_states to prevent infinite loop).
             if self.avoid_needs_python {
                 let state_id = state.state_id();
+                if self.skip_avoid_predicate_states.remove(&state_id) {
+                    // Fall through — predicate already checked at this PC
+                } else {
                 self.pending_callback = Some(PendingCallback {
                     state,
                     pre_callback_snapshot: None,
@@ -868,6 +882,7 @@ impl RustExplorationManager {
                     branch_false_target: None,
                     branch_condition_id: None,
                 });
+                }
             }
 
             // Check avoid addresses (address-based, only when NOT using callable predicate)
@@ -879,8 +894,13 @@ impl RustExplorationManager {
             // P2 fix: Check if callable find predicate needs Python evaluation
             // When find is a callable (lambda/function), we must return to Python
             // to evaluate it for each state, not just check addresses.
+            // Skip if this state was just checked (resume_find_predicate(false)
+            // sets skip_find_predicate_state to avoid infinite loop).
             if self.find_needs_python {
                 let state_id = state.state_id();
+                if self.skip_find_predicate_states.remove(&state_id) {
+                    // Fall through to hooks/stepping — predicate already checked
+                } else {
                 self.pending_callback = Some(PendingCallback {
                     state,
                     pre_callback_snapshot: None,
@@ -908,6 +928,7 @@ impl RustExplorationManager {
                     branch_false_target: None,
                     branch_condition_id: None,
                 });
+                } // else (not skip_find_predicate_state)
             }
 
             // Check find addresses (address-based, only when NOT using callable predicate)
@@ -1813,16 +1834,23 @@ impl RustExplorationManager {
 
         if matched {
             log::debug!("Find predicate matched - moving state to found stash");
+            let state_id = pending.state.state_id();
             self.stashes
                 .entry("found".to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(pending.state);
+            self.state_index.insert(state_id, "found".to_string());
         } else {
             log::debug!("Find predicate did not match - continuing exploration");
+            // Mark this state to skip the find predicate check on next pop,
+            // preventing infinite loop (state was already checked at this PC).
+            let state_id = pending.state.state_id();
+            self.skip_find_predicate_states.insert(state_id);
             self.stashes
                 .entry("active".to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(pending.state);
+            self.state_index.insert(state_id, "active".to_string());
         }
 
         Ok(())
@@ -1842,10 +1870,13 @@ impl RustExplorationManager {
             self.push_or_drop_terminal("avoid", pending.state);
         } else {
             log::debug!("Avoid predicate did not match - continuing exploration");
+            let state_id = pending.state.state_id();
+            self.skip_avoid_predicate_states.insert(state_id);
             self.stashes
                 .entry("active".to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(pending.state);
+            self.state_index.insert(state_id, "active".to_string());
         }
 
         Ok(())
@@ -2952,6 +2983,12 @@ impl RustExplorationManager {
     /// Find an immutable reference to a state by ID using the index.
     /// Falls back to linear scan if the index is stale.
     fn find_state(&self, state_id: u64) -> Option<&RustSimState> {
+        // Check pending callback state first (during find_predicate evaluation)
+        if let Some(ref pending) = self.pending_callback {
+            if pending.state.state_id() == state_id {
+                return Some(&pending.state);
+            }
+        }
         // Fast path: use index to find the right stash
         if let Some(stash_name) = self.state_index.get(&state_id) {
             if let Some(stash) = self.stashes.get(stash_name) {
@@ -3366,8 +3403,17 @@ impl RustExplorationManager {
                 interp.stats_mut().step_setup_time_ns += start.elapsed().as_nanos() as u64;
             }
 
-            // Run until event
-            let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, self.max_steps_per_run as u32);
+            // Run until event.
+            // When callable predicates are active (find_needs_python), limit to
+            // 1 block so the run loop can check the predicate at each PC.
+            // Otherwise the interpreter would execute many blocks, skipping past
+            // the target address without the predicate ever seeing it.
+            let steps_limit = if self.find_needs_python || self.avoid_needs_python {
+                1
+            } else {
+                self.max_steps_per_run as u32
+            };
+            let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, steps_limit);
 
             // Get last branch condition before dropping interpreter
             let last_condition = interp.take_last_branch_condition();

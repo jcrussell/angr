@@ -30,7 +30,7 @@ pip install -e . --no-build-isolation --no-deps
 ## Running Tests
 
 ```bash
-# Run RustExplorationManager tests (14/14 passing)
+# Run RustExplorationManager tests (24/24 passing)
 python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 
 # Run benchmark comparison against Python engine
@@ -53,7 +53,7 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 
 ## Current Test Status
 
-**RustExplorationManager Tests:** 14/14 passing
+**RustExplorationManager Tests:** 24/24 passing
 
 ## Rust Symbolic Execution
 

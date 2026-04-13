@@ -356,5 +356,110 @@ class TestRustEdgeCases:
                 assert s.memory_load(0x1000, 1) == bytes([i])
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCallablePredicates:
+    """Tests for callable find/avoid predicates with RustStateProxy."""
+
+    @pytest.fixture
+    def fauxware_project(self):
+        """Load fauxware test binary."""
+        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
+        if not os.path.exists(binary_path):
+            pytest.skip("fauxware binary not found")
+        return angr.Project(binary_path, auto_load_libs=False)
+
+    def test_find_lambda_by_address(self, fauxware_project):
+        """Callable find predicate matching by address works."""
+        from angr.exploration import RustExplorationManager
+
+        ACCEPTED = 0x4006ed
+        REJECTED = 0x4006fd
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=lambda s: s.addr == ACCEPTED, avoid=REJECTED,
+                    max_steps=50000)
+
+        assert len(mgr.found) > 0, "Should find at least one state reaching accepted()"
+        for s in mgr.found:
+            assert s.addr == ACCEPTED
+
+    def test_avoid_lambda_by_address(self, fauxware_project):
+        """Callable avoid predicate matching by address works."""
+        from angr.exploration import RustExplorationManager
+
+        ACCEPTED = 0x4006ed
+        REJECTED = 0x4006fd
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=ACCEPTED, avoid=lambda s: s.addr == REJECTED,
+                    max_steps=50000)
+
+        assert len(mgr.found) > 0, "Should find at least one state reaching accepted()"
+
+    def test_solver_proxy_eval_returns_single_value(self):
+        """RustSolverProxy.eval() returns a single value, not a tuple."""
+        from angr.exploration.rust_state_proxy import RustSolverProxy
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x >= 10)
+        ctx.add_constraint_ast(x <= 20)
+
+        # RustSolverProxy normally lazily forks from rust_mgr, but we can
+        # inject a pre-built solver context for unit testing.
+        proxy = RustSolverProxy.__new__(RustSolverProxy)
+        proxy._mgr = None
+        proxy._state_id = None
+        proxy._solver_ctx = ctx
+
+        result = proxy.eval(x)
+        assert isinstance(result, int), f"eval() should return int, got {type(result)}"
+        assert 10 <= result <= 20
+
+    def test_solver_proxy_eval_upto_returns_tuple(self):
+        """RustSolverProxy.eval_upto() returns a tuple."""
+        from angr.exploration.rust_state_proxy import RustSolverProxy
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x >= 10)
+        ctx.add_constraint_ast(x <= 12)
+
+        proxy = RustSolverProxy.__new__(RustSolverProxy)
+        proxy._mgr = None
+        proxy._state_id = None
+        proxy._solver_ctx = ctx
+
+        results = proxy.eval_upto(x, 5)
+        assert isinstance(results, tuple), f"eval_upto() should return tuple, got {type(results)}"
+        assert len(results) == 3  # exactly 10, 11, 12
+        assert set(results) == {10, 11, 12}
+
+    def test_solver_proxy_eval_cast_to_bytes(self):
+        """RustSolverProxy.eval() with cast_to=bytes works."""
+        from angr.exploration.rust_state_proxy import RustSolverProxy
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x == 0x41424344)
+
+        proxy = RustSolverProxy.__new__(RustSolverProxy)
+        proxy._mgr = None
+        proxy._state_id = None
+        proxy._solver_ctx = ctx
+
+        result = proxy.eval(x, cast_to=bytes)
+        assert isinstance(result, bytes), f"eval(cast_to=bytes) should return bytes, got {type(result)}"
+        assert result == b"ABCD"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -47,7 +47,68 @@ class RustSolverProxy:
         return self._solver_ctx.satisfiable()
 
     def eval(self, expr, n=1, cast_to=None, extra_constraints=(), **kwargs):
-        """Evaluate a symbolic expression to concrete value(s)."""
+        """Evaluate a symbolic expression to a concrete value.
+
+        Matches angr SimSolver.eval: returns a single value (not a tuple).
+        """
+        self._ensure_solver()
+        # Fast path: concrete expression
+        if hasattr(expr, 'concrete') and expr.concrete:
+            val = expr.concrete_value if hasattr(expr, 'concrete_value') else expr.args[0]
+            return self._cast_result(expr, val, cast_to)
+        if extra_constraints:
+            self._solver_ctx.push()
+            try:
+                for c in extra_constraints:
+                    self._solver_ctx.add_constraint_ast(c)
+                result = self._solver_ctx.eval(expr)
+            finally:
+                self._solver_ctx.pop()
+        else:
+            result = self._solver_ctx.eval(expr)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return self._cast_result(expr, result, cast_to)
+
+    def _cast_result(self, expr, result, cast_to):
+        """Cast eval result matching angr's SimSolver._cast_to behavior."""
+        if cast_to is None:
+            return result
+        if cast_to is bytes:
+            if hasattr(expr, '__len__'):
+                nbits = len(expr)
+            elif hasattr(expr, 'size'):
+                nbits = expr.size()
+            else:
+                nbits = 64
+            if nbits == 0:
+                return b""
+            return result.to_bytes(nbits // 8, byteorder="big")
+        return cast_to(result)
+
+    def _eval_inner(self, expr, n, cast_to):
+        if n == 1:
+            result = self._solver_ctx.eval(expr)
+            if result is None:
+                raise claripy.errors.UnsatError("unsat")
+            result = self._cast_result(expr, result, cast_to)
+            return (result,)
+        else:
+            results = self._solver_ctx.eval_upto(expr, n)
+            results = tuple(self._cast_result(expr, r, cast_to) for r in results)
+            return results
+
+    def eval_one(self, expr, **kwargs):
+        """Evaluate expression expecting exactly one solution."""
+        results = self.eval_upto(expr, 2, **kwargs)
+        if len(results) != 1:
+            raise claripy.errors.ClaripyError(
+                f"expected 1 solution, got {len(results)}"
+            )
+        return results[0]
+
+    def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), **kwargs):
+        """Evaluate expression for up to n solutions. Returns a tuple."""
         self._ensure_solver()
         if extra_constraints:
             self._solver_ctx.push()
@@ -59,39 +120,9 @@ class RustSolverProxy:
                 self._solver_ctx.pop()
         return self._eval_inner(expr, n, cast_to)
 
-    def _eval_inner(self, expr, n, cast_to):
-        if n == 1:
-            result = self._solver_ctx.eval(expr)
-            if result is None:
-                raise claripy.errors.UnsatError("unsat")
-            if cast_to is not None:
-                result = cast_to(result)
-            return (result,)
-        else:
-            results = self._solver_ctx.eval_upto(expr, n)
-            if cast_to is not None:
-                results = tuple(cast_to(r) for r in results)
-            else:
-                results = tuple(results)
-            return results
-
-    def eval_one(self, expr, **kwargs):
-        """Evaluate expression expecting exactly one solution."""
-        results = self.eval(expr, n=2, **kwargs)
-        if len(results) != 1:
-            raise claripy.errors.ClaripyError(
-                f"expected 1 solution, got {len(results)}"
-            )
-        return results[0]
-
-    def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), **kwargs):
-        """Evaluate expression for up to n solutions."""
-        return self.eval(expr, n=n, cast_to=cast_to,
-                        extra_constraints=extra_constraints, **kwargs)
-
     def eval_exact(self, expr, n, **kwargs):
         """Evaluate expression expecting exactly n solutions."""
-        results = self.eval(expr, n=n + 1, **kwargs)
+        results = self.eval_upto(expr, n + 1, **kwargs)
         if len(results) != n:
             raise claripy.errors.ClaripyError(
                 f"expected {n} solutions, got {len(results)}"
@@ -100,7 +131,7 @@ class RustSolverProxy:
 
     def eval_atleast(self, expr, n, **kwargs):
         """Evaluate expression expecting at least n solutions."""
-        results = self.eval(expr, n=n, **kwargs)
+        results = self.eval_upto(expr, n, **kwargs)
         if len(results) < n:
             raise claripy.errors.ClaripyError(
                 f"expected at least {n} solutions, got {len(results)}"
@@ -415,6 +446,8 @@ class RustStateProxy:
     @property
     def addr(self):
         """Current program counter (O(1) via state index, no full export)."""
+        if hasattr(self, '_override_addr') and self._override_addr is not None:
+            return self._override_addr
         try:
             pc = self._mgr.get_state_pc_by_id(self._state_id)
             if pc is not None:
