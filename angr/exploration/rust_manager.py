@@ -1627,7 +1627,6 @@ class RustExplorationManager(RustStateExportMixin):
 
         page_size = 0x1000
         pages_mapped = 0
-
         # Identify pages containing user-written symbolic data. These pages
         # should NOT be pre-populated with concrete loader data, so that Rust
         # falls back to the Python memory_load callback which returns the
@@ -1742,29 +1741,83 @@ class RustExplorationManager(RustStateExportMixin):
         symbolic_regions = []  # (addr, claripy_ast) pairs to import
         for page_addr in [sp_page]:
             try:
-                page_data = angr_state.memory.load(
-                    page_addr, page_size, endness='Iend_BE',
-                    inspect=False, disable_actions=True
-                )
-                # Map concrete representation of the page
-                concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
-                rust_state.map_memory_data(page_addr, concrete, 6)
-                pages_synced += 1
+                # Fast path: use page.concrete_load() to avoid expensive
+                # solver.eval() on pages full of unconstrained fill.
+                # solver.eval() on a 4KB symbolic page takes 20-150ms;
+                # concrete_load() returns the raw bytes in <0.1ms.
+                page_no = page_addr // page_size
+                mem_pages = getattr(angr_state.memory, '_pages', None)
+                page_obj = mem_pages.get(page_no) if mem_pages is not None else None
+                used_fast_path = False
 
-                # Only extract symbolic regions for meaningful symbols.
-                # Skip the expensive byte-by-byte scan for pages that only
-                # contain unconstrained fill (common for stack pages at init).
-                if page_data.symbolic:
-                    leaf_names = list(page_data.variables)
-                    has_user_sym = any(
-                        not n.startswith('mem_') and not n.startswith('reg_')
-                        and not n.startswith('unconstrained')
-                        for n in leaf_names
+                if page_obj is not None and hasattr(page_obj, 'concrete_load'):
+                    try:
+                        concrete = bytes(page_obj.concrete_load(0, page_size))
+                        if len(concrete) == page_size:
+                            rust_state.map_memory_data(page_addr, concrete, 6)
+                            pages_synced += 1
+                            used_fast_path = True
+
+                            # Check for user symbolic data via symbolic_data dict
+                            # (O(1), no solver involved)
+                            sd = getattr(page_obj, 'symbolic_data', None)
+                            if sd and len(sd) > 0:
+                                # Fast symbolic extraction: use symbolic_data dict
+                                # to find which byte ranges are symbolic, then scan
+                                # only those ranges (not all 4096 bytes).
+                                # _extract_symbolic_regions scans 4096 bytes (~137ms);
+                                # targeted scan of just the symbolic ranges is ~1-5ms.
+                                scan_ranges = []
+                                for sd_offset, sd_ast in sd.items():
+                                    if not hasattr(sd_ast, 'variables'):
+                                        continue
+                                    leaf_names = list(sd_ast.variables)
+                                    is_user = any(
+                                        not n.startswith('mem_') and not n.startswith('reg_')
+                                        and not n.startswith('unconstrained')
+                                        for n in leaf_names
+                                    )
+                                    if is_user:
+                                        ast_size = sd_ast.size() // 8 if hasattr(sd_ast, 'size') else 1
+                                        scan_ranges.append((sd_offset, ast_size))
+                                if scan_ranges:
+                                    for start_offset, size in scan_ranges:
+                                        for byte_off in range(size):
+                                            addr = page_addr + start_offset + byte_off
+                                            if start_offset + byte_off >= page_size:
+                                                break
+                                            try:
+                                                val = angr_state.memory.load(
+                                                    addr, 1, endness='Iend_BE',
+                                                    inspect=False, disable_actions=True)
+                                                if val.symbolic:
+                                                    symbolic_regions.append((addr, val))
+                                            except Exception:
+                                                pass
+                    except Exception:
+                        pass  # Fall back to slow path
+
+                if not used_fast_path:
+                    # Slow path: load through memory mixin stack + solver.eval()
+                    page_data = angr_state.memory.load(
+                        page_addr, page_size, endness='Iend_BE',
+                        inspect=False, disable_actions=True
                     )
-                    if has_user_sym:
-                        self._extract_symbolic_regions(
-                            angr_state, page_addr, page_size,
-                            arch.bytes, symbolic_regions)
+                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
+                    rust_state.map_memory_data(page_addr, concrete, 6)
+                    pages_synced += 1
+
+                    if page_data.symbolic:
+                        leaf_names = list(page_data.variables)
+                        has_user_sym = any(
+                            not n.startswith('mem_') and not n.startswith('reg_')
+                            and not n.startswith('unconstrained')
+                            for n in leaf_names
+                        )
+                        if has_user_sym:
+                            self._extract_symbolic_regions(
+                                angr_state, page_addr, page_size,
+                                arch.bytes, symbolic_regions)
             except Exception:
                 pass
         if pages_synced:
