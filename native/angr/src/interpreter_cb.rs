@@ -4167,34 +4167,19 @@ fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
 
 /// Build a balanced ITE tree from a list of (condition, value) pairs.
 ///
-/// This creates a balanced binary tree of ITE nodes, which is more efficient
-/// than a linear chain for both Z3 solving and symbolic evaluation.
+/// Build a linear ITE chain: ITE(c1, v1, ITE(c2, v2, ... ITE(cn, vn, default)))
 /// Returns the value for the first matching condition, or a default value.
 fn build_balanced_ite(
     pairs: &[(RustBV, RustBV)],
     default_value: RustBV,
     ctx: &SymContext,
 ) -> RustBV {
-    if pairs.is_empty() {
-        return default_value;
+    // Build right-to-left: innermost ITE is the last pair
+    let mut result = default_value;
+    for (cond, val) in pairs.iter().rev() {
+        result = cond.ite(val, &result, ctx);
     }
-
-    if pairs.len() == 1 {
-        // Base case: single condition
-        return pairs[0].0.ite(&pairs[0].1, &default_value, ctx);
-    }
-
-    // Build balanced tree by splitting in the middle
-    let mid = pairs.len() / 2;
-    let (left, right) = pairs.split_at(mid);
-
-    let left_ite = build_balanced_ite(left, default_value.clone(), ctx);
-    let right_ite = build_balanced_ite(right, default_value, ctx);
-
-    // Combine: if any left condition matches, use left_ite, else right_ite
-    // We need to compute "any left condition is true"
-    // For efficiency, we use the first left condition as the split point
-    pairs[0].0.ite(&left_ite, &right_ite, ctx)
+    result
 }
 
 #[cfg(test)]
