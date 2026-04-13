@@ -226,26 +226,23 @@ impl SymContext {
     /// Add a constraint that the bitvector is true (non-zero for 1-bit).
     #[cfg(feature = "vex-engine-z3")]
     pub fn assume_true(&self, cond: &RustBV) {
-        use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python
         self.assumed_constraints.lock().push((cond.clone(), true));
-        let ast = cond.to_z3_ast();
-        let one = z3::ast::BV::from_u64(1, 1);
-        let constraint = ast._eq(&one);
+        // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
+        // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
+        let constraint = cond.to_z3_bool();
         self.add_constraint(constraint);
     }
 
     /// Add a constraint that the bitvector is false (zero for 1-bit).
     #[cfg(feature = "vex-engine-z3")]
     pub fn assume_false(&self, cond: &RustBV) {
-        use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python
         self.assumed_constraints.lock().push((cond.clone(), false));
-        let ast = cond.to_z3_ast();
-        let zero = z3::ast::BV::from_u64(0, 1);
-        let constraint = ast._eq(&zero);
+        // Negate the bool directly
+        let constraint = cond.to_z3_bool().not();
         self.add_constraint(constraint);
     }
 
@@ -299,21 +296,19 @@ impl SymContext {
     /// This method is only used in non-deferred mode and for explicit checks.
     #[cfg(feature = "vex-engine-z3")]
     pub fn check_branch_feasibility(&self, cond: &RustBV) -> (bool, bool) {
-        use z3::ast::Ast;
         debug_assert_eq!(cond.width(), 1);
         // Quick check for concrete values
         if let Some(v) = cond.as_u128() {
             return (v != 0, v == 0);
         }
-        let ast = cond.to_z3_ast();
-        let one = z3::ast::BV::from_u64(1, 1);
-        let zero = z3::ast::BV::from_u64(0, 1);
+        // Use native Bool to avoid ITE wrapping overhead
+        let bool_ast = cond.to_z3_bool();
 
         let solver = self.solver.lock();
 
         // Check true branch
         solver.push();
-        solver.assert(&ast._eq(&one));
+        solver.assert(&bool_ast);
         let can_true = matches!(solver.check(), z3::SatResult::Sat);
         solver.pop(1);
 
@@ -323,7 +318,7 @@ impl SymContext {
 
         // Check false branch
         solver.push();
-        solver.assert(&ast._eq(&zero));
+        solver.assert(&bool_ast.not());
         let can_false = matches!(solver.check(), z3::SatResult::Sat);
         solver.pop(1);
 

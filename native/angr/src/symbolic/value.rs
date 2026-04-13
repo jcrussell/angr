@@ -1130,6 +1130,54 @@ impl RustBV {
         }
     }
 
+    /// Convert a 1-bit RustBV to a native Z3 Bool, avoiding ITE wrapping.
+    ///
+    /// For comparison ops (Eq, Ne, Ult, etc.), produces the native Z3 Bool
+    /// directly instead of going through ITE(cmp, BV(1,1), BV(0,1)) then
+    /// `._eq(BV(1,1))`. Saves 3 Z3 AST nodes per comparison constraint.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn to_z3_bool(&self) -> z3::ast::Bool {
+        use z3::ast::Ast;
+        match self {
+            RustBV::Concrete { value, .. } => {
+                z3::ast::Bool::from_bool(*value != 0)
+            }
+            RustBV::Constrained { value, .. } => {
+                z3::ast::Bool::from_bool(*value != 0)
+            }
+            RustBV::Expression { op, operands, .. } => {
+                match op {
+                    BVOp::Eq => operands[0].to_z3_ast()._eq(&operands[1].to_z3_ast()),
+                    BVOp::Ne => operands[0].to_z3_ast()._eq(&operands[1].to_z3_ast()).not(),
+                    BVOp::Ult => operands[0].to_z3_ast().bvult(&operands[1].to_z3_ast()),
+                    BVOp::Ule => operands[0].to_z3_ast().bvule(&operands[1].to_z3_ast()),
+                    BVOp::Ugt => operands[0].to_z3_ast().bvugt(&operands[1].to_z3_ast()),
+                    BVOp::Uge => operands[0].to_z3_ast().bvuge(&operands[1].to_z3_ast()),
+                    BVOp::Slt => operands[0].to_z3_ast().bvslt(&operands[1].to_z3_ast()),
+                    BVOp::Sle => operands[0].to_z3_ast().bvsle(&operands[1].to_z3_ast()),
+                    BVOp::Sgt => operands[0].to_z3_ast().bvsgt(&operands[1].to_z3_ast()),
+                    BVOp::Sge => operands[0].to_z3_ast().bvsge(&operands[1].to_z3_ast()),
+                    // Not() on a 1-bit comparison: negate the inner bool
+                    BVOp::Not if operands.len() == 1 => {
+                        operands[0].to_z3_bool().not()
+                    }
+                    // Fallback: convert BV to Bool via _eq(1)
+                    _ => {
+                        let ast = self.to_z3_ast();
+                        let one = z3::ast::BV::from_u64(1, 1);
+                        ast._eq(&one)
+                    }
+                }
+            }
+            // Symbolic BV — use _eq(1)
+            _ => {
+                let ast = self.to_z3_ast();
+                let one = z3::ast::BV::from_u64(1, 1);
+                ast._eq(&one)
+            }
+        }
+    }
+
     /// Build a Z3 AST from an operation and its operands.
     /// Called lazily when a Z3 AST is actually needed (e.g., for constraint solving).
     #[cfg(feature = "vex-engine-z3")]
