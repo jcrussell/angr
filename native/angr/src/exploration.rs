@@ -1548,6 +1548,19 @@ impl RustExplorationManager {
     /// This moves the pending state to the errored stash instead of continuing
     /// with a corrupted state. This prevents "list index out of range" errors
     /// caused by UNSAT states proliferating from callback failures.
+    /// Fast-path: deadend the pending callback state without any changes.
+    /// Used for SimProcedure continuations known to just call exit().
+    /// Much cheaper than resume_after_simprocedure(0, None, None, None)
+    /// since it skips apply_changes, deferred fork processing, etc.
+    pub fn deadend_pending_callback(&mut self) -> PyResult<()> {
+        let pending = self.pending_callback.take().ok_or_else(|| {
+            PyRuntimeError::new_err("no pending callback state for deadend")
+        })?;
+
+        self.push_or_drop_terminal("deadended", pending.state);
+        Ok(())
+    }
+
     pub fn resume_after_error(&mut self, error_msg: &str) -> PyResult<()> {
         let pending = self.pending_callback.take().ok_or_else(|| {
             PyRuntimeError::new_err("no pending callback state for error handling")

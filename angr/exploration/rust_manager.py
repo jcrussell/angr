@@ -215,6 +215,11 @@ class RustExplorationManager(RustStateExportMixin):
         # Maps continuation_addr -> procedure_data tuple
         self._pending_procedure_data: Dict[int, Tuple] = {}
 
+        # Cache for addresses where SimProcedure continuations always result in exit.
+        # After the first time a continuation at an address produces only Ijk_Exit
+        # successors, all subsequent callbacks are fast-deadended without state creation.
+        self._exit_continuation_addrs: set = set()
+
         # P10 fix: Track root state IDs for plugin restoration
         # Maps state_id -> root_state_id (the original state from Python)
         # When Rust forks states, this allows finding the original state for plugin copying
@@ -3088,6 +3093,7 @@ class RustExplorationManager(RustStateExportMixin):
         addr = event.callback_addr
         name = event.callback_name
         state_id = event.callback_state_id
+        addr_int = int(addr) if addr is not None else None
 
         # Track current callback state ID for symbolic memory preservation
         self._current_callback_state_id = state_id
@@ -3132,7 +3138,22 @@ class RustExplorationManager(RustStateExportMixin):
         proc_no_ret = getattr(proc, 'NO_RET', False)
         if proc_no_ret and name in no_ret_names:
             l.debug(f"Fast path: no-return procedure {name} at 0x{addr:x} — deadending")
-            self._rust_mgr.resume_after_simprocedure(0, None, None)
+            self._rust_mgr.deadend_pending_callback()
+            self._current_callback_state_id = None
+            _proc_name = name or proc.__class__.__name__
+            if _proc_name not in self._procedure_times:
+                self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
+            self._procedure_times[_proc_name]['count'] += 1
+            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+            return
+
+        # Fast path for continuation addresses known to result in exit.
+        # After the first time a continuation produces only Ijk_Exit successors,
+        # subsequent callbacks at the same address skip state creation entirely.
+        if addr_int in self._exit_continuation_addrs:
+            l.debug(f"Fast path: exit continuation at 0x{addr:x} — deadending")
+            self._rust_mgr.deadend_pending_callback()
             self._current_callback_state_id = None
             _proc_name = name or proc.__class__.__name__
             if _proc_name not in self._procedure_times:
@@ -3310,9 +3331,26 @@ class RustExplorationManager(RustStateExportMixin):
                 if proc_no_ret and name in no_ret_names:
                     # Deadend the state by resuming at address 0
                     l.debug(f"No-return procedure {name} with successors — deadending")
-                    self._rust_mgr.resume_after_simprocedure(0, None, None)
+                    self._rust_mgr.deadend_pending_callback()
                     self._set_callback_state(None)
                     self._current_callback_state_id = None
+                    return
+
+                # Detect exit-only continuations: if ALL successors have Ijk_Exit
+                # jumpkind, this address always results in deadend (e.g., __libc_start_main's
+                # after_main continuation). Cache this for fast-path on future callbacks.
+                _all_exit = all(
+                    getattr(s.history, 'jumpkind', None) == 'Ijk_Exit'
+                    for s in all_succs
+                )
+                if _all_exit and addr_int is not None:
+                    l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
+                    self._exit_continuation_addrs.add(addr_int)
+                    self._rust_mgr.deadend_pending_callback()
+                    self._set_callback_state(None)
+                    self._current_callback_state_id = None
+                    self._perf_stats['callback_simprocedure_count'] += 1
+                    self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
                     return
 
                 # First successor continues in Rust
@@ -3394,7 +3432,7 @@ class RustExplorationManager(RustStateExportMixin):
                             pass
                         self._rust_mgr.resume_after_simprocedure(addr, None, None)
                     else:
-                        self._rust_mgr.resume_after_simprocedure(0, None, None)
+                        self._rust_mgr.deadend_pending_callback()
                 elif is_zero_length_hook:
                     # Tell Rust to skip the hook and execute from addr
                     # GAP 2: Pass original constraints for constraint sync
@@ -3408,7 +3446,7 @@ class RustExplorationManager(RustStateExportMixin):
                     proc_no_ret = getattr(proc, 'NO_RET', False)
                     if proc_no_ret:
                         l.debug(f"No-return procedure {name} — deadending state")
-                        self._rust_mgr.resume_after_simprocedure(0, None, None)
+                        self._rust_mgr.deadend_pending_callback()
                     else:
                         ret_addr = event.callback_return_addr or (addr + 1)
                         for sym_addr, ast in (tracked_symbolic_writes or []):
