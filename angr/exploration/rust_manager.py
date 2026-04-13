@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import angr
 
 l = logging.getLogger(name=__name__)
+_DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug calls
 
 # Try to import the Rust exploration manager
 try:
@@ -343,7 +344,8 @@ class RustExplorationManager(RustStateExportMixin):
                                     # Exact match - return the full AST
                                     concrete = state.solver.eval(ast).to_bytes(size, 'little')
                                     self._register_handle(id(ast), ast, addr=addr, size=size, state_id=lookup_id)
-                                    l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
+                                    if _DBG:
+                                        l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
                                     return (concrete, True, ast)
                                 elif offset == 0 and size < mem_size:
                                     # Partial read from start - extract bytes
@@ -363,7 +365,8 @@ class RustExplorationManager(RustStateExportMixin):
                             val = val()
                             coerce_attempts += 1
                         except Exception:
-                            l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
+                            if _DBG:
+                                l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
                             val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
                             break
 
@@ -438,7 +441,8 @@ class RustExplorationManager(RustStateExportMixin):
                     # which returns the symbolic AST (enabling symbolic forking)
                     is_symbolic = getattr(data, 'symbolic', False)
                     if is_symbolic:
-                        l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
+                        if _DBG:
+                            l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
                         return (bytes(4096), 0, False)
                     concrete = state.solver.eval(data).to_bytes(4096, 'little')
                     return (concrete, 7, True)  # RWX permissions
@@ -1031,11 +1035,13 @@ class RustExplorationManager(RustStateExportMixin):
             no_return = getattr(proc, 'NO_RET', False)
             procs.append((addr, name, num_args, no_return))
             self._registered_hooks.add(addr)
-            l.debug(f"Syncing dynamically created hook at 0x{addr:x}: {name}")
+            if _DBG:
+                l.debug(f"Syncing dynamically created hook at 0x{addr:x}: {name}")
 
         if procs:
             self._rust_mgr.register_simprocedures(procs)
-            l.debug(f"Synced {len(procs)} dynamically created hooks")
+            if _DBG:
+                l.debug(f"Synced {len(procs)} dynamically created hooks")
 
     # =========================================================================
     # Persistent disk cache for Python init results
@@ -2122,7 +2128,8 @@ class RustExplorationManager(RustStateExportMixin):
                 rust_history = self._rust_mgr.get_pending_history()
                 rust_jumpkind = self._rust_mgr.get_pending_jumpkind()
             except Exception as e:
-                l.debug(f"Could not get Rust history: {e}")
+                if _DBG:
+                    l.debug(f"Could not get Rust history: {e}")
                 rust_history = []
                 rust_jumpkind = "Ijk_Boring"
         if rust_jumpkind is None:
@@ -2150,8 +2157,9 @@ class RustExplorationManager(RustStateExportMixin):
         except Exception:
             pass
 
-        l.debug(f"Initialized callback history with {len(state.history.recent_bbl_addrs)} entries, "
-                f"jumpkind={rust_jumpkind}, addr=0x{callback_addr:x}")
+        if _DBG:
+            l.debug(f"Initialized callback history with {len(state.history.recent_bbl_addrs)} entries, "
+                    f"jumpkind={rust_jumpkind}, addr=0x{callback_addr:x}")
 
     def _init_callback_callstack(self, state: "angr.SimState", event: "_ExplorationEvent"):
         """Initialize callstack for SimProcedure continuations.
@@ -3100,7 +3108,8 @@ class RustExplorationManager(RustStateExportMixin):
 
         # Handle internal passthrough - this is internal binary code, just continue execution
         if name == "__internal_passthrough__":
-            l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
+            if _DBG:
+                l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
             # Resume execution at this address, no SimProcedure to run
             self._rust_mgr.resume_after_simprocedure(addr, None, None)
             self._perf_stats['callback_simprocedure_count'] += 1
@@ -3115,7 +3124,8 @@ class RustExplorationManager(RustStateExportMixin):
                 proc_name = candidate.__class__.__name__ if hasattr(candidate, '__class__') else str(candidate)
                 if proc_name == name:
                     proc = candidate
-                    l.debug(f"Found SimProcedure {name} at 0x{proc_addr:x} (callback was at 0x{addr:x})")
+                    if _DBG:
+                        l.debug(f"Found SimProcedure {name} at 0x{proc_addr:x} (callback was at 0x{addr:x})")
                     break
         if proc is None:
             l.warning(f"SimProcedure not found at 0x{addr:x} (name={name})")
@@ -3137,7 +3147,8 @@ class RustExplorationManager(RustStateExportMixin):
         no_ret_names = {'exit', '_exit', 'abort', '__stack_chk_fail'}
         proc_no_ret = getattr(proc, 'NO_RET', False)
         if proc_no_ret and name in no_ret_names:
-            l.debug(f"Fast path: no-return procedure {name} at 0x{addr:x} — deadending")
+            if _DBG:
+                l.debug(f"Fast path: no-return procedure {name} at 0x{addr:x} — deadending")
             self._rust_mgr.deadend_pending_callback()
             self._current_callback_state_id = None
             _proc_name = name or proc.__class__.__name__
@@ -3152,7 +3163,8 @@ class RustExplorationManager(RustStateExportMixin):
         # After the first time a continuation produces only Ijk_Exit successors,
         # subsequent callbacks at the same address skip state creation entirely.
         if addr_int in self._exit_continuation_addrs:
-            l.debug(f"Fast path: exit continuation at 0x{addr:x} — deadending")
+            if _DBG:
+                l.debug(f"Fast path: exit continuation at 0x{addr:x} — deadending")
             self._rust_mgr.deadend_pending_callback()
             self._current_callback_state_id = None
             _proc_name = name or proc.__class__.__name__
@@ -3263,9 +3275,11 @@ class RustExplorationManager(RustStateExportMixin):
             tracked_writes = memory_tracker.get_writes()
             tracked_symbolic_writes = memory_tracker.get_symbolic_writes()
             if tracked_writes:
-                l.debug(f"Tracked {len(tracked_writes)} memory writes during callback")
+                if _DBG:
+                    l.debug(f"Tracked {len(tracked_writes)} memory writes during callback")
             if tracked_symbolic_writes:
-                l.debug(f"Tracked {len(tracked_symbolic_writes)} symbolic memory writes during callback")
+                if _DBG:
+                    l.debug(f"Tracked {len(tracked_symbolic_writes)} symbolic memory writes during callback")
 
             # Handle successors - this includes sync back to Rust
             _sp_sync_start = time.perf_counter_ns()
@@ -3302,7 +3316,8 @@ class RustExplorationManager(RustStateExportMixin):
                                 continue
                             if cont_addr_int != addr:
                                 self._pending_procedure_data[cont_addr_int] = pdata
-                                l.debug(f"Stored procedure_data for continuation at 0x{cont_addr_int:x}")
+                                if _DBG:
+                                    l.debug(f"Stored procedure_data for continuation at 0x{cont_addr_int:x}")
 
                                 # C1 Fix: Register continuation hook with Rust IMMEDIATELY
                                 # This prevents "Cannot execute external address" errors
@@ -3316,9 +3331,11 @@ class RustExplorationManager(RustStateExportMixin):
                                         cont_no_return = getattr(cont_proc, 'NO_RET', False)
                                         self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])
                                         self._registered_hooks.add(cont_addr_int)
-                                        l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}: {cont_name}")
+                                        if _DBG:
+                                            l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}: {cont_name}")
                 except Exception as e:
-                    l.debug(f"Could not capture procedure_data: {e}")
+                    if _DBG:
+                        l.debug(f"Could not capture procedure_data: {e}")
 
             if all_succs:
                 # Check for no-return procedures (exit, abort, etc.)
@@ -3330,7 +3347,8 @@ class RustExplorationManager(RustStateExportMixin):
                 no_ret_names = {'exit', '_exit', 'abort', '__stack_chk_fail'}
                 if proc_no_ret and name in no_ret_names:
                     # Deadend the state by resuming at address 0
-                    l.debug(f"No-return procedure {name} with successors — deadending")
+                    if _DBG:
+                        l.debug(f"No-return procedure {name} with successors — deadending")
                     self._rust_mgr.deadend_pending_callback()
                     self._set_callback_state(None)
                     self._current_callback_state_id = None
@@ -3344,7 +3362,8 @@ class RustExplorationManager(RustStateExportMixin):
                     for s in all_succs
                 )
                 if _all_exit and addr_int is not None:
-                    l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
+                    if _DBG:
+                        l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
                     self._exit_continuation_addrs.add(addr_int)
                     self._rust_mgr.deadend_pending_callback()
                     self._set_callback_state(None)
@@ -3377,9 +3396,11 @@ class RustExplorationManager(RustStateExportMixin):
                             first_succ.memory.store(new_sp,
                                 claripy.BVV(cont_addr, ptr_size * 8),
                                 endness='Iend_LE')
-                            l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
+                            if _DBG:
+                                l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
                     except Exception as e:
-                        l.debug(f"Could not push continuation addr: {e}")
+                        if _DBG:
+                            l.debug(f"Could not push continuation addr: {e}")
 
                 # For zero-length hooks, if successor has same address as hook,
                 # the hook just modifies state and we should continue execution
@@ -3420,7 +3441,8 @@ class RustExplorationManager(RustStateExportMixin):
                 # CallReturn is the terminal hook used by factory.callable().
                 no_ret_terminal = name in ('exit', '_exit', 'abort', '__stack_chk_fail', 'CallReturn')
                 if no_ret_terminal:
-                    l.debug(f"Terminal procedure {name} — deadending state at 0x{addr:x}")
+                    if _DBG:
+                        l.debug(f"Terminal procedure {name} — deadending state at 0x{addr:x}")
                     if is_zero_length_hook:
                         # For zero-length terminal hooks (e.g., CallReturn at callable's
                         # return address), skip the hook and resume at addr. The Rust
@@ -3445,7 +3467,8 @@ class RustExplorationManager(RustStateExportMixin):
                     # Non-zero-length, non-terminal: check NO_RET as fallback
                     proc_no_ret = getattr(proc, 'NO_RET', False)
                     if proc_no_ret:
-                        l.debug(f"No-return procedure {name} — deadending state")
+                        if _DBG:
+                            l.debug(f"No-return procedure {name} — deadending state")
                         self._rust_mgr.deadend_pending_callback()
                     else:
                         ret_addr = event.callback_return_addr or (addr + 1)
@@ -3555,7 +3578,8 @@ class RustExplorationManager(RustStateExportMixin):
                 if addr not in existing_addrs:
                     mem_changes.append((addr, data))
                     existing_addrs.add(addr)
-            l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
+            if _DBG:
+                l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
 
         # Collect all symbolic addresses to exclude from concrete memory changes
         # This prevents apply_changes from overwriting symbolic imports with concrete values
@@ -3581,15 +3605,18 @@ class RustExplorationManager(RustStateExportMixin):
                 orig_constraints=orig_constraints,
                 orig_constraint_count=orig_constraint_count)
             if new_constraints:
-                l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
+                if _DBG:
+                    l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
 
         # For zero-length hooks, tell Rust to skip the hook on next step
         if skip_hook_addr is not None:
             try:
                 self._rust_mgr.set_skip_hook_addr(skip_hook_addr)
-                l.debug(f"Set skip_hook_addr to 0x{skip_hook_addr:x}")
+                if _DBG:
+                    l.debug(f"Set skip_hook_addr to 0x{skip_hook_addr:x}")
             except Exception as e:
-                l.debug(f"Could not set skip_hook_addr: {e}")
+                if _DBG:
+                    l.debug(f"Could not set skip_hook_addr: {e}")
 
         # Resume Rust with the changes and any new constraints.
         # IMPORTANT: This must happen BEFORE symbolic imports, because
@@ -3616,9 +3643,11 @@ class RustExplorationManager(RustStateExportMixin):
         for addr, ast in all_sym_imports:
             try:
                 self._rust_mgr.import_symbolic_to_state(state_id, addr, ast)
-                l.debug(f"Imported symbolic memory at 0x{addr:x} to state {state_id}")
+                if _DBG:
+                    l.debug(f"Imported symbolic memory at 0x{addr:x} to state {state_id}")
             except Exception as e:
-                l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
+                if _DBG:
+                    l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
 
         # Update cache for future callbacks
         state_id = event.callback_state_id
@@ -3654,9 +3683,11 @@ class RustExplorationManager(RustStateExportMixin):
         # This prevents infinite loops when resuming at a zero-length hook address
         try:
             self._rust_mgr.set_skip_hook_addr(addr)
-            l.debug(f"Set skip_hook_addr to 0x{addr:x}")
+            if _DBG:
+                l.debug(f"Set skip_hook_addr to 0x{addr:x}")
         except Exception as e:
-            l.debug(f"Could not set skip_hook_addr: {e}")
+            if _DBG:
+                l.debug(f"Could not set skip_hook_addr: {e}")
 
         # Extract actual next PC from the modified state
         # This handles hooks that manually set the return address (e.g., pop ret simulation)
@@ -3672,7 +3703,8 @@ class RustExplorationManager(RustStateExportMixin):
             new_pc = state.addr
 
         if new_pc != addr:
-            l.debug(f"Hook modified IP from 0x{addr:x} to 0x{new_pc:x}")
+            if _DBG:
+                l.debug(f"Hook modified IP from 0x{addr:x} to 0x{new_pc:x}")
 
         # Extract register changes between original and modified state
         # This syncs all register modifications made by the hook
@@ -3695,7 +3727,8 @@ class RustExplorationManager(RustStateExportMixin):
                 if write_addr not in existing_addrs:
                     mem_changes.append((write_addr, data))
                     existing_addrs.add(write_addr)
-            l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
+            if _DBG:
+                l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
 
         # Collect all symbolic addresses to exclude from concrete memory changes
         # This prevents apply_changes from overwriting symbolic imports with concrete values
@@ -3719,16 +3752,19 @@ class RustExplorationManager(RustStateExportMixin):
                     current_constraints = set(state.solver.constraints)
                     new_constraints = list(current_constraints - orig_constraints)
                     if new_constraints:
-                        l.debug(f"Extracted {len(new_constraints)} constraints from hook")
+                        if _DBG:
+                            l.debug(f"Extracted {len(new_constraints)} constraints from hook")
                 elif orig_constraint_count is not None and not is_snapshot:
                     # Count changed — need full diff (only when orig_state is a real state)
                     prior = set(orig_state.solver.constraints)
                     current_constraints = set(state.solver.constraints)
                     new_constraints = list(current_constraints - prior)
                     if new_constraints:
-                        l.debug(f"Extracted {len(new_constraints)} constraints from hook")
+                        if _DBG:
+                            l.debug(f"Extracted {len(new_constraints)} constraints from hook")
             except Exception as e:
-                l.debug(f"Could not extract constraints: {e}")
+                if _DBG:
+                    l.debug(f"Could not extract constraints: {e}")
 
         # Resume Rust with all extracted changes.
         # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
@@ -3751,9 +3787,11 @@ class RustExplorationManager(RustStateExportMixin):
         for sym_addr, ast in all_sym_imports:
             try:
                 self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, ast)
-                l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to state {state_id}")
+                if _DBG:
+                    l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to state {state_id}")
             except Exception as e:
-                l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
+                if _DBG:
+                    l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
 
         # Update cache with modified state for future callbacks
         if state_id is not None:
@@ -3796,27 +3834,32 @@ class RustExplorationManager(RustStateExportMixin):
                     state_constraints = set(new_constraint_list)
                     python_added = state_constraints - prior
                     if python_added:
-                        l.debug(f"Callback added {len(python_added)} new Python constraints")
+                        if _DBG:
+                            l.debug(f"Callback added {len(python_added)} new Python constraints")
                         new_constraints.extend(python_added)
             elif orig_constraints is not None:
                 prior = orig_constraints
                 state_constraints = set(new_constraint_list)
                 python_added = state_constraints - prior
                 if python_added:
-                    l.debug(f"Callback added {len(python_added)} new Python constraints")
+                    if _DBG:
+                        l.debug(f"Callback added {len(python_added)} new Python constraints")
                     new_constraints.extend(python_added)
             else:
                 prior = set(orig_state.solver.constraints)
                 state_constraints = set(new_constraint_list)
                 python_added = state_constraints - prior
                 if python_added:
-                    l.debug(f"Callback added {len(python_added)} new Python constraints")
+                    if _DBG:
+                        l.debug(f"Callback added {len(python_added)} new Python constraints")
                     new_constraints.extend(python_added)
         except Exception as e:
-            l.debug(f"Could not extract Python constraints: {e}")
+            if _DBG:
+                l.debug(f"Could not extract Python constraints: {e}")
 
         if new_constraints:
-            l.debug(f"Total new constraints to sync: {len(new_constraints)}")
+            if _DBG:
+                l.debug(f"Total new constraints to sync: {len(new_constraints)}")
 
         return new_constraints
 
@@ -3836,10 +3879,12 @@ class RustExplorationManager(RustStateExportMixin):
             forked_solver = self._rust_mgr.fork_pending_solver()
             # Attach forked solver to the state
             succ_state.scratch.rust_solver_ctx = forked_solver
-            l.debug(f"Forked solver context for additional successor "
-                    f"({forked_solver.num_constraints()} constraints)")
+            if _DBG:
+                l.debug(f"Forked solver context for additional successor "
+                        f"({forked_solver.num_constraints()} constraints)")
         except Exception as e:
-            l.debug(f"Could not fork solver for additional successor: {e}")
+            if _DBG:
+                l.debug(f"Could not fork solver for additional successor: {e}")
 
         # Extract any constraints specific to this fork path
         # These may differ from the main successor due to branching conditions
@@ -3860,11 +3905,14 @@ class RustExplorationManager(RustStateExportMixin):
             try:
                 # The state was just added, so sync constraints to the pending/active state
                 self._rust_mgr.add_constraints_to_pending(fork_constraints)
-                l.debug(f"Synced {len(fork_constraints)} fork constraints to Rust state")
+                if _DBG:
+                    l.debug(f"Synced {len(fork_constraints)} fork constraints to Rust state")
             except Exception as e:
-                l.debug(f"Could not sync fork constraints: {e}")
+                if _DBG:
+                    l.debug(f"Could not sync fork constraints: {e}")
 
-        l.debug(f"Added forked state at PC 0x{succ_state.addr:x}")
+        if _DBG:
+            l.debug(f"Added forked state at PC 0x{succ_state.addr:x}")
 
     def _handle_syscall_callback(self, event: "_ExplorationEvent"):
         """Handle syscall callback from Rust.
@@ -3971,7 +4019,8 @@ class RustExplorationManager(RustStateExportMixin):
             try:
                 result = self._find_predicate(state)
                 matched = bool(result) if result is not None else False
-                l.debug(f"Find predicate at 0x{addr:x} returned: {matched}")
+                if _DBG:
+                    l.debug(f"Find predicate at 0x{addr:x} returned: {matched}")
             except Exception as e:
                 l.warning(f"Find predicate evaluation error at 0x{addr:x}: {e}")
                 matched = False
@@ -4024,7 +4073,8 @@ class RustExplorationManager(RustStateExportMixin):
             try:
                 result = self._avoid_predicate(state)
                 matched = bool(result) if result is not None else False
-                l.debug(f"Avoid predicate at 0x{addr:x} returned: {matched}")
+                if _DBG:
+                    l.debug(f"Avoid predicate at 0x{addr:x} returned: {matched}")
             except Exception as e:
                 l.warning(f"Avoid predicate evaluation error at 0x{addr:x}: {e}")
                 matched = False
@@ -4058,14 +4108,16 @@ class RustExplorationManager(RustStateExportMixin):
         condition_id = event.branch_condition_id
         state_id = event.callback_state_id
 
-        l.debug(f"Handling symbolic branch: true=0x{true_target:x}, false=0x{false_target:x}, "
-                f"cond_id={condition_id}")
+        if _DBG:
+            l.debug(f"Handling symbolic branch: true=0x{true_target:x}, false=0x{false_target:x}, "
+                    f"cond_id={condition_id}")
 
         try:
             # Get the branch condition from Rust as a claripy AST
             condition = self._rust_mgr.get_pending_branch_condition()
 
-            l.debug(f"Got branch condition from Rust: {condition}")
+            if _DBG:
+                l.debug(f"Got branch condition from Rust: {condition}")
 
             # Defensive: ensure condition is a claripy AST, not Python bool/int
             # This can happen if rustbv_to_claripy() returns the wrong type
@@ -4081,8 +4133,10 @@ class RustExplorationManager(RustStateExportMixin):
             # Create false branch constraint: condition == 0 (condition is false)
             false_constraint = condition == 0
 
-            l.debug(f"True constraint: {true_constraint}")
-            l.debug(f"False constraint: {false_constraint}")
+            if _DBG:
+                l.debug(f"True constraint: {true_constraint}")
+            if _DBG:
+                l.debug(f"False constraint: {false_constraint}")
 
             # Resume Rust with the forked states
             # Pass constraints as lists for each branch
@@ -4108,7 +4162,8 @@ class RustExplorationManager(RustStateExportMixin):
                     root = self._state_roots.get(state_id, state_id)
                     self._state_roots[new_id] = root
 
-            l.debug(f"Resumed after symbolic branch with {len(new_ids)} forked states")
+            if _DBG:
+                l.debug(f"Resumed after symbolic branch with {len(new_ids)} forked states")
 
         except Exception as e:
             l.warning(f"Symbolic branch handling error: {e}")
@@ -4266,14 +4321,16 @@ class RustExplorationManager(RustStateExportMixin):
             if root_id is not None and root_id in self._state_cache:
                 cached_state = self._state_cache[root_id]
                 lookup_state_id = root_id
-                l.debug(f"Using root state {root_id} cache for forked state {state_id}")
+                if _DBG:
+                    l.debug(f"Using root state {root_id} cache for forked state {state_id}")
             else:
                 # Walk full ancestry chain to find any cached ancestor
                 for ancestor_id in self._get_pending_ancestry():
                     if ancestor_id in self._state_cache:
                         cached_state = self._state_cache[ancestor_id]
                         lookup_state_id = ancestor_id
-                        l.debug(f"Using ancestor {ancestor_id} cache for forked state {state_id}")
+                        if _DBG:
+                            l.debug(f"Using ancestor {ancestor_id} cache for forked state {state_id}")
                         break
 
         if cached_state is not None:
@@ -4298,7 +4355,8 @@ class RustExplorationManager(RustStateExportMixin):
                 forked_solver = bundle['solver']
                 state.scratch.rust_solver_ctx = forked_solver
                 constraint_count = bundle['constraint_count']
-                l.debug(f"Bundle: solver with {constraint_count} constraints for state {state_id}")
+                if _DBG:
+                    l.debug(f"Bundle: solver with {constraint_count} constraints for state {state_id}")
 
                 # Apply registers from bundle using direct store (bypasses claripy BVV creation)
                 # Save bundle registers for snapshot reuse in _handle_simprocedure_callback
@@ -4329,7 +4387,8 @@ class RustExplorationManager(RustStateExportMixin):
                 state.scratch._rust_bundle_history = bundle.get('history', [])
                 state.scratch._rust_bundle_jumpkind = bundle.get('jumpkind', 'Ijk_Boring')
             except Exception as e:
-                l.debug(f"Bundle API failed, falling back to individual calls: {e}")
+                if _DBG:
+                    l.debug(f"Bundle API failed, falling back to individual calls: {e}")
                 self._last_bundle_registers = None  # Clear on fallback
                 # Fallback to individual calls — try shared (borrow) first, fork as last resort
                 try:
@@ -4356,7 +4415,8 @@ class RustExplorationManager(RustStateExportMixin):
                 self._restore_hook_symbolic_memory(state, lookup_state_id)
                 state._rust_sympage_restored = True
 
-            l.debug(f"Using cached state {state_id} for callback (lookup_id={lookup_state_id})")
+            if _DBG:
+                l.debug(f"Using cached state {state_id} for callback (lookup_id={lookup_state_id})")
         else:
             # Fallback to blank state (original behavior)
             self._stats_cache_misses += 1
@@ -4421,7 +4481,8 @@ class RustExplorationManager(RustStateExportMixin):
             template = next(iter(self._state_cache.values()))
 
         if template is None:
-            l.debug(f"Phase 3: No template for plugin restoration, missing: {missing_plugins}")
+            if _DBG:
+                l.debug(f"Phase 3: No template for plugin restoration, missing: {missing_plugins}")
             return
 
         # Restore missing plugins
@@ -4431,9 +4492,11 @@ class RustExplorationManager(RustStateExportMixin):
                     plugin = getattr(template, plugin_name)
                     if plugin is not None and hasattr(plugin, 'copy'):
                         state.register_plugin(plugin_name, plugin.copy())
-                        l.debug(f"Phase 3: Restored {plugin_name} plugin")
+                        if _DBG:
+                            l.debug(f"Phase 3: Restored {plugin_name} plugin")
             except Exception as e:
-                l.debug(f"Phase 3: Could not restore {plugin_name}: {e}")
+                if _DBG:
+                    l.debug(f"Phase 3: Could not restore {plugin_name}: {e}")
 
     def _create_blank_state_fallback(self, event: "_ExplorationEvent") -> Optional["angr.SimState"]:
         """Create a blank state as fallback when no cached state is available."""
@@ -4445,10 +4508,12 @@ class RustExplorationManager(RustStateExportMixin):
             try:
                 forked_solver = self._rust_mgr.fork_pending_solver()
                 state.scratch.rust_solver_ctx = forked_solver
-                l.debug(f"Forked Rust solver for blank fallback state "
-                        f"({forked_solver.num_constraints()} constraints)")
+                if _DBG:
+                    l.debug(f"Forked Rust solver for blank fallback state "
+                            f"({forked_solver.num_constraints()} constraints)")
             except Exception as e:
-                l.debug(f"Could not fork solver for blank state: {e}")
+                if _DBG:
+                    l.debug(f"Could not fork solver for blank state: {e}")
 
             # Copy registers from pending Rust state
             self._sync_registers_from_rust_pending(state)
@@ -4660,9 +4725,11 @@ class RustExplorationManager(RustStateExportMixin):
                     if reg_name in return_regs:
                         try:
                             self._sync_symbolic_register_to_rust(reg_name, new_val)
-                            l.debug(f"Synced symbolic return register {reg_name} to Rust")
+                            if _DBG:
+                                l.debug(f"Synced symbolic return register {reg_name} to Rust")
                         except Exception as e:
-                            l.debug(f"Could not sync symbolic {reg_name}: {e}")
+                            if _DBG:
+                                l.debug(f"Could not sync symbolic {reg_name}: {e}")
                             try:
                                 new_concrete = new_state.solver.eval(new_val)
                                 data = new_concrete.to_bytes(size, 'little')
@@ -4691,23 +4758,27 @@ class RustExplorationManager(RustStateExportMixin):
             # Best approach: directly sync claripy AST to Rust
             if hasattr(self._rust_mgr, 'set_pending_register_symbolic_ast'):
                 self._rust_mgr.set_pending_register_symbolic_ast(reg_name, value)
-                l.debug(f"Synced symbolic register {reg_name} to Rust via AST")
+                if _DBG:
+                    l.debug(f"Synced symbolic register {reg_name} to Rust via AST")
                 return
 
             # Fallback: use handle-based sync
             if hasattr(self._rust_mgr, 'claripy_ast_to_handle'):
                 handle = self._rust_mgr.claripy_ast_to_handle(value)
                 self._rust_mgr.set_pending_register_symbolic(reg_name, handle.id())
-                l.debug(f"Synced symbolic register {reg_name} to Rust via handle")
+                if _DBG:
+                    l.debug(f"Synced symbolic register {reg_name} to Rust via handle")
                 return
 
             # Final fallback: just register the handle for later retrieval
             handle_id = id(value)
             self._register_handle(handle_id, value)
-            l.debug(f"Registered symbolic register {reg_name} handle for later retrieval")
+            if _DBG:
+                l.debug(f"Registered symbolic register {reg_name} handle for later retrieval")
 
         except Exception as e:
-            l.debug(f"Could not sync symbolic {reg_name}: {e}")
+            if _DBG:
+                l.debug(f"Could not sync symbolic {reg_name}: {e}")
 
     def _extract_memory_changes(
         self,
@@ -4735,7 +4806,8 @@ class RustExplorationManager(RustStateExportMixin):
 
             # Limit to prevent timeouts on large diffs (e.g., unconstrained fill)
             if len(changed) > 10000:
-                l.debug(f"Too many changed bytes ({len(changed)}), truncating to 10000")
+                if _DBG:
+                    l.debug(f"Too many changed bytes ({len(changed)}), truncating to 10000")
                 changed = set(sorted(changed)[:10000])
 
             # Group consecutive changed bytes into regions
@@ -4749,7 +4821,8 @@ class RustExplorationManager(RustStateExportMixin):
                     concrete_changes.append((start, bytes(data)))
                     # Cache symbolic value for later constraint sync
                     # The handle is already registered in _emit_memory_region
-                    l.debug(f"Tracked symbolic memory change at 0x{start:x} (handle={handle_id})")
+                    if _DBG:
+                        l.debug(f"Tracked symbolic memory change at 0x{start:x} (handle={handle_id})")
 
                     # Collect symbolic AST for import to Rust
                     symbolic_imports.append((start, ast))
@@ -4762,10 +4835,12 @@ class RustExplorationManager(RustStateExportMixin):
                         if state_id not in self._hook_symbolic_memory:
                             self._hook_symbolic_memory[state_id] = {}
                         self._hook_symbolic_memory[state_id][start] = (ast, size)
-                        l.debug(f"Preserved symbolic memory at 0x{start:x} for state {state_id}")
+                        if _DBG:
+                            l.debug(f"Preserved symbolic memory at 0x{start:x} for state {state_id}")
 
         except Exception as e:
-            l.debug(f"Error extracting memory changes: {e}")
+            if _DBG:
+                l.debug(f"Error extracting memory changes: {e}")
 
         return concrete_changes, symbolic_imports
 
@@ -5051,17 +5126,20 @@ class RustExplorationManager(RustStateExportMixin):
             root_id = self._get_pending_root_state_id()
             if root_id is not None and root_id in self._symbolic_pages:
                 symbolic_pages = self._symbolic_pages[root_id]
-                l.debug(f"Using root {root_id} symbolic pages for state {state_id}")
+                if _DBG:
+                    l.debug(f"Using root {root_id} symbolic pages for state {state_id}")
             else:
                 # Walk full ancestry chain
                 for ancestor_id in self._get_pending_ancestry():
                     if ancestor_id in self._symbolic_pages:
                         symbolic_pages = self._symbolic_pages[ancestor_id]
-                        l.debug(f"Using ancestor {ancestor_id} symbolic pages for state {state_id}")
+                        if _DBG:
+                            l.debug(f"Using ancestor {ancestor_id} symbolic pages for state {state_id}")
                         break
 
         if symbolic_pages is None:
-            l.debug(f"No symbolic pages found for state {state_id} or ancestors")
+            if _DBG:
+                l.debug(f"No symbolic pages found for state {state_id} or ancestors")
             return
         restored_count = 0
         failed_count = 0
@@ -5081,7 +5159,8 @@ class RustExplorationManager(RustStateExportMixin):
                     restored_count += 1
                     self._register_handle(id(ast), ast)
                 except Exception as e:
-                    l.debug(f"Error restoring symbolic byte at 0x{start_addr:x}: {e}")
+                    if _DBG:
+                        l.debug(f"Error restoring symbolic byte at 0x{start_addr:x}: {e}")
                     failed_count += 1
                 i += 1
             else:
@@ -5091,12 +5170,14 @@ class RustExplorationManager(RustStateExportMixin):
                     restored_count += 1
                     self._register_handle(id(ast), ast)
                 except Exception as e:
-                    l.debug(f"Error restoring symbolic memory at 0x{start_addr:x}: {e}")
+                    if _DBG:
+                        l.debug(f"Error restoring symbolic memory at 0x{start_addr:x}: {e}")
                     failed_count += 1
                 i += 1
 
         if restored_count > 0:
-            l.debug(f"Restored {restored_count} symbolic memory regions for state {state_id}")
+            if _DBG:
+                l.debug(f"Restored {restored_count} symbolic memory regions for state {state_id}")
         if failed_count > 0:
             l.warning(f"Failed to restore {failed_count} symbolic memory regions")
 
@@ -5126,13 +5207,15 @@ class RustExplorationManager(RustStateExportMixin):
             root_id = self._get_pending_root_state_id()
             if root_id is not None and root_id in self._hook_symbolic_memory:
                 hook_memory = self._hook_symbolic_memory[root_id]
-                l.debug(f"Using root {root_id} hook symbolic memory for state {state_id}")
+                if _DBG:
+                    l.debug(f"Using root {root_id} hook symbolic memory for state {state_id}")
             else:
                 # Walk full ancestry chain
                 for ancestor_id in self._get_pending_ancestry():
                     if ancestor_id in self._hook_symbolic_memory:
                         hook_memory = self._hook_symbolic_memory[ancestor_id]
-                        l.debug(f"Using ancestor {ancestor_id} hook symbolic memory for state {state_id}")
+                        if _DBG:
+                            l.debug(f"Using ancestor {ancestor_id} hook symbolic memory for state {state_id}")
                         break
 
         if hook_memory is None:
@@ -5144,12 +5227,15 @@ class RustExplorationManager(RustStateExportMixin):
                 state.memory.store(addr, ast, endness=state.arch.memory_endness)
                 self._register_handle(id(ast), ast)
                 restored_count += 1
-                l.debug(f"Restored hook symbolic memory at 0x{addr:x} (size={size})")
+                if _DBG:
+                    l.debug(f"Restored hook symbolic memory at 0x{addr:x} (size={size})")
             except Exception as e:
-                l.debug(f"Could not restore hook symbolic at 0x{addr:x}: {e}")
+                if _DBG:
+                    l.debug(f"Could not restore hook symbolic at 0x{addr:x}: {e}")
 
         if restored_count > 0:
-            l.debug(f"Restored {restored_count} hook symbolic memory regions for state {state_id}")
+            if _DBG:
+                l.debug(f"Restored {restored_count} hook symbolic memory regions for state {state_id}")
 
     # =========================================================================
     # Public API (SimulationManager-like interface)
@@ -5397,7 +5483,8 @@ class RustExplorationManager(RustStateExportMixin):
                     break
                 self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
             elif event.event_type == 'errored':
-                l.debug(f"Exploration error (state deadended): {event.callback_reason}")
+                if _DBG:
+                    l.debug(f"Exploration error (state deadended): {event.callback_reason}")
             elif event.event_type == 'step_complete':
                 self._cleanup_symbolic_pages_cache()
 
@@ -5734,7 +5821,8 @@ class RustExplorationManager(RustStateExportMixin):
                     else:
                         keep_ids.append(state_id)
                 except Exception as e:
-                    l.debug(f"P8: move filter error for state {state_id}: {e}")
+                    if _DBG:
+                        l.debug(f"P8: move filter error for state {state_id}: {e}")
                     keep_ids.append(state_id)  # Keep on error
 
             # Use Rust to move matching states
@@ -5800,7 +5888,8 @@ class RustExplorationManager(RustStateExportMixin):
                 else:
                     prune_ids.append(state_id)
             except Exception as e:
-                l.debug(f"P8: filter error for state {state_id}: {e}")
+                if _DBG:
+                    l.debug(f"P8: filter error for state {state_id}: {e}")
                 keep_ids.append(state_id)  # Keep on error
 
         # Move non-matching states to pruned stash
@@ -5880,7 +5969,8 @@ class RustExplorationManager(RustStateExportMixin):
                         except Exception:
                             pass
                 except Exception as e:
-                    l.debug(f"P8: drop filter error for state {state_id}: {e}")
+                    if _DBG:
+                        l.debug(f"P8: drop filter error for state {state_id}: {e}")
 
         return self
 
