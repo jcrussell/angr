@@ -57,18 +57,10 @@ class RustStateExportMixin:
                 # Sync concrete memory from Rust to Python state so that
                 # memory modified during Rust execution is visible to the user
                 self._sync_rust_memory_to_state(state, state_id)
-                # Sync Rust PC to the Python state so multi-stage exploration
-                # (re-init from found state) gets the correct program counter.
-                try:
-                    # Find state's index in the stash
-                    all_ids = self._rust_mgr.get_state_ids(stash)
-                    idx = all_ids.index(state_id) if state_id in all_ids else -1
-                    if idx >= 0:
-                        pc = self._rust_mgr.get_state_pc(stash, idx)
-                        if pc is not None:
-                            state.regs._ip = pc
-                except Exception:
-                    pass
+                # Sync all registers from Rust state to Python state so that
+                # register values computed during Rust execution are visible
+                # (e.g., rdi holding a computed flag address in asisctf).
+                self._sync_rust_registers_to_state(state, state_id)
                 states.append(state)
 
         # For states not in cache, try parent state or snapshot export
@@ -161,6 +153,25 @@ class RustStateExportMixin:
                         fd_obj.set_state(state)
         except Exception:
             pass
+
+    def _sync_rust_registers_to_state(self, state: "angr.SimState", state_id: int):
+        """Sync concrete register values from Rust state to Python state.
+
+        After Rust executes code, register values computed during execution
+        are only in Rust's state. This exports named registers and overwrites
+        the Python state's values for registers that are concrete in Rust.
+        """
+        try:
+            snapshot = self._rust_mgr.export_state(state_id)
+        except Exception:
+            return
+
+        named_regs = snapshot.get_registers_named()
+        for reg_name, (value, size_bits) in named_regs.items():
+            try:
+                setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
+            except Exception:
+                pass  # Skip VEX internal registers that angr doesn't expose
 
     def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
         """Sync concrete memory from Rust state to Python state.
