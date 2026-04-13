@@ -19,6 +19,30 @@ import sys
 EXAMPLES_DIR = os.path.expanduser("~/repos/angr-examples/examples")
 DEFAULT_MEM_LIMIT_MB = 4096  # 4 GB — leaves 4 GB for parent + OS on 8GB machine
 
+# Catalog of tested examples with expected behavior
+# tier: "fast" (<5s), "medium" (5-30s), "slow" (30-120s), "very_slow" (>120s)
+EXAMPLE_CATALOG = {
+    # === Core benchmark suite (fast, always correct) ===
+    "fauxware":                {"tier": "fast",    "rust_ok": True,  "notes": "SimProcedure callbacks"},
+    "defcamp_r100":            {"tier": "fast",    "rust_ok": True,  "notes": "Basic find/avoid"},
+    "ais3_crackme":            {"tier": "fast",    "rust_ok": True,  "notes": "Symbolic argv, state forking"},
+    "sym-write":               {"tier": "medium",  "rust_ok": True,  "notes": "Symbolic writes, callable predicates"},
+    "securityfest_fairlight":  {"tier": "medium",  "rust_ok": True,  "notes": "Heavy VEX interpretation"},
+    "flareon2015_5":           {"tier": "medium",   "rust_ok": True,  "notes": "Complex symbolic memory"},
+    "flareon2015_10":          {"tier": "medium",  "rust_ok": True,  "notes": "Callable step_func, pruning"},
+    "ekopartyctf2016_rev250":  {"tier": "medium",  "rust_ok": True,  "notes": "Deep constraint solving"},
+    "csaw_wyvern":             {"tier": "medium",  "rust_ok": True,  "notes": "Linear constraints"},
+    # === Extended examples ===
+    "codegate_2017-angrybird": {"tier": "medium",  "rust_ok": True,  "notes": "LAZY_SOLVES, manual state init"},
+    "google2016_unbreakable_0":{"tier": "fast",    "rust_ok": True,  "notes": "Basic constraint solving"},
+    "google2016_unbreakable_1":{"tier": "fast",    "rust_ok": True,  "notes": "Multi-step constraints"},
+    # === Slow/problematic examples ===
+    "hackcon2016_angry-reverser":{"tier": "slow",  "rust_ok": True,  "notes": "LAZY_SOLVES, Z3 structure mismatch"},
+    "asisctffinals2015_fake":  {"tier": "slow",    "rust_ok": False, "notes": "Rust finds state but empty output"},
+    "b01lersctf2020_little_engine":{"tier": "very_slow", "rust_ok": None, "notes": "~150s Python, untested Rust"},
+    "tumctf2016_zwiebel":      {"tier": "very_slow","rust_ok": None, "notes": "Self-modifying code, ~2.5h"},
+}
+
 
 def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
@@ -229,13 +253,41 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
 
 def main():
     parser = argparse.ArgumentParser(description="Run a single angr-example benchmark")
-    parser.add_argument("example", help="Example name (e.g. fauxware, ais3_crackme)")
+    parser.add_argument("example", nargs="?", help="Example name (e.g. fauxware, ais3_crackme)")
     parser.add_argument("--engine", choices=["rust", "python"], default="rust")
     parser.add_argument("--both", action="store_true", help="Run both engines")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB,
                         help=f"Memory limit in MB (default: {DEFAULT_MEM_LIMIT_MB})")
+    parser.add_argument("--list", action="store_true", help="List all cataloged examples")
+    parser.add_argument("--suite", choices=["fast", "medium", "all"],
+                        help="Run a suite of examples (fast: <5s, medium: <30s, all: everything)")
     args = parser.parse_args()
+
+    if args.list:
+        print(f"{'Example':<35} {'Tier':<10} {'Rust OK':<10} {'Notes'}")
+        print("-" * 90)
+        for name, info in EXAMPLE_CATALOG.items():
+            rust_ok = {True: "yes", False: "NO", None: "?"}[info["rust_ok"]]
+            print(f"{name:<35} {info['tier']:<10} {rust_ok:<10} {info['notes']}")
+        return
+
+    if args.suite:
+        tiers = {"fast": ["fast"], "medium": ["fast", "medium"], "all": ["fast", "medium", "slow"]}
+        selected = [n for n, i in EXAMPLE_CATALOG.items() if i["tier"] in tiers[args.suite]]
+        for name in selected:
+            print(f"\n=== {name} ===")
+            if args.both:
+                run_example(name, "python", args.timeout, args.mem_limit)
+                print()
+                run_example(name, "rust", args.timeout, args.mem_limit)
+            else:
+                run_example(name, args.engine, args.timeout, args.mem_limit)
+        return
+
+    if not args.example:
+        parser.print_help()
+        return
 
     if args.both:
         print(f"=== {args.example} ===")
