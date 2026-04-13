@@ -2599,26 +2599,44 @@ class RustExplorationManager(RustStateExportMixin):
             l.debug("Failed to inject Rust stdout into posix: %s", e)
 
     def _evaluate_predicates_on_active(self):
-        """Evaluate callable find/avoid predicates on cached Python states.
+        """Evaluate callable find/avoid predicates on all Rust states.
 
         When find/avoid are callables (not addresses), the Rust engine can't
-        evaluate them. Only evaluates states not yet checked (tracked via
-        _evaluated_state_ids). New forked states get evaluated; already-checked
-        states are skipped.
+        evaluate them. Checks both cached Python states and uncached Rust-only
+        states (created by Rust forking without SimProcedure callbacks).
+        Only evaluates states not yet checked (tracked via _evaluated_state_ids).
         """
-        if not self._state_cache:
-            return
-
         if not hasattr(self, '_evaluated_state_ids'):
             self._evaluated_state_ids = set()
 
         found_sids = set()
         avoid_sids = set()
 
-        for state_id, state in list(self._state_cache.items()):
+        # Collect all state IDs from active + deadended Rust stashes
+        all_state_ids = set()
+        for stash in ('active', 'deadended'):
+            try:
+                ids = self._rust_mgr.get_state_ids(stash)
+                all_state_ids.update(ids)
+            except Exception:
+                pass
+
+        # Also include cached states (may have been moved between stashes)
+        all_state_ids.update(self._state_cache.keys())
+
+        for state_id in all_state_ids:
             if state_id in self._evaluated_state_ids:
                 continue
             self._evaluated_state_ids.add(state_id)
+
+            # Get or create a Python state for predicate evaluation
+            state = self._state_cache.get(state_id)
+            if state is None:
+                # Uncached state — create from root parent
+                state = self._create_state_for_predicate(state_id)
+                if state is None:
+                    continue
+                self._state_cache[state_id] = state
 
             try:
                 self._restore_plugins_to_state(state, state_id)
@@ -2661,6 +2679,53 @@ class RustExplorationManager(RustStateExportMixin):
                     self._rust_mgr.move_state(sid, stash, 'avoid')
                 except Exception:
                     pass
+
+    def _create_state_for_predicate(self, state_id):
+        """Create a lightweight Python state for predicate evaluation.
+
+        For states created purely in Rust (no SimProcedure callback), we need
+        a Python state to evaluate callable predicates. Creates one by copying
+        from the closest cached ancestor state.
+
+        Returns None if no suitable parent can be found.
+        """
+        # Try to find the root state in cache
+        try:
+            root_id = self._rust_mgr.get_state_root(state_id)
+        except Exception:
+            root_id = None
+
+        parent_state = None
+        if root_id is not None and root_id in self._state_cache:
+            parent_state = self._state_cache[root_id]
+        else:
+            # Fall back to any cached state (typically the init state)
+            if self._state_cache:
+                parent_state = next(iter(self._state_cache.values()))
+
+        if parent_state is None:
+            return None
+
+        try:
+            state = parent_state.copy()
+            # Update PC from Rust state
+            try:
+                for stash in ('active', 'deadended', 'found', 'avoid'):
+                    ids = self._rust_mgr.get_state_ids(stash)
+                    if state_id in ids:
+                        idx = ids.index(state_id)
+                        pc = self._rust_mgr.get_state_pc(stash, idx)
+                        if pc is not None:
+                            state.regs._ip = pc
+                        break
+            except Exception:
+                pass
+            # Attach Rust solver fallback so solver operations work
+            self._attach_rust_solver_fallback(state, state_id)
+            return state
+        except Exception as e:
+            l.debug("Failed to create predicate state for %d: %s", state_id, e)
+            return None
 
     def _cleanup_state_cache(self):
         """Enforce the state cache size limit.
