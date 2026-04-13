@@ -119,6 +119,10 @@ impl SymContext {
         let mut params = z3::Params::new();
         // Phase 2 Fix: Add 30 second timeout to prevent indefinite hangs
         params.set_u32("timeout", 30000);
+        // Propagate extraction inward through arithmetic — reduces constraint
+        // structure before bit-blasting, especially for Rust-generated constraints
+        // that use nested Extract/SignExt patterns.
+        params.set_bool("bv_extract_prop", true);
         solver.set_params(&params);
 
         SymContext {
@@ -1155,6 +1159,7 @@ impl SymContext {
         let cloned_solver = self.solver.lock().clone();
         let mut params = z3::Params::new();
         params.set_u32("timeout", 30000);
+        params.set_bool("bv_extract_prop", true);
         cloned_solver.set_params(&params);
 
         // Clone assumed constraints for the fork
