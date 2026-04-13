@@ -133,7 +133,6 @@ class TestRustIntegration:
     """Integration tests running real CTF examples through the Rust engine."""
 
     KNOWN_XFAIL = {
-        "google2016_unbreakable_0",  # Rust solver eval returns b'' for symbolic argv
         "flareon2015_2",  # list index out of range (state export issue)
         "codegate_2017-angrybird",  # Rust solver eval returns b'' for symbolic result
         "strcpy_find",  # Wrong output (state/constraint sync issue)
