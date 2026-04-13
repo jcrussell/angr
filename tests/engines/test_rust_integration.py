@@ -1,6 +1,6 @@
 """Integration tests for RustExplorationManager against real angr-examples.
 
-Runs 5 small CTF examples through both Python and Rust engines,
+Runs 12 small CTF examples through both Python and Rust engines,
 comparing correctness and checking for severe performance regressions.
 """
 import importlib.util
@@ -50,6 +50,13 @@ FAST_EXAMPLES = [
     ("fauxware", b"SOSNEAKY", 30, True),
     ("sym-write", b"", 60, True),  # output is list of ints, just check success
     ("defcon2016quals_baby-re", b"Math is hard!", 60, False),
+    ("google2016_unbreakable_1", b"CTF{0The1Quick2Brown3Fox4Jumped5Over6The7Lazy8Fox9}", 30, False),
+    ("mma_howtouse", b"MMA{fc7d90ca001fc8712497d88d9ee7efa9e9b32ed8}", 30, False),
+    ("whitehatvn2015_re400", b"Flag 0:", 30, False),  # multi-solution, just check output exists
+    ("google2016_unbreakable_0", b"CTF{", 30, False),
+    ("flareon2015_2", b"@flare-on.com", 30, False),
+    ("codegate_2017-angrybird", b"Im_so_cute", 30, False),
+    ("strcpy_find", b"The password is", 30, False),
 ]
 
 
@@ -125,7 +132,12 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
 class TestRustIntegration:
     """Integration tests running real CTF examples through the Rust engine."""
 
-    KNOWN_XFAIL = set()  # No known failures
+    KNOWN_XFAIL = {
+        "google2016_unbreakable_0",  # Rust solver eval returns b'' for symbolic argv
+        "flareon2015_2",  # list index out of range (state export issue)
+        "codegate_2017-angrybird",  # Rust solver eval returns b'' for symbolic result
+        "strcpy_find",  # Wrong output (state/constraint sync issue)
+    }
 
     @pytest.mark.parametrize(
         "example_name,expected,timeout,uses_predicate",
