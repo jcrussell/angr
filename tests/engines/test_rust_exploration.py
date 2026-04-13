@@ -269,5 +269,92 @@ class TestExplorationEvent:
         assert hasattr(event, 'steps_taken')
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustEdgeCases:
+    """Edge-case tests for Rust state and solver."""
+
+    def test_page_boundary_store_load(self):
+        """Store 6 bytes at offset 4090, crossing a 4096-byte page boundary."""
+        state = RustSimState("amd64")
+        state.map_memory(0x1000, 0x2000, 7)  # Map 2 pages
+
+        data_in = bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
+        state.memory_store(0x1000 + 4090, data_in)
+        data_out = state.memory_load(0x1000 + 4090, 6)
+        assert data_out == data_in
+
+    def test_page_boundary_cow_fork(self):
+        """Page-boundary store preserves CoW isolation after fork."""
+        state1 = RustSimState("amd64")
+        state1.map_memory(0x1000, 0x2000, 7)
+        state1.memory_store(0x1000 + 4090, bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
+
+        state2 = state1.fork()
+        state2.memory_store(0x1000 + 4090, bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]))
+
+        assert state1.memory_load(0x1000 + 4090, 6) == bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+        assert state2.memory_load(0x1000 + 4090, 6) == bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
+
+    def test_many_symbolic_variables(self):
+        """Solver with >50 symbolic variables and constraints."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        symbols = []
+        for i in range(60):
+            s = claripy.BVS(f"var_{i}", 32)
+            symbols.append(s)
+            ctx.add_constraint_ast(s >= i)
+            ctx.add_constraint_ast(s <= i + 100)
+
+        assert ctx.satisfiable()
+        assert ctx.num_constraints() == 120
+
+        # Eval boundary values
+        val_first = ctx.eval(symbols[0])
+        val_last = ctx.eval(symbols[59])
+        assert val_first is not None and 0 <= val_first <= 100
+        assert val_last is not None and 59 <= val_last <= 159
+
+    def test_solver_push_pop(self):
+        """Push/pop preserves solver state correctly."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x >= 10)
+        ctx.add_constraint_ast(x <= 20)
+
+        ctx.push()
+        ctx.add_constraint_ast(x == 15)
+        assert ctx.eval(x) == 15
+
+        ctx.pop()
+        # After pop, x == 15 constraint is gone
+        val = ctx.eval(x)
+        assert 10 <= val <= 20
+
+    def test_deep_fork_chain(self):
+        """Fork a state 20 levels deep and verify independence."""
+        state = RustSimState("amd64")
+        state.map_memory(0x1000, 0x1000, 7)
+        state.set_register("rax", 0)
+
+        states = [state]
+        for i in range(1, 21):
+            child = states[-1].fork()
+            child.set_register("rax", i)
+            child.memory_store(0x1000, bytes([i]))
+            states.append(child)
+
+        # Verify each level is independent
+        for i, s in enumerate(states):
+            assert s.get_register("rax") == i
+            if i > 0:
+                assert s.memory_load(0x1000, 1) == bytes([i])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
