@@ -1254,7 +1254,29 @@ impl RustBV {
             BVOp::ZeroExt(bits) => operands[0].to_z3_ast().zero_ext(*bits),
             BVOp::SignExt(bits) => operands[0].to_z3_ast().sign_ext(*bits),
             BVOp::Extract(high, low) => operands[0].to_z3_ast().extract(*high, *low),
-            BVOp::Concat => operands[0].to_z3_ast().concat(&operands[1].to_z3_ast()),
+            BVOp::Concat => {
+                // Flatten nested left-associative Concat trees into a single
+                // right-associative chain. Left-associative trees from memory loads
+                // (Concat(Concat(Concat(b0,b1),b2),b3)) produce deeper Z3 ASTs.
+                // Collect all leaves, then build right-to-left for better sharing.
+                fn collect_concat_leaves(bv: &RustBV, leaves: &mut Vec<z3::ast::BV>) {
+                    if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                        collect_concat_leaves(&operands[0], leaves);
+                        collect_concat_leaves(&operands[1], leaves);
+                    } else {
+                        leaves.push(bv.to_z3_ast());
+                    }
+                }
+                let mut leaves = Vec::new();
+                collect_concat_leaves(&operands[0], &mut leaves);
+                collect_concat_leaves(&operands[1], &mut leaves);
+                // Build right-associative: leaves[0].concat(leaves[1].concat(...))
+                let mut result = leaves.pop().unwrap();
+                while let Some(part) = leaves.pop() {
+                    result = part.concat(&result);
+                }
+                result
+            }
 
             // Conditional
             BVOp::Ite => {
