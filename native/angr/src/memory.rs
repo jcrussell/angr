@@ -766,32 +766,33 @@ impl SymbolicMemory {
         }
 
         // Try to concretize the address
-        match concretizer.concretize(&addr, ctx) {
+        let base_value = match concretizer.concretize(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_lazy(concrete_addr, size, ctx)
+                self.load_concrete_lazy(concrete_addr, size, ctx)?
             }
             ConcretizationResult::Strided { base, stride, count } => {
-                // Use balanced ITE tree for strided access - O(log N) depth vs O(N)
-                self.load_strided_balanced(&addr, base, stride, count, size, ctx)
+                self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
             }
             ConcretizationResult::Multiple(addrs) => {
-                // Build balanced ITE tree for better solver performance
-                self.build_balanced_ite_load(&addr, &addrs, size, ctx)
+                self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
-                Err(MemoryError::SymbolicAddress {
+                return Err(MemoryError::SymbolicAddress {
                     description: format!(
                         "address range too large for concretization: 0x{:x} - 0x{:x}",
                         min, max
                     ),
-                })
+                });
             }
             ConcretizationResult::Failed(reason) => {
-                Err(MemoryError::SymbolicAddress {
+                return Err(MemoryError::SymbolicAddress {
                     description: reason,
-                })
+                });
             }
-        }
+        };
+
+        // Apply any pending writes that might overlap this symbolic load
+        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
     }
 
     /// Load from strided addresses using a balanced ITE tree.
@@ -1128,17 +1129,14 @@ impl SymbolicMemory {
         }
 
         // Try to concretize the address
-        match concretizer.concretize(&addr, ctx) {
+        let base_value = match concretizer.concretize(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_automap(concrete_addr, size, ctx)
+                self.load_concrete_automap(concrete_addr, size, ctx)?
             }
             ConcretizationResult::Multiple(addrs) => {
-                // Prepare addresses by auto-mapping unmapped pages in lazy regions
-                // This mutates self, so we do it first
                 let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
 
                 if ready_addrs.is_empty() {
-                    // All addresses unmapped - return unconstrained
                     return Ok(RustBV::symbolic(
                         ctx,
                         &format!("mem_all_unmapped_{}", size),
@@ -1146,30 +1144,27 @@ impl SymbolicMemory {
                     ));
                 }
 
-                // Now that preparation is done, build the ITE tree (immutable borrow)
-                // Clone ready_addrs to own the data
                 let addr_clone = addr.clone();
-                self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)
+                self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)?
             }
             ConcretizationResult::Strided { base, stride, count } => {
-                // Prepare strided region for access (mutates self)
                 self.prepare_strided_region(base, stride, count, size);
-                // Use the existing balanced ITE builder (immutable borrow)
-                self.load_strided_balanced(&addr, base, stride, count, size, ctx)
+                self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
             }
             ConcretizationResult::TooLarge { .. } => {
-                // Address range too large - return unconstrained symbolic value
-                // This is better than failing, as it preserves soundness
-                Ok(RustBV::symbolic(
+                RustBV::symbolic(
                     ctx,
                     &format!("mem_unbounded_{}", size),
                     size * 8,
-                ))
+                )
             }
             ConcretizationResult::Failed(reason) => {
-                Err(MemoryError::SymbolicAddress { description: reason })
+                return Err(MemoryError::SymbolicAddress { description: reason });
             }
-        }
+        };
+
+        // Apply any pending writes that might overlap this symbolic load
+        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
     }
 
     /// Build a balanced ITE tree after addresses have been prepared.
@@ -1741,10 +1736,8 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        // Use the lazy inner function which returns UnmappedPageInRegion
-        // for unmapped pages in lazy regions. Caller should handle this
-        // by falling back to Python callback.
-        self.load_concrete_lazy_inner(addr, size, ctx)
+        let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
+        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
 
     /// Load from a concrete address with internal auto-mapping.
@@ -1759,16 +1752,96 @@ impl SymbolicMemory {
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         // First try normal load
-        match self.load_concrete_lazy_inner(addr, size, ctx) {
-            Ok(v) => Ok(v),
+        let base = match self.load_concrete_lazy_inner(addr, size, ctx) {
+            Ok(v) => v,
             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
                 // Auto-map the missing page
                 self.auto_map_zero_page(page_addr);
                 // Retry the load
-                self.load_concrete_lazy_inner(addr, size, ctx)
+                self.load_concrete_lazy_inner(addr, size, ctx)?
             }
-            Err(e) => Err(e),
+            Err(e) => return Err(e),
+        };
+        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
+    }
+
+    /// Apply pending writes that might overlap a concrete load address.
+    /// Returns the value with ITE chains for any matching pending writes.
+    fn apply_pending_writes_concrete(
+        &self,
+        addr: u64,
+        size: u32,
+        mut base_value: RustBV,
+        ctx: &SymContext,
+    ) -> RustBV {
+        if self.pending_writes.is_empty() {
+            return base_value;
         }
+
+        // Check each pending write for potential overlap with this concrete address
+        for pw in &self.pending_writes {
+            if pw.size != size {
+                // TODO: handle partial overlaps in future
+                continue;
+            }
+
+            // If the pending write's address is concrete, check directly
+            if let Some(pw_addr) = pw.addr.as_u64() {
+                if pw_addr == addr {
+                    // Exact match — this write definitely applies
+                    base_value = pw.value.clone();
+                }
+                continue;
+            }
+
+            // Symbolic address — build ITE: if pw.addr == addr then pw.value else base_value
+            let addr_const = RustBV::concrete(addr as u128, pw.addr.width());
+            let cond = pw.addr.eq(&addr_const, ctx);
+
+            // Apply optional condition
+            let effective_cond = if let Some(ref c) = pw.condition {
+                cond.and(c, ctx)
+            } else {
+                cond
+            };
+
+            base_value = effective_cond.ite(&pw.value, &base_value, ctx);
+        }
+
+        base_value
+    }
+
+    /// Apply pending writes that might overlap a symbolic load address.
+    /// Returns the value with ITE chains for any matching pending writes.
+    fn apply_pending_writes_symbolic(
+        &self,
+        addr: &RustBV,
+        size: u32,
+        mut base_value: RustBV,
+        ctx: &SymContext,
+    ) -> RustBV {
+        if self.pending_writes.is_empty() {
+            return base_value;
+        }
+
+        for pw in &self.pending_writes {
+            if pw.size != size {
+                continue;
+            }
+
+            // Build condition: pw.addr == load_addr
+            let cond = pw.addr.eq(addr, ctx);
+
+            let effective_cond = if let Some(ref c) = pw.condition {
+                cond.and(c, ctx)
+            } else {
+                cond
+            };
+
+            base_value = effective_cond.ite(&pw.value, &base_value, ctx);
+        }
+
+        base_value
     }
 
     /// Load from a concrete address, returning UnmappedPageInRegion for lazy regions.
@@ -1782,7 +1855,8 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        self.load_concrete_lazy_inner(addr, size, ctx)
+        let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
+        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
 
     /// Internal implementation of load_concrete_lazy.
