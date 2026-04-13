@@ -365,15 +365,11 @@ impl SymbolicMemory {
             let page_offset = (current_addr & PAGE_MASK) as usize;
             let bytes_in_page = (PAGE_SIZE as usize - page_offset).min(remaining.len());
 
-            // Get or create page
+            // Get or create page, modify in place (COW handled by Arc::make_mut in store_concrete)
             let page = self.pages.entry(page_num).or_insert_with(|| {
                 MemoryPage::new(page_num << 12, permissions)
             });
-
-            // Write data
-            let mut page = page.clone();
             page.store_concrete(page_offset as u16, &remaining[..bytes_in_page]);
-            self.pages.insert(page_num, page);
 
             remaining = &remaining[bytes_in_page..];
             current_addr += bytes_in_page as u64;
@@ -686,10 +682,8 @@ impl SymbolicMemory {
             let page_offset = (current_addr & PAGE_MASK) as u16;
             let bytes_in_page = ((PAGE_SIZE - page_offset as u64) as usize).min(remaining.len());
 
-            if let Some(page) = self.pages.get(&page_num) {
-                let mut page = page.clone();
+            if let Some(page) = self.pages.get_mut(&page_num) {
                 page.store_concrete(page_offset, &remaining[..bytes_in_page]);
-                self.pages.insert(page_num, page);
                 // Mark page as dirty
                 self.dirty_pages.insert(page_num);
             }
@@ -1502,10 +1496,8 @@ impl SymbolicMemory {
                 MemoryPage::new(page_addr, Permission::RW)
             });
 
-            // Clone and modify
-            let mut page = page.clone();
+            // Modify in place (COW handled by bitmap allocation in mark_symbolic)
             page.mark_symbolic(offset, 1);
-            self.pages.insert(page_num, page);
         }
     }
 
