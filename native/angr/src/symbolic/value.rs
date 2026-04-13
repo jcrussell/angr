@@ -1295,7 +1295,22 @@ impl RustBV {
 
             // Conversions
             BVOp::ZeroExt(bits) => operands[0].to_z3_ast().zero_ext(*bits),
-            BVOp::SignExt(bits) => operands[0].to_z3_ast().sign_ext(*bits),
+            BVOp::SignExt(bits) => {
+                // Decompose SignExt into Concat of sign-bit extracts to match
+                // claripy's canonical form. SignExt(n, x) becomes:
+                //   Concat(Extract(msb,msb,x), ..., Extract(msb,msb,x), x)
+                // where msb is the sign bit position. This flat representation
+                // allows Z3's max_bv_sharing tactic to share sign-bit extracts
+                // across multiple constraints (e.g., hackcon's 20 linear equations).
+                let inner = operands[0].to_z3_ast();
+                let inner_width = operands[0].width();
+                let sign_bit = inner.extract(inner_width - 1, inner_width - 1);
+                let mut result = inner;
+                for _ in 0..*bits {
+                    result = sign_bit.clone().concat(&result);
+                }
+                result
+            }
             BVOp::Extract(high, low) => operands[0].to_z3_ast().extract(*high, *low),
             BVOp::Concat => {
                 // Flatten nested left-associative Concat trees into a single
