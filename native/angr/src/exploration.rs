@@ -2816,12 +2816,37 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Export a state by ID, flushing pending writes first.
+    pub fn export_state_flushed(&mut self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
+        if let Some(state) = self.find_state_mut(state_id) {
+            return Ok(state.flush_and_export_full());
+        }
+
+        // Also check pending callback state
+        if let Some(ref mut pending) = self.pending_callback {
+            if pending.state.state_id() == state_id {
+                return Ok(pending.state.flush_and_export_full());
+            }
+        }
+
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Export all states in a stash as snapshots.
     pub fn export_stash(&self, stash: &str) -> Vec<crate::state::ExplorationStateSnapshot> {
         self.stashes
             .get(stash)
             .map(|s| s.iter().map(|state| state.export_full()).collect())
             .unwrap_or_default()
+    }
+
+    /// Export all found states as snapshots (flushing pending writes).
+    pub fn export_found_states_flushed(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
+        if let Some(states) = self.stashes.get_mut("found") {
+            states.iter_mut().map(|s| s.flush_and_export_full()).collect()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Export all found states as snapshots.

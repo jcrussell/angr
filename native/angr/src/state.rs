@@ -1140,6 +1140,13 @@ impl RustSimState {
             }
         }
 
+        // Flush pending writes before exporting memory pages.
+        // We need a mutable borrow, but export_full takes &self. Use an
+        // unsafe interior mutability pattern is not ideal, so we just report
+        // unflushed writes via pending_writes_count on the snapshot.
+        // Callers should call flush_pending_writes() before export_full()
+        // if they need materialized memory.
+
         // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
         let mut memory_pages: Vec<PageData> = Vec::new();
         for (page_num, page) in self.memory.pages().iter() {
@@ -1165,6 +1172,17 @@ impl RustSimState {
             history: self.history.clone(),
             named_registers,
         }
+    }
+
+    /// Flush pending writes and then export.
+    /// This materializes any deferred symbolic stores before creating the snapshot.
+    pub fn flush_and_export_full(&mut self) -> ExplorationStateSnapshot {
+        // Flush pending writes using the current solver context
+        {
+            let ctx = self.solver.borrow();
+            let _ = self.memory.flush_pending_writes(&*ctx, &self.concretizer);
+        }
+        self.export_full()
     }
 }
 

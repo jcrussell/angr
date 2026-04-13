@@ -1405,6 +1405,74 @@ impl SymbolicMemory {
         std::mem::take(&mut self.pending_writes)
     }
 
+    /// Flush all pending writes by materializing ITE chains into memory.
+    /// This must be called before exporting state to Python to ensure
+    /// memory pages contain all written values.
+    pub fn flush_pending_writes(
+        &mut self,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<(), MemoryError> {
+        if self.pending_writes.is_empty() {
+            return Ok(());
+        }
+
+        let writes = std::mem::take(&mut self.pending_writes);
+        for pw in writes {
+            // Try to concretize the address
+            if let Some(concrete_addr) = pw.addr.as_u64() {
+                self.store_concrete_lazy(concrete_addr, pw.value)?;
+                continue;
+            }
+
+            match concretizer.concretize(&pw.addr, ctx) {
+                ConcretizationResult::Single(addr) => {
+                    self.store_concrete_lazy(addr, pw.value)?;
+                }
+                ConcretizationResult::Multiple(addrs) => {
+                    // Build ITE chains for each candidate address
+                    for &candidate in &addrs {
+                        let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
+                        let cond = pw.addr.eq(&addr_const, ctx);
+                        let effective_cond = if let Some(ref c) = pw.condition {
+                            cond.and(c, ctx)
+                        } else {
+                            cond
+                        };
+                        let current = match self.load_concrete_lazy_inner(candidate, pw.size, ctx) {
+                            Ok(v) => v,
+                            Err(_) => RustBV::concrete(0, pw.size * 8),
+                        };
+                        let ite_val = effective_cond.ite(&pw.value, &current, ctx);
+                        self.store_concrete_lazy(candidate, ite_val)?;
+                    }
+                }
+                ConcretizationResult::Strided { base, stride, count } => {
+                    for i in 0..count {
+                        let candidate = base + i * stride;
+                        let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
+                        let cond = pw.addr.eq(&addr_const, ctx);
+                        let effective_cond = if let Some(ref c) = pw.condition {
+                            cond.and(c, ctx)
+                        } else {
+                            cond
+                        };
+                        let current = match self.load_concrete_lazy_inner(candidate, pw.size, ctx) {
+                            Ok(v) => v,
+                            Err(_) => RustBV::concrete(0, pw.size * 8),
+                        };
+                        let ite_val = effective_cond.ite(&pw.value, &current, ctx);
+                        self.store_concrete_lazy(candidate, ite_val)?;
+                    }
+                }
+                ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => {
+                    // Cannot materialize — skip (data was already applied via load-time ITE)
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Get page count.
     pub fn page_count(&self) -> usize {
         self.pages.len()

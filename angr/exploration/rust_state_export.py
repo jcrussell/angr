@@ -182,9 +182,14 @@ class RustStateExportMixin:
         current values.
         """
         try:
-            snapshot = self._rust_mgr.export_state(state_id)
+            # Use flushed export to materialize any pending symbolic writes
+            # before exporting memory pages to Python.
+            snapshot = self._rust_mgr.export_state_flushed(state_id)
         except Exception:
-            return  # State may not be in Rust stashes anymore
+            try:
+                snapshot = self._rust_mgr.export_state(state_id)
+            except Exception:
+                return  # State may not be in Rust stashes anymore
 
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
