@@ -225,6 +225,11 @@ impl MemoryPage {
 
     /// Store bytes to this page (concrete).
     pub fn store_concrete(&mut self, offset: u16, bytes: &[u8]) {
+        debug_assert!(
+            (offset as usize + bytes.len()) <= PAGE_SIZE as usize,
+            "store_concrete: offset {} + len {} exceeds PAGE_SIZE {}",
+            offset, bytes.len(), PAGE_SIZE
+        );
         // Copy-on-write: if shared, make a unique copy
         let data = Arc::make_mut(&mut self.data);
         let start = offset as usize;
@@ -233,7 +238,8 @@ impl MemoryPage {
 
         // Clear symbolic bitmap bits for overwritten bytes
         if let Some(ref mut bitmap) = self.symbolic_bitmap {
-            for i in offset..(offset + bytes.len() as u16) {
+            let loop_end = (offset as usize + bytes.len()).min(PAGE_SIZE as usize) as u16;
+            for i in offset..loop_end {
                 let word_idx = (i / 64) as usize;
                 let bit_idx = i % 64;
                 bitmap[word_idx] &= !(1u64 << bit_idx);
@@ -247,8 +253,14 @@ impl MemoryPage {
 
     /// Mark bytes as symbolic.
     pub fn mark_symbolic(&mut self, offset: u16, size: u16) {
+        debug_assert!(
+            (offset as usize + size as usize) <= PAGE_SIZE as usize,
+            "mark_symbolic: offset {} + size {} exceeds PAGE_SIZE {}",
+            offset, size, PAGE_SIZE
+        );
         let bitmap = self.symbolic_bitmap.get_or_insert_with(|| Box::new([0u64; 64]));
-        for i in offset..(offset + size) {
+        let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
+        for i in offset..loop_end {
             let word_idx = (i / 64) as usize;
             let bit_idx = i % 64;
             bitmap[word_idx] |= 1u64 << bit_idx;
