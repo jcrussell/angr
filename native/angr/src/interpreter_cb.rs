@@ -1689,12 +1689,6 @@ impl<'a> CallbackInterpreter<'a> {
                                 let prefetch_count = self.page_prefetch_count;
                                 let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
 
-                                // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
-                                // Python may have actual data for this page from backers (file contents,
-                                // initialized data). Speculatively creating zero pages causes state
-                                // divergence between Rust and Python. Instead, we fall through to
-                                // the Python callback which handles memory correctly.
-
                                 if page_fetched {
                                     // Page was fetched - retry store using cached concretization
                                     if let Some(ref mut rust_mem) = self.rust_memory {
@@ -1719,7 +1713,7 @@ impl<'a> CallbackInterpreter<'a> {
                                     }
                                 }
                                 // If page not fetched, fall through to Python callback
-                                                            }
+                            }
                             Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
                                 // Totally unmapped (not in lazy region) - fall through to Python
                                 log::debug!(

@@ -457,6 +457,41 @@ impl RustBV {
         self.as_u64().expect("value is symbolic or too wide")
     }
 
+    /// Try to extract (concrete_base, symbolic_width) from expressions like
+    /// Add(Concrete, ZeroExtend(Symbolic(w))) → (concrete, w)
+    /// Add(Concrete, Symbolic(w)) → (concrete, w)
+    /// This enables estimating the address range for pending write filtering.
+    pub fn concrete_base_and_sym_width(&self) -> Option<(u64, u32)> {
+        match self {
+            RustBV::Expression { op: BVOp::Add, operands, .. } if operands.len() == 2 => {
+                let (a, b) = (&*operands[0], &*operands[1]);
+                // Try both orderings: Add(concrete, sym) or Add(sym, concrete)
+                let (concrete, sym) = if let Some(c) = a.as_u64() {
+                    (c, b)
+                } else if let Some(c) = b.as_u64() {
+                    (c, a)
+                } else {
+                    return None;
+                };
+                // Get the symbolic part's effective width
+                match sym {
+                    RustBV::Symbolic { width, .. } => Some((concrete, *width)),
+                    RustBV::Constrained { width, .. } => Some((concrete, *width)),
+                    RustBV::Expression { op: BVOp::ZeroExt(_), operands: inner, .. } => {
+                        // ZeroExtend(Symbolic(w)) — effective range is w bits
+                        if let Some(inner_val) = inner.first() {
+                            Some((concrete, inner_val.width()))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     // =========================================================================
     // Arithmetic Operations
     // =========================================================================

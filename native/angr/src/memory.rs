@@ -27,6 +27,9 @@ pub struct PendingWrite {
     pub size: u32,
     /// Optional condition (for conditional stores).
     pub condition: Option<RustBV>,
+    /// Hint: page range that this write could touch (min_page, max_page).
+    /// If None, the write could be to any address.
+    pub page_hint: Option<(u64, u64)>,
 }
 
 /// Page size in bytes (4KB).
@@ -340,6 +343,44 @@ pub struct SymbolicMemory {
     /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
     /// addresses at store time, we append here and materialize on load.
     pending_writes: Vec<PendingWrite>,
+}
+
+impl PendingWrite {
+    /// Compute a page hint from an address expression by trying to extract
+    /// a concrete base from add(base, symbolic) patterns.
+    fn compute_page_hint(addr: &RustBV, size: u32) -> Option<(u64, u64)> {
+        // If the address has a concrete component, we can estimate the page range
+        // For addr = base + sym where sym is 8-bit (0..255), range is base..base+255
+        if let Some(concrete) = addr.as_u64() {
+            let end = concrete + size as u64 - 1;
+            return Some((concrete >> 12, end >> 12));
+        }
+
+        // Try to extract concrete base from expression
+        if let Some((base, sym_width)) = addr.concrete_base_and_sym_width() {
+            // sym_width bits → max value is (1 << sym_width) - 1
+            let max_offset = if sym_width >= 64 {
+                return None; // Too wide to estimate
+            } else {
+                (1u64 << sym_width) - 1
+            };
+            let end = base.saturating_add(max_offset).saturating_add(size as u64 - 1);
+            return Some((base >> 12, end >> 12));
+        }
+
+        None // Can't determine range — must check all loads
+    }
+
+    /// Check if a concrete address could possibly overlap with this pending write.
+    pub fn could_overlap_page(&self, addr: u64) -> bool {
+        match self.page_hint {
+            Some((min_page, max_page)) => {
+                let page = addr >> 12;
+                page >= min_page && page <= max_page
+            }
+            None => true, // Unknown range, must assume overlap
+        }
+    }
 }
 
 impl SymbolicMemory {
@@ -962,25 +1003,47 @@ impl SymbolicMemory {
         &mut self,
         addr: RustBV,
         value: RustBV,
-        _ctx: &SymContext,
-        _concretizer: &AddressConcretizer,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
     ) -> Result<(), MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
             return self.store_concrete_lazy(concrete_addr, value);
         }
 
-        // Defer all symbolic-address stores. Instead of eagerly concretizing
-        // (which triggers Z3 range/solutions queries per store), we record the
-        // store and materialize ITE chains lazily on load.
-        let size = (value.width() + 7) / 8;
-        self.pending_writes.push(PendingWrite {
-            addr,
-            value,
-            size,
-            condition: None,
-        });
-        Ok(())
+        // Try to concretize the address
+        match concretizer.concretize(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete_lazy(concrete_addr, value)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                self.store_strided(&addr, &value, base, stride, count, ctx)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                let size = value.width() / 8;
+                for &candidate in &addrs {
+                    let addr_const = RustBV::concrete(candidate as u128, addr.width());
+                    let cond = addr.eq(&addr_const, ctx);
+                    let current = self.load_concrete_lazy(candidate, size, ctx)?;
+                    let conditional_value = cond.ite(&value, &current, ctx);
+                    self.store_concrete_lazy(candidate, conditional_value)?;
+                }
+                Ok(())
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress {
+                    description: reason,
+                })
+            }
+        }
     }
 
     /// Store to strided addresses with conditional stores.
@@ -1313,23 +1376,21 @@ impl SymbolicMemory {
         addr: &RustBV,
         value: RustBV,
         conc_result: &ConcretizationResult,
-        _ctx: &SymContext,
+        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         match conc_result {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_automap(*concrete_addr, value)
             }
-            ConcretizationResult::Multiple(_)
-            | ConcretizationResult::Strided { .. }
-            | ConcretizationResult::TooLarge { .. } => {
-                // Defer to pending_writes instead of eagerly building ITE chains
-                let size = (value.width() + 7) / 8;
-                self.pending_writes.push(PendingWrite {
-                    addr: addr.clone(),
-                    value,
-                    size,
-                    condition: None,
-                });
+            ConcretizationResult::Multiple(addrs) => {
+                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
+                self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
+                self.store_strided(addr, &value, *base, *stride, *count, ctx)
+            }
+            ConcretizationResult::TooLarge { .. } => {
                 Ok(())
             }
             ConcretizationResult::Failed(reason) => {
@@ -1837,45 +1898,14 @@ impl SymbolicMemory {
     /// Returns the value with ITE chains for any matching pending writes.
     fn apply_pending_writes_concrete(
         &self,
-        addr: u64,
-        size: u32,
-        mut base_value: RustBV,
-        ctx: &SymContext,
+        _addr: u64,
+        _size: u32,
+        base_value: RustBV,
+        _ctx: &SymContext,
     ) -> RustBV {
-        if self.pending_writes.is_empty() {
-            return base_value;
-        }
-
-        // Check each pending write for potential overlap with this concrete address
-        for pw in &self.pending_writes {
-            if pw.size != size {
-                // TODO: handle partial overlaps in future
-                continue;
-            }
-
-            // If the pending write's address is concrete, check directly
-            if let Some(pw_addr) = pw.addr.as_u64() {
-                if pw_addr == addr {
-                    // Exact match — this write definitely applies
-                    base_value = pw.value.clone();
-                }
-                continue;
-            }
-
-            // Symbolic address — build ITE: if pw.addr == addr then pw.value else base_value
-            let addr_const = RustBV::concrete(addr as u128, pw.addr.width());
-            let cond = pw.addr.eq(&addr_const, ctx);
-
-            // Apply optional condition
-            let effective_cond = if let Some(ref c) = pw.condition {
-                cond.and(c, ctx)
-            } else {
-                cond
-            };
-
-            base_value = effective_cond.ite(&pw.value, &base_value, ctx);
-        }
-
+        // Pending writes overlay is disabled during execution.
+        // Stores go through the eager concretize+ITE path.
+        // Pending writes are only used for deferred flushing on export.
         base_value
     }
 
@@ -1883,32 +1913,13 @@ impl SymbolicMemory {
     /// Returns the value with ITE chains for any matching pending writes.
     fn apply_pending_writes_symbolic(
         &self,
-        addr: &RustBV,
-        size: u32,
-        mut base_value: RustBV,
-        ctx: &SymContext,
+        _addr: &RustBV,
+        _size: u32,
+        base_value: RustBV,
+        _ctx: &SymContext,
     ) -> RustBV {
-        if self.pending_writes.is_empty() {
-            return base_value;
-        }
-
-        for pw in &self.pending_writes {
-            if pw.size != size {
-                continue;
-            }
-
-            // Build condition: pw.addr == load_addr
-            let cond = pw.addr.eq(addr, ctx);
-
-            let effective_cond = if let Some(ref c) = pw.condition {
-                cond.and(c, ctx)
-            } else {
-                cond
-            };
-
-            base_value = effective_cond.ite(&pw.value, &base_value, ctx);
-        }
-
+        // Pending writes overlay is disabled during execution.
+        // See apply_pending_writes_concrete for rationale.
         base_value
     }
 
