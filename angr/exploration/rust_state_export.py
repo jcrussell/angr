@@ -228,7 +228,7 @@ class RustStateExportMixin:
             return _cached_rust_ctx[0]
 
         def _rust_eval(expr, cast_to=None):
-            """Evaluate using Rust solver."""
+            """Evaluate using Rust solver, with byte decomposition for wide BVS."""
             rust_ctx = _get_rust_ctx()
             result = rust_ctx.eval(expr)
             if result is not None:
@@ -237,71 +237,85 @@ class RustStateExportMixin:
                     raw = result.to_bytes(nbytes, 'little')
                     return raw[::-1]
                 return result
+            # Wide BVS (e.g. 160-bit flag): Rust eval returns None because
+            # the full symbol isn't in Rust's table. Decompose into byte evals.
+            if hasattr(expr, 'length') and expr.length > 64:
+                import claripy
+                nbytes = expr.length // 8
+                byte_vals = []
+                for i in range(nbytes):
+                    hi = expr.length - 1 - i * 8
+                    lo = hi - 7
+                    byte_expr = claripy.Extract(hi, lo, expr)
+                    byte_result = rust_ctx.eval(byte_expr)
+                    if byte_result is None:
+                        return None  # Can't decompose
+                    byte_vals.append(byte_result & 0xFF)
+                # Reassemble
+                value = 0
+                for bv in byte_vals:
+                    value = (value << 8) | bv
+                if cast_to == bytes:
+                    return value.to_bytes(nbytes, 'big')
+                return value
             return None
 
         def eval_with_fallback(expr, cast_to=None, **kwargs):
+            # Try Rust solver first — avoids expensive SolverComposite path
+            # which can take 81s for LAZY_SOLVES examples (hackcon2016)
             try:
-                return original_eval(expr, cast_to=cast_to, **kwargs)
-            except Exception as orig_err:
-                try:
-                    result = _rust_eval(expr, cast_to=cast_to)
-                    if result is not None:
-                        return (result,) if isinstance(result, int) else result
-                except Exception:
-                    pass
-                raise orig_err
+                result = _rust_eval(expr, cast_to=cast_to)
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+            # Fall back to Python solver
+            return original_eval(expr, cast_to=cast_to, **kwargs)
 
         def eval_upto_with_fallback(expr, n, cast_to=None, **kwargs):
+            # Try Rust solver first
             try:
-                return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
-            except Exception as orig_err:
-                try:
-                    rust_ctx = _get_rust_ctx()
-                    results = rust_ctx.eval_upto(expr, n)
-                    if results is not None:
-                        if cast_to == bytes:
-                            nbytes = (expr.length + 7) // 8
-                            return [r.to_bytes(nbytes, 'little')[::-1] for r in results]
-                        return results
-                except Exception:
-                    pass
-                raise orig_err
+                rust_ctx = _get_rust_ctx()
+                results = rust_ctx.eval_upto(expr, n)
+                if results is not None:
+                    if cast_to == bytes:
+                        nbytes = (expr.length + 7) // 8
+                        return [r.to_bytes(nbytes, 'little')[::-1] for r in results]
+                    return results
+            except Exception:
+                pass
+            return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
 
         def min_with_fallback(expr, **kwargs):
             try:
-                return original_min(expr, **kwargs)
-            except Exception as orig_err:
-                try:
-                    rust_ctx = _get_rust_ctx()
-                    result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
-                    if result is not None:
-                        return result
-                except Exception:
-                    pass
-                raise orig_err
+                rust_ctx = _get_rust_ctx()
+                result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+            return original_min(expr, **kwargs)
 
         def max_with_fallback(expr, **kwargs):
             try:
-                return original_max(expr, **kwargs)
-            except Exception as orig_err:
-                try:
-                    rust_ctx = _get_rust_ctx()
-                    result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
-                    if result is not None:
-                        return result
-                except Exception:
-                    pass
-                raise orig_err
+                rust_ctx = _get_rust_ctx()
+                result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+            return original_max(expr, **kwargs)
 
         def satisfiable_with_fallback(**kwargs):
             try:
+                rust_ctx = _get_rust_ctx()
+                return rust_ctx.satisfiable()
+            except Exception:
+                pass
+            try:
                 return original_satisfiable(**kwargs)
             except Exception:
-                try:
-                    rust_ctx = _get_rust_ctx()
-                    return rust_ctx.satisfiable()
-                except Exception:
-                    return False
+                return False
 
         state.solver.eval = eval_with_fallback
         state.solver.eval_upto = eval_upto_with_fallback
