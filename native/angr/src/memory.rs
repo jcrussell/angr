@@ -961,59 +961,25 @@ impl SymbolicMemory {
         &mut self,
         addr: RustBV,
         value: RustBV,
-        ctx: &SymContext,
-        concretizer: &AddressConcretizer,
+        _ctx: &SymContext,
+        _concretizer: &AddressConcretizer,
     ) -> Result<(), MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
             return self.store_concrete_lazy(concrete_addr, value);
         }
 
-        // Try to concretize the address
-        match concretizer.concretize(&addr, ctx) {
-            ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete_lazy(concrete_addr, value)
-            }
-            ConcretizationResult::Strided { base, stride, count } => {
-                // Handle strided access pattern
-                self.store_strided(&addr, &value, base, stride, count, ctx)
-            }
-            ConcretizationResult::Multiple(addrs) => {
-                // For each candidate address, perform a conditional store:
-                // mem[candidate] = If(addr == candidate, new_value, mem[candidate])
-                let size = value.width() / 8;
-
-                for &candidate in &addrs {
-                    // Build condition: addr == candidate
-                    let addr_const = RustBV::concrete(candidate as u128, addr.width());
-                    let cond = addr.eq(&addr_const, ctx);
-
-                    // Load current value at candidate address
-                    let current = self.load_concrete_lazy(candidate, size, ctx)?;
-
-                    // Build conditional value
-                    let conditional_value = cond.ite(&value, &current, ctx);
-
-                    // Store the conditional value
-                    self.store_concrete_lazy(candidate, conditional_value)?;
-                }
-
-                Ok(())
-            }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                Err(MemoryError::SymbolicAddress {
-                    description: format!(
-                        "address range too large for concretization: 0x{:x} - 0x{:x}",
-                        min, max
-                    ),
-                })
-            }
-            ConcretizationResult::Failed(reason) => {
-                Err(MemoryError::SymbolicAddress {
-                    description: reason,
-                })
-            }
-        }
+        // Defer all symbolic-address stores. Instead of eagerly concretizing
+        // (which triggers Z3 range/solutions queries per store), we record the
+        // store and materialize ITE chains lazily on load.
+        let size = (value.width() + 7) / 8;
+        self.pending_writes.push(PendingWrite {
+            addr,
+            value,
+            size,
+            condition: None,
+        });
+        Ok(())
     }
 
     /// Store to strided addresses with conditional stores.
@@ -1345,27 +1311,30 @@ impl SymbolicMemory {
     }
 
     /// Store using a pre-computed concretization result.
-    /// Avoids redundant Z3 calls when the caller has already concretized the address.
+    /// Single addresses store concretely. All other symbolic results are deferred
+    /// to pending_writes for lazy materialization on load.
     pub fn store_with_concretization(
         &mut self,
         addr: &RustBV,
         value: RustBV,
         conc_result: &ConcretizationResult,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         match conc_result {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_automap(*concrete_addr, value)
             }
-            ConcretizationResult::Multiple(addrs) => {
-                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
-                self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
-            }
-            ConcretizationResult::Strided { base, stride, count } => {
-                self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
-                self.store_strided(addr, &value, *base, *stride, *count, ctx)
-            }
-            ConcretizationResult::TooLarge { .. } => {
+            ConcretizationResult::Multiple(_)
+            | ConcretizationResult::Strided { .. }
+            | ConcretizationResult::TooLarge { .. } => {
+                // Defer to pending_writes instead of eagerly building ITE chains
+                let size = (value.width() + 7) / 8;
+                self.pending_writes.push(PendingWrite {
+                    addr: addr.clone(),
+                    value,
+                    size,
+                    condition: None,
+                });
                 Ok(())
             }
             ConcretizationResult::Failed(reason) => {
