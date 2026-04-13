@@ -978,17 +978,60 @@ impl RustBV {
         debug_assert!(high >= low);
         debug_assert!(high < self.width());
         let result_width = high - low + 1;
-        match self.as_u128() {
-            Some(v) => {
-                let extracted = (v >> low) & ((1u128 << result_width) - 1);
-                Self::concrete(extracted, result_width)
+
+        // Fast path for concrete values
+        if let Some(v) = self.as_u128() {
+            let extracted = (v >> low) & ((1u128 << result_width) - 1);
+            return Self::concrete(extracted, result_width);
+        }
+
+        // Identity extraction: Extract(width-1, 0, x) → x
+        if high == self.width() - 1 && low == 0 {
+            return self.clone();
+        }
+
+        // Canonicalization rules for Expression nodes
+        if let RustBV::Expression { op, operands, .. } = self {
+            match op {
+                // Rule 1: Extract(Extract(x)) → fused single Extract
+                // Extract(h2, l2, Extract(h1, l1, x)) → Extract(l1+h2, l1+l2, x)
+                BVOp::Extract(_, inner_low) => {
+                    return operands[0].extract(inner_low + high, inner_low + low, _ctx);
+                }
+
+                // Rule 2: Extract(Concat(a, b)) → distribute to relevant part(s)
+                BVOp::Concat if operands.len() == 2 => {
+                    let b_width = operands[1].width();
+                    if high < b_width {
+                        // Entirely within the low part (b)
+                        return operands[1].extract(high, low, _ctx);
+                    } else if low >= b_width {
+                        // Entirely within the high part (a)
+                        return operands[0].extract(high - b_width, low - b_width, _ctx);
+                    }
+                    // Crosses boundary — extract from each part and concat
+                    let lo_part = operands[1].extract(b_width - 1, low, _ctx);
+                    let hi_part = operands[0].extract(high - b_width, 0, _ctx);
+                    return hi_part.concat(&lo_part, _ctx);
+                }
+
+                // Rule 3: Extract(Reverse(x)) with byte-aligned bounds
+                // → Extract(width-1-lo, width-1-hi, x) — eliminates the Reverse
+                BVOp::Reverse if operands[0].width() % 8 == 0
+                    && high % 8 == 7 && low % 8 == 0 => {
+                    let w = operands[0].width();
+                    return operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
+                }
+
+                _ => {}
             }
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: result_width,
-                op: BVOp::Extract(high, low),
-                operands: vec![Arc::new(self.clone())],
-            },
+        }
+
+        RustBV::Expression {
+            id: Self::EXPRESSION_ID,
+            width: result_width,
+            op: BVOp::Extract(high, low),
+            operands: vec![Arc::new(self.clone())],
         }
     }
 
@@ -1288,6 +1331,39 @@ impl RustBV {
 
             // Byte reverse
             BVOp::Reverse => {
+                // Rule 5: Reverse(Concat(a,b)) → Concat(Reverse(b), Reverse(a))
+                // Distribute reverse across concat parts before building Z3 AST
+                if let RustBV::Expression { op: BVOp::Concat, operands: inner_ops, .. } = operands[0].as_ref() {
+                    fn collect_concat_parts(bv: &RustBV, parts: &mut Vec<Arc<RustBV>>) {
+                        if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                            collect_concat_parts(&operands[0], parts);
+                            collect_concat_parts(&operands[1], parts);
+                        } else {
+                            parts.push(Arc::new(bv.clone()));
+                        }
+                    }
+                    let mut parts = Vec::new();
+                    collect_concat_parts(&operands[0], &mut parts);
+                    // Reverse the order, then reverse each part individually
+                    parts.reverse();
+                    let reversed_asts: Vec<z3::ast::BV> = parts.iter()
+                        .map(|p| {
+                            // Build reverse of each part
+                            let w = p.width();
+                            if w == 8 {
+                                p.to_z3_ast() // Single byte — no reverse needed
+                            } else {
+                                Self::build_z3_ast(&BVOp::Reverse, &[p.clone()], w)
+                            }
+                        })
+                        .collect();
+                    let mut result = reversed_asts[0].clone();
+                    for ast in &reversed_asts[1..] {
+                        result = result.concat(ast);
+                    }
+                    return result;
+                }
+
                 let ast = operands[0].to_z3_ast();
                 let w = operands[0].width();
                 if w % 8 == 0 && w >= 16 {
