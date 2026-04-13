@@ -14,6 +14,21 @@ use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
+/// A deferred symbolic store. Instead of eagerly concretizing symbolic addresses
+/// and building ITE chains at store time (275 Z3 calls for sym-write), we record
+/// the store and only materialize it when a load touches the same region.
+#[derive(Debug, Clone)]
+pub struct PendingWrite {
+    /// The symbolic address expression.
+    pub addr: RustBV,
+    /// The value to store.
+    pub value: RustBV,
+    /// Size in bytes.
+    pub size: u32,
+    /// Optional condition (for conditional stores).
+    pub condition: Option<RustBV>,
+}
+
 /// Page size in bytes (4KB).
 pub const PAGE_SIZE: u64 = 4096;
 
@@ -322,6 +337,9 @@ pub struct SymbolicMemory {
     /// symbolic object to (base_addr, width_bits). Enables O(1) lookup when
     /// loading a byte that falls inside a wider symbolic object.
     symbolic_spans: HashMap<u64, (u64, u32)>,
+    /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
+    /// addresses at store time, we append here and materialize on load.
+    pending_writes: Vec<PendingWrite>,
 }
 
 impl SymbolicMemory {
@@ -336,6 +354,7 @@ impl SymbolicMemory {
             dirty_pages: HashSet::new(),
             lazy_regions: Vec::new(),
             symbolic_spans: HashMap::new(),
+            pending_writes: Vec::new(),
         }
     }
 
@@ -1398,7 +1417,28 @@ impl SymbolicMemory {
             dirty_pages: HashSet::new(), // Fresh dirty tracking for fork
             lazy_regions: self.lazy_regions.clone(), // Share lazy regions
             symbolic_spans: self.symbolic_spans.clone(),
+            pending_writes: self.pending_writes.clone(),
         }
+    }
+
+    /// Get pending writes count.
+    pub fn pending_writes_count(&self) -> usize {
+        self.pending_writes.len()
+    }
+
+    /// Get a reference to the pending writes.
+    pub fn pending_writes(&self) -> &[PendingWrite] {
+        &self.pending_writes
+    }
+
+    /// Add a deferred symbolic store.
+    pub fn add_pending_write(&mut self, write: PendingWrite) {
+        self.pending_writes.push(write);
+    }
+
+    /// Drain all pending writes (for materialization).
+    pub fn drain_pending_writes(&mut self) -> Vec<PendingWrite> {
+        std::mem::take(&mut self.pending_writes)
     }
 
     /// Get page count.
