@@ -318,6 +318,10 @@ pub struct SymbolicMemory {
     /// When a load hits an unmapped page in a lazy region, the interpreter
     /// should fetch it from Python rather than failing.
     lazy_regions: Vec<(u64, u64)>,
+    /// Reverse index for symbolic objects: maps each byte offset within a
+    /// symbolic object to (base_addr, width_bits). Enables O(1) lookup when
+    /// loading a byte that falls inside a wider symbolic object.
+    symbolic_spans: HashMap<u64, (u64, u32)>,
 }
 
 impl SymbolicMemory {
@@ -331,6 +335,7 @@ impl SymbolicMemory {
             endness,
             dirty_pages: HashSet::new(),
             lazy_regions: Vec::new(),
+            symbolic_spans: HashMap::new(),
         }
     }
 
@@ -443,9 +448,10 @@ impl SymbolicMemory {
         }
         // Check if this address falls WITHIN a wider symbolic object
         // stored at a lower address (e.g., reading byte 5 of a 128-byte BVS)
-        for base_offset in 1..=256u64 {
-            let base_addr = addr.wrapping_sub(base_offset);
+        // Uses the symbolic_spans reverse index for O(1) lookup.
+        if let Some(&(base_addr, _width_bits)) = self.symbolic_spans.get(&addr) {
             if let Some(sym) = self.symbolic_objects.get(&base_addr) {
+                let base_offset = addr - base_addr;
                 let sym_bytes = sym.width() / 8;
                 if base_offset < sym_bytes as u64
                     && base_offset + size as u64 <= sym_bytes as u64
@@ -634,6 +640,12 @@ impl SymbolicMemory {
         // If symbolic, store in symbolic_objects
         if value.is_symbolic() {
             self.symbolic_objects.insert(addr, value.clone());
+            // Update reverse span index: map each byte offset to (base_addr, width)
+            let width_bits = value.width();
+            let sym_bytes = width_bits / 8;
+            for i in 1..sym_bytes {
+                self.symbolic_spans.insert(addr + i as u64, (addr, width_bits));
+            }
             // Mark pages as having symbolic bytes — batch per-page
             let mut current_page_num = u64::MAX;
             let mut current_page: Option<MemoryPage> = None;
@@ -692,8 +704,13 @@ impl SymbolicMemory {
             current_addr += bytes_in_page as u64;
         }
 
-        // Clear any symbolic object at this address
-        self.symbolic_objects.remove(&addr);
+        // Clear any symbolic object at this address and its span entries
+        if let Some(old_sym) = self.symbolic_objects.remove(&addr) {
+            let old_bytes = old_sym.width() / 8;
+            for i in 1..old_bytes {
+                self.symbolic_spans.remove(&(addr + i as u64));
+            }
+        }
 
         Ok(())
     }
@@ -1380,6 +1397,7 @@ impl SymbolicMemory {
             endness: self.endness,
             dirty_pages: HashSet::new(), // Fresh dirty tracking for fork
             lazy_regions: self.lazy_regions.clone(), // Share lazy regions
+            symbolic_spans: self.symbolic_spans.clone(),
         }
     }
 
@@ -1481,6 +1499,12 @@ impl SymbolicMemory {
     pub fn import_symbolic_value(&mut self, addr: u64, value: RustBV, _symbol_id: Option<u64>) {
         // Store in symbolic_objects for lookup
         self.symbolic_objects.insert(addr, value.clone());
+        // Update reverse span index
+        let width_bits = value.width();
+        let sym_bytes = width_bits / 8;
+        for i in 1..sym_bytes {
+            self.symbolic_spans.insert(addr + i as u64, (addr, width_bits));
+        }
 
         // Mark pages as having symbolic bytes
         // Create pages if they don't exist (critical for stack addresses)
@@ -1519,6 +1543,7 @@ impl SymbolicMemory {
     /// Clear all symbolic objects (used when resetting state).
     pub fn clear_symbolic_objects(&mut self) {
         self.symbolic_objects.clear();
+        self.symbolic_spans.clear();
     }
 
     /// Add a lazy region where pages can be fetched on-demand.
