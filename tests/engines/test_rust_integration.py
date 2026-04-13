@@ -125,9 +125,7 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
 class TestRustIntegration:
     """Integration tests running real CTF examples through the Rust engine."""
 
-    # Known failures: defcon2016quals_baby-re has solver.eval() returning tuple
-    # instead of int via RustStateProxy — pre-existing compatibility issue
-    KNOWN_XFAIL = {"defcon2016quals_baby-re"}
+    KNOWN_XFAIL = set()  # No known failures
 
     @pytest.mark.parametrize(
         "example_name,expected,timeout,uses_predicate",
