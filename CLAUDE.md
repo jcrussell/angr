@@ -30,8 +30,11 @@ pip install -e . --no-build-isolation --no-deps
 ## Running Tests
 
 ```bash
-# Run RustExplorationManager tests (24/24 passing)
+# Run RustExplorationManager tests (82/82 passing)
 python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
+
+# Run benchmark regression tests (5 fast-tier benchmarks)
+python tests/benchmarks/run_regression.py
 
 # Run single benchmark (safe, subprocess with 4GB memory limit)
 python tests/benchmarks/run_single.py fauxware --both
@@ -55,9 +58,9 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 
 ## Current Status
 
-**Tests:** 24/24 passing
-**Benchmarks:** 10/10 correct results
-**Performance:** 6/10 faster than Python, 10/10 within 2x
+**Tests:** 82/82 passing
+**Benchmarks:** 12/12 correct results (5 regression-tested)
+**Performance:** 7/12 faster than Python
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
@@ -65,10 +68,12 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 | ekoparty | 8.2x | |
 | flareon5 | 5.85x | |
 | ais3 | 3.55x | |
+| whitehatvn | 2.7x | Partial output divergence |
 | defcamp | 2.04x | |
 | flareon10 | 1.37x | Callable flow |
 | fairlight | 1.15x | |
 | fauxware | 0.83x | Per-callback FFI |
+| strcpy_find | 0.21x | Callable predicate overhead |
 | sym-write | 0.08x | Eager symbolic store |
 | hackcon | varies | Z3 AST structure |
 
