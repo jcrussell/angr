@@ -2501,24 +2501,80 @@ class RustExplorationManager(
         """
         return self
 
-    def merge(self, stash: str = 'active', **kwargs) -> "RustExplorationManager":
-        """Merge states in a stash (best-effort for SimulationManager compatibility).
+    def merge(self, stash: str = 'active', merge_func=None, merge_key=None,
+              prune=True, **kwargs) -> "RustExplorationManager":
+        """Merge states in a stash.
 
-        True state merging requires claripy merge which isn't supported across
-        the Rust/Python boundary. This is a no-op that keeps the first state.
+        Exports states to Python, performs merge via claripy, then replaces
+        the stash with merged states. Falls back to keeping all states
+        unmerged if merge fails.
         """
         state_ids = list(self._rust_mgr.get_state_ids(stash))
-        if len(state_ids) > 1:
-            # Keep first, drop rest
-            for sid in state_ids[1:]:
+        if len(state_ids) <= 1:
+            return self
+
+        # Export all states to Python SimStates for merging
+        try:
+            py_states = []
+            for sid in state_ids:
+                py_state = self.get_state_by_id(sid)
+                if py_state is not None:
+                    py_states.append(py_state)
+
+            if len(py_states) <= 1:
+                return self
+
+            # Group by merge key (default: PC)
+            if merge_key is None:
+                merge_key = lambda s: s.addr
+
+            groups = {}
+            for s in py_states:
+                key = merge_key(s)
+                groups.setdefault(key, []).append(s)
+
+            merged = []
+            for key, group in groups.items():
+                if len(group) <= 1:
+                    merged.extend(group)
+                elif merge_func is not None:
+                    try:
+                        merged.append(merge_func(*group))
+                    except Exception:
+                        l.warning("merge_func failed for group at %s, keeping unmerged", key)
+                        merged.extend(group)
+                else:
+                    try:
+                        base = group[0]
+                        others = group[1:]
+                        m, _, _ = base.merge(*others)
+                        merged.append(m)
+                    except Exception:
+                        l.warning("State merge failed for group at %s, keeping unmerged", key)
+                        merged.extend(group)
+
+            # Clear the Rust stash and re-add merged states
+            for sid in state_ids:
                 try:
-                    self._rust_mgr.move_state(sid, stash, '_drop')
+                    self._rust_mgr.move_state(sid, stash, '_merge_drop')
                 except Exception:
                     pass
             try:
-                self._rust_mgr.clear_stash('_drop')
+                self._rust_mgr.clear_stash('_merge_drop')
             except Exception:
                 pass
+
+            # Re-add merged states
+            for ms in merged:
+                try:
+                    self._add_rust_state(stash, ms)
+                    l.debug("Added merged state to %s at 0x%x", stash, ms.addr)
+                except Exception as e:
+                    l.warning("Failed to re-add merged state: %s", e)
+
+        except Exception:
+            l.warning("State merge failed entirely, keeping states unmerged", exc_info=True)
+
         return self
 
     def __len__(self) -> int:
