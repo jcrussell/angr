@@ -237,10 +237,27 @@ class RustStateExportMixin:
         # significant time when the solve script calls eval() many times
         # (e.g., ais3 evaluates ~100 flag bytes → ~100 eval calls).
         _cached_rust_ctx = [None]
+        # Track constraint count at attach time so we can detect when the user
+        # adds constraints post-exploration (e.g., flareon2015_5 adds hash
+        # equality constraints after finding the state).
+        _initial_constraint_count = [len(state.solver.constraints)]
+        _synced_constraint_count = [_initial_constraint_count[0]]
 
         def _get_rust_ctx():
             if _cached_rust_ctx[0] is None:
                 _cached_rust_ctx[0] = rust_mgr.fork_state_solver(state_id)
+            # If user added constraints after export, sync them to Rust solver
+            current_count = len(state.solver.constraints)
+            if current_count != _synced_constraint_count[0]:
+                ctx = _cached_rust_ctx[0]
+                # Add new constraints (those beyond what we've already synced)
+                new_constraints = state.solver.constraints[_synced_constraint_count[0]:]
+                for c in new_constraints:
+                    try:
+                        ctx.add_constraint_ast(c)
+                    except Exception:
+                        pass
+                _synced_constraint_count[0] = current_count
             return _cached_rust_ctx[0]
 
         def _rust_eval(expr, cast_to=None):
