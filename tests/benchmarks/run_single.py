@@ -36,6 +36,17 @@ EXAMPLE_CATALOG = {
     "codegate_2017-angrybird": {"tier": "medium",  "rust_ok": True,  "notes": "LAZY_SOLVES, manual state init"},
     "google2016_unbreakable_0":{"tier": "fast",    "rust_ok": True,  "notes": "Basic constraint solving"},
     "google2016_unbreakable_1":{"tier": "fast",    "rust_ok": True,  "notes": "Multi-step constraints"},
+    # === New benchmark candidates (untested with Rust engine) ===
+    "sharif7_rev50":           {"tier": "fast",    "rust_ok": None, "notes": "Basic reversing challenge"},
+    "defcon2016quals_baby-re": {"tier": "medium",  "rust_ok": None, "notes": "SimProcedure hooks (scanf), constraints"},
+    "asisctffinals2015_license":{"tier": "medium", "rust_ok": None, "notes": "License validation"},
+    "0ctf_momo_3":             {"tier": "medium",  "rust_ok": None, "notes": "CTF challenge"},
+    "csgames2018":             {"tier": "fast",    "rust_ok": None, "notes": "Competition binary"},
+    "unmapped_analysis":       {"tier": "fast",    "rust_ok": None, "notes": "Analysis with unmapped regions"},
+    "hitcon2017_sakura":       {"tier": "medium",  "rust_ok": None, "notes": "Multi-stage constraint solving"},
+    "strcpy_find":             {"tier": "fast",    "rust_ok": None, "notes": "Buffer overflow / strcpy detection"},
+    "flareon2015_2":           {"tier": "fast",    "rust_ok": None, "notes": "FlareOn reverse engineering"},
+    "whitehatvn2015_re400":    {"tier": "medium",  "rust_ok": None, "notes": "Whithat CTF challenge"},
     # === Slow/problematic examples ===
     "hackcon2016_angry-reverser":{"tier": "slow",  "rust_ok": True,  "notes": "LAZY_SOLVES, Z3 structure mismatch"},
     "asisctffinals2015_fake":  {"tier": "very_slow","rust_ok": False, "notes": "Z3 AST structure too complex for post-exploration solve"},
