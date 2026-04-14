@@ -49,6 +49,7 @@ python tests/benchmarks/run_single.py fauxware --both
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
 - **Claripy bridge**: `native/angr/src/claripy_bridge.rs`
 - **VEX interpreter**: `native/angr/src/interpreter.rs`, `native/angr/src/vex/`
+- **Native SimProcedures**: `native/angr/src/procedures/` (strlen, memcpy, strcmp, malloc, free, etc.)
 - **State proxy**: `angr/exploration/rust_state_proxy.py`
 - **Tests**: `tests/engines/test_rust_exploration.py`
 
@@ -72,7 +73,7 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 | defcamp | 2.04x | |
 | flareon10 | 1.37x | Callable flow |
 | fairlight | 1.15x | |
-| fauxware | 0.83x | Per-callback FFI |
+| fauxware | 0.91x | Per-callback FFI (lazy fork_base) |
 | strcpy_find | 0.21x | Callable predicate overhead |
 | sym-write | 0.08x | Eager symbolic store |
 | hackcon | varies | Z3 AST structure |
