@@ -992,13 +992,15 @@ impl RustExplorationManager {
 
                                 // Get return address and set PC
                                 let ctx = state.solver().borrow();
-                                if let Some(ret_addr) = self.calling_convention.get_return_addr(
-                                    &crate::arch::RegisterFile::new(
-                                        crate::arch::arch_from_name(&self.arch_name).unwrap()
-                                    ),
-                                    None,
-                                    &ctx,
-                                ) {
+                                let ret_addr_opt = crate::arch::arch_from_name(&self.arch_name)
+                                    .and_then(|arch| {
+                                        self.calling_convention.get_return_addr(
+                                            &crate::arch::RegisterFile::new(arch),
+                                            None,
+                                            &ctx,
+                                        )
+                                    });
+                                if let Some(ret_addr) = ret_addr_opt {
                                     drop(ctx);
                                     // Pop return address from stack
                                     let sp = state.get_sp().as_u64().unwrap_or(0);
@@ -3165,7 +3167,10 @@ impl RustExplorationManager {
         }
 
         // Second pass: remove duplicates (mutable borrow of stashes)
-        let active = self.stashes.get_mut("active").unwrap();
+        let active = match self.stashes.get_mut("active") {
+            Some(s) => s,
+            None => return,
+        };
         let mut removed_states = Vec::new();
         for &idx in to_remove.iter().rev() {
             if let Some(state) = active.remove(idx) {
