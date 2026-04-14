@@ -106,13 +106,6 @@ impl RegisterFile {
 
     /// Read a register value by offset and size.
     pub fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
-        // Debug trace for ecx/cx register reads
-        if offset == 12 {
-            eprintln!("[REG_GET] offset=12 size={} symbolic_keys={:?} symbolic_at_12={}",
-                size,
-                self.symbolic.keys().filter(|&&k| k >= 8 && k <= 16).collect::<Vec<_>>(),
-                self.symbolic.get(&12).map(|v| format!("width={} sym={}", v.width(), v.is_symbolic())).unwrap_or("none".to_string()));
-        }
         // Check for symbolic value at this exact offset
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
@@ -231,13 +224,6 @@ impl RegisterFile {
     /// Write a register value by offset.
     pub fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;
-
-        // Debug trace for ecx/cx register writes
-        if offset == 12 || (offset >= 8 && offset <= 15 && offset + size > 12) {
-            eprintln!("[REG_PUT] offset={} size={} sym={} val={}",
-                offset, size, value.is_symbolic(),
-                value.as_u64().map(|v| format!("0x{:x}", v)).unwrap_or("symbolic".to_string()));
-        }
 
         // If symbolic, store in symbolic map
         if value.is_symbolic() {

@@ -3875,7 +3875,14 @@ impl RustExplorationManager {
                         state.add_constraint(constraint);
                     }
                     state.set_pc(addr);
-                    return Ok(vec![state]);
+                    let mut successors = vec![state];
+                    self.process_deferred_forks_into(
+                        &mut successors,
+                        deferred_forks,
+                        &stored_conditions,
+                        fork_snapshots,
+                    );
+                    return Ok(successors);
                 }
 
                 // Multiple targets - fork for each from the UNCONSTRAINED original
@@ -3915,6 +3922,14 @@ impl RustExplorationManager {
                     self.state_roots.insert(forked.state_id(), root_state_id);
                     successors.push(forked);
                 }
+
+                // Process any deferred forks accumulated during execution
+                self.process_deferred_forks_into(
+                    &mut successors,
+                    deferred_forks,
+                    &stored_conditions,
+                    fork_snapshots,
+                );
 
                 Ok(successors)
             }
@@ -3988,8 +4003,15 @@ impl RustExplorationManager {
                             // Continue at return address
                             state.set_pc(return_addr);
 
-                            // Return the state as a successor
-                            Ok(vec![state])
+                            // Process any deferred forks from the interpreter step
+                            let mut successors = vec![state];
+                            self.process_deferred_forks_into(
+                                &mut successors,
+                                deferred_forks,
+                                &stored_conditions,
+                                fork_snapshots,
+                            );
+                            Ok(successors)
                         }
                         Err(e) => {
                             // Callback error - treat as execution error
@@ -4014,11 +4036,89 @@ impl RustExplorationManager {
                     // Continue at return address
                     state.set_pc(return_addr);
 
-                    // Return the state as a successor
-                    Ok(vec![state])
+                    // Process any deferred forks from the interpreter step
+                    let mut successors = vec![state];
+                    self.process_deferred_forks_into(
+                        &mut successors,
+                        deferred_forks,
+                        &stored_conditions,
+                        fork_snapshots,
+                    );
+                    Ok(successors)
                 }
             }
         }
+    }
+
+    /// Process deferred forks and add the resulting forked states to the successor list.
+    /// This is used by code paths (like P21 generic skip) that don't go through
+    /// the main MaxBlocks/BlockEnd deferred fork processing.
+    fn process_deferred_forks_into(
+        &mut self,
+        successors: &mut Vec<RustSimState>,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: &std::collections::HashMap<u64, RustBV>,
+        mut fork_snapshots: std::collections::HashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+    ) {
+        if deferred_forks.is_empty() {
+            return;
+        }
+
+        let root_state_id = {
+            let original_state_id = successors[0].state_id();
+            self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id)
+        };
+
+        for fork in &deferred_forks {
+            if let Some(condition) = stored_conditions.get(&fork.condition_id) {
+                // Add the taken-path constraint to the main state
+                if fork.path_taken {
+                    successors[0].solver().borrow().assume_true(condition);
+                } else {
+                    successors[0].solver().borrow().assume_false(condition);
+                }
+
+                // Create forked state for the unexplored path
+                let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
+                    let mut f = successors[0].fork_from_snapshot(snapshot);
+                    if fork.path_taken {
+                        f.solver().borrow().assume_false(condition);
+                    } else {
+                        f.solver().borrow().assume_true(condition);
+                    }
+                    f.set_pc(fork.unexplored_target);
+                    f
+                } else if fork.path_taken {
+                    let mut f = successors[0].fork_false(condition);
+                    f.set_pc(fork.unexplored_target);
+                    f
+                } else {
+                    let mut f = successors[0].fork_true(condition);
+                    f.set_pc(fork.unexplored_target);
+                    f
+                };
+
+                self.state_roots.insert(forked.state_id(), root_state_id);
+
+                if self.lazy_solves || forked.satisfiable() {
+                    successors.push(forked);
+                } else {
+                    self.push_or_drop_terminal("pruned", forked);
+                }
+            } else {
+                // Conservative fork without condition
+                let mut forked = successors[0].fork();
+                forked.set_pc(fork.unexplored_target);
+                self.state_roots.insert(forked.state_id(), root_state_id);
+                if self.lazy_solves || forked.satisfiable() {
+                    successors.push(forked);
+                } else {
+                    self.push_or_drop_terminal("pruned", forked);
+                }
+            }
+        }
+
+        self.accumulated_stats.deferred_fork_count += deferred_forks.len() as u64;
     }
 }
 
