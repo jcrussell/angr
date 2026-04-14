@@ -287,6 +287,15 @@ impl SymContext {
         result
     }
 
+    /// Set the Z3 solver timeout in milliseconds.
+    pub fn set_timeout(&self, timeout_ms: u32) {
+        let solver = self.solver.lock();
+        let mut params = z3::Params::new();
+        params.set_u32("timeout", timeout_ms);
+        params.set_bool("bv_extract_prop", true);
+        solver.set_params(&params);
+    }
+
     /// Prime the SAT cache with a known value.
     /// Used after symbolic branch forking where the interpreter already
     /// proved feasibility — avoids redundant Z3 check() calls.

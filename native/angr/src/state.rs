@@ -885,6 +885,44 @@ impl PyRustSimState {
         self.inner.set_registers_raw(bytes);
     }
 
+    /// Set a register to a symbolic value from a raw Z3 AST pointer.
+    ///
+    /// The Z3 AST must be a BitVec in the shared Z3 context.
+    /// Used to import symbolic register values (e.g., BVS in rax) from Python.
+    /// Set a register to a symbolic value from a raw Z3 AST pointer.
+    ///
+    /// The Z3 AST must be a BitVec in the shared Z3 context.
+    /// Used to import symbolic register values (e.g., BVS in rax) from Python.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn set_register_symbolic(&mut self, name: &str, z3_ast_ptr: usize, width: u32) -> PyResult<()> {
+        use z3::ast::Ast;
+        let size = self.inner.arch().register_size(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+        if width != size * 8 {
+            return Err(PyValueError::new_err(format!(
+                "width mismatch: register {} is {} bits, got {} bits", name, size * 8, width
+            )));
+        }
+        // Reconstruct z3::ast::BV from raw pointer.
+        // Safety: caller guarantees pointer is a valid Z3_ast in shared context.
+        let z3_bv = unsafe {
+            let raw = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
+            let ctx = z3::Context::thread_local();
+            z3::ast::BV::wrap(&ctx, raw)
+        };
+        let bv = RustBV::Symbolic {
+            id: 0,
+            ast: z3_bv,
+            width,
+            name: name.to_string(),
+        };
+        if self.inner.set_register(name, bv) {
+            Ok(())
+        } else {
+            Err(PyValueError::new_err(format!("failed to set register: {}", name)))
+        }
+    }
+
     /// Get dirty register offsets.
     pub fn get_dirty_registers(&self) -> Vec<u32> {
         self.inner.get_dirty_registers()

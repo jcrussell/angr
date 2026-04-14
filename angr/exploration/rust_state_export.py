@@ -82,6 +82,10 @@ class RustStateExportMixin:
                     self._inject_rust_stdout(state, sid)
                     self._sync_exported_constraints(state, sid)
                     self._attach_rust_solver_fallback(state, sid)
+                    # Sync memory and registers from Rust (state was copied from
+                    # root, so it doesn't have Rust-computed values yet)
+                    self._sync_rust_memory_to_state(state, sid)
+                    self._sync_rust_registers_to_state(state, sid)
                     # Cache the copy so it stays alive (prevents weakref death
                     # during chained attribute access like sm.active[1].posix.dumps())
                     self._state_cache[sid] = state
@@ -100,6 +104,8 @@ class RustStateExportMixin:
                     self._inject_rust_stdout(state, sid)
                     self._sync_exported_constraints(state, sid)
                     self._attach_rust_solver_fallback(state, sid)
+                    self._sync_rust_memory_to_state(state, sid)
+                    self._sync_rust_registers_to_state(state, sid)
                     self._state_cache[sid] = state
                     states.append(state)
                     cached_ids.add(sid)
@@ -116,6 +122,8 @@ class RustStateExportMixin:
                                 self._inject_rust_stdout(angr_state, snapshot.state_id)
                                 self._sync_exported_constraints(angr_state, snapshot.state_id)
                                 self._attach_rust_solver_fallback(angr_state, snapshot.state_id)
+                                self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
+                                self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
                                 self._state_cache[snapshot.state_id] = angr_state
                                 states.append(angr_state)
                             except Exception as e:
@@ -174,12 +182,12 @@ class RustStateExportMixin:
                 pass  # Skip VEX internal registers that angr doesn't expose
 
     def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
-        """Sync concrete memory from Rust state to Python state.
+        """Sync memory from Rust state to Python state.
 
         After Rust executes code, memory modified during execution is only in
         Rust's memory. This method exports the Rust state's memory pages and
-        applies them to the Python state so that state.memory.load() returns
-        current values.
+        symbolic expressions, and applies them to the Python state so that
+        state.memory.load() returns current values.
         """
         try:
             # Use flushed export to materialize any pending symbolic writes
@@ -214,6 +222,56 @@ class RustStateExportMixin:
             except Exception:
                 pass
 
+        # Export Rust-computed symbolic expressions to Python memory.
+        # These are Expression values computed by the Rust VEX interpreter
+        # (e.g., flag computations in asisctf). Python-imported BVS values
+        # are excluded — they already have proper claripy identity in Python.
+        self._sync_rust_symbolic_objects_to_state(state, state_id)
+
+    def _sync_rust_symbolic_objects_to_state(self, state: "angr.SimState", state_id: int):
+        """Export Rust-computed symbolic expressions as claripy ASTs into Python memory.
+
+        Uses the shared Z3 context: Rust builds Z3 ASTs in Python's Z3 context,
+        so we can directly wrap the raw Z3_ast pointers as z3.BitVecRef objects
+        and convert them to claripy ASTs via claripy.backends.z3._abstract().
+        """
+        try:
+            sym_asts = self._rust_mgr.get_state_symbolic_z3_asts(state_id)
+        except Exception:
+            return
+
+        if not sym_asts:
+            return
+
+        import z3 as z3mod
+        import ctypes
+
+        z3_backend = claripy.backends.z3
+        z3_ctx = z3_backend._context  # The shared Z3 context
+
+        for addr, z3_ast_ptr, width_bits in sym_asts:
+            try:
+                # Wrap raw Z3_ast pointer as z3.BitVecRef
+                ast_wrapper = ctypes.c_void_p(z3_ast_ptr)
+                ast_wrapper.__class__ = z3mod.z3types.Ast
+                ast_wrapper._as_parameter_ = z3_ast_ptr
+                z3_bv = z3mod.BitVecRef(ast_wrapper, z3_ctx)
+
+                # Convert to claripy AST
+                claripy_ast = z3_backend._abstract(z3_bv)
+
+                # Store using the architecture's endianness to match VEX IR
+                # store operations (STle for x86-64, etc.)
+                state.memory.store(
+                    addr,
+                    claripy_ast,
+                    endness=state.arch.memory_endness,
+                    inspect=False,
+                    disable_actions=True,
+                )
+            except Exception as e:
+                l.debug("Failed to sync symbolic object at 0x%x: %s", addr, e)
+
     def _attach_rust_solver_fallback(self, state, state_id):
         """Monkey-patch state.solver to use Rust solver as primary for eval operations.
 
@@ -225,6 +283,11 @@ class RustStateExportMixin:
         rust_mgr = self._rust_mgr
         state.scratch.rust_mgr = rust_mgr
         state.scratch.rust_found_state_id = state_id
+
+        # Guard against double-patching (which causes infinite recursion)
+        if getattr(state.solver, '_rust_fallback_attached', False):
+            return
+        state.solver._rust_fallback_attached = True
 
         original_eval = state.solver.eval
         original_eval_upto = state.solver.eval_upto
@@ -246,6 +309,12 @@ class RustStateExportMixin:
         def _get_rust_ctx():
             if _cached_rust_ctx[0] is None:
                 _cached_rust_ctx[0] = rust_mgr.fork_state_solver(state_id)
+                # Increase timeout for post-exploration solving (default 30s
+                # is too short for complex constraint systems like asisctf)
+                try:
+                    _cached_rust_ctx[0].set_timeout(120000)
+                except Exception:
+                    pass
             # If user added constraints after export, sync them to Rust solver
             current_count = len(state.solver.constraints)
             if current_count != _synced_constraint_count[0]:

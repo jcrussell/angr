@@ -169,6 +169,11 @@ impl RustSolverContext {
         self.inner.ctx().is_sat()
     }
 
+    /// Set the Z3 solver timeout in milliseconds.
+    pub fn set_timeout(&self, timeout_ms: u32) {
+        self.inner.ctx().set_timeout(timeout_ms);
+    }
+
     /// Evaluate a claripy AST to a single concrete value.
     ///
     /// Returns None if unsatisfiable or the expression cannot be evaluated.
@@ -180,20 +185,83 @@ impl RustSolverContext {
         }
 
         let ctx = self.inner.ctx();
-        let bv = claripy_to_rustbv(py, ast, &*ctx)?;
-        let width = bv.width();
 
-        // For narrow values (<= 128 bits), use the fast path
+        // Try standard claripy → RustBV conversion first
+        match claripy_to_rustbv(py, ast, &*ctx) {
+            Ok(bv) => {
+                let width = bv.width();
+                if width <= 128 {
+                    match ctx.eval(&bv) {
+                        Some(v) => return Ok(Some(v.into_pyobject(py)?.into())),
+                        None => return Ok(None),
+                    }
+                } else {
+                    match ctx.eval_wide(&bv) {
+                        Some(bytes) => {
+                            let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
+                            let int_class = py.get_type::<pyo3::types::PyInt>();
+                            let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
+                            return Ok(Some(py_int.into()));
+                        }
+                        None => return Ok(None),
+                    }
+                }
+            }
+            Err(_) => {
+                // RustBV conversion failed — try Z3 fast path via shared context.
+                // This handles complex expressions containing imported Z3 ASTs
+                // (e.g., Concat of Reverse of Rust-computed expressions).
+                #[cfg(feature = "vex-engine-z3")]
+                {
+                    if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
+                        if z3_ptr != 0 {
+                            return self.eval_z3_ast_ptr(py, z3_ptr, ast);
+                        }
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// Evaluate a Z3 AST pointer directly in the solver context.
+    #[cfg(feature = "vex-engine-z3")]
+    fn eval_z3_ast_ptr(
+        &self,
+        py: Python<'_>,
+        z3_ptr: usize,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<PyObject>> {
+        use z3::ast::Ast;
+        let ctx = self.inner.ctx();
+
+        // Get the bit width from claripy
+        let width: u32 = match ast.getattr("length") {
+            Ok(l) => l.extract().unwrap_or(64),
+            Err(_) => 64,
+        };
+
+        // Build a RustBV::Symbolic wrapping this Z3 AST
+        let z3_bv = unsafe {
+            let raw = std::ptr::NonNull::new_unchecked(z3_ptr as *mut _);
+            let z3_ctx = z3::Context::thread_local();
+            z3::ast::BV::wrap(&z3_ctx, raw)
+        };
+        let bv = RustBV::Symbolic {
+            id: 0,
+            ast: z3_bv,
+            width,
+            name: String::new(),
+        };
+
         if width <= 128 {
             match ctx.eval(&bv) {
                 Some(v) => Ok(Some(v.into_pyobject(py)?.into())),
                 None => Ok(None),
             }
         } else {
-            // For wide values, use the wide path that returns bytes
             match ctx.eval_wide(&bv) {
                 Some(bytes) => {
-                    // Convert bytes to Python int using int.from_bytes
                     let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
                     let int_class = py.get_type::<pyo3::types::PyInt>();
                     let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
@@ -219,8 +287,32 @@ impl RustSolverContext {
         }
 
         let ctx = self.inner.ctx();
-        let bv = claripy_to_rustbv(py, ast, &*ctx)?;
-        Ok(ctx.eval_upto(&bv, n))
+        match claripy_to_rustbv(py, ast, &*ctx) {
+            Ok(bv) => Ok(ctx.eval_upto(&bv, n)),
+            Err(_) => {
+                // Z3 fast path for complex expressions
+                #[cfg(feature = "vex-engine-z3")]
+                {
+                    use z3::ast::Ast;
+                    if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
+                        if z3_ptr != 0 {
+                            let width: u32 = ast.getattr("length")
+                                .and_then(|l| l.extract()).unwrap_or(64);
+                            let z3_bv = unsafe {
+                                let raw = std::ptr::NonNull::new_unchecked(z3_ptr as *mut _);
+                                let z3_ctx = z3::Context::thread_local();
+                                z3::ast::BV::wrap(&z3_ctx, raw)
+                            };
+                            let bv = RustBV::Symbolic {
+                                id: 0, ast: z3_bv, width, name: String::new(),
+                            };
+                            return Ok(ctx.eval_upto(&bv, n));
+                        }
+                    }
+                }
+                Ok(Vec::new())
+            }
+        }
     }
 
     /// Get the minimum value of a claripy AST.

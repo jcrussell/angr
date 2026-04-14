@@ -87,8 +87,9 @@ class RustStateSyncMixin:
             reg_names = []
 
         # Build dict of all register values, then send in single FFI call.
-        # Skip symbolic registers — Rust falls back to Python callbacks for
-        # symbolic values, so the Z3 eval cost (~6ms each) is wasted.
+        # Symbolic registers are imported via Z3 AST pointers (shared context).
+        import claripy as _claripy
+        z3_backend = _claripy.backends.z3
         bulk_regs = {}
         for reg_name in reg_names:
             try:
@@ -97,7 +98,17 @@ class RustStateSyncMixin:
                     bulk_regs[reg_name] = reg_val.args[0]
                 elif not reg_val.symbolic:
                     bulk_regs[reg_name] = angr_state.solver.eval(reg_val)
-                # else: symbolic — skip, Rust uses callback for these
+                else:
+                    # Import symbolic register via shared Z3 context
+                    try:
+                        z3_obj = z3_backend.convert(reg_val)
+                        ast_ptr = z3_obj.as_ast().value
+                        if ast_ptr:
+                            rust_state.set_register_symbolic(
+                                reg_name, ast_ptr, reg_val.length
+                            )
+                    except Exception:
+                        pass  # Skip if Z3 conversion fails
             except (AttributeError, KeyError, Exception):
                 pass
         if bulk_regs:

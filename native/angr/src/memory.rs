@@ -1673,6 +1673,11 @@ impl SymbolicMemory {
         self.symbolic_objects.len()
     }
 
+    /// Iterate over all symbolic objects in memory.
+    pub fn symbolic_objects_iter(&self) -> impl Iterator<Item = (&u64, &RustBV)> {
+        self.symbolic_objects.iter()
+    }
+
     /// Clear all symbolic objects (used when resetting state).
     pub fn clear_symbolic_objects(&mut self) {
         self.symbolic_objects.clear();

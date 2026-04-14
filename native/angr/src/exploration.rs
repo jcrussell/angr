@@ -2901,6 +2901,38 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Get Z3 AST pointers for all symbolic objects in a state's memory.
+    ///
+    /// Returns Vec<(addr, z3_ast_ptr_as_usize, width_bits)> for each symbolic
+    /// object. The Z3 ASTs are built in the shared Z3 context, so Python can
+    /// directly wrap them as z3.BitVecRef and convert to claripy ASTs.
+    ///
+    /// This is used to export Rust-computed symbolic expressions (e.g., flag
+    /// computations in asisctf) to Python state memory during state export.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn get_state_symbolic_z3_asts(&self, state_id: u64) -> PyResult<Vec<(u64, usize, u32)>> {
+        use z3::ast::Ast;
+        if let Some(state) = self.find_state(state_id) {
+            let mem = state.memory();
+            let mut result = Vec::new();
+            for (&addr, bv) in mem.symbolic_objects_iter() {
+                // Only export Expression values (Rust-computed).
+                // Skip Symbolic values (imported from Python) — Python already
+                // has those with proper claripy identity.
+                if matches!(bv, RustBV::Expression { .. }) {
+                    let z3_ast = bv.to_z3_ast();
+                    let raw_ptr = z3_ast.get_z3_ast().as_ptr() as usize;
+                    // Prevent z3::ast::BV destructor from decrementing the ref count.
+                    // Python takes ownership of this pointer.
+                    std::mem::forget(z3_ast);
+                    result.push((addr, raw_ptr, bv.width()));
+                }
+            }
+            return Ok(result);
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Check if constraints are satisfiable for a state.
     pub fn state_satisfiable(&self, state_id: u64) -> PyResult<bool> {
         if let Some(state) = self.find_state(state_id) {

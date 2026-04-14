@@ -38,7 +38,7 @@ EXAMPLE_CATALOG = {
     "google2016_unbreakable_1":{"tier": "fast",    "rust_ok": True,  "notes": "Multi-step constraints"},
     # === Slow/problematic examples ===
     "hackcon2016_angry-reverser":{"tier": "slow",  "rust_ok": True,  "notes": "LAZY_SOLVES, Z3 structure mismatch"},
-    "asisctffinals2015_fake":  {"tier": "slow",    "rust_ok": False, "notes": "Rust finds state but empty output"},
+    "asisctffinals2015_fake":  {"tier": "very_slow","rust_ok": False, "notes": "Z3 AST structure too complex for post-exploration solve"},
     "b01lersctf2020_little_engine":{"tier": "very_slow", "rust_ok": None, "notes": "~150s Python, untested Rust"},
     "tumctf2016_zwiebel":      {"tier": "very_slow","rust_ok": None, "notes": "Self-modifying code, ~2.5h"},
 }
