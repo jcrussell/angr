@@ -2633,9 +2633,47 @@ impl RustExplorationManager {
             return Ok(0);
         }
 
-        // With filter - for now just move all (filter requires Python evaluation)
-        // TODO: Implement filter evaluation
-        self.move_states(from_stash, to_stash, None)
+        // With filter - evaluate Python filter_fn per state
+        let filter_fn = filter_fn.unwrap();
+        let from = match self.stashes.get(from_stash) {
+            Some(s) if !s.is_empty() => s,
+            _ => return Ok(0),
+        };
+
+        // First pass: determine which states pass the filter (immutable borrow)
+        let mut move_indices = Vec::new();
+        Python::with_gil(|py| -> PyResult<()> {
+            for (i, state) in from.iter().enumerate() {
+                let result = filter_fn.call1(py, (state.state_id(),))?;
+                if result.extract::<bool>(py).unwrap_or(false) {
+                    move_indices.push(i);
+                }
+            }
+            Ok(())
+        })?;
+
+        if move_indices.is_empty() {
+            return Ok(0);
+        }
+
+        // Second pass: move matching states (mutable borrow)
+        let from = match self.stashes.get_mut(from_stash) {
+            Some(s) => s,
+            None => return Ok(0),
+        };
+        let mut moved = Vec::new();
+        for &idx in move_indices.iter().rev() {
+            if let Some(state) = from.remove(idx) {
+                self.state_index.insert(state.state_id(), to_stash.to_string());
+                moved.push(state);
+            }
+        }
+        let count = moved.len();
+        let to = self.stashes.entry(to_stash.to_string()).or_insert_with(VecDeque::new);
+        for state in moved.into_iter().rev() {
+            to.push_back(state);
+        }
+        Ok(count)
     }
 
     /// P8 fix: Move a single state by ID between stashes.
