@@ -1971,16 +1971,11 @@ impl<'a> CallbackInterpreter<'a> {
                     // skip all code between this exit and the end of the block.
                     let false_target = self.current_insn_addr + self.current_insn_len as u64;
 
-                    // Convert guard to claripy AST for constraint tracking
-                    let condition_ast = match py.import("claripy") {
-                        Ok(claripy_mod) => {
-                            match rustbv_to_claripy(py, &guard_val, claripy_mod.as_any()) {
-                                Ok(ast) => Some(ast),
-                                Err(_) => None, // Failed to convert, fork will proceed without constraint
-                            }
-                        }
-                        Err(_) => None, // Claripy not available
-                    };
+                    // Skip expensive rustbv_to_claripy conversion for the condition.
+                    // The condition is stored in stored_conditions (below) as a RustBV,
+                    // which is the primary lookup path in fork processing. The claripy
+                    // AST was only a P11 fallback for missing stored_conditions entries.
+                    let condition_ast: Option<PyObject> = None;
 
                     // Take the "true" path (jump to dst), defer the "false" path
                     let cond_id = self.next_cond_id();
