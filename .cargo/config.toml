@@ -1,2 +1,5 @@
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native"]
+rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-Wl,-rpath,/home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/z3/lib"]
+
+[env]
+Z3_SYS_Z3_HEADER = "/home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/z3/include/z3.h"

@@ -1400,6 +1400,51 @@ impl RustVEXEngine {
     }
 }
 
+/// Set the Rust Z3 thread-local context to share Python's Z3 context.
+///
+/// This enables Rust and Python to share Z3 ASTs without translation.
+/// The pointer must be a valid Z3_context created by Python's z3 module.
+/// Call this once at startup, before creating any Rust solver contexts.
+#[cfg(feature = "vex-engine-z3")]
+#[pyfunction]
+fn set_shared_z3_context(py_z3_ctx_ptr: usize) -> PyResult<bool> {
+    if py_z3_ctx_ptr == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Z3 context pointer is null",
+        ));
+    }
+
+    // Create a z3-rs Context from the raw pointer.
+    // SAFETY: The pointer comes from Python's z3.main_ctx().ctx.value which
+    // is a valid Z3_context created by Z3_mk_context_rc(). Python owns this
+    // context and will delete it at process exit. The Context::from_raw
+    // constructor marks it as "borrowed" so ContextInternal::drop will NOT
+    // call Z3_del_context — Python retains ownership.
+    unsafe {
+        let raw_ctx = std::ptr::NonNull::new_unchecked(py_z3_ctx_ptr as *mut _);
+        let ctx = z3::Context::from_raw(raw_ctx);
+        z3::Context::set_thread_local(&ctx);
+        // No need to forget — from_raw marks the context as borrowed,
+        // so Z3_del_context is never called from Rust's side.
+    }
+
+    Ok(true)
+}
+
+/// Reset the Rust thread-local Z3 context to a fresh Rust-owned context.
+/// Call this before Python's Z3 context is freed (e.g., via atexit) to
+/// prevent use-after-free during process shutdown.
+#[cfg(feature = "vex-engine-z3")]
+#[pyfunction]
+fn reset_shared_z3_context() -> PyResult<()> {
+    // Replace the thread-local with a fresh Rust-owned context.
+    // The old thread-local (pointing to Python's context) has a leaked Rc
+    // (refcount stays at 1 after this, ContextInternal::drop never called).
+    let fresh = z3::Context::new(&z3::Config::new());
+    z3::Context::set_thread_local(&fresh);
+    Ok(())
+}
+
 /// Register the VEX engine module with Python.
 pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustVEXEngine>()?;
@@ -1420,6 +1465,11 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::state::ExplorationStateSnapshot>()?;
     // Exploration manager
     crate::exploration::register_exploration(m)?;
+    // Z3 context sharing
+    #[cfg(feature = "vex-engine-z3")]
+    m.add_function(pyo3::wrap_pyfunction!(set_shared_z3_context, m)?)?;
+    #[cfg(feature = "vex-engine-z3")]
+    m.add_function(pyo3::wrap_pyfunction!(reset_shared_z3_context, m)?)?;
     Ok(())
 }
 

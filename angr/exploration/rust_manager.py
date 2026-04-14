@@ -43,6 +43,25 @@ except ImportError:
     PythonCallbacks = None
     _RustSimState = None
 
+# Z3 context sharing: make Rust and Python use the same Z3 context
+# to avoid AST translation overhead between solvers.
+_z3_context_shared = False
+
+def _setup_shared_z3_context():
+    """Share Python's Z3 context with Rust, so both create ASTs in the same context."""
+    global _z3_context_shared
+    if _z3_context_shared:
+        return
+    try:
+        from angr.rustylib.vex_engine import set_shared_z3_context
+        import z3
+        py_ctx = z3.main_ctx()
+        set_shared_z3_context(py_ctx.ctx.value)
+        _z3_context_shared = True
+        l.debug("Shared Z3 context with Rust (ptr=%#x)", py_ctx.ctx.value)
+    except (ImportError, AttributeError, Exception) as e:
+        l.debug("Z3 context sharing not available: %s", e)
+
 
 from angr.exploration.rust_identity import SymbolicIdentityTracker, CallbackMemoryTracker
 
@@ -94,6 +113,9 @@ class RustExplorationManager(RustStateExportMixin):
             project: angr Project for the binary.
             active_states: Optional list of initial angr SimStates.
         """
+        # Ensure Z3 context is shared (one-time setup)
+        _setup_shared_z3_context()
+
         if not RUST_EXPLORATION_AVAILABLE:
             raise ImportError(
                 "RustExplorationManager not available. "
