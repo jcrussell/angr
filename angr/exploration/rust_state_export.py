@@ -80,7 +80,8 @@ class RustStateExportMixin:
                     state = self._state_cache[root].copy()
                     self._restore_plugins_to_state(state, sid)
                     self._inject_rust_stdout(state, sid)
-                    self._sync_exported_constraints(state, sid)
+                    # Skip _sync_exported_constraints — Rust solver fallback
+                    # handles all solver operations directly.
                     self._attach_rust_solver_fallback(state, sid)
                     # Sync memory and registers from Rust (state was copied from
                     # root, so it doesn't have Rust-computed values yet)
@@ -102,7 +103,8 @@ class RustStateExportMixin:
                     state = self._state_cache[stepping_id].copy()
                     self._restore_plugins_to_state(state, sid)
                     self._inject_rust_stdout(state, sid)
-                    self._sync_exported_constraints(state, sid)
+                    # Skip _sync_exported_constraints — Rust solver fallback
+                    # handles all solver operations directly.
                     self._attach_rust_solver_fallback(state, sid)
                     self._sync_rust_memory_to_state(state, sid)
                     self._sync_rust_registers_to_state(state, sid)
@@ -120,7 +122,12 @@ class RustStateExportMixin:
                             try:
                                 angr_state = self._snapshot_to_angr(snapshot)
                                 self._inject_rust_stdout(angr_state, snapshot.state_id)
-                                self._sync_exported_constraints(angr_state, snapshot.state_id)
+                                # Skip _sync_exported_constraints — it's O(n^2) on
+                                # constraint ASTs (5.9s for sym-write) and causes
+                                # identity mismatches. The Rust solver fallback
+                                # handles eval/eval_upto/min/max/satisfiable via
+                                # Rust's Z3 solver which already has the correct
+                                # constraints from exploration.
                                 self._attach_rust_solver_fallback(angr_state, snapshot.state_id)
                                 self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
