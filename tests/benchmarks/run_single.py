@@ -46,7 +46,7 @@ EXAMPLE_CATALOG = {
     "hitcon2017_sakura":       {"tier": "very_slow","rust_ok": False, "notes": "Python >60s, Rust list index error"},
     "strcpy_find":             {"tier": "fast",    "rust_ok": True,  "notes": "Buffer overflow / strcpy detection, Py 0.8s Rust 4.0s"},
     "flareon2015_2":           {"tier": "fast",    "rust_ok": False, "notes": "FlareOn RE, Rust list index error"},
-    "whitehatvn2015_re400":    {"tier": "fast",    "rust_ok": True,  "notes": "Py 3.3s Rust 1.2s = 2.7x speedup"},
+    "whitehatvn2015_re400":    {"tier": "fast",    "rust_ok": True,  "notes": "2.7x speedup, partial output divergence (leading zeros)"},
     # === Slow/problematic examples ===
     "hackcon2016_angry-reverser":{"tier": "slow",  "rust_ok": True,  "notes": "LAZY_SOLVES, Z3 structure mismatch"},
     "asisctffinals2015_fake":  {"tier": "very_slow","rust_ok": False, "notes": "Z3 AST structure too complex for post-exploration solve"},

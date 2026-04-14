@@ -1,0 +1,26 @@
+{
+  "ais3_crackme": {
+    "python_time": 2.48,
+    "rust_time": 0.99
+  },
+  "defcamp_r100": {
+    "python_time": 1.037,
+    "rust_time": 0.599
+  },
+  "fauxware": {
+    "python_time": 0.391,
+    "rust_time": 0.446
+  },
+  "google2016_unbreakable_0": {
+    "python_time": 1.366,
+    "rust_time": 1.5
+  },
+  "google2016_unbreakable_1": {
+    "python_time": 1.704,
+    "rust_time": 3.871
+  },
+  "whitehatvn2015_re400": {
+    "python_time": null,
+    "rust_time": 1.205
+  }
+}
