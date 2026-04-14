@@ -33,8 +33,10 @@ pip install -e . --no-build-isolation --no-deps
 # Run RustExplorationManager tests (24/24 passing)
 python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 
-# Run benchmark comparison against Python engine
-python tests/benchmarks/run_comparison_10.py
+# Run single benchmark (safe, subprocess with 4GB memory limit)
+python tests/benchmarks/run_single.py fauxware --both
+
+# AVOID run_comparison_10.py on <16GB machines (OOM risk)
 ```
 
 ## Key Files
@@ -51,9 +53,32 @@ python tests/benchmarks/run_comparison_10.py
 
 Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via beads (`bd ready`).
 
-## Current Test Status
+## Current Status
 
-**RustExplorationManager Tests:** 24/24 passing
+**Tests:** 24/24 passing
+**Benchmarks:** 10/10 correct results
+**Performance:** 6/10 faster than Python, 10/10 within 2x
+
+| Example | Speedup | Notes |
+|---------|---------|-------|
+| wyvern | 14.7x | Best case |
+| ekoparty | 8.2x | |
+| flareon5 | 5.85x | |
+| ais3 | 3.55x | |
+| defcamp | 2.04x | |
+| flareon10 | 1.37x | Callable flow |
+| fairlight | 1.15x | |
+| fauxware | 0.83x | Per-callback FFI |
+| sym-write | 0.08x | Eager symbolic store |
+| hackcon | varies | Z3 AST structure |
+
+## Architecture
+
+- **Rust engine** (`native/angr/src/`): VEX interpreter, Z3 solver, state management
+- **Python wrapper** (`angr/exploration/rust_manager.py`): Callback dispatch, state sync, technique support
+- **FFI boundary**: PyO3 bindings in `native/angr/src/lib.rs`
+- **Shared Z3 context**: Python and Rust share Z3 context for AST passthrough
+- **Feature flag**: `use_rust_engine=True` on `proj.factory.simulation_manager()`
 
 ## Rust Symbolic Execution
 

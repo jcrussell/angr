@@ -1,0 +1,1357 @@
+"""Mixin for State synchronization between Python and Rust."""
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Optional
+
+import claripy
+
+if TYPE_CHECKING:
+    import angr
+
+l = logging.getLogger(name=__name__)
+_DBG = l.isEnabledFor(logging.DEBUG)
+
+
+class RustStateSyncMixin:
+    """State synchronization between Python and Rust
+
+    This mixin expects the host class to have the standard
+    RustExplorationManager attributes (self._rust_mgr, self._project, etc.).
+    """
+
+    def _sync_hooks_before_step(self):
+        """Sync dynamically created hooks (like continuations) before stepping.
+
+        SimProcedures can create continuation hooks via self.call() which are
+        added to the project dynamically. This method ensures those hooks are
+        registered with Rust before exploration continues.
+
+        This is critical for __libc_start_main and other procedures that use
+        continuations to chain function calls (init -> main -> fini).
+        """
+        self._stats_hook_sync_calls += 1
+
+        if not hasattr(self._project, '_sim_procedures'):
+            self._stats_hook_sync_skips += 1
+            return
+
+        # Fast path: if dict length hasn't changed, no new hooks were added.
+        # This avoids O(n) set construction on every step.
+        proc_len = len(self._project._sim_procedures)
+        if proc_len == len(self._registered_hooks):
+            self._stats_hook_sync_skips += 1
+            return
+
+        current_hooks = set(self._project._sim_procedures.keys())
+        new_hooks = current_hooks - self._registered_hooks
+
+        if not new_hooks:
+            self._stats_hook_sync_skips += 1
+            return
+
+        # Register newly created hooks with Rust
+        procs = []
+        for addr in new_hooks:
+            proc = self._project._sim_procedures[addr]
+            name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+            num_args = getattr(proc, 'num_args', 0) or 0
+            no_return = getattr(proc, 'NO_RET', False)
+            procs.append((addr, name, num_args, no_return))
+            self._registered_hooks.add(addr)
+            if _DBG:
+                l.debug(f"Syncing dynamically created hook at 0x{addr:x}: {name}")
+
+        if procs:
+            self._rust_mgr.register_simprocedures(procs)
+            if _DBG:
+                l.debug(f"Synced {len(procs)} dynamically created hooks")
+
+    def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
+        """Sync registers from angr state to Rust state."""
+        regs = angr_state.regs
+        arch = angr_state.arch
+
+        # Sync common registers based on architecture
+        if arch.name in ('AMD64', 'X86_64'):
+            reg_names = ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
+                        'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11',
+                        'r12', 'r13', 'r14', 'r15', 'rip']
+        elif arch.name == 'X86':
+            reg_names = ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
+                        'ebp', 'esp', 'eip']
+        elif arch.name.startswith('ARM'):
+            reg_names = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
+                        'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
+        else:
+            reg_names = []
+
+        # Build dict of all register values, then send in single FFI call.
+        # Skip symbolic registers — Rust falls back to Python callbacks for
+        # symbolic values, so the Z3 eval cost (~6ms each) is wasted.
+        bulk_regs = {}
+        for reg_name in reg_names:
+            try:
+                reg_val = getattr(regs, reg_name)
+                if reg_val.op == 'BVV':
+                    bulk_regs[reg_name] = reg_val.args[0]
+                elif not reg_val.symbolic:
+                    bulk_regs[reg_name] = angr_state.solver.eval(reg_val)
+                # else: symbolic — skip, Rust uses callback for these
+            except (AttributeError, KeyError, Exception):
+                pass
+        if bulk_regs:
+            rust_state.set_registers_bulk(bulk_regs)
+
+    def _sync_memory_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
+        """Sync memory from angr state to Rust state.
+
+        Strategy: map pages for each loaded segment (not the entire address
+        space). Uses the Python state's memory for relocations/initialized data.
+        """
+        # Fast path: use cached memory layout from disk cache
+        if self._mem_cache is not None:
+            mem = self._mem_cache
+            self._mem_cache = None  # Consume once
+            try:
+                if mem.get('batch_pages'):
+                    rust_state.map_memory_batch(mem['batch_pages'])
+                for addr, patch_bytes in mem.get('section_patches', []):
+                    rust_state.map_memory_data(addr, patch_bytes, 7)
+                if mem.get('stack_page'):
+                    sp_page, page_bytes = mem['stack_page']
+                    rust_state.map_memory_data(sp_page, page_bytes, 6)
+                for start, size in mem.get('lazy_regions', []):
+                    rust_state.add_lazy_region(start, size)
+                l.debug(f"Fast memory sync from cache: {len(mem.get('batch_pages', []))} pages")
+                return
+            except Exception as e:
+                l.debug(f"Fast memory sync failed, falling back: {e}")
+
+        page_size = 0x1000
+        pages_mapped = 0
+        # Identify pages containing user-written symbolic data. These pages
+        # should NOT be pre-populated with concrete loader data, so that Rust
+        # falls back to the Python memory_load callback which returns the
+        # symbolic AST (enabling symbolic forking on comparisons).
+        symbolic_pages = set()
+        if hasattr(angr_state.memory, 'get_symbolic_addrs'):
+            try:
+                for addr in angr_state.memory.get_symbolic_addrs():
+                    symbolic_pages.add(addr & ~(page_size - 1))
+            except Exception:
+                pass
+        if not symbolic_pages and hasattr(angr_state.memory, '_pages'):
+            # Fallback: scan pages for symbolic content
+            mem_page_size = getattr(angr_state.memory, 'page_size', page_size)
+            for page_num in list(angr_state.memory._pages.keys()):
+                page = angr_state.memory._pages.get(page_num)
+                if page is not None and hasattr(page, 'symbolic_bitmap'):
+                    sb = page.symbolic_bitmap
+                    if sb is not None and any(sb):
+                        symbolic_pages.add(page_num * mem_page_size)
+        if symbolic_pages:
+            l.debug(f"Skipping {len(symbolic_pages)} pages with symbolic data during memory sync")
+
+        # Map pages for each loaded object's segments (batch for fewer FFI calls).
+        # Use segment ranges for ELF objects to avoid iterating empty gaps
+        # (e.g., ais3 has 553 pages in full range but only 12 in segments).
+        batch_pages = []
+        mapped_page_addrs = set()
+        for obj in self._project.loader.all_objects:
+            try:
+                # Prefer segments for ELF objects (avoids iterating gaps)
+                if hasattr(obj, 'segments') and obj.segments:
+                    ranges = []
+                    for seg in obj.segments:
+                        if seg.memsize > 0:
+                            ranges.append((seg.min_addr & ~(page_size - 1),
+                                          (seg.max_addr + page_size) & ~(page_size - 1)))
+                else:
+                    ranges = [(obj.min_addr & ~(page_size - 1),
+                              (obj.max_addr + page_size) & ~(page_size - 1))]
+                for start_page, end_page in ranges:
+                    for page_addr in range(start_page, end_page, page_size):
+                        if page_addr in symbolic_pages or page_addr in mapped_page_addrs:
+                            continue
+                        try:
+                            data = self._project.loader.memory.load(page_addr, page_size)
+                            if data and len(data) == page_size:
+                                batch_pages.append((page_addr, bytes(data), 7))
+                                mapped_page_addrs.add(page_addr)
+                                pages_mapped += 1
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        # Single FFI call for all pages
+        if batch_pages:
+            try:
+                rust_state.map_memory_batch(batch_pages)
+            except AttributeError:
+                # Fallback for older Rust builds without batch API
+                for page_addr, data, perms in batch_pages:
+                    rust_state.map_memory_data(page_addr, data, perms)
+
+        # Overlay relocated data from Python state (GOT entries, etc.)
+        # Only do small concrete sections to avoid expensive Z3 eval
+        for obj in self._project.loader.all_objects:
+            if obj.binary is None or not hasattr(obj, 'sections'):
+                continue
+            for section in obj.sections:
+                if section.memsize > 0 and section.memsize < 0x10000:
+                    try:
+                        val = angr_state.memory.load(
+                            section.min_addr, section.memsize,
+                            endness='Iend_BE', inspect=False,
+                            disable_actions=True)
+                        if not val.symbolic:
+                            data = angr_state.solver.eval(val).to_bytes(section.memsize, 'big')
+                            rust_state.map_memory_data(section.min_addr, data, 7)
+                    except Exception:
+                        pass
+
+        l.debug(f"Pre-populated {pages_mapped} pages from loaded objects")
+
+        # Add lazy regions for ALL loader objects + stack so the fetch_page
+        # callback can populate any unmapped page on demand.
+        for obj in self._project.loader.all_objects:
+            try:
+                region_start = obj.min_addr & ~(page_size - 1)
+                region_end = (obj.max_addr + page_size) & ~(page_size - 1)
+                region_size = region_end - region_start
+                if region_size > 0:
+                    rust_state.add_lazy_region(region_start, region_size)
+            except Exception:
+                pass
+
+        arch = self._project.arch
+        try:
+            sp = angr_state.solver.eval(angr_state.regs.sp)
+        except Exception:
+            sp = 0x7fff_fff0_0000 if arch.bits == 64 else 0x7fff_0000
+        stack_base = (sp & ~(page_size - 1)) + page_size
+        stack_start = stack_base - 0x11_0000
+        rust_state.add_lazy_region(stack_start, 0x11_0000)
+
+        # Pre-populate stack page at SP from the Python state.
+        # Only load the page containing SP - this has the active stack frame
+        # with return addresses and saved registers. All other stack pages
+        # use lazy fetching via fetch_page callback when actually accessed.
+        # This avoids expensive solver.eval() on unconstrained fill pages.
+        sp_page = sp & ~(page_size - 1)
+        pages_synced = 0
+        symbolic_regions = []  # (addr, claripy_ast) pairs to import
+        for page_addr in [sp_page]:
+            try:
+                # Fast path: use page.concrete_load() to avoid expensive
+                # solver.eval() on pages full of unconstrained fill.
+                # solver.eval() on a 4KB symbolic page takes 20-150ms;
+                # concrete_load() returns the raw bytes in <0.1ms.
+                page_no = page_addr // page_size
+                mem_pages = getattr(angr_state.memory, '_pages', None)
+                page_obj = mem_pages.get(page_no) if mem_pages is not None else None
+                used_fast_path = False
+
+                if page_obj is not None and hasattr(page_obj, 'concrete_load'):
+                    try:
+                        concrete = bytes(page_obj.concrete_load(0, page_size))
+                        if len(concrete) == page_size:
+                            rust_state.map_memory_data(page_addr, concrete, 6)
+                            pages_synced += 1
+                            used_fast_path = True
+
+                            # Check for user symbolic data via symbolic_data dict
+                            # (O(1), no solver involved)
+                            sd = getattr(page_obj, 'symbolic_data', None)
+                            if sd and len(sd) > 0:
+                                # Fast symbolic extraction: use symbolic_data dict
+                                # to find which byte ranges are symbolic, then scan
+                                # only those ranges (not all 4096 bytes).
+                                # _extract_symbolic_regions scans 4096 bytes (~137ms);
+                                # targeted scan of just the symbolic ranges is ~1-5ms.
+                                scan_ranges = []
+                                for sd_offset, sd_ast in sd.items():
+                                    if not hasattr(sd_ast, 'variables'):
+                                        continue
+                                    leaf_names = list(sd_ast.variables)
+                                    is_user = any(
+                                        not n.startswith('mem_') and not n.startswith('reg_')
+                                        and not n.startswith('unconstrained')
+                                        for n in leaf_names
+                                    )
+                                    if is_user:
+                                        ast_size = sd_ast.size() // 8 if hasattr(sd_ast, 'size') else 1
+                                        scan_ranges.append((sd_offset, ast_size))
+                                if scan_ranges:
+                                    for start_offset, size in scan_ranges:
+                                        for byte_off in range(size):
+                                            addr = page_addr + start_offset + byte_off
+                                            if start_offset + byte_off >= page_size:
+                                                break
+                                            try:
+                                                val = angr_state.memory.load(
+                                                    addr, 1, endness='Iend_BE',
+                                                    inspect=False, disable_actions=True)
+                                                if val.symbolic:
+                                                    symbolic_regions.append((addr, val))
+                                            except Exception:
+                                                pass
+                    except Exception:
+                        pass  # Fall back to slow path
+
+                if not used_fast_path:
+                    # Slow path: load through memory mixin stack + solver.eval()
+                    page_data = angr_state.memory.load(
+                        page_addr, page_size, endness='Iend_BE',
+                        inspect=False, disable_actions=True
+                    )
+                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
+                    rust_state.map_memory_data(page_addr, concrete, 6)
+                    pages_synced += 1
+
+                    if page_data.symbolic:
+                        leaf_names = list(page_data.variables)
+                        has_user_sym = any(
+                            not n.startswith('mem_') and not n.startswith('reg_')
+                            and not n.startswith('unconstrained')
+                            for n in leaf_names
+                        )
+                        if has_user_sym:
+                            self._extract_symbolic_regions(
+                                angr_state, page_addr, page_size,
+                                arch.bytes, symbolic_regions)
+            except Exception:
+                pass
+        if pages_synced:
+            l.debug(f"Pre-populated {pages_synced} stack pages in Rust memory")
+
+        # Scan non-stack memory pages for user-written symbolic data.
+        # Import WIDE symbolic objects (not byte-by-byte) to preserve identity.
+        # This ensures the Rust engine creates a single symbol that can be
+        # unified with the original user-created BVS during state export.
+        #
+        # OPTIMIZATION: Only scan pages with actual user symbolic data, NOT
+        # unconstrained fill pages. After Python init, thousands of pages get
+        # filled with mem_*/unconstrained symbols. Calling memory.load() on
+        # each is ~0.3ms/page = 600ms+ for 2000 pages. Instead:
+        # 1. get_symbolic_addrs() returns only user-written addresses (fast)
+        # 2. Fall back to page.symbolic_data dict (O(1) per page, non-empty
+        #    only for pages with explicit stores, not default fill)
+        try:
+            pages = getattr(angr_state.memory, '_pages', {})
+            # Build set of page numbers worth scanning
+            user_sym_pages = set()
+            if hasattr(angr_state.memory, 'get_symbolic_addrs'):
+                try:
+                    for addr in angr_state.memory.get_symbolic_addrs():
+                        user_sym_pages.add(addr // page_size)
+                except Exception:
+                    pass
+            if not user_sym_pages:
+                # Cheap filter: check symbolic_data dict on each page object.
+                # symbolic_data is non-empty only for pages with explicit stores,
+                # not for unconstrained fill from the default filler mixin.
+                for page_no in pages:
+                    page = pages[page_no]
+                    if hasattr(page, 'symbolic_data'):
+                        sd = page.symbolic_data
+                        if sd and len(sd) > 0:
+                            user_sym_pages.add(page_no)
+
+            for page_no in sorted(user_sym_pages):
+                page_addr = page_no * page_size
+                if stack_start <= page_addr < stack_base:
+                    continue  # Skip stack pages
+                try:
+                    page_data = angr_state.memory.load(
+                        page_addr, page_size, endness='Iend_BE',
+                        inspect=False, disable_actions=True)
+                    if page_data.symbolic:
+                        leaf_names = list(page_data.variables)
+                        has_user_sym = any(
+                            not n.startswith('mem_') and not n.startswith('reg_')
+                            and not n.startswith('unconstrained')
+                            for n in leaf_names
+                        )
+                        if has_user_sym:
+                            self._extract_wide_symbolic_regions(
+                                angr_state, page_addr, page_size, symbolic_regions)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        if symbolic_regions:
+            self._pending_symbolic_imports = symbolic_regions
+            l.debug(f"Found {len(symbolic_regions)} symbolic regions for import")
+
+    def _extract_wide_symbolic_regions(self, angr_state, page_addr, page_size, out):
+        """Extract WIDE symbolic regions from a page.
+
+        Groups contiguous symbolic bytes that share the same variable and
+        imports them as a single wide object. This preserves symbolic identity
+        across the Rust/Python boundary (avoids creating rust_sym_XXX aliases).
+
+        Uses page.symbolic_data dict to find symbolic ranges, avoiding full
+        4096-byte scan (~137ms → ~1ms).
+        """
+        # Fast path: use symbolic_data dict to find which ranges to scan
+        page_no = page_addr // page_size
+        mem_pages = getattr(angr_state.memory, '_pages', None)
+        page_obj = mem_pages.get(page_no) if mem_pages is not None else None
+
+        if page_obj is not None and hasattr(page_obj, 'symbolic_data'):
+            sd = page_obj.symbolic_data
+            if sd:
+                # Determine byte ranges that need scanning from symbolic_data entries
+                scan_ranges = []
+                for sd_offset, sd_ast in sd.items():
+                    if not hasattr(sd_ast, 'variables'):
+                        continue
+                    leaf_names = list(sd_ast.variables)
+                    is_user = any(
+                        not n.startswith('mem_') and not n.startswith('reg_')
+                        and not n.startswith('unconstrained')
+                        for n in leaf_names
+                    )
+                    if is_user:
+                        ast_size = sd_ast.size() // 8 if hasattr(sd_ast, 'size') else 1
+                        scan_ranges.append((sd_offset, ast_size))
+
+                if scan_ranges:
+                    # Scan only the identified ranges
+                    for start_offset, size in sorted(scan_ranges):
+                        region_start = page_addr + start_offset
+                        end_offset = min(start_offset + size, page_size)
+                        actual_size = end_offset - start_offset
+                        if actual_size <= 0:
+                            continue
+                        # Load the full region as a single wide object
+                        try:
+                            wide_val = angr_state.memory.load(
+                                region_start, actual_size, endness='Iend_BE',
+                                inspect=False, disable_actions=True)
+                            if wide_val.symbolic:
+                                out.append((region_start, wide_val))
+                        except Exception:
+                            # Fall back to byte-by-byte for this range
+                            for byte_off in range(actual_size):
+                                addr = region_start + byte_off
+                                try:
+                                    val = angr_state.memory.load(
+                                        addr, 1, endness='Iend_BE',
+                                        inspect=False, disable_actions=True)
+                                    if val.symbolic:
+                                        out.append((addr, val))
+                                except Exception:
+                                    pass
+                    return  # Done with fast path
+
+        # Slow fallback: scan entire page byte by byte
+        offset = 0
+        while offset < page_size:
+            addr = page_addr + offset
+            try:
+                val = angr_state.memory.load(addr, 1, endness='Iend_BE',
+                                              inspect=False, disable_actions=True)
+                if not val.symbolic:
+                    offset += 1
+                    continue
+                leaf_names = list(val.variables)
+                is_user = any(
+                    not n.startswith('mem_') and not n.startswith('reg_')
+                    and not n.startswith('unconstrained')
+                    for n in leaf_names
+                )
+                if not is_user:
+                    offset += 1
+                    continue
+
+                # Found a symbolic byte — scan forward to find the full region
+                region_start = addr
+                region_vars = frozenset(leaf_names)
+                region_len = 1
+                while offset + region_len < page_size:
+                    next_addr = page_addr + offset + region_len
+                    try:
+                        next_val = angr_state.memory.load(
+                            next_addr, 1, endness='Iend_BE',
+                            inspect=False, disable_actions=True)
+                        if next_val.symbolic and frozenset(next_val.variables) == region_vars:
+                            region_len += 1
+                        else:
+                            break
+                    except Exception:
+                        break
+
+                try:
+                    wide_val = angr_state.memory.load(
+                        region_start, region_len, endness='Iend_BE',
+                        inspect=False, disable_actions=True)
+                    out.append((region_start, wide_val))
+                except Exception:
+                    out.append((addr, val))
+
+                offset += region_len
+            except Exception:
+                offset += 1
+
+    def _extract_symbolic_regions(self, angr_state, page_addr, page_size, ptr_size, out):
+        """Extract symbolic memory regions from a page for import to Rust.
+
+        Only imports BYTE-LEVEL symbolic values that contain user-defined
+        symbols (BVS with names not starting with 'mem_' or 'reg_').
+        Skips unconstrained fill variables.
+        """
+        for offset in range(0, page_size, 1):
+            addr = page_addr + offset
+            try:
+                val = angr_state.memory.load(addr, 1,
+                                             endness='Iend_BE',
+                                             inspect=False, disable_actions=True)
+                if val.symbolic:
+                    # Check if this contains a user-defined variable
+                    # (not just unconstrained fill from entry_state)
+                    leaf_names = list(val.variables)
+                    is_user_sym = any(
+                        not n.startswith('mem_') and not n.startswith('reg_')
+                        and not n.startswith('unconstrained')
+                        for n in leaf_names
+                    )
+                    if is_user_sym:
+                        out.append((addr, val))
+            except Exception:
+                pass
+
+    def _concretize_stack_registers(self, state: "angr.SimState"):
+        """Concretize stack registers for Rust memory mapping compatibility.
+
+        This prevents symbolic address issues during Rust exploration by
+        ensuring stack-relative registers have concrete values.
+
+        Uses solver.eval() to get the same concrete values that Python
+        already evaluated, ensuring Rust has consistent state with what
+        Python set up (e.g., address calculations like ebp - 0x80004).
+        """
+        arch = state.arch
+
+        # Determine which registers to concretize based on architecture
+        if arch.name in ('AMD64', 'X86_64'):
+            stack_regs = ['rsp', 'rbp']
+            bp_reg = 'rbp'
+            sp_reg = 'rsp'
+        elif arch.name == 'X86':
+            stack_regs = ['esp', 'ebp']
+            bp_reg = 'ebp'
+            sp_reg = 'esp'
+        elif arch.name.startswith('ARM'):
+            stack_regs = ['sp']
+            bp_reg = None
+            sp_reg = 'sp'
+        else:
+            stack_regs = []
+            bp_reg = None
+            sp_reg = None
+
+        # First, concretize SP if needed (we need a concrete SP for BP default)
+        sp_val = None
+        if sp_reg:
+            try:
+                reg_val = getattr(state.regs, sp_reg)
+                if reg_val.symbolic:
+                    sp_val = state.solver.eval(reg_val)
+                    state.solver.add(reg_val == sp_val)
+                    setattr(state.regs, sp_reg, sp_val)
+                    l.debug(f"Concretized {sp_reg} to 0x{sp_val:x} (constraint added)")
+                else:
+                    sp_val = state.solver.eval(reg_val)
+            except Exception as e:
+                l.debug(f"Could not concretize {sp_reg}: {e}")
+
+        # Then concretize BP - always use solver.eval() to get the same value
+        # that Python already used to calculate addresses. This ensures
+        # Rust gets consistent register values with what Python set up.
+        if bp_reg:
+            try:
+                reg_val = getattr(state.regs, bp_reg)
+                if reg_val.symbolic:
+                    # Use existing solver evaluation (respects any prior concretization)
+                    concrete_val = state.solver.eval(reg_val)
+                    setattr(state.regs, bp_reg, concrete_val)
+                    l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x}")
+            except Exception as e:
+                l.debug(f"Could not concretize {bp_reg}: {e}")
+
+    def _sync_rust_constraints_to_python(self, state: "angr.SimState"):
+        """Sync constraints from Rust solver to Python state.
+
+        This exports constraints from the Rust pending state and adds them
+        to the Python state's solver. This ensures Python hooks see the
+        same constraint context as Rust.
+
+        Phase 2 Fix: Enhanced to export assumed path constraints (condition == true/false)
+        not just stored branch conditions. This ensures Python's claripy solver has
+        all the path constraints that Rust accumulated during exploration.
+
+        Note: This relies on export_pending_constraints() which converts
+        Rust constraints back to claripy ASTs.
+        """
+        try:
+            # Check if export_pending_constraints is available
+            if not hasattr(self._rust_mgr, 'export_pending_constraints'):
+                l.debug("export_pending_constraints not available, skipping constraint sync")
+                return
+
+            constraints = self._rust_mgr.export_pending_constraints()
+            synced = 0
+            skipped = 0
+
+            # Get existing constraint hashes to avoid duplicates
+            existing_hashes = set()
+            try:
+                for c in state.solver.constraints:
+                    existing_hashes.add(hash(c))
+            except Exception:
+                pass  # If we can't get existing constraints, add all
+
+            for ast in constraints:
+                if ast is not None:
+                    try:
+                        # Phase 2 Fix: Skip duplicate constraints
+                        ast_hash = hash(ast)
+                        if ast_hash in existing_hashes:
+                            skipped += 1
+                            continue
+
+                        # Convert BV constraints to Bool for Python's Z3 backend.
+                        # Rust's assume_true produces 1-bit BV constraints that
+                        # Z3 can't cast to Bool directly.
+                        if getattr(ast, 'length', None) is not None:
+                            state.solver.add(ast != 0)
+                        else:
+                            state.solver.add(ast)
+                        existing_hashes.add(ast_hash)
+                        synced += 1
+                    except Exception as e:
+                        l.debug(f"Could not add constraint: {e}")
+
+            if synced > 0 or skipped > 0:
+                l.debug(f"Synced {synced} constraints from Rust to Python state ({skipped} duplicates skipped)")
+
+        except Exception as e:
+            l.debug(f"Could not sync Rust constraints: {e}")
+
+    def _sync_registers_from_rust_pending(self, state: "angr.SimState"):
+        """Sync register values from Rust pending state to angr state.
+
+        Handles both concrete and symbolic registers. Concrete values are
+        set directly. Symbolic values are converted from Rust Z3 BVs to
+        claripy ASTs via rustbv_to_claripy, preserving symbolic identity.
+        """
+        arch = self._project.arch
+        reg_names = self._get_arch_register_names(arch)
+
+        reg_map = self._get_register_offset_map(arch)
+        for reg_name in reg_names:
+            try:
+                # Try concrete first (fast path — direct store bypasses claripy)
+                val = self._rust_mgr.get_pending_register(reg_name)
+                if val is not None:
+                    offset_size = reg_map.get(reg_name)
+                    if offset_size is not None:
+                        state.registers.store(offset_size[0], val, size=offset_size[1])
+                    else:
+                        setattr(state.regs, reg_name, claripy.BVV(val, arch.bits))
+                else:
+                    # Register is symbolic — convert to claripy AST
+                    try:
+                        ast = self._rust_mgr.get_pending_register_ast(reg_name)
+                        if ast is not None:
+                            setattr(state.regs, reg_name, ast)
+                    except Exception:
+                        pass  # Skip if conversion fails
+            except Exception:
+                pass
+
+    def _is_binary_code_addr(self, addr: int) -> bool:
+        """Check if address is in real binary code (not extern/loader space).
+
+        Cached on first call. Only considers ELF objects with actual binary
+        files, excluding CLE's ExternObject, KernelObject, TLSObject etc.
+        """
+        if not hasattr(self, '_binary_addr_ranges'):
+            self._binary_addr_ranges = []
+            for obj in self._project.loader.all_objects:
+                # Only include real binary files (ELF, PE, etc.)
+                # Skip CLE's synthetic objects (ExternObject, KernelObject, TLS)
+                binary_path = getattr(obj, 'binary', None)
+                if not binary_path or not isinstance(binary_path, str) or binary_path.startswith('cle##'):
+                    continue
+                if hasattr(obj, 'segments') and obj.segments:
+                    for seg in obj.segments:
+                        if seg.memsize > 0:
+                            self._binary_addr_ranges.append((seg.min_addr, seg.max_addr))
+                else:
+                    self._binary_addr_ranges.append((obj.min_addr, obj.max_addr))
+        return any(lo <= addr <= hi for lo, hi in self._binary_addr_ranges)
+
+    def _get_register_offset_map(self, arch) -> dict:
+        """Get cached {name: (offset, size)} mapping for register fast-path writes."""
+        if not hasattr(self, '_reg_offset_cache'):
+            self._reg_offset_cache = {}
+        arch_name = arch.name
+        if arch_name not in self._reg_offset_cache:
+            mapping = {}
+            for name in self._get_arch_register_names(arch):
+                try:
+                    info = arch.registers.get(name)
+                    if info is not None:
+                        mapping[name] = (info[0], info[1])  # (offset, size_bytes)
+                except Exception:
+                    pass
+            self._reg_offset_cache[arch_name] = mapping
+        return self._reg_offset_cache[arch_name]
+
+    def _get_arch_register_names(self, arch) -> list:
+        """Get register names for an architecture."""
+        if arch.name in ('AMD64', 'X86_64'):
+            return ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
+                    'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11',
+                    'r12', 'r13', 'r14', 'r15', 'rip']
+        elif arch.name == 'X86':
+            return ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
+                    'ebp', 'esp', 'eip']
+        elif arch.name.startswith('ARM'):
+            return ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
+                    'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
+        else:
+            return []
+
+    @staticmethod
+    def _get_reg_map_and_return_regs(arch):
+        """Get architecture-specific register map and return registers.
+
+        Returns:
+            Tuple of (reg_map, return_regs) or (None, None) if unsupported.
+        """
+        if arch.name in ('AMD64', 'X86_64'):
+            reg_map = {
+                'rax': (16, 8), 'rcx': (24, 8), 'rdx': (32, 8), 'rbx': (40, 8),
+                'rsp': (48, 8), 'rbp': (56, 8), 'rsi': (64, 8), 'rdi': (72, 8),
+                'r8': (80, 8), 'r9': (88, 8), 'r10': (96, 8), 'r11': (104, 8),
+                'r12': (112, 8), 'r13': (120, 8), 'r14': (128, 8), 'r15': (136, 8),
+                'rip': (184, 8),
+            }
+            return_regs = {'rax'}
+        elif arch.name == 'X86':
+            reg_map = {
+                'eax': (8, 4), 'ecx': (12, 4), 'edx': (16, 4), 'ebx': (20, 4),
+                'esp': (24, 4), 'ebp': (28, 4), 'esi': (32, 4), 'edi': (36, 4),
+                'eip': (68, 4),
+            }
+            return_regs = {'eax'}
+        elif arch.name in ('ARMEL', 'ARMHF', 'ARM'):
+            reg_map = {
+                'r0': (8, 4), 'r1': (12, 4), 'r2': (16, 4), 'r3': (20, 4),
+                'r4': (24, 4), 'r5': (28, 4), 'r6': (32, 4), 'r7': (36, 4),
+                'r8': (40, 4), 'r9': (44, 4), 'r10': (48, 4), 'r11': (52, 4),
+                'r12': (56, 4), 'sp': (60, 4), 'lr': (64, 4), 'pc': (68, 4),
+            }
+            return_regs = {'r0'}
+        elif arch.name == 'AARCH64':
+            l.warning(f"AARCH64 register extraction not yet implemented")
+            return None, None
+        else:
+            l.warning(f"Unknown architecture {arch.name} for register extraction")
+            return None, None
+        return reg_map, return_regs
+
+    def _snapshot_registers(self, state) -> dict:
+        """Snapshot register values as a lightweight dict for later comparison.
+
+        Much cheaper than state.copy() — only reads register values (~0.1ms
+        vs ~1ms for full state copy). Used for non-memory-writing extern
+        SimProcedures where we only need to detect register changes.
+
+        Returns:
+            Dict mapping reg_name -> (is_symbolic, concrete_value_or_None, offset, size).
+        """
+        reg_map, _ = self._get_reg_map_and_return_regs(state.arch)
+        if reg_map is None:
+            return {}
+
+        snapshot = {}
+        for reg_name, (offset, size) in reg_map.items():
+            try:
+                val = getattr(state.regs, reg_name)
+                if val.symbolic:
+                    snapshot[reg_name] = (True, None, offset, size)
+                else:
+                    # Fast path: BVV values have concrete int in args[0]
+                    concrete = val.args[0] if val.op == 'BVV' else state.solver.eval(val)
+                    snapshot[reg_name] = (False, concrete, offset, size)
+            except Exception:
+                pass
+        return snapshot
+
+    def _extract_register_changes(
+        self,
+        old_state,
+        new_state: "angr.SimState"
+    ) -> list:
+        """Extract register changes between states.
+
+        Handles both concrete and symbolic register values. For symbolic
+        values (especially return registers like RAX), the value is converted
+        to a claripy AST and stored in Rust's pending symbolic state.
+
+        Args:
+            old_state: Either a SimState or a register snapshot dict from
+                       _snapshot_registers(). Using a snapshot avoids the
+                       cost of state.copy() for non-memory-writing callbacks.
+            new_state: The successor SimState after callback execution.
+
+        Returns:
+            List of (offset, size, data_bytes) tuples for concrete changes.
+        """
+        changes = []
+        is_snapshot = isinstance(old_state, dict)
+        arch = new_state.arch
+
+        reg_map, return_regs = self._get_reg_map_and_return_regs(arch)
+        if reg_map is None:
+            return []
+
+        for reg_name, (offset, size) in reg_map.items():
+            try:
+                new_val = getattr(new_state.regs, reg_name)
+
+                # Get old value from snapshot or state
+                if is_snapshot:
+                    entry = old_state.get(reg_name)
+                    if entry is None:
+                        continue
+                    old_is_symbolic, old_concrete, _, _ = entry
+                else:
+                    old_val = getattr(old_state.regs, reg_name)
+                    old_is_symbolic = old_val.symbolic
+                    old_concrete = None if old_is_symbolic else (old_val.args[0] if old_val.op == 'BVV' else old_state.solver.eval(old_val))
+
+                if new_val.symbolic:
+                    # Symbolic register value - sync to Rust
+                    if reg_name in return_regs:
+                        try:
+                            self._sync_symbolic_register_to_rust(reg_name, new_val)
+                            if _DBG:
+                                l.debug(f"Synced symbolic return register {reg_name} to Rust")
+                        except Exception as e:
+                            if _DBG:
+                                l.debug(f"Could not sync symbolic {reg_name}: {e}")
+                            try:
+                                new_concrete = new_state.solver.eval(new_val)
+                                data = new_concrete.to_bytes(size, 'little')
+                                changes.append((offset, size, bytes(data)))
+                            except Exception:
+                                pass
+                else:
+                    # Fast path: extract concrete value without solver.eval()
+                    # BVV values have the concrete int in args[0]
+                    new_concrete = new_val.args[0] if new_val.op == 'BVV' else new_state.solver.eval(new_val)
+                    if old_is_symbolic or old_concrete != new_concrete:
+                        data = new_concrete.to_bytes(size, 'little')
+                        changes.append((offset, size, bytes(data)))
+            except Exception:
+                pass
+
+        return changes
+
+    def _sync_symbolic_register_to_rust(self, reg_name: str, value):
+        """Sync a symbolic register value to Rust pending state.
+
+        Tries direct AST sync first (best approach), falls back to handle-based
+        sync if the direct method is not available.
+        """
+        try:
+            # Best approach: directly sync claripy AST to Rust
+            if hasattr(self._rust_mgr, 'set_pending_register_symbolic_ast'):
+                self._rust_mgr.set_pending_register_symbolic_ast(reg_name, value)
+                if _DBG:
+                    l.debug(f"Synced symbolic register {reg_name} to Rust via AST")
+                return
+
+            # Fallback: use handle-based sync
+            if hasattr(self._rust_mgr, 'claripy_ast_to_handle'):
+                handle = self._rust_mgr.claripy_ast_to_handle(value)
+                self._rust_mgr.set_pending_register_symbolic(reg_name, handle.id())
+                if _DBG:
+                    l.debug(f"Synced symbolic register {reg_name} to Rust via handle")
+                return
+
+            # Final fallback: just register the handle for later retrieval
+            handle_id = id(value)
+            self._register_handle(handle_id, value)
+            if _DBG:
+                l.debug(f"Registered symbolic register {reg_name} handle for later retrieval")
+
+        except Exception as e:
+            if _DBG:
+                l.debug(f"Could not sync symbolic {reg_name}: {e}")
+
+    def _extract_memory_changes(
+        self,
+        old_state: "angr.SimState",
+        new_state: "angr.SimState"
+    ) -> tuple:
+        """Extract memory changes between states for Rust sync.
+
+        Uses angr's changed_bytes() to detect memory modifications,
+        groups them into contiguous regions, and returns concrete values.
+        Also tracks symbolic values for constraint propagation.
+
+        Returns:
+            Tuple of:
+            - List of (addr, data_bytes) for concrete memory changes
+            - List of (addr, ast) for symbolic memory that needs import
+        """
+        concrete_changes = []
+        symbolic_imports = []  # Collect symbolic ASTs for import to Rust
+        try:
+            # Use angr's changed_bytes to find modifications
+            changed = new_state.memory.changed_bytes(old_state.memory)
+            if not changed:
+                return [], []
+
+            # Limit to prevent timeouts on large diffs (e.g., unconstrained fill)
+            if len(changed) > 10000:
+                if _DBG:
+                    l.debug(f"Too many changed bytes ({len(changed)}), truncating to 10000")
+                changed = set(sorted(changed)[:10000])
+
+            # Group consecutive changed bytes into regions
+            for item in self._group_changed_bytes(new_state, changed):
+                if item[0] == 'concrete':
+                    _, start, size, data = item
+                    concrete_changes.append((start, bytes(data)))
+                elif item[0] == 'symbolic':
+                    _, start, size, data, handle_id, ast = item
+                    # Provide concrete witness for Rust memory sync
+                    concrete_changes.append((start, bytes(data)))
+                    # Cache symbolic value for later constraint sync
+                    # The handle is already registered in _emit_memory_region
+                    if _DBG:
+                        l.debug(f"Tracked symbolic memory change at 0x{start:x} (handle={handle_id})")
+
+                    # Collect symbolic AST for import to Rust
+                    symbolic_imports.append((start, ast))
+
+                    # Track symbolic AST for state restoration during callbacks
+                    # This is critical: hooks that copy symbolic memory would lose
+                    # the symbolic relationship without this tracking
+                    state_id = self._current_callback_state_id
+                    if state_id is not None:
+                        if state_id not in self._hook_symbolic_memory:
+                            self._hook_symbolic_memory[state_id] = {}
+                        self._hook_symbolic_memory[state_id][start] = (ast, size)
+                        if _DBG:
+                            l.debug(f"Preserved symbolic memory at 0x{start:x} for state {state_id}")
+
+        except Exception as e:
+            if _DBG:
+                l.debug(f"Error extracting memory changes: {e}")
+
+        return concrete_changes, symbolic_imports
+
+    def _group_changed_bytes(self, state: "angr.SimState", changed_addrs):
+        """Group consecutive changed bytes into contiguous regions.
+
+        Yields tuples from _emit_memory_region:
+            ('concrete', start_addr, size, data_bytes) for concrete regions
+            ('symbolic', start_addr, size, data_bytes, handle_id, ast) for symbolic regions
+        """
+        if not changed_addrs:
+            return
+
+        sorted_addrs = sorted(changed_addrs)
+        start = sorted_addrs[0]
+        end = start + 1
+
+        for addr in sorted_addrs[1:]:
+            if addr == end:
+                # Contiguous with current region
+                end += 1
+            else:
+                # Gap found - emit current region and start new one
+                yield from self._emit_memory_region(state, start, end - start)
+                start = addr
+                end = addr + 1
+
+        # Emit final region
+        yield from self._emit_memory_region(state, start, end - start)
+
+    def _emit_memory_region(self, state: "angr.SimState", start: int, size: int):
+        """Emit a memory region with concrete bytes and optional symbolic info.
+
+        Yields tuples with symbolic value info for constraint reconstruction:
+        - ('concrete', start_addr, size, data_bytes) for concrete values
+        - ('symbolic', start_addr, size, data_bytes, handle_id, ast) for symbolic values
+
+        For symbolic regions, emits byte-by-byte to produce simple ASTs
+        (individual BVS or Extract) that convert cleanly to RustBV. This
+        avoids complex Concat trees from multi-byte loads that may fail
+        in claripy_to_rustbv conversion.
+        """
+        # Limit region size to avoid memory issues
+        MAX_REGION_SIZE = 4096
+        if size > MAX_REGION_SIZE:
+            for offset in range(0, size, MAX_REGION_SIZE):
+                chunk_size = min(MAX_REGION_SIZE, size - offset)
+                yield from self._emit_memory_region(state, start + offset, chunk_size)
+            return
+
+        try:
+            val = state.memory.load(start, size, endness=state.arch.memory_endness)
+            if not val.symbolic:
+                concrete = state.solver.eval(val)
+                data = concrete.to_bytes(size, 'little')
+                yield ('concrete', start, size, data)
+            else:
+                # For small symbolic regions (typical SimProcedure writes),
+                # emit byte-by-byte for simple ASTs. For large regions,
+                # emit as one chunk to avoid 1000s of solver.eval() calls.
+                if size > 128:
+                    # Large region: emit whole (may produce complex AST)
+                    handle_id = id(val)
+                    self._register_handle(handle_id, val)
+                    try:
+                        concrete = state.solver.eval(val)
+                        data = concrete.to_bytes(size, 'little')
+                    except Exception:
+                        data = bytes(size)
+                    yield ('symbolic', start, size, data, handle_id, val)
+                    return
+
+                # Small region: byte-by-byte for simple ASTs
+                for byte_offset in range(size):
+                    byte_addr = start + byte_offset
+                    try:
+                        byte_val = state.memory.load(
+                            byte_addr, 1, endness='Iend_BE',
+                            inspect=False, disable_actions=True)
+                        if byte_val.symbolic:
+                            handle_id = id(byte_val)
+                            self._register_handle(handle_id, byte_val)
+                            try:
+                                concrete_byte = state.solver.eval(byte_val)
+                                data = bytes([concrete_byte & 0xff])
+                            except Exception:
+                                data = bytes(1)
+                            yield ('symbolic', byte_addr, 1, data, handle_id, byte_val)
+                        else:
+                            try:
+                                concrete_byte = state.solver.eval(byte_val)
+                                data = bytes([concrete_byte & 0xff])
+                            except Exception:
+                                data = bytes(1)
+                            yield ('concrete', byte_addr, 1, data)
+                    except Exception:
+                        yield ('concrete', byte_addr, 1, bytes(1))
+        except Exception as e:
+            l.debug(f"Error emitting memory region at 0x{start:x}: {e}")
+            pass
+
+    def _extract_symbolic_pages(self, state: "angr.SimState") -> dict:
+        """Extract symbolic memory regions from an angr state.
+
+        This identifies memory regions containing symbolic values and caches
+        them for later restoration. This is critical for preserving symbolic
+        memory when Rust falls back to Python callbacks.
+
+        Args:
+            state: The angr state to extract symbolic pages from.
+
+        Returns:
+            Dict mapping address -> claripy AST for symbolic memory locations.
+        """
+        symbolic_regions = {}
+        try:
+            # Strategy 1: Use angr's internal symbolic tracking if available
+            # This is the most accurate method as angr tracks symbolic bytes precisely
+            if hasattr(state.memory, 'get_symbolic_addrs'):
+                try:
+                    # get_symbolic_addrs returns addresses of symbolic bytes
+                    symbolic_addrs = state.memory.get_symbolic_addrs()
+                    if symbolic_addrs:
+                        # Group contiguous symbolic regions
+                        for addr in symbolic_addrs:
+                            try:
+                                # Load individual symbolic bytes
+                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
+                                if hasattr(val, 'symbolic') and val.symbolic:
+                                    symbolic_regions[addr] = val
+                                    self._register_handle(id(val), val)
+                            except Exception:
+                                pass
+                        if symbolic_regions:
+                            l.debug(f"Extracted {len(symbolic_regions)} symbolic bytes via get_symbolic_addrs")
+                            return symbolic_regions
+                except Exception as e:
+                    l.debug(f"get_symbolic_addrs failed: {e}")
+
+            # Strategy 2: Scan pages for symbolic content
+            # Note: _pages keys are page NUMBERS, not addresses
+            if hasattr(state.memory, '_pages'):
+                page_size = getattr(state.memory, 'page_size', 4096)
+
+                for page_num in list(state.memory._pages.keys()):
+                    page = state.memory._pages.get(page_num)
+                    if page is None:
+                        continue
+
+                    page_addr = page_num * page_size  # Convert page number to address
+
+                    # UltraPage: use all_bytes_changed_in_history() for written bytes,
+                    # then check symbolic_bitmap to filter to symbolic ones
+                    if hasattr(page, 'all_bytes_changed_in_history') and hasattr(page, 'symbolic_bitmap'):
+                        try:
+                            changed = page.all_bytes_changed_in_history()
+                            sb = page.symbolic_bitmap
+                            # changed is a SegmentList, iterate over Segment objects
+                            for segment in changed:
+                                # Segment has start/end attributes
+                                start = getattr(segment, 'start', None)
+                                end = getattr(segment, 'end', None)
+                                if start is not None and end is not None:
+                                    for offset in range(start, end):
+                                        if offset < len(sb) and sb[offset]:
+                                            addr = page_addr + offset
+                                            try:
+                                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
+                                                if hasattr(val, 'symbolic') and val.symbolic:
+                                                    symbolic_regions[addr] = val
+                                                    self._register_handle(id(val), val)
+                                            except Exception:
+                                                pass
+                        except Exception:
+                            pass
+                    # ListPage: stored_offset tracks all written bytes
+                    elif hasattr(page, 'stored_offset') and page.stored_offset:
+                        for offset in page.stored_offset:
+                            addr = page_addr + offset
+                            try:
+                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
+                                if hasattr(val, 'symbolic') and val.symbolic:
+                                    symbolic_regions[addr] = val
+                                    self._register_handle(id(val), val)
+                            except Exception:
+                                pass
+                    # Fallback: Check alternative tracking attributes
+                    elif hasattr(page, '_symbolic_bitmap') and page._symbolic_bitmap:
+                        for offset in range(page_size):
+                            if page._symbolic_bitmap.get(offset, False):
+                                addr = page_addr + offset
+                                try:
+                                    val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
+                                    if hasattr(val, 'symbolic') and val.symbolic:
+                                        symbolic_regions[addr] = val
+                                        self._register_handle(id(val), val)
+                                except Exception:
+                                    pass
+                    elif hasattr(page, 'symbolic_byte_map') and page.symbolic_byte_map:
+                        for offset, sym_val in page.symbolic_byte_map.items():
+                            addr = page_addr + offset
+                            symbolic_regions[addr] = sym_val
+                            self._register_handle(id(sym_val), sym_val)
+
+            if symbolic_regions:
+                l.debug(f"Extracted {len(symbolic_regions)} symbolic memory regions")
+
+        except Exception as e:
+            l.debug(f"Error extracting symbolic pages: {e}")
+        return symbolic_regions
+
+    def _install_rust_memory_proxy(self, state: "angr.SimState"):
+        """Sync stack data from Rust to Python callback state.
+
+        Loads the SP page in a single bulk FFI call (pending_memory_load_page)
+        then writes non-zero pointer-sized values to the Python state.
+        This is ~30x faster than 64 individual pending_memory_load calls.
+        """
+        try:
+            sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
+            if not sp:
+                return
+            ptr_size = state.arch.bytes
+
+            # Load the full page containing SP in ONE FFI call
+            sp_page = sp & ~0xFFF
+            sp_offset = sp - sp_page
+            try:
+                page_data = self._rust_mgr.pending_memory_load_page(sp_page)
+                if page_data and len(page_data) == 0x1000:
+                    # Write non-zero pointer-sized values from SP upward
+                    # Covers 64 slots (~512 bytes on x64) for args + locals
+                    end_offset = min(sp_offset + 64 * ptr_size, 0x1000)
+                    for off in range(sp_offset, end_offset, ptr_size):
+                        chunk = page_data[off:off + ptr_size]
+                        if len(chunk) == ptr_size:
+                            int_val = int.from_bytes(chunk, 'little')
+                            if int_val != 0:
+                                addr = sp_page + off
+                                # Pass int directly — UltraPage fast path avoids claripy BVV
+                                state.memory.store(addr, int_val, size=ptr_size,
+                                                   endness='Iend_LE',
+                                                   inspect=False, disable_actions=True)
+                    return
+            except Exception:
+                pass
+
+            # Fallback: individual loads
+            for i in range(16):
+                addr = sp + i * ptr_size
+                try:
+                    data = self._rust_mgr.pending_memory_load(addr, ptr_size)
+                    if data and len(data) == ptr_size:
+                        int_val = int.from_bytes(data, 'little')
+                        if int_val != 0:
+                            val = claripy.BVV(int_val, ptr_size * 8)
+                            state.memory.store(addr, val, endness='Iend_LE',
+                                               inspect=False, disable_actions=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _restore_symbolic_pages(self, state: "angr.SimState", state_id: int):
+        """Restore symbolic memory regions to an angr state.
+
+        This restores symbolic values that were previously extracted and
+        cached, ensuring that Python callbacks see the correct symbolic
+        memory context after fallback from Rust.
+
+        For forked states, tries parent chain if direct lookup fails.
+
+        Args:
+            state: The angr state to restore symbolic pages to.
+            state_id: The state ID to look up cached symbolic pages.
+        """
+        # Try direct lookup, then ancestry chain for forked states
+        symbolic_pages = None
+        if state_id in self._symbolic_pages:
+            symbolic_pages = self._symbolic_pages[state_id]
+        else:
+            # Try root state first (most likely to have cached pages)
+            root_id = self._get_pending_root_state_id()
+            if root_id is not None and root_id in self._symbolic_pages:
+                symbolic_pages = self._symbolic_pages[root_id]
+                if _DBG:
+                    l.debug(f"Using root {root_id} symbolic pages for state {state_id}")
+            else:
+                # Walk full ancestry chain
+                for ancestor_id in self._get_pending_ancestry():
+                    if ancestor_id in self._symbolic_pages:
+                        symbolic_pages = self._symbolic_pages[ancestor_id]
+                        if _DBG:
+                            l.debug(f"Using ancestor {ancestor_id} symbolic pages for state {state_id}")
+                        break
+
+        if symbolic_pages is None:
+            if _DBG:
+                l.debug(f"No symbolic pages found for state {state_id} or ancestors")
+            return
+        restored_count = 0
+        failed_count = 0
+
+        # Group contiguous regions for more efficient restoration
+        # This reduces the number of store operations
+        sorted_addrs = sorted(symbolic_pages.keys())
+        i = 0
+        while i < len(sorted_addrs):
+            start_addr = sorted_addrs[i]
+            ast = symbolic_pages[start_addr]
+
+            # Check for single-byte symbolic values (most common case after byte-granular extraction)
+            if ast.length == 8:  # 8 bits = 1 byte
+                try:
+                    state.memory.store(start_addr, ast, endness=state.arch.memory_endness)
+                    restored_count += 1
+                    self._register_handle(id(ast), ast)
+                except Exception as e:
+                    if _DBG:
+                        l.debug(f"Error restoring symbolic byte at 0x{start_addr:x}: {e}")
+                    failed_count += 1
+                i += 1
+            else:
+                # Multi-byte symbolic value - store directly
+                try:
+                    state.memory.store(start_addr, ast, endness=state.arch.memory_endness)
+                    restored_count += 1
+                    self._register_handle(id(ast), ast)
+                except Exception as e:
+                    if _DBG:
+                        l.debug(f"Error restoring symbolic memory at 0x{start_addr:x}: {e}")
+                    failed_count += 1
+                i += 1
+
+        if restored_count > 0:
+            if _DBG:
+                l.debug(f"Restored {restored_count} symbolic memory regions for state {state_id}")
+        if failed_count > 0:
+            l.warning(f"Failed to restore {failed_count} symbolic memory regions")
+
+    def _restore_hook_symbolic_memory(self, state: "angr.SimState", state_id: int):
+        """Restore symbolic memory that was tracked during hook execution.
+
+        When hooks copy or manipulate symbolic memory, the symbolic ASTs are
+        tracked in `_hook_symbolic_memory`. This method restores those ASTs
+        to the callback state so subsequent operations preserve symbolic
+        relationships.
+
+        This is critical for examples like flareon2015_5 where hooks copy
+        symbolic password bytes to new memory locations.
+
+        For forked states, tries parent chain if direct lookup fails.
+
+        Args:
+            state: The angr state to restore symbolic memory to.
+            state_id: The state ID to look up tracked symbolic memory.
+        """
+        # Try direct lookup, then ancestry chain for forked states
+        hook_memory = None
+        if state_id in self._hook_symbolic_memory:
+            hook_memory = self._hook_symbolic_memory[state_id]
+        else:
+            # Try root state first (most likely to have hook memory)
+            root_id = self._get_pending_root_state_id()
+            if root_id is not None and root_id in self._hook_symbolic_memory:
+                hook_memory = self._hook_symbolic_memory[root_id]
+                if _DBG:
+                    l.debug(f"Using root {root_id} hook symbolic memory for state {state_id}")
+            else:
+                # Walk full ancestry chain
+                for ancestor_id in self._get_pending_ancestry():
+                    if ancestor_id in self._hook_symbolic_memory:
+                        hook_memory = self._hook_symbolic_memory[ancestor_id]
+                        if _DBG:
+                            l.debug(f"Using ancestor {ancestor_id} hook symbolic memory for state {state_id}")
+                        break
+
+        if hook_memory is None:
+            return
+        restored_count = 0
+
+        for addr, (ast, size) in hook_memory.items():
+            try:
+                state.memory.store(addr, ast, endness=state.arch.memory_endness)
+                self._register_handle(id(ast), ast)
+                restored_count += 1
+                if _DBG:
+                    l.debug(f"Restored hook symbolic memory at 0x{addr:x} (size={size})")
+            except Exception as e:
+                if _DBG:
+                    l.debug(f"Could not restore hook symbolic at 0x{addr:x}: {e}")
+
+        if restored_count > 0:
+            if _DBG:
+                l.debug(f"Restored {restored_count} hook symbolic memory regions for state {state_id}")
+
