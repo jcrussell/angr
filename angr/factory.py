@@ -205,12 +205,20 @@ class AngrObjectFactory:
         """
         return self.project.simos.state_call(addr, *args, **kwargs)
 
-    def simulation_manager(self, thing: list[SimState] | SimState | None = None, **kwargs) -> SimulationManager:
+    def simulation_manager(
+        self,
+        thing: list[SimState] | SimState | None = None,
+        use_rust_engine: bool = False,
+        **kwargs,
+    ) -> SimulationManager:
         """
         Constructs a new simulation manager.
 
         :param thing:           What to put in the new SimulationManager's active stash (either a SimState or a list of
                                 SimStates).
+        :param use_rust_engine: If True, return a RustExplorationManager instead of SimulationManager.
+                                The Rust engine keeps the exploration loop in Rust for ~2-10x speedup
+                                on symbolic execution workloads. Requires the Rust extension to be built.
         :param kwargs:          Any additional keyword arguments will be passed to the SimulationManager constructor
         :returns:               The new SimulationManager
         :rtype:                 angr.sim_manager.SimulationManager
@@ -232,6 +240,10 @@ class AngrObjectFactory:
             thing = [thing]
         else:
             raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
+
+        if use_rust_engine:
+            from angr.exploration import RustExplorationManager
+            return RustExplorationManager(self.project, active_states=thing)
 
         return SimulationManager(self.project, active_states=thing, **kwargs)
 
