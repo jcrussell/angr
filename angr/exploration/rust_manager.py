@@ -334,219 +334,209 @@ class RustExplorationManager(
         return "\n".join(lines)
 
     def _setup_callbacks(self):
-        """Set up Python callbacks for the Rust engine."""
-        callbacks = PythonCallbacks()
+        """Set up Python callbacks for the Rust engine.
 
-        # Thread-safe stepping state ID accessor (avoids re-entrant Rust calls)
+        Registers bound methods as callbacks with the Rust PythonCallbacks object.
+        Each _cb_* method implements one callback type.
+        """
+        # Cache the stepping state ID accessor for _get_per_fork_state
         try:
-            from angr.rustylib.vex_engine import get_stepping_state_id as _get_sid
+            from angr.rustylib.vex_engine import get_stepping_state_id
+            self._get_stepping_state_id = get_stepping_state_id
         except ImportError:
-            _get_sid = lambda: None
+            self._get_stepping_state_id = lambda: None
 
-        def _get_per_fork_state():
-            """Get the correct per-fork Python state for the current VEX step."""
-            state = self._get_callback_state()
-            if state is not None:
-                return state
-            sid = _get_sid()
-            if sid is not None and sid in self._state_cache:
-                return self._state_cache[sid]
-            return self._get_default_state()
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(self._cb_memory_load)
+        callbacks.set_memory_store(self._cb_memory_store)
+        callbacks.set_lift_block(self._cb_lift_block)
+        callbacks.set_fetch_page(self._cb_fetch_page)
+        callbacks.set_sync_constraints(self._cb_sync_constraints)
+        callbacks.set_get_register(self._cb_get_register)
+        callbacks.set_put_register(self._cb_put_register)
+        callbacks.set_dirty_call(self._cb_dirty_call)
+        callbacks.set_resolve_function(self._cb_resolve_function)
+        if hasattr(callbacks, 'set_memory_store_batch'):
+            callbacks.set_memory_store_batch(self._cb_memory_store_batch)
+        if hasattr(callbacks, 'set_memory_load_batch'):
+            callbacks.set_memory_load_batch(self._cb_memory_load_batch)
+        if hasattr(callbacks, 'set_batch_fetch_pages'):
+            callbacks.set_batch_fetch_pages(self._cb_batch_fetch_pages)
+        if hasattr(callbacks, 'set_memory_store_symbolic_value'):
+            callbacks.set_memory_store_symbolic_value(self._cb_memory_store_symbolic_value)
+        self._rust_mgr.set_callbacks(callbacks)
+        self._callbacks = callbacks
 
-        # Memory load callback - use per-fork state for correct isolation
-        def memory_load(addr: int, size: int) -> tuple:
-            _ml_start = time.perf_counter_ns()
-            try:
-                state = _get_per_fork_state()
-                if state is None:
-                    return (bytes(size), False, None)
+    # ---- Per-fork state resolution ----
 
-                try:
-                    # Check preserved hook symbolic memory first
-                    # This is critical for preserving symbolic relationships when
-                    # hooks manipulate symbolic memory (like flareon2015_5)
-                    # P5 fix: Use effective state ID to find parent's symbolic memory
-                    state_id = self._current_callback_state_id
-                    effective_state_id = self._get_effective_state_id(state_id) if state_id is not None else None
-                    lookup_id = effective_state_id if effective_state_id is not None else state_id
-                    if lookup_id is not None and lookup_id in self._hook_symbolic_memory:
-                        hook_mem = self._hook_symbolic_memory[lookup_id]
-                        for mem_addr, (ast, mem_size) in hook_mem.items():
-                            # Check if the requested address overlaps with tracked symbolic memory
-                            if mem_addr <= addr < mem_addr + mem_size:
-                                # Found symbolic memory at this address
-                                offset = addr - mem_addr
-                                if offset == 0 and size == mem_size:
-                                    # Exact match - return the full AST
-                                    concrete = state.solver.eval(ast).to_bytes(size, 'little')
-                                    self._register_handle(id(ast), ast, addr=addr, size=size, state_id=lookup_id)
-                                    if _DBG:
-                                        l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
-                                    return (concrete, True, ast)
-                                elif offset == 0 and size < mem_size:
-                                    # Partial read from start - extract bytes
-                                    extracted = claripy.Extract(size * 8 - 1, 0, ast)
-                                    concrete = state.solver.eval(extracted).to_bytes(size, 'little')
-                                    self._register_handle(id(extracted), extracted, addr=addr, size=size, state_id=lookup_id)
-                                    return (concrete, True, extracted)
+    def _get_per_fork_state(self):
+        """Get the correct per-fork Python state for the current VEX step."""
+        state = self._get_callback_state()
+        if state is not None:
+            return state
+        sid = self._get_stepping_state_id()
+        if sid is not None and sid in self._state_cache:
+            return self._state_cache[sid]
+        return self._get_default_state()
 
-                    # Standard memory load from state
-                    val = state.memory.load(addr, size, endness=state.arch.memory_endness)
+    # ---- Individual callback methods ----
 
-                    # Fix 1C: Coerce thunks/callables to actual values
-                    # Some memory loads can return callable thunks instead of proper ASTs
-                    coerce_attempts = 0
-                    while callable(val) and not hasattr(val, 'op') and coerce_attempts < 3:
-                        try:
-                            val = val()
-                            coerce_attempts += 1
-                        except Exception:
-                            if _DBG:
-                                l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
-                            val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
-                            break
-
-                    # Validate we have a proper claripy AST
-                    if not hasattr(val, 'op'):
-                        l.warning(f"Memory load at 0x{addr:x} returned invalid type: {type(val)}")
-                        return (bytes(size), False, None)
-
-                    # Safe check for symbolic (handles callables)
-                    is_symbolic = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
-                    if is_symbolic:
-                        # Register the handle for later constraint reconstruction
-                        # This is critical for bidirectional constraint sync - when Rust
-                        # concretizes this address and syncs constraints back, we can
-                        # look up the original AST and properly constrain it
-                        handle_id = id(val)
-                        # Track address mapping for state export recovery (P1 fix)
-                        self._register_handle(handle_id, val, addr=addr, size=size, state_id=state_id)
-                        concrete = state.solver.eval(val).to_bytes(size, 'little')
-                        return (concrete, True, val)  # Return claripy AST for symbolic values
-                    else:
-                        concrete = state.solver.eval(val).to_bytes(size, 'little')
-                        return (concrete, False, None)
-                except Exception as e:
-                    l.warning(f"Memory load error at 0x{addr:x}: {e}")
-                    return (bytes(size), False, None)
-            finally:
-                self._perf_stats['callback_memory_load_count'] += 1
-                self._perf_stats['callback_memory_load_total_ns'] += time.perf_counter_ns() - _ml_start
-
-        # Memory store callback
-        def memory_store(addr: int, data: bytes):
-            state = _get_per_fork_state()
+    def _cb_memory_load(self, addr: int, size: int) -> tuple:
+        _ml_start = time.perf_counter_ns()
+        try:
+            state = self._get_per_fork_state()
             if state is None:
-                return
+                return (bytes(size), False, None)
 
             try:
-                val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
-                state.memory.store(addr, val, endness=state.arch.memory_endness)
-            except Exception as e:
-                l.warning(f"Memory store error at 0x{addr:x}: {e}")
+                # Check preserved hook symbolic memory first
+                state_id = self._current_callback_state_id
+                effective_state_id = self._get_effective_state_id(state_id) if state_id is not None else None
+                lookup_id = effective_state_id if effective_state_id is not None else state_id
+                if lookup_id is not None and lookup_id in self._hook_symbolic_memory:
+                    hook_mem = self._hook_symbolic_memory[lookup_id]
+                    for mem_addr, (ast, mem_size) in hook_mem.items():
+                        if mem_addr <= addr < mem_addr + mem_size:
+                            offset = addr - mem_addr
+                            if offset == 0 and size == mem_size:
+                                concrete = state.solver.eval(ast).to_bytes(size, 'little')
+                                self._register_handle(id(ast), ast, addr=addr, size=size, state_id=lookup_id)
+                                if _DBG:
+                                    l.debug(f"Memory load hit preserved symbolic at 0x{addr:x}")
+                                return (concrete, True, ast)
+                            elif offset == 0 and size < mem_size:
+                                extracted = claripy.Extract(size * 8 - 1, 0, ast)
+                                concrete = state.solver.eval(extracted).to_bytes(size, 'little')
+                                self._register_handle(id(extracted), extracted, addr=addr, size=size, state_id=lookup_id)
+                                return (concrete, True, extracted)
 
-        # Block lifting callback
-        def lift_block(addr: int) -> str:
-            _lb_start = time.perf_counter_ns()
-            try:
-                import json
-                try:
-                    block = self._project.factory.block(addr)
-                    irsb = block.vex
-                    # Serialize to JSON
-                    return self._serialize_irsb(irsb)
-                except Exception as e:
-                    l.warning(f"Lift error at 0x{addr:x}: {e}")
-                    return '{}'
-            finally:
-                self._perf_stats['callback_lift_block_count'] += 1
-                self._perf_stats['callback_lift_block_total_ns'] += time.perf_counter_ns() - _lb_start
+                val = state.memory.load(addr, size, endness=state.arch.memory_endness)
 
-        # Page fetch callback
-        def fetch_page(page_addr: int) -> tuple:
-            _fp_start = time.perf_counter_ns()
-            try:
-                state = self._get_default_state()
-                if state is None:
-                    return (bytes(4096), 0, False)
-
-                try:
-                    data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
-                    # If the page contains symbolic data, return failure so the
-                    # Rust engine falls back to per-access memory_load callback
-                    # which returns the symbolic AST (enabling symbolic forking)
-                    is_symbolic = getattr(data, 'symbolic', False)
-                    if is_symbolic:
+                # Coerce thunks/callables to actual values
+                coerce_attempts = 0
+                while callable(val) and not hasattr(val, 'op') and coerce_attempts < 3:
+                    try:
+                        val = val()
+                        coerce_attempts += 1
+                    except Exception:
                         if _DBG:
-                            l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
-                        return (bytes(4096), 0, False)
-                    concrete = state.solver.eval(data).to_bytes(4096, 'little')
-                    return (concrete, 7, True)  # RWX permissions
-                except Exception as e:
-                    return (bytes(4096), 0, False)
-            finally:
-                self._perf_stats['callback_fetch_page_count'] += 1
-                self._perf_stats['callback_fetch_page_total_ns'] += time.perf_counter_ns() - _fp_start
+                            l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
+                        val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
+                        break
 
-        # Constraint sync callback - receives constraints from Rust before Python fallback
-        def sync_constraints(constraints: list) -> bool:
-            """Sync constraints from Rust to Python's claripy solver.
+                if not hasattr(val, 'op'):
+                    l.warning(f"Memory load at 0x{addr:x} returned invalid type: {type(val)}")
+                    return (bytes(size), False, None)
 
-            This is called when Rust falls back to Python for operations that
-            depend on solver state (e.g., unmapped memory access). The constraints
-            represent concretization decisions made by Rust that need to be
-            reflected in Python's solver.
+                is_symbolic = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                if is_symbolic:
+                    handle_id = id(val)
+                    self._register_handle(handle_id, val, addr=addr, size=size, state_id=state_id)
+                    concrete = state.solver.eval(val).to_bytes(size, 'little')
+                    return (concrete, True, val)
+                else:
+                    concrete = state.solver.eval(val).to_bytes(size, 'little')
+                    return (concrete, False, None)
+            except Exception as e:
+                l.warning(f"Memory load error at 0x{addr:x}: {e}")
+                return (bytes(size), False, None)
+        finally:
+            self._perf_stats['callback_memory_load_count'] += 1
+            self._perf_stats['callback_memory_load_total_ns'] += time.perf_counter_ns() - _ml_start
 
-            Uses transactional sync with rollback on failure:
-            1. Record pre-sync constraint count
-            2. Add all constraints
-            3. Validate satisfiability
-            4. On failure: remove added constraints and report error
+    def _cb_memory_store(self, addr: int, data: bytes):
+        state = self._get_per_fork_state()
+        if state is None:
+            return
+        try:
+            val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
+            state.memory.store(addr, val, endness=state.arch.memory_endness)
+        except Exception as e:
+            l.warning(f"Memory store error at 0x{addr:x}: {e}")
 
-            Args:
-                constraints: List of (description, width, concrete_value, handle_id) tuples
+    def _cb_lift_block(self, addr: int) -> str:
+        _lb_start = time.perf_counter_ns()
+        try:
+            try:
+                block = self._project.factory.block(addr)
+                irsb = block.vex
+                return self._serialize_irsb(irsb)
+            except Exception as e:
+                l.warning(f"Lift error at 0x{addr:x}: {e}")
+                return '{}'
+        finally:
+            self._perf_stats['callback_lift_block_count'] += 1
+            self._perf_stats['callback_lift_block_total_ns'] += time.perf_counter_ns() - _lb_start
 
-            Returns:
-                True if sync succeeded, False if rollback occurred
-            """
+    def _cb_fetch_page(self, page_addr: int) -> tuple:
+        _fp_start = time.perf_counter_ns()
+        try:
             state = self._get_default_state()
             if state is None:
-                l.debug("sync_constraints called but no state available")
-                return False
+                return (bytes(4096), 0, False)
+            try:
+                data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
+                is_symbolic = getattr(data, 'symbolic', False)
+                if is_symbolic:
+                    if _DBG:
+                        l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
+                    return (bytes(4096), 0, False)
+                concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                return (concrete, 7, True)
+            except Exception:
+                return (bytes(4096), 0, False)
+        finally:
+            self._perf_stats['callback_fetch_page_count'] += 1
+            self._perf_stats['callback_fetch_page_total_ns'] += time.perf_counter_ns() - _fp_start
 
-            # Record pre-sync state for transactional rollback
-            pre_sync_count = len(state.solver.constraints)
-            added_constraints = []
-            sync_failed = False
+    def _cb_sync_constraints(self, constraints: list) -> bool:
+        """Sync constraints from Rust to Python's claripy solver."""
+        state = self._get_default_state()
+        if state is None:
+            l.debug("sync_constraints called but no state available")
+            return False
 
-            for desc, width, concrete_val, handle_id in constraints:
-                try:
-                    # Try to reconstruct the constraint from handle_id if available
-                    if handle_id is not None:
-                        # Look up the original AST from the handle
-                        ast = self._lookup_handle(handle_id)
-                        if ast is not None:
-                            # Add constraint: ast == concrete_val
-                            constraint = ast == claripy.BVV(concrete_val, width)
-                            state.solver.add(constraint)
-                            added_constraints.append(constraint)
-                            l.debug(f"Synced constraint from handle {handle_id}: {desc}")
-                            continue
+        added_constraints = []
+        sync_failed = False
 
-                    # P2 fix: Try to reconstruct constraint from description
-                    # Description formats: "addr_concretize_0x1234", "branch_cond_0xABCD", etc.
-                    reconstructed = False
+        for desc, width, concrete_val, handle_id in constraints:
+            try:
+                if handle_id is not None:
+                    ast = self._lookup_handle(handle_id)
+                    if ast is not None:
+                        constraint = ast == claripy.BVV(concrete_val, width)
+                        state.solver.add(constraint)
+                        added_constraints.append(constraint)
+                        l.debug(f"Synced constraint from handle {handle_id}: {desc}")
+                        continue
 
-                    # P5 fix: Use effective state ID for addr_to_ast lookups
-                    state_id = self._current_callback_state_id
-                    effective_id = self._get_effective_state_id(state_id) if state_id is not None else None
+                reconstructed = False
+                state_id = self._current_callback_state_id
+                effective_id = self._get_effective_state_id(state_id) if state_id is not None else None
 
-                    if desc.startswith("addr_concretize_"):
-                        # Address concretization - extract address from description
-                        addr_str = desc.replace("addr_concretize_", "")
+                if desc.startswith("addr_concretize_"):
+                    addr_str = desc.replace("addr_concretize_", "")
+                    try:
+                        addr = int(addr_str, 16)
+                        lookup_id = effective_id if effective_id is not None else state_id
+                        if lookup_id is not None:
+                            addr_map = self._addr_to_ast.get(lookup_id, {})
+                            for tracked_addr, (tracked_ast, _) in addr_map.items():
+                                if tracked_addr == addr:
+                                    constraint = tracked_ast == claripy.BVV(concrete_val, width)
+                                    state.solver.add(constraint)
+                                    added_constraints.append(constraint)
+                                    l.debug(f"Reconstructed addr_concretize constraint from desc: {desc}")
+                                    reconstructed = True
+                                    break
+                    except ValueError:
+                        pass
+
+                elif desc.startswith("mem_") and "_" in desc:
+                    parts = desc.split("_")
+                    if len(parts) >= 2:
                         try:
-                            addr = int(addr_str, 16)
-                            # Look for AST by address in our tracking
+                            addr = int(parts[1], 16)
                             lookup_id = effective_id if effective_id is not None else state_id
                             if lookup_id is not None:
                                 addr_map = self._addr_to_ast.get(lookup_id, {})
@@ -555,442 +545,268 @@ class RustExplorationManager(
                                         constraint = tracked_ast == claripy.BVV(concrete_val, width)
                                         state.solver.add(constraint)
                                         added_constraints.append(constraint)
-                                        l.debug(f"Reconstructed addr_concretize constraint from desc: {desc}")
+                                        l.debug(f"Reconstructed mem constraint from desc: {desc}")
                                         reconstructed = True
                                         break
                         except ValueError:
                             pass
 
-                    elif desc.startswith("mem_") and "_" in desc:
-                        # Memory read symbolic - try to find by address
-                        parts = desc.split("_")
-                        if len(parts) >= 2:
-                            try:
-                                addr = int(parts[1], 16)
-                                lookup_id = effective_id if effective_id is not None else state_id
-                                if lookup_id is not None:
-                                    addr_map = self._addr_to_ast.get(lookup_id, {})
-                                    for tracked_addr, (tracked_ast, _) in addr_map.items():
-                                        if tracked_addr == addr:
-                                            constraint = tracked_ast == claripy.BVV(concrete_val, width)
-                                            state.solver.add(constraint)
-                                            added_constraints.append(constraint)
-                                            l.debug(f"Reconstructed mem constraint from desc: {desc}")
-                                            reconstructed = True
-                                            break
-                            except ValueError:
-                                pass
-
-                    if not reconstructed:
-                        # Still couldn't reconstruct - log warning
-                        l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
-                        sync_failed = True
-
-                except Exception as e:
-                    l.warning(f"Error syncing constraint '{desc}': {e}")
+                if not reconstructed:
+                    l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
                     sync_failed = True
 
-            # Validate constraints are still satisfiable
-            if added_constraints:
-                try:
-                    if not state.solver.satisfiable():
-                        l.warning(f"Constraint sync made solver UNSAT, rolling back {len(added_constraints)} constraints")
-                        # Rollback: remove added constraints
-                        # Note: claripy doesn't have a native rollback, so we recreate
-                        # the solver with the original constraints
-                        state.solver._stored_solver = None  # Force solver rebuild
-                        sync_failed = True
-                except Exception as e:
-                    l.warning(f"Error validating constraint sync: {e}")
+            except Exception as e:
+                l.warning(f"Error syncing constraint '{desc}': {e}")
+                sync_failed = True
+
+        if added_constraints:
+            try:
+                if not state.solver.satisfiable():
+                    l.warning(f"Constraint sync made solver UNSAT, rolling back {len(added_constraints)} constraints")
+                    state.solver._stored_solver = None
                     sync_failed = True
-
-            if sync_failed:
-                l.debug(f"Constraint sync completed with failures (added {len(added_constraints)} constraints)")
-            else:
-                l.debug(f"Constraint sync succeeded (added {len(added_constraints)} constraints)")
-
-            return not sync_failed
-
-        callbacks.set_memory_load(memory_load)
-        callbacks.set_memory_store(memory_store)
-        callbacks.set_lift_block(lift_block)
-        callbacks.set_fetch_page(fetch_page)
-        callbacks.set_sync_constraints(sync_constraints)
-
-        # P3 fix: Register callbacks for reading/writing registers
-        def get_register(offset: int, size: int) -> Tuple[bytes, bool, Optional[object]]:
-            """Get register value from Python state.
-
-            P3 fix: This callback allows Rust to read register values from the
-            Python state, supporting both concrete and symbolic values.
-
-            Args:
-                offset: Register offset in the register file.
-                size: Size of the register in bytes.
-
-            Returns:
-                (concrete_bytes, is_symbolic, symbolic_ast_or_none)
-            """
-            state = self._get_callback_state() or self._get_default_state()
-            if state is None:
-                return (bytes(size), False, None)
-
-            try:
-                val = state.registers.load(offset, size, endness=state.arch.register_endness)
-                is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
-                concrete = state.solver.eval(val).to_bytes(size, 'little')
-                if is_sym:
-                    self._register_handle(id(val), val)
-                    return (concrete, True, val)
-                return (concrete, False, None)
             except Exception as e:
-                l.warning(f"get_register error at offset {offset}: {e}")
-                return (bytes(size), False, None)
+                l.warning(f"Error validating constraint sync: {e}")
+                sync_failed = True
 
-        def put_register(offset: int, data: bytes):
-            """Set register value in Python state.
+        if sync_failed:
+            l.debug(f"Constraint sync completed with failures (added {len(added_constraints)} constraints)")
+        else:
+            l.debug(f"Constraint sync succeeded (added {len(added_constraints)} constraints)")
 
-            P3 fix: This callback allows Rust to write register values to the
-            Python state.
+        return not sync_failed
 
-            Args:
-                offset: Register offset in the register file.
-                data: Raw bytes to write to the register.
-            """
-            state = self._get_callback_state() or self._get_default_state()
-            if state is None:
-                return
+    def _cb_get_register(self, offset: int, size: int) -> Tuple[bytes, bool, Optional[object]]:
+        state = self._get_callback_state() or self._get_default_state()
+        if state is None:
+            return (bytes(size), False, None)
+        try:
+            val = state.registers.load(offset, size, endness=state.arch.register_endness)
+            is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+            concrete = state.solver.eval(val).to_bytes(size, 'little')
+            if is_sym:
+                self._register_handle(id(val), val)
+                return (concrete, True, val)
+            return (concrete, False, None)
+        except Exception as e:
+            l.warning(f"get_register error at offset {offset}: {e}")
+            return (bytes(size), False, None)
 
-            try:
-                val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
-                state.registers.store(offset, val, endness=state.arch.register_endness)
-            except Exception as e:
-                l.warning(f"put_register error at offset {offset}: {e}")
+    def _cb_put_register(self, offset: int, data: bytes):
+        state = self._get_callback_state() or self._get_default_state()
+        if state is None:
+            return
+        try:
+            val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
+            state.registers.store(offset, val, endness=state.arch.register_endness)
+        except Exception as e:
+            l.warning(f"put_register error at offset {offset}: {e}")
 
-        callbacks.set_get_register(get_register)
-        callbacks.set_put_register(put_register)
+    def _cb_dirty_call(self, name: str, args: list, ret_ty_bits: int) -> Tuple[bytes, bool, Optional[object]]:
+        state = self._get_callback_state() or self._get_default_state()
+        if state is None:
+            return (bytes(ret_ty_bits // 8), False, None)
+        try:
+            from angr.engines.vex.heavy import dirty as dirty_module
 
-        # P4 fix: Dirty call callback for VEX dirty helpers (CPUID, RDTSC, etc.)
-        def dirty_call(name: str, args: list, ret_ty_bits: int) -> Tuple[bytes, bool, Optional[object]]:
-            """Handle VEX dirty calls (CPUID, RDTSC, x87 ops, etc.).
-
-            P4 fix: VEX dirty calls are helper functions that perform complex
-            operations like reading CPU features (CPUID) or timestamp counter
-            (RDTSC). These need to be handled in Python where the dirty
-            helper implementations live.
-
-            Args:
-                name: Name of the dirty helper function (e.g., "amd64g_dirtyhelper_RDTSC").
-                args: List of integer arguments to pass to the helper.
-                ret_ty_bits: Size of return value in bits.
-
-            Returns:
-                (concrete_bytes, is_symbolic, symbolic_ast_or_none)
-            """
-            state = self._get_callback_state() or self._get_default_state()
-            if state is None:
+            if not hasattr(dirty_module, name):
+                l.warning(f"No dirty call handler for {name}")
                 return (bytes(ret_ty_bits // 8), False, None)
 
-            try:
-                from angr.engines.vex.heavy import dirty as dirty_module
+            handler = getattr(dirty_module, name)
+            claripy_args = [claripy.BVV(arg, 64) for arg in args]
+            result, constraints = handler(state, *claripy_args)
 
-                if not hasattr(dirty_module, name):
-                    l.warning(f"No dirty call handler for {name}")
-                    return (bytes(ret_ty_bits // 8), False, None)
+            if constraints:
+                for c in constraints:
+                    state.solver.add(c)
 
-                handler = getattr(dirty_module, name)
-
-                # Convert integer args to claripy BVVs
-                claripy_args = [claripy.BVV(arg, 64) for arg in args]
-
-                # Call the handler
-                result, constraints = handler(state, *claripy_args)
-
-                # Add any constraints returned by the handler
-                if constraints:
-                    for c in constraints:
-                        state.solver.add(c)
-
-                if result is None:
-                    return (bytes(ret_ty_bits // 8), False, None)
-
-                is_sym = getattr(result, 'symbolic', False) if hasattr(result, 'symbolic') else False
-
-                # Get concrete value (evaluate if symbolic)
-                concrete_val = state.solver.eval(result)
-                num_bytes = ret_ty_bits // 8
-                concrete_bytes = concrete_val.to_bytes(num_bytes, 'little')
-
-                if is_sym:
-                    self._register_handle(id(result), result)
-                    return (concrete_bytes, True, result)
-                return (concrete_bytes, False, None)
-
-            except Exception as e:
-                l.warning(f"dirty_call {name} error: {e}")
+            if result is None:
                 return (bytes(ret_ty_bits // 8), False, None)
 
-        callbacks.set_dirty_call(dirty_call)
+            is_sym = getattr(result, 'symbolic', False) if hasattr(result, 'symbolic') else False
+            concrete_val = state.solver.eval(result)
+            num_bytes = ret_ty_bits // 8
+            concrete_bytes = concrete_val.to_bytes(num_bytes, 'little')
 
-        # Dynamic function resolution callback
-        def resolve_function(addr: int, name: Optional[str]) -> Optional[Tuple[str, int, bool]]:
-            """Resolve an unmodeled function call.
+            if is_sym:
+                self._register_handle(id(result), result)
+                return (concrete_bytes, True, result)
+            return (concrete_bytes, False, None)
 
-            This is called when Rust encounters a function that isn't hooked.
-            We check angr's procedure registries to see if we can provide a SimProcedure.
+        except Exception as e:
+            l.warning(f"dirty_call {name} error: {e}")
+            return (bytes(ret_ty_bits // 8), False, None)
 
-            Args:
-                addr: The address of the unmodeled function
-                name: The function name if known (from symbols), or None
+    def _cb_resolve_function(self, addr: int, name: Optional[str]) -> Optional[Tuple[str, int, bool]]:
+        """Resolve an unmodeled function call."""
+        if hasattr(self._project, '_sim_procedures'):
+            if addr in self._project._sim_procedures:
+                proc = self._project._sim_procedures[addr]
+                proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+                num_args = getattr(proc, 'num_args', 0) or 0
+                no_ret = getattr(proc, 'NO_RET', False)
+                return (proc_name, num_args, no_ret)
 
-            Returns:
-                (name, num_args, no_return) if the function can be resolved,
-                None if the function is truly unmodeled and state should deadend.
-            """
-            # Check if the address is already hooked (shouldn't happen, but safety check)
-            if hasattr(self._project, '_sim_procedures'):
-                if addr in self._project._sim_procedures:
-                    proc = self._project._sim_procedures[addr]
-                    proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
-                    num_args = getattr(proc, 'num_args', 0) or 0
-                    no_ret = getattr(proc, 'NO_RET', False)
-                    return (proc_name, num_args, no_ret)
+        if hasattr(self._project, 'loader'):
+            obj = self._project.loader.find_object_containing(addr)
+            if obj:
+                in_plt = False
+                for section in obj.sections:
+                    if section.name in ('.plt', '.plt.got', '.plt.sec') and section.min_addr <= addr < section.max_addr:
+                        in_plt = True
+                        break
 
-            # Check if this is a PLT address - resolve through GOT using jmprel table
-            # PLT stubs do `jmp [GOT]` - we need to find which symbol the GOT entry maps to
-            if hasattr(self._project, 'loader'):
-                obj = self._project.loader.find_object_containing(addr)
-                if obj:
-                    # Check if addr is in a PLT section
-                    in_plt = False
-                    for section in obj.sections:
-                        if section.name in ('.plt', '.plt.got', '.plt.sec') and section.min_addr <= addr < section.max_addr:
-                            in_plt = True
-                            break
+                if in_plt:
+                    proc_by_name = {}
+                    for proc_addr, proc in self._project._sim_procedures.items():
+                        proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
+                        proc_by_name[proc_name] = (proc_addr, proc)
 
-                    if in_plt:
-                        # Build mappings for resolution
-                        proc_by_name = {}
-                        for proc_addr, proc in self._project._sim_procedures.items():
-                            proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
-                            proc_by_name[proc_name] = (proc_addr, proc)
+                    got_to_sym = {}
+                    if hasattr(obj, 'jmprel'):
+                        for sym_name, reloc in obj.jmprel.items():
+                            got_to_sym[reloc.rebased_addr] = sym_name
 
-                        # Build GOT address -> symbol name mapping from jmprel
-                        got_to_sym = {}
-                        if hasattr(obj, 'jmprel'):
-                            for sym_name, reloc in obj.jmprel.items():
-                                got_to_sym[reloc.rebased_addr] = sym_name
-
-                        # Read the GOT address from the PLT instruction
-                        try:
-                            block = self._project.factory.block(addr, num_inst=1)
-                            insn = block.capstone.insns[0] if block.capstone.insns else None
-                            if insn and insn.mnemonic == 'jmp':
-                                # Get the memory operand (GOT address)
-                                for op in insn.operands:
-                                    if op.type == 3:  # CS_OP_MEM
-                                        # RIP-relative addressing: target = insn.address + insn.size + disp
-                                        got_addr = insn.address + insn.size + op.mem.disp
-                                        # Look up which symbol this GOT address belongs to
-                                        if got_addr in got_to_sym:
-                                            sym_name = got_to_sym[got_addr]
-                                            if sym_name in proc_by_name:
-                                                proc_addr, proc = proc_by_name[sym_name]
+                    try:
+                        block = self._project.factory.block(addr, num_inst=1)
+                        insn = block.capstone.insns[0] if block.capstone.insns else None
+                        if insn and insn.mnemonic == 'jmp':
+                            for op in insn.operands:
+                                if op.type == 3:  # CS_OP_MEM
+                                    got_addr = insn.address + insn.size + op.mem.disp
+                                    if got_addr in got_to_sym:
+                                        sym_name = got_to_sym[got_addr]
+                                        if sym_name in proc_by_name:
+                                            proc_addr, proc = proc_by_name[sym_name]
+                                            num_args = getattr(proc, 'num_args', 0) or 0
+                                            no_ret = getattr(proc, 'NO_RET', False)
+                                            l.debug(f"Resolved PLT at 0x{addr:x} to {sym_name} (GOT 0x{got_addr:x})")
+                                            return (sym_name, num_args, no_ret)
+                                    else:
+                                        state = self._get_default_state()
+                                        if state:
+                                            got_val = state.memory.load(got_addr, 8, endness='Iend_LE')
+                                            extern_addr = state.solver.eval(got_val)
+                                            if extern_addr in self._project._sim_procedures:
+                                                proc = self._project._sim_procedures[extern_addr]
+                                                proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
                                                 num_args = getattr(proc, 'num_args', 0) or 0
                                                 no_ret = getattr(proc, 'NO_RET', False)
-                                                l.debug(f"Resolved PLT at 0x{addr:x} to {sym_name} (GOT 0x{got_addr:x})")
-                                                return (sym_name, num_args, no_ret)
-                                        else:
-                                            # GOT not in jmprel - try reading the value and checking SimProcedures
-                                            state = self._get_default_state()
-                                            if state:
-                                                got_val = state.memory.load(got_addr, 8, endness='Iend_LE')
-                                                extern_addr = state.solver.eval(got_val)
-                                                if extern_addr in self._project._sim_procedures:
-                                                    proc = self._project._sim_procedures[extern_addr]
-                                                    proc_name = proc.__class__.__name__ if hasattr(proc, '__class__') else str(proc)
-                                                    num_args = getattr(proc, 'num_args', 0) or 0
-                                                    no_ret = getattr(proc, 'NO_RET', False)
-                                                    l.debug(f"Resolved PLT at 0x{addr:x} to {proc_name} via GOT value")
-                                                    return (proc_name, num_args, no_ret)
-                        except Exception as e:
-                            l.debug(f"PLT resolution failed for 0x{addr:x}: {e}")
+                                                l.debug(f"Resolved PLT at 0x{addr:x} to {proc_name} via GOT value")
+                                                return (proc_name, num_args, no_ret)
+                    except Exception as e:
+                        l.debug(f"PLT resolution failed for 0x{addr:x}: {e}")
 
+        if name:
+            try:
+                from angr.procedures import SIM_PROCEDURES
+                for lib_name, procs in SIM_PROCEDURES.items():
+                    if name in procs:
+                        proc_class = procs[name]
+                        num_args = getattr(proc_class, 'num_args', 0) or 0
+                        no_ret = getattr(proc_class, 'NO_RET', False)
+                        l.debug(f"Resolved {name} to {lib_name}:{name}")
+                        return (name, num_args, no_ret)
+            except ImportError:
+                pass
 
-            # Try to resolve by name using angr's procedure registry
-            if name:
+        if hasattr(self._project, 'loader'):
+            sym = self._project.loader.find_symbol(addr)
+            if sym and sym.name:
                 try:
                     from angr.procedures import SIM_PROCEDURES
-
-                    # Check common libraries
                     for lib_name, procs in SIM_PROCEDURES.items():
-                        if name in procs:
-                            proc_class = procs[name]
+                        if sym.name in procs:
+                            proc_class = procs[sym.name]
                             num_args = getattr(proc_class, 'num_args', 0) or 0
                             no_ret = getattr(proc_class, 'NO_RET', False)
-                            l.debug(f"Resolved {name} to {lib_name}:{name}")
-                            return (name, num_args, no_ret)
+                            l.debug(f"Resolved symbol {sym.name} to {lib_name}:{sym.name}")
+                            return (sym.name, num_args, no_ret)
                 except ImportError:
                     pass
 
-            # Check if we can resolve via the loader's symbol table
-            if hasattr(self._project, 'loader'):
-                sym = self._project.loader.find_symbol(addr)
-                if sym and sym.name:
-                    try:
-                        from angr.procedures import SIM_PROCEDURES
+        if hasattr(self._project, 'loader'):
+            obj = self._project.loader.find_object_containing(addr)
+            if obj and obj.binary is not None:
+                for section in obj.sections:
+                    if section.is_executable and section.min_addr <= addr < section.max_addr:
+                        if section.name not in ('.plt', '.plt.got', '.plt.sec'):
+                            l.debug(f"Internal function at 0x{addr:x} - returning pass-through")
+                            return ("__internal_passthrough__", 0, False)
 
-                        for lib_name, procs in SIM_PROCEDURES.items():
-                            if sym.name in procs:
-                                proc_class = procs[sym.name]
-                                num_args = getattr(proc_class, 'num_args', 0) or 0
-                                no_ret = getattr(proc_class, 'NO_RET', False)
-                                l.debug(f"Resolved symbol {sym.name} to {lib_name}:{sym.name}")
-                                return (sym.name, num_args, no_ret)
-                    except ImportError:
-                        pass
+        l.debug(f"Could not resolve function at 0x{addr:x} (name={name})")
+        return None
 
-            # Check if this is internal binary code (not PLT, not extern)
-            # If so, return a special marker to tell Rust to continue execution
-            if hasattr(self._project, 'loader'):
-                obj = self._project.loader.find_object_containing(addr)
-                if obj and obj.binary is not None:
-                    # Check if addr is in an executable section (but not PLT)
-                    for section in obj.sections:
-                        if section.is_executable and section.min_addr <= addr < section.max_addr:
-                            if section.name not in ('.plt', '.plt.got', '.plt.sec'):
-                                # This is internal binary code - return a pass-through marker
-                                l.debug(f"Internal function at 0x{addr:x} - returning pass-through")
-                                return ("__internal_passthrough__", 0, False)
-
-            # Unresolvable - return None to indicate state should deadend
-            l.debug(f"Could not resolve function at 0x{addr:x} (name={name})")
-            return None
-
-        callbacks.set_resolve_function(resolve_function)
-
-        # Phase 5 Fix: Add batch callbacks for improved performance
-        # Batching reduces Python<->Rust FFI overhead
-
-        def memory_store_batch(stores: list):
-            """Batch memory stores callback for improved performance.
-
-            Phase 5 Fix: Handle multiple memory stores in a single callback
-            to reduce Python<->Rust FFI overhead.
-
-            Args:
-                stores: List of (addr, data) tuples to write.
-            """
-            state = _get_per_fork_state()
-            if state is None:
-                return
-
-            for addr, data in stores:
-                try:
-                    if isinstance(data, (bytes, list)):
-                        int_val = int.from_bytes(bytes(data), 'little')
-                        val = claripy.BVV(int_val, len(data) * 8)
-                    else:
-                        val = claripy.BVV(data, 64)
-                    state.memory.store(addr, val, endness='Iend_LE')
-                except Exception as e:
-                    l.debug(f"Batch memory store failed at 0x{addr:x}: {e}")
-
-        def memory_load_batch(loads: list) -> list:
-            """Batch memory loads callback for improved performance.
-
-            Phase 5 Fix: Handle multiple memory loads in a single callback
-            to reduce Python<->Rust FFI overhead.
-
-            Args:
-                loads: List of (addr, size) tuples to read.
-
-            Returns:
-                List of (bytes, is_symbolic, ast_or_none) tuples.
-            """
-            state = _get_per_fork_state()
-            if state is None:
-                return [(bytes(size), False, None) for _, size in loads]
-
-            results = []
-            for addr, size in loads:
-                try:
-                    val = state.memory.load(addr, size, endness=state.arch.memory_endness)
-                    is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
-                    concrete = state.solver.eval(val).to_bytes(size, 'little')
-                    if is_sym:
-                        self._register_handle(id(val), val, addr=addr, size=size)
-                        results.append((concrete, True, val))
-                    else:
-                        results.append((concrete, False, None))
-                except Exception as e:
-                    l.debug(f"Batch memory load failed at 0x{addr:x}: {e}")
-                    results.append((bytes(size), False, None))
-
-            return results
-
-        def batch_fetch_pages(page_addrs: list) -> list:
-            """Batch page fetch callback for improved performance.
-
-            Phase 5 Fix: Fetch multiple pages in a single callback to reduce
-            FFI overhead when prefetching nearby pages.
-
-            Args:
-                page_addrs: List of page-aligned addresses to fetch.
-
-            Returns:
-                List of (bytes, permissions, is_concrete) tuples.
-            """
-            state = self._get_callback_state() or self._get_default_state()
-            if state is None:
-                return [(bytes(4096), 0, True) for _ in page_addrs]
-
-            results = []
-            for page_addr in page_addrs:
-                try:
-                    # Use fetch_page logic but batch it
-                    data = state.memory.load(page_addr, 4096, endness='Iend_LE')
-                    if getattr(data, 'symbolic', False):
-                        concrete = state.solver.eval(data).to_bytes(4096, 'little')
-                        results.append((concrete, 7, False))  # RWX, symbolic
-                    else:
-                        concrete = state.solver.eval(data).to_bytes(4096, 'little')
-                        results.append((concrete, 7, True))  # RWX, concrete
-                except Exception as e:
-                    l.debug(f"Batch page fetch failed at 0x{page_addr:x}: {e}")
-                    results.append((bytes(4096), 0, True))
-
-            return results
-
-        # Symbolic value store callback — preserves symbolic expressions in Python memory
-        def memory_store_symbolic_value(addr: int, ast):
-            """Store a symbolic value (claripy AST) to Python state memory."""
-            state = _get_per_fork_state()
-            if state is None or ast is None:
-                return
+    def _cb_memory_store_batch(self, stores: list):
+        state = self._get_per_fork_state()
+        if state is None:
+            return
+        for addr, data in stores:
             try:
-                if hasattr(ast, 'length') and ast.length:
-                    size = ast.length // 8
-                    state.memory.store(addr, ast, endness=state.arch.memory_endness,
-                                       inspect=False, disable_actions=True)
-                    self._register_handle(id(ast), ast, addr=addr, size=size)
+                if isinstance(data, (bytes, list)):
+                    int_val = int.from_bytes(bytes(data), 'little')
+                    val = claripy.BVV(int_val, len(data) * 8)
+                else:
+                    val = claripy.BVV(data, 64)
+                state.memory.store(addr, val, endness='Iend_LE')
             except Exception as e:
-                l.debug(f"Symbolic store at 0x{addr:x} failed: {e}")
+                l.debug(f"Batch memory store failed at 0x{addr:x}: {e}")
 
-        # Set batch callbacks if available
-        if hasattr(callbacks, 'set_memory_store_batch'):
-            callbacks.set_memory_store_batch(memory_store_batch)
-        if hasattr(callbacks, 'set_memory_load_batch'):
-            callbacks.set_memory_load_batch(memory_load_batch)
-        if hasattr(callbacks, 'set_batch_fetch_pages'):
-            callbacks.set_batch_fetch_pages(batch_fetch_pages)
-        # Symbolic store callback — preserves expression trees for non-stack
-        # addresses. Errors are caught gracefully (fall through to concrete store).
-        if hasattr(callbacks, 'set_memory_store_symbolic_value'):
-            callbacks.set_memory_store_symbolic_value(memory_store_symbolic_value)
+    def _cb_memory_load_batch(self, loads: list) -> list:
+        state = self._get_per_fork_state()
+        if state is None:
+            return [(bytes(size), False, None) for _, size in loads]
 
-        self._rust_mgr.set_callbacks(callbacks)
-        self._callbacks = callbacks
+        results = []
+        for addr, size in loads:
+            try:
+                val = state.memory.load(addr, size, endness=state.arch.memory_endness)
+                is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                concrete = state.solver.eval(val).to_bytes(size, 'little')
+                if is_sym:
+                    self._register_handle(id(val), val, addr=addr, size=size)
+                    results.append((concrete, True, val))
+                else:
+                    results.append((concrete, False, None))
+            except Exception as e:
+                l.debug(f"Batch memory load failed at 0x{addr:x}: {e}")
+                results.append((bytes(size), False, None))
+        return results
+
+    def _cb_batch_fetch_pages(self, page_addrs: list) -> list:
+        state = self._get_callback_state() or self._get_default_state()
+        if state is None:
+            return [(bytes(4096), 0, True) for _ in page_addrs]
+
+        results = []
+        for page_addr in page_addrs:
+            try:
+                data = state.memory.load(page_addr, 4096, endness='Iend_LE')
+                if getattr(data, 'symbolic', False):
+                    concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                    results.append((concrete, 7, False))
+                else:
+                    concrete = state.solver.eval(data).to_bytes(4096, 'little')
+                    results.append((concrete, 7, True))
+            except Exception as e:
+                l.debug(f"Batch page fetch failed at 0x{page_addr:x}: {e}")
+                results.append((bytes(4096), 0, True))
+        return results
+
+    def _cb_memory_store_symbolic_value(self, addr: int, ast):
+        """Store a symbolic value (claripy AST) to Python state memory."""
+        state = self._get_per_fork_state()
+        if state is None or ast is None:
+            return
+        try:
+            if hasattr(ast, 'length') and ast.length:
+                size = ast.length // 8
+                state.memory.store(addr, ast, endness=state.arch.memory_endness,
+                                   inspect=False, disable_actions=True)
+                self._register_handle(id(ast), ast, addr=addr, size=size)
+        except Exception as e:
+            l.debug(f"Symbolic store at 0x{addr:x} failed: {e}")
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""
