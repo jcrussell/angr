@@ -1325,7 +1325,15 @@ impl RustExplorationManager {
         //
         // CRITICAL: Deferred forks diverged BEFORE the callback, so they should
         // NOT inherit callback constraints. Use pre_callback_snapshot as fork base.
-        let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| state.fork());
+        // Only create fork_base when there are deferred forks — state.fork() costs ~3ms
+        // due to Z3 solver clone, and most callbacks have zero deferred forks.
+        let has_deferred_forks = !pending.deferred_forks.is_empty();
+        let fork_base = if has_deferred_forks {
+            Some(pending.pre_callback_snapshot.unwrap_or_else(|| state.fork()))
+        } else {
+            drop(pending.pre_callback_snapshot); // explicitly drop unused snapshot
+            None
+        };
 
         // Track root state ID for lineage
         // The root is inherited from the original pending state
@@ -1349,7 +1357,8 @@ impl RustExplorationManager {
                     // Try to convert the claripy AST to RustBV
                     Python::with_gil(|py| {
                         let ast = py_ast.bind(py);
-                        let solver_ref = fork_base.solver();
+                        let fb = fork_base.as_ref().unwrap();
+                        let solver_ref = fb.solver();
                         let ctx: &SymContext = &*solver_ref.borrow();
                         claripy_to_rustbv(py, ast, ctx).ok()
                     })
@@ -1364,8 +1373,9 @@ impl RustExplorationManager {
 
             if let Some(cond) = effective_condition {
                 // Use solver snapshot (from before branch constraint) if available
+                let fb = fork_base.as_ref().unwrap();
                 let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                    let mut f = fork_base.fork_from_snapshot(snapshot);
+                    let mut f = fb.fork_from_snapshot(snapshot);
                     if fork.path_taken {
                         f.solver().borrow().assume_false(cond);
                     } else {
@@ -1374,11 +1384,11 @@ impl RustExplorationManager {
                     f.set_pc(fork.unexplored_target);
                     f
                 } else if fork.path_taken {
-                    let mut f = fork_base.fork_false(cond);
+                    let mut f = fb.fork_false(cond);
                     f.set_pc(fork.unexplored_target);
                     f
                 } else {
-                    let mut f = fork_base.fork_true(cond);
+                    let mut f = fb.fork_true(cond);
                     f.set_pc(fork.unexplored_target);
                     f
                 };
@@ -1417,7 +1427,7 @@ impl RustExplorationManager {
                 );
                 // Create a fork without additional constraints - this is conservative
                 // but ensures we don't lose valid paths
-                let mut forked = fork_base.fork();
+                let mut forked = fork_base.as_ref().unwrap().fork();
                 forked.set_pc(fork.unexplored_target);
                 self.state_roots.insert(forked.state_id(), root_state_id);
 
