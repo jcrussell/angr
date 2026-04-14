@@ -175,6 +175,30 @@ impl SymContext {
     // Constraint Management (Z3-backed)
     // =========================================================================
 
+    /// Push an entry to assumed_constraints for export tracking.
+    /// Used by the fast path that bypasses assume_true.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn assumed_constraints_push(&self, bv: RustBV, is_true: bool) {
+        self.assumed_constraints.lock().push((bv, is_true));
+    }
+
+    /// Add a constraint from a raw Z3_ast pointer (shared context fast path).
+    ///
+    /// This bypasses the RustBV → build_z3_ast() conversion, preserving the
+    /// original Z3 AST structure from Python's claripy/z3 backend.
+    /// SAFETY: The pointer must be a valid Z3_ast Bool in the same Z3 context.
+    #[cfg(feature = "vex-engine-z3")]
+    pub unsafe fn add_constraint_raw(&self, z3_ast_ptr: usize) {
+        use z3::ast::Ast;
+        let ctx = z3::Context::thread_local();
+        let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
+        let constraint: z3::ast::Bool = z3::ast::Ast::wrap(&ctx, raw_ast);
+        self.solver.lock().assert(&constraint);
+        self.constraint_count.fetch_add(1, Ordering::SeqCst);
+        self.sat_cache.set(None);
+        *self.model_cache.borrow_mut() = None;
+    }
+
     /// Add a constraint (fast path: no tracking overhead).
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint(&self, constraint: z3::ast::Bool) {

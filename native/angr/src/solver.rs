@@ -16,6 +16,19 @@ use std::rc::Rc;
 use crate::claripy_bridge::{claripy_to_rustbv, try_extract_bvv, BridgeError};
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
+/// Try to extract raw Z3_ast pointer from a claripy AST's z3 backend.
+/// Returns the pointer as usize, or an error if not available.
+/// This preserves claripy's original Z3 AST structure.
+#[cfg(feature = "vex-engine-z3")]
+fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let claripy = py.import("claripy")?;
+    let z3_backend = claripy.getattr("backends")?.getattr("z3")?;
+    let z3_obj = z3_backend.call_method1("convert", (ast,))?;
+    let ast_ref = z3_obj.call_method0("as_ast")?;
+    let ptr: usize = ast_ref.getattr("value")?.extract()?;
+    Ok(ptr)
+}
+
 /// Convert a BridgeError to a PyErr.
 impl From<BridgeError> for PyErr {
     fn from(err: BridgeError) -> Self {
@@ -98,21 +111,38 @@ impl RustSolverContext {
 
     /// Add a constraint from a claripy AST.
     ///
-    /// The constraint should be a 1-bit (boolean) value. For wider values,
-    /// we interpret them as "value != 0" to maintain compatibility with
-    /// claripy's flexible constraint handling.
+    /// Uses fast path when Z3 context is shared: extracts the raw Z3_ast
+    /// from claripy's z3 backend and asserts it directly, preserving the
+    /// original Z3 AST structure. Falls back to RustBV conversion otherwise.
     pub fn add_constraint_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
         let ctx = self.inner.ctx();
+
+        // Fast path: try to extract raw Z3 AST from claripy's z3 backend.
+        // This preserves the original AST structure (Python's claripy creates
+        // different Z3 trees than our build_z3_ast), avoiding the structural
+        // divergence that causes 3-7x slower Z3 solving.
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            if let Ok(z3_ast_ptr) = extract_z3_ast_ptr(py, ast) {
+                if z3_ast_ptr != 0 {
+                    unsafe { ctx.add_constraint_raw(z3_ast_ptr); }
+                    // Also track in RustBV for export (best-effort, non-critical)
+                    if let Ok(bv) = claripy_to_rustbv(py, ast, &*ctx) {
+                        ctx.assumed_constraints_push(bv, true);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        // Slow path: convert claripy AST to RustBV, then build Z3 AST
         let bv = claripy_to_rustbv(py, ast, &*ctx)?;
 
         #[cfg(feature = "vex-engine-z3")]
         {
             if bv.width() == 1 {
-                // Standard boolean constraint
                 ctx.assume_true(&bv);
             } else {
-                // For wider values, interpret as "value != 0"
-                // This is consistent with how claripy handles such constraints
                 let zero = RustBV::concrete(0, bv.width());
                 let neq = bv.ne(&zero, &*ctx);
                 ctx.assume_true(&neq);
