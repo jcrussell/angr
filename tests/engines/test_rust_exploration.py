@@ -461,5 +461,361 @@ class TestCallablePredicates:
         assert result == b"ABCD"
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStashOperations:
+    """Tests for stash management operations."""
+
+    def test_move_states_all(self):
+        """move_states without filter moves all states."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.create_state("active")
+        mgr.create_state("active")
+        mgr.create_state("active")
+        assert mgr.active_count() == 3
+
+        count = mgr.move_states("active", "found", None)
+        assert count == 3
+        assert mgr.active_count() == 0
+        assert mgr.found_count() == 3
+
+    def test_move_states_empty_source(self):
+        """move_states from empty stash returns 0."""
+        mgr = _RustExplorationManager("amd64")
+        count = mgr.move_states("active", "found", None)
+        assert count == 0
+
+    def test_move_state_by_id(self):
+        """move_state moves a specific state by ID."""
+        mgr = _RustExplorationManager("amd64")
+        id1 = mgr.create_state("active")
+        id2 = mgr.create_state("active")
+
+        result = mgr.move_state(id1, "active", "found")
+        assert result is True
+        assert mgr.active_count() == 1
+        assert mgr.found_count() == 1
+
+        # The remaining state should be id2
+        remaining = mgr.get_state_ids("active")
+        assert id2 in remaining
+
+    def test_move_state_nonexistent(self):
+        """move_state returns False for nonexistent state ID."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.create_state("active")
+        result = mgr.move_state(999999, "active", "found")
+        assert result is False
+
+    def test_clear_stash(self):
+        """clear_stash removes all states from a stash."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.create_state("found")
+        mgr.create_state("found")
+        assert mgr.found_count() == 2
+
+        mgr.clear_stash("found")
+        assert mgr.found_count() == 0
+
+    def test_clear_empty_stash(self):
+        """clear_stash on empty stash is a no-op."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.clear_stash("nonexistent")  # Should not raise
+
+    def test_stash_counts_multiple(self):
+        """stash_counts includes all stash names."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.create_state("active")
+        mgr.create_state("found")
+        mgr.create_state("deadended")
+
+        counts = mgr.stash_counts()
+        assert counts["active"] == 1
+        assert counts["found"] == 1
+        assert counts["deadended"] == 1
+
+    def test_get_state_ids_empty(self):
+        """get_state_ids on empty stash returns empty list."""
+        mgr = _RustExplorationManager("amd64")
+        ids = mgr.get_state_ids("active")
+        assert ids == []
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestHooksAndProcedures:
+    """Tests for hook and SimProcedure registration."""
+
+    def test_register_hook(self):
+        """Registering a hook at an address."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.register_simprocedure(0x401000, "test_hook", 0, False)
+        stats = mgr.stats()
+        assert stats["hooks"] == 1
+
+    def test_register_multiple_hooks(self):
+        """Multiple hooks at different addresses."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.register_simprocedure(0x401000, "hook1", 1, False)
+        mgr.register_simprocedure(0x402000, "hook2", 2, False)
+        mgr.register_simprocedure(0x403000, "hook3", 0, True)
+        stats = mgr.stats()
+        assert stats["simprocedures"] == 3
+        assert stats["hooks"] == 3
+
+    def test_set_find_avoid_addrs(self):
+        """Setting find and avoid addresses."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_find_addrs([0x1000, 0x2000])
+        mgr.set_avoid_addrs([0x3000])
+
+        stats = mgr.stats()
+        assert stats["find_addrs"] == 2
+        assert stats["avoid_addrs"] == 1
+
+    def test_empty_find_avoid(self):
+        """Empty find/avoid lists."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_find_addrs([])
+        mgr.set_avoid_addrs([])
+        stats = mgr.stats()
+        assert stats["find_addrs"] == 0
+        assert stats["avoid_addrs"] == 0
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStateManagement:
+    """Tests for state creation and management."""
+
+    def test_state_pc_get_set(self):
+        """Get and set PC on states via manager."""
+        mgr = _RustExplorationManager("amd64")
+        state = RustSimState("amd64")
+        state.pc = 0x401000
+        mgr.add_state("active", state)
+
+        pc = mgr.get_state_pc("active", 0)
+        assert pc == 0x401000
+
+    def test_multiple_states_different_pcs(self):
+        """Multiple states with different PCs."""
+        mgr = _RustExplorationManager("amd64")
+
+        for addr in [0x1000, 0x2000, 0x3000]:
+            state = RustSimState("amd64")
+            state.pc = addr
+            mgr.add_state("active", state)
+
+        assert mgr.active_count() == 3
+
+    def test_has_active_states(self):
+        """has_active_states reflects stash contents."""
+        mgr = _RustExplorationManager("amd64")
+        assert not mgr.has_active_states()
+
+        mgr.create_state("active")
+        assert mgr.has_active_states()
+
+    def test_drop_terminal_states_toggle(self):
+        """set_drop_terminal_states can be toggled."""
+        mgr = _RustExplorationManager("amd64")
+        # Should not raise
+        mgr.set_drop_terminal_states(True)
+        mgr.set_drop_terminal_states(False)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestSolverOperations:
+    """Tests for solver constraint operations."""
+
+    def test_solver_min_max(self):
+        """min() and max() return correct bounds."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x >= 10)
+        ctx.add_constraint_ast(x <= 20)
+
+        assert ctx.min(x, signed=False) == 10
+        assert ctx.max(x, signed=False) == 20
+
+    def test_solver_unsatisfiable(self):
+        """Contradictory constraints make solver UNSAT."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x == 5)
+        ctx.add_constraint_ast(x == 10)
+        assert not ctx.satisfiable()
+
+    def test_solver_fork_independence(self):
+        """Forked solver contexts are independent."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx1 = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx1.add_constraint_ast(x >= 0)
+        ctx1.add_constraint_ast(x <= 100)
+
+        ctx2 = ctx1.fork()
+        ctx2.add_constraint_ast(x == 42)
+
+        # ctx2 is constrained to 42
+        assert ctx2.eval(x) == 42
+
+        # ctx1 still has the wider range
+        val = ctx1.eval(x)
+        assert 0 <= val <= 100
+
+    def test_solver_multiple_variables(self):
+        """Solver handles multiple independent symbolic variables."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        y = claripy.BVS("y", 32)
+        ctx.add_constraint_ast(x >= 30)
+        ctx.add_constraint_ast(x <= 50)
+        ctx.add_constraint_ast(y >= 60)
+        ctx.add_constraint_ast(y <= 80)
+
+        assert ctx.satisfiable()
+        vx = ctx.eval(x)
+        vy = ctx.eval(y)
+        assert 30 <= vx <= 50
+        assert 60 <= vy <= 80
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustStateRegisters:
+    """Tests for register operations on RustSimState."""
+
+    def test_register_set_get(self):
+        """Set and get multiple registers."""
+        state = RustSimState("amd64")
+        state.set_register("rax", 0x1234)
+        state.set_register("rbx", 0x5678)
+        state.set_register("rcx", 0xABCD)
+
+        assert state.get_register("rax") == 0x1234
+        assert state.get_register("rbx") == 0x5678
+        assert state.get_register("rcx") == 0xABCD
+
+    def test_register_fork_isolation(self):
+        """Forked states have independent registers."""
+        state1 = RustSimState("amd64")
+        state1.set_register("rax", 100)
+
+        state2 = state1.fork()
+        state2.set_register("rax", 200)
+
+        assert state1.get_register("rax") == 100
+        assert state2.get_register("rax") == 200
+
+    def test_pc_set_get(self):
+        """PC property works correctly."""
+        state = RustSimState("amd64")
+        state.pc = 0xDEADBEEF
+        assert state.pc == 0xDEADBEEF
+
+    def test_state_id_unique(self):
+        """Each state has a unique ID."""
+        s1 = RustSimState("amd64")
+        s2 = RustSimState("amd64")
+        s3 = s1.fork()
+        ids = {s1.state_id, s2.state_id, s3.state_id}
+        assert len(ids) == 3, "State IDs should be unique"
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestSerializeIRSB:
+    """Tests for IRSB serialization (used in lift callbacks)."""
+
+    @pytest.fixture
+    def fauxware_project(self):
+        """Load fauxware test binary."""
+        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
+        if not os.path.exists(binary_path):
+            pytest.skip("fauxware binary not found")
+        return angr.Project(binary_path, auto_load_libs=False)
+
+    def test_serialize_basic_block(self, fauxware_project):
+        """Serializing a basic block produces valid JSON."""
+        import json
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Lift a block
+        block = fauxware_project.factory.block(fauxware_project.entry)
+        irsb = block.vex
+
+        # Serialize
+        result = mgr._serialize_irsb(irsb)
+        data = json.loads(result)
+
+        assert 'addr' in data
+        assert 'statements' in data
+        assert 'next' in data
+        assert 'jumpkind' in data
+        assert 'tyenv' in data
+        assert len(data['statements']) > 0
+
+    def test_serialize_roundtrip_consistency(self, fauxware_project):
+        """Serializing the same block twice produces identical output."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        block = fauxware_project.factory.block(fauxware_project.entry)
+        irsb = block.vex
+
+        result1 = mgr._serialize_irsb(irsb)
+        result2 = mgr._serialize_irsb(irsb)
+        assert result1 == result2
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestExplorationIntegration:
+    """Integration tests with real binaries."""
+
+    @pytest.fixture
+    def fauxware_project(self):
+        """Load fauxware test binary."""
+        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
+        if not os.path.exists(binary_path):
+            pytest.skip("fauxware binary not found")
+        return angr.Project(binary_path, auto_load_libs=False)
+
+    def test_explore_with_max_steps(self, fauxware_project):
+        """Exploration respects max_steps limit."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed, max_steps=10)
+
+        # Should stop before finding (10 steps is too few for fauxware)
+        # But should not crash
+        stats = mgr.stats
+        assert stats['ffi_crossings'] > 0
+
+    def test_explore_finds_correct_state(self, fauxware_project):
+        """Full exploration finds the expected state."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+
+        assert len(mgr.found) > 0, "Should find at least one state"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
