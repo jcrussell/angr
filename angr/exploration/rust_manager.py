@@ -114,12 +114,16 @@ class RustExplorationManager(
         self,
         project: "angr.Project",
         active_states: Optional[list] = None,
+        save_unconstrained: bool = False,
+        **kwargs,
     ):
         """Initialize the Rust exploration manager.
 
         Args:
             project: angr Project for the binary.
             active_states: Optional list of initial angr SimStates.
+            save_unconstrained: If True, save states with unconstrained IP
+                to the 'unconstrained' stash instead of dropping them.
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
@@ -131,6 +135,7 @@ class RustExplorationManager(
             )
 
         self._project = project
+        self._save_unconstrained = save_unconstrained
         is_le = project.arch.memory_endness == 'Iend_LE'
         self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
 
@@ -2054,6 +2059,13 @@ class RustExplorationManager(
                 steps_taken += 1
             else:
                 steps_taken += max(1, event.steps_taken)
+
+            # Drop unconstrained states if save_unconstrained=False
+            if not self._save_unconstrained:
+                try:
+                    self._rust_mgr.clear_stash('unconstrained')
+                except Exception:
+                    pass
 
             # Terminal states (avoid/pruned/deadended) are now dropped immediately
             # in Rust (drop_terminal_states=true), so no periodic cleanup needed.

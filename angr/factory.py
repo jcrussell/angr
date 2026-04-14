@@ -243,7 +243,9 @@ class AngrObjectFactory:
 
         if use_rust_engine:
             from angr.exploration import RustExplorationManager
-            return RustExplorationManager(self.project, active_states=thing)
+            save_unc = kwargs.pop('save_unconstrained', False)
+            return RustExplorationManager(self.project, active_states=thing,
+                                          save_unconstrained=save_unc)
 
         return SimulationManager(self.project, active_states=thing, **kwargs)
 
