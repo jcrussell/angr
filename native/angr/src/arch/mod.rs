@@ -106,6 +106,13 @@ impl RegisterFile {
 
     /// Read a register value by offset and size.
     pub fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
+        // Debug trace for ecx/cx register reads
+        if offset == 12 {
+            eprintln!("[REG_GET] offset=12 size={} symbolic_keys={:?} symbolic_at_12={}",
+                size,
+                self.symbolic.keys().filter(|&&k| k >= 8 && k <= 16).collect::<Vec<_>>(),
+                self.symbolic.get(&12).map(|v| format!("width={} sym={}", v.width(), v.is_symbolic())).unwrap_or("none".to_string()));
+        }
         // Check for symbolic value at this exact offset
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
@@ -114,6 +121,42 @@ impl RegisterFile {
             // Partial read: extract low bytes from wider symbolic value
             if sym.width() > size * 8 {
                 return sym.extract(size * 8 - 1, 0, ctx);
+            }
+            // Wider read of narrower symbolic: e.g., reading ecx (32-bit) when
+            // cx (16-bit) was written symbolically. Compose the symbolic low part
+            // with the concrete high bytes from the data array.
+            if sym.width() < size * 8 {
+                let sym_bytes = sym.width() / 8;
+                let remaining_offset = offset + sym_bytes;
+                let remaining_bytes = size - sym_bytes;
+                let remaining_start = remaining_offset as usize;
+                let remaining_end = remaining_start + remaining_bytes as usize;
+
+                if remaining_end <= self.data.len() {
+                    // Check if the upper portion also has a symbolic value
+                    let upper = if let Some(upper_sym) = self.symbolic.get(&remaining_offset) {
+                        if upper_sym.width() == remaining_bytes * 8 {
+                            upper_sym.clone()
+                        } else {
+                            // Read concrete upper bytes
+                            let mut v: u128 = 0;
+                            for (i, &byte) in self.data[remaining_start..remaining_end].iter().enumerate() {
+                                v |= (byte as u128) << (i * 8);
+                            }
+                            RustBV::concrete(v, remaining_bytes * 8)
+                        }
+                    } else {
+                        // Read concrete upper bytes
+                        let mut v: u128 = 0;
+                        for (i, &byte) in self.data[remaining_start..remaining_end].iter().enumerate() {
+                            v |= (byte as u128) << (i * 8);
+                        }
+                        RustBV::concrete(v, remaining_bytes * 8)
+                    };
+
+                    // Compose: upper (MSB) concat sym (LSB) — little-endian layout
+                    return upper.concat(sym, ctx);
+                }
             }
         }
 
@@ -126,6 +169,46 @@ impl RegisterFile {
                 let bit_lo = (offset - sym_offset) * 8;
                 let bit_hi = bit_lo + size * 8 - 1;
                 return sym_val.extract(bit_hi, bit_lo, ctx);
+            }
+        }
+
+        // Check if any symbolic sub-register falls within our read range
+        // E.g., reading eax (offset=8, size=4) when al (offset=8, size=1) is symbolic
+        // or reading eax when ah (offset=9, size=1) is symbolic
+        for (&sym_offset, sym_val) in &self.symbolic {
+            let sym_size = sym_val.width() / 8;
+            if sym_offset >= offset && sym_offset + sym_size <= offset + size {
+                // This symbolic sub-register is contained within our read range
+                // Build the result by composing symbolic and concrete parts
+                let mut parts: Vec<RustBV> = Vec::new();
+                let mut pos = offset;
+                while pos < offset + size {
+                    if let Some(sub_sym) = self.symbolic.get(&pos) {
+                        let sub_size = sub_sym.width() / 8;
+                        if pos + sub_size <= offset + size {
+                            parts.push(sub_sym.clone());
+                            pos += sub_size;
+                            continue;
+                        }
+                    }
+                    // Concrete byte
+                    let idx = pos as usize;
+                    if idx < self.data.len() {
+                        parts.push(RustBV::concrete(self.data[idx] as u128, 8));
+                    } else {
+                        parts.push(RustBV::zero(8));
+                    }
+                    pos += 1;
+                }
+                // Compose parts: in little-endian, lower offset = LSB
+                // Concat builds MSB first, so we reverse
+                if !parts.is_empty() {
+                    let mut result = parts.pop().unwrap();
+                    while let Some(part) = parts.pop() {
+                        result = result.concat(&part, ctx);
+                    }
+                    return result;
+                }
             }
         }
 
@@ -149,9 +232,19 @@ impl RegisterFile {
     pub fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;
 
+        // Debug trace for ecx/cx register writes
+        if offset == 12 || (offset >= 8 && offset <= 15 && offset + size > 12) {
+            eprintln!("[REG_PUT] offset={} size={} sym={} val={}",
+                offset, size, value.is_symbolic(),
+                value.as_u64().map(|v| format!("0x{:x}", v)).unwrap_or("symbolic".to_string()));
+        }
+
         // If symbolic, store in symbolic map
         if value.is_symbolic() {
             self.symbolic.insert(offset, value);
+            // Also update concrete bytes to zero (so reads of wider
+            // registers that include non-symbolic parts get correct
+            // concrete values for the non-overlapping parts)
             return;
         }
 
@@ -164,8 +257,16 @@ impl RegisterFile {
                 for i in 0..size as usize {
                     self.data[start + i] = (v >> (i * 8)) as u8;
                 }
-                // Clear any symbolic overlay
+                // Clear any symbolic overlay at this offset
                 self.symbolic.remove(&offset);
+                // Also remove any narrower symbolic overlays within our range
+                let overlapping: Vec<u32> = self.symbolic.keys()
+                    .filter(|&&k| k >= offset && k < offset + size)
+                    .copied()
+                    .collect();
+                for k in overlapping {
+                    self.symbolic.remove(&k);
+                }
             }
         }
     }
