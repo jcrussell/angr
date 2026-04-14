@@ -132,6 +132,9 @@ pub struct RustSimState {
     stdout_buffer: Vec<u8>,
     /// Whether stdout_buffer has been written to (dirty flag).
     stdout_dirty: bool,
+    /// Heap brk pointer — simple bump allocator for malloc/calloc.
+    /// Default: 0xC0000000 (matching angr's DEFAULT_HEAP_LOCATION).
+    heap_brk: u64,
 }
 
 impl RustSimState {
@@ -176,6 +179,7 @@ impl RustSimState {
             arch,
             stdout_buffer: Vec::new(),
             stdout_dirty: false,
+            heap_brk: 0xC000_0000,
         })
     }
 
@@ -205,6 +209,7 @@ impl RustSimState {
             arch,
             stdout_buffer: Vec::new(),
             stdout_dirty: false,
+            heap_brk: 0xC000_0000,
         }
     }
 
@@ -244,6 +249,7 @@ impl RustSimState {
             arch,
             stdout_buffer: Vec::new(),
             stdout_dirty: false,
+            heap_brk: 0xC000_0000,
         })
     }
 
@@ -299,6 +305,20 @@ impl RustSimState {
     /// Check if stdout has been written to.
     pub fn has_stdout(&self) -> bool {
         self.stdout_dirty
+    }
+
+    /// Get the current heap brk pointer.
+    pub fn heap_brk(&self) -> u64 {
+        self.heap_brk
+    }
+
+    /// Bump-allocate from the heap. Returns the address of the allocation.
+    /// Aligns size up to 16 bytes (matching angr's SimHeapBrk).
+    pub fn heap_alloc(&mut self, size: u64) -> u64 {
+        let aligned = (size + 15) & !15; // round up to 16
+        let addr = self.heap_brk;
+        self.heap_brk = addr.wrapping_add(aligned);
+        addr
     }
 
     /// Get the history (basic block addresses visited).
@@ -595,6 +615,7 @@ impl RustSimState {
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
             stdout_dirty: self.stdout_dirty,
+            heap_brk: self.heap_brk,
         }
     }
 
@@ -619,6 +640,7 @@ impl RustSimState {
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
             stdout_dirty: self.stdout_dirty,
+            heap_brk: self.heap_brk,
         }
     }
 
@@ -643,6 +665,7 @@ impl RustSimState {
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
             stdout_dirty: self.stdout_dirty,
+            heap_brk: self.heap_brk,
         }
     }
 
@@ -675,6 +698,7 @@ impl RustSimState {
             track_history: self.track_history,
             stdout_buffer: self.stdout_buffer.clone(),
             stdout_dirty: self.stdout_dirty,
+            heap_brk: self.heap_brk,
         }
     }
 

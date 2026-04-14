@@ -26,6 +26,9 @@ pub mod puts;
 pub mod printf;
 pub mod exit;
 pub mod rand;
+pub mod malloc;
+pub mod read;
+pub mod write;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -165,6 +168,16 @@ impl NativeProcedureRegistry {
         // registry.register(Arc::new(exit::NativeAbort));
         registry.register(Arc::new(rand::NativeRand));
         registry.register(Arc::new(rand::NativeSrand));
+        // Heap procedures (bump allocator, matching SimHeapBrk)
+        registry.register(Arc::new(malloc::NativeMalloc));
+        registry.register(Arc::new(malloc::NativeFree));
+        registry.register(Arc::new(malloc::NativeCalloc));
+        registry.register(Arc::new(malloc::NativeRealloc));
+        // I/O procedures: NOT registered by default — they only handle
+        // stdin/stdout natively, and the interaction with Python's posix
+        // plugin for fd tracking requires careful coordination.
+        // registry.register(Arc::new(read::NativeRead));
+        // registry.register(Arc::new(write::NativeWrite));
 
         registry
     }

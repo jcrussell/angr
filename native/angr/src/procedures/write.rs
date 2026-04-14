@@ -1,0 +1,84 @@
+//! Native write implementation.
+//!
+//! Handles write(fd, buf, count) for stdout (fd=1).
+//! Other file descriptors fall back to Python.
+
+use crate::state::RustSimState;
+use crate::symbolic::RustBV;
+use super::{NativeSimProcedure, ProcedureError};
+
+const MAX_WRITE_SIZE: u64 = 4096;
+
+/// Native write implementation.
+///
+/// ```c
+/// ssize_t write(int fd, const void *buf, size_t count);
+/// ```
+///
+/// Only handles fd=1 (stdout) natively. Other fds fall back to Python.
+pub struct NativeWrite;
+
+impl NativeSimProcedure for NativeWrite {
+    fn name(&self) -> &'static str {
+        "write"
+    }
+
+    fn num_args(&self) -> usize {
+        3
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let fd = args[0].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("fd".to_string())
+        })?;
+
+        // Only handle stdout natively
+        if fd != 1 {
+            return Err(ProcedureError::Other(format!(
+                "write to fd={} not supported natively", fd
+            )));
+        }
+
+        let buf = args[1].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("buf".to_string())
+        })?;
+        let count = args[2].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("count".to_string())
+        })?;
+
+        if count > MAX_WRITE_SIZE {
+            return Err(ProcedureError::Other(format!(
+                "write count {} exceeds limit", count
+            )));
+        }
+
+        // Read bytes from memory and append to stdout buffer
+        let mut bytes = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            match state.memory_load(buf.wrapping_add(i), 1) {
+                Ok(bv) => {
+                    if let Some(val) = bv.as_u64() {
+                        bytes.push(val as u8);
+                    } else {
+                        // Symbolic byte — can't handle natively
+                        return Err(ProcedureError::SymbolicArgument(
+                            format!("symbolic byte at buf+{}", i)
+                        ));
+                    }
+                }
+                Err(e) => {
+                    return Err(ProcedureError::MemoryError(e.to_string()));
+                }
+            }
+        }
+
+        state.write_stdout(&bytes);
+
+        let bits = state.arch().bits();
+        Ok(Some(RustBV::concrete(count as u128, bits)))
+    }
+}
