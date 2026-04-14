@@ -828,5 +828,89 @@ class TestExplorationIntegration:
         # Should terminate quickly due to timeout (not find the solution)
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestMultiArchSupport:
+    """Tests for MIPS, ARM, and big-endian architecture support."""
+
+    def test_mips32_state_creation(self):
+        """MIPS32 state creation and register operations."""
+        state = RustSimState("mips32")
+        state.set_register("v0", 0xDEAD)
+        state.set_register("a0", 0xBEEF)
+        state.set_register("sp", 0x7FFF0000)
+
+        assert state.get_register("v0") == 0xDEAD
+        assert state.get_register("a0") == 0xBEEF
+        assert state.get_register("sp") == 0x7FFF0000
+
+    def test_mips32_exploration_manager(self):
+        """MIPS32 exploration manager creation and stash ops."""
+        mgr = _RustExplorationManager("mips32")
+        assert mgr.arch == "mips32"
+
+        sid = mgr.create_state("active")
+        assert mgr.active_count() == 1
+        mgr.set_find_addrs([0x400000])
+        mgr.set_avoid_addrs([0x400100])
+
+    def test_mips32_big_endian(self):
+        """MIPS32 big-endian state creation."""
+        state = RustSimState("mips32", little_endian=False)
+        state.set_register("v0", 0x12345678)
+        assert state.get_register("v0") == 0x12345678
+
+    def test_mips32_fork_isolation(self):
+        """MIPS32 forked states have independent registers."""
+        state1 = RustSimState("mips32")
+        state1.set_register("t0", 100)
+        state2 = state1.fork()
+        state2.set_register("t0", 200)
+        assert state1.get_register("t0") == 100
+        assert state2.get_register("t0") == 200
+
+    def test_arm_state_creation(self):
+        """ARM32 state creation and register operations."""
+        state = RustSimState("arm")
+        state.set_register("r0", 0x1234)
+        state.set_register("r1", 0x5678)
+        state.set_register("sp", 0x7FFF0000)
+        state.set_register("lr", 0x8000)
+
+        assert state.get_register("r0") == 0x1234
+        assert state.get_register("r1") == 0x5678
+        assert state.get_register("sp") == 0x7FFF0000
+        assert state.get_register("lr") == 0x8000
+
+    def test_arm_exploration_manager(self):
+        """ARM exploration manager creation."""
+        mgr = _RustExplorationManager("arm")
+        assert mgr.arch == "arm"
+        sid = mgr.create_state("active")
+        assert mgr.active_count() == 1
+
+    def test_arm64_state_creation(self):
+        """ARM64/AArch64 state creation and register operations."""
+        state = RustSimState("aarch64")
+        state.set_register("x0", 0xDEADBEEF)
+        state.set_register("x1", 0xCAFEBABE)
+        state.set_register("sp", 0x7FFFFFFFE000)
+        assert state.get_register("x0") == 0xDEADBEEF
+        assert state.get_register("x1") == 0xCAFEBABE
+        assert state.get_register("sp") == 0x7FFFFFFFE000
+
+    def test_x86_state_creation(self):
+        """x86 (32-bit) state creation and register operations."""
+        state = RustSimState("x86")
+        state.set_register("eax", 0xDEADBEEF)
+        state.set_register("esp", 0x7FFF0000)
+        assert state.get_register("eax") == 0xDEADBEEF
+        assert state.get_register("esp") == 0x7FFF0000
+
+    def test_unsupported_arch_raises(self):
+        """Unknown architecture raises an error."""
+        with pytest.raises(Exception):
+            RustSimState("pdp11")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
