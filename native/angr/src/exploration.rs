@@ -117,9 +117,10 @@ pub struct ExplorationEvent {
 }
 
 impl ExplorationEvent {
-    fn found(found_count: usize, active_count: usize, steps: u64) -> Self {
+    /// Base constructor with common fields; all Optional fields default to None.
+    fn base(event_type: &str, found_count: usize, active_count: usize, steps: u64) -> Self {
         ExplorationEvent {
-            event_type: "found".to_string(),
+            event_type: event_type.to_string(),
             found_count,
             active_count,
             steps_taken: steps,
@@ -134,161 +135,69 @@ impl ExplorationEvent {
             branch_false_target: None,
             branch_condition_id: None,
         }
+    }
+
+    fn found(found_count: usize, active_count: usize, steps: u64) -> Self {
+        Self::base("found", found_count, active_count, steps)
     }
 
     fn deadended(found_count: usize, active_count: usize, steps: u64) -> Self {
-        ExplorationEvent {
-            event_type: "deadended".to_string(),
-            found_count,
-            active_count,
-            steps_taken: steps,
-            callback_state_id: None,
-            callback_reason: None,
-            callback_addr: None,
-            callback_name: None,
-            callback_syscall_num: None,
-            callback_return_addr: None,
-            callback_num_args: None,
-            branch_true_target: None,
-            branch_false_target: None,
-            branch_condition_id: None,
-        }
+        Self::base("deadended", found_count, active_count, steps)
     }
 
     fn active_empty(found_count: usize, steps: u64) -> Self {
-        ExplorationEvent {
-            event_type: "active_empty".to_string(),
-            found_count,
-            active_count: 0,
-            steps_taken: steps,
-            callback_state_id: None,
-            callback_reason: None,
-            callback_addr: None,
-            callback_name: None,
-            callback_syscall_num: None,
-            callback_return_addr: None,
-            callback_num_args: None,
-            branch_true_target: None,
-            branch_false_target: None,
-            branch_condition_id: None,
-        }
+        Self::base("active_empty", found_count, 0, steps)
     }
 
     fn step_complete(found_count: usize, active_count: usize, steps: u64) -> Self {
-        ExplorationEvent {
-            event_type: "step_complete".to_string(),
-            found_count,
-            active_count,
-            steps_taken: steps,
-            callback_state_id: None,
-            callback_reason: None,
-            callback_addr: None,
-            callback_name: None,
-            callback_syscall_num: None,
-            callback_return_addr: None,
-            callback_num_args: None,
-            branch_true_target: None,
-            branch_false_target: None,
-            branch_condition_id: None,
-        }
+        Self::base("step_complete", found_count, active_count, steps)
     }
 
     fn need_simprocedure(
-        state_id: u64,
-        addr: u64,
-        name: String,
-        num_args: usize,
-        return_addr: u64,
-        found_count: usize,
-        active_count: usize,
-        steps: u64,
+        state_id: u64, addr: u64, name: String, num_args: usize, return_addr: u64,
+        found_count: usize, active_count: usize, steps: u64,
     ) -> Self {
         ExplorationEvent {
-            event_type: "need_callback".to_string(),
-            found_count,
-            active_count,
-            steps_taken: steps,
             callback_state_id: Some(state_id),
             callback_reason: Some("simprocedure".to_string()),
             callback_addr: Some(addr),
             callback_name: Some(name),
-            callback_syscall_num: None,
             callback_return_addr: Some(return_addr),
             callback_num_args: Some(num_args),
-            branch_true_target: None,
-            branch_false_target: None,
-            branch_condition_id: None,
+            ..Self::base("need_callback", found_count, active_count, steps)
         }
     }
 
     fn need_syscall(
-        state_id: u64,
-        syscall_num: u64,
-        found_count: usize,
-        active_count: usize,
-        steps: u64,
+        state_id: u64, syscall_num: u64,
+        found_count: usize, active_count: usize, steps: u64,
     ) -> Self {
         ExplorationEvent {
-            event_type: "need_callback".to_string(),
-            found_count,
-            active_count,
-            steps_taken: steps,
             callback_state_id: Some(state_id),
             callback_reason: Some("syscall".to_string()),
-            callback_addr: None,
-            callback_name: None,
             callback_syscall_num: Some(syscall_num),
-            callback_return_addr: None,
-            callback_num_args: None,
-            branch_true_target: None,
-            branch_false_target: None,
-            branch_condition_id: None,
+            ..Self::base("need_callback", found_count, active_count, steps)
         }
     }
 
     fn need_symbolic_branch(
-        state_id: u64,
-        condition_id: u64,
-        true_target: u64,
-        false_target: u64,
-        found_count: usize,
-        active_count: usize,
-        steps: u64,
+        state_id: u64, condition_id: u64, true_target: u64, false_target: u64,
+        found_count: usize, active_count: usize, steps: u64,
     ) -> Self {
         ExplorationEvent {
-            event_type: "need_callback".to_string(),
-            found_count,
-            active_count,
-            steps_taken: steps,
             callback_state_id: Some(state_id),
             callback_reason: Some("symbolic_branch".to_string()),
-            callback_addr: None,
-            callback_name: None,
-            callback_syscall_num: None,
-            callback_return_addr: None,
-            callback_num_args: None,
             branch_true_target: Some(true_target),
             branch_false_target: Some(false_target),
             branch_condition_id: Some(condition_id),
+            ..Self::base("need_callback", found_count, active_count, steps)
         }
     }
 
     fn error(message: String, found_count: usize, active_count: usize, steps: u64) -> Self {
         ExplorationEvent {
-            event_type: "errored".to_string(),
-            found_count,
-            active_count,
-            steps_taken: steps,
-            callback_state_id: None,
             callback_reason: Some(message),
-            callback_addr: None,
-            callback_name: None,
-            callback_syscall_num: None,
-            callback_return_addr: None,
-            callback_num_args: None,
-            branch_true_target: None,
-            branch_false_target: None,
-            branch_condition_id: None,
+            ..Self::base("errored", found_count, active_count, steps)
         }
     }
 }
