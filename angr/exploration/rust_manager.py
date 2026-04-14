@@ -1562,195 +1562,168 @@ class RustExplorationManager(
             l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
 
 
+    # Field descriptor types for table-driven serialization:
+    #   'val'  — copy attribute value directly (int, str)
+    #   'str'  — convert attribute to string via str()
+    #   'expr' — serialize as VEX expression (recursive)
+    #   'exprs'— serialize list of VEX expressions
+    _EXPR_FIELDS = {
+        # 'val' fields, 'str' fields, 'expr' fields
+        'RdTmp': (('tmp',), (), ()),
+        'Get':   (('offset',), ('ty',), ()),
+        'Load':  ((), ('ty', 'end'), ('addr',)),
+        'Unop':  None,  # special: singular 'arg' not 'args'
+        'Binop': None,  # special: has 'op' + 'args'
+        'Triop': None,  # same pattern
+        'Qop':   None,  # same pattern
+        'ITE':   ((), (), ('cond', 'iftrue', 'iffalse')),
+    }
+
+    _STMT_FIELDS = {
+        # (val_fields, str_fields, expr_fields)
+        'IMark':  (('addr', 'len', 'delta'), (), ()),
+        'WrTmp':  (('tmp',), (), ('data',)),
+        'Put':    (('offset',), (), ('data',)),
+        'Store':  ((), ('end',), ('addr', 'data')),
+        'StoreG': ((), ('end',), ('addr', 'data', 'guard')),
+        'AbiHint': (('len',), (), ('base', 'nia')),
+        'MBE':    ((), (), ()),
+        'NoOp':   ((), (), ()),
+    }
+
+    _CONST_TYPES = frozenset(('U1', 'U8', 'U16', 'U32', 'U64', 'U128',
+                               'F32', 'F32i', 'F64', 'F64i', 'V128', 'V256'))
+
     def _serialize_irsb(self, irsb) -> str:
         """Serialize a pyvex IRSB to JSON."""
         import json
 
+        _MASK64 = 0xFFFFFFFFFFFFFFFF
+
+        def serialize_const(con):
+            """Serialize a pyvex constant (Ico_ prefix)."""
+            name = type(con).__name__
+            if name == 'V128':
+                val = con.value if isinstance(con.value, int) else 0
+                return {'tag': 'Ico_V128', 'low': val & _MASK64, 'high': (val >> 64) & _MASK64}
+            if name == 'V256':
+                val = con.value if isinstance(con.value, int) else 0
+                return {'tag': 'Ico_V256', 'value': [
+                    val & _MASK64, (val >> 64) & _MASK64,
+                    (val >> 128) & _MASK64, (val >> 192) & _MASK64]}
+            return {'tag': f'Ico_{name}', 'value': con.value}
+
+        def serialize_descr(descr):
+            """Serialize a VEX array descriptor (GetI/PutI)."""
+            return {'base': descr.base, 'elemTy': str(descr.elemTy), 'nElems': descr.nElems}
+
+        def serialize_cee(cee):
+            """Serialize a callee descriptor (CCall/Dirty)."""
+            return {'name': cee.name if hasattr(cee, 'name') else str(cee),
+                    'addr': 0, 'mcx_mask': getattr(cee, 'mcx_mask', 0)}
+
         def serialize_expr(expr):
             if expr is None:
                 return None
-
-            # Handle primitive types directly
             if isinstance(expr, (int, float, str, bool)):
                 return expr
 
-            # Get the class name for type checking
-            expr_name = type(expr).__name__
+            name = type(expr).__name__
 
-            # Handle direct constants (e.g., pyvex.const.U32)
-            # These appear in Exit.dst and need Ico_ prefix, not Iex_
-            if hasattr(expr, 'value') and expr_name in ('U1', 'U8', 'U16', 'U32', 'U64', 'U128',
-                                                         'F32', 'F32i', 'F64', 'F64i', 'V128', 'V256'):
-                if expr_name == 'V128':
-                    # Rust expects {low: u64, high: u64}
-                    val = expr.value if isinstance(expr.value, int) else 0
-                    return {
-                        'tag': 'Ico_V128',
-                        'low': val & 0xFFFFFFFFFFFFFFFF,
-                        'high': (val >> 64) & 0xFFFFFFFFFFFFFFFF,
-                    }
-                elif expr_name == 'V256':
-                    val = expr.value if isinstance(expr.value, int) else 0
-                    return {
-                        'tag': 'Ico_V256',
-                        'value': [
-                            val & 0xFFFFFFFFFFFFFFFF,
-                            (val >> 64) & 0xFFFFFFFFFFFFFFFF,
-                            (val >> 128) & 0xFFFFFFFFFFFFFFFF,
-                            (val >> 192) & 0xFFFFFFFFFFFFFFFF,
-                        ]
-                    }
-                return {
-                    'tag': f'Ico_{expr_name}',
-                    'value': expr.value
-                }
+            # Direct constants (Ico_ prefix)
+            if hasattr(expr, 'value') and name in self._CONST_TYPES:
+                return serialize_const(expr)
 
-            # Rust expects VEX expression tags with Iex_ prefix
-            result = {'tag': f'Iex_{expr_name}'}
+            result = {'tag': f'Iex_{name}'}
 
-            # Handle Const expressions
+            # Const expression — wraps a constant
             if hasattr(expr, 'con'):
                 con = expr.con
-                con_name = type(con).__name__
-                # Serialize the constant with the right format
-                con_result = serialize_expr(con)
-                if con_result and isinstance(con_result, dict):
-                    result['con'] = con_result
-                else:
-                    result['con'] = {
-                        'tag': f'Ico_{con_name}',
-                        'value': con.value if hasattr(con, 'value') else 0
-                    }
+                con_result = serialize_const(con) if hasattr(con, 'value') else {
+                    'tag': f'Ico_{type(con).__name__}', 'value': 0}
+                result['con'] = con_result
                 return result
 
-            # Handle RdTmp (read temporary)
-            if hasattr(expr, 'tmp') and not hasattr(expr, 'data'):
-                result['tmp'] = expr.tmp
+            # Table-driven common expressions
+            fields = self._EXPR_FIELDS.get(name)
+            if fields is not None:
+                val_f, str_f, expr_f = fields
+                for f in val_f:
+                    if hasattr(expr, f):
+                        result[f] = getattr(expr, f)
+                for f in str_f:
+                    if hasattr(expr, f):
+                        result[f] = str(getattr(expr, f))
+                for f in expr_f:
+                    if hasattr(expr, f):
+                        result[f] = serialize_expr(getattr(expr, f))
                 return result
 
-            # Handle Get (read register)
-            if expr_name == 'Get':
-                if hasattr(expr, 'offset'):
-                    result['offset'] = expr.offset
-                if hasattr(expr, 'ty'):
-                    result['ty'] = str(expr.ty)
-                return result
-
-            # Handle GetI (indexed get)
-            if expr_name == 'GetI':
-                if hasattr(expr, 'descr'):
-                    # Serialize descr as struct, not string - Rust expects {base, elemTy, nElems}
-                    result['descr'] = {
-                        'base': expr.descr.base,
-                        'elemTy': str(expr.descr.elemTy),
-                        'nElems': expr.descr.nElems,
-                    }
-                if hasattr(expr, 'ix'):
-                    result['ix'] = serialize_expr(expr.ix)
-                if hasattr(expr, 'bias'):
-                    result['bias'] = expr.bias
-                return result
-
-            # Handle Load expression
-            if expr_name == 'Load':
-                if hasattr(expr, 'addr'):
-                    result['addr'] = serialize_expr(expr.addr)
-                if hasattr(expr, 'ty'):
-                    result['ty'] = str(expr.ty)
-                if hasattr(expr, 'end'):
-                    result['end'] = str(expr.end)
-                return result
-
-            # Handle Unop (single argument)
-            if expr_name == 'Unop':
+            # Unop: singular 'arg' key
+            if name == 'Unop':
                 result['op'] = expr.op
-                if hasattr(expr, 'args') and len(expr.args) > 0:
-                    result['arg'] = serialize_expr(expr.args[0])  # singular 'arg', not 'args'
+                if hasattr(expr, 'args') and expr.args:
+                    result['arg'] = serialize_expr(expr.args[0])
                 return result
 
-            # Handle Binop, Triop, Qop (multiple arguments)
+            # Binop/Triop/Qop: 'op' + 'args' list
             if hasattr(expr, 'op'):
                 result['op'] = expr.op
                 if hasattr(expr, 'args'):
                     result['args'] = [serialize_expr(a) for a in expr.args]
                 return result
 
-            # Handle ITE (if-then-else)
-            if expr_name == 'ITE':
-                if hasattr(expr, 'cond'):
-                    result['cond'] = serialize_expr(expr.cond)
-                if hasattr(expr, 'iftrue'):
-                    result['iftrue'] = serialize_expr(expr.iftrue)
-                if hasattr(expr, 'iffalse'):
-                    result['iffalse'] = serialize_expr(expr.iffalse)
+            # GetI: descr + ix + bias
+            if name == 'GetI':
+                if hasattr(expr, 'descr'):
+                    result['descr'] = serialize_descr(expr.descr)
+                if hasattr(expr, 'ix'):
+                    result['ix'] = serialize_expr(expr.ix)
+                if hasattr(expr, 'bias'):
+                    result['bias'] = expr.bias
                 return result
 
-            # Handle CCall (helper function calls)
-            if expr_name == 'CCall':
+            # CCall: callee + retty + args
+            if name == 'CCall':
                 if hasattr(expr, 'cee'):
-                    cee = expr.cee
-                    result['cee'] = {
-                        'name': cee.name if hasattr(cee, 'name') else str(cee),
-                        'addr': 0,
-                        'mcx_mask': getattr(cee, 'mcx_mask', 0),
-                    }
+                    result['cee'] = serialize_cee(expr.cee)
                 if hasattr(expr, 'retty'):
                     result['retty'] = str(expr.retty)
                 if hasattr(expr, 'args'):
                     result['args'] = [serialize_expr(a) for a in expr.args]
                 return result
 
-            # Fallback: try common attributes
-            if hasattr(expr, 'offset'):
-                result['offset'] = expr.offset
+            # Fallback
+            for f in ('offset', 'tmp'):
+                if hasattr(expr, f):
+                    result[f] = getattr(expr, f)
             if hasattr(expr, 'ty'):
                 result['ty'] = str(expr.ty)
-            if hasattr(expr, 'tmp'):
-                result['tmp'] = expr.tmp
-
             return result
 
         def serialize_stmt(stmt):
-            # Rust expects VEX statement tags with Ist_ prefix
-            stmt_name = type(stmt).__name__
-            result = {'tag': f'Ist_{stmt_name}'}
-            tag = stmt_name  # Use plain name for our checks below
+            name = type(stmt).__name__
+            result = {'tag': f'Ist_{name}'}
 
-            # IMark: instruction marker
-            if tag == 'IMark':
-                if hasattr(stmt, 'addr'):
-                    result['addr'] = stmt.addr  # This is an int for IMark
-                if hasattr(stmt, 'len'):
-                    result['len'] = stmt.len
-                if hasattr(stmt, 'delta'):
-                    result['delta'] = stmt.delta
+            # Table-driven common statements
+            fields = self._STMT_FIELDS.get(name)
+            if fields is not None:
+                val_f, str_f, expr_f = fields
+                for f in val_f:
+                    if hasattr(stmt, f):
+                        result[f] = getattr(stmt, f)
+                for f in str_f:
+                    if hasattr(stmt, f):
+                        result[f] = str(getattr(stmt, f))
+                for f in expr_f:
+                    if hasattr(stmt, f):
+                        result[f] = serialize_expr(getattr(stmt, f))
                 return result
 
-            # WrTmp: write to temporary
-            if tag == 'WrTmp':
-                if hasattr(stmt, 'tmp'):
-                    result['tmp'] = stmt.tmp
-                if hasattr(stmt, 'data'):
-                    result['data'] = serialize_expr(stmt.data)
-                return result
-
-            # Put: write to register
-            if tag == 'Put':
-                if hasattr(stmt, 'offset'):
-                    result['offset'] = stmt.offset
-                if hasattr(stmt, 'data'):
-                    result['data'] = serialize_expr(stmt.data)
-                return result
-
-            # PutI: indexed put
-            if tag == 'PutI':
+            # PutI: descr + ix + bias + data
+            if name == 'PutI':
                 if hasattr(stmt, 'descr'):
-                    # Serialize descr as struct, not string - Rust expects {base, elemTy, nElems}
-                    result['descr'] = {
-                        'base': stmt.descr.base,
-                        'elemTy': str(stmt.descr.elemTy),
-                        'nElems': stmt.descr.nElems,
-                    }
+                    result['descr'] = serialize_descr(stmt.descr)
                 if hasattr(stmt, 'ix'):
                     result['ix'] = serialize_expr(stmt.ix)
                 if hasattr(stmt, 'bias'):
@@ -1759,57 +1732,25 @@ class RustExplorationManager(
                     result['data'] = serialize_expr(stmt.data)
                 return result
 
-            # Store: write to memory
-            if tag == 'Store':
-                if hasattr(stmt, 'addr'):
-                    result['addr'] = serialize_expr(stmt.addr)  # addr is an expression!
-                if hasattr(stmt, 'data'):
-                    result['data'] = serialize_expr(stmt.data)
-                if hasattr(stmt, 'end'):
-                    result['end'] = str(stmt.end)
-                return result
-
-            # StoreG: guarded store
-            if tag == 'StoreG':
-                if hasattr(stmt, 'addr'):
-                    result['addr'] = serialize_expr(stmt.addr)
-                if hasattr(stmt, 'data'):
-                    result['data'] = serialize_expr(stmt.data)
-                if hasattr(stmt, 'guard'):
-                    result['guard'] = serialize_expr(stmt.guard)
-                if hasattr(stmt, 'end'):
-                    result['end'] = str(stmt.end)
-                return result
-
             # LoadG: guarded load
-            if tag == 'LoadG':
-                if hasattr(stmt, 'dst'):
-                    result['dst'] = stmt.dst
-                if hasattr(stmt, 'addr'):
-                    result['addr'] = serialize_expr(stmt.addr)
-                if hasattr(stmt, 'alt'):
-                    result['alt'] = serialize_expr(stmt.alt)
-                if hasattr(stmt, 'guard'):
-                    result['guard'] = serialize_expr(stmt.guard)
-                # Add missing cvt and end fields for Rust deserialization
-                if hasattr(stmt, 'cvt'):
-                    result['cvt'] = str(stmt.cvt)
-                if hasattr(stmt, 'end'):
-                    result['end'] = str(stmt.end)
+            if name == 'LoadG':
+                for f in ('dst',):
+                    if hasattr(stmt, f):
+                        result[f] = getattr(stmt, f)
+                for f in ('cvt', 'end'):
+                    if hasattr(stmt, f):
+                        result[f] = str(getattr(stmt, f))
+                for f in ('addr', 'alt', 'guard'):
+                    if hasattr(stmt, f):
+                        result[f] = serialize_expr(getattr(stmt, f))
                 return result
 
-            # Exit: conditional exit
-            if tag == 'Exit':
+            # Exit: guard + constant dst + jk + offsIP
+            if name == 'Exit':
                 if hasattr(stmt, 'guard'):
                     result['guard'] = serialize_expr(stmt.guard)
                 if hasattr(stmt, 'dst'):
-                    # Exit.dst is a constant, not an expression - Rust expects Ico_ format directly
-                    dst = stmt.dst
-                    type_name = type(dst).__name__
-                    result['dst'] = {
-                        'tag': f'Ico_{type_name}',
-                        'value': dst.value if hasattr(dst, 'value') else 0
-                    }
+                    result['dst'] = serialize_const(stmt.dst)
                 if hasattr(stmt, 'jk'):
                     result['jk'] = str(stmt.jk)
                 if hasattr(stmt, 'offsIP'):
@@ -1817,24 +1758,17 @@ class RustExplorationManager(
                 return result
 
             # CAS: compare-and-swap
-            if tag == 'CAS':
+            if name == 'CAS':
                 result['end'] = str(stmt.end) if hasattr(stmt, 'end') else "Iend_LE"
-                result['oldLo'] = stmt.oldLo if hasattr(stmt, 'oldLo') else 0
-                result['oldHi'] = stmt.oldHi if hasattr(stmt, 'oldHi') else None
-                if hasattr(stmt, 'addr'):
-                    result['addr'] = serialize_expr(stmt.addr)
-                if hasattr(stmt, 'dataLo'):
-                    result['dataLo'] = serialize_expr(stmt.dataLo)
-                if hasattr(stmt, 'dataHi'):
-                    result['dataHi'] = serialize_expr(stmt.dataHi)
-                if hasattr(stmt, 'expdLo'):
-                    result['expdLo'] = serialize_expr(stmt.expdLo)
-                if hasattr(stmt, 'expdHi'):
-                    result['expdHi'] = serialize_expr(stmt.expdHi)
+                result['oldLo'] = getattr(stmt, 'oldLo', 0)
+                result['oldHi'] = getattr(stmt, 'oldHi', None)
+                for f in ('addr', 'dataLo', 'dataHi', 'expdLo', 'expdHi'):
+                    if hasattr(stmt, f):
+                        result[f] = serialize_expr(getattr(stmt, f))
                 return result
 
             # LLSC: load-linked/store-conditional
-            if tag == 'LLSC':
+            if name == 'LLSC':
                 result['end'] = str(stmt.end) if hasattr(stmt, 'end') else "Iend_LE"
                 if hasattr(stmt, 'addr'):
                     result['addr'] = serialize_expr(stmt.addr)
@@ -1845,68 +1779,29 @@ class RustExplorationManager(
                 return result
 
             # Dirty: helper call with side effects
-            if tag == 'Dirty':
+            if name == 'Dirty':
                 if hasattr(stmt, 'cee'):
-                    cee = stmt.cee
-                    result['cee'] = {
-                        'name': cee.name if hasattr(cee, 'name') else str(cee),
-                        'addr': 0,
-                        'mcx_mask': getattr(cee, 'mcx_mask', 0),
-                    }
-                if hasattr(stmt, 'guard'):
-                    result['guard'] = serialize_expr(stmt.guard) if stmt.guard else None
-                else:
-                    result['guard'] = None
+                    result['cee'] = serialize_cee(stmt.cee)
+                result['guard'] = serialize_expr(stmt.guard) if hasattr(stmt, 'guard') and stmt.guard else None
                 if hasattr(stmt, 'args'):
                     result['args'] = [serialize_expr(a) for a in stmt.args]
-                if hasattr(stmt, 'tmp'):
-                    result['tmp'] = stmt.tmp
-                else:
-                    result['tmp'] = None
-                # Memory effect fields
+                result['tmp'] = getattr(stmt, 'tmp', None)
                 result['mFx'] = str(stmt.mFx) if hasattr(stmt, 'mFx') and stmt.mFx else "Ifx_None"
                 result['mAddr'] = serialize_expr(stmt.mAddr) if hasattr(stmt, 'mAddr') and stmt.mAddr else None
-                result['mSize'] = stmt.mSize if hasattr(stmt, 'mSize') else 0
-                result['nFxState'] = stmt.nFxState if hasattr(stmt, 'nFxState') else 0
-                return result
-
-            # AbiHint - needs base, len, nia fields
-            if tag == 'AbiHint':
-                if hasattr(stmt, 'base'):
-                    result['base'] = serialize_expr(stmt.base)
-                if hasattr(stmt, 'len'):
-                    result['len'] = stmt.len
-                if hasattr(stmt, 'nia'):
-                    result['nia'] = serialize_expr(stmt.nia)
-                return result
-
-            # MBE, NoOp - simple statements with no fields
-            if tag in ('MBE', 'NoOp'):
+                result['mSize'] = getattr(stmt, 'mSize', 0)
+                result['nFxState'] = getattr(stmt, 'nFxState', 0)
                 return result
 
             # Fallback for unknown statements
+            for f in ('tmp', 'offset', 'len', 'delta'):
+                if hasattr(stmt, f):
+                    result[f] = getattr(stmt, f)
             if hasattr(stmt, 'addr'):
-                # Check if addr is an expression or int
                 addr = stmt.addr
-                if isinstance(addr, int):
-                    result['addr'] = addr
-                else:
-                    result['addr'] = serialize_expr(addr)
-            if hasattr(stmt, 'len'):
-                result['len'] = stmt.len
-            if hasattr(stmt, 'delta'):
-                result['delta'] = stmt.delta
-            if hasattr(stmt, 'tmp'):
-                result['tmp'] = stmt.tmp
-            if hasattr(stmt, 'data'):
-                result['data'] = serialize_expr(stmt.data)
-            if hasattr(stmt, 'offset'):
-                result['offset'] = stmt.offset
-            if hasattr(stmt, 'guard'):
-                result['guard'] = serialize_expr(stmt.guard)
-            if hasattr(stmt, 'dst'):
-                result['dst'] = serialize_expr(stmt.dst)
-
+                result['addr'] = addr if isinstance(addr, int) else serialize_expr(addr)
+            for f in ('data', 'guard', 'dst'):
+                if hasattr(stmt, f):
+                    result[f] = serialize_expr(getattr(stmt, f))
             return result
 
         data = {
