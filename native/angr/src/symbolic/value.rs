@@ -697,6 +697,32 @@ impl RustBV {
         }
     }
 
+    /// Byte-reverse a bitvector (endianness swap).
+    pub fn reverse(&self, _ctx: &SymContext) -> Self {
+        let w = self.width();
+        debug_assert!(w % 8 == 0, "reverse requires byte-aligned width");
+        if w <= 8 {
+            return self.clone(); // Single byte, no-op
+        }
+        match self.as_u128() {
+            Some(v) => {
+                let num_bytes = (w / 8) as usize;
+                let mut result: u128 = 0;
+                for i in 0..num_bytes {
+                    let byte = (v >> (i * 8)) & 0xff;
+                    result |= byte << ((num_bytes - 1 - i) * 8);
+                }
+                Self::concrete(result, w)
+            }
+            None => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: w,
+                op: BVOp::Reverse,
+                operands: vec![Arc::new(self.clone())],
+            },
+        }
+    }
+
     // =========================================================================
     // Shift Operations
     // =========================================================================

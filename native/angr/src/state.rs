@@ -139,14 +139,21 @@ impl RustSimState {
     ///
     /// # Arguments
     /// * `arch_name` - Architecture name (e.g., "amd64", "x86", "arm")
+    /// * `little_endian` - Override endianness (None = use arch default)
     ///
     /// # Returns
     /// New state with default initialization.
     pub fn new(arch_name: &str) -> Result<Self, String> {
+        Self::new_with_endian(arch_name, None)
+    }
+
+    /// Create a new state with explicit endianness override.
+    pub fn new_with_endian(arch_name: &str, little_endian: Option<bool>) -> Result<Self, String> {
         let arch = arch_from_name(arch_name)
             .ok_or_else(|| format!("unknown architecture: {}", arch_name))?;
         let vex_arch = arch.vex_arch();
-        let endness = if arch.is_little_endian() {
+        let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
+        let endness = if is_le {
             Endness::Little
         } else {
             Endness::Big
@@ -205,10 +212,16 @@ impl RustSimState {
     ///
     /// This is used when forking to share constraints across states.
     pub fn with_solver(arch_name: &str, solver: Rc<RefCell<SymContext>>) -> Result<Self, String> {
+        Self::with_solver_endian(arch_name, solver, None)
+    }
+
+    /// Create a state with a shared solver context and explicit endianness.
+    pub fn with_solver_endian(arch_name: &str, solver: Rc<RefCell<SymContext>>, little_endian: Option<bool>) -> Result<Self, String> {
         let arch = arch_from_name(arch_name)
             .ok_or_else(|| format!("unknown architecture: {}", arch_name))?;
         let vex_arch = arch.vex_arch();
-        let endness = if arch.is_little_endian() {
+        let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
+        let endness = if is_le {
             Endness::Little
         } else {
             Endness::Big
@@ -787,9 +800,9 @@ pub struct PyRustSimState {
 impl PyRustSimState {
     /// Create a new state for the given architecture.
     #[new]
-    #[pyo3(signature = (arch="amd64"))]
-    pub fn new(arch: &str) -> PyResult<Self> {
-        let inner = RustSimState::new(arch)
+    #[pyo3(signature = (arch="amd64", little_endian=None))]
+    pub fn new(arch: &str, little_endian: Option<bool>) -> PyResult<Self> {
+        let inner = RustSimState::new_with_endian(arch, little_endian)
             .map_err(|e| PyValueError::new_err(e))?;
         Ok(PyRustSimState { inner })
     }

@@ -432,14 +432,16 @@ pub struct RustExplorationManager {
     accumulated_stats: ExecutionStats,
     /// Index mapping state_id -> stash name for O(1) lookups.
     state_index: HashMap<u64, String>,
+    /// Endianness override: None = use arch default, Some(true) = little-endian.
+    little_endian: Option<bool>,
 }
 
 #[pymethods]
 impl RustExplorationManager {
     /// Create a new exploration manager.
     #[new]
-    #[pyo3(signature = (arch="amd64"))]
-    pub fn new(arch: &str) -> PyResult<Self> {
+    #[pyo3(signature = (arch="amd64", little_endian=None))]
+    pub fn new(arch: &str, little_endian: Option<bool>) -> PyResult<Self> {
         let arch_info = arch_from_name(arch).ok_or_else(|| {
             PyValueError::new_err(format!("unsupported architecture: {}", arch))
         })?;
@@ -492,6 +494,7 @@ impl RustExplorationManager {
             profiling_enabled: false,
             accumulated_stats: ExecutionStats::default(),
             state_index: HashMap::new(),
+            little_endian,
         })
     }
 
@@ -656,7 +659,7 @@ impl RustExplorationManager {
     /// Create a new RustSimState and add it to a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn create_state(&mut self, stash: &str) -> PyResult<u64> {
-        let state = RustSimState::new(&self.arch_name)
+        let state = RustSimState::new_with_endian(&self.arch_name, self.little_endian)
             .map_err(|e| PyValueError::new_err(e))?;
         let state_id = state.state_id();
 

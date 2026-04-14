@@ -305,8 +305,13 @@ impl<'a> VEXInterpreter<'a> {
                 };
                 let store_size = data_val.width() / 8;
                 self.store_log.push((concrete_addr, store_size as usize));
-                // TODO: handle endianness properly
-                self.memory.store(addr_val, data_val, self.ctx)?;
+                // If IR endness differs from memory endness, byte-reverse the value
+                let store_val = if *endness != self.memory.endness() {
+                    data_val.reverse(self.ctx)
+                } else {
+                    data_val
+                };
+                self.memory.store(addr_val, store_val, self.ctx)?;
                 Ok(StmtResult::Continue)
             }
 
@@ -411,7 +416,13 @@ impl<'a> VEXInterpreter<'a> {
             IRExpr::Load { addr, ty, endness } => {
                 let addr_val = self.eval_expr(addr, tyenv)?;
                 let size = ty.bytes();
-                self.memory.load(addr_val, size, self.ctx).map_err(|e| e.into())
+                let val = self.memory.load(addr_val, size, self.ctx).map_err(|e| Into::<ExecutionError>::into(e))?;
+                // If IR endness differs from memory endness, byte-reverse the loaded value
+                if *endness != self.memory.endness() {
+                    Ok(val.reverse(self.ctx))
+                } else {
+                    Ok(val)
+                }
             }
 
             IRExpr::Unop { op, arg } => {

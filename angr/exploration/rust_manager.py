@@ -123,7 +123,8 @@ class RustExplorationManager(RustStateExportMixin):
             )
 
         self._project = project
-        self._rust_mgr = _RustExplorationManager(project.arch.name)
+        is_le = project.arch.memory_endness == 'Iend_LE'
+        self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
 
         # Performance profiling counters
         self._perf_stats = {
@@ -1484,7 +1485,8 @@ class RustExplorationManager(RustStateExportMixin):
         self._concretize_stack_registers(angr_state)
 
         # Create Rust state from angr state
-        rust_state = _RustSimState(self._project.arch.name)
+        is_le = self._project.arch.memory_endness == 'Iend_LE'
+        rust_state = _RustSimState(self._project.arch.name, little_endian=is_le)
 
         # Set PC
         rust_state.pc = angr_state.addr
