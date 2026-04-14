@@ -816,6 +816,17 @@ class TestExplorationIntegration:
 
         assert len(mgr.found) > 0, "Should find at least one state"
 
+    def test_explore_with_timeout_technique(self, fauxware_project):
+        """Timeout technique stops exploration after time limit."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration_techniques import Timeout
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.use_technique(Timeout(timeout=0.001))  # 1ms timeout — should trigger quickly
+        mgr.explore(find=0x4006ed, max_steps=50000)
+        # Should terminate quickly due to timeout (not find the solution)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

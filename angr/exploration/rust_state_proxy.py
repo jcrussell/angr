@@ -360,6 +360,10 @@ class RustHistoryProxy:
     def bbl_addrs(self):
         return self.recent_bbl_addrs
 
+    @property
+    def block_count(self):
+        return len(self.recent_bbl_addrs)
+
 
 class RustPosixProxy:
     """

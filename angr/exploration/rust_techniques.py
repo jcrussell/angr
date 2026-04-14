@@ -148,6 +148,23 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
         else:
             l.debug(f"P9: CheckUniqueness registered (Python fallback)")
 
+    # LengthLimiter: Limit path length (block count)
+    elif tech_name == 'LengthLimiter':
+        max_length = getattr(technique, '_max_length', None)
+        drop = getattr(technique, '_drop', False)
+        if max_length is not None:
+            l.debug(f"P9: LengthLimiter registered (max_length={max_length}, drop={drop})")
+        else:
+            l.debug(f"P9: LengthLimiter registered (no max_length found)")
+
+    # Timeout: Wall-clock timeout for exploration
+    elif tech_name == 'Timeout':
+        timeout_val = getattr(technique, 'timeout', None)
+        if timeout_val is not None:
+            l.debug(f"P9: Timeout technique registered ({timeout_val}s)")
+        else:
+            l.debug(f"P9: Timeout technique registered (no timeout value)")
+
     # Other techniques
     else:
         l.debug(f"P9: Technique {tech_name} registered (limited support)")
@@ -227,6 +244,20 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                 # Skip techniques handled natively in Rust
                 if getattr(tech, '_native_uniqueness', False):
                     continue
+
+                tech_name = type(tech).__name__
+
+                # LengthLimiter: check _filter (uses step() pattern, not filter())
+                if tech_name == 'LengthLimiter' and hasattr(tech, '_filter'):
+                    try:
+                        if tech._filter(state_proxy):
+                            drop = getattr(tech, '_drop', False)
+                            goto = "_DROP" if drop else "cut"
+                            break
+                    except Exception as e:
+                        l.debug(f"LengthLimiter._filter() error: {e}")
+                    continue
+
                 if hasattr(tech, 'filter'):
                     try:
                         result = tech.filter(simgr_proxy, state_proxy)
@@ -234,7 +265,7 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                             goto = result
                             break
                     except Exception as e:
-                        l.debug(f"Technique {type(tech).__name__}.filter() error: {e}")
+                        l.debug(f"Technique {tech_name}.filter() error: {e}")
 
             # Mark as filtered regardless of outcome
             mgr._filtered_state_ids.add(sid)
@@ -285,13 +316,31 @@ def check_technique_complete(mgr: "RustExplorationManager") -> bool:
         stdout_tracker=getattr(mgr, '_stdout_tracker', {}),
     )
 
+    import time
+
     for tech in mgr._active_techniques:
+        tech_name = type(tech).__name__
+
+        # Timeout: check wall-clock and move all active states to "timeout"
+        if tech_name == 'Timeout':
+            timeout_val = getattr(tech, 'timeout', None)
+            if timeout_val is not None:
+                if tech.start_time is None:
+                    tech.start_time = time.time()
+                if time.time() - tech.start_time > timeout_val:
+                    try:
+                        mgr._rust_mgr.move_states("active", "timeout", None)
+                    except Exception:
+                        pass
+                    l.warning(f"exploration timeout in {timeout_val} seconds!")
+                    return True
+
         if hasattr(tech, 'complete'):
             try:
                 if tech.complete(simgr_proxy):
-                    l.debug(f"Technique {type(tech).__name__}.complete() returned True")
+                    l.debug(f"Technique {tech_name}.complete() returned True")
                     return True
             except Exception as e:
-                l.debug(f"Technique {type(tech).__name__}.complete() error: {e}")
+                l.debug(f"Technique {tech_name}.complete() error: {e}")
 
     return False
