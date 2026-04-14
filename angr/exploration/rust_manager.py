@@ -53,12 +53,18 @@ def _setup_shared_z3_context():
     if _z3_context_shared:
         return
     try:
-        from angr.rustylib.vex_engine import set_shared_z3_context
+        from angr.rustylib.vex_engine import set_shared_z3_context, reset_shared_z3_context
+        import atexit
         import z3
         py_ctx = z3.main_ctx()
         set_shared_z3_context(py_ctx.ctx.value)
         _z3_context_shared = True
         l.debug("Shared Z3 context with Rust (ptr=%#x)", py_ctx.ctx.value)
+
+        # Register cleanup to run BEFORE Python's Z3 context is freed.
+        # Without this, Rust's Solver objects may reference a freed Z3 context
+        # at process exit, causing a segfault.
+        atexit.register(reset_shared_z3_context)
     except (ImportError, AttributeError, Exception) as e:
         l.debug("Z3 context sharing not available: %s", e)
 
