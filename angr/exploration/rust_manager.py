@@ -2138,14 +2138,27 @@ class RustExplorationManager(
             # Sync any dynamically created hooks (continuations from self.call())
             self._sync_hooks_before_step()
 
-            # When until predicates or techniques are active, step one state at
-            # a time so Python can check between steps. Otherwise, let Rust run
-            # its full batch for performance.
+            # When until predicates or techniques are active, run in batches
+            # of 50 steps so Python can check predicates/techniques between
+            # batches. Callbacks (simprocedure/syscall/symbolic_branch) still
+            # return immediately from Rust regardless of batch size.
+            # Otherwise, let Rust run its full batch for performance.
             need_per_step = (until is not None) or bool(self._active_techniques)
             self._stats_ffi_crossings += 1
-            event = self._rust_mgr.run(1) if need_per_step else self._rust_mgr.run()
+            if need_per_step:
+                batch_size = 50
+                if max_steps is not None:
+                    batch_size = min(batch_size, max_steps - steps_taken)
+                event = self._rust_mgr.run(batch_size)
+            else:
+                event = self._rust_mgr.run()
             self._rust_mgr.sync_state_index()
-            steps_taken += 1
+            # Use actual steps from Rust event for accurate counting.
+            # For callbacks, count as 1 step; for batched runs, use event total.
+            if event.event_type == 'need_callback':
+                steps_taken += 1
+            else:
+                steps_taken += max(1, event.steps_taken)
 
             # Terminal states (avoid/pruned/deadended) are now dropped immediately
             # in Rust (drop_terminal_states=true), so no periodic cleanup needed.
