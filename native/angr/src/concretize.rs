@@ -191,29 +191,57 @@ impl AddressConcretizer {
             return ConcretizationResult::Single(concrete_addr);
         }
 
-        // Get the range of possible values
+        // Optimization: try direct solution enumeration first with a small limit.
+        // For addresses with few solutions (common case: boolean index → 2 values),
+        // this is dramatically faster than binary-search min/max which does ~64 Z3
+        // checks regardless of solution count. eval_upto for 2 solutions: ~3 checks.
+        const FAST_ENUM_LIMIT: usize = 16;
+        let fast_solutions = ctx.solutions(addr, FAST_ENUM_LIMIT + 1);
+
+        if fast_solutions.is_empty() {
+            // No solutions — try single eval as fallback
+            if let Some(single) = ctx.eval(addr) {
+                return ConcretizationResult::Single(single as u64);
+            }
+            return ConcretizationResult::Failed("no solutions found".to_string());
+        }
+
+        if fast_solutions.len() == 1 {
+            return ConcretizationResult::Single(fast_solutions[0] as u64);
+        }
+
+        if fast_solutions.len() <= FAST_ENUM_LIMIT {
+            // Small solution set — return directly without expensive range() call
+            let mut addrs: Vec<u64> = fast_solutions.iter().map(|&v| v as u64).collect();
+            addrs.sort_unstable();
+
+            if self.enable_stride_detection && addrs.len() >= 2 {
+                if let Some(strided) = self.detect_stride_from_solutions(&addrs) {
+                    return strided;
+                }
+            }
+
+            return ConcretizationResult::Multiple(addrs);
+        }
+
+        // More than FAST_ENUM_LIMIT solutions — fall back to range-based approach.
+        // Use range() to check if the address space is manageable.
         let (min, max) = match ctx.range(addr) {
             Some((min, max)) => (min as u64, max as u64),
             None => {
-                // Fallback: try to get any single solution when range fails
-                if let Some(single) = ctx.eval(addr) {
-                    return ConcretizationResult::Single(single as u64);
-                }
-                return ConcretizationResult::Failed(
-                    "could not determine address range".to_string()
-                );
+                // Range failed but we have solutions from fast enum — use them
+                let mut addrs: Vec<u64> = fast_solutions.iter().take(FAST_ENUM_LIMIT).map(|&v| v as u64).collect();
+                addrs.sort_unstable();
+                return ConcretizationResult::Multiple(addrs);
             }
         };
 
-        // If min == max, there's only one solution
         if min == max {
             return ConcretizationResult::Single(min);
         }
 
-        // Check if the range is too large
         let range_size = max.saturating_sub(min);
         if range_size > self.max_range {
-            // Try stride detection for large ranges
             if self.enable_stride_detection {
                 if let Some(strided) = self.try_detect_stride(addr, ctx, min, max) {
                     return strided;
@@ -226,12 +254,11 @@ impl AddressConcretizer {
             };
         }
 
-        // Get actual solutions
+        // Range is manageable — enumerate all solutions
         let solutions = ctx.solutions(addr, self.max_solutions);
 
         match solutions.len() {
             0 => {
-                // Fallback: try single eval when enumeration fails
                 if let Some(single) = ctx.eval(addr) {
                     return ConcretizationResult::Single(single as u64);
                 }
@@ -239,11 +266,9 @@ impl AddressConcretizer {
             }
             1 => ConcretizationResult::Single(solutions[0] as u64),
             _ => {
-                // Convert to u64 and sort for deterministic ITE chain ordering
                 let mut addrs: Vec<u64> = solutions.iter().map(|&v| v as u64).collect();
                 addrs.sort_unstable();
 
-                // Check for stride pattern in the solutions
                 if self.enable_stride_detection && addrs.len() >= 2 {
                     if let Some(strided) = self.detect_stride_from_solutions(&addrs) {
                         return strided;

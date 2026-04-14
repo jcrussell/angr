@@ -1206,8 +1206,26 @@ impl RustBV {
     /// lazy evaluation approach).
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_ast(&self) -> z3::ast::BV {
+        let mut cache = std::collections::HashMap::new();
+        self.to_z3_ast_cached(&mut cache)
+    }
+
+    /// Build Z3 AST with caching to avoid exponential blowup on DAG expressions.
+    ///
+    /// Expression trees built from symbolic memory stores (ITE chains) often share
+    /// sub-expressions via Arc. Without caching, to_z3_ast() traverses the DAG as
+    /// a tree, rebuilding shared subtrees exponentially. This version caches by
+    /// Arc pointer identity, ensuring each unique sub-expression is built once.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn to_z3_ast_cached(&self, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) -> z3::ast::BV {
         use z3::ast::Ast;
-        match self {
+        // For Expression nodes, use pointer identity as cache key
+        // (Arc-shared sub-expressions will have the same pointer)
+        let cache_key = self as *const RustBV as usize;
+        if let Some(cached) = cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let result = match self {
             RustBV::Concrete { value, width } => {
                 if *width <= 64 {
                     z3::ast::BV::from_u64(*value as u64, *width)
@@ -1228,10 +1246,11 @@ impl RustBV {
                 }
             }
             RustBV::Expression { op, operands, width, .. } => {
-                // Lazily compute Z3 AST from operation tree
-                Self::build_z3_ast(op, operands, *width)
+                Self::build_z3_ast_cached(op, operands, *width, cache)
             }
-        }
+        };
+        cache.insert(cache_key, result.clone());
+        result
     }
 
     /// Convert a 1-bit RustBV to a native Z3 Bool, avoiding ITE wrapping.
@@ -1241,6 +1260,12 @@ impl RustBV {
     /// `._eq(BV(1,1))`. Saves 3 Z3 AST nodes per comparison constraint.
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool(&self) -> z3::ast::Bool {
+        let mut cache = std::collections::HashMap::new();
+        self.to_z3_bool_cached(&mut cache)
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn to_z3_bool_cached(&self, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) -> z3::ast::Bool {
         use z3::ast::Ast;
         match self {
             RustBV::Concrete { value, .. } => {
@@ -1251,23 +1276,23 @@ impl RustBV {
             }
             RustBV::Expression { op, operands, .. } => {
                 match op {
-                    BVOp::Eq => operands[0].to_z3_ast()._eq(&operands[1].to_z3_ast()),
-                    BVOp::Ne => operands[0].to_z3_ast()._eq(&operands[1].to_z3_ast()).not(),
-                    BVOp::Ult => operands[0].to_z3_ast().bvult(&operands[1].to_z3_ast()),
-                    BVOp::Ule => operands[0].to_z3_ast().bvule(&operands[1].to_z3_ast()),
-                    BVOp::Ugt => operands[0].to_z3_ast().bvugt(&operands[1].to_z3_ast()),
-                    BVOp::Uge => operands[0].to_z3_ast().bvuge(&operands[1].to_z3_ast()),
-                    BVOp::Slt => operands[0].to_z3_ast().bvslt(&operands[1].to_z3_ast()),
-                    BVOp::Sle => operands[0].to_z3_ast().bvsle(&operands[1].to_z3_ast()),
-                    BVOp::Sgt => operands[0].to_z3_ast().bvsgt(&operands[1].to_z3_ast()),
-                    BVOp::Sge => operands[0].to_z3_ast().bvsge(&operands[1].to_z3_ast()),
+                    BVOp::Eq => operands[0].to_z3_ast_cached(cache)._eq(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Ne => operands[0].to_z3_ast_cached(cache)._eq(&operands[1].to_z3_ast_cached(cache)).not(),
+                    BVOp::Ult => operands[0].to_z3_ast_cached(cache).bvult(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Ule => operands[0].to_z3_ast_cached(cache).bvule(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Ugt => operands[0].to_z3_ast_cached(cache).bvugt(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Uge => operands[0].to_z3_ast_cached(cache).bvuge(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Slt => operands[0].to_z3_ast_cached(cache).bvslt(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Sle => operands[0].to_z3_ast_cached(cache).bvsle(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Sgt => operands[0].to_z3_ast_cached(cache).bvsgt(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Sge => operands[0].to_z3_ast_cached(cache).bvsge(&operands[1].to_z3_ast_cached(cache)),
                     // Not() on a 1-bit comparison: negate the inner bool
                     BVOp::Not if operands.len() == 1 => {
-                        operands[0].to_z3_bool().not()
+                        operands[0].to_z3_bool_cached(cache).not()
                     }
                     // Fallback: convert BV to Bool via _eq(1)
                     _ => {
-                        let ast = self.to_z3_ast();
+                        let ast = self.to_z3_ast_cached(cache);
                         let one = z3::ast::BV::from_u64(1, 1);
                         ast._eq(&one)
                     }
@@ -1275,7 +1300,7 @@ impl RustBV {
             }
             // Symbolic BV — use _eq(1)
             _ => {
-                let ast = self.to_z3_ast();
+                let ast = self.to_z3_ast_cached(cache);
                 let one = z3::ast::BV::from_u64(1, 1);
                 ast._eq(&one)
             }
@@ -1459,6 +1484,174 @@ impl RustBV {
             }
 
             // Bit counting ops - create fresh symbolic (can't express in Z3 BV theory)
+            BVOp::Clz => z3::ast::BV::new_const("clz", _width),
+            BVOp::Ctz => z3::ast::BV::new_const("ctz", _width),
+            BVOp::Popcount => z3::ast::BV::new_const("popcount", _width),
+        }
+    }
+
+    /// Build Z3 AST with caching to avoid exponential blowup on DAG expressions.
+    /// See `to_z3_ast_cached()` for rationale.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_z3_ast_cached(op: &BVOp, operands: &[Arc<RustBV>], _width: u32, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) -> z3::ast::BV {
+        use z3::ast::Ast;
+
+        match op {
+            // Arithmetic
+            BVOp::Add => operands[0].to_z3_ast_cached(cache).bvadd(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Sub => operands[0].to_z3_ast_cached(cache).bvsub(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Mul => operands[0].to_z3_ast_cached(cache).bvmul(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::UDiv => operands[0].to_z3_ast_cached(cache).bvudiv(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::SDiv => operands[0].to_z3_ast_cached(cache).bvsdiv(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::URem => operands[0].to_z3_ast_cached(cache).bvurem(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::SRem => operands[0].to_z3_ast_cached(cache).bvsrem(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Neg => operands[0].to_z3_ast_cached(cache).bvneg(),
+
+            // Bitwise
+            BVOp::And => operands[0].to_z3_ast_cached(cache).bvand(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Or => operands[0].to_z3_ast_cached(cache).bvor(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Xor => operands[0].to_z3_ast_cached(cache).bvxor(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Not => operands[0].to_z3_ast_cached(cache).bvnot(),
+
+            // Shifts
+            BVOp::Shl => operands[0].to_z3_ast_cached(cache).bvshl(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Lshr => operands[0].to_z3_ast_cached(cache).bvlshr(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Ashr => operands[0].to_z3_ast_cached(cache).bvashr(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::RotL => operands[0].to_z3_ast_cached(cache).bvrotl(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::RotR => operands[0].to_z3_ast_cached(cache).bvrotr(&operands[1].to_z3_ast_cached(cache)),
+
+            // Comparisons (return 1-bit BV: If(cmp, BV(1,1), BV(0,1)))
+            BVOp::Eq => {
+                let cmp = operands[0].to_z3_ast_cached(cache)._eq(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ne => {
+                let cmp = operands[0].to_z3_ast_cached(cache)._eq(&operands[1].to_z3_ast_cached(cache)).not();
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ult => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvult(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ule => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvule(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Ugt => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvugt(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Uge => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvuge(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Slt => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvslt(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Sle => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvsle(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Sgt => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvsgt(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+            BVOp::Sge => {
+                let cmp = operands[0].to_z3_ast_cached(cache).bvsge(&operands[1].to_z3_ast_cached(cache));
+                cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
+            }
+
+            // Conversions
+            BVOp::ZeroExt(bits) => operands[0].to_z3_ast_cached(cache).zero_ext(*bits),
+            BVOp::SignExt(bits) => {
+                let inner = operands[0].to_z3_ast_cached(cache);
+                let inner_width = operands[0].width();
+                let sign_bit = inner.extract(inner_width - 1, inner_width - 1);
+                let mut result = inner;
+                for _ in 0..*bits {
+                    result = sign_bit.clone().concat(&result);
+                }
+                result
+            }
+            BVOp::Extract(high, low) => operands[0].to_z3_ast_cached(cache).extract(*high, *low),
+            BVOp::Concat => {
+                fn collect_concat_leaves_cached(bv: &RustBV, leaves: &mut Vec<z3::ast::BV>, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) {
+                    if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                        collect_concat_leaves_cached(&operands[0], leaves, cache);
+                        collect_concat_leaves_cached(&operands[1], leaves, cache);
+                    } else {
+                        leaves.push(bv.to_z3_ast_cached(cache));
+                    }
+                }
+                let mut leaves = Vec::new();
+                collect_concat_leaves_cached(&operands[0], &mut leaves, cache);
+                collect_concat_leaves_cached(&operands[1], &mut leaves, cache);
+                let mut result = leaves.pop().unwrap();
+                while let Some(part) = leaves.pop() {
+                    result = part.concat(&result);
+                }
+                result
+            }
+
+            // Conditional
+            BVOp::Ite => {
+                let cond = operands[0].to_z3_ast_cached(cache)
+                    ._eq(&z3::ast::BV::from_u64(0, operands[0].width()))
+                    .not();
+                cond.ite(&operands[1].to_z3_ast_cached(cache), &operands[2].to_z3_ast_cached(cache))
+            }
+
+            // Byte reverse
+            BVOp::Reverse => {
+                if let RustBV::Expression { op: BVOp::Concat, .. } = operands[0].as_ref() {
+                    fn collect_concat_parts_cached(bv: &RustBV, parts: &mut Vec<Arc<RustBV>>) {
+                        if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                            collect_concat_parts_cached(&operands[0], parts);
+                            collect_concat_parts_cached(&operands[1], parts);
+                        } else {
+                            parts.push(Arc::new(bv.clone()));
+                        }
+                    }
+                    let mut parts = Vec::new();
+                    collect_concat_parts_cached(&operands[0], &mut parts);
+                    parts.reverse();
+                    let reversed_asts: Vec<z3::ast::BV> = parts.iter()
+                        .map(|p| {
+                            let w = p.width();
+                            if w == 8 {
+                                p.to_z3_ast_cached(cache)
+                            } else {
+                                Self::build_z3_ast_cached(&BVOp::Reverse, &[p.clone()], w, cache)
+                            }
+                        })
+                        .collect();
+                    let mut result = reversed_asts[0].clone();
+                    for ast in &reversed_asts[1..] {
+                        result = result.concat(ast);
+                    }
+                    return result;
+                }
+
+                let ast = operands[0].to_z3_ast_cached(cache);
+                let w = operands[0].width();
+                if w % 8 == 0 && w >= 16 {
+                    let bytes = w / 8;
+                    let mut parts: Vec<z3::ast::BV> = (0..bytes)
+                        .map(|i| ast.extract(i * 8 + 7, i * 8))
+                        .collect();
+                    parts.reverse();
+                    let mut result = parts[0].clone();
+                    for part in &parts[1..] {
+                        result = result.concat(part);
+                    }
+                    result
+                } else {
+                    ast
+                }
+            }
+
+            // Bit counting ops
             BVOp::Clz => z3::ast::BV::new_const("clz", _width),
             BVOp::Ctz => z3::ast::BV::new_const("ctz", _width),
             BVOp::Popcount => z3::ast::BV::new_const("popcount", _width),

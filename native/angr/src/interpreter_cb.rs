@@ -657,7 +657,13 @@ impl<'a> CallbackInterpreter<'a> {
             return cached.clone();
         }
 
+        let conc_start = std::time::Instant::now();
         let result = self.concretizer.concretize(addr, self.ctx);
+        let conc_elapsed = conc_start.elapsed();
+        if self.profiling_enabled {
+            self.stats.concretize_count += 1;
+            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+        }
         self.concretize_cache.insert(cache_key, result.clone());
         result
     }
@@ -1559,10 +1565,21 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         // Execute statements
+        let mut stmt_total_ns: u64 = 0;
         for stmt in &irsb.statements {
             if self.profiling_enabled { self.stats.stmt_count += 1; }
+            let stmt_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
             match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {
-                StmtResult::Continue => continue,
+                StmtResult::Continue => {
+                    if let Some(start) = stmt_start {
+                        let elapsed = start.elapsed().as_nanos() as u64;
+                        stmt_total_ns += elapsed;
+                        if elapsed > 50_000_000 { // >50ms
+                            eprintln!("  SLOW STMT at 0x{:x}: {}ms {:?}", self.current_insn_addr, elapsed / 1_000_000, stmt);
+                        }
+                    }
+                    continue;
+                }
                 StmtResult::Exit { target, jumpkind } => {
                     // Flush pending stores before returning
                     self.flush_stores(py, callbacks)?;
@@ -1589,6 +1606,13 @@ impl<'a> CallbackInterpreter<'a> {
                         false_target,
                     });
                 }
+            }
+        }
+
+        if self.profiling_enabled {
+            self.stats.run_loop_time_ns += stmt_total_ns;
+            if stmt_total_ns > 100_000_000 { // >100ms
+                eprintln!("SLOW BLOCK at 0x{:x}: {}ms for {} stmts", irsb.addr, stmt_total_ns / 1_000_000, irsb.statements.len());
             }
         }
 
@@ -1682,6 +1706,9 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
 
                                 // Rust owns memory — no need to sync stores to Python.
+                                if let Some(start) = store_start {
+                                    self.stats.store_stmt_time_ns += start.elapsed().as_nanos() as u64;
+                                }
                                 return Ok(StmtResult::Continue);
                             }
                             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
@@ -2537,6 +2564,22 @@ impl<'a> CallbackInterpreter<'a> {
         expr: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
+        let expr_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        let result = self.eval_expr_with_callbacks_inner(py, callbacks, expr, tyenv);
+        if let Some(start) = expr_start {
+            self.stats.expr_eval_time_ns += start.elapsed().as_nanos() as u64;
+            self.stats.expr_eval_count += 1;
+        }
+        result
+    }
+
+    fn eval_expr_with_callbacks_inner(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        expr: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
         match expr {
             IRExpr::Const(c) => Ok(self.eval_const(c)),
 
@@ -2554,8 +2597,10 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRExpr::Load { addr, ty, .. } => {
+                let load_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
                 let size = ty.bytes() as usize;
+                if self.profiling_enabled { self.stats.load_stmt_count += 1; }
 
                 // Try Rust-native memory first if enabled - use unified method
                 if self.use_rust_memory {
@@ -2568,7 +2613,12 @@ impl<'a> CallbackInterpreter<'a> {
 
                     if let Some(result) = first_result {
                         match result {
-                            Ok(value) => return Ok(value),
+                            Ok(value) => {
+                                if let Some(start) = load_start {
+                                    self.stats.load_stmt_time_ns += start.elapsed().as_nanos() as u64;
+                                }
+                                return Ok(value);
+                            }
                             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
                                 // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
                                 let prefetch_count = self.page_prefetch_count;

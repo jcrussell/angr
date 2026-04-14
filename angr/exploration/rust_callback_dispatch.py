@@ -189,7 +189,10 @@ class RustCallbackDispatchMixin:
                 else:
                     result = _ctx.eval(expr)
                 if result is None:
-                    raise claripy.errors.UnsatError("UNSAT in Rust solver")
+                    # Rust solver returned None — fall back to Python solver
+                    # before raising UNSAT. The Rust solver may lack constraints
+                    # that the Python solver has (e.g., symbolic write scenarios).
+                    return original_eval(expr, cast_to=cast_to, **kwargs)
                 if cast_to == bytes:
                     nbytes = (expr.length + 7) // 8
                     return result.to_bytes(nbytes, 'big')
