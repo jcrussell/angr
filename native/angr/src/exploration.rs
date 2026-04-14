@@ -315,6 +315,47 @@ struct PendingCallback {
     fork_snapshots: HashMap<u64, crate::interpreter_cb::BranchSnapshot>,
 }
 
+impl PendingCallback {
+    /// Create a lightweight callback with no solver context or deferred state.
+    /// Used for predicate evaluation (find/avoid predicates).
+    fn lightweight(state: RustSimState, reason: CallbackReason) -> Self {
+        PendingCallback {
+            state,
+            pre_callback_snapshot: None,
+            reason,
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: Vec::new(),
+            stored_conditions: HashMap::new(),
+            fork_snapshots: HashMap::new(),
+        }
+    }
+
+    /// Create a callback with full interpreter context (deferred forks, conditions, snapshots).
+    /// Used for SimProcedure, syscall, and symbolic branch callbacks after interpreter execution.
+    fn with_context(
+        state: RustSimState,
+        pre_callback_snapshot: Option<RustSimState>,
+        reason: CallbackReason,
+        jumpkind: &str,
+        solver_ctx: Option<RustSolverContext>,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: HashMap<u64, RustBV>,
+        fork_snapshots: HashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+    ) -> Self {
+        PendingCallback {
+            state,
+            pre_callback_snapshot,
+            reason,
+            jumpkind: Some(jumpkind.to_string()),
+            solver_ctx,
+            deferred_forks,
+            stored_conditions,
+            fork_snapshots,
+        }
+    }
+}
+
 /// Statistics for native procedure execution.
 #[derive(Debug, Clone)]
 struct NativeProcStats {
@@ -858,16 +899,10 @@ impl RustExplorationManager {
                 if self.skip_avoid_predicate_states.remove(&state_id) {
                     // Fall through — predicate already checked at this PC
                 } else {
-                self.pending_callback = Some(PendingCallback {
+                self.pending_callback = Some(PendingCallback::lightweight(
                     state,
-                    pre_callback_snapshot: None,
-                    reason: CallbackReason::AvoidPredicate { addr: pc },
-                    jumpkind: None,
-                    solver_ctx: None,
-                    deferred_forks: Vec::new(),
-                    stored_conditions: HashMap::new(),
-                    fork_snapshots: HashMap::new(),
-                });
+                    CallbackReason::AvoidPredicate { addr: pc },
+                ));
 
                 return Ok(ExplorationEvent {
                     event_type: "need_callback".to_string(),
@@ -904,16 +939,10 @@ impl RustExplorationManager {
                 if self.skip_find_predicate_states.remove(&state_id) {
                     // Fall through to hooks/stepping — predicate already checked
                 } else {
-                self.pending_callback = Some(PendingCallback {
+                self.pending_callback = Some(PendingCallback::lightweight(
                     state,
-                    pre_callback_snapshot: None,
-                    reason: CallbackReason::FindPredicate { addr: pc },
-                    jumpkind: None,
-                    solver_ctx: None,
-                    deferred_forks: Vec::new(),
-                    stored_conditions: HashMap::new(),
-                    fork_snapshots: HashMap::new(),
-                });
+                    CallbackReason::FindPredicate { addr: pc },
+                ));
 
                 return Ok(ExplorationEvent {
                     event_type: "need_callback".to_string(),
@@ -1051,21 +1080,21 @@ impl RustExplorationManager {
                     let solver_ref = state.solver();
                     let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
 
-                    self.pending_callback = Some(PendingCallback {
+                    self.pending_callback = Some(PendingCallback::with_context(
                         state,
-                        pre_callback_snapshot: None,
-                        reason: CallbackReason::SimProcedure {
+                        None,
+                        CallbackReason::SimProcedure {
                             addr: pc,
                             name: name.clone(),
                             num_args,
                             return_addr,
                         },
-                        jumpkind: Some("Ijk_Call".to_string()),
-                        solver_ctx: Some(shared_ctx),
-                        deferred_forks: Vec::new(),
-                        stored_conditions: HashMap::new(),
-                        fork_snapshots: HashMap::new(),
-                    });
+                        "Ijk_Call",
+                        Some(shared_ctx),
+                        Vec::new(),
+                        HashMap::new(),
+                        HashMap::new(),
+                    ));
 
                     return Ok(ExplorationEvent::need_simprocedure(
                         state_id,
@@ -3707,21 +3736,21 @@ impl RustExplorationManager {
                     self.accumulated_stats.solver_fork_count += fork_count;
                 }
                 // Return to Python for hook - store deferred forks for later processing
-                Err(StepError::NeedCallback(PendingCallback {
+                Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
                     pre_callback_snapshot,
-                    reason: CallbackReason::SimProcedure {
+                    CallbackReason::SimProcedure {
                         addr,
                         name: "unknown".to_string(),
                         num_args: 0,
                         return_addr: 0,
                     },
-                    jumpkind: Some("Ijk_Boring".to_string()),
-                    solver_ctx: Some(shared_ctx),
+                    "Ijk_Boring",
+                    Some(shared_ctx),
                     deferred_forks,
                     stored_conditions,
                     fork_snapshots,
-                }))
+                )))
             }
             RunResult::SimProcedure { addr, name, num_args, return_addr } => {
                 // Try native procedure first — avoids Python callback overhead.
@@ -3824,21 +3853,21 @@ impl RustExplorationManager {
                     // Use shared solver (O(1) Rc clone) instead of fork
                     let solver_ref = state.solver();
                     let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
-                    Err(StepError::NeedCallback(PendingCallback {
+                    Err(StepError::NeedCallback(PendingCallback::with_context(
                         state,
                         pre_callback_snapshot,
-                        reason: CallbackReason::SimProcedure {
+                        CallbackReason::SimProcedure {
                             addr,
                             name,
                             num_args,
                             return_addr,
                         },
-                        jumpkind: Some("Ijk_Call".to_string()),
-                        solver_ctx: Some(shared_ctx),
+                        "Ijk_Call",
+                        Some(shared_ctx),
                         deferred_forks,
                         stored_conditions,
                         fork_snapshots,
-                    }))
+                    )))
                 }
             }
             RunResult::Syscall { num, pc } => {
@@ -3854,16 +3883,16 @@ impl RustExplorationManager {
                 // Use shared solver (O(1) Rc clone) instead of fork
                 let solver_ref = state.solver();
                 let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
-                Err(StepError::NeedCallback(PendingCallback {
+                Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
                     pre_callback_snapshot,
-                    reason: CallbackReason::Syscall { num },
-                    jumpkind: Some("Ijk_Sys_syscall".to_string()),
-                    solver_ctx: Some(shared_ctx),
+                    CallbackReason::Syscall { num },
+                    "Ijk_Sys_syscall",
+                    Some(shared_ctx),
                     deferred_forks,
                     stored_conditions,
                     fork_snapshots,
-                }))
+                )))
             }
             RunResult::SymbolicBranch { condition_id, true_target, false_target } => {
                 // Return to Python for proper state forking with constraints.
@@ -3876,20 +3905,20 @@ impl RustExplorationManager {
                     branch_conditions.insert(condition_id, cond);
                 }
 
-                Err(StepError::NeedCallback(PendingCallback {
+                Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
-                    pre_callback_snapshot: None,
-                    reason: CallbackReason::SymbolicBranch {
+                    None,
+                    CallbackReason::SymbolicBranch {
                         condition_id,
                         true_target,
                         false_target,
                     },
-                    jumpkind: Some("Ijk_Boring".to_string()),
-                    solver_ctx: None,
+                    "Ijk_Boring",
+                    None,
                     deferred_forks,
-                    stored_conditions: branch_conditions,
+                    branch_conditions,
                     fork_snapshots,
-                }))
+                )))
             }
             RunResult::Error { message, addr } => {
                 state.set_pc(addr);
@@ -4005,21 +4034,21 @@ impl RustExplorationManager {
                             let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
 
                             // Return to Python for SimProcedure execution
-                            Err(StepError::NeedCallback(PendingCallback {
+                            Err(StepError::NeedCallback(PendingCallback::with_context(
                                 state,
                                 pre_callback_snapshot,
-                                reason: CallbackReason::SimProcedure {
+                                CallbackReason::SimProcedure {
                                     addr,
                                     name,
                                     num_args,
                                     return_addr,
                                 },
-                                jumpkind: Some("Ijk_Call".to_string()),
-                                solver_ctx: Some(shared_ctx),
+                                "Ijk_Call",
+                                Some(shared_ctx),
                                 deferred_forks,
                                 stored_conditions,
                                 fork_snapshots,
-                            }))
+                            )))
                         }
                         Ok(None) => {
                             // P21: Function could not be resolved - use generic skip instead of deadending
