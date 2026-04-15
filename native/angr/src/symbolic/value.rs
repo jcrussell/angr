@@ -1113,6 +1113,46 @@ impl RustBV {
         }
     }
 
+    /// Extract bits without requiring a SymContext (same logic, ctx unused).
+    pub fn extract_no_ctx(&self, high: u32, low: u32) -> Self {
+        debug_assert!(high >= low);
+        debug_assert!(high < self.width());
+        let result_width = high - low + 1;
+
+        if let Some(v) = self.as_u128() {
+            let extracted = (v >> low) & ((1u128 << result_width) - 1);
+            return Self::concrete(extracted, result_width);
+        }
+
+        if high == self.width() - 1 && low == 0 {
+            return self.clone();
+        }
+
+        RustBV::Expression {
+            id: Self::EXPRESSION_ID,
+            width: result_width,
+            op: BVOp::Extract(high, low),
+            operands: vec![Arc::new(self.clone())],
+        }
+    }
+
+    /// Concatenate without requiring a SymContext (same logic, ctx unused).
+    pub fn concat_no_ctx(&self, other: &Self) -> Self {
+        let result_width = self.width() + other.width();
+        match (self.as_u128(), other.as_u128()) {
+            (Some(hi), Some(lo)) => {
+                let combined = (hi << other.width()) | lo;
+                Self::concrete(combined, result_width)
+            }
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: result_width,
+                op: BVOp::Concat,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+            },
+        }
+    }
+
     // =========================================================================
     // Utility Operations
     // =========================================================================

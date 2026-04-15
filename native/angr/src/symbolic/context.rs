@@ -72,6 +72,11 @@ pub struct SymContext {
     /// Each entry is (constraint, is_assumed_true) - constraint == 1 if true, == 0 if false.
     assumed_constraints: Mutex<Vec<(RustBV, bool)>>,
 
+    /// Cached Z3 Bool assertions for fast fork replay.
+    /// Avoids re-building Z3 ASTs from RustBV on every fork.
+    #[cfg(feature = "vex-engine-z3")]
+    z3_assertions_cache: Mutex<Vec<z3::ast::Bool>>,
+
     // Z3-specific fields (when feature is enabled)
     #[cfg(feature = "vex-engine-z3")]
     solver: Mutex<z3::Solver>,
@@ -132,6 +137,7 @@ impl SymContext {
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
             assumed_constraints: Mutex::new(Vec::new()),
+            z3_assertions_cache: Mutex::new(Vec::new()),
             solver: Mutex::new(solver),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
@@ -193,6 +199,8 @@ impl SymContext {
         let ctx = z3::Context::thread_local();
         let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
         let constraint: z3::ast::Bool = z3::ast::Ast::wrap(&ctx, raw_ast);
+        // Cache Z3 Bool for fast fork replay
+        self.z3_assertions_cache.lock().push(constraint.clone());
         self.solver.lock().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
@@ -205,6 +213,8 @@ impl SymContext {
         // Use plain assert for fast path (no unsat_core tracking overhead).
         // This avoids creating tracking booleans, string formatting, and
         // mutex acquisition on constraint_trackers for every constraint.
+        // NOTE: Don't cache here — callers (assume_true, assume_false,
+        // add_constraint_raw) cache before calling this to avoid double-cache.
         self.solver.lock().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         // Invalidate caches - constraint set has changed
@@ -256,6 +266,8 @@ impl SymContext {
         // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
         // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
         let constraint = cond.to_z3_bool();
+        // Cache Z3 Bool for fast fork replay
+        self.z3_assertions_cache.lock().push(constraint.clone());
         self.add_constraint(constraint);
     }
 
@@ -267,6 +279,8 @@ impl SymContext {
         self.assumed_constraints.lock().push((cond.clone(), false));
         // Negate the bool directly
         let constraint = cond.to_z3_bool().not();
+        // Cache Z3 Bool for fast fork replay
+        self.z3_assertions_cache.lock().push(constraint.clone());
         self.add_constraint(constraint);
     }
 
@@ -1181,17 +1195,26 @@ impl SymContext {
     /// Fork the context, creating a new context with all constraints preserved.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
-        // Use Z3_solver_translate (Solver::clone) for O(1) fork.
-        // This copies the solver's internal state in one operation,
-        // avoiding the O(n) constraint replay that rebuilds Z3 ASTs.
-        let cloned_solver = self.solver.lock().clone();
+        // Clone assumed constraints for the fork
+        let cloned_assumed = self.assumed_constraints.lock().clone();
+        let cloned_z3_cache = self.z3_assertions_cache.lock().clone();
+
+        // Create a fresh solver and replay cached Z3 Bool assertions.
+        // NOTE: Z3_solver_translate (Solver::clone) loses all assertions
+        // when source and destination are the same Z3 context (which is
+        // always the case with shared Z3 context). We replay the cached
+        // Z3 Bool objects directly — this is fast because we avoid the
+        // RustBV → Z3 AST conversion that to_z3_bool() would require.
+        let new_solver = z3::Solver::new();
         let mut params = z3::Params::new();
         params.set_u32("timeout", 30000);
         params.set_bool("bv_extract_prop", true);
-        cloned_solver.set_params(&params);
+        new_solver.set_params(&params);
 
-        // Clone assumed constraints for the fork
-        let cloned_assumed = self.assumed_constraints.lock().clone();
+        // Replay cached Z3 assertions (O(n) Z3_solver_assert, no AST rebuild)
+        for constraint in &cloned_z3_cache {
+            new_solver.assert(constraint);
+        }
 
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
@@ -1200,7 +1223,8 @@ impl SymContext {
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
             assumed_constraints: Mutex::new(cloned_assumed),
-            solver: Mutex::new(cloned_solver),
+            z3_assertions_cache: Mutex::new(cloned_z3_cache),
+            solver: Mutex::new(new_solver),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),

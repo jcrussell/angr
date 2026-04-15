@@ -224,13 +224,83 @@ impl RegisterFile {
     /// Write a register value by offset.
     pub fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;
+        let write_bits = value.width();
+
+        // Check if this write is to a SUB-REGISTER of a wider symbolic value.
+        // E.g., writing cl (8-bit at offset 12) when ecx (32-bit at offset 12)
+        // is symbolic. We must compose the new value with the remaining symbolic
+        // bits to preserve them.
+        if let Some(wider_sym) = self.symbolic.get(&offset).cloned() {
+            if wider_sym.width() > write_bits {
+                // Writing to the LOW portion of a wider symbolic
+                let upper = wider_sym.extract_no_ctx(wider_sym.width() - 1, write_bits);
+                let composed = upper.concat_no_ctx(&value);
+                self.symbolic.insert(offset, composed);
+                // Also update concrete data for the written portion if concrete
+                if let Some(v) = value.as_u128() {
+                    let start = offset as usize;
+                    for i in 0..size as usize {
+                        if start + i < self.data.len() {
+                            self.data[start + i] = (v >> (i * 8)) as u8;
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        // Also check if writing to the middle/upper portion of a wider symbolic.
+        // E.g., writing ch (8-bit at offset 13) when ecx (32-bit at offset 12) is symbolic.
+        for (&sym_offset, sym_val) in &self.symbolic {
+            let sym_size = sym_val.width() / 8;
+            if sym_offset < offset && offset + size <= sym_offset + sym_size {
+                // Our write is fully contained within a wider symbolic at a lower offset
+                let sym_val = sym_val.clone();
+                let bit_lo = (offset - sym_offset) * 8;
+                let bit_hi = bit_lo + write_bits;
+                let sym_bits = sym_val.width();
+
+                let mut parts: Vec<RustBV> = Vec::new();
+                // Upper portion (if any)
+                if bit_hi < sym_bits {
+                    parts.push(sym_val.extract_no_ctx(sym_bits - 1, bit_hi));
+                }
+                // The written value
+                parts.push(value.clone());
+                // Lower portion (if any)
+                if bit_lo > 0 {
+                    parts.push(sym_val.extract_no_ctx(bit_lo - 1, 0));
+                }
+
+                // Compose: concat all parts (MSB first)
+                let mut composed = parts[0].clone();
+                for part in &parts[1..] {
+                    composed = composed.concat_no_ctx(part);
+                }
+                self.symbolic.insert(sym_offset, composed);
+                // Update concrete data for the written portion if concrete
+                if let Some(v) = value.as_u128() {
+                    let start = offset as usize;
+                    for i in 0..size as usize {
+                        if start + i < self.data.len() {
+                            self.data[start + i] = (v >> (i * 8)) as u8;
+                        }
+                    }
+                }
+                return;
+            }
+        }
 
         // If symbolic, store in symbolic map
         if value.is_symbolic() {
+            // Clean up any narrower symbolic overlays within our range
+            let overlapping: Vec<u32> = self.symbolic.keys()
+                .filter(|&&k| k >= offset && k < offset + size && k != offset)
+                .copied()
+                .collect();
+            for k in overlapping {
+                self.symbolic.remove(&k);
+            }
             self.symbolic.insert(offset, value);
-            // Also update concrete bytes to zero (so reads of wider
-            // registers that include non-symbolic parts get correct
-            // concrete values for the non-overlapping parts)
             return;
         }
 

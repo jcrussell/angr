@@ -1995,31 +1995,53 @@ impl<'a> CallbackInterpreter<'a> {
                         memory: self.rust_memory.as_ref().map(|m| m.fork()),
                     });
 
-                    // Take the FALLTHROUGH path (continue block execution) and
-                    // defer the EXIT path (*dst). VEX inverts many branch
-                    // conditions (e.g., `jne target` becomes `if (eq) goto exit;
-                    // NEXT: target`), so taking the exit would follow the wrong
-                    // direction for loops and comparisons. Fallthrough follows
-                    // the natural execution flow.
-                    let deferred = DeferredFork {
-                        branch_addr: self.current_insn_addr,
-                        path_taken: false,          // we took the fallthrough (guard=false) path
-                        unexplored_target: *dst,    // the exit target is deferred
-                        condition_id: cond_id,
-                        push_level: self.push_level,
-                        condition_ast,
+                    // Decide which path to take based on branch direction.
+                    // For backward branches (loops), take the exit (loop back)
+                    // and defer the fall-through (loop exit). For forward branches,
+                    // take the fall-through and defer the exit. VEX often inverts
+                    // forward branch conditions (e.g., `jne target` becomes
+                    // `if (eq) goto exit; NEXT: target`), so fall-through follows
+                    // the natural execution flow for forward branches.
+                    let is_backward_branch = *dst < self.current_insn_addr;
+
+                    let deferred = if is_backward_branch {
+                        DeferredFork {
+                            branch_addr: self.current_insn_addr,
+                            path_taken: true,           // we took the exit (guard=true) path
+                            unexplored_target: false_target, // fall-through deferred
+                            condition_id: cond_id,
+                            push_level: self.push_level,
+                            condition_ast,
+                        }
+                    } else {
+                        DeferredFork {
+                            branch_addr: self.current_insn_addr,
+                            path_taken: false,          // we took the fallthrough (guard=false) path
+                            unexplored_target: *dst,    // the exit target is deferred
+                            condition_id: cond_id,
+                            push_level: self.push_level,
+                            condition_ast,
+                        }
                     };
                     self.deferred_forks.push(deferred);
                     self.deferred_fork_this_step = true;
 
-                    // NOTE: We intentionally do NOT call assume_false() permanently.
+                    // NOTE: We intentionally do NOT call assume_true/false() permanently.
                     // The solver stays clean so snapshots capture unconstrained state.
                     // Taken-path constraints are temporarily added via push/pop for
                     // check_branch_feasibility() (above), then applied permanently
                     // during fork processing in exploration.rs after the step completes.
 
-                    // Continue execution on the fallthrough path
-                    return Ok(StmtResult::Continue);
+                    if is_backward_branch {
+                        // Take the exit path (loop back to target)
+                        return Ok(StmtResult::Exit {
+                            target: *dst,
+                            jumpkind: *jk,
+                        });
+                    } else {
+                        // Continue execution on the fallthrough path
+                        return Ok(StmtResult::Continue);
+                    }
                 } else if can_be_true {
                     return Ok(StmtResult::Exit {
                         target: *dst,

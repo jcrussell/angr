@@ -79,7 +79,9 @@ class RustStateSyncMixin:
                         'r12', 'r13', 'r14', 'r15', 'rip']
         elif arch.name == 'X86':
             reg_names = ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
-                        'ebp', 'esp', 'eip']
+                        'ebp', 'esp', 'eip',
+                        'dflag', 'idflag', 'acflag',
+                        'cc_op', 'cc_dep1', 'cc_dep2', 'cc_ndep']
         elif arch.name.startswith('ARM'):
             reg_names = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
                         'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
