@@ -78,8 +78,11 @@ pub struct SymContext {
     z3_assertions_cache: Mutex<Vec<z3::ast::Bool>>,
 
     // Z3-specific fields (when feature is enabled)
+    /// Z3 solver — lazy: starts as None on fork(), materialized on first access.
+    /// This avoids O(n) assertion replay for forked states that are
+    /// pruned/avoided/deadended without ever querying the solver.
     #[cfg(feature = "vex-engine-z3")]
-    solver: Mutex<z3::Solver>,
+    solver: Mutex<Option<z3::Solver>>,
     /// Cached SAT result, invalidated on constraint addition.
     #[cfg(feature = "vex-engine-z3")]
     sat_cache: Cell<Option<bool>>,
@@ -138,7 +141,7 @@ impl SymContext {
             symbol_table: RwLock::new(HashMap::new()),
             assumed_constraints: Mutex::new(Vec::new()),
             z3_assertions_cache: Mutex::new(Vec::new()),
-            solver: Mutex::new(solver),
+            solver: Mutex::new(Some(solver)),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
@@ -149,6 +152,33 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn new_mock() -> Self {
         Self::new()
+    }
+
+    /// Get or lazily create the Z3 solver.
+    ///
+    /// Forked contexts start with `solver = None` to avoid O(n) assertion
+    /// replay for states that are pruned/avoided without querying the solver.
+    /// On first access, a fresh solver is created and cached assertions are
+    /// replayed.
+    #[cfg(feature = "vex-engine-z3")]
+    fn solver(&self) -> parking_lot::MappedMutexGuard<'_, z3::Solver> {
+        let mut guard = self.solver.lock();
+        if guard.is_none() {
+            let new_solver = z3::Solver::new();
+            let mut params = z3::Params::new();
+            params.set_u32("timeout", 30000);
+            params.set_bool("bv_extract_prop", true);
+            new_solver.set_params(&params);
+
+            // Replay cached Z3 assertions
+            let cache = self.z3_assertions_cache.lock();
+            for constraint in cache.iter() {
+                new_solver.assert(constraint);
+            }
+
+            *guard = Some(new_solver);
+        }
+        parking_lot::MutexGuard::map(guard, |opt| opt.as_mut().unwrap())
     }
 
     /// Get the next unique ID for a symbolic variable.
@@ -201,7 +231,7 @@ impl SymContext {
         let constraint: z3::ast::Bool = z3::ast::Ast::wrap(&ctx, raw_ast);
         // Cache Z3 Bool for fast fork replay
         self.z3_assertions_cache.lock().push(constraint.clone());
-        self.solver.lock().assert(&constraint);
+        self.solver().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
@@ -215,7 +245,7 @@ impl SymContext {
         // mutex acquisition on constraint_trackers for every constraint.
         // NOTE: Don't cache here — callers (assume_true, assume_false,
         // add_constraint_raw) cache before calling this to avoid double-cache.
-        self.solver.lock().assert(&constraint);
+        self.solver().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         // Invalidate caches - constraint set has changed
         self.sat_cache.set(None);
@@ -235,7 +265,7 @@ impl SymContext {
             trackers.push(track_bool.clone());
         }
 
-        self.solver.lock().assert_and_track(&constraint, &track_bool);
+        self.solver().assert_and_track(&constraint, &track_bool);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
@@ -296,14 +326,14 @@ impl SymContext {
             return cached;
         }
         // Perform actual SAT check
-        let result = matches!(self.solver.lock().check(), z3::SatResult::Sat);
+        let result = matches!(self.solver().check(), z3::SatResult::Sat);
         self.sat_cache.set(Some(result));
         result
     }
 
     /// Set the Z3 solver timeout in milliseconds.
     pub fn set_timeout(&self, timeout_ms: u32) {
-        let solver = self.solver.lock();
+        let solver = self.solver();
         let mut params = z3::Params::new();
         params.set_u32("timeout", timeout_ms);
         params.set_bool("bv_extract_prop", true);
@@ -351,7 +381,7 @@ impl SymContext {
         // Use native Bool to avoid ITE wrapping overhead
         let bool_ast = cond.to_z3_bool();
 
-        let solver = self.solver.lock();
+        let solver = self.solver();
 
         // Check true branch
         solver.push();
@@ -392,7 +422,7 @@ impl SymContext {
         }
 
         // Need to get a fresh model - must call check() first for Z3
-        let solver = self.solver.lock();
+        let solver = self.solver();
         match solver.check() {
             z3::SatResult::Sat => {
                 self.sat_cache.set(Some(true));
@@ -438,7 +468,7 @@ impl SymContext {
         }
 
         // Need to get a model from Z3
-        let solver = self.solver.lock();
+        let solver = self.solver();
         match solver.check() {
             z3::SatResult::Sat => {}
             _ => return None,
@@ -516,7 +546,7 @@ impl SymContext {
         let ast = bv.to_z3_ast();
 
         // Hold lock for entire operation to avoid lifetime issues
-        let solver = self.solver.lock();
+        let solver = self.solver();
         solver.push();
 
         for _ in 0..n {
@@ -610,7 +640,7 @@ impl SymContext {
             (0, max_val)
         };
 
-        let solver = self.solver.lock();
+        let solver = self.solver();
         solver.push();
 
         if signed {
@@ -719,7 +749,7 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
-        let solver = self.solver.lock();
+        let solver = self.solver();
         solver.push();
 
         let (mut lo, mut hi): (u128, u128);
@@ -862,7 +892,7 @@ impl SymContext {
 
         let constraint = ast._eq(&val_ast);
 
-        let solver = self.solver.lock();
+        let solver = self.solver();
         solver.push();
         solver.assert(&constraint);
         let result = matches!(solver.check(), z3::SatResult::Sat);
@@ -874,7 +904,7 @@ impl SymContext {
     /// Save solver state for temporary constraints.
     #[cfg(feature = "vex-engine-z3")]
     pub fn push(&self) {
-        self.solver.lock().push();
+        self.solver().push();
         // Invalidate caches since constraint set may change
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
@@ -883,7 +913,7 @@ impl SymContext {
     /// Restore solver state.
     #[cfg(feature = "vex-engine-z3")]
     pub fn pop(&self) {
-        self.solver.lock().pop(1);
+        self.solver().pop(1);
         // Invalidate caches since constraint set has changed
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
@@ -1005,7 +1035,7 @@ impl SymContext {
     /// Call this after checking satisfiability and finding UNSAT.
     #[cfg(feature = "vex-engine-z3")]
     pub fn unsat_core(&self) -> Vec<usize> {
-        let solver = self.solver.lock();
+        let solver = self.solver();
         let core = solver.get_unsat_core();
 
         let trackers = self.constraint_trackers.lock();
@@ -1032,7 +1062,7 @@ impl SymContext {
     /// this allows Python to understand what constraints are active.
     #[cfg(feature = "vex-engine-z3")]
     pub fn get_all_constraints_str(&self) -> Vec<String> {
-        let solver = self.solver.lock();
+        let solver = self.solver();
         solver.get_assertions().iter().map(|a| format!("{}", a)).collect()
     }
 
@@ -1041,7 +1071,7 @@ impl SymContext {
     /// This can be used to verify constraint sync between Rust and Python.
     #[cfg(feature = "vex-engine-z3")]
     pub fn z3_assertion_count(&self) -> usize {
-        let solver = self.solver.lock();
+        let solver = self.solver();
         solver.get_assertions().len()
     }
 
@@ -1193,28 +1223,17 @@ impl SymContext {
     // =========================================================================
 
     /// Fork the context, creating a new context with all constraints preserved.
+    ///
+    /// The Z3 solver is NOT created eagerly — it starts as None and is
+    /// materialized on first access (lazy). This avoids the O(n) assertion
+    /// replay cost for forked states that are pruned/avoided/deadended
+    /// without ever querying the solver.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
-        // Clone assumed constraints for the fork
+        // Clone assumed constraints and Z3 cache for the fork.
+        // The actual Z3 solver is created lazily on first access.
         let cloned_assumed = self.assumed_constraints.lock().clone();
         let cloned_z3_cache = self.z3_assertions_cache.lock().clone();
-
-        // Create a fresh solver and replay cached Z3 Bool assertions.
-        // NOTE: Z3_solver_translate (Solver::clone) loses all assertions
-        // when source and destination are the same Z3 context (which is
-        // always the case with shared Z3 context). We replay the cached
-        // Z3 Bool objects directly — this is fast because we avoid the
-        // RustBV → Z3 AST conversion that to_z3_bool() would require.
-        let new_solver = z3::Solver::new();
-        let mut params = z3::Params::new();
-        params.set_u32("timeout", 30000);
-        params.set_bool("bv_extract_prop", true);
-        new_solver.set_params(&params);
-
-        // Replay cached Z3 assertions (O(n) Z3_solver_assert, no AST rebuild)
-        for constraint in &cloned_z3_cache {
-            new_solver.assert(constraint);
-        }
 
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
@@ -1224,7 +1243,7 @@ impl SymContext {
             push_constraint_counts: Mutex::new(Vec::new()),
             assumed_constraints: Mutex::new(cloned_assumed),
             z3_assertions_cache: Mutex::new(cloned_z3_cache),
-            solver: Mutex::new(new_solver),
+            solver: Mutex::new(None),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
