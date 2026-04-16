@@ -60,8 +60,8 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 ## Current Status
 
 **Tests:** 82/82 passing
-**Benchmarks:** 5 regression-tested, all correct
-**Performance:** 4/8 measured faster than Python
+**Benchmarks:** 5 regression-tested, all correct + 13/14 total correct
+**Performance:** 5/8 measured faster than Python
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
@@ -71,7 +71,7 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 | defcamp_r100 | 1.5x | |
 | flareon2015_10 | 1.4x | Callable flow |
 | fauxware | 0.9x | Per-callback FFI overhead |
-| flareon2015_2 | 0.8x | 32-bit x86 |
+| flareon2015_2 | 0.8x | 32-bit x86, correct |
 | securityfest_fairlight | 0.5x | Rust interpreter slower for symbolic-heavy blocks |
 
 ## Architecture
