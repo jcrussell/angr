@@ -60,23 +60,19 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 ## Current Status
 
 **Tests:** 82/82 passing
-**Benchmarks:** 12/12 correct results (5 regression-tested)
-**Performance:** 7/12 faster than Python
+**Benchmarks:** 5 regression-tested, all correct
+**Performance:** 4/8 measured faster than Python
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
-| wyvern | 14.7x | Best case |
-| ekoparty | 8.2x | |
-| flareon5 | 5.85x | |
-| ais3 | 3.55x | |
-| whitehatvn | 2.7x | Partial output divergence |
-| defcamp | 2.04x | |
-| flareon10 | 1.37x | Callable flow |
-| fairlight | 1.15x | |
-| fauxware | 0.91x | Per-callback FFI (lazy fork_base) |
-| strcpy_find | 0.21x | Callable predicate overhead |
-| sym-write | 0.08x | Eager symbolic store |
-| hackcon | varies | Z3 AST structure |
+| csaw_wyvern | 15.0x | Best case |
+| flareon2015_5 | 5.2x | |
+| ais3_crackme | 2.7x | |
+| defcamp_r100 | 1.5x | |
+| flareon2015_10 | 1.4x | Callable flow |
+| fauxware | 0.9x | Per-callback FFI overhead |
+| flareon2015_2 | 0.8x | 32-bit x86 |
+| securityfest_fairlight | 0.5x | Rust interpreter slower for symbolic-heavy blocks |
 
 ## Architecture
 
