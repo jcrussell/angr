@@ -8,6 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
@@ -68,14 +69,19 @@ pub struct SymContext {
     push_level: AtomicUsize,
     /// Constraint count at each push level (for rollback).
     push_constraint_counts: Mutex<Vec<usize>>,
+    /// Local Z3 cache length at each push level (for rollback truncation).
+    #[cfg(feature = "vex-engine-z3")]
+    push_local_cache_lengths: Mutex<Vec<usize>>,
     /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true) - constraint == 1 if true, == 0 if false.
     assumed_constraints: Mutex<Vec<(RustBV, bool)>>,
 
-    /// Cached Z3 Bool assertions for fast fork replay.
-    /// Avoids re-building Z3 ASTs from RustBV on every fork.
+    /// Shared (frozen) Z3 Bool assertions from parent — O(1) clone via Arc.
     #[cfg(feature = "vex-engine-z3")]
-    z3_assertions_cache: Mutex<Vec<z3::ast::Bool>>,
+    z3_assertions_shared: Arc<Vec<z3::ast::Bool>>,
+    /// Local Z3 Bool assertions added after fork — only these are cloned.
+    #[cfg(feature = "vex-engine-z3")]
+    z3_assertions_local: Mutex<Vec<z3::ast::Bool>>,
 
     // Z3-specific fields (when feature is enabled)
     /// Z3 solver — lazy: starts as None on fork(), materialized on first access.
@@ -137,10 +143,12 @@ impl SymContext {
             next_id: AtomicU64::new(0),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
+            push_local_cache_lengths: Mutex::new(Vec::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
             assumed_constraints: Mutex::new(Vec::new()),
-            z3_assertions_cache: Mutex::new(Vec::new()),
+            z3_assertions_shared: Arc::new(Vec::new()),
+            z3_assertions_local: Mutex::new(Vec::new()),
             solver: Mutex::new(Some(solver)),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
@@ -170,9 +178,12 @@ impl SymContext {
             params.set_bool("bv_extract_prop", true);
             new_solver.set_params(&params);
 
-            // Replay cached Z3 assertions
-            let cache = self.z3_assertions_cache.lock();
-            for constraint in cache.iter() {
+            // Replay cached Z3 assertions: shared prefix then local additions
+            for constraint in self.z3_assertions_shared.iter() {
+                new_solver.assert(constraint);
+            }
+            let local = self.z3_assertions_local.lock();
+            for constraint in local.iter() {
                 new_solver.assert(constraint);
             }
 
@@ -230,7 +241,7 @@ impl SymContext {
         let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
         let constraint: z3::ast::Bool = z3::ast::Ast::wrap(&ctx, raw_ast);
         // Cache Z3 Bool for fast fork replay
-        self.z3_assertions_cache.lock().push(constraint.clone());
+        self.z3_assertions_local.lock().push(constraint.clone());
         self.solver().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
@@ -297,7 +308,7 @@ impl SymContext {
         // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
         let constraint = cond.to_z3_bool();
         // Cache Z3 Bool for fast fork replay
-        self.z3_assertions_cache.lock().push(constraint.clone());
+        self.z3_assertions_local.lock().push(constraint.clone());
         self.add_constraint(constraint);
     }
 
@@ -310,7 +321,7 @@ impl SymContext {
         // Negate the bool directly
         let constraint = cond.to_z3_bool().not();
         // Cache Z3 Bool for fast fork replay
-        self.z3_assertions_cache.lock().push(constraint.clone());
+        self.z3_assertions_local.lock().push(constraint.clone());
         self.add_constraint(constraint);
     }
 
@@ -932,6 +943,8 @@ impl SymContext {
         self.push();
         let current_count = self.constraint_count.load(Ordering::SeqCst);
         self.push_constraint_counts.lock().push(current_count);
+        let local_len = self.z3_assertions_local.lock().len();
+        self.push_local_cache_lengths.lock().push(local_len);
         self.push_level.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -978,6 +991,11 @@ impl SymContext {
         // Restore constraint count
         if let Some(prev_count) = self.push_constraint_counts.lock().pop() {
             self.constraint_count.store(prev_count, Ordering::SeqCst);
+        }
+
+        // Truncate local Z3 cache to pre-transaction length
+        if let Some(prev_len) = self.push_local_cache_lengths.lock().pop() {
+            self.z3_assertions_local.lock().truncate(prev_len);
         }
 
         self.push_level.fetch_sub(1, Ordering::SeqCst);
@@ -1230,10 +1248,23 @@ impl SymContext {
     /// without ever querying the solver.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
-        // Clone assumed constraints and Z3 cache for the fork.
+        // Clone assumed constraints for the fork.
         // The actual Z3 solver is created lazily on first access.
         let cloned_assumed = self.assumed_constraints.lock().clone();
-        let cloned_z3_cache = self.z3_assertions_cache.lock().clone();
+
+        // Freeze local assertions into the shared prefix (Arc).
+        // If local is empty, this is O(1) — just Arc::clone.
+        // If local is non-empty, merge shared + local into a new Arc.
+        let local = self.z3_assertions_local.lock();
+        let frozen_shared = if local.is_empty() {
+            Arc::clone(&self.z3_assertions_shared)
+        } else {
+            let mut merged = Vec::with_capacity(self.z3_assertions_shared.len() + local.len());
+            merged.extend_from_slice(&self.z3_assertions_shared);
+            merged.extend_from_slice(&local);
+            Arc::new(merged)
+        };
+        drop(local);
 
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
@@ -1241,8 +1272,10 @@ impl SymContext {
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
+            push_local_cache_lengths: Mutex::new(Vec::new()),
             assumed_constraints: Mutex::new(cloned_assumed),
-            z3_assertions_cache: Mutex::new(cloned_z3_cache),
+            z3_assertions_shared: frozen_shared,
+            z3_assertions_local: Mutex::new(Vec::new()),
             solver: Mutex::new(None),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
