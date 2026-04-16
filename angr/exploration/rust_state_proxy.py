@@ -325,9 +325,10 @@ class RustMemoryProxy:
         if data is None:
             return claripy.BVV(0, size * 8)
 
-        # Convert bytes to BVV (default big-endian like angr)
+        # Convert bytes to BVV — angr's memory.load() defaults to big-endian
+        # regardless of architecture (caller must explicitly pass Iend_LE)
         if endness is None:
-            endness = self._arch.memory_endness
+            endness = "Iend_BE"
         if endness == "Iend_LE":
             val = int.from_bytes(data, "little")
         else:
