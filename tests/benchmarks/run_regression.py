@@ -28,17 +28,30 @@ from run_single import _run_in_child, EXAMPLES_DIR, DEFAULT_MEM_LIMIT_MB
 
 BASELINE_FILE = os.path.join(os.path.dirname(__file__), "baseline_timings.json")
 
-# Fast-tier benchmarks known to produce correct results with both engines.
-# Each entry: (name, timeout_seconds)
-REGRESSION_SUITE = [
+# Tiered benchmark suites. Each entry: (name, timeout_seconds)
+# Fast tier: < 10s, always run
+FAST_SUITE = [
     ("fauxware", 30),
     ("defcamp_r100", 30),
     ("ais3_crackme", 30),
     ("google2016_unbreakable_0", 30),
     ("google2016_unbreakable_1", 30),
-    # whitehatvn2015_re400: Rust finds correct states but flag extraction
-    # diverges (leading zeros) due to symbolic memory concretization issue.
+    ("strcpy_find", 30),
+    ("flareon2015_2", 30),
 ]
+
+# Medium tier: 10-60s, run with --full
+MEDIUM_SUITE = [
+    ("sym-write", 60),
+    ("flareon2015_5", 60),
+    ("flareon2015_10", 60),
+    ("ekopartyctf2016_rev250", 60),
+    ("csaw_wyvern", 60),
+    ("securityfest_fairlight", 60),
+]
+
+# Default: fast only. Use --full for fast + medium.
+REGRESSION_SUITE = FAST_SUITE  # overridden in main() if --full
 
 
 def _normalize_output(output):
@@ -100,7 +113,13 @@ def main():
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB)
     parser.add_argument("--rust-only", action="store_true",
                         help="Only run Rust engine (skip Python comparison)")
+    parser.add_argument("--full", action="store_true",
+                        help="Run full suite (fast + medium tier)")
     args = parser.parse_args()
+
+    global REGRESSION_SUITE
+    if args.full:
+        REGRESSION_SUITE = FAST_SUITE + MEDIUM_SUITE
 
     # Verify examples exist
     missing = [name for name, _ in REGRESSION_SUITE
