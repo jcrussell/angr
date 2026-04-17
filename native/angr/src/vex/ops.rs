@@ -1519,229 +1519,83 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    // Float conversions for concrete values
-    fn f32_to_f64(
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    // Float conversions for concrete values.
+    // Generated via macros to eliminate boilerplate across 18 conversion functions.
+
+    /// Float-to-float or int-to-float conversion (no rounding needed).
+    fn float_convert_simple(arg: RustBV, convert: fn(u128) -> u128, out_bits: u32) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
-            let f = f32::from_bits(v as u32);
-            let result = (f as f64).to_bits();
-            return Ok(RustBV::concrete(result as u128, 64));
+            return Ok(RustBV::concrete(convert(v), out_bits));
         }
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f64_to_f32(
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    /// Float-to-int conversion with round-ties-to-even (unary, no rounding mode arg).
+    fn float_to_int_rte(arg: RustBV, convert: fn(u128) -> u128, out_bits: u32) -> Result<RustBV, OpError> {
         if let Some(v) = arg.as_u128() {
-            let f = f64::from_bits(v as u64);
-            let result = (f as f32).to_bits();
-            return Ok(RustBV::concrete(result as u128, 32));
+            return Ok(RustBV::concrete(convert(v), out_bits));
         }
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn i32s_to_f32(
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as i32;
-            let result = (i as f32).to_bits();
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    // --- Float-to-float conversions ---
+    fn f32_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| (f32::from_bits(v as u32) as f64).to_bits() as u128, 64)
+    }
+    fn f64_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| (f64::from_bits(v as u64) as f32).to_bits() as u128, 32)
     }
 
-    fn i32s_to_f64(
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as i32;
-            let result = (i as f64).to_bits();
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    // --- Int-to-float conversions ---
+    fn i32s_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as i32) as f32).to_bits() as u128, 32)
+    }
+    fn i32s_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as i32) as f64).to_bits() as u128, 64)
+    }
+    fn i64s_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as i64) as f32).to_bits() as u128, 32)
+    }
+    fn i64s_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as i64) as f64).to_bits() as u128, 64)
+    }
+    fn i32u_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as u32) as f32).to_bits() as u128, 32)
+    }
+    fn i32u_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as u32) as f64).to_bits() as u128, 64)
+    }
+    fn i64u_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as u64) as f32).to_bits() as u128, 32)
+    }
+    fn i64u_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_simple(arg, |v| ((v as u64) as f64).to_bits() as u128, 64)
     }
 
-    fn i64s_to_f64(
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as i64;
-            let result = (i as f64).to_bits();
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    // --- Float-to-int conversions (round ties to even) ---
+    fn f32_to_i32s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| (Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as i32 as u32) as u128, 32)
     }
-
-    fn f32_to_i32s(
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::round_ties_to_even_f32(f);
-            let result = (rounded as i32) as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f64_to_i32s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| (Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as i32 as u32) as u128, 32)
     }
-
-    fn f64_to_i32s(
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::round_ties_to_even_f64(f);
-            let result = (rounded as i32) as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f32_to_i64s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| (Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as i64 as u64) as u128, 64)
     }
-
-    fn f64_to_i64s(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::round_ties_to_even_f64(f);
-            let result = rounded as i64 as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f64_to_i64s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| (Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as i64 as u64) as u128, 64)
     }
-
-    fn i64s_to_f32(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as i64;
-            let result = (i as f32).to_bits();
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f32_to_i32u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as u32 as u128, 32)
     }
-
-    fn i32u_to_f32(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as u32;
-            let result = (i as f32).to_bits();
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f64_to_i32u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as u32 as u128, 32)
     }
-
-    fn i32u_to_f64(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as u32;
-            let result = (i as f64).to_bits();
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f32_to_i64u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as u64 as u128, 64)
     }
-
-    fn i64u_to_f32(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as u64;
-            let result = (i as f32).to_bits();
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
-    fn i64u_to_f64(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let i = v as u64;
-            let result = (i as f64).to_bits();
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
-    fn f32_to_i64s(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::round_ties_to_even_f32(f);
-            let result = rounded as i64 as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
-    fn f32_to_i32u(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::round_ties_to_even_f32(f);
-            let result = rounded as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
-    fn f64_to_i32u(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::round_ties_to_even_f64(f);
-            let result = rounded as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
-    fn f32_to_i64u(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::round_ties_to_even_f32(f);
-            let result = rounded as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
-    fn f64_to_i64u(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::round_ties_to_even_f64(f);
-            let result = rounded as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f64_to_i64u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_to_int_rte(arg, |v| Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as u64 as u128, 64)
     }
 
     fn round_f32_to_int(
@@ -1882,130 +1736,42 @@ impl VEXOps {
         }
     }
 
-    fn f64_to_f32_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    /// Float conversion with rounding mode (binop: rm, value -> result).
+    fn float_convert_rm(rm: RustBV, arg: RustBV, convert: fn(u128, u32) -> u128, out_bits: u32) -> Result<RustBV, OpError> {
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f64::from_bits(v as u64);
-            // Note: f64 to f32 rounding is complex - for now use direct cast
-            let result = (f as f32).to_bits();
-            return Ok(RustBV::concrete(result as u128, 32));
+            return Ok(RustBV::concrete(convert(v, rm_val as u32), out_bits));
         }
         Err(OpError::SymbolicFloatUnsupported)
     }
 
-    fn f32_to_i32s_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
-            let result = (rounded as i32) as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    // --- Rounding-mode float conversions (binop variants) ---
+    fn f64_to_f32_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        // Note: ignores rounding mode, uses direct cast
+        Self::float_convert_rm(rm, arg, |v, _rm| (f64::from_bits(v as u64) as f32).to_bits() as u128, 32)
     }
-
-    fn f64_to_i32s_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
-            let result = (rounded as i32) as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f32_to_i32s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i32 as u32) as u128, 32)
     }
-
-    fn f32_to_i64s_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
-            let result = (rounded as i64) as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f64_to_i32s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i32 as u32) as u128, 32)
     }
-
-    fn f64_to_i64s_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
-            let result = (rounded as i64) as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f32_to_i64s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i64 as u64) as u128, 64)
     }
-
-    fn f32_to_i32u_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
-            let result = rounded as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f64_to_i64s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i64 as u64) as u128, 64)
     }
-
-    fn f64_to_i32u_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
-            let result = rounded as u32;
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f32_to_i32u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u32 as u128, 32)
     }
-
-    fn f32_to_i64u_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::apply_rounding_f32(f, rm_val as u32);
-            let result = rounded as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f64_to_i32u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u32 as u128, 32)
     }
-
-    fn f64_to_i64u_rm(
-        rm: RustBV,
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::apply_rounding_f64(f, rm_val as u32);
-            let result = rounded as u64;
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
+    fn f32_to_i64u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u64 as u128, 64)
+    }
+    fn f64_to_i64u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+        Self::float_convert_rm(rm, arg, |v, rm| Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u64 as u128, 64)
     }
 }
 
