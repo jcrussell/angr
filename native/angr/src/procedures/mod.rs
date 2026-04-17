@@ -29,6 +29,8 @@ pub mod rand;
 pub mod malloc;
 pub mod read;
 pub mod write;
+pub mod ctype;
+pub mod strchr;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -173,6 +175,20 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(malloc::NativeFree));
         registry.register(Arc::new(malloc::NativeCalloc));
         registry.register(Arc::new(malloc::NativeRealloc));
+        // Character classification (ctype.h)
+        registry.register(Arc::new(ctype::NativeIsDigit));
+        registry.register(Arc::new(ctype::NativeIsAlpha));
+        registry.register(Arc::new(ctype::NativeIsSpace));
+        registry.register(Arc::new(ctype::NativeIsAlnum));
+        registry.register(Arc::new(ctype::NativeIsUpper));
+        registry.register(Arc::new(ctype::NativeIsLower));
+        registry.register(Arc::new(ctype::NativeIsXdigit));
+        registry.register(Arc::new(ctype::NativeIsPrint));
+        registry.register(Arc::new(ctype::NativeToLower));
+        registry.register(Arc::new(ctype::NativeToUpper));
+        // String/memory search
+        registry.register(Arc::new(strchr::NativeStrchr));
+        registry.register(Arc::new(strchr::NativeMemchr));
         // I/O procedures: NOT registered by default — they only handle
         // stdin/stdout natively, and the interaction with Python's posix
         // plugin for fd tracking requires careful coordination.
