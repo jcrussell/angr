@@ -491,6 +491,12 @@ pub struct CallbackInterpreter<'a> {
     /// Limits to one deferred fork per run_until_event call to prevent
     /// solver corruption from under-constrained multi-block execution.
     deferred_fork_this_step: bool,
+    /// Whether we've pushed the solver for incremental branch constraint tracking.
+    /// When true, the solver has accumulated taken-path conditions from prior
+    /// deferred forks in this block. Must pop at block end.
+    block_solver_pushed: bool,
+    /// Number of deferred_forks conditions already asserted in the pushed context.
+    block_forks_asserted: usize,
     /// Execution configuration.
     config: ExecutionConfig,
     /// Counter for alternating branch policy.
@@ -605,6 +611,8 @@ impl<'a> CallbackInterpreter<'a> {
             use_memory_callbacks: true,
             deferred_forks: Vec::new(),
             deferred_fork_this_step: false,
+            block_solver_pushed: false,
+            block_forks_asserted: 0,
             config,
             branch_counter: 0,
             next_condition_id: 0,
@@ -1558,6 +1566,10 @@ impl<'a> CallbackInterpreter<'a> {
         callbacks: &PythonCallbacks,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
+        // Reset incremental branch solver state for this block
+        self.block_solver_pushed = false;
+        self.block_forks_asserted = 0;
+
         // Clear per-block concretization cache (constraints don't change within a block)
         self.concretize_cache.clear();
 
@@ -1596,6 +1608,7 @@ impl<'a> CallbackInterpreter<'a> {
                 StmtResult::Exit { target, jumpkind } => {
                     // Flush pending stores before returning
                     self.flush_stores(py, callbacks)?;
+                    self.pop_block_solver_if_pushed();
                     return Ok(self.handle_exit(target, jumpkind));
                 }
                 StmtResult::SymbolicBranch {
@@ -1605,6 +1618,7 @@ impl<'a> CallbackInterpreter<'a> {
                 } => {
                     // Flush pending stores before returning
                     self.flush_stores(py, callbacks)?;
+                    self.pop_block_solver_if_pushed();
 
                     // Generate unique condition ID and store condition for later retrieval
                     let cond_id = self.next_cond_id();
@@ -1632,8 +1646,21 @@ impl<'a> CallbackInterpreter<'a> {
         // Flush pending stores at block end
         self.flush_stores(py, callbacks)?;
 
+        // Pop incremental branch solver context if pushed
+        self.pop_block_solver_if_pushed();
+
         // Handle default exit
         self.handle_default_exit(irsb)
+    }
+
+    /// Pop the solver if we pushed for incremental branch constraint tracking.
+    #[inline]
+    fn pop_block_solver_if_pushed(&mut self) {
+        if self.block_solver_pushed {
+            self.ctx.pop();
+            self.block_solver_pushed = false;
+            self.block_forks_asserted = 0;
+        }
     }
 
     /// Execute a single statement using Python callbacks.
@@ -1950,30 +1977,40 @@ impl<'a> CallbackInterpreter<'a> {
                 let (can_be_true, can_be_false) = if self.lazy_solves {
                     (true, true)
                 } else {
-                    // Use push/pop to temporarily add taken-path constraints from
-                    // previous deferred forks so feasibility checks account for the
-                    // execution path. Without these, the solver would report both paths
-                    // feasible for every exit, causing exponential state growth.
-                    // The push/pop ensures the main solver stays clean (snapshots
-                    // capture the unconstrained state for correct alternate-path forking).
-                    let has_prior_forks = !self.deferred_forks.is_empty();
-                    if has_prior_forks {
-                        self.ctx.push();
-                        for prev_fork in &self.deferred_forks {
-                            if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
-                                if prev_fork.path_taken {
-                                    self.ctx.assume_true(cond);
-                                } else {
-                                    self.ctx.assume_false(cond);
+                    // Incremental assertion: push once per block, assert new fork
+                    // conditions incrementally. This avoids re-asserting all N prior
+                    // conditions for the N-th Exit (O(N) → O(1) per check).
+                    if !self.deferred_forks.is_empty() {
+                        if !self.block_solver_pushed {
+                            // First time in this block with prior forks: push and assert all
+                            self.ctx.push();
+                            self.block_solver_pushed = true;
+                            for prev_fork in &self.deferred_forks {
+                                if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                                    if prev_fork.path_taken {
+                                        self.ctx.assume_true(cond);
+                                    } else {
+                                        self.ctx.assume_false(cond);
+                                    }
                                 }
+                            }
+                            self.block_forks_asserted = self.deferred_forks.len();
+                        } else {
+                            // Subsequent Exits: only assert NEW fork conditions
+                            while self.block_forks_asserted < self.deferred_forks.len() {
+                                let prev_fork = &self.deferred_forks[self.block_forks_asserted];
+                                if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                                    if prev_fork.path_taken {
+                                        self.ctx.assume_true(cond);
+                                    } else {
+                                        self.ctx.assume_false(cond);
+                                    }
+                                }
+                                self.block_forks_asserted += 1;
                             }
                         }
                     }
-                    let result = self.ctx.check_branch_feasibility(&guard_val);
-                    if has_prior_forks {
-                        self.ctx.pop();
-                    }
-                    result
+                    self.ctx.check_branch_feasibility(&guard_val)
                 };
                 if can_be_true && can_be_false {
 
@@ -3528,6 +3565,8 @@ impl<'a> CallbackInterpreter<'a> {
             use_memory_callbacks: self.use_memory_callbacks,
             deferred_forks: Vec::new(), // Fresh deferred forks for fork
             deferred_fork_this_step: false,
+            block_solver_pushed: false,
+            block_forks_asserted: 0,
             config: self.config.clone(),
             branch_counter: self.branch_counter,
             next_condition_id: self.next_condition_id,
