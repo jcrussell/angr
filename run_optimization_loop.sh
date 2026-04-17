@@ -45,16 +45,12 @@ For each task, follow this loop:
 11. If you discover new work needed: bd create --title="<title>" --description="<desc>" --type=task --parent=angr-34w
 12. If budget remains, pick the next task from bd ready
 
-IMPORTANT: Read the detailed plan before implementing:
-  cat /home/ubuntu/.claude/plans/fluffy-snacking-music.md
-It has specific file paths, line numbers, and implementation details for each task.
-
 Key files:
-- Plan: /home/ubuntu/.claude/plans/fluffy-snacking-music.md
-- Rust: native/angr/src/ (exploration.rs, interpreter_cb.rs, callbacks.rs, state.rs, concretize.rs)
-- Python: angr/exploration/rust_manager.py (5059 lines), rust_state_proxy.py, rust_techniques.py
-- Tests: tests/engines/test_rust_exploration.py (14 tests)
+- Rust: native/angr/src/ (exploration.rs, interpreter_cb.rs, callbacks.rs, state.rs, symbolic/context.rs, symbolic/value.rs)
+- Python: angr/exploration/rust_manager.py, rust_state_export.py, rust_state_sync.py, rust_state_proxy.py
+- Tests: tests/engines/test_rust_exploration.py (82 tests)
 - Single runner: tests/benchmarks/run_single.py <example> [--engine rust|python] [--both]
+- Regression: tests/benchmarks/run_regression.py
 
 Rules:
 - Never push to remote (no network to github)
@@ -63,6 +59,7 @@ Rules:
 - If a build fails, fix it before moving on
 - If tests fail, investigate and fix before closing the task
 - Store findings in bd remember, not in markdown files
+- CHECKPOINT: Every ~30 minutes of work, commit any working changes (even partial) with a WIP commit message. This prevents losing work if you hit a rate limit or crash.
 
 MEMORY SAFETY (8GB machine, no swap):
 - NEVER run tests/benchmarks/run_comparison_10.py — it OOM-kills the orchestrator
@@ -76,10 +73,19 @@ while [ $ITERATION -lt $MAX_ITERATIONS ]; do
   ITERATION=$((ITERATION + 1))
   LOGFILE="$LOG_DIR/iteration-${ITERATION}-$(date +%Y%m%d-%H%M%S).log"
 
-  echo "=== Iteration $ITERATION/$MAX_ITERATIONS at $(date) ==="
+  # Check if there's any work to do before burning tokens
+  IN_PROGRESS=$(cd /home/ubuntu/repos/angr && bd list --status=in_progress --json 2>/dev/null | jq 'length')
+  READY=$(cd /home/ubuntu/repos/angr && bd ready --json 2>/dev/null | jq 'length')
+
+  if [ "$IN_PROGRESS" -eq 0 ] && [ "$READY" -eq 0 ]; then
+    echo "=== No tasks in_progress or ready — exiting loop at $(date) ==="
+    break
+  fi
+
+  echo "=== Iteration $ITERATION/$MAX_ITERATIONS at $(date) (in_progress=$IN_PROGRESS, ready=$READY) ==="
   echo "=== Log: $LOGFILE ==="
 
-  claude -p "$PROMPT" \
+  stdbuf -oL claude -p "$PROMPT" \
     --dangerously-skip-permissions \
     --model opus \
     < /dev/null \
