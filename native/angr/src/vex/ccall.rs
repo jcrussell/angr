@@ -279,10 +279,22 @@ fn calc_parity(val: u64) -> u8 {
     if byte.count_ones() % 2 == 0 { 1 } else { 0 }
 }
 
+/// Get bitmask for an n-bit value (e.g., nbits=32 -> 0xFFFFFFFF).
+#[inline]
+fn get_mask(nbits: u32) -> u64 {
+    if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 }
+}
+
+/// Get the sign bit for an n-bit value (e.g., nbits=32 -> 0x80000000).
+#[inline]
+fn get_sign_bit(nbits: u32) -> u64 {
+    1u64 << (nbits - 1)
+}
+
 /// Calculate flags for SUB operation (CMP uses this)
 fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
 
     let res = arg_l.wrapping_sub(arg_r) & mask;
 
@@ -307,8 +319,8 @@ fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
 
 /// Calculate flags for ADD operation
 fn calc_flags_add(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
 
     let res = arg_l.wrapping_add(arg_r) & mask;
 
@@ -335,8 +347,8 @@ fn calc_flags_add(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
 
 /// Calculate flags for LOGIC operation (AND, OR, XOR, TEST)
 fn calc_flags_logic(nbits: u32, result: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
     let res = result & mask;
 
     // CF and OF are always 0 for logic ops
@@ -357,8 +369,8 @@ fn calc_flags_logic(nbits: u32, result: u64) -> Flags {
 
 /// Calculate flags for INC operation
 fn calc_flags_inc(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
     let res = res & mask;
 
     // CF is preserved from cc_ndep
@@ -381,8 +393,8 @@ fn calc_flags_inc(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
 
 /// Calculate flags for DEC operation
 fn calc_flags_dec(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
     let res = res & mask;
 
     // CF is preserved from cc_ndep
@@ -405,8 +417,8 @@ fn calc_flags_dec(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
 
 /// Calculate flags for SHL (shift left) operation
 fn calc_flags_shl(nbits: u32, remaining: u64, shifted: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
     let remaining = remaining & mask;
     let shifted = shifted & mask;
 
@@ -430,8 +442,8 @@ fn calc_flags_shl(nbits: u32, remaining: u64, shifted: u64) -> Flags {
 
 /// Calculate flags for SHR (shift right) operation
 fn calc_flags_shr(nbits: u32, remaining: u64, shifted: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
     let remaining = remaining & mask;
     let shifted = shifted & mask;
 
@@ -455,7 +467,7 @@ fn calc_flags_shr(nbits: u32, remaining: u64, shifted: u64) -> Flags {
 
 /// Calculate flags for ROL (rotate left) operation
 fn calc_flags_rol(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
+    let mask = get_mask(nbits);
     let res = res & mask;
 
     // CF: LSB of result
@@ -474,7 +486,7 @@ fn calc_flags_rol(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
 
 /// Calculate flags for ROR (rotate right) operation
 fn calc_flags_ror(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
+    let mask = get_mask(nbits);
     let res = res & mask;
 
     // CF: MSB of result
@@ -493,8 +505,8 @@ fn calc_flags_ror(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
 
 /// Calculate flags for ADC (add with carry) operation
 fn calc_flags_adc(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
 
     let old_c = (cc_ndep >> flag_shift::G_CC_SHIFT_C) & 1;
     let arg_l = cc_dep1 & mask;
@@ -525,8 +537,8 @@ fn calc_flags_adc(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Flags
 
 /// Calculate flags for SBB (subtract with borrow) operation
 fn calc_flags_sbb(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
-    let sign_bit = 1u64 << (nbits - 1);
+    let mask = get_mask(nbits);
+    let sign_bit = get_sign_bit(nbits);
 
     let old_c = (cc_ndep >> flag_shift::G_CC_SHIFT_C) & 1;
     let arg_l = cc_dep1 & mask;
@@ -557,7 +569,7 @@ fn calc_flags_sbb(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Flags
 
 /// Calculate flags for UMUL (unsigned multiply) operation
 fn calc_flags_umul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
+    let mask = get_mask(nbits);
 
     let lo = (cc_dep1.wrapping_mul(cc_dep2)) & mask;
 
@@ -583,13 +595,13 @@ fn calc_flags_umul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
 
 /// Calculate flags for SMUL (signed multiply) operation
 fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
-    let mask = if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 };
+    let mask = get_mask(nbits);
 
     // Sign-extend operands
     let arg1_signed = if nbits == 64 {
         cc_dep1 as i64
     } else {
-        let sign_bit = 1u64 << (nbits - 1);
+        let sign_bit = get_sign_bit(nbits);
         if (cc_dep1 & sign_bit) != 0 {
             (cc_dep1 | !mask) as i64
         } else {
@@ -600,7 +612,7 @@ fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     let arg2_signed = if nbits == 64 {
         cc_dep2 as i64
     } else {
-        let sign_bit = 1u64 << (nbits - 1);
+        let sign_bit = get_sign_bit(nbits);
         if (cc_dep2 & sign_bit) != 0 {
             (cc_dep2 | !mask) as i64
         } else {
@@ -616,7 +628,7 @@ fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     let lo_sign_ext = if nbits == 64 {
         if (lo as i64) < 0 { u64::MAX } else { 0 }
     } else {
-        let sign_bit = 1u64 << (nbits - 1);
+        let sign_bit = get_sign_bit(nbits);
         if (lo & sign_bit) != 0 { mask } else { 0 }
     };
 

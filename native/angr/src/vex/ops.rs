@@ -210,47 +210,22 @@ impl VEXOps {
                 Ok(left.xor(&right, ctx))
             }
 
-            // Shifts
+            // Shifts — normalize shift amount width to match operand
             IROp::Shl(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
-                // Shift amount might be different width, adjust
-                let amt = if right.width() != left.width() {
-                    if right.width() > left.width() {
-                        right.truncate(left.width(), ctx)
-                    } else {
-                        right.zero_extend(left.width(), ctx)
-                    }
-                } else {
-                    right
-                };
+                let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.shl(&amt, ctx))
             }
 
             IROp::Shr(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
-                let amt = if right.width() != left.width() {
-                    if right.width() > left.width() {
-                        right.truncate(left.width(), ctx)
-                    } else {
-                        right.zero_extend(left.width(), ctx)
-                    }
-                } else {
-                    right
-                };
+                let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.lshr(&amt, ctx))
             }
 
             IROp::Sar(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
-                let amt = if right.width() != left.width() {
-                    if right.width() > left.width() {
-                        right.truncate(left.width(), ctx)
-                    } else {
-                        right.zero_extend(left.width(), ctx)
-                    }
-                } else {
-                    right
-                };
+                let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.ashr(&amt, ctx))
             }
 
@@ -1521,6 +1496,19 @@ impl VEXOps {
 
     // Float conversions for concrete values.
     // Generated via macros to eliminate boilerplate across 18 conversion functions.
+
+    /// Normalize shift amount width to match the operand width.
+    fn normalize_shift_amount(amt: RustBV, target_width: u32, ctx: &SymContext) -> RustBV {
+        if amt.width() != target_width {
+            if amt.width() > target_width {
+                amt.truncate(target_width, ctx)
+            } else {
+                amt.zero_extend(target_width, ctx)
+            }
+        } else {
+            amt
+        }
+    }
 
     /// Float-to-float or int-to-float conversion (no rounding needed).
     fn float_convert_simple(arg: RustBV, convert: fn(u128) -> u128, out_bits: u32) -> Result<RustBV, OpError> {
