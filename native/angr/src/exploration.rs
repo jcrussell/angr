@@ -2656,7 +2656,9 @@ impl RustExplorationManager {
     pub fn clear_stash(&mut self, stash: &str) {
         if let Some(s) = self.stashes.get_mut(stash) {
             for state in s.iter() {
-                self.state_index.remove(&state.state_id());
+                let sid = state.state_id();
+                self.state_index.remove(&sid);
+                self.state_roots.remove(&sid);
             }
             s.clear();
         }
@@ -2680,6 +2682,7 @@ impl RustExplorationManager {
         dict.set_item("pruned_count", self.pruned_count)?;
         dict.set_item("deadended_count", self.deadended_count)?;
         dict.set_item("drop_terminal_states", self.drop_terminal_states)?;
+        dict.set_item("state_roots_size", self.state_roots.len())?;
         Ok(dict)
     }
 
@@ -3189,8 +3192,11 @@ impl RustExplorationManager {
                 .entry(stash_name.to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(state);
+        } else {
+            // State is dropped here, freeing its Z3 solver clone.
+            // Clean up state_roots to prevent unbounded growth.
+            self.state_roots.remove(&state.state_id());
         }
-        // else: state is dropped here, freeing its Z3 solver clone
     }
 
     /// Sync constraints from Python callbacks back to the Rust state's solver.
