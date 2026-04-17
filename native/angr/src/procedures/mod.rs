@@ -31,6 +31,8 @@ pub mod read;
 pub mod write;
 pub mod ctype;
 pub mod strchr;
+pub mod strtol;
+pub mod strcat;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -189,6 +191,14 @@ impl NativeProcedureRegistry {
         // String/memory search
         registry.register(Arc::new(strchr::NativeStrchr));
         registry.register(Arc::new(strchr::NativeMemchr));
+        // String-to-integer conversion
+        registry.register(Arc::new(strtol::NativeStrtol));
+        registry.register(Arc::new(strtol::NativeStrtoul));
+        registry.register(Arc::new(strtol::NativeAtoi));
+        registry.register(Arc::new(strtol::NativeAtol));
+        // String concatenation
+        registry.register(Arc::new(strcat::NativeStrcat));
+        registry.register(Arc::new(strcat::NativeStrncat));
         // I/O procedures: NOT registered by default — they only handle
         // stdin/stdout natively, and the interaction with Python's posix
         // plugin for fd tracking requires careful coordination.
