@@ -516,6 +516,10 @@ pub struct CallbackInterpreter<'a> {
     /// Used for same-step cross-block load forwarding and for applying to state memory.
     /// HashMap for O(1) lookup by address. Value is the most recent store data.
     all_flushed_stores: HashMap<u64, Vec<u8>>,
+    /// All symbolic stores flushed during this step (accumulated across block boundaries).
+    /// Preserves symbolic RustBV values for cross-block load forwarding.
+    /// Takes priority over all_flushed_stores (concrete) during loads.
+    all_flushed_symbolic_stores: HashMap<u64, RustBV>,
     /// Pending symbolic stores - maps address to symbolic RustBV.
     /// These override the concrete bytes in pending_stores for load forwarding.
     pending_symbolic_stores: HashMap<u64, RustBV>,
@@ -610,6 +614,7 @@ impl<'a> CallbackInterpreter<'a> {
             dirty_registers: 0,
             pending_stores: Vec::with_capacity(256),
             all_flushed_stores: HashMap::new(),
+            all_flushed_symbolic_stores: HashMap::new(),
             pending_symbolic_stores: HashMap::new(),
             max_pending_stores: 256,
             rust_memory: None,
@@ -945,8 +950,11 @@ impl<'a> CallbackInterpreter<'a> {
             for (addr, data) in &self.pending_stores {
                 self.all_flushed_stores.insert(*addr, data.clone());
             }
+            // Preserve symbolic values across block boundaries
+            for (addr, bv) in self.pending_symbolic_stores.drain() {
+                self.all_flushed_symbolic_stores.insert(addr, bv);
+            }
             self.pending_stores.clear();
-            self.pending_symbolic_stores.clear();
             return Ok(());
         }
 
@@ -959,8 +967,11 @@ impl<'a> CallbackInterpreter<'a> {
         for (addr, data) in &self.pending_stores {
             self.all_flushed_stores.insert(*addr, data.clone());
         }
+        // Preserve symbolic values across block boundaries
+        for (addr, bv) in self.pending_symbolic_stores.drain() {
+            self.all_flushed_symbolic_stores.insert(addr, bv);
+        }
         self.pending_stores.clear();
-        self.pending_symbolic_stores.clear();
         Ok(())
     }
 
@@ -983,12 +994,14 @@ impl<'a> CallbackInterpreter<'a> {
                 rust_mem.import_symbolic_value(addr, bv, None);
             }
             self.all_flushed_stores.clear();
+            self.all_flushed_symbolic_stores.clear();
         }
     }
 
     /// Take all stores from this step (both pending and previously flushed).
     pub fn take_all_stores(&mut self) -> Vec<(u64, Vec<u8>)> {
         self.pending_symbolic_stores.clear();
+        self.all_flushed_symbolic_stores.clear();
         // Merge pending into flushed
         for (addr, data) in self.pending_stores.drain(..) {
             self.all_flushed_stores.insert(addr, data);
@@ -2704,7 +2717,16 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                     }
 
-                    // Also check previously flushed stores (from earlier blocks in this step)
+                    // Also check previously flushed symbolic stores (cross-block)
+                    if let Some(sym_val) = self.all_flushed_symbolic_stores.get(&addr_concrete) {
+                        if sym_val.width() == (size * 8) as u32 {
+                            return Ok(sym_val.clone());
+                        } else if sym_val.width() > (size * 8) as u32 {
+                            return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+                        }
+                    }
+
+                    // Also check previously flushed concrete stores (cross-block)
                     if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
                         if size <= store_data.len() {
                             let data = &store_data[..size];
@@ -3515,6 +3537,7 @@ impl<'a> CallbackInterpreter<'a> {
             dirty_registers: 0, // Fresh dirty tracking for fork
             pending_stores: Vec::with_capacity(256), // Fresh store buffer for fork
             all_flushed_stores: HashMap::new(),
+            all_flushed_symbolic_stores: HashMap::new(),
             pending_symbolic_stores: HashMap::new(),
             max_pending_stores: self.max_pending_stores,
             // Fork Rust memory with O(1) CoW

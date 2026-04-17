@@ -1022,36 +1022,45 @@ pub fn handle_ccall_with_ctx(
             if let Some(cat) = category {
                 match cat {
                     OpCategory::Sub => {
-                        // For SUB: ZF = (dep1 == dep2), CF = (dep1 < dep2 unsigned)
+                        // For SUB: must extract to nbits first (64-bit temps for 8/16/32-bit ops)
                         use cond_type::*;
                         let inv = (cond & 1) != 0;
-                        match cond & !1 {
-                            COND_Z => {
-                                let eq = dep1.eq(dep2, sym_ctx);
-                                let r = if inv { eq.not(sym_ctx) } else { eq };
-                                return Some(r.zero_extend(ret_bits, sym_ctx));
+                        let nbits = if name == "amd64g_calculate_condition" {
+                            amd64_op_to_nbits(cc_op)
+                        } else {
+                            x86_op_to_nbits(cc_op)
+                        };
+                        if let Some(nb) = nbits {
+                            let d1 = extract_to_nbits(dep1, nb, sym_ctx);
+                            let d2 = extract_to_nbits(dep2, nb, sym_ctx);
+                            match cond & !1 {
+                                COND_Z => {
+                                    let eq = d1.eq(&d2, sym_ctx);
+                                    let r = if inv { eq.not(sym_ctx) } else { eq };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                COND_B => {
+                                    let lt = d1.ult(&d2, sym_ctx);
+                                    let r = if inv { lt.not(sym_ctx) } else { lt };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                COND_BE => {
+                                    let le = d1.ule(&d2, sym_ctx);
+                                    let r = if inv { le.not(sym_ctx) } else { le };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                COND_L => {
+                                    let lt = d1.slt(&d2, sym_ctx);
+                                    let r = if inv { lt.not(sym_ctx) } else { lt };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                COND_LE => {
+                                    let le = d1.sle(&d2, sym_ctx);
+                                    let r = if inv { le.not(sym_ctx) } else { le };
+                                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                                }
+                                _ => {}
                             }
-                            COND_B => {
-                                let lt = dep1.ult(dep2, sym_ctx);
-                                let r = if inv { lt.not(sym_ctx) } else { lt };
-                                return Some(r.zero_extend(ret_bits, sym_ctx));
-                            }
-                            COND_BE => {
-                                let le = dep1.ule(dep2, sym_ctx);
-                                let r = if inv { le.not(sym_ctx) } else { le };
-                                return Some(r.zero_extend(ret_bits, sym_ctx));
-                            }
-                            COND_L => {
-                                let lt = dep1.slt(dep2, sym_ctx);
-                                let r = if inv { lt.not(sym_ctx) } else { lt };
-                                return Some(r.zero_extend(ret_bits, sym_ctx));
-                            }
-                            COND_LE => {
-                                let le = dep1.sle(dep2, sym_ctx);
-                                let r = if inv { le.not(sym_ctx) } else { le };
-                                return Some(r.zero_extend(ret_bits, sym_ctx));
-                            }
-                            _ => {}
                         }
                     }
                     OpCategory::Logic => {

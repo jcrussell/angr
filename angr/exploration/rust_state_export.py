@@ -138,6 +138,24 @@ class RustStateExportMixin:
                 except Exception as e:
                     l.warning(f"export_stash failed for {stash}: {e}")
 
+        # Restore stdin content for states that were forked purely in Rust.
+        # These states have empty posix.stdin.content because they never went
+        # through a SimProcedure callback in Python. The _stdin_content tracks
+        # BVS packets captured during callbacks (fgets, read, etc.).
+        if self._stdin_content:
+            for s in states:
+                try:
+                    posix = getattr(s, 'posix', None)
+                    if posix is None:
+                        continue
+                    stdin = getattr(posix, 'stdin', None)
+                    if stdin is None or not hasattr(stdin, 'content'):
+                        continue
+                    if not stdin.content:
+                        stdin.content = list(self._stdin_content)
+                except Exception:
+                    pass
+
         # Fix posix nested weakrefs on all returned states
         # This ensures stdin/stdout/stderr have valid state references
         # regardless of which code path created the state

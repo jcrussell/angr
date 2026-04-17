@@ -275,6 +275,12 @@ class RustExplorationManager(
         # Cached memory layout from disk cache for fast _sync_memory_to_rust
         self._mem_cache: Optional[dict] = None
 
+        # Track stdin BVS variables for state export.
+        # List of (claripy_bvs, size_ast) tuples from SimPacketsStream.content.
+        # Populated during SimProcedure callbacks that read from stdin (fgets, read, etc.).
+        # Used to restore stdin content on found states that were forked purely in Rust.
+        self._stdin_content: list = []
+
         # Add initial states
         if active_states:
             # Handle single state or list of states

@@ -506,6 +506,25 @@ class RustCallbackDispatchMixin:
             _sp_sync_start = time.perf_counter_ns()
             all_succs = successors.all_successors
 
+            # Capture stdin BVS variables from SimProcedure callbacks.
+            # When fgets/read/etc. execute, they add packets to posix.stdin.content.
+            # Track these so found states forked purely in Rust can restore stdin.
+            for succ in all_succs:
+                try:
+                    posix = getattr(succ, 'posix', None)
+                    if posix is None:
+                        continue
+                    stdin = getattr(posix, 'stdin', None)
+                    if stdin is None or not hasattr(stdin, 'content'):
+                        continue
+                    if stdin.content and len(stdin.content) > len(self._stdin_content):
+                        self._stdin_content = list(stdin.content)
+                        if _DBG:
+                            l.debug(f"Captured {len(stdin.content)} stdin packets from {name}")
+                    break  # Only need one successor — they all share stdin
+                except Exception:
+                    pass
+
             # P1 fix: Capture procedure_data from successors that use self.call()
             # When a SimProcedure uses self.call() to invoke another function,
             # it stores arguments and continuation info in procedure_data.

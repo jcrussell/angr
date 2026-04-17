@@ -193,7 +193,7 @@ impl RustSolverContext {
                 if width <= 128 {
                     match ctx.eval(&bv) {
                         Some(v) => return Ok(Some(v.into_pyobject(py)?.into())),
-                        None => return Ok(None),
+                        None => {} // fall through to Z3 AST pointer path
                     }
                 } else {
                     match ctx.eval_wide(&bv) {
@@ -203,25 +203,28 @@ impl RustSolverContext {
                             let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
                             return Ok(Some(py_int.into()));
                         }
-                        None => return Ok(None),
+                        None => {} // fall through to Z3 AST pointer path
                     }
                 }
             }
-            Err(_) => {
-                // RustBV conversion failed — try Z3 fast path via shared context.
-                // This handles complex expressions containing imported Z3 ASTs
-                // (e.g., Concat of Reverse of Rust-computed expressions).
-                #[cfg(feature = "vex-engine-z3")]
-                {
-                    if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
-                        if z3_ptr != 0 {
-                            return self.eval_z3_ast_ptr(py, z3_ptr, ast);
-                        }
-                    }
+            Err(_) => {}
+        }
+
+        // Z3 AST pointer fast path via shared context.
+        // This handles: (1) expressions where claripy_to_rustbv creates a new
+        // Z3 variable that has no constraints (e.g., stdin BVS from Python),
+        // (2) complex expressions containing imported Z3 ASTs.
+        // Using the original Z3 AST pointer preserves identity with
+        // constraints already in the solver.
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
+                if z3_ptr != 0 {
+                    return self.eval_z3_ast_ptr(py, z3_ptr, ast);
                 }
-                Ok(None)
             }
         }
+        Ok(None)
     }
 
     /// Evaluate a Z3 AST pointer directly in the solver context.
