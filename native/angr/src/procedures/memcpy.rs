@@ -16,6 +16,30 @@ use super::{NativeSimProcedure, ProcedureError};
 /// Maximum copy size before falling back to Python.
 const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
 
+/// Copy `size` bytes forward from `src` to `dst` using 8-byte chunks.
+fn copy_forward(state: &mut RustSimState, src: u64, dst: u64, size: usize) -> Result<(), ProcedureError> {
+    let mut offset: usize = 0;
+
+    // Copy in 8-byte chunks where possible
+    while offset + 8 <= size {
+        let value = state.memory_load(src.wrapping_add(offset as u64), 8)
+            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+        state.memory_store(dst.wrapping_add(offset as u64), value)
+            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+        offset += 8;
+    }
+
+    // Copy remaining bytes
+    while offset < size {
+        let value = state.memory_load(src.wrapping_add(offset as u64), 1)
+            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+        state.memory_store(dst.wrapping_add(offset as u64), value)
+            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+        offset += 1;
+    }
+    Ok(())
+}
+
 /// Native memcpy implementation.
 ///
 /// ```c
@@ -62,40 +86,7 @@ impl NativeSimProcedure for NativeMemcpy {
             return Ok(Some(args[0].clone()));
         }
 
-        // For efficiency, try to copy in larger chunks
-        // This is much faster than byte-by-byte for large copies
-        let mut offset: usize = 0;
-
-        // Copy in 8-byte chunks where possible
-        while offset + 8 <= size {
-            let src_addr = src.wrapping_add(offset as u64);
-            let dst_addr = dst.wrapping_add(offset as u64);
-
-            let value = state.memory_load(src_addr, 8)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-            // If the value is symbolic, we can still copy it
-            state.memory_store(dst_addr, value)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-            offset += 8;
-        }
-
-        // Copy remaining bytes (less than 8)
-        while offset < size {
-            let src_addr = src.wrapping_add(offset as u64);
-            let dst_addr = dst.wrapping_add(offset as u64);
-
-            let value = state.memory_load(src_addr, 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-            state.memory_store(dst_addr, value)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-            offset += 1;
-        }
-
-        // Return dest pointer
+        copy_forward(state, src, dst, size)?;
         Ok(Some(args[0].clone()))
     }
 }
@@ -162,34 +153,7 @@ impl NativeSimProcedure for NativeMemmove {
             }
         } else {
             // Non-overlapping or dst < src: copy forwards
-            // Use chunk optimization like memcpy
-            let mut offset: usize = 0;
-
-            while offset + 8 <= size {
-                let src_addr = src.wrapping_add(offset as u64);
-                let dst_addr = dst.wrapping_add(offset as u64);
-
-                let value = state.memory_load(src_addr, 8)
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-                state.memory_store(dst_addr, value)
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-                offset += 8;
-            }
-
-            while offset < size {
-                let src_addr = src.wrapping_add(offset as u64);
-                let dst_addr = dst.wrapping_add(offset as u64);
-
-                let value = state.memory_load(src_addr, 1)
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-                state.memory_store(dst_addr, value)
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-                offset += 1;
-            }
+            copy_forward(state, src, dst, size)?;
         }
 
         // Return dest pointer

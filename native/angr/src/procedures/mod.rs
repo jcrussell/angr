@@ -86,6 +86,11 @@ impl std::fmt::Display for ProcedureError {
     }
 }
 
+/// Extract a concrete u64 value from a procedure argument, or return SymbolicArgument error.
+pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, ProcedureError> {
+    arg.as_u64().ok_or_else(|| ProcedureError::SymbolicArgument(name.to_string()))
+}
+
 /// Trait for native SimProcedure implementations.
 ///
 /// Implementors provide Rust-native execution of common library functions.
