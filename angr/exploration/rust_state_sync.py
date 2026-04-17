@@ -735,6 +735,9 @@ class RustStateSyncMixin:
         elif arch.name == 'X86':
             return ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
                     'ebp', 'esp', 'eip']
+        elif arch.name == 'AARCH64':
+            return (['x%d' % i for i in range(31)] +
+                    ['sp', 'pc'])
         elif arch.name.startswith('ARM'):
             return ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
                     'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
@@ -773,8 +776,10 @@ class RustStateSyncMixin:
             }
             return_regs = {'r0'}
         elif arch.name == 'AARCH64':
-            l.warning(f"AARCH64 register extraction not yet implemented")
-            return None, None
+            reg_map = {('x%d' % i): (16 + i * 8, 8) for i in range(31)}
+            reg_map['sp'] = (264, 8)
+            reg_map['pc'] = (272, 8)
+            return_regs = {'x0'}
         else:
             l.warning(f"Unknown architecture {arch.name} for register extraction")
             return None, None
