@@ -1682,6 +1682,41 @@ class RustExplorationManager(
     # Public API (SimulationManager-like interface)
     # =========================================================================
 
+    def _dispatch_callback(self, event) -> bool:
+        """Dispatch a need_callback event to the appropriate handler.
+
+        Returns True if exploration should stop (unknown callback reason).
+        """
+        self._stats_callback_count += 1
+        _cb_start = time.perf_counter_ns()
+        reason = event.callback_reason
+        if reason == 'simprocedure':
+            self._handle_simprocedure_callback(event)
+        elif reason == 'syscall':
+            self._handle_syscall_callback(event)
+        elif reason == 'symbolic_branch':
+            self._handle_symbolic_branch_callback(event)
+        elif reason == 'find_predicate':
+            self._handle_find_predicate_callback(event)
+        elif reason == 'avoid_predicate':
+            self._handle_avoid_predicate_callback(event)
+        else:
+            l.warning(f"Unknown callback reason: {reason}")
+            self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
+            return True
+        self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
+        return False
+
+    def _check_limits(self, start_time, steps_taken, timeout, max_steps) -> bool:
+        """Check if timeout or max_steps limits have been reached."""
+        if timeout is not None and (time.time() - start_time) > timeout:
+            l.warning(f"Exploration timeout reached ({timeout}s)")
+            return True
+        if max_steps is not None and steps_taken >= max_steps:
+            l.warning(f"Max exploration steps reached ({max_steps})")
+            return True
+        return False
+
     def explore(
         self,
         find: Optional[Union[int, list, Callable]] = None,
@@ -1699,8 +1734,8 @@ class RustExplorationManager(
             avoid: Address(es) or callable predicate for avoiding states.
             num_find: Number of solutions to find before stopping.
             until: Callable predicate that receives `self` and returns True to stop.
-            timeout: Wall-clock timeout in seconds (Phase 3 fix).
-            max_steps: Maximum exploration steps before stopping (Phase 3 fix).
+            timeout: Wall-clock timeout in seconds.
+            max_steps: Maximum exploration steps before stopping.
             **kwargs: Additional arguments (ignored for compatibility).
 
         Returns:
@@ -1712,8 +1747,7 @@ class RustExplorationManager(
         if not hasattr(self, '_avoid_predicate'):
             self._avoid_predicate = None
 
-        # Set find addresses and store predicate for P2 callback handling
-        # Only override if explicitly provided (don't clear technique-set values)
+        # Set find addresses and store predicate for callback handling
         if find is not None:
             find_addrs = self._extract_addrs(find)
             self._rust_mgr.set_find_addrs(find_addrs)
@@ -1725,154 +1759,137 @@ class RustExplorationManager(
             avoid_addrs = self._extract_addrs(avoid)
             self._rust_mgr.set_avoid_addrs(avoid_addrs)
         self._rust_mgr.set_avoid_needs_python(callable(avoid))
-        # P2 fix: Store the avoid predicate for callback evaluation
         self._avoid_predicate = avoid if callable(avoid) else None
 
         # Set num_find
         self._rust_mgr.set_num_find(num_find)
 
-        # Phase 3 Fix: Track timeout and steps
+        # Route to appropriate exploration strategy
+        has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
+        if has_predicates or bool(self._active_techniques):
+            return self._explore_with_predicates(num_find, until, timeout, max_steps)
+        return self._explore_with_addresses(num_find, until, timeout, max_steps)
+
+    def _explore_with_predicates(self, num_find, until, timeout, max_steps):
+        """Exploration loop for callable predicates or active techniques.
+
+        Runs in batches of 50 steps, evaluating predicates between batches.
+        Callbacks are handled immediately when Rust returns need_callback events.
+        """
+        self._rust_mgr.set_find_needs_python(self._find_predicate is not None)
+        self._rust_mgr.set_avoid_needs_python(False)
+        # Keep terminal states alive so predicates can check them
+        self._rust_mgr.set_drop_terminal_states(False)
+
+        batch_size = 50
         start_time = time.time()
         _explore_start_ns = time.perf_counter_ns()
         steps_taken = 0
+        _time_in_rust_run = 0
+        _time_in_predicate_eval = 0
+        _time_in_active_check = 0
 
-        # When callable predicates or techniques are active, use step-by-step
-        # exploration so Python callbacks are properly dispatched between steps.
-        # The address-based path below handles run() events directly but can
-        # miss callback dispatch that step() handles correctly.
-        has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
-        if has_predicates or bool(self._active_techniques):
-            # Enable Rust-side find predicate callbacks to evaluate predicates
-            # at EVERY state PC, including PLT addresses that are only visible
-            # before hook resolution. Uses lightweight RustStateProxy.
-            self._rust_mgr.set_find_needs_python(self._find_predicate is not None)
-            self._rust_mgr.set_avoid_needs_python(False)
-            # Keep terminal states alive so predicates can check them.
-            # Without this, states that output "win" then exit() get dropped
-            # before the predicate evaluation can check stdout content.
-            self._rust_mgr.set_drop_terminal_states(False)
-            # Native puts/printf stay enabled — they write to Rust's per-state
-            # stdout_buffer. We inject this into posix.stdout during predicate
-            # evaluation via _inject_rust_stdout().
-            #
-            # Batch predicate mode: run N steps in Rust between predicate
-            # evaluations instead of 1 step at a time. Callbacks are still
-            # handled immediately when run() returns need_callback events.
-            batch_size = 50  # Steps between predicate evaluations
-            _time_in_rust_run = 0
-            _time_in_predicate_eval = 0
-            _time_in_active_check = 0
-            while True:
-                if timeout is not None and (time.time() - start_time) > timeout:
-                    break
-                if max_steps is not None and steps_taken >= max_steps:
-                    break
-                _t0 = time.perf_counter_ns()
-                if not self._rust_mgr.has_active_states():
-                    _time_in_active_check += time.perf_counter_ns() - _t0
-                    break
-                _time_in_active_check += time.perf_counter_ns() - _t0
-
-                # Run a batch of steps, handling callbacks as they arise.
-                # run(N) processes up to N steps but returns early on callbacks.
-                batch_limit = batch_size
-                if max_steps is not None:
-                    batch_limit = min(batch_limit, max_steps - steps_taken)
-
-                batch_done = False
-                batch_steps_start = steps_taken
-                while not batch_done and (steps_taken - batch_steps_start) < batch_limit:
-                    self._sync_hooks_before_step()
-                    self._stats_ffi_crossings += 1
-                    remaining = batch_limit - (steps_taken - batch_steps_start)
-                    _t1 = time.perf_counter_ns()
-                    event = self._rust_mgr.run(remaining)
-                    _time_in_rust_run += time.perf_counter_ns() - _t1
-                    self._rust_mgr.sync_state_index()
-
-                    if event.event_type == 'need_callback':
-                        self._stats_callback_count += 1
-                        _cb_start = time.perf_counter_ns()
-                        if event.callback_reason == 'simprocedure':
-                            self._handle_simprocedure_callback(event)
-                        elif event.callback_reason == 'syscall':
-                            self._handle_syscall_callback(event)
-                        elif event.callback_reason == 'symbolic_branch':
-                            self._handle_symbolic_branch_callback(event)
-                        elif event.callback_reason == 'find_predicate':
-                            self._handle_find_predicate_callback(event)
-                        elif event.callback_reason == 'avoid_predicate':
-                            self._handle_avoid_predicate_callback(event)
-                        else:
-                            l.warning(f"Unknown callback reason: {event.callback_reason}")
-                            batch_done = True
-                        self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
-                        steps_taken += 1
-                    elif event.event_type == 'active_empty':
-                        batch_done = True
-                    elif event.event_type in ('step_complete', 'found'):
-                        # run(N) completed N steps or found a solution
-                        steps_taken += remaining
-                        batch_done = True
-                    else:
-                        steps_taken += 1
-                        batch_done = True
-
-                # Ensure at least 1 step counted per batch iteration
-                if steps_taken == batch_steps_start:
-                    steps_taken += 1
-
-                # Apply technique callbacks after the batch
-                if self._active_techniques:
-                    self._apply_technique_filters()
-                    if self._check_technique_complete():
-                        break
-                # Evaluate predicates on all states after the batch
-                _t2 = time.perf_counter_ns()
-                self._evaluate_predicates_on_active()
-                _time_in_predicate_eval += time.perf_counter_ns() - _t2
-                pf = getattr(self, '_predicate_found', [])
-                if pf and len(pf) >= num_find:
-                    break
-                if until is not None:
-                    try:
-                        if until(self):
-                            break
-                    except Exception:
-                        pass
-            # Final predicate check on deadended/remaining states
-            self._evaluate_predicates_on_active()
-            # Re-enable drop_terminal_states for future exploration
-            self._rust_mgr.set_drop_terminal_states(True)
-            # Store timing breakdown for stats
-            self._time_in_rust_run_ns = _time_in_rust_run
-            self._time_in_predicate_eval_ns = _time_in_predicate_eval
-            self._time_in_active_check_ns = _time_in_active_check
-            self._time_in_explore_ns = time.perf_counter_ns() - _explore_start_ns
-            return self
-
-        # Run exploration loop (address-based find/avoid)
         while True:
-            # Phase 3 Fix: Check timeout
-            if timeout is not None and (time.time() - start_time) > timeout:
-                l.warning(f"Exploration timeout reached ({timeout}s)")
+            if self._check_limits(start_time, steps_taken, timeout, max_steps):
                 break
-
-            # Phase 3 Fix: Check max_steps
-            if max_steps is not None and steps_taken >= max_steps:
-                l.warning(f"Max exploration steps reached ({max_steps})")
+            _t0 = time.perf_counter_ns()
+            if not self._rust_mgr.has_active_states():
+                _time_in_active_check += time.perf_counter_ns() - _t0
                 break
+            _time_in_active_check += time.perf_counter_ns() - _t0
 
-            # Sync any dynamically created hooks (continuations from self.call())
+            # Run a batch of steps, handling callbacks as they arise
+            batch_limit = batch_size
+            if max_steps is not None:
+                batch_limit = min(batch_limit, max_steps - steps_taken)
+
+            steps_taken, _time_in_rust_run = self._run_predicate_batch(
+                steps_taken, batch_limit, _time_in_rust_run
+            )
+
+            # Apply technique callbacks after the batch
+            if self._active_techniques:
+                self._apply_technique_filters()
+                if self._check_technique_complete():
+                    break
+
+            # Evaluate predicates on all states after the batch
+            _t2 = time.perf_counter_ns()
+            self._evaluate_predicates_on_active()
+            _time_in_predicate_eval += time.perf_counter_ns() - _t2
+            pf = getattr(self, '_predicate_found', [])
+            if pf and len(pf) >= num_find:
+                break
+            if until is not None:
+                try:
+                    if until(self):
+                        break
+                except Exception:
+                    pass
+
+        # Final predicate check on deadended/remaining states
+        self._evaluate_predicates_on_active()
+        self._rust_mgr.set_drop_terminal_states(True)
+
+        # Store timing breakdown for stats
+        self._time_in_rust_run_ns = _time_in_rust_run
+        self._time_in_predicate_eval_ns = _time_in_predicate_eval
+        self._time_in_active_check_ns = _time_in_active_check
+        self._time_in_explore_ns = time.perf_counter_ns() - _explore_start_ns
+        return self
+
+    def _run_predicate_batch(self, steps_taken, batch_limit, _time_in_rust_run):
+        """Run up to batch_limit steps, dispatching callbacks immediately.
+
+        Returns updated (steps_taken, _time_in_rust_run).
+        """
+        batch_steps_start = steps_taken
+        batch_done = False
+        while not batch_done and (steps_taken - batch_steps_start) < batch_limit:
             self._sync_hooks_before_step()
-
-            # When until predicates or techniques are active, run in batches
-            # of 50 steps so Python can check predicates/techniques between
-            # batches. Callbacks (simprocedure/syscall/symbolic_branch) still
-            # return immediately from Rust regardless of batch size.
-            # Otherwise, let Rust run its full batch for performance.
-            need_per_step = (until is not None) or bool(self._active_techniques)
             self._stats_ffi_crossings += 1
+            remaining = batch_limit - (steps_taken - batch_steps_start)
+            _t1 = time.perf_counter_ns()
+            event = self._rust_mgr.run(remaining)
+            _time_in_rust_run += time.perf_counter_ns() - _t1
+            self._rust_mgr.sync_state_index()
+
+            if event.event_type == 'need_callback':
+                if self._dispatch_callback(event):
+                    batch_done = True
+                steps_taken += 1
+            elif event.event_type == 'active_empty':
+                batch_done = True
+            elif event.event_type in ('step_complete', 'found'):
+                steps_taken += remaining
+                batch_done = True
+            else:
+                steps_taken += 1
+                batch_done = True
+
+        # Ensure at least 1 step counted per batch iteration
+        if steps_taken == batch_steps_start:
+            steps_taken += 1
+
+        return steps_taken, _time_in_rust_run
+
+    def _explore_with_addresses(self, num_find, until, timeout, max_steps):
+        """Exploration loop for address-based find/avoid (no callable predicates).
+
+        Lets Rust run full batches for performance. Callbacks still return
+        immediately from Rust regardless of batch size.
+        """
+        start_time = time.time()
+        steps_taken = 0
+        need_per_step = (until is not None) or bool(self._active_techniques)
+
+        while True:
+            if self._check_limits(start_time, steps_taken, timeout, max_steps):
+                break
+
+            self._sync_hooks_before_step()
+            self._stats_ffi_crossings += 1
+
             if need_per_step:
                 batch_size = 50
                 if max_steps is not None:
@@ -1881,8 +1898,8 @@ class RustExplorationManager(
             else:
                 event = self._rust_mgr.run()
             self._rust_mgr.sync_state_index()
-            # Use actual steps from Rust event for accurate counting.
-            # For callbacks, count as 1 step; for batched runs, use event total.
+
+            # Count steps: callbacks = 1, batched runs = event total
             if event.event_type == 'need_callback':
                 steps_taken += 1
             else:
@@ -1895,65 +1912,31 @@ class RustExplorationManager(
                 except Exception:
                     pass
 
-            # Terminal states (avoid/pruned/deadended) are now dropped immediately
-            # in Rust (drop_terminal_states=true), so no periodic cleanup needed.
-            # Periodically clean Python state cache to prevent memory leaks.
+            # Periodically clean Python state cache to prevent memory leaks
             if steps_taken % 100 == 0:
-                try:
-                    active_set = set(self._rust_mgr.get_state_ids('active'))
-                    found_set = set(self._rust_mgr.get_state_ids('found'))
-                    keep = active_set | found_set
-                    keep.update(self._state_roots.get(sid, sid) for sid in keep)
-                    for sid in list(self._state_cache.keys()):
-                        if sid not in keep:
-                            del self._state_cache[sid]
-                except Exception:
-                    pass
+                self._cleanup_state_cache()
 
-            # --- Dispatch event ---
-            should_break = False
-
+            # Dispatch event
             if event.event_type == 'found' and event.found_count >= num_find:
                 break
             elif event.event_type == 'active_empty':
-                # Before exiting, apply technique filters one last time.
-                # Techniques like SearchForNull need to check deadended states
-                # and may move them to 'found' before we conclude exploration.
                 if self._active_techniques:
                     self._apply_technique_filters()
                     if self._check_technique_complete():
                         break
-                    # If techniques moved states back to active, continue
                     if self._rust_mgr.get_state_ids('active'):
                         continue
                 break
             elif event.event_type == 'need_callback':
-                self._stats_callback_count += 1
-                _cb_start = time.perf_counter_ns()
-                if event.callback_reason == 'simprocedure':
-                    self._handle_simprocedure_callback(event)
-                elif event.callback_reason == 'syscall':
-                    self._handle_syscall_callback(event)
-                elif event.callback_reason == 'symbolic_branch':
-                    self._handle_symbolic_branch_callback(event)
-                elif event.callback_reason == 'find_predicate':
-                    self._handle_find_predicate_callback(event)
-                elif event.callback_reason == 'avoid_predicate':
-                    self._handle_avoid_predicate_callback(event)
-                else:
-                    l.warning(f"Unknown callback reason: {event.callback_reason}")
+                if self._dispatch_callback(event):
                     break
-                self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
             elif event.event_type == 'errored':
                 if _DBG:
                     l.debug(f"Exploration error (state deadended): {event.callback_reason}")
             elif event.event_type == 'step_complete':
                 self._cleanup_symbolic_pages_cache()
 
-            # --- Common post-event checks ---
-
-            # Apply ExplorationTechnique filter/complete callbacks only after
-            # step events (not callbacks — callbacks don't change the active stash)
+            # Apply technique filters after step events
             if self._active_techniques and event.event_type in ('step_complete', 'found', 'steps_exhausted'):
                 self._apply_technique_filters()
                 if self._check_technique_complete():
@@ -1976,6 +1959,19 @@ class RustExplorationManager(
 
         return self
 
+    def _cleanup_state_cache(self):
+        """Remove cached Python states that are no longer active or found."""
+        try:
+            active_set = set(self._rust_mgr.get_state_ids('active'))
+            found_set = set(self._rust_mgr.get_state_ids('found'))
+            keep = active_set | found_set
+            keep.update(self._state_roots.get(sid, sid) for sid in keep)
+            for sid in list(self._state_cache.keys()):
+                if sid not in keep:
+                    del self._state_cache[sid]
+        except Exception:
+            pass
+
     def step(self, n: int = 1, **kwargs) -> "RustExplorationManager":
         """Step the exploration n times.
 
@@ -1988,48 +1984,25 @@ class RustExplorationManager(
         """
         steps_taken = 0
         while steps_taken < n:
-            # Sync any dynamically created hooks (continuations from self.call())
             self._sync_hooks_before_step()
-
             self._stats_ffi_crossings += 1
             event = self._rust_mgr.run(1)
             self._rust_mgr.sync_state_index()
 
             if event.event_type == 'need_callback':
-                self._stats_callback_count += 1
-                _cb_start = time.perf_counter_ns()
-                # Handle callback and continue
-                if event.callback_reason == 'simprocedure':
-                    self._handle_simprocedure_callback(event)
-                elif event.callback_reason == 'syscall':
-                    self._handle_syscall_callback(event)
-                elif event.callback_reason == 'symbolic_branch':
-                    self._handle_symbolic_branch_callback(event)
-                elif event.callback_reason == 'find_predicate':
-                    # P2 fix: Handle callable find predicate evaluation
-                    self._handle_find_predicate_callback(event)
-                elif event.callback_reason == 'avoid_predicate':
-                    # P7 fix: Handle callable avoid predicate evaluation
-                    self._handle_avoid_predicate_callback(event)
-                else:
-                    l.warning(f"Unknown callback reason: {event.callback_reason}")
+                if self._dispatch_callback(event):
                     break
-                self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
-                # After callback, increment step count
                 steps_taken += 1
             elif event.event_type == 'active_empty':
-                # No more active states
                 break
             elif event.event_type == 'errored':
                 l.warning(f"Step error: {event.callback_reason}")
                 break
             elif event.event_type in ('step_complete', 'found'):
                 steps_taken += 1
-                # Apply technique filters after each step
                 if self._active_techniques:
                     self._apply_technique_filters()
             else:
-                # Unknown event type, count as a step
                 steps_taken += 1
 
         return self
