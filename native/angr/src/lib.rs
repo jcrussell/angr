@@ -34,6 +34,7 @@ pub mod solver;
 #[cfg(feature = "vex-engine")]
 pub mod state;
 #[cfg(feature = "vex-engine")]
+pub mod stash;
 pub mod symbolic;
 #[cfg(feature = "vex-engine")]
 pub mod vex;

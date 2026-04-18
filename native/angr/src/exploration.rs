@@ -10,6 +10,7 @@
 //! minimizing Python callback overhead.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use crate::stash::{StashManager, STASH_ACTIVE, STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -30,11 +31,7 @@ use crate::symbolic::{RustBV, RustSymbolTable, SymContext};
 use crate::vex::{VexArch, IRSB};
 
 // Stash name constants — use these instead of string literals to prevent typos.
-const STASH_ACTIVE: &str = "active";
-const STASH_FOUND: &str = "found";
-const STASH_AVOID: &str = "avoid";
-const STASH_DEADENDED: &str = "deadended";
-const STASH_ERRORED: &str = "errored";
+// Stash constants imported from crate::stash
 const STASH_PRUNED: &str = "pruned";
 
 use std::cell::Cell;
@@ -308,7 +305,7 @@ pub struct RustExplorationManager {
     /// VEX architecture enum.
     vex_arch: VexArch,
     /// Stash system (mirrors Python's).
-    stashes: HashMap<String, VecDeque<RustSimState>>,
+    sm: StashManager,
     /// Find addresses.
     find_addrs: HashSet<u64>,
     /// Avoid addresses.
@@ -352,11 +349,7 @@ pub struct RustExplorationManager {
     /// This prevents infinite loops when a hook with length=0 runs and
     /// returns to the same address. Stack-based to handle nested hooks.
     skip_hook_stack: Vec<(u64, u64)>,
-    /// Maps state_id -> root_state_id for lineage tracking.
-    /// When Rust forks states internally, Python only has cached data for the
-    /// original state added via Python. This map allows looking up the root
-    /// state (the one originally added) for any forked descendant.
-    state_roots: HashMap<u64, u64>,
+    // state_roots is now in self.sm (StashManager)
     /// P9 fix: Use LIFO (stack) state selection instead of FIFO (queue).
     /// When true, states are popped from the back (DFS). Default is false (BFS).
     use_lifo: bool,
@@ -364,15 +357,8 @@ pub struct RustExplorationManager {
     /// This improves performance for binaries with many branches by deferring
     /// constraint solving until values are actually needed.
     lazy_solves: bool,
-    /// When true, drop avoided/pruned/deadended states immediately instead of
-    /// storing them. This prevents Z3 solver clones from accumulating memory.
-    drop_terminal_states: bool,
-    /// Counter for states dropped/stored in the avoid stash.
-    avoided_count: u64,
-    /// Counter for states dropped/stored in the pruned stash.
-    pruned_count: u64,
-    /// Counter for states dropped/stored in the deadended stash.
-    deadended_count: u64,
+    // drop_terminal_states, avoided_count, pruned_count, deadended_count
+    // are now in self.sm (StashManager)
     /// Native uniqueness filter: register names to check.
     uniqueness_registers: Vec<String>,
     /// Set of seen register tuple hashes for uniqueness checking.
@@ -388,8 +374,7 @@ pub struct RustExplorationManager {
     profiling_enabled: bool,
     /// Accumulated execution statistics across all steps.
     accumulated_stats: ExecutionStats,
-    /// Index mapping state_id -> stash name for O(1) lookups.
-    state_index: HashMap<u64, String>,
+    // state_index is now in self.sm (StashManager)
     /// Endianness override: None = use arch default, Some(true) = little-endian.
     little_endian: Option<bool>,
 }
@@ -406,18 +391,10 @@ impl RustExplorationManager {
 
         let vex_arch = arch_info.vex_arch();
 
-        let mut stashes = HashMap::new();
-        stashes.insert(STASH_ACTIVE.to_string(), VecDeque::new());
-        stashes.insert(STASH_FOUND.to_string(), VecDeque::new());
-        stashes.insert(STASH_AVOID.to_string(), VecDeque::new());
-        stashes.insert(STASH_DEADENDED.to_string(), VecDeque::new());
-        stashes.insert(STASH_ERRORED.to_string(), VecDeque::new());
-        stashes.insert("unconstrained".to_string(), VecDeque::new());
-
         Ok(RustExplorationManager {
             arch_name: arch.to_string(),
             vex_arch,
-            stashes,
+            sm: StashManager::new(),
             find_addrs: HashSet::new(),
             avoid_addrs: HashSet::new(),
             find_needs_python: false,
@@ -438,20 +415,14 @@ impl RustExplorationManager {
             calling_convention: default_cc_for_arch(arch),
             native_proc_stats: NativeProcStats::default(),
             skip_hook_stack: Vec::new(),
-            state_roots: HashMap::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
             lazy_solves: false,
-            drop_terminal_states: true,
-            avoided_count: 0,
-            pruned_count: 0,
-            deadended_count: 0,
             uniqueness_registers: Vec::new(),
             uniqueness_set: HashSet::new(),
             skip_find_predicate_states: HashSet::new(),
             skip_avoid_predicate_states: HashSet::new(),
             profiling_enabled: false,
             accumulated_stats: ExecutionStats::default(),
-            state_index: HashMap::new(),
             little_endian,
         })
     }
@@ -470,18 +441,18 @@ impl RustExplorationManager {
 
     /// Get active state count.
     pub fn active_count(&self) -> usize {
-        self.stashes.get(STASH_ACTIVE).map(|s| s.len()).unwrap_or(0)
+        self.sm.get(STASH_ACTIVE).map(|s| s.len()).unwrap_or(0)
     }
 
     /// Get found state count.
     pub fn found_count(&self) -> usize {
-        self.stashes.get(STASH_FOUND).map(|s| s.len()).unwrap_or(0)
+        self.sm.stashes().get(STASH_FOUND).map(|s| s.len()).unwrap_or(0)
     }
 
     /// Get stash counts as a dictionary.
     pub fn stash_counts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-        for (name, stash) in &self.stashes {
+        for (name, stash) in self.sm.stashes() {
             dict.set_item(name, stash.len())?;
         }
         Ok(dict)
@@ -540,7 +511,7 @@ impl RustExplorationManager {
     /// When true (default), terminal states are dropped to save memory.
     /// Set to false when states need to be recovered (e.g., factory.callable()).
     pub fn set_drop_terminal_states(&mut self, enabled: bool) {
-        self.drop_terminal_states = enabled;
+        self.sm.set_drop_terminal_states(enabled);
     }
 
     /// Enable or disable Rust-side profiling.
@@ -627,7 +598,7 @@ impl RustExplorationManager {
         }
 
         self.index_state(state_id, stash);
-        self.stashes
+        self.sm.stashes_mut()
             .entry(stash.to_string())
             .or_insert_with(VecDeque::new)
             .push_back(state);
@@ -643,10 +614,10 @@ impl RustExplorationManager {
         let state_id = forked.state_id();
 
         // Track this state as its own root (it was added via Python)
-        self.state_roots.insert(state_id, state_id);
+        self.sm.set_root(state_id, state_id);
 
         self.index_state(state_id, stash);
-        self.stashes
+        self.sm.stashes_mut()
             .entry(stash.to_string())
             .or_insert_with(VecDeque::new)
             .push_back(forked);
@@ -655,7 +626,7 @@ impl RustExplorationManager {
     /// Get the PC of a state in a stash by index.
     #[pyo3(signature = (stash="active", index=0))]
     pub fn get_state_pc(&self, stash: &str, index: usize) -> Option<u64> {
-        self.stashes.get(stash).and_then(|s| s.get(index)).map(|s| s.pc())
+        self.sm.get(stash).and_then(|s| s.get(index)).map(|s| s.pc())
     }
 
     /// Get the PC of a state by its ID (O(1) via state index, no full export).
@@ -674,21 +645,20 @@ impl RustExplorationManager {
     /// Get state IDs in a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn get_state_ids(&self, stash: &str) -> Vec<u64> {
-        self.stashes
-            .get(stash)
+        self.sm.get(stash)
             .map(|s| s.iter().map(|state| state.state_id()).collect())
             .unwrap_or_default()
     }
 
     /// Check if there are any active states (O(1), no allocation).
     pub fn has_active_states(&self) -> bool {
-        self.stashes.get(STASH_ACTIVE).map_or(false, |s| !s.is_empty())
+        self.sm.get(STASH_ACTIVE).map_or(false, |s| !s.is_empty())
     }
 
     /// Get the number of states in a stash (O(1), no allocation).
     #[pyo3(signature = (stash="active"))]
     pub fn stash_count(&self, stash: &str) -> usize {
-        self.stashes.get(stash).map_or(0, |s| s.len())
+        self.sm.get(stash).map_or(0, |s| s.len())
     }
 
     /// Rebuild the state index after run() modifies stashes internally.
@@ -700,7 +670,7 @@ impl RustExplorationManager {
     /// Get the root state ID for any state.
     /// Returns the original (initial) state from which this state was forked.
     pub fn get_state_root(&self, state_id: u64) -> Option<u64> {
-        self.state_roots.get(&state_id).copied()
+        self.sm.roots().get(&state_id).copied()
     }
 
     /// Set the PC of the pending callback state (for external initialization).
@@ -732,7 +702,7 @@ impl RustExplorationManager {
     /// Map memory in active states.
     #[pyo3(signature = (addr, data, permissions=7))]
     pub fn active_states_map_memory(&mut self, addr: u64, data: &[u8], permissions: u8) {
-        if let Some(stash) = self.stashes.get_mut(STASH_ACTIVE) {
+        if let Some(stash) = self.sm.get_mut(STASH_ACTIVE) {
             for state in stash.iter_mut() {
                 state.map_memory_data(addr, data, Permission::from_bits(permissions));
             }
@@ -773,7 +743,7 @@ impl RustExplorationManager {
 
             // Get next state from active stash
             // P9 fix: Use LIFO (pop_back) for DFS or FIFO (pop_front) for BFS
-            let mut state = match self.stashes.get_mut(STASH_ACTIVE).and_then(|s| {
+            let mut state = match self.sm.get_mut(STASH_ACTIVE).and_then(|s| {
                 if self.use_lifo {
                     s.pop_back()  // DFS: LIFO (most recent state first)
                 } else {
@@ -885,7 +855,7 @@ impl RustExplorationManager {
                 // Only add to found if the state is satisfiable
                 // (UNSAT states reached the address via infeasible paths)
                 if self.lazy_solves || state.satisfiable() {
-                    self.stashes
+                    self.sm.stashes_mut()
                         .entry(STASH_FOUND.to_string())
                         .or_insert_with(VecDeque::new)
                         .push_back(state);
@@ -972,7 +942,7 @@ impl RustExplorationManager {
                                     self.push_or_drop_terminal(STASH_DEADENDED, state);
                                 } else {
                                     // Add back to active stash
-                                    self.stashes
+                                    self.sm.stashes_mut()
                                         .entry(STASH_ACTIVE.to_string())
                                         .or_insert_with(VecDeque::new)
                                         .push_back(state);
@@ -1035,13 +1005,13 @@ impl RustExplorationManager {
                         let spc = successor.pc();
                         if self.find_addrs.contains(&spc) {
                             if self.lazy_solves || successor.satisfiable() {
-                                self.stashes.entry(STASH_FOUND.to_string())
+                                self.sm.stashes_mut().entry(STASH_FOUND.to_string())
                                     .or_insert_with(VecDeque::new).push_back(successor);
                             }
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, successor);
                         } else {
-                            self.stashes.entry(STASH_ACTIVE.to_string())
+                            self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
                                 .or_insert_with(VecDeque::new).push_back(successor);
                         }
                     }
@@ -1062,7 +1032,7 @@ impl RustExplorationManager {
                             // reaching the find/avoid address and must not be dropped.
                             let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| pending.state.fork());
                             let original_state_id = pending.state.state_id();
-                            let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+                            let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
 
                             let mut snapshots = pending.fork_snapshots;
                             let cb_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
@@ -1111,14 +1081,14 @@ impl RustExplorationManager {
                                         self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
                                         self.accumulated_stats.solver_fork_count += 1;
                                     }
-                                    self.state_roots.insert(forked.state_id(), root_state_id);
+                                    self.sm.set_root(forked.state_id(), root_state_id);
                                     let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                                     if self.lazy_solves || forked.satisfiable() {
                                         if let Some(start) = sat_start {
                                             self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                                             self.accumulated_stats.solver_sat_count += 1;
                                         }
-                                        self.stashes.entry(STASH_ACTIVE.to_string())
+                                        self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
                                             .or_insert_with(VecDeque::new)
                                             .push_back(forked);
                                     } else if let Some(start) = sat_start {
@@ -1135,7 +1105,7 @@ impl RustExplorationManager {
                             // Now handle the main state
                             if is_find {
                                 if self.lazy_solves || pending.state.satisfiable() {
-                                    self.stashes.entry(STASH_FOUND.to_string())
+                                    self.sm.stashes_mut().entry(STASH_FOUND.to_string())
                                         .or_insert_with(VecDeque::new)
                                         .push_back(pending.state);
                                 } else {
@@ -1212,7 +1182,7 @@ impl RustExplorationManager {
                     let pc = state.pc();
                     let state_id = state.state_id();
                     self.errors.push((pc, message, state_id));
-                    self.stashes
+                    self.sm.stashes_mut()
                         .entry(STASH_ERRORED.to_string())
                         .or_insert_with(VecDeque::new)
                         .push_back(state);
@@ -1220,7 +1190,7 @@ impl RustExplorationManager {
                 Err(StepError::Unconstrained(state)) => {
                     // State has too many symbolic jump targets - move to unconstrained stash
                     log::debug!("State {} moved to unconstrained stash", state.state_id());
-                    self.stashes
+                    self.sm.stashes_mut()
                         .entry("unconstrained".to_string())
                         .or_insert_with(VecDeque::new)
                         .push_back(state);
@@ -1353,7 +1323,7 @@ impl RustExplorationManager {
         // Track root state ID for lineage
         // The root is inherited from the original pending state
         let original_state_id = state.state_id();
-        let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
 
         // P12: Only add main state if SAT, otherwise add to pruned list
         let (mut successors, mut pruned_states) = if main_state_unsat {
@@ -1409,7 +1379,7 @@ impl RustExplorationManager {
                 };
 
                 // Track root state ID for this forked state
-                self.state_roots.insert(forked.state_id(), root_state_id);
+                self.sm.set_root(forked.state_id(), root_state_id);
 
                 // DO NOT sync callback constraints to forked state!
                 // These paths diverged before the callback occurred.
@@ -1444,7 +1414,7 @@ impl RustExplorationManager {
                 // but ensures we don't lose valid paths
                 let mut forked = fork_base.as_ref().expect("fork_base set before fork").fork();
                 forked.set_pc(fork.unexplored_target);
-                self.state_roots.insert(forked.state_id(), root_state_id);
+                self.sm.set_root(forked.state_id(), root_state_id);
 
                 // P13: Still check satisfiability
                 if self.lazy_solves || forked.satisfiable() {
@@ -1461,7 +1431,7 @@ impl RustExplorationManager {
 
         // Add all successors (original state + forks) to stashes
         // P13: Check satisfiability for each before adding
-        // Note: We split the loops to avoid double mutable borrow of self.stashes
+        // Note: We split the loops to avoid double mutable borrow of self.sm
         let mut final_successors = Vec::new();
         for successor in successors {
             if self.lazy_solves || successor.satisfiable() {
@@ -1479,12 +1449,12 @@ impl RustExplorationManager {
         for s in final_successors {
             let spc = s.pc();
             if self.find_addrs.contains(&spc) {
-                self.stashes.entry(STASH_FOUND.to_string())
+                self.sm.stashes_mut().entry(STASH_FOUND.to_string())
                     .or_insert_with(VecDeque::new).push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
             } else {
-                self.stashes.entry(STASH_ACTIVE.to_string())
+                self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
                     .or_insert_with(VecDeque::new).push_back(s);
             }
         }
@@ -1567,7 +1537,7 @@ impl RustExplorationManager {
         self.errors.push((pc, error_msg.to_string(), state_id));
 
         // Move to errored stash
-        self.stashes
+        self.sm.stashes_mut()
             .entry(STASH_ERRORED.to_string())
             .or_insert_with(VecDeque::new)
             .push_back(pending.state);
@@ -1616,11 +1586,11 @@ impl RustExplorationManager {
 
         // Track root state ID for lineage
         let original_state_id = pending.state.state_id();
-        let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
 
         // Create the true state (fork of original) and add constraint
         let mut true_state = pending.state.fork();
-        self.state_roots.insert(true_state.state_id(), root_state_id);
+        self.sm.set_root(true_state.state_id(), root_state_id);
         true_state.set_pc(true_pc);
         if let Some(ref cond) = branch_condition {
             // Add assume_true: guard is true → exit taken
@@ -1686,7 +1656,7 @@ impl RustExplorationManager {
                         f
                     };
 
-                    self.state_roots.insert(forked.state_id(), root_state_id);
+                    self.sm.set_root(forked.state_id(), root_state_id);
 
                     if self.lazy_solves || forked.satisfiable() {
                         deferred_successors.push(forked);
@@ -1705,7 +1675,7 @@ impl RustExplorationManager {
                     );
                     let mut forked = true_state.fork();
                     forked.set_pc(fork.unexplored_target);
-                    self.state_roots.insert(forked.state_id(), root_state_id);
+                    self.sm.set_root(forked.state_id(), root_state_id);
                     if self.lazy_solves || forked.satisfiable() {
                         deferred_successors.push(forked);
                     } else {
@@ -1728,14 +1698,14 @@ impl RustExplorationManager {
             false_state.set_sat_cache(true);
             // Check find/avoid on new states before adding to active
             if self.find_addrs.contains(&true_pc) {
-                self.stashes.entry(STASH_FOUND.to_string()).or_insert_with(VecDeque::new).push_back(true_state);
+                self.sm.stashes_mut().entry(STASH_FOUND.to_string()).or_insert_with(VecDeque::new).push_back(true_state);
             } else if self.avoid_addrs.contains(&true_pc) {
                 self.push_or_drop_terminal(STASH_AVOID, true_state);
             } else {
                 active_states.push(true_state);
             }
             if self.find_addrs.contains(&false_pc) {
-                self.stashes.entry(STASH_FOUND.to_string()).or_insert_with(VecDeque::new).push_back(false_state);
+                self.sm.stashes_mut().entry(STASH_FOUND.to_string()).or_insert_with(VecDeque::new).push_back(false_state);
             } else if self.avoid_addrs.contains(&false_pc) {
                 self.push_or_drop_terminal(STASH_AVOID, false_state);
             } else {
@@ -1759,7 +1729,7 @@ impl RustExplorationManager {
         for s in deferred_successors {
             let spc = s.pc();
             if self.find_addrs.contains(&spc) {
-                self.stashes.entry(STASH_FOUND.to_string())
+                self.sm.stashes_mut().entry(STASH_FOUND.to_string())
                     .or_insert_with(VecDeque::new).push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
@@ -1769,7 +1739,7 @@ impl RustExplorationManager {
         }
 
         // Add to active stash
-        let active = self.stashes
+        let active = self.sm.stashes_mut()
             .entry(STASH_ACTIVE.to_string())
             .or_insert_with(VecDeque::new);
         for s in active_states {
@@ -1803,22 +1773,22 @@ impl RustExplorationManager {
         if matched {
             log::debug!("Find predicate matched - moving state to found stash");
             let state_id = pending.state.state_id();
-            self.stashes
+            self.sm.stashes_mut()
                 .entry(STASH_FOUND.to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(pending.state);
-            self.state_index.insert(state_id, STASH_FOUND.to_string());
+            self.sm.index(state_id, STASH_FOUND);
         } else {
             log::debug!("Find predicate did not match - continuing exploration");
             // Mark this state to skip the find predicate check on next pop,
             // preventing infinite loop (state was already checked at this PC).
             let state_id = pending.state.state_id();
             self.skip_find_predicate_states.insert(state_id);
-            self.stashes
+            self.sm.stashes_mut()
                 .entry(STASH_ACTIVE.to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(pending.state);
-            self.state_index.insert(state_id, STASH_ACTIVE.to_string());
+            self.sm.index(state_id, STASH_ACTIVE);
         }
 
         Ok(())
@@ -1840,11 +1810,11 @@ impl RustExplorationManager {
             log::debug!("Avoid predicate did not match - continuing exploration");
             let state_id = pending.state.state_id();
             self.skip_avoid_predicate_states.insert(state_id);
-            self.stashes
+            self.sm.stashes_mut()
                 .entry(STASH_ACTIVE.to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(pending.state);
-            self.state_index.insert(state_id, STASH_ACTIVE.to_string());
+            self.sm.index(state_id, STASH_ACTIVE);
         }
 
         Ok(())
@@ -2180,7 +2150,7 @@ impl RustExplorationManager {
     pub fn get_pending_root_state_id(&self) -> PyResult<Option<u64>> {
         if let Some(ref pending) = self.pending_callback {
             let state_id = pending.state.state_id();
-            Ok(self.state_roots.get(&state_id).copied())
+            Ok(self.sm.roots().get(&state_id).copied())
         } else {
             Err(PyRuntimeError::new_err("no pending callback state"))
         }
@@ -2208,7 +2178,7 @@ impl RustExplorationManager {
 
             // Add root state if not already in ancestry
             let state_id = pending.state.state_id();
-            if let Some(&root_id) = self.state_roots.get(&state_id) {
+            if let Some(&root_id) = self.sm.roots().get(&state_id) {
                 if !ancestry.contains(&root_id) {
                     ancestry.push(root_id);
                 }
@@ -2582,15 +2552,15 @@ impl RustExplorationManager {
     pub fn move_states(&mut self, from_stash: &str, to_stash: &str, filter_fn: Option<PyObject>) -> PyResult<usize> {
         // If no filter, move all
         if filter_fn.is_none() {
-            if let Some(mut from) = self.stashes.remove(from_stash) {
+            if let Some(mut from) = self.sm.remove(from_stash) {
                 let count = from.len();
                 // Update index for all moved states
                 for state in from.iter() {
-                    self.state_index.insert(state.state_id(), to_stash.to_string());
+                    self.sm.index(state.state_id(), to_stash);
                 }
-                let to = self.stashes.entry(to_stash.to_string()).or_insert_with(VecDeque::new);
+                let to = self.sm.stashes_mut().entry(to_stash.to_string()).or_insert_with(VecDeque::new);
                 to.append(&mut from);
-                self.stashes.insert(from_stash.to_string(), VecDeque::new());
+                self.sm.insert(from_stash, VecDeque::new());
                 return Ok(count);
             }
             return Ok(0);
@@ -2598,7 +2568,7 @@ impl RustExplorationManager {
 
         // With filter - evaluate Python filter_fn per state
         let filter_fn = filter_fn.expect("filter_fn checked before call");
-        let from = match self.stashes.get(from_stash) {
+        let from = match self.sm.stashes().get(from_stash) {
             Some(s) if !s.is_empty() => s,
             _ => return Ok(0),
         };
@@ -2620,19 +2590,20 @@ impl RustExplorationManager {
         }
 
         // Second pass: move matching states (mutable borrow)
-        let from = match self.stashes.get_mut(from_stash) {
-            Some(s) => s,
-            None => return Ok(0),
-        };
         let mut moved = Vec::new();
-        for &idx in move_indices.iter().rev() {
-            if let Some(state) = from.remove(idx) {
-                self.state_index.insert(state.state_id(), to_stash.to_string());
-                moved.push(state);
+        if let Some(from) = self.sm.get_mut(from_stash) {
+            for &idx in move_indices.iter().rev() {
+                if let Some(state) = from.remove(idx) {
+                    moved.push(state);
+                }
             }
         }
+        // Update index and destination stash after releasing from-stash borrow
+        for state in &moved {
+            self.sm.index(state.state_id(), to_stash);
+        }
         let count = moved.len();
-        let to = self.stashes.entry(to_stash.to_string()).or_insert_with(VecDeque::new);
+        let to = self.sm.stashes_mut().entry(to_stash.to_string()).or_insert_with(VecDeque::new);
         for state in moved.into_iter().rev() {
             to.push_back(state);
         }
@@ -2643,7 +2614,7 @@ impl RustExplorationManager {
     pub fn move_state(&mut self, state_id: u64, from_stash: &str, to_stash: &str) -> PyResult<bool> {
         // Find and remove the state from the source stash
         let mut found_state = None;
-        if let Some(stash) = self.stashes.get_mut(from_stash) {
+        if let Some(stash) = self.sm.get_mut(from_stash) {
             let mut idx = None;
             for (i, state) in stash.iter().enumerate() {
                 if state.state_id() == state_id {
@@ -2659,7 +2630,7 @@ impl RustExplorationManager {
         // Add to destination stash if found
         if let Some(state) = found_state {
             self.index_state(state_id, to_stash);
-            let to = self.stashes.entry(to_stash.to_string()).or_insert_with(VecDeque::new);
+            let to = self.sm.stashes_mut().entry(to_stash.to_string()).or_insert_with(VecDeque::new);
             to.push_back(state);
             Ok(true)
         } else {
@@ -2669,14 +2640,7 @@ impl RustExplorationManager {
 
     /// P8 fix: Clear all states from a stash.
     pub fn clear_stash(&mut self, stash: &str) {
-        if let Some(s) = self.stashes.get_mut(stash) {
-            for state in s.iter() {
-                let sid = state.state_id();
-                self.state_index.remove(&sid);
-                self.state_roots.remove(&sid);
-            }
-            s.clear();
-        }
+        self.sm.clear(stash);
     }
 
     /// Get statistics.
@@ -2693,11 +2657,11 @@ impl RustExplorationManager {
         dict.set_item("block_cache_size", self.block_cache.len())?;
         dict.set_item("native_proc_calls", self.native_proc_stats.native_calls)?;
         dict.set_item("native_proc_fallbacks", self.native_proc_stats.python_fallbacks)?;
-        dict.set_item("avoided_count", self.avoided_count)?;
-        dict.set_item("pruned_count", self.pruned_count)?;
-        dict.set_item("deadended_count", self.deadended_count)?;
-        dict.set_item("drop_terminal_states", self.drop_terminal_states)?;
-        dict.set_item("state_roots_size", self.state_roots.len())?;
+        dict.set_item("avoided_count", self.sm.avoided_count)?;
+        dict.set_item("pruned_count", self.sm.pruned_count)?;
+        dict.set_item("deadended_count", self.sm.deadended_count)?;
+        dict.set_item("drop_terminal_states", self.sm.drop_terminal_states())?;
+        dict.set_item("state_roots_size", self.sm.roots().len())?;
         Ok(dict)
     }
 
@@ -2783,7 +2747,7 @@ impl RustExplorationManager {
         self.uniqueness_registers = register_names;
         self.uniqueness_set.clear();
         // Ensure not_unique stash exists
-        self.stashes.entry("not_unique".to_string()).or_insert_with(VecDeque::new);
+        self.sm.stashes_mut().entry("not_unique".to_string()).or_insert_with(VecDeque::new);
     }
 
     /// Disable the native uniqueness filter.
@@ -2843,15 +2807,14 @@ impl RustExplorationManager {
 
     /// Export all states in a stash as snapshots.
     pub fn export_stash(&self, stash: &str) -> Vec<crate::state::ExplorationStateSnapshot> {
-        self.stashes
-            .get(stash)
+        self.sm.get(stash)
             .map(|s| s.iter().map(|state| state.export_full()).collect())
             .unwrap_or_default()
     }
 
     /// Export all found states as snapshots (flushing pending writes).
     pub fn export_found_states_flushed(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
-        if let Some(states) = self.stashes.get_mut(STASH_FOUND) {
+        if let Some(states) = self.sm.get_mut(STASH_FOUND) {
             states.iter_mut().map(|s| s.flush_and_export_full()).collect()
         } else {
             Vec::new()
@@ -3026,24 +2989,19 @@ impl RustExplorationManager {
     /// Track a state in the state_index.
     #[inline]
     fn index_state(&mut self, state_id: u64, stash: &str) {
-        self.state_index.insert(state_id, stash.to_string());
+        self.sm.index(state_id, stash);
     }
 
     /// Remove a state from the state_index.
     #[inline]
     fn unindex_state(&mut self, state_id: u64) {
-        self.state_index.remove(&state_id);
+        self.sm.unindex(state_id);
     }
 
     /// Rebuild the state_index from scratch by scanning all stashes.
     /// Called after run() to ensure index is up to date for Python API calls.
     fn rebuild_state_index(&mut self) {
-        self.state_index.clear();
-        for (stash_name, stash) in &self.stashes {
-            for state in stash {
-                self.state_index.insert(state.state_id(), stash_name.clone());
-            }
-        }
+        self.sm.rebuild_index();
     }
 
     /// Find an immutable reference to a state by ID using the index.
@@ -3055,59 +3013,13 @@ impl RustExplorationManager {
                 return Some(&pending.state);
             }
         }
-        // Fast path: use index to find the right stash
-        if let Some(stash_name) = self.state_index.get(&state_id) {
-            if let Some(stash) = self.stashes.get(stash_name) {
-                for state in stash {
-                    if state.state_id() == state_id {
-                        return Some(state);
-                    }
-                }
-            }
-        }
-        // Slow fallback: linear scan all stashes (index may be stale)
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    return Some(state);
-                }
-            }
-        }
-        None
+        self.sm.find_state(state_id)
     }
 
     /// Find a mutable reference to a state by ID using the index.
     /// Falls back to linear scan if the index is stale.
     fn find_state_mut(&mut self, state_id: u64) -> Option<&mut RustSimState> {
-        // Try index first, then fallback to linear scan.
-        // We need to determine the stash name first, then do mutable borrow.
-        let stash_name = if let Some(name) = self.state_index.get(&state_id) {
-            Some(name.clone())
-        } else {
-            // Linear scan to find which stash contains this state
-            let mut found_name = None;
-            for (name, stash) in &self.stashes {
-                for state in stash {
-                    if state.state_id() == state_id {
-                        found_name = Some(name.clone());
-                        break;
-                    }
-                }
-                if found_name.is_some() { break; }
-            }
-            found_name
-        };
-
-        if let Some(name) = stash_name {
-            if let Some(stash) = self.stashes.get_mut(&name) {
-                for state in stash.iter_mut() {
-                    if state.state_id() == state_id {
-                        return Some(state);
-                    }
-                }
-            }
-        }
-        None
+        self.sm.find_state_mut(state_id)
     }
 
     /// Compute a hash for a state's register tuple for uniqueness checking.
@@ -3151,7 +3063,7 @@ impl RustExplorationManager {
 
         // First pass: compute hashes and find duplicates (immutable borrow of active)
         let to_remove = {
-            let active = match self.stashes.get(STASH_ACTIVE) {
+            let active = match self.sm.get(STASH_ACTIVE) {
                 Some(s) => s,
                 None => return,
             };
@@ -3171,7 +3083,7 @@ impl RustExplorationManager {
         }
 
         // Second pass: remove duplicates (mutable borrow of stashes)
-        let active = match self.stashes.get_mut(STASH_ACTIVE) {
+        let active = match self.sm.get_mut(STASH_ACTIVE) {
             Some(s) => s,
             None => return,
         };
@@ -3182,8 +3094,8 @@ impl RustExplorationManager {
             }
         }
 
-        if !self.drop_terminal_states {
-            let not_unique = self.stashes
+        if !self.sm.drop_terminal_states() {
+            let not_unique = self.sm.stashes_mut()
                 .entry("not_unique".to_string())
                 .or_insert_with(VecDeque::new);
             for state in removed_states {
@@ -3196,22 +3108,7 @@ impl RustExplorationManager {
     /// Push a state to a terminal stash (avoid/pruned/deadended), or drop it
     /// if `drop_terminal_states` is enabled. Increments the appropriate counter.
     fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
-        match stash_name {
-            "avoid" => self.avoided_count += 1,
-            "pruned" => self.pruned_count += 1,
-            "deadended" => self.deadended_count += 1,
-            _ => {}
-        }
-        if !self.drop_terminal_states {
-            self.stashes
-                .entry(stash_name.to_string())
-                .or_insert_with(VecDeque::new)
-                .push_back(state);
-        } else {
-            // State is dropped here, freeing its Z3 solver clone.
-            // Clean up state_roots to prevent unbounded growth.
-            self.state_roots.remove(&state.state_id());
-        }
+        self.sm.push_or_drop_terminal(stash_name, state);
     }
 
     /// Sync constraints from Python callbacks back to the Rust state's solver.
@@ -3548,7 +3445,7 @@ impl RustExplorationManager {
 
                 // Track root state ID for lineage
                 let original_state_id = state.state_id();
-                let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+                let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
 
                 // Process deferred forks with proper constraint handling
                 // P13: Track UNSAT states for pruning
@@ -3598,7 +3495,7 @@ impl RustExplorationManager {
                             self.accumulated_stats.solver_fork_count += 1;
                         }
                         // Track root state ID for this forked state
-                        self.state_roots.insert(forked.state_id(), root_state_id);
+                        self.sm.set_root(forked.state_id(), root_state_id);
 
                         // P13: Check satisfiability before adding to successors
                         let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
@@ -3629,7 +3526,7 @@ impl RustExplorationManager {
                         );
                         let mut forked = successors[0].fork();
                         forked.set_pc(fork.unexplored_target);
-                        self.state_roots.insert(forked.state_id(), root_state_id);
+                        self.sm.set_root(forked.state_id(), root_state_id);
 
                         // P13: Still check satisfiability
                         if self.lazy_solves || forked.satisfiable() {
@@ -3737,7 +3634,7 @@ impl RustExplorationManager {
                 if native_succeeded {
                     // Handle deferred forks same as normal successors
                     let original_state_id = state.state_id();
-                    let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+                    let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
                     let mut successors = vec![state];
 
                     // Process deferred forks with fork_base from first successor
@@ -3771,7 +3668,7 @@ impl RustExplorationManager {
                                     f.set_pc(fork.unexplored_target);
                                     f
                                 };
-                                self.state_roots.insert(forked.state_id(), root_state_id);
+                                self.sm.set_root(forked.state_id(), root_state_id);
                                 if self.lazy_solves || forked.satisfiable() {
                                     successors.push(forked);
                                 }
@@ -3913,7 +3810,7 @@ impl RustExplorationManager {
 
                 // Track root state ID for lineage
                 let original_state_id = state.state_id();
-                let root_state_id = self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id);
+                let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
 
                 let mut successors = Vec::with_capacity(targets.len());
 
@@ -3940,7 +3837,7 @@ impl RustExplorationManager {
                     }
                     forked.set_pc(addr);
                     // Track root state ID for this forked state
-                    self.state_roots.insert(forked.state_id(), root_state_id);
+                    self.sm.set_root(forked.state_id(), root_state_id);
                     successors.push(forked);
                 }
 
@@ -4087,7 +3984,7 @@ impl RustExplorationManager {
 
         let root_state_id = {
             let original_state_id = successors[0].state_id();
-            self.state_roots.get(&original_state_id).copied().unwrap_or(original_state_id)
+            self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id)
         };
 
         for fork in &deferred_forks {
@@ -4119,7 +4016,7 @@ impl RustExplorationManager {
                     f
                 };
 
-                self.state_roots.insert(forked.state_id(), root_state_id);
+                self.sm.set_root(forked.state_id(), root_state_id);
 
                 if self.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
@@ -4130,7 +4027,7 @@ impl RustExplorationManager {
                 // Conservative fork without condition
                 let mut forked = successors[0].fork();
                 forked.set_pc(fork.unexplored_target);
-                self.state_roots.insert(forked.state_id(), root_state_id);
+                self.sm.set_root(forked.state_id(), root_state_id);
                 if self.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
