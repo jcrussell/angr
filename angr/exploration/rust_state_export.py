@@ -404,11 +404,11 @@ class RustStateExportMixin:
             try:
                 rust_ctx = _get_rust_ctx()
                 results = rust_ctx.eval_upto(expr, n)
-                if results is not None:
+                if results:
                     if cast_to == bytes:
                         nbytes = (expr.length + 7) // 8
-                        return [r.to_bytes(nbytes, 'little')[::-1] for r in results]
-                    return results
+                        return [r.to_bytes(nbytes, 'big') for r in results]
+                    return list(results)
             except Exception:
                 pass
             return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
@@ -486,11 +486,11 @@ class RustStateExportMixin:
             try:
                 rust_ctx = rust_mgr.fork_state_solver(state_id)
                 results = rust_ctx.eval_upto(expr, n)
-                if results is not None:
+                if results:
                     if cast_to == bytes:
                         nbytes = (expr.length + 7) // 8
-                        return [r.to_bytes(nbytes, 'little')[::-1] for r in results]
-                    return results
+                        return [r.to_bytes(nbytes, 'big') for r in results]
+                    return list(results)
             except Exception:
                 pass
             return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)

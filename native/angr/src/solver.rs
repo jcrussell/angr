@@ -281,17 +281,24 @@ impl RustSolverContext {
         py: Python<'_>,
         ast: &Bound<'_, PyAny>,
         n: usize,
-    ) -> PyResult<Vec<u128>> {
+    ) -> PyResult<PyObject> {
+        let result_list = pyo3::types::PyList::empty(py);
+
         // Fast path: concrete BVV has exactly one solution
         if n > 0 {
             if let Some((value, _width)) = try_extract_bvv(ast) {
-                return Ok(vec![value]);
+                result_list.append(value.into_pyobject(py)?)?;
+                return Ok(result_list.into());
             }
         }
 
+        let width: u32 = ast.getattr("length")
+            .and_then(|l| l.extract()).unwrap_or(64);
+        let is_wide = width > 128;
+
         let ctx = self.inner.ctx();
-        match claripy_to_rustbv(py, ast, &*ctx) {
-            Ok(bv) => Ok(ctx.eval_upto(&bv, n)),
+        let bv = match claripy_to_rustbv(py, ast, &*ctx) {
+            Ok(bv) => bv,
             Err(_) => {
                 // Z3 fast path for complex expressions
                 #[cfg(feature = "vex-engine-z3")]
@@ -299,23 +306,45 @@ impl RustSolverContext {
                     use z3::ast::Ast;
                     if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
                         if z3_ptr != 0 {
-                            let width: u32 = ast.getattr("length")
-                                .and_then(|l| l.extract()).unwrap_or(64);
                             let z3_bv = unsafe {
                                 let raw = std::ptr::NonNull::new_unchecked(z3_ptr as *mut _);
                                 let z3_ctx = z3::Context::thread_local();
                                 z3::ast::BV::wrap(&z3_ctx, raw)
                             };
-                            let bv = RustBV::Symbolic {
+                            RustBV::Symbolic {
                                 id: 0, ast: z3_bv, width, name: String::new(),
-                            };
-                            return Ok(ctx.eval_upto(&bv, n));
+                            }
+                        } else {
+                            return Ok(result_list.into());
                         }
+                    } else {
+                        return Ok(result_list.into());
                     }
                 }
-                Ok(Vec::new())
+                #[cfg(not(feature = "vex-engine-z3"))]
+                {
+                    return Ok(result_list.into());
+                }
+            }
+        };
+
+        if is_wide {
+            // Wide values: use eval_upto_wide to get full-precision bytes
+            let results = ctx.eval_upto_wide(&bv, n);
+            let int_class = py.get_type::<pyo3::types::PyInt>();
+            for bytes in results {
+                let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
+                let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
+                result_list.append(py_int)?;
+            }
+        } else {
+            // Standard path: u128 values
+            let results = ctx.eval_upto(&bv, n);
+            for v in results {
+                result_list.append(v.into_pyobject(py)?)?;
             }
         }
+        Ok(result_list.into())
     }
 
     /// Get the minimum value of a claripy AST.

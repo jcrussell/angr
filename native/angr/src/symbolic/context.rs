@@ -597,6 +597,67 @@ impl SymContext {
         results
     }
 
+    /// Evaluate a bitvector and return up to n solutions as byte arrays (big-endian).
+    /// Handles values of any width without truncation.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn eval_upto_wide(&self, bv: &RustBV, n: usize) -> Vec<Vec<u8>> {
+        use z3::ast::Ast;
+
+        let width = bv.width();
+
+        // Fast path for concrete values
+        if let Some(v) = bv.as_u128() {
+            let byte_len = ((width + 7) / 8) as usize;
+            let bytes = v.to_be_bytes();
+            let result = if byte_len <= 16 {
+                bytes[16 - byte_len..].to_vec()
+            } else {
+                let mut r = vec![0u8; byte_len];
+                r[byte_len - 16..].copy_from_slice(&bytes);
+                r
+            };
+            return vec![result];
+        }
+
+        if n == 0 {
+            return vec![];
+        }
+
+        let mut results = Vec::with_capacity(n);
+        let ast = bv.to_z3_ast();
+
+        let solver = self.solver();
+        solver.push();
+
+        for _ in 0..n {
+            match solver.check() {
+                z3::SatResult::Sat => {
+                    if let Some(model) = solver.get_model() {
+                        if let Some(result) = model.eval(&ast, true) {
+                            if let Some(bytes) = Self::extract_bv_value_wide(&result, width) {
+                                // Exclude this value from future solutions
+                                // Build Z3 constant from bytes for full-precision exclusion
+                                let val_ast = Self::make_bv_from_bytes(&bytes, width);
+                                solver.assert(&ast._eq(&val_ast).not());
+                                results.push(bytes);
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        solver.pop(1);
+        results
+    }
+
     /// Create a Z3 BV constant from a u128 value.
     #[cfg(feature = "vex-engine-z3")]
     fn make_bv_const(value: u128, width: u32) -> z3::ast::BV {
@@ -607,6 +668,47 @@ impl SymContext {
             let hi = z3::ast::BV::from_u64((value >> 64) as u64, width - 64);
             hi.concat(&lo)
         }
+    }
+
+    /// Create a Z3 BV constant from big-endian bytes.
+    /// Handles arbitrary widths by building 64-bit chunks and concatenating.
+    #[cfg(feature = "vex-engine-z3")]
+    fn make_bv_from_bytes(bytes: &[u8], width: u32) -> z3::ast::BV {
+        if width <= 64 {
+            let mut val: u64 = 0;
+            for &b in bytes {
+                val = (val << 8) | (b as u64);
+            }
+            return z3::ast::BV::from_u64(val, width);
+        }
+
+        // Build from 64-bit chunks (big-endian)
+        let byte_len = bytes.len();
+        let mut result: Option<z3::ast::BV> = None;
+        let mut bits_remaining = width;
+        let mut pos = 0;
+
+        while bits_remaining > 0 {
+            let chunk_bits = std::cmp::min(bits_remaining, 64);
+            let chunk_bytes = ((chunk_bits + 7) / 8) as usize;
+            let mut val: u64 = 0;
+            for i in 0..chunk_bytes {
+                if pos + i < byte_len {
+                    val = (val << 8) | (bytes[pos + i] as u64);
+                } else {
+                    val <<= 8;
+                }
+            }
+            let chunk = z3::ast::BV::from_u64(val, chunk_bits);
+            result = Some(match result {
+                Some(prev) => prev.concat(&chunk),
+                None => chunk,
+            });
+            pos += chunk_bytes;
+            bits_remaining -= chunk_bits;
+        }
+
+        result.unwrap_or_else(|| z3::ast::BV::from_u64(0, width))
     }
 
     /// Get the minimum value of a bitvector using binary search (O(log N)).
@@ -1153,6 +1255,14 @@ impl SymContext {
         }
         // Without Z3, can only return concrete values
         bv.as_u128().map(|v| vec![v]).unwrap_or_default()
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn eval_upto_wide(&self, bv: &RustBV, n: usize) -> Vec<Vec<u8>> {
+        if n == 0 {
+            return vec![];
+        }
+        self.eval_wide(bv).map(|v| vec![v]).unwrap_or_default()
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
