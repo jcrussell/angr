@@ -104,24 +104,11 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
         angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
         angr.factory.AngrObjectFactory.simgr = patched_simulation_manager
 
-    class BufferedStringIO(io.StringIO):
-        def __init__(self):
-            super().__init__()
-            self._buffer = io.BytesIO()
-
-        @property
-        def buffer(self):
-            return self._buffer
-
-        def getvalue(self):
-            text = super().getvalue()
-            binary = self._buffer.getvalue()
-            if binary:
-                try:
-                    text += binary.decode("utf-8", errors="replace")
-                except Exception:
-                    pass
-            return text
+    # Import shared utility from the benchmarks directory
+    _bench_dir = os.path.dirname(os.path.abspath(__file__))
+    if _bench_dir not in sys.path:
+        sys.path.insert(0, _bench_dir)
+    from test_utils import BufferedStringIO
 
     try:
         os.chdir(example_dir)

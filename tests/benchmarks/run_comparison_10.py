@@ -7,7 +7,6 @@ Usage:
     python tests/benchmarks/run_comparison_10.py
 """
 import importlib.util
-import io
 import json
 import multiprocessing
 import os
@@ -20,28 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
-class BufferedStringIO(io.StringIO):
-    """StringIO with a buffer attribute for compatibility with code that uses stdout.buffer."""
-
-    def __init__(self):
-        super().__init__()
-        self._buffer = io.BytesIO()
-
-    @property
-    def buffer(self):
-        return self._buffer
-
-    def getvalue(self) -> str:
-        """Get combined output from both text and binary writes."""
-        text_output = super().getvalue()
-        binary_output = self._buffer.getvalue()
-        if binary_output:
-            try:
-                text_output += binary_output.decode('utf-8', errors='replace')
-            except Exception:
-                pass
-        return text_output
+# Import shared utility from the benchmarks directory
+_bench_dir = os.path.dirname(os.path.abspath(__file__))
+if _bench_dir not in sys.path:
+    sys.path.insert(0, _bench_dir)
+from test_utils import BufferedStringIO
 
 # Add the reference/angr directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))

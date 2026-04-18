@@ -30,6 +30,15 @@ _candidates = [
 TEST_BINARIES_DIR = next((d for d in _candidates if os.path.isdir(d)), _candidates[0])
 
 
+@pytest.fixture(scope="module")
+def fauxware_project():
+    """Load fauxware test binary (shared across all tests in this module)."""
+    binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
+    if not os.path.exists(binary_path):
+        pytest.skip("fauxware binary not found")
+    return angr.Project(binary_path, auto_load_libs=False)
+
+
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustExplorationManagerUnit:
     """Unit tests for RustExplorationManager Rust class."""
@@ -186,13 +195,6 @@ class TestRustSimStateIntegration:
 class TestRustExplorationPython:
     """Tests for Python RustExplorationManager wrapper."""
 
-    @pytest.fixture
-    def fauxware_project(self):
-        """Load fauxware test binary."""
-        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-        if not os.path.exists(binary_path):
-            pytest.skip("fauxware binary not found")
-        return angr.Project(binary_path, auto_load_libs=False)
 
     def test_python_wrapper_creation(self, fauxware_project):
         """Test creating Python wrapper."""
@@ -355,13 +357,6 @@ class TestRustEdgeCases:
 class TestCallablePredicates:
     """Tests for callable find/avoid predicates with RustStateProxy."""
 
-    @pytest.fixture
-    def fauxware_project(self):
-        """Load fauxware test binary."""
-        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-        if not os.path.exists(binary_path):
-            pytest.skip("fauxware binary not found")
-        return angr.Project(binary_path, auto_load_libs=False)
 
     def test_find_lambda_by_address(self, fauxware_project):
         """Callable find predicate matching by address works."""
@@ -776,13 +771,6 @@ class TestRustStateRegisters:
 class TestSerializeIRSB:
     """Tests for IRSB serialization (used in lift callbacks)."""
 
-    @pytest.fixture
-    def fauxware_project(self):
-        """Load fauxware test binary."""
-        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-        if not os.path.exists(binary_path):
-            pytest.skip("fauxware binary not found")
-        return angr.Project(binary_path, auto_load_libs=False)
 
     def test_serialize_basic_block(self, fauxware_project):
         """Serializing a basic block produces valid JSON."""
@@ -826,13 +814,6 @@ class TestSerializeIRSB:
 class TestExplorationIntegration:
     """Integration tests with real binaries."""
 
-    @pytest.fixture
-    def fauxware_project(self):
-        """Load fauxware test binary."""
-        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-        if not os.path.exists(binary_path):
-            pytest.skip("fauxware binary not found")
-        return angr.Project(binary_path, auto_load_libs=False)
 
     def test_explore_with_max_steps(self, fauxware_project):
         """Exploration respects max_steps limit."""
@@ -873,13 +854,6 @@ class TestExplorationIntegration:
 class TestAdversarial:
     """Adversarial tests: edge cases, API misuse, resource bounds."""
 
-    @pytest.fixture
-    def fauxware_project(self):
-        """Load fauxware test binary."""
-        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-        if not os.path.exists(binary_path):
-            pytest.skip("fauxware binary not found")
-        return angr.Project(binary_path, auto_load_libs=False)
 
     # --- API misuse ---
 
