@@ -1081,6 +1081,13 @@ impl RustExplorationManager {
                                 } else { None };
 
                                 if let Some(cond) = condition.or(reconstructed.as_ref()) {
+                                    // Add the taken-path constraint to the main state
+                                    // (mirrors the BlockEnd handling at line 3560-3564).
+                                    if fork.path_taken {
+                                        pending.state.solver().borrow().assume_true(cond);
+                                    } else {
+                                        pending.state.solver().borrow().assume_false(cond);
+                                    }
                                     let fork_op_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                                     let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
                                         let mut f = fork_base.fork_from_snapshot(snapshot);

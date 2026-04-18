@@ -935,14 +935,12 @@ impl<'a> CallbackInterpreter<'a> {
         py: Python<'_>,
         callbacks: &PythonCallbacks,
     ) -> Result<(), CbExecutionError> {
-        if self.pending_stores.is_empty() {
+        if self.pending_stores.is_empty() && self.pending_symbolic_stores.is_empty() {
             return Ok(());
         }
 
         if self.use_rust_memory {
             // When Rust owns memory, flush stores to rust_memory instead of Python.
-            // Stores already went to rust_memory in the store path (line 1435),
-            // but some code paths may still buffer stores in pending_stores.
             if let Some(ref mut rust_mem) = self.rust_memory {
                 for (addr, data) in &self.pending_stores {
                     let width = (data.len() * 8) as u32;
@@ -952,6 +950,12 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                     let bv = RustBV::concrete(val, width);
                     let _ = rust_mem.store_concrete_automap_internal(*addr, bv);
+                }
+                // Also flush symbolic stores to rust_memory so that subsequent
+                // loads via load_concrete_lazy_inner find the symbolic values
+                // instead of returning concrete zeros from the page fill.
+                for (addr, bv) in &self.pending_symbolic_stores {
+                    rust_mem.import_symbolic_value(*addr, bv.clone(), None);
                 }
             }
             // Still accumulate for cross-block load forwarding
@@ -2680,11 +2684,11 @@ impl<'a> CallbackInterpreter<'a> {
 
                     if let Some(result) = first_result {
                         match result {
-                            Ok(value) => {
+                            Ok(ref value) => {
                                 if let Some(start) = load_start {
                                     self.stats.load_stmt_time_ns += start.elapsed().as_nanos() as u64;
                                 }
-                                return Ok(value);
+                                return Ok(value.clone());
                             }
                             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
                                 // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
