@@ -6,7 +6,7 @@
 //! - Minimizes Python-Rust state transfer overhead
 //! - Enables Rust-native exploration loops
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::cell::RefCell;
 
@@ -127,11 +127,10 @@ pub struct RustSimState {
     dirty_registers: u128,
     /// Whether to track detailed history.
     track_history: bool,
-    /// Stdout buffer — accumulates output from native puts/printf.
+    /// Per-fd output buffers — accumulates output from native puts/printf/write.
     /// Cloned on fork so each path gets its own copy.
-    stdout_buffer: Vec<u8>,
-    /// Whether stdout_buffer has been written to (dirty flag).
-    stdout_dirty: bool,
+    /// Key: file descriptor number (1=stdout, 2=stderr, etc.)
+    fd_buffers: HashMap<u32, Vec<u8>>,
     /// Heap brk pointer — simple bump allocator for malloc/calloc.
     /// Default: 0xC0000000 (matching angr's DEFAULT_HEAP_LOCATION).
     heap_brk: u64,
@@ -177,8 +176,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
-            stdout_buffer: Vec::new(),
-            stdout_dirty: false,
+            fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
         })
     }
@@ -207,8 +205,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
-            stdout_buffer: Vec::new(),
-            stdout_dirty: false,
+            fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
         }
     }
@@ -247,8 +244,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
-            stdout_buffer: Vec::new(),
-            stdout_dirty: false,
+            fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
         })
     }
@@ -291,20 +287,29 @@ impl RustSimState {
         self.arch.as_ref()
     }
 
-    /// Get the stdout buffer.
+    /// Get the stdout buffer (fd=1).
     pub fn stdout_buffer(&self) -> &[u8] {
-        &self.stdout_buffer
+        self.fd_buffer(1)
     }
 
-    /// Append bytes to the stdout buffer.
+    /// Append bytes to the stdout buffer (fd=1).
     pub fn write_stdout(&mut self, data: &[u8]) {
-        self.stdout_buffer.extend_from_slice(data);
-        self.stdout_dirty = true;
+        self.write_fd(1, data);
     }
 
     /// Check if stdout has been written to.
     pub fn has_stdout(&self) -> bool {
-        self.stdout_dirty
+        self.fd_buffers.get(&1).is_some_and(|b| !b.is_empty())
+    }
+
+    /// Get the output buffer for a file descriptor.
+    pub fn fd_buffer(&self, fd: u32) -> &[u8] {
+        self.fd_buffers.get(&fd).map(|b| b.as_slice()).unwrap_or(&[])
+    }
+
+    /// Append bytes to a file descriptor's output buffer.
+    pub fn write_fd(&mut self, fd: u32, data: &[u8]) {
+        self.fd_buffers.entry(fd).or_default().extend_from_slice(data);
     }
 
     /// Get the current heap brk pointer.
@@ -613,8 +618,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0, // Fresh dirty tracking for fork
             track_history: self.track_history,
-            stdout_buffer: self.stdout_buffer.clone(),
-            stdout_dirty: self.stdout_dirty,
+            fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
         }
     }
@@ -638,8 +642,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
-            stdout_buffer: self.stdout_buffer.clone(),
-            stdout_dirty: self.stdout_dirty,
+            fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
         }
     }
@@ -663,8 +666,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
-            stdout_buffer: self.stdout_buffer.clone(),
-            stdout_dirty: self.stdout_dirty,
+            fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
         }
     }
@@ -696,8 +698,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
-            stdout_buffer: self.stdout_buffer.clone(),
-            stdout_dirty: self.stdout_dirty,
+            fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
         }
     }

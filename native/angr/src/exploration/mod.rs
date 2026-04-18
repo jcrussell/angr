@@ -1871,13 +1871,20 @@ impl RustExplorationManager {
     ///
     /// Returns the accumulated output from native puts/printf calls.
     pub fn get_state_stdout(&self, state_id: u64) -> PyResult<Vec<u8>> {
+        self.get_state_fd_output(state_id, 1)
+    }
+
+    /// Get the output buffer for a specific file descriptor.
+    ///
+    /// Returns the accumulated output from native write/puts/printf calls.
+    pub fn get_state_fd_output(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
         if let Some(state) = self.find_state(state_id) {
-            return Ok(state.stdout_buffer().to_vec());
+            return Ok(state.fd_buffer(fd).to_vec());
         }
         // Also check pending callback state
         if let Some(ref cb) = self.pending_callback {
             if cb.state.state_id() == state_id {
-                return Ok(cb.state.stdout_buffer().to_vec());
+                return Ok(cb.state.fd_buffer(fd).to_vec());
             }
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))

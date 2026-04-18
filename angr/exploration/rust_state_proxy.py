@@ -385,15 +385,18 @@ class RustPosixProxy:
 
     def dumps(self, fd):
         """Dump file descriptor contents."""
-        if fd == 1:
-            # stdout — return accumulated output
-            return self._stdout_data
-        elif fd == 0:
+        if fd == 0:
             # stdin — evaluate symbolic variables under constraints
             return self._eval_stdin()
+        elif fd == 1:
+            # stdout — return accumulated output (cached on proxy init)
+            return self._stdout_data
         else:
-            l.warning("RustPosixProxy: fd %d not tracked, returning empty", fd)
-            return b""
+            # Other fds (stderr, opened files) — query Rust engine
+            try:
+                return bytes(self._mgr.get_state_fd_output(self._state_id, fd))
+            except Exception:
+                return b""
 
     def _eval_stdin(self):
         """Evaluate stdin symbolic variables to concrete bytes."""

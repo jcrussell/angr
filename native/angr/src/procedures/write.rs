@@ -1,6 +1,6 @@
 //! Native write implementation.
 //!
-//! Handles write(fd, buf, count) for stdout (fd=1).
+//! Handles write(fd, buf, count) for stdout (fd=1) and stderr (fd=2).
 //! Other file descriptors fall back to Python.
 
 use crate::state::RustSimState;
@@ -15,7 +15,7 @@ const MAX_WRITE_SIZE: u64 = 4096;
 /// ssize_t write(int fd, const void *buf, size_t count);
 /// ```
 ///
-/// Only handles fd=1 (stdout) natively. Other fds fall back to Python.
+/// Handles fd=1 (stdout) and fd=2 (stderr) natively. Other fds fall back to Python.
 pub struct NativeWrite;
 
 impl NativeSimProcedure for NativeWrite {
@@ -36,8 +36,8 @@ impl NativeSimProcedure for NativeWrite {
             ProcedureError::SymbolicArgument("fd".to_string())
         })?;
 
-        // Only handle stdout natively
-        if fd != 1 {
+        // Handle stdout (fd=1) and stderr (fd=2) natively
+        if fd != 1 && fd != 2 {
             return Err(ProcedureError::Other(format!(
                 "write to fd={} not supported natively", fd
             )));
@@ -76,7 +76,7 @@ impl NativeSimProcedure for NativeWrite {
             }
         }
 
-        state.write_stdout(&bytes);
+        state.write_fd(fd as u32, &bytes);
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(count as u128, bits)))
