@@ -1,5 +1,7 @@
-[build]
-rustflags = ["-C", "link-arg=-Wl,-rpath,/home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/z3/lib"]
-
-[env]
-Z3_SYS_Z3_HEADER = "/home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/z3/include/z3.h"
+# Z3 paths are auto-detected by build.rs from the Python environment.
+# To override, uncomment and adjust these lines:
+# [build]
+# rustflags = ["-C", "link-arg=-Wl,-rpath,/path/to/.venv/lib/python3.12/site-packages/z3/lib"]
+#
+# [env]
+# Z3_SYS_Z3_HEADER = "/path/to/.venv/lib/python3.12/site-packages/z3/include/z3.h"
