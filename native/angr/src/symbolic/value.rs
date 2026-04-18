@@ -1455,7 +1455,7 @@ impl RustBV {
                 collect_concat_leaves(&operands[0], &mut leaves);
                 collect_concat_leaves(&operands[1], &mut leaves);
                 // Build right-associative: leaves[0].concat(leaves[1].concat(...))
-                let mut result = leaves.pop().unwrap();
+                let mut result = leaves.pop().expect("Concat operands always produce at least one leaf");
                 while let Some(part) = leaves.pop() {
                     result = part.concat(&result);
                 }
@@ -1627,7 +1627,7 @@ impl RustBV {
                 let mut leaves = Vec::new();
                 collect_concat_leaves_cached(&operands[0], &mut leaves, cache);
                 collect_concat_leaves_cached(&operands[1], &mut leaves, cache);
-                let mut result = leaves.pop().unwrap();
+                let mut result = leaves.pop().expect("Concat operands always produce at least one leaf");
                 while let Some(part) = leaves.pop() {
                     result = part.concat(&result);
                 }

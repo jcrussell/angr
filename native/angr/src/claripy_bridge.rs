@@ -32,7 +32,7 @@ const AST_CACHE_SIZE: usize = 10000;
 /// Using hash instead of object ID avoids cache corruption when Python reuses object addresses.
 thread_local! {
     static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
-        RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).unwrap()));
+        RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).expect("AST_CACHE_SIZE is a non-zero constant")));
 }
 
 /// Thread-local cache for preserving original claripy ASTs.
@@ -53,7 +53,7 @@ thread_local! {
 /// reconstructed from scratch, potentially losing identity with the original AST.
 thread_local! {
     static EXPRESSION_CACHE: RefCell<LruCache<u64, PyObject>> =
-        RefCell::new(LruCache::new(NonZeroUsize::new(10000).unwrap()));
+        RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression cache capacity is a non-zero constant")));
 }
 
 /// Store a claripy AST for later retrieval.

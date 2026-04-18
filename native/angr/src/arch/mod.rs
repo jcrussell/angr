@@ -196,7 +196,7 @@ impl RegisterFile {
                 // Compose parts: in little-endian, lower offset = LSB
                 // Concat builds MSB first, so we reverse
                 if !parts.is_empty() {
-                    let mut result = parts.pop().unwrap();
+                    let mut result = parts.pop().expect("parts vec is non-empty because at least one sub-register was found");
                     while let Some(part) = parts.pop() {
                         result = result.concat(&part, ctx);
                     }

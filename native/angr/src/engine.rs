@@ -222,7 +222,7 @@ impl RustVEXEngine {
         Ok(RustVEXEngine {
             arch_name: arch.to_string(),
             vex_arch,
-            block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()),
+            block_cache: LruCache::new(NonZeroUsize::new(1024).expect("nonzero literal")),
             hooks: std::collections::HashSet::new(),
             registers: vec![0u8; state_size],
             pc: 0,
@@ -506,7 +506,7 @@ impl RustVEXEngine {
     /// Get a register value.
     /// Returns u128 to handle XMM and other large registers (Python BigInt handles this).
     pub fn get_register(&self, name: &str) -> PyResult<u128> {
-        let arch = arch_from_name(&self.arch_name).unwrap();
+        let arch = arch_from_name(&self.arch_name).expect("arch validated at construction");
         let offset = arch.register_offset(name).ok_or_else(|| {
             PyValueError::new_err(format!("unknown register: {}", name))
         })? as usize;
@@ -528,7 +528,7 @@ impl RustVEXEngine {
     /// Set a register value.
     /// Accepts u128 to handle XMM and other large registers (Python BigInt handles this).
     pub fn set_register(&mut self, name: &str, value: u128) -> PyResult<()> {
-        let arch = arch_from_name(&self.arch_name).unwrap();
+        let arch = arch_from_name(&self.arch_name).expect("arch validated at construction");
         let offset = arch.register_offset(name).ok_or_else(|| {
             PyValueError::new_err(format!("unknown register: {}", name))
         })? as usize;
@@ -549,7 +549,7 @@ impl RustVEXEngine {
     /// Get all register values as a dictionary.
     pub fn get_registers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-        let arch = arch_from_name(&self.arch_name).unwrap();
+        let arch = arch_from_name(&self.arch_name).expect("arch validated at construction");
 
         for name in arch.register_names() {
             if let Ok(value) = self.get_register(name) {
@@ -1038,7 +1038,7 @@ impl RustVEXEngine {
             arch_name: self.arch_name.clone(),
             vex_arch: self.vex_arch,
             // New cache for forked state - they may have different access patterns
-            block_cache: LruCache::new(NonZeroUsize::new(1024).unwrap()),
+            block_cache: LruCache::new(NonZeroUsize::new(1024).expect("nonzero literal")),
             hooks: self.hooks.clone(),
             registers: self.registers.clone(),
             pc: self.pc,
@@ -1076,7 +1076,7 @@ impl RustVEXEngine {
 
     /// Create a state snapshot for debugging.
     pub fn snapshot(&self) -> StateSnapshot {
-        let arch = arch_from_name(&self.arch_name).unwrap();
+        let arch = arch_from_name(&self.arch_name).expect("arch validated at construction");
         let mut registers = HashMap::new();
 
         for name in arch.register_names() {

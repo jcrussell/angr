@@ -2050,7 +2050,7 @@ impl SymbolicMemory {
                 match self.endness {
                     Endness::Little => {
                         // Start with the MSB (last byte) and concat towards LSB
-                        let mut result = byte_objects.pop().unwrap();
+                        let mut result = byte_objects.pop().expect("byte_objects non-empty when size > 0");
                         while let Some(byte) = byte_objects.pop() {
                             result = result.concat(&byte, ctx);
                         }

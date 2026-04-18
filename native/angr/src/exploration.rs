@@ -427,7 +427,7 @@ impl RustExplorationManager {
             hooks: HashSet::new(),
             simprocedures: HashMap::new(),
             binary_regions: Vec::new(),
-            block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()),
+            block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
             pending_callback: None,
             current_stepping_state_id: None,
             steps: 0,
@@ -1372,7 +1372,7 @@ impl RustExplorationManager {
                     // Try to convert the claripy AST to RustBV
                     Python::with_gil(|py| {
                         let ast = py_ast.bind(py);
-                        let fb = fork_base.as_ref().unwrap();
+                        let fb = fork_base.as_ref().expect("fork_base set before deferred fork processing");
                         let solver_ref = fb.solver();
                         let ctx: &SymContext = &*solver_ref.borrow();
                         claripy_to_rustbv(py, ast, ctx).ok()
@@ -1388,7 +1388,7 @@ impl RustExplorationManager {
 
             if let Some(cond) = effective_condition {
                 // Use solver snapshot (from before branch constraint) if available
-                let fb = fork_base.as_ref().unwrap();
+                let fb = fork_base.as_ref().expect("fork_base set before deferred fork processing");
                 let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
                     let mut f = fb.fork_from_snapshot(snapshot);
                     if fork.path_taken {
@@ -1442,7 +1442,7 @@ impl RustExplorationManager {
                 );
                 // Create a fork without additional constraints - this is conservative
                 // but ensures we don't lose valid paths
-                let mut forked = fork_base.as_ref().unwrap().fork();
+                let mut forked = fork_base.as_ref().expect("fork_base set before fork").fork();
                 forked.set_pc(fork.unexplored_target);
                 self.state_roots.insert(forked.state_id(), root_state_id);
 
@@ -2597,7 +2597,7 @@ impl RustExplorationManager {
         }
 
         // With filter - evaluate Python filter_fn per state
-        let filter_fn = filter_fn.unwrap();
+        let filter_fn = filter_fn.expect("filter_fn checked before call");
         let from = match self.stashes.get(from_stash) {
             Some(s) if !s.is_empty() => s,
             _ => return Ok(0),
@@ -3465,7 +3465,7 @@ impl RustExplorationManager {
             // so lifted blocks persist across steps (avoids re-lifting).
             // Swap exploration's populated cache into interp, stash interp's empty one.
             let interp_empty_cache = interp.swap_block_cache(
-                std::mem::replace(&mut self.block_cache, LruCache::new(NonZeroUsize::new(4096).unwrap()))
+                std::mem::replace(&mut self.block_cache, LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")))
             );
             // interp now has the exploration's cache; self.block_cache is a temporary empty placeholder
             let _ = interp_empty_cache; // drop the empty cache
@@ -3505,7 +3505,7 @@ impl RustExplorationManager {
             let recovered_memory = interp.take_rust_memory();
 
             // Return shared block cache to exploration before interpreter is dropped
-            let updated_cache = interp.swap_block_cache(LruCache::new(NonZeroUsize::new(4096).unwrap()));
+            let updated_cache = interp.swap_block_cache(LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")));
 
             // Take profiling stats before interpreter is dropped
             let step_stats = interp.take_stats();

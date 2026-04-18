@@ -607,7 +607,7 @@ impl<'a> CallbackInterpreter<'a> {
             current_insn_len: 0,
             hook_addrs: HashSet::new(),
             arch,
-            block_cache: LruCache::new(NonZeroUsize::new(4096).unwrap()),
+            block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
             use_memory_callbacks: true,
             deferred_forks: Vec::new(),
             deferred_fork_this_step: false,

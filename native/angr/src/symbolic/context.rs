@@ -189,7 +189,7 @@ impl SymContext {
 
             *guard = Some(new_solver);
         }
-        parking_lot::MutexGuard::map(guard, |opt| opt.as_mut().unwrap())
+        parking_lot::MutexGuard::map(guard, |opt| opt.as_mut().expect("solver was just initialized in the None branch above"))
     }
 
     /// Get the next unique ID for a symbolic variable.

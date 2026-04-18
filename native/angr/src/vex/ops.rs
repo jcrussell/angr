@@ -580,7 +580,7 @@ impl VEXOps {
         }
 
         // Concatenate from high to low
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_binop elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = result.concat(&elem, ctx);
         }
@@ -661,7 +661,7 @@ impl VEXOps {
         }
 
         // Concatenate from high to low
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_mul_lo elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = result.concat(&elem, ctx);
         }
@@ -750,7 +750,7 @@ impl VEXOps {
         }
 
         // Concatenate
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_cmp elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = result.concat(&elem, ctx);
         }
@@ -806,7 +806,7 @@ impl VEXOps {
 
         // Concatenate from high to low
         elements.reverse();
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_interleave_lo elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = elem.concat(&result, ctx);
         }
@@ -862,7 +862,7 @@ impl VEXOps {
 
         // Concatenate from high to low
         elements.reverse();
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_interleave_hi elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = elem.concat(&result, ctx);
         }
@@ -924,7 +924,7 @@ impl VEXOps {
             elements.push(shifted);
         }
 
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_shl_n elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = result.concat(&elem, ctx);
         }
@@ -981,7 +981,7 @@ impl VEXOps {
             elements.push(shifted);
         }
 
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_shr_n elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = result.concat(&elem, ctx);
         }
@@ -1055,7 +1055,7 @@ impl VEXOps {
             elements.push(shifted);
         }
 
-        let mut result = elements.pop().unwrap();
+        let mut result = elements.pop().expect("vec_sar_n elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
             result = result.concat(&elem, ctx);
         }
