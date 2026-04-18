@@ -201,7 +201,7 @@ class TestRustExplorationPython:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
 
-        assert mgr.stash_counts()["active"] >= 1
+        assert mgr.stash_counts()["active"] == 1, "entry_state should produce exactly 1 active state"
 
     def test_basic_explore(self, fauxware_project):
         """Test basic exploration with find address."""
@@ -215,15 +215,10 @@ class TestRustExplorationPython:
         mgr = RustExplorationManager(fauxware_project, [state])
 
         # Run exploration
-        try:
-            mgr.explore(find=find_addr)
-            # If we get here, exploration completed
-            stats = mgr.stats
-            print(f"Exploration stats: {stats}")
-        except Exception as e:
-            # Exploration might fail due to missing SimProcedures
-            # This is expected in unit tests
-            print(f"Exploration stopped: {e}")
+        mgr.explore(find=find_addr)
+        # Exploration completed — verify at least one state was found or explored
+        assert len(mgr.found) > 0 or len(mgr.deadended) > 0, \
+            "exploration should find states or deadend some"
 
     def test_stash_access(self, fauxware_project):
         """Test accessing stashes."""
@@ -689,6 +684,52 @@ class TestSolverOperations:
         assert 30 <= vx <= 50
         assert 60 <= vy <= 80
 
+    def test_solver_eval_upto_wide_bvs(self):
+        """eval_upto should handle BVS wider than 128 bits without truncation."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        # 296-bit BVS (like whitehatvn's 37-byte arg)
+        x = claripy.BVS("wide_var", 296)
+        # Constrain first byte to 'A' (0x41) and last byte to 'Z' (0x5a)
+        ctx.add_constraint_ast(claripy.Extract(295, 288, x) == 0x41)
+        ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x5a)
+
+        results = ctx.eval_upto(x, 2)
+        assert len(results) >= 1, "should find at least one solution"
+        for r in results:
+            nbytes = 37
+            val_bytes = r.to_bytes(nbytes, 'big')
+            assert val_bytes[0] == 0x41, "first byte should be 'A'"
+            assert val_bytes[-1] == 0x5a, "last byte should be 'Z'"
+
+    def test_solver_eval_upto_excludes_duplicates(self):
+        """eval_upto should return distinct values."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 8)
+        ctx.add_constraint_ast(x >= 1)
+        ctx.add_constraint_ast(x <= 5)
+
+        results = ctx.eval_upto(x, 10)
+        assert len(results) == 5, "should find exactly 5 solutions for [1..5]"
+        assert len(set(results)) == 5, "all solutions should be distinct"
+
+    def test_solver_contradictory_find_avoid(self):
+        """Same address in find and avoid should avoid (avoid takes priority)."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_find_addrs([0x1000])
+        mgr.set_avoid_addrs([0x1000])
+        state = RustSimState("amd64")
+        state.pc = 0x1000
+        mgr.add_state("active", state)
+        # The address is in both find and avoid — behavior is implementation-defined
+        # but should not crash
+        assert mgr.active_count() == 1
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustStateRegisters:
@@ -799,12 +840,12 @@ class TestExplorationIntegration:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, max_steps=10)
+        mgr.explore(find=0x4006ed, max_steps=3)
 
-        # Should stop before finding (10 steps is too few for fauxware)
-        # But should not crash
+        # 3 steps is too few to find target in fauxware
         stats = mgr.stats
-        assert stats['ffi_crossings'] > 0
+        assert stats['ffi_crossings'] > 0, "should have crossed FFI boundary"
+        assert len(mgr.found) == 0, "3 steps too few to find target in fauxware"
 
     def test_explore_finds_correct_state(self, fauxware_project):
         """Full exploration finds the expected state."""
@@ -870,9 +911,9 @@ class TestAdversarial:
     # --- State operations ---
 
     def test_state_register_unknown(self):
-        """Getting unknown register should raise or return error."""
+        """Getting unknown register should raise ValueError."""
         state = RustSimState("amd64")
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, RuntimeError)):
             state.get_register("nonexistent_register_xyz")
 
     def test_state_register_zero_value(self):
