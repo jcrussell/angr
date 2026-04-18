@@ -173,25 +173,25 @@ class RustCallbackDispatchMixin:
         ctx_ref = [rust_ctx]
         state.scratch._rust_solver_ref = ctx_ref
 
+        def _with_extra_constraints(_ctx, fn, *args, extra=()):
+            """Run fn(*args) on _ctx, temporarily adding extra constraints via push/pop."""
+            if extra:
+                _ctx.push()
+                try:
+                    for c in extra:
+                        _ctx.add_constraint_ast(c)
+                    return fn(*args)
+                finally:
+                    _ctx.pop()
+            return fn(*args)
+
         def _rust_eval(expr, cast_to=None, **kwargs):
             _ctx = ctx_ref[0]
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
-                if extra:
-                    _ctx.push()
-                    try:
-                        for c in extra:
-                            _ctx.add_constraint_ast(c)
-                        result = _ctx.eval(expr)
-                    finally:
-                        _ctx.pop()
-                else:
-                    result = _ctx.eval(expr)
+                result = _with_extra_constraints(_ctx, _ctx.eval, expr, extra=extra)
                 if result is None:
-                    # Rust solver returned None — fall back to Python solver
-                    # before raising UNSAT. The Rust solver may lack constraints
-                    # that the Python solver has (e.g., symbolic write scenarios).
                     return original_eval(expr, cast_to=cast_to, **kwargs)
                 if cast_to == bytes:
                     nbytes = (expr.length + 7) // 8
@@ -207,15 +207,7 @@ class RustCallbackDispatchMixin:
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
-                if extra:
-                    _ctx.push()
-                    try:
-                        for c in extra:
-                            _ctx.add_constraint_ast(c)
-                        return _ctx.satisfiable()
-                    finally:
-                        _ctx.pop()
-                return _ctx.satisfiable()
+                return _with_extra_constraints(_ctx, _ctx.satisfiable, extra=extra)
             except Exception:
                 return original_satisfiable(**kwargs)
 
@@ -242,16 +234,7 @@ class RustCallbackDispatchMixin:
             kwargs.pop('exact', None)
             extra = kwargs.pop('extra_constraints', ())
             try:
-                if extra:
-                    _ctx.push()
-                    try:
-                        for c in extra:
-                            _ctx.add_constraint_ast(c)
-                        results = _ctx.eval_upto(expr, n)
-                    finally:
-                        _ctx.pop()
-                else:
-                    results = _ctx.eval_upto(expr, n)
+                results = _with_extra_constraints(_ctx, _ctx.eval_upto, expr, n, extra=extra)
                 if cast_to is not None:
                     results = tuple(cast_to(r) for r in results)
                 return results

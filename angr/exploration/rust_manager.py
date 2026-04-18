@@ -440,7 +440,7 @@ class RustExplorationManager(
                     l.warning(f"Memory load at 0x{addr:x} returned invalid type: {type(val)}")
                     return (bytes(size), False, None)
 
-                is_symbolic = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                is_symbolic = getattr(val, 'symbolic', False)
                 if is_symbolic:
                     handle_id = id(val)
                     self._register_handle(handle_id, val, addr=addr, size=size, state_id=state_id)
@@ -594,7 +594,7 @@ class RustExplorationManager(
             return (bytes(size), False, None)
         try:
             val = state.registers.load(offset, size, endness=state.arch.register_endness)
-            is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+            is_sym = getattr(val, 'symbolic', False)
             concrete = state.solver.eval(val).to_bytes(size, 'little')
             if is_sym:
                 self._register_handle(id(val), val)
@@ -636,7 +636,7 @@ class RustExplorationManager(
             if result is None:
                 return (bytes(ret_ty_bits // 8), False, None)
 
-            is_sym = getattr(result, 'symbolic', False) if hasattr(result, 'symbolic') else False
+            is_sym = getattr(result, 'symbolic', False)
             concrete_val = state.solver.eval(result)
             num_bytes = ret_ty_bits // 8
             concrete_bytes = concrete_val.to_bytes(num_bytes, 'little')
@@ -774,7 +774,7 @@ class RustExplorationManager(
         for addr, size in loads:
             try:
                 val = state.memory.load(addr, size, endness=state.arch.memory_endness)
-                is_sym = getattr(val, 'symbolic', False) if hasattr(val, 'symbolic') else False
+                is_sym = getattr(val, 'symbolic', False)
                 concrete = state.solver.eval(val).to_bytes(size, 'little')
                 if is_sym:
                     self._register_handle(id(val), val, addr=addr, size=size)

@@ -162,31 +162,29 @@ class RustStateCacheMixin:
         if hasattr(self, '_pending_handles') and handle_id in self._pending_handles:
             self._pending_handles.discard(handle_id)
 
-    def _cleanup_symbolic_pages_cache(self):
-        """Enforce the symbolic pages cache size limit.
+    @staticmethod
+    def _evict_oldest(cache: dict, max_size: int) -> list:
+        """Find oldest entries to remove from a dict-based cache.
 
-        Removes oldest entries when cache exceeds _max_symbolic_pages_cache.
-        Also cleans up _addr_to_ast to prevent memory leaks.
+        Returns list of keys to evict so len(cache) - len(result) <= max_size.
         """
-        if len(self._symbolic_pages) <= self._max_symbolic_pages_cache:
-            return
-
-        # Find entries to remove (oldest first)
+        if len(cache) <= max_size:
+            return []
         to_remove = []
-        for state_id in list(self._symbolic_pages.keys()):
-            to_remove.append(state_id)
-            if len(self._symbolic_pages) - len(to_remove) <= self._max_symbolic_pages_cache:
+        for key in list(cache.keys()):
+            to_remove.append(key)
+            if len(cache) - len(to_remove) <= max_size:
                 break
+        return to_remove
 
-        # Remove old entries
+    def _cleanup_symbolic_pages_cache(self):
+        """Enforce the symbolic pages cache size limit."""
+        to_remove = self._evict_oldest(self._symbolic_pages, self._max_symbolic_pages_cache)
         for state_id in to_remove:
             del self._symbolic_pages[state_id]
-            # Also clean up address tracking for this state (P1 fix)
             if state_id in self._addr_to_ast:
                 del self._addr_to_ast[state_id]
-            # Mark symbols as inactive for GC
             self._identity_tracker.mark_inactive(state_id)
-
         if to_remove:
             l.debug(f"Cleaned up {len(to_remove)} symbolic page cache entries")
 
@@ -333,27 +331,12 @@ class RustStateCacheMixin:
             return None
 
     def _cleanup_state_cache(self):
-        """Enforce the state cache size limit.
-
-        Removes oldest entries when cache exceeds _max_state_cache_size.
-        """
-        if len(self._state_cache) <= self._max_state_cache_size:
-            return
-
-        # Find entries to remove (oldest first)
-        to_remove = []
-        for state_id in list(self._state_cache.keys()):
-            to_remove.append(state_id)
-            if len(self._state_cache) - len(to_remove) <= self._max_state_cache_size:
-                break
-
-        # Remove old entries
+        """Enforce the state cache size limit."""
+        to_remove = self._evict_oldest(self._state_cache, self._max_state_cache_size)
         for state_id in to_remove:
             del self._state_cache[state_id]
-            # Also clean up symbolic pages
             self._symbolic_pages.pop(state_id, None)
             self._identity_tracker.mark_inactive(state_id)
-
         if to_remove:
             l.debug(f"Cleaned up {len(to_remove)} state cache entries")
 
