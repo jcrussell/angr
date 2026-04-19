@@ -25,6 +25,31 @@ If something is in_progress, continue it. Otherwise:
   bd ready
 Pick the highest priority unblocked task.
 
+SCOPE: Complete ONE task per session. Only take a second task if it is closely
+related to the first (same files, shared context) AND the first task completed
+quickly (<15 minutes). This keeps sessions focused and limits blast radius from
+rate limits or crashes.
+
+RESUMABILITY: Check .claude/loop-session.md for context from the previous session.
+This file contains the task ID, progress notes, and what was being done when the
+session ended. Read it BEFORE doing anything else (after setup commands).
+
+Then run git status and git diff --stat. If there are uncommitted changes:
+  1. Read .claude/loop-session.md and the diff to understand what was being done
+  2. Check bd list --status=in_progress to find the associated task
+  3. Decide: compile, test, and commit if the work is complete/useful, OR
+     revert if the changes are broken/partial and start fresh
+  4. Use your judgment — you have full context the shell script does not
+
+SESSION LOG: Throughout your work, keep .claude/loop-session.md updated with:
+  - Task ID and title you are working on
+  - Current step (investigating / implementing / testing / committing)
+  - Key findings or decisions made so far
+  - Files you have modified
+This file is your handoff note to the next session. Update it at each major
+milestone, not just at the end. Write it as if briefing a colleague who will
+pick up exactly where you left off.
+
 For each task, follow this loop:
 1. bd update <id> --claim
 2. bd show <id> — read the description carefully
@@ -42,13 +67,13 @@ For each task, follow this loop:
     - Profiling showed the bottleneck was NOT where expected? Save it. (--key <topic>-bottleneck)
     - A benchmark number changed significantly? Save before/after. (--key benchmark-<topic>)
     Do NOT skip this step. Context dies between sessions; memories are the only bridge.
-11. If you discover new work needed: bd create --title="<title>" --description="<desc>" --type=task --parent=angr-34w
-12. If budget remains, pick the next task from bd ready
+11. If you discover new work needed: bd create --title="<title>" --description="<desc>" --type=task
+12. Write a brief session summary to stdout before exiting.
 
 Key files:
-- Rust: native/angr/src/ (exploration.rs, interpreter_cb.rs, callbacks.rs, state.rs, symbolic/context.rs, symbolic/value.rs)
+- Rust: native/angr/src/ (exploration/, interpreter_cb.rs, callbacks.rs, state.rs, symbolic/context.rs, symbolic/value.rs)
 - Python: angr/exploration/rust_manager.py, rust_state_export.py, rust_state_sync.py, rust_state_proxy.py
-- Tests: tests/engines/test_rust_exploration.py (82 tests)
+- Tests: tests/engines/test_rust_exploration.py (85 tests)
 - Single runner: tests/benchmarks/run_single.py <example> [--engine rust|python] [--both]
 - Regression: tests/benchmarks/run_regression.py
 
@@ -103,4 +128,4 @@ while [ $ITERATION -lt $MAX_ITERATIONS ]; do
 done
 
 echo "=== Loop complete: $ITERATION iterations ==="
-echo "=== Check progress: cd /home/ubuntu/repos/angr && bd status ==="
+echo "=== Check progress: cd /home/ubuntu/repos/angr && bd stats ==="
