@@ -41,7 +41,7 @@ EXAMPLE_CATALOG = {
     "defcon2016quals_baby-re": {"tier": "medium",  "rust_ok": True,  "notes": "scanf hooks, Py 1.5s Rust 28s (slow)"},
     "asisctffinals2015_license":{"tier": "medium", "rust_ok": False, "notes": "Rust list index error"},
     "0ctf_momo_3":             {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
-    "csgames2018":             {"tier": "fast",    "rust_ok": False, "notes": "Rust list index error"},
+    "csgames2018":             {"tier": "fast",    "rust_ok": True,  "notes": "Callable predicates, stdout check"},
     "unmapped_analysis":       {"tier": "fast",    "rust_ok": False, "notes": "Rust state error"},
     "hitcon2017_sakura":       {"tier": "very_slow","rust_ok": False, "notes": "Python >60s, Rust list index error"},
     "strcpy_find":             {"tier": "fast",    "rust_ok": True,  "notes": "Buffer overflow / strcpy detection, Py 0.8s Rust 4.0s"},
