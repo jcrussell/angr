@@ -285,6 +285,14 @@ impl SymContext {
     /// Add a constraint that the bitvector equals a specific value.
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_bv_constraint(&self, bv: &RustBV, value: u128) {
+        // Fast path: if bv is already concrete, the constraint is either
+        // trivially true (skip) or trivially false (makes UNSAT).
+        if let Some(v) = bv.as_u128() {
+            if v == value {
+                return; // Tautology — skip Z3
+            }
+            // Falls through to add False constraint (UNSAT)
+        }
         use z3::ast::Ast;
         let ast = bv.to_z3_ast();
         let val_ast = if bv.width() <= 64 {
@@ -304,6 +312,13 @@ impl SymContext {
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python
         self.assumed_constraints.lock().push((cond.clone(), true));
+        // Fast path: concrete true is a tautology — skip Z3 entirely
+        if let Some(v) = cond.as_u128() {
+            if v != 0 {
+                return; // Asserting True is a no-op
+            }
+            // v == 0: asserting False makes solver UNSAT — still add it
+        }
         // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
         // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
         let constraint = cond.to_z3_bool();
@@ -318,6 +333,13 @@ impl SymContext {
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python
         self.assumed_constraints.lock().push((cond.clone(), false));
+        // Fast path: concrete false (== 0) means not(False) = True — skip Z3
+        if let Some(v) = cond.as_u128() {
+            if v == 0 {
+                return; // Asserting not(False) = True is a no-op
+            }
+            // v != 0: asserting not(True) = False makes solver UNSAT — still add it
+        }
         // Negate the bool directly
         let constraint = cond.to_z3_bool().not();
         // Cache Z3 Bool for fast fork replay
