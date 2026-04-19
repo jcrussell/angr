@@ -121,6 +121,7 @@ class RustExplorationManager(
         project: "angr.Project",
         active_states: Optional[list] = None,
         save_unconstrained: bool = False,
+        solver_timeout_ms: int = 30000,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -130,6 +131,7 @@ class RustExplorationManager(
             active_states: Optional list of initial angr SimStates.
             save_unconstrained: If True, save states with unconstrained IP
                 to the 'unconstrained' stash instead of dropping them.
+            solver_timeout_ms: Z3 solver timeout in milliseconds (default: 30000).
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
@@ -144,6 +146,10 @@ class RustExplorationManager(
         self._save_unconstrained = save_unconstrained
         is_le = project.arch.memory_endness == 'Iend_LE'
         self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
+
+        # Configure solver timeout
+        if solver_timeout_ms != 30000:
+            self._rust_mgr.set_solver_timeout(solver_timeout_ms)
 
         # Performance profiling counters
         self._perf_stats = {

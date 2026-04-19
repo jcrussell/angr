@@ -87,6 +87,11 @@
         self.zero_fill_unconstrained = enabled;
     }
 
+    /// Set the Z3 solver timeout in milliseconds (default: 30000).
+    pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
+        self.solver_timeout_ms = timeout_ms;
+    }
+
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
     /// When true (default), terminal states are dropped to save memory.
     /// Set to false when states need to be recovered (e.g., factory.callable()).

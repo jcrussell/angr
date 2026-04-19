@@ -378,6 +378,8 @@ pub struct RustExplorationManager {
     pub(crate) lazy_solves: bool,
     /// When true, fill unconstrained memory reads with zero instead of symbolic values.
     pub(crate) zero_fill_unconstrained: bool,
+    /// Z3 solver timeout in milliseconds (default: 30000).
+    pub(crate) solver_timeout_ms: u32,
     // drop_terminal_states, avoided_count, pruned_count, deadended_count
     // are now in self.sm (StashManager)
     /// Native uniqueness filter: register names to check.
@@ -439,6 +441,7 @@ impl RustExplorationManager {
             use_lifo: false,  // P9: Default to BFS (FIFO)
             lazy_solves: false,
             zero_fill_unconstrained: false,
+            solver_timeout_ms: 30000,
             uniqueness_registers: Vec::new(),
             uniqueness_set: HashSet::new(),
             skip_find_predicate_states: HashSet::new(),
@@ -540,6 +543,11 @@ impl RustExplorationManager {
         self.zero_fill_unconstrained = enabled;
     }
 
+    /// Set the Z3 solver timeout in milliseconds (default: 30000).
+    pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
+        self.solver_timeout_ms = timeout_ms;
+    }
+
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
     /// When true (default), terminal states are dropped to save memory.
     /// Set to false when states need to be recovered (e.g., factory.callable()).
@@ -630,6 +638,11 @@ impl RustExplorationManager {
             state.memory_mut().set_zero_fill_unconstrained(true);
         }
 
+        // Propagate solver timeout
+        if self.solver_timeout_ms != 30000 {
+            state.solver().borrow().set_timeout(self.solver_timeout_ms);
+        }
+
         // Copy hooks to state
         for &addr in &self.hooks {
             // State hooks are checked during execution
@@ -654,6 +667,11 @@ impl RustExplorationManager {
         // Propagate memory options
         if self.zero_fill_unconstrained {
             forked.memory_mut().set_zero_fill_unconstrained(true);
+        }
+
+        // Propagate solver timeout
+        if self.solver_timeout_ms != 30000 {
+            forked.solver().borrow().set_timeout(self.solver_timeout_ms);
         }
 
         // Track this state as its own root (it was added via Python)

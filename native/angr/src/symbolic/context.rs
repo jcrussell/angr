@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
@@ -99,6 +99,9 @@ pub struct SymContext {
     /// Each entry is a (track_bool, constraint_ast) pair.
     #[cfg(feature = "vex-engine-z3")]
     constraint_trackers: Mutex<Vec<z3::ast::Bool>>,
+    /// Z3 solver timeout in milliseconds (default: 30000).
+    #[cfg(feature = "vex-engine-z3")]
+    timeout_ms: AtomicU32,
 }
 
 impl SymContext {
@@ -127,12 +130,17 @@ impl SymContext {
     /// All Z3 operations on this thread will use the same context.
     #[cfg(feature = "vex-engine-z3")]
     pub fn new() -> Self {
+        Self::with_timeout(30000)
+    }
+
+    /// Create a new solver context with Z3 and a custom timeout.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn with_timeout(timeout_ms: u32) -> Self {
         // Create solver with timeout (unsat_core disabled for performance —
         // tracking booleans add significant overhead per constraint)
         let solver = z3::Solver::new();
         let mut params = z3::Params::new();
-        // Phase 2 Fix: Add 30 second timeout to prevent indefinite hangs
-        params.set_u32("timeout", 30000);
+        params.set_u32("timeout", timeout_ms);
         // Propagate extraction inward through arithmetic — reduces constraint
         // structure before bit-blasting, especially for Rust-generated constraints
         // that use nested Extract/SignExt patterns.
@@ -153,6 +161,7 @@ impl SymContext {
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
+            timeout_ms: AtomicU32::new(timeout_ms),
         }
     }
 
@@ -174,7 +183,7 @@ impl SymContext {
         if guard.is_none() {
             let new_solver = z3::Solver::new();
             let mut params = z3::Params::new();
-            params.set_u32("timeout", 30000);
+            params.set_u32("timeout", self.timeout_ms.load(Ordering::SeqCst));
             params.set_bool("bv_extract_prop", true);
             new_solver.set_params(&params);
 
@@ -366,11 +375,18 @@ impl SymContext {
 
     /// Set the Z3 solver timeout in milliseconds.
     pub fn set_timeout(&self, timeout_ms: u32) {
-        let solver = self.solver();
-        let mut params = z3::Params::new();
-        params.set_u32("timeout", timeout_ms);
-        params.set_bool("bv_extract_prop", true);
-        solver.set_params(&params);
+        self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
+        if let Some(solver) = self.solver.lock().as_ref() {
+            let mut params = z3::Params::new();
+            params.set_u32("timeout", timeout_ms);
+            params.set_bool("bv_extract_prop", true);
+            solver.set_params(&params);
+        }
+    }
+
+    /// Get the Z3 solver timeout in milliseconds.
+    pub fn timeout_ms(&self) -> u32 {
+        self.timeout_ms.load(Ordering::SeqCst)
     }
 
     /// Prime the SAT cache with a known value.
@@ -1412,6 +1428,7 @@ impl SymContext {
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
+            timeout_ms: AtomicU32::new(self.timeout_ms.load(Ordering::SeqCst)),
         }
     }
 
