@@ -446,6 +446,15 @@
                                 self.steps,
                             )
                         }
+                        CallbackReason::PythonVEXFallback { addr } => {
+                            ExplorationEvent::need_python_vex(
+                                state_id,
+                                *addr,
+                                self.found_count(),
+                                self.active_count(),
+                                self.steps,
+                            )
+                        }
                         CallbackReason::Error { message } => {
                             ExplorationEvent::error(
                                 message.clone(),

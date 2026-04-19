@@ -1437,14 +1437,18 @@ impl<'a> CallbackInterpreter<'a> {
                 }
                 Err(e) => {
                     let forks = self.take_deferred_forks();
-                    return (
-                        RunResult::Error {
+                    // Unsupported operations should fall back to Python VEX engine
+                    // instead of moving the state to the errored stash
+                    let result = match &e {
+                        CbExecutionError::Unsupported(_) | CbExecutionError::NeedPythonFallback(_) => {
+                            RunResult::NeedPythonVEX { addr: self.pc }
+                        }
+                        _ => RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
                         },
-                        blocks_executed,
-                        forks,
-                    );
+                    };
+                    return (result, blocks_executed, forks);
                 }
             }
         }

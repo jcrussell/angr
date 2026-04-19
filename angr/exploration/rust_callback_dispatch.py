@@ -1733,3 +1733,74 @@ class RustCallbackDispatchMixin:
             l.warning(f"Error creating blank state for callback: {e}")
             return None
 
+    def _handle_python_vex_fallback(self, event: "_ExplorationEvent"):
+        """Handle Python VEX engine fallback for unsupported Rust operations.
+
+        When the Rust VEX interpreter encounters an unsupported operation
+        (CAS, dirty calls, SIMD, etc.), it returns to Python to step the
+        block using SimEngineVEX, then syncs results back to Rust.
+        """
+        addr = event.callback_addr
+        state_id = event.callback_state_id
+
+        if _DBG:
+            l.debug(f"Python VEX fallback at 0x{addr:x} (state {state_id})")
+
+        try:
+            # Create a full SimState from the Rust state
+            state = self._create_state_for_callback(event)
+            if state is None:
+                l.warning(f"Could not create state for VEX fallback at 0x{addr:x}")
+                self._rust_mgr.resume_after_simprocedure(addr, None, None)
+                return
+
+            # Step the state through Python's VEX engine for one block
+            try:
+                succs_obj = self._project.factory.successors(state, num_inst=99)
+            except Exception as e:
+                l.warning(f"Python VEX engine failed at 0x{addr:x}: {e}")
+                try:
+                    self._rust_mgr.resume_after_error(f"python_vex_fallback_error: {e}")
+                except Exception:
+                    pass
+                return
+
+            all_succs = succs_obj.all_successors
+            if not all_succs:
+                if _DBG:
+                    l.debug(f"VEX fallback produced no successors at 0x{addr:x} — deadending")
+                self._rust_mgr.deadend_pending_callback()
+                return
+
+            # Use the first successor as the primary result
+            succ = all_succs[0]
+            new_pc = succ.addr
+
+            # Extract register changes
+            reg_changes = self._extract_register_changes(state, succ)
+
+            # Extract memory changes (returns concrete_changes, symbolic_imports)
+            mem_changes, symbolic_imports = self._extract_memory_changes(state, succ)
+
+            # Extract new constraints
+            orig_constraints = set(state.solver.constraints)
+            new_constraints = [c for c in succ.solver.constraints if c not in orig_constraints]
+
+            # Resume Rust with the first successor
+            self._rust_mgr.resume_after_simprocedure(
+                new_pc, reg_changes, mem_changes or None, new_constraints or None
+            )
+
+            if len(all_succs) > 1:
+                l.warning(f"VEX fallback at 0x{addr:x} produced {len(all_succs)} successors, "
+                          f"only first successor synced back to Rust")
+
+            self._perf_stats['callback_simprocedure_count'] += 1
+
+        except Exception as e:
+            l.warning(f"Python VEX fallback error at 0x{addr:x}: {e}")
+            try:
+                self._rust_mgr.resume_after_error(f"python_vex_fallback_error: {e}")
+            except Exception:
+                pass
+

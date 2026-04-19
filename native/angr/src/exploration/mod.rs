@@ -76,6 +76,8 @@ pub enum CallbackReason {
         true_target: u64,
         false_target: u64,
     },
+    /// Need Python VEX engine to handle block with unsupported operations.
+    PythonVEXFallback { addr: u64 },
 }
 
 /// Event returned from exploration to Python.
@@ -208,6 +210,18 @@ impl ExplorationEvent {
         ExplorationEvent {
             callback_reason: Some(message),
             ..Self::base(STASH_ERRORED, found_count, active_count, steps)
+        }
+    }
+
+    pub(crate) fn need_python_vex(
+        state_id: u64, addr: u64,
+        found_count: usize, active_count: usize, steps: u64,
+    ) -> Self {
+        ExplorationEvent {
+            callback_state_id: Some(state_id),
+            callback_reason: Some("python_vex_fallback".to_string()),
+            callback_addr: Some(addr),
+            ..Self::base("need_callback", found_count, active_count, steps)
         }
     }
 }
@@ -2334,6 +2348,15 @@ impl RustExplorationManager {
                                 *condition_id,
                                 *true_target,
                                 *false_target,
+                                self.found_count(),
+                                self.active_count(),
+                                self.steps,
+                            )
+                        }
+                        CallbackReason::PythonVEXFallback { addr } => {
+                            ExplorationEvent::need_python_vex(
+                                state_id,
+                                *addr,
                                 self.found_count(),
                                 self.active_count(),
                                 self.steps,

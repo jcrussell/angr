@@ -1700,6 +1700,8 @@ class RustExplorationManager(
             self._handle_find_predicate_callback(event)
         elif reason == 'avoid_predicate':
             self._handle_avoid_predicate_callback(event)
+        elif reason == 'python_vex_fallback':
+            self._handle_python_vex_fallback(event)
         else:
             l.warning(f"Unknown callback reason: {reason}")
             self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start

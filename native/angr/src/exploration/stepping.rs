@@ -503,6 +503,21 @@ impl RustExplorationManager {
                     Err(StepError::Error(state, message))
                 }
             }
+            RunResult::NeedPythonVEX { addr } => {
+                // Rust interpreter hit an unsupported operation (CAS, dirty call, SIMD, etc.)
+                // Fall back to Python's SimEngineVEX to handle this block
+                state.set_pc(addr);
+                Err(StepError::NeedCallback(PendingCallback::with_context(
+                    state,
+                    None,
+                    CallbackReason::PythonVEXFallback { addr },
+                    "Ijk_Boring",
+                    None,
+                    deferred_forks,
+                    stored_conditions,
+                    fork_snapshots,
+                )))
+            }
             RunResult::NeedLift { addr } => {
                 // This shouldn't happen if callbacks are properly set
                 state.set_pc(addr);

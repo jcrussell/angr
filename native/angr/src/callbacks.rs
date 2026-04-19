@@ -246,6 +246,8 @@ pub enum RunResult {
     BlockEnd { next_addr: u64, jumpkind: String },
     /// Error during execution.
     Error { message: String, addr: u64 },
+    /// Rust VEX interpreter hit an unsupported operation - need Python VEX engine fallback.
+    NeedPythonVEX { addr: u64 },
     /// Need to lift a block at the given address.
     NeedLift { addr: u64 },
     /// Reached max deferred forks limit - return to Python with accumulated forks.
@@ -1690,6 +1692,30 @@ impl LoopExecutionEvent {
                 unmodeled_call_addr: Some(addr),
                 unmodeled_call_return_addr: Some(return_addr),
                 unmodeled_call_symbol: symbol_name,
+            },
+            RunResult::NeedPythonVEX { addr } => LoopExecutionEvent {
+                event_type: "python_vex_fallback".to_string(),
+                pc: Some(addr),
+                addr: Some(addr),
+                syscall_num: None,
+                true_target: None,
+                false_target: None,
+                jumpkind: None,
+                error: None,
+                blocks_executed,
+                deferred_forks,
+                push_level,
+                simprocedure_name: None,
+                simprocedure_num_args: None,
+                simprocedure_return_addr: None,
+                jump_targets: None,
+                jump_condition_id: None,
+                unconstrained_min: None,
+                unconstrained_max: None,
+                unconstrained_limit: None,
+                unmodeled_call_addr: None,
+                unmodeled_call_return_addr: None,
+                unmodeled_call_symbol: None,
             },
         }
     }
