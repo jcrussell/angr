@@ -82,3 +82,57 @@ impl NativeSimProcedure for NativeWrite {
         Ok(Some(RustBV::concrete(count as u128, bits)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Permission;
+
+    #[test]
+    fn test_write_stdout() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello", Permission::RWX);
+
+        let result = NativeWrite.call(
+            &mut state,
+            &[RustBV::concrete(1, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(5, 64)],
+        ).unwrap();
+
+        assert_eq!(result.unwrap().as_u64(), Some(5));
+        assert_eq!(state.stdout_buffer(), b"hello");
+    }
+
+    #[test]
+    fn test_write_stderr() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"err", Permission::RWX);
+
+        let result = NativeWrite.call(
+            &mut state,
+            &[RustBV::concrete(2, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(3, 64)],
+        ).unwrap();
+
+        assert_eq!(result.unwrap().as_u64(), Some(3));
+        assert_eq!(state.fd_buffer(2), b"err");
+    }
+
+    #[test]
+    fn test_write_unsupported_fd() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeWrite.call(
+            &mut state,
+            &[RustBV::concrete(3, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(1, 64)],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_too_large() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeWrite.call(
+            &mut state,
+            &[RustBV::concrete(1, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(5000, 64)],
+        );
+        assert!(result.is_err());
+    }
+}

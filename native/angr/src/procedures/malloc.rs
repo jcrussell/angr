@@ -185,3 +185,116 @@ impl NativeSimProcedure for NativeRealloc {
         Ok(Some(RustBV::concrete(new_addr as u128, bits)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Permission;
+
+    #[test]
+    fn test_malloc_basic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeMalloc.call(&mut state, &[RustBV::concrete(100, 64)]).unwrap();
+        let addr = result.unwrap().as_u64().unwrap();
+        assert!(addr > 0);
+    }
+
+    #[test]
+    fn test_malloc_sequential_non_overlapping() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let r1 = NativeMalloc.call(&mut state, &[RustBV::concrete(32, 64)]).unwrap();
+        let r2 = NativeMalloc.call(&mut state, &[RustBV::concrete(32, 64)]).unwrap();
+        let a1 = r1.unwrap().as_u64().unwrap();
+        let a2 = r2.unwrap().as_u64().unwrap();
+        // Second allocation should be >= first + aligned size
+        assert!(a2 >= a1 + 32);
+    }
+
+    #[test]
+    fn test_malloc_symbolic_size() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "size", 64);
+        drop(ctx);
+        let result = NativeMalloc.call(&mut state, &[sym]);
+        assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+    }
+
+    #[test]
+    fn test_free_noop() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeFree.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_calloc_zeroed() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        // Map heap region (heap starts at 0xC0000000)
+        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+
+        let result = NativeCalloc.call(
+            &mut state,
+            &[RustBV::concrete(4, 64), RustBV::concrete(8, 64)],
+        ).unwrap();
+        let addr = result.unwrap().as_u64().unwrap();
+        // Verify zeroed memory
+        let val = state.memory_load(addr, 8).unwrap();
+        assert_eq!(val.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_calloc_overflow() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeCalloc.call(
+            &mut state,
+            &[RustBV::concrete(u64::MAX as u128, 64), RustBV::concrete(2, 64)],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_calloc_too_large() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeCalloc.call(
+            &mut state,
+            &[RustBV::concrete(1, 64), RustBV::concrete(2_000_000, 64)],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_realloc_null_ptr() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        // realloc(NULL, size) should behave like malloc
+        let result = NativeRealloc.call(
+            &mut state,
+            &[RustBV::concrete(0, 64), RustBV::concrete(64, 64)],
+        ).unwrap();
+        let addr = result.unwrap().as_u64().unwrap();
+        assert!(addr > 0);
+    }
+
+    #[test]
+    fn test_realloc_copies_data() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        // Map heap region
+        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+
+        // Allocate and write data
+        let r1 = NativeMalloc.call(&mut state, &[RustBV::concrete(16, 64)]).unwrap();
+        let old_addr = r1.unwrap().as_u64().unwrap();
+        state.memory_store(old_addr, RustBV::concrete(0xDEADBEEF, 32)).unwrap();
+
+        // Realloc to larger size
+        let r2 = NativeRealloc.call(
+            &mut state,
+            &[RustBV::concrete(old_addr as u128, 64), RustBV::concrete(32, 64)],
+        ).unwrap();
+        let new_addr = r2.unwrap().as_u64().unwrap();
+
+        // Data should be copied
+        let val = state.memory_load(new_addr, 4).unwrap();
+        assert_eq!(val.as_u64(), Some(0xDEADBEEF));
+    }
+}

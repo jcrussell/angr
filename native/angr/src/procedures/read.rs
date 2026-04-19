@@ -92,3 +92,59 @@ impl NativeSimProcedure for NativeRead {
         Ok(Some(RustBV::concrete(count as u128, bits)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Permission;
+
+    #[test]
+    fn test_read_stdin() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+
+        let result = NativeRead.call(
+            &mut state,
+            &[RustBV::concrete(0, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(4, 64)],
+        ).unwrap();
+
+        // Should return count
+        assert_eq!(result.unwrap().as_u64(), Some(4));
+
+        // Each byte should be symbolic
+        for i in 0..4u64 {
+            let byte = state.memory_load(0x2000 + i, 1).unwrap();
+            assert!(byte.as_u64().is_none()); // symbolic
+        }
+    }
+
+    #[test]
+    fn test_read_zero_count() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeRead.call(
+            &mut state,
+            &[RustBV::concrete(0, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+        ).unwrap();
+        assert_eq!(result.unwrap().as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_read_non_stdin_fails() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeRead.call(
+            &mut state,
+            &[RustBV::concrete(3, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(4, 64)],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_too_large() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeRead.call(
+            &mut state,
+            &[RustBV::concrete(0, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(5000, 64)],
+        );
+        assert!(result.is_err());
+    }
+}

@@ -72,3 +72,50 @@ impl NativeSimProcedure for NativePuts {
         Ok(Some(RustBV::concrete(len, 32)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Permission;
+
+    #[test]
+    fn test_puts_basic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+
+        let result = NativePuts.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        assert_eq!(result.unwrap().as_u64(), Some(6)); // 5 + newline
+        assert_eq!(state.stdout_buffer(), b"hello\n");
+    }
+
+    #[test]
+    fn test_puts_empty_string() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"\x00", Permission::RWX);
+
+        let result = NativePuts.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        assert_eq!(result.unwrap().as_u64(), Some(1)); // just newline
+        assert_eq!(state.stdout_buffer(), b"\n");
+    }
+
+    #[test]
+    fn test_puts_multiple_calls() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
+        state.map_memory_data(0x2000, b"def\x00", Permission::RWX);
+
+        NativePuts.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        NativePuts.call(&mut state, &[RustBV::concrete(0x2000, 64)]).unwrap();
+        assert_eq!(state.stdout_buffer(), b"abc\ndef\n");
+    }
+
+    #[test]
+    fn test_puts_symbolic_addr() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "addr", 64);
+        drop(ctx);
+        let result = NativePuts.call(&mut state, &[sym]);
+        assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+    }
+}
