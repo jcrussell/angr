@@ -287,13 +287,16 @@ class RustExplorationManager(
             if hasattr(active_states, 'solver'):  # Single SimState
                 active_states = [active_states]
             for state in active_states:
-                # Detect LAZY_SOLVES option
+                # Detect state options
                 if hasattr(state, 'options'):
                     try:
-                        from angr.sim_options import LAZY_SOLVES
-                        if LAZY_SOLVES in state.options:
+                        from angr import sim_options as o
+                        if o.LAZY_SOLVES in state.options:
                             self._rust_mgr.set_lazy_solves(True)
                             l.debug("Enabled lazy_solves mode from state options")
+                        if o.ZERO_FILL_UNCONSTRAINED_MEMORY in state.options:
+                            self._rust_mgr.set_zero_fill_unconstrained(True)
+                            l.debug("Enabled zero_fill_unconstrained from state options")
                     except ImportError:
                         pass
 

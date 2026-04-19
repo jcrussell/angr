@@ -376,6 +376,8 @@ pub struct RustExplorationManager {
     /// This improves performance for binaries with many branches by deferring
     /// constraint solving until values are actually needed.
     pub(crate) lazy_solves: bool,
+    /// When true, fill unconstrained memory reads with zero instead of symbolic values.
+    pub(crate) zero_fill_unconstrained: bool,
     // drop_terminal_states, avoided_count, pruned_count, deadended_count
     // are now in self.sm (StashManager)
     /// Native uniqueness filter: register names to check.
@@ -436,6 +438,7 @@ impl RustExplorationManager {
             skip_hook_stack: Vec::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
             lazy_solves: false,
+            zero_fill_unconstrained: false,
             uniqueness_registers: Vec::new(),
             uniqueness_set: HashSet::new(),
             skip_find_predicate_states: HashSet::new(),
@@ -531,6 +534,12 @@ impl RustExplorationManager {
         self.lazy_solves = enabled;
     }
 
+    /// Enable zero-fill for unconstrained memory reads.
+    /// When true, unmapped memory returns zero instead of fresh symbolic values.
+    pub fn set_zero_fill_unconstrained(&mut self, enabled: bool) {
+        self.zero_fill_unconstrained = enabled;
+    }
+
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
     /// When true (default), terminal states are dropped to save memory.
     /// Set to false when states need to be recovered (e.g., factory.callable()).
@@ -612,9 +621,14 @@ impl RustExplorationManager {
     /// Create a new RustSimState and add it to a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn create_state(&mut self, stash: &str) -> PyResult<u64> {
-        let state = RustSimState::new_with_endian(&self.arch_name, self.little_endian)
+        let mut state = RustSimState::new_with_endian(&self.arch_name, self.little_endian)
             .map_err(|e| PyValueError::new_err(e))?;
         let state_id = state.state_id();
+
+        // Propagate memory options
+        if self.zero_fill_unconstrained {
+            state.memory_mut().set_zero_fill_unconstrained(true);
+        }
 
         // Copy hooks to state
         for &addr in &self.hooks {
@@ -634,8 +648,13 @@ impl RustExplorationManager {
     #[pyo3(signature = (stash, state))]
     pub fn add_state(&mut self, stash: &str, state: &crate::state::PyRustSimState) {
         // Fork the state to get our own copy
-        let forked = state.inner().fork();
+        let mut forked = state.inner().fork();
         let state_id = forked.state_id();
+
+        // Propagate memory options
+        if self.zero_fill_unconstrained {
+            forked.memory_mut().set_zero_fill_unconstrained(true);
+        }
 
         // Track this state as its own root (it was added via Python)
         self.sm.set_root(state_id, state_id);

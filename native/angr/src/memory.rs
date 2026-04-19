@@ -343,6 +343,9 @@ pub struct SymbolicMemory {
     /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
     /// addresses at store time, we append here and materialize on load.
     pending_writes: Vec<PendingWrite>,
+    /// If true, fill unconstrained memory with zeros instead of symbolic values.
+    /// Corresponds to angr's ZERO_FILL_UNCONSTRAINED_MEMORY option.
+    zero_fill_unconstrained: bool,
 }
 
 impl PendingWrite {
@@ -396,7 +399,18 @@ impl SymbolicMemory {
             lazy_regions: Vec::new(),
             symbolic_spans: HashMap::new(),
             pending_writes: Vec::new(),
+            zero_fill_unconstrained: false,
         }
+    }
+
+    /// Set whether to fill unconstrained memory with zeros.
+    pub fn set_zero_fill_unconstrained(&mut self, enabled: bool) {
+        self.zero_fill_unconstrained = enabled;
+    }
+
+    /// Get whether zero fill is enabled.
+    pub fn zero_fill_unconstrained(&self) -> bool {
+        self.zero_fill_unconstrained
     }
 
     /// Get the endianness.
@@ -1150,9 +1164,13 @@ impl SymbolicMemory {
         match self.load_concrete_lazy(addr, size, ctx) {
             Ok(value) => value,
             Err(_) => {
-                // Generate a unique name for the unconstrained memory read
-                *counter += 1;
-                RustBV::symbolic(ctx, &format!("unc_mem_{:x}_{}", addr, counter), size * 8)
+                if self.zero_fill_unconstrained {
+                    RustBV::concrete(0, size * 8)
+                } else {
+                    // Generate a unique name for the unconstrained memory read
+                    *counter += 1;
+                    RustBV::symbolic(ctx, &format!("unc_mem_{:x}_{}", addr, counter), size * 8)
+                }
             }
         }
     }
@@ -1443,6 +1461,7 @@ impl SymbolicMemory {
             lazy_regions: self.lazy_regions.clone(), // Share lazy regions
             symbolic_spans: self.symbolic_spans.clone(),
             pending_writes: self.pending_writes.clone(),
+            zero_fill_unconstrained: self.zero_fill_unconstrained,
         }
     }
 
