@@ -55,6 +55,8 @@ impl RustExplorationManager {
             // Propagate lazy_solves to skip Z3 feasibility checks
             interp.lazy_solves = self.lazy_solves;
             interp.set_profiling(self.profiling_enabled);
+            // Propagate concretization strategy config
+            interp.set_concretizer(self.concretizer_config.clone());
 
             // Copy state registers to interpreter (including symbolic values)
             interp.registers = state.registers().fork();

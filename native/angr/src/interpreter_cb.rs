@@ -655,23 +655,70 @@ impl<'a> CallbackInterpreter<'a> {
         self.concretizer = concretizer;
     }
 
-    /// Concretize with per-block caching.
-    /// Within a single VEX block, solver constraints don't change,
-    /// so the same symbolic address produces the same result.
-    fn concretize_cached(&mut self, addr: &RustBV) -> ConcretizationResult {
-        // Concrete addresses don't need caching
+    /// Concretize for read with per-block caching.
+    /// Uses read_range_limit and falls back to Any (single solution) if range is too large.
+    fn concretize_cached_read(&mut self, addr: &RustBV) -> ConcretizationResult {
         if let Some(concrete_addr) = addr.as_u64() {
             return ConcretizationResult::Single(concrete_addr);
         }
 
-        // Use a quick identity key based on the BV variant
         let cache_key = Self::bv_cache_key(addr);
+        // Note: read and write may produce different results for same address,
+        // but within a block they're typically used consistently for a given address.
+        // Cache the raw result and apply fallback after cache lookup.
         if let Some(cached) = self.concretize_cache.get(&cache_key) {
-            return cached.clone();
+            let result = cached.clone();
+            // Apply read fallback to cached result
+            return match result {
+                ConcretizationResult::TooLarge { .. } if self.concretizer.read_fallback_any => {
+                    if let Some(val) = self.ctx.eval(addr) {
+                        ConcretizationResult::Single(val as u64)
+                    } else {
+                        result
+                    }
+                }
+                _ => result,
+            };
         }
 
         let conc_start = std::time::Instant::now();
-        let result = self.concretizer.concretize(addr, self.ctx);
+        let result = self.concretizer.concretize_read(addr, self.ctx);
+        let conc_elapsed = conc_start.elapsed();
+        if self.profiling_enabled {
+            self.stats.concretize_count += 1;
+            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+        }
+        self.concretize_cache.insert(cache_key, result.clone());
+        result
+    }
+
+    /// Concretize for write with per-block caching.
+    /// Uses write_range_limit and falls back to Max solution if range is too large.
+    fn concretize_cached_write(&mut self, addr: &RustBV) -> ConcretizationResult {
+        if let Some(concrete_addr) = addr.as_u64() {
+            return ConcretizationResult::Single(concrete_addr);
+        }
+
+        let cache_key = Self::bv_cache_key(addr);
+        if let Some(cached) = self.concretize_cache.get(&cache_key) {
+            let result = cached.clone();
+            // Apply write fallback to cached result
+            return match result {
+                ConcretizationResult::TooLarge { .. } if self.concretizer.write_fallback_max => {
+                    if let Some((_min, max)) = self.ctx.range(addr) {
+                        ConcretizationResult::Single(max as u64)
+                    } else if let Some(val) = self.ctx.eval(addr) {
+                        ConcretizationResult::Single(val as u64)
+                    } else {
+                        result
+                    }
+                }
+                _ => result,
+            };
+        }
+
+        let conc_start = std::time::Instant::now();
+        let result = self.concretizer.concretize_write(addr, self.ctx);
         let conc_elapsed = conc_start.elapsed();
         if self.profiling_enabled {
             self.stats.concretize_count += 1;
@@ -1731,8 +1778,8 @@ impl<'a> CallbackInterpreter<'a> {
 
                 // Try Rust-native memory first if enabled
                 if self.use_rust_memory {
-                    // Concretize with per-block cache (avoids redundant Z3 calls)
-                    let conc_result = self.concretize_cached(&addr_val);
+                    // Concretize for write with per-block cache (avoids redundant Z3 calls)
+                    let conc_result = self.concretize_cached_write(&addr_val);
 
                     // Attempt store using pre-computed concretization
                     let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
@@ -1867,8 +1914,8 @@ impl<'a> CallbackInterpreter<'a> {
                     self.load_prefetch_cache.clear();
                     // Symbolic address - flush buffer first, then handle specially
                     self.flush_stores(py, callbacks)?;
-                    // Symbolic address - use cached concretization
-                    let concret_result = self.concretize_cached(&addr_val);
+                    // Symbolic address - use cached write concretization
+                    let concret_result = self.concretize_cached_write(&addr_val);
                     match concret_result {
                         ConcretizationResult::Single(addr_concrete) => {
                             // Track concretization constraint for Python sync
@@ -2212,8 +2259,8 @@ impl<'a> CallbackInterpreter<'a> {
                             }
                         }
                     } else {
-                        // Symbolic address with symbolic guard - concretize address first
-                        match self.concretize_cached(&addr_val) {
+                        // Symbolic address with symbolic guard - concretize for write
+                        match self.concretize_cached_write(&addr_val) {
                             ConcretizationResult::Single(addr_concrete) => {
                                 // Track concretization constraint for Python sync
                                 self.track_concretization_constraint(&addr_val, addr_concrete);
@@ -2286,8 +2333,8 @@ impl<'a> CallbackInterpreter<'a> {
                             self.flush_stores(py, callbacks)?;
                             // Check if data is symbolic - use symbolic store callback
                             if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                                // Concretize address first (with cache)
-                                let concret_result = self.concretize_cached(&addr_val);
+                                // Concretize address for write (with cache)
+                                let concret_result = self.concretize_cached_write(&addr_val);
                                 match concret_result {
                                     ConcretizationResult::Single(addr_concrete) => {
                                         self.track_concretization_constraint(&addr_val, addr_concrete);
@@ -2373,8 +2420,8 @@ impl<'a> CallbackInterpreter<'a> {
                         let addr_concrete = match addr_val.as_u64() {
                             Some(a) => a,
                             None => {
-                                // Symbolic address - concretize
-                                match self.concretize_cached(&addr_val) {
+                                // Symbolic address - concretize for read
+                                match self.concretize_cached_read(&addr_val) {
                                     ConcretizationResult::Single(a) => {
                                         // Track concretization constraint for Python sync
                                         self.track_concretization_constraint(&addr_val, a);
@@ -2418,7 +2465,7 @@ impl<'a> CallbackInterpreter<'a> {
                     let addr_concrete = match addr_val.as_u64() {
                         Some(a) => a,
                         None => {
-                            match self.concretize_cached(&addr_val) {
+                            match self.concretize_cached_read(&addr_val) {
                                 ConcretizationResult::Single(a) => {
                                     // Track concretization constraint for Python sync
                                     self.track_concretization_constraint(&addr_val, a);
@@ -2460,7 +2507,7 @@ impl<'a> CallbackInterpreter<'a> {
                         let addr_concrete = match addr_val.as_u64() {
                             Some(a) => a,
                             None => {
-                                match self.concretize_cached(&addr_val) {
+                                match self.concretize_cached_read(&addr_val) {
                                     ConcretizationResult::Single(a) => {
                                         // Track concretization constraint for Python sync
                                         self.track_concretization_constraint(&addr_val, a);
@@ -2793,8 +2840,8 @@ impl<'a> CallbackInterpreter<'a> {
                     // SLOW PATH: Fall back to Python callback
                     self.load_from_callback(py, callbacks, addr_concrete, size)
                 } else {
-                    // Symbolic address - try to concretize
-                    match self.concretize_cached(&addr_val) {
+                    // Symbolic address - try to concretize for read
+                    match self.concretize_cached_read(&addr_val) {
                         ConcretizationResult::Single(addr_concrete) => {
                             if self.arch.pointer_size() == 32 && addr_concrete >= 0x400000 && addr_concrete < 0x420000 {
                             }

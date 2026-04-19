@@ -820,8 +820,8 @@ impl SymbolicMemory {
             return self.load_concrete_lazy(concrete_addr, size, ctx);
         }
 
-        // Try to concretize the address
-        let base_value = match concretizer.concretize(&addr, ctx) {
+        // Try to concretize the address (read mode: falls back to Any single solution)
+        let base_value = match concretizer.concretize_read(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
                 self.load_concrete_lazy(concrete_addr, size, ctx)?
             }
@@ -1025,8 +1025,8 @@ impl SymbolicMemory {
             return self.store_concrete_lazy(concrete_addr, value);
         }
 
-        // Try to concretize the address
-        match concretizer.concretize(&addr, ctx) {
+        // Try to concretize the address (write mode: falls back to Max solution)
+        match concretizer.concretize_write(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_lazy(concrete_addr, value)
             }
@@ -1209,8 +1209,8 @@ impl SymbolicMemory {
             return self.load_concrete_automap(concrete_addr, size, ctx);
         }
 
-        // Try to concretize the address
-        let base_value = match concretizer.concretize(&addr, ctx) {
+        // Try to concretize the address (read mode: falls back to Any single solution)
+        let base_value = match concretizer.concretize_read(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
                 self.load_concrete_automap(concrete_addr, size, ctx)?
             }
@@ -1233,6 +1233,8 @@ impl SymbolicMemory {
                 self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
             }
             ConcretizationResult::TooLarge { .. } => {
+                // With read_fallback_any enabled, TooLarge shouldn't reach here
+                // (concretize_read would have returned Single). But as a safety net:
                 RustBV::symbolic(
                     ctx,
                     &format!("mem_unbounded_{}", size),
@@ -1354,8 +1356,8 @@ impl SymbolicMemory {
             return Ok(Some(ConcretizationResult::Single(concrete_addr)));
         }
 
-        // Try to concretize the address
-        let result = concretizer.concretize(&addr, ctx);
+        // Try to concretize the address (write mode: falls back to Max solution)
+        let result = concretizer.concretize_write(&addr, ctx);
         match &result {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_automap(*concrete_addr, value)?;
@@ -1378,6 +1380,7 @@ impl SymbolicMemory {
                 Ok(Some(result))
             }
             ConcretizationResult::TooLarge { .. } => {
+                // With write_fallback_max enabled, TooLarge shouldn't reach here
                 Ok(Some(result))
             }
             ConcretizationResult::Failed(reason) => {
@@ -1505,7 +1508,7 @@ impl SymbolicMemory {
                 continue;
             }
 
-            match concretizer.concretize(&pw.addr, ctx) {
+            match concretizer.concretize_write(&pw.addr, ctx) {
                 ConcretizationResult::Single(addr) => {
                     self.store_concrete_lazy(addr, pw.value)?;
                 }

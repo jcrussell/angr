@@ -303,6 +303,35 @@ class RustExplorationManager(
                         if o.ZERO_FILL_UNCONSTRAINED_MEMORY in state.options:
                             self._rust_mgr.set_zero_fill_unconstrained(True)
                             l.debug("Enabled zero_fill_unconstrained from state options")
+                        # Configure concretization strategies to match Python's
+                        use_approx = o.APPROXIMATE_MEMORY_INDICES in state.options
+                        sym_write = o.SYMBOLIC_WRITE_ADDRESSES in state.options
+                        # Read Python's strategy limits from memory plugin
+                        read_limit = 1024  # Python default
+                        write_limit = 128  # Python default
+                        if hasattr(state, 'memory'):
+                            mem = state.memory
+                            if hasattr(mem, 'read_strategies') and mem.read_strategies:
+                                for strat in mem.read_strategies:
+                                    if hasattr(strat, '_limit'):
+                                        read_limit = strat._limit
+                                        break
+                            if hasattr(mem, 'write_strategies') and mem.write_strategies:
+                                for strat in mem.write_strategies:
+                                    if hasattr(strat, '_limit'):
+                                        write_limit = strat._limit
+                                        break
+                        self._rust_mgr.configure_concretization_strategies(
+                            use_approx,
+                            read_limit,
+                            write_limit,
+                            sym_write,
+                        )
+                        l.debug(
+                            "Configured concretization: approx=%s, read_limit=%d, "
+                            "write_limit=%d, sym_write=%s",
+                            use_approx, read_limit, write_limit, sym_write,
+                        )
                     except ImportError:
                         pass
 

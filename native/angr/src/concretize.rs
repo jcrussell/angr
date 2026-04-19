@@ -4,14 +4,28 @@
 //! concrete address sets, enabling memory operations on symbolic addresses
 //! with bounded ranges.
 //!
-//! The concretization strategy:
+//! Matches Python's pluggable strategy pattern with separate read/write configs:
+//! - Read: Range(limit) → Any (single arbitrary solution as fallback)
+//! - Write: Range(limit) → Max (maximum solution as fallback)
+//!
+//! The concretization algorithm:
 //! 1. Fast path: If address is concrete, return Single
-//! 2. Get range [min, max] via solver
-//! 3. If range > max_range, return TooLarge
-//! 4. Get actual solutions via solver
-//! 5. Return Single or Multiple based on solution count
+//! 2. Try small enumeration (≤16 solutions)
+//! 3. Get range [min, max] via solver
+//! 4. If range ≤ limit, enumerate all solutions
+//! 5. If range > limit, apply fallback: Any (reads) or Max (writes)
 
 use crate::symbolic::{RustBV, SymContext};
+
+/// Whether a concretization is for a read or write operation.
+/// This determines which strategy chain to use (different limits and fallbacks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcretizationMode {
+    /// Read concretization: Range(read_limit) → Any fallback
+    Read,
+    /// Write concretization: Range(write_limit) → Max fallback
+    Write,
+}
 
 /// Result of address concretization.
 #[derive(Debug, Clone)]
@@ -90,11 +104,16 @@ impl ConcretizationResult {
 }
 
 /// Configuration for address concretization.
+///
+/// Mirrors Python's strategy chain with separate read/write configurations:
+/// - Read: SimConcretizationStrategyRange(read_range_limit) → SimConcretizationStrategyAny()
+/// - Write: SimConcretizationStrategyRange(write_range_limit) → SimConcretizationStrategyMax()
 #[derive(Debug, Clone)]
 pub struct AddressConcretizer {
-    /// Maximum address range to consider (default: 1024, matching Python).
-    /// If max - min > max_range, concretization fails.
-    pub max_range: u64,
+    /// Maximum address range for read concretization (default: 1024, matching Python).
+    pub read_range_limit: u64,
+    /// Maximum address range for write concretization (default: 128, matching Python).
+    pub write_range_limit: u64,
     /// Maximum number of solutions to enumerate (default: 256).
     pub max_solutions: usize,
     /// Maximum number of elements for strided access (default: 16384).
@@ -107,17 +126,36 @@ pub struct AddressConcretizer {
     /// Whether to use approximate memory indices (from APPROXIMATE_MEMORY_INDICES option).
     /// When true, allows more aggressive concretization with potential approximation.
     pub use_approximate: bool,
+    /// Whether SYMBOLIC_WRITE_ADDRESSES is enabled.
+    /// When true, writes to symbolic addresses use Range strategy.
+    /// When false, writes only concretize to a single value (or max as fallback).
+    pub symbolic_write_addresses: bool,
+    /// Read fallback strategy: return any single solution when range is too large.
+    /// Matches Python's SimConcretizationStrategyAny.
+    pub read_fallback_any: bool,
+    /// Write fallback strategy: return maximum solution when range is too large.
+    /// Matches Python's SimConcretizationStrategyMax.
+    pub write_fallback_max: bool,
+
+    // Legacy field for backward compatibility with callers using .max_range
+    // This is kept in sync with read_range_limit.
+    pub max_range: u64,
 }
 
 impl Default for AddressConcretizer {
     fn default() -> Self {
         AddressConcretizer {
-            max_range: 1024,            // Match Python's default range limit
+            read_range_limit: 1024,     // Match Python's default read range
+            write_range_limit: 128,     // Match Python's default write range
             max_solutions: 256,
             max_stride_count: 16384,    // Max 16K elements in strided access
             enable_stride_detection: true,
             stride_sample_count: 4,     // Sample 4 solutions for stride detection
             use_approximate: false,     // Default to precise concretization
+            symbolic_write_addresses: false, // Python default
+            read_fallback_any: true,    // Match Python: Any() fallback for reads
+            write_fallback_max: true,   // Match Python: Max() fallback for writes
+            max_range: 1024,            // Legacy, kept in sync with read_range_limit
         }
     }
 }
@@ -131,6 +169,8 @@ impl AddressConcretizer {
     /// Create a concretizer with custom settings.
     pub fn with_limits(max_range: u64, max_solutions: usize) -> Self {
         AddressConcretizer {
+            read_range_limit: max_range,
+            write_range_limit: max_range.min(128),
             max_range,
             max_solutions,
             ..Default::default()
@@ -145,16 +185,21 @@ impl AddressConcretizer {
         enable_stride_detection: bool,
     ) -> Self {
         AddressConcretizer {
+            read_range_limit: max_range,
+            write_range_limit: max_range.min(128),
             max_range,
             max_solutions,
             max_stride_count,
             enable_stride_detection,
             stride_sample_count: 4,
             use_approximate: false,
+            symbolic_write_addresses: false,
+            read_fallback_any: true,
+            write_fallback_max: true,
         }
     }
 
-    /// Configure from Python sim_options.
+    /// Configure from Python sim_options (legacy interface).
     ///
     /// # Arguments
     /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
@@ -162,18 +207,118 @@ impl AddressConcretizer {
     pub fn configure(&mut self, use_approximate: bool, range_limit: Option<u64>) {
         self.use_approximate = use_approximate;
         if let Some(limit) = range_limit {
+            self.read_range_limit = limit;
             self.max_range = limit;
         }
         // When approximate is enabled, we can be more aggressive with range
-        if use_approximate && self.max_range < 4096 {
+        if use_approximate && self.read_range_limit < 4096 {
+            self.read_range_limit = 4096;
             self.max_range = 4096;
         }
     }
 
-    /// Concretize a symbolic address to a set of concrete addresses.
+    /// Configure from Python's full strategy configuration.
     ///
-    /// This method tries to determine the concrete addresses that a symbolic
-    /// address can take, given the current constraint context.
+    /// # Arguments
+    /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
+    /// * `read_range_limit` - Range limit for read strategies (default: 1024)
+    /// * `write_range_limit` - Range limit for write strategies (default: 128)
+    /// * `symbolic_write_addresses` - Whether SYMBOLIC_WRITE_ADDRESSES is enabled
+    pub fn configure_strategies(
+        &mut self,
+        use_approximate: bool,
+        read_range_limit: Option<u64>,
+        write_range_limit: Option<u64>,
+        symbolic_write_addresses: bool,
+    ) {
+        self.use_approximate = use_approximate;
+        self.symbolic_write_addresses = symbolic_write_addresses;
+
+        if let Some(limit) = read_range_limit {
+            self.read_range_limit = limit;
+            self.max_range = limit;
+        }
+        if let Some(limit) = write_range_limit {
+            self.write_range_limit = limit;
+        }
+
+        // When approximate is enabled, be more aggressive with range limits
+        if use_approximate {
+            if self.read_range_limit < 4096 {
+                self.read_range_limit = 4096;
+                self.max_range = 4096;
+            }
+            if self.write_range_limit < 4096 {
+                self.write_range_limit = 4096;
+            }
+        }
+    }
+
+    /// Get the range limit for a given mode.
+    fn range_limit_for_mode(&self, mode: ConcretizationMode) -> u64 {
+        match mode {
+            ConcretizationMode::Read => self.read_range_limit,
+            ConcretizationMode::Write => {
+                if self.symbolic_write_addresses {
+                    self.write_range_limit
+                } else {
+                    // Without SYMBOLIC_WRITE_ADDRESSES, writes should concretize to single value
+                    // But we still allow the range limit for annotated writes
+                    self.write_range_limit
+                }
+            }
+        }
+    }
+
+    /// Concretize for a read operation.
+    /// Uses read_range_limit and falls back to Any (single solution) if range is too large.
+    pub fn concretize_read(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
+        let result = self.concretize_with_mode(addr, ctx, ConcretizationMode::Read);
+        match result {
+            ConcretizationResult::TooLarge { .. } if self.read_fallback_any => {
+                // Fallback: SimConcretizationStrategyAny - return single arbitrary solution
+                if let Some(val) = ctx.eval(addr) {
+                    ConcretizationResult::Single(val as u64)
+                } else {
+                    result
+                }
+            }
+            _ => result,
+        }
+    }
+
+    /// Concretize for a write operation.
+    /// Uses write_range_limit and falls back to Max (maximum solution) if range is too large.
+    pub fn concretize_write(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
+        let result = self.concretize_with_mode(addr, ctx, ConcretizationMode::Write);
+        match result {
+            ConcretizationResult::TooLarge { .. } if self.write_fallback_max => {
+                // Fallback: SimConcretizationStrategyMax - return maximum solution
+                if let Some((_min, max)) = ctx.range(addr) {
+                    ConcretizationResult::Single(max as u64)
+                } else if let Some(val) = ctx.eval(addr) {
+                    ConcretizationResult::Single(val as u64)
+                } else {
+                    result
+                }
+            }
+            _ => result,
+        }
+    }
+
+    /// Concretize with a specific mode (determines range limit).
+    fn concretize_with_mode(
+        &self,
+        addr: &RustBV,
+        ctx: &SymContext,
+        mode: ConcretizationMode,
+    ) -> ConcretizationResult {
+        let range_limit = self.range_limit_for_mode(mode);
+        self.concretize_internal(addr, ctx, range_limit)
+    }
+
+    /// Concretize a symbolic address to a set of concrete addresses.
+    /// Uses the read_range_limit (legacy behavior, equivalent to concretize_read without fallback).
     ///
     /// # Arguments
     /// * `addr` - The symbolic address to concretize
@@ -183,9 +328,19 @@ impl AddressConcretizer {
     /// * `Single` if the address has exactly one possible value
     /// * `Multiple` if the address has 2-256 possible values
     /// * `Strided` if a regular stride pattern is detected (e.g., arr[i*4])
-    /// * `TooLarge` if the address range exceeds max_range
+    /// * `TooLarge` if the address range exceeds the limit
     /// * `Failed` if concretization is not possible
     pub fn concretize(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
+        self.concretize_internal(addr, ctx, self.read_range_limit)
+    }
+
+    /// Internal concretization with explicit range limit.
+    fn concretize_internal(
+        &self,
+        addr: &RustBV,
+        ctx: &SymContext,
+        range_limit: u64,
+    ) -> ConcretizationResult {
         // Fast path: if address is already concrete, return immediately
         if let Some(concrete_addr) = addr.as_u64() {
             return ConcretizationResult::Single(concrete_addr);
@@ -241,7 +396,7 @@ impl AddressConcretizer {
         }
 
         let range_size = max.saturating_sub(min);
-        if range_size > self.max_range {
+        if range_size > range_limit {
             if self.enable_stride_detection {
                 if let Some(strided) = self.try_detect_stride(addr, ctx, min, max) {
                     return strided;
@@ -250,7 +405,7 @@ impl AddressConcretizer {
             return ConcretizationResult::TooLarge {
                 min,
                 max,
-                limit: self.max_range,
+                limit: range_limit,
             };
         }
 
@@ -510,11 +665,16 @@ mod tests {
     #[test]
     fn test_default_config() {
         let concretizer = AddressConcretizer::default();
-        assert_eq!(concretizer.max_range, 1024);  // Match Python default
+        assert_eq!(concretizer.read_range_limit, 1024);  // Match Python default
+        assert_eq!(concretizer.write_range_limit, 128);   // Match Python default
+        assert_eq!(concretizer.max_range, 1024);           // Legacy compatibility
         assert_eq!(concretizer.max_solutions, 256);
         assert_eq!(concretizer.max_stride_count, 16384);
         assert!(concretizer.enable_stride_detection);
         assert!(!concretizer.use_approximate);
+        assert!(!concretizer.symbolic_write_addresses);
+        assert!(concretizer.read_fallback_any);
+        assert!(concretizer.write_fallback_max);
     }
 
     #[test]
@@ -523,12 +683,28 @@ mod tests {
 
         // Configure without approximate
         concretizer.configure(false, Some(2048));
-        assert_eq!(concretizer.max_range, 2048);
+        assert_eq!(concretizer.read_range_limit, 2048);
         assert!(!concretizer.use_approximate);
 
         // Configure with approximate - should increase range to at least 4096
         concretizer.configure(true, None);
         assert!(concretizer.use_approximate);
-        assert!(concretizer.max_range >= 4096);
+        assert!(concretizer.read_range_limit >= 4096);
+    }
+
+    #[test]
+    fn test_configure_strategies() {
+        let mut concretizer = AddressConcretizer::default();
+
+        concretizer.configure_strategies(false, Some(2048), Some(256), true);
+        assert_eq!(concretizer.read_range_limit, 2048);
+        assert_eq!(concretizer.write_range_limit, 256);
+        assert!(concretizer.symbolic_write_addresses);
+        assert!(!concretizer.use_approximate);
+
+        // With approximate, limits should increase to at least 4096
+        concretizer.configure_strategies(true, Some(512), Some(128), false);
+        assert!(concretizer.read_range_limit >= 4096);
+        assert!(concretizer.write_range_limit >= 4096);
     }
 }

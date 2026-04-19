@@ -400,6 +400,8 @@ pub struct RustExplorationManager {
     // state_index is now in self.sm (StashManager)
     /// Endianness override: None = use arch default, Some(true) = little-endian.
     pub(crate) little_endian: Option<bool>,
+    /// Address concretization configuration, propagated to each engine/interpreter.
+    pub(crate) concretizer_config: crate::concretize::AddressConcretizer,
 }
 
 #[pymethods]
@@ -449,6 +451,7 @@ impl RustExplorationManager {
             profiling_enabled: false,
             accumulated_stats: ExecutionStats::default(),
             little_endian,
+            concretizer_config: crate::concretize::AddressConcretizer::default(),
         })
     }
 
@@ -553,6 +556,29 @@ impl RustExplorationManager {
     /// Set to false when states need to be recovered (e.g., factory.callable()).
     pub fn set_drop_terminal_states(&mut self, enabled: bool) {
         self.sm.set_drop_terminal_states(enabled);
+    }
+
+    /// Configure address concretization strategies to match Python's configuration.
+    ///
+    /// # Arguments
+    /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
+    /// * `read_range_limit` - Range limit for read strategies (default: 1024)
+    /// * `write_range_limit` - Range limit for write strategies (default: 128)
+    /// * `symbolic_write_addresses` - Whether SYMBOLIC_WRITE_ADDRESSES is enabled
+    #[pyo3(signature = (use_approximate, read_range_limit=None, write_range_limit=None, symbolic_write_addresses=false))]
+    pub fn configure_concretization_strategies(
+        &mut self,
+        use_approximate: bool,
+        read_range_limit: Option<u64>,
+        write_range_limit: Option<u64>,
+        symbolic_write_addresses: bool,
+    ) {
+        self.concretizer_config.configure_strategies(
+            use_approximate,
+            read_range_limit,
+            write_range_limit,
+            symbolic_write_addresses,
+        );
     }
 
     /// Enable or disable Rust-side profiling.

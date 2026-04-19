@@ -274,17 +274,37 @@ impl RustVEXEngine {
         self.execution_config.branch_policy = policy;
     }
 
-    /// Configure address concretization to match Python's strategy.
+    /// Configure address concretization to match Python's strategy (legacy interface).
     ///
     /// # Arguments
     /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
     /// * `range_limit` - Optional custom range limit (default: 1024)
-    ///
-    /// This should be called before execution to ensure consistent behavior
-    /// between Rust and Python memory access concretization.
     #[pyo3(signature = (use_approximate, range_limit=None))]
     pub fn configure_concretization(&mut self, use_approximate: bool, range_limit: Option<u64>) {
         self.concretizer_config.configure(use_approximate, range_limit);
+    }
+
+    /// Configure address concretization with full Python strategy configuration.
+    ///
+    /// # Arguments
+    /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
+    /// * `read_range_limit` - Range limit for read strategies (default: 1024)
+    /// * `write_range_limit` - Range limit for write strategies (default: 128)
+    /// * `symbolic_write_addresses` - Whether SYMBOLIC_WRITE_ADDRESSES is enabled
+    #[pyo3(signature = (use_approximate, read_range_limit=None, write_range_limit=None, symbolic_write_addresses=false))]
+    pub fn configure_concretization_strategies(
+        &mut self,
+        use_approximate: bool,
+        read_range_limit: Option<u64>,
+        write_range_limit: Option<u64>,
+        symbolic_write_addresses: bool,
+    ) {
+        self.concretizer_config.configure_strategies(
+            use_approximate,
+            read_range_limit,
+            write_range_limit,
+            symbolic_write_addresses,
+        );
     }
 
     /// Enable or disable profiling.
