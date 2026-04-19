@@ -1603,6 +1603,7 @@ impl<'a> CallbackInterpreter<'a> {
                     if let Some(start) = stmt_start {
                         let elapsed = start.elapsed().as_nanos() as u64;
                         stmt_total_ns += elapsed;
+                        #[cfg(debug_assertions)]
                         if elapsed > 50_000_000 { // >50ms
                             eprintln!("  SLOW STMT at 0x{:x}: {}ms {:?}", self.current_insn_addr, elapsed / 1_000_000, stmt);
                         }
@@ -1642,6 +1643,7 @@ impl<'a> CallbackInterpreter<'a> {
 
         if self.profiling_enabled {
             self.stats.run_loop_time_ns += stmt_total_ns;
+            #[cfg(debug_assertions)]
             if stmt_total_ns > 100_000_000 { // >100ms
                 eprintln!("SLOW BLOCK at 0x{:x}: {}ms for {} stmts", irsb.addr, stmt_total_ns / 1_000_000, irsb.statements.len());
             }
