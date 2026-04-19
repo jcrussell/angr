@@ -293,12 +293,65 @@
     /// caused by UNSAT states proliferating from callback failures.
     /// Fast-path: deadend the pending callback state without any changes.
     /// Used for SimProcedure continuations known to just call exit().
-    /// Much cheaper than resume_after_simprocedure(0, None, None, None)
-    /// since it skips apply_changes, deferred fork processing, etc.
+    /// Cheaper than resume_after_simprocedure since it skips apply_changes,
+    /// but still processes deferred forks to avoid losing unexplored branches.
     pub fn deadend_pending_callback(&mut self) -> PyResult<()> {
         let pending = self.pending_callback.take().ok_or_else(|| {
             PyRuntimeError::new_err("no pending callback state for deadend")
         })?;
+
+        // Process deferred forks BEFORE deadending — these represent
+        // unexplored branches that diverged before the exit/abort call.
+        if !pending.deferred_forks.is_empty() {
+            let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| pending.state.fork());
+            let original_state_id = pending.state.state_id();
+            let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+
+            let mut snapshots = pending.fork_snapshots;
+            for fork in pending.deferred_forks {
+                let condition = pending.stored_conditions.get(&fork.condition_id);
+                if let Some(cond) = condition {
+                    // Add taken-path constraint to main state
+                    if fork.path_taken {
+                        pending.state.solver().borrow().assume_true(cond);
+                    } else {
+                        pending.state.solver().borrow().assume_false(cond);
+                    }
+                    let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
+                        let mut f = fork_base.fork_from_snapshot(snapshot);
+                        if fork.path_taken {
+                            f.solver().borrow().assume_false(cond);
+                        } else {
+                            f.solver().borrow().assume_true(cond);
+                        }
+                        f.set_pc(fork.unexplored_target);
+                        f
+                    } else if fork.path_taken {
+                        let mut f = fork_base.fork_false(cond);
+                        f.set_pc(fork.unexplored_target);
+                        f
+                    } else {
+                        let mut f = fork_base.fork_true(cond);
+                        f.set_pc(fork.unexplored_target);
+                        f
+                    };
+                    self.sm.set_root(forked.state_id(), root_state_id);
+                    if self.lazy_solves || forked.satisfiable() {
+                        // Check find/avoid before adding to active
+                        let spc = forked.pc();
+                        if self.find_addrs.contains(&spc) {
+                            self.sm.stashes_mut().entry(STASH_FOUND.to_string())
+                                .or_insert_with(VecDeque::new).push_back(forked);
+                        } else if self.avoid_addrs.contains(&spc) {
+                            self.push_or_drop_terminal(STASH_AVOID, forked);
+                        } else {
+                            self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
+                                .or_insert_with(VecDeque::new).push_back(forked);
+                        }
+                    }
+                }
+            }
+        }
 
         self.push_or_drop_terminal(STASH_DEADENDED, pending.state);
         Ok(())

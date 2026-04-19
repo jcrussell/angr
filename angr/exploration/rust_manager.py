@@ -1134,6 +1134,17 @@ class RustExplorationManager(
                 new_state = cached.copy()
                 for c in state.solver.constraints:
                     new_state.solver.add(c)
+                # Preserve user-set globals from the original state
+                if 'globals' in state.plugins:
+                    for k, v in state.globals.items():
+                        new_state.globals[k] = v
+                # Preserve LAZY_SOLVES option if set on the original state
+                try:
+                    from angr import sim_options as o
+                    if o.LAZY_SOLVES in state.options:
+                        new_state.options.add(o.LAZY_SOLVES)
+                except (ImportError, Exception):
+                    pass
                 return new_state
             # Check persistent disk cache (survives across processes).
             # Only use when state has no user symbolic data — blank_state
@@ -1145,6 +1156,16 @@ class RustExplorationManager(
                 if disk_state is not None:
                     for c in state.solver.constraints:
                         disk_state.solver.add(c)
+                    # Preserve user-set globals from the original state
+                    if 'globals' in state.plugins:
+                        for k, v in state.globals.items():
+                            disk_state.globals[k] = v
+                    try:
+                        from angr import sim_options as o
+                        if o.LAZY_SOLVES in state.options:
+                            disk_state.options.add(o.LAZY_SOLVES)
+                    except (ImportError, Exception):
+                        pass
                     self._extract_continuation_data(disk_state)
                     self._mem_cache = mem_cache  # For fast _sync_memory_to_rust
                     return disk_state
@@ -1169,6 +1190,16 @@ class RustExplorationManager(
                 if disk_state is not None:
                     for c in state.solver.constraints:
                         disk_state.solver.add(c)
+                    # Preserve user-set globals from the original state
+                    if 'globals' in state.plugins:
+                        for k, v in state.globals.items():
+                            disk_state.globals[k] = v
+                    try:
+                        from angr import sim_options as o
+                        if o.LAZY_SOLVES in state.options:
+                            disk_state.options.add(o.LAZY_SOLVES)
+                    except (ImportError, Exception):
+                        pass
                     self._extract_continuation_data(disk_state)
                     self._mem_cache = mem_cache
                     return disk_state
@@ -1774,6 +1805,18 @@ class RustExplorationManager(
 
         # Set num_find
         self._rust_mgr.set_num_find(num_find)
+
+        # Re-check state options that may have been set after construction
+        # (e.g., sm.one_active.options.add(LAZY_SOLVES) after simgr creation)
+        try:
+            from angr import sim_options as o
+            for state in self._state_cache.values():
+                if hasattr(state, 'options') and o.LAZY_SOLVES in state.options:
+                    self._rust_mgr.set_lazy_solves(True)
+                    l.debug("Enabled lazy_solves from cached state options at explore() time")
+                    break
+        except (ImportError, Exception):
+            pass
 
         # Route to appropriate exploration strategy
         has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
