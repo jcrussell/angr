@@ -1,66 +1,66 @@
 {
   "ais3_crackme": {
-    "python_time": 2.45,
-    "rust_time": 0.89
+    "python_time": 2.50,
+    "rust_time": 0.86
   },
   "codegate_2017-angrybird": {
-    "python_time": 6.92,
+    "python_time": 6.89,
     "rust_time": 2.84
   },
   "csaw_wyvern": {
-    "python_time": 16.33,
-    "rust_time": 1.07
+    "python_time": 16.41,
+    "rust_time": 1.05
   },
   "csgames2018": {
     "python_time": 1.58,
-    "rust_time": 1.00
+    "rust_time": 0.97
   },
   "defcamp_r100": {
     "python_time": 1.03,
-    "rust_time": 0.72
+    "rust_time": 0.70
   },
   "ekopartyctf2016_rev250": {
-    "python_time": 32.35,
-    "rust_time": 4.28
+    "python_time": 32.41,
+    "rust_time": 4.14
   },
   "fauxware": {
-    "python_time": 0.37,
+    "python_time": 0.38,
     "rust_time": 0.42
   },
   "flareon2015_2": {
-    "python_time": 4.17,
+    "python_time": 4.11,
     "rust_time": 3.76
   },
   "flareon2015_5": {
-    "python_time": 39.42,
-    "rust_time": 6.73
+    "python_time": 39.45,
+    "rust_time": 6.66
   },
   "flareon2015_10": {
-    "python_time": 7.51,
-    "rust_time": 5.48
+    "python_time": 7.47,
+    "rust_time": 5.54
   },
   "google2016_unbreakable_0": {
     "python_time": 1.36,
     "rust_time": 0.90
   },
   "google2016_unbreakable_1": {
-    "python_time": 2.30,
-    "rust_time": 1.79
+    "python_time": 3.82,
+    "rust_time": 3.50
   },
   "securityfest_fairlight": {
-    "python_time": 16.68,
-    "rust_time": 24.89
+    "python_time": 9.76,
+    "rust_time": 23.72
   },
   "strcpy_find": {
-    "python_time": 0.85,
-    "rust_time": 3.95
+    "python_time": 0.84,
+    "rust_time": 3.97
   },
   "sym-write": {
-    "python_time": 0.99,
-    "rust_time": 0.43
+    "python_time": 0.98,
+    "rust_time": 0.45
   },
   "whitehatvn2015_re400": {
-    "python_time": 3.17,
-    "rust_time": 1.27
+    "python_time": 3.14,
+    "rust_time": 1.25
   }
 }

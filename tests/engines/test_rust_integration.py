@@ -132,9 +132,7 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
 class TestRustIntegration:
     """Integration tests running real CTF examples through the Rust engine."""
 
-    KNOWN_XFAIL = {
-        "codegate_2017-angrybird",  # Rust solver eval returns b'' for symbolic result
-    }
+    KNOWN_XFAIL = set()  # All examples now produce correct output
 
     @pytest.mark.parametrize(
         "example_name,expected,timeout,uses_predicate",

@@ -59,20 +59,28 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 
 ## Current Status
 
-**Tests:** 82/82 passing
-**Benchmarks:** 5 regression-tested, all correct + 13/14 total correct
-**Performance:** 5/8 measured faster than Python
+**Tests:** 85/85 passing
+**Benchmarks:** 16 benchmarks, all correct (16/16)
+**Performance:** 12/16 faster than Python
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
-| csaw_wyvern | 15.0x | Best case |
-| flareon2015_5 | 5.2x | |
-| ais3_crackme | 2.7x | |
+| csaw_wyvern | 15.6x | Best case |
+| ekopartyctf2016_rev250 | 7.8x | |
+| flareon2015_5 | 5.9x | |
+| ais3_crackme | 2.9x | |
+| whitehatvn2015_re400 | 2.5x | |
+| codegate_2017-angrybird | 2.4x | Was XFAIL, now passing |
+| sym-write | 2.2x | |
+| csgames2018 | 1.6x | |
+| google2016_unbreakable_0 | 1.5x | |
 | defcamp_r100 | 1.5x | |
-| flareon2015_10 | 1.4x | Callable flow |
+| flareon2015_10 | 1.3x | Callable flow |
+| flareon2015_2 | 1.1x | 32-bit x86 |
 | fauxware | 0.9x | Per-callback FFI overhead |
-| flareon2015_2 | 0.8x | 32-bit x86, correct |
-| securityfest_fairlight | 0.5x | Rust interpreter slower for symbolic-heavy blocks |
+| google2016_unbreakable_1 | 0.9x | Variance-dependent |
+| strcpy_find | 0.2x | Callable predicate per-step overhead |
+| securityfest_fairlight | 0.4x | Rust interpreter slower for symbolic-heavy blocks |
 
 ## Architecture
 
