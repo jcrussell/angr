@@ -99,7 +99,7 @@ class RustCallbackDispatchMixin:
         # P1 fix: Check for stored procedure_data from a previous self.call()
         # This restores the full context (arguments, local vars) for continuations
         if addr_int in self._pending_procedure_data:
-            stored_data = self._pending_procedure_data.get(addr_int)
+            stored_data = self._pending_procedure_data.pop(addr_int)
             try:
                 if hasattr(state.callstack, 'top') and state.callstack.top is not None:
                     state.callstack.top.procedure_data = stored_data
@@ -604,12 +604,32 @@ class RustCallbackDispatchMixin:
                 # can find it when the called function returns.
                 if first_succ.history.jumpkind == 'Ijk_Call':
                     try:
-                        # Find continuation address from pending_procedure_data
+                        # Get continuation address from the successor's callstack.
+                        # When self.call() is used, procedure_data is stored on the
+                        # caller's frame (top.next after Ijk_Call pushes a new frame).
                         cont_addr = None
-                        for cont_a, pdata in self._pending_procedure_data.items():
-                            if cont_a != addr:  # Not the current address
-                                cont_addr = cont_a
-                                break
+                        try:
+                            cs = first_succ.callstack
+                            for frame in [cs.top, getattr(cs.top, 'next', None)]:
+                                if frame is None:
+                                    continue
+                                pdata = getattr(frame, 'procedure_data', None)
+                                if pdata is not None and len(pdata) >= 5:
+                                    ca = pdata[4]  # ideal_addr = continuation address
+                                    ca_int = int(ca) if hasattr(ca, 'concrete') else (ca if isinstance(ca, int) else None)
+                                    if ca_int is not None and ca_int != addr:
+                                        cont_addr = ca_int
+                                        break
+                        except Exception:
+                            pass
+
+                        # Fallback: search _pending_procedure_data if callstack didn't have it
+                        if cont_addr is None:
+                            for cont_a in self._pending_procedure_data:
+                                if cont_a != addr:
+                                    cont_addr = cont_a
+                                    break
+
                         if cont_addr is not None:
                             sp = first_succ.solver.eval(first_succ.regs._sp)
                             ptr_size = first_succ.arch.bytes
