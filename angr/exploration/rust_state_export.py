@@ -229,23 +229,44 @@ class RustStateExportMixin:
             if page is None:
                 continue
             page_addr, data, _perms, symbolic_offsets = page
-            # Skip pages with symbolic data — concrete bytes are just
-            # fallback values and would overwrite Python's proper symbolic
-            # representations (e.g., BVS password bytes in flareon2015_5).
             if symbolic_offsets:
-                continue
-            try:
-                # Raw bytes from Rust are in memory order; use Iend_BE so angr
-                # stores them as-is without byte-reversing.
-                state.memory.store(
-                    page_addr,
-                    claripy.BVV(data, len(data) * 8),
-                    endness="Iend_BE",
-                    inspect=False,
-                    disable_actions=True,
-                )
-            except Exception:
-                pass
+                # Write concrete byte ranges while preserving symbolic regions.
+                # symbolic_offsets are byte positions within the page where Python
+                # has BVS values — writing zeros there would corrupt them.
+                sym_set = set(symbolic_offsets)
+                # Find contiguous concrete runs
+                start = None
+                for j in range(len(data) + 1):
+                    if j < len(data) and j not in sym_set:
+                        if start is None:
+                            start = j
+                    else:
+                        if start is not None:
+                            chunk = data[start:j]
+                            try:
+                                state.memory.store(
+                                    page_addr + start,
+                                    claripy.BVV(chunk, len(chunk) * 8),
+                                    endness="Iend_BE",
+                                    inspect=False,
+                                    disable_actions=True,
+                                )
+                            except Exception:
+                                pass
+                            start = None
+            else:
+                try:
+                    # Raw bytes from Rust are in memory order; use Iend_BE so angr
+                    # stores them as-is without byte-reversing.
+                    state.memory.store(
+                        page_addr,
+                        claripy.BVV(data, len(data) * 8),
+                        endness="Iend_BE",
+                        inspect=False,
+                        disable_actions=True,
+                    )
+                except Exception:
+                    pass
 
         # Export Rust-computed symbolic expressions to Python memory.
         # These are Expression values computed by the Rust VEX interpreter

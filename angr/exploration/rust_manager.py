@@ -1379,15 +1379,34 @@ class RustExplorationManager(
         if new_ids:
             actual_state_id = new_ids.pop()
 
-            # Sync constraints from Python state to Rust solver
+            # Sync constraints from Python state to Rust solver.
+            # When re-using a found state from a previous RustExplorationManager
+            # (multi-stage explore pattern), the Python solver may have 0 constraints
+            # because they all live in the old Rust solver. Detect this and transfer
+            # constraints from the old Rust manager.
+            constraints = []
             if hasattr(angr_state, 'solver') and angr_state.solver.constraints:
+                constraints = list(angr_state.solver.constraints)
+
+            # Transfer constraints from the old Rust solver if present
+            old_rust_mgr = getattr(angr_state.scratch, 'rust_mgr', None)
+            old_state_id = getattr(angr_state.scratch, 'rust_found_state_id', None)
+            if old_rust_mgr is not None and old_state_id is not None:
                 try:
-                    constraints = list(angr_state.solver.constraints)
-                    if constraints:
-                        sat = self._rust_mgr.add_constraints_to_state(
-                            actual_state_id, constraints)
-                        l.debug(f"Synced {len(constraints)} initial constraints to Rust state "
-                                f"{actual_state_id}, sat={sat}")
+                    exported = old_rust_mgr.export_state_constraints(old_state_id)
+                    if exported:
+                        l.debug(f"Transferring {len(exported)} constraints from previous "
+                                f"Rust manager (state {old_state_id})")
+                        constraints = exported + constraints
+                except Exception as e:
+                    l.debug(f"Could not export constraints from old Rust manager: {e}")
+
+            if constraints:
+                try:
+                    sat = self._rust_mgr.add_constraints_to_state(
+                        actual_state_id, constraints)
+                    l.debug(f"Synced {len(constraints)} initial constraints to Rust state "
+                            f"{actual_state_id}, sat={sat}")
                 except Exception as e:
                     l.warning(f"Failed to sync initial constraints: {e}")
 
