@@ -194,12 +194,17 @@ class RustStateCacheMixin:
         When find/avoid are callables (not addresses), the Rust engine can't
         evaluate them. Checks both cached Python states and uncached Rust-only
         states (created by Rust forking without SimProcedure callbacks).
-        Only evaluates states not yet checked (tracked via _evaluated_state_ids).
+
+        States are re-evaluated each call because their stdout may grow between
+        batches (e.g. puts/printf executes after the state was first seen).
+        States already moved to found/avoid stashes are excluded by the stash
+        query (only active + deadended are checked).
         """
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        if not hasattr(self, '_evaluated_state_ids'):
-            self._evaluated_state_ids = set()
+        # Track states already moved to found/avoid to avoid re-moving them
+        if not hasattr(self, '_predicate_matched_ids'):
+            self._predicate_matched_ids = set()
 
         found_sids = set()
         avoid_sids = set()
@@ -218,9 +223,8 @@ class RustStateCacheMixin:
         all_state_ids.update(self._state_cache.keys())
 
         for state_id in all_state_ids:
-            if state_id in self._evaluated_state_ids:
+            if state_id in self._predicate_matched_ids:
                 continue
-            self._evaluated_state_ids.add(state_id)
 
             # Get or create a state for predicate evaluation
             state = self._state_cache.get(state_id)
@@ -262,6 +266,7 @@ class RustStateCacheMixin:
 
         # Move matched states to found/avoid stashes
         for sid in found_sids:
+            self._predicate_matched_ids.add(sid)
             for stash in ('active', 'deadended'):
                 try:
                     if self._rust_mgr.move_state(sid, stash, 'found'):
@@ -277,6 +282,7 @@ class RustStateCacheMixin:
                 self._predicate_found.append(_proxy_states[sid])
 
         for sid in avoid_sids:
+            self._predicate_matched_ids.add(sid)
             for stash in ('active', 'deadended'):
                 try:
                     self._rust_mgr.move_state(sid, stash, 'avoid')
