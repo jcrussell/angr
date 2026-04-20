@@ -488,10 +488,7 @@
                 Err(StepError::Unconstrained(state)) => {
                     // State has too many symbolic jump targets - move to unconstrained stash
                     log::debug!("State {} moved to unconstrained stash", state.state_id());
-                    self.sm.stashes_mut()
-                        .entry("unconstrained".to_string())
-                        .or_insert_with(VecDeque::new)
-                        .push_back(state);
+                    self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
                 }
             }
 

@@ -16,6 +16,8 @@ pub const STASH_FOUND: &str = "found";
 pub const STASH_AVOID: &str = "avoid";
 pub const STASH_DEADENDED: &str = "deadended";
 pub const STASH_ERRORED: &str = "errored";
+pub const STASH_PRUNED: &str = "pruned";
+pub const STASH_UNCONSTRAINED: &str = "unconstrained";
 
 /// Manages state stashes, indices, and lineage tracking.
 pub struct StashManager {
@@ -31,6 +33,8 @@ pub struct StashManager {
     pub avoided_count: u64,
     pub pruned_count: u64,
     pub deadended_count: u64,
+    pub errored_count: u64,
+    pub unconstrained_count: u64,
 }
 
 impl StashManager {
@@ -42,7 +46,8 @@ impl StashManager {
         stashes.insert(STASH_AVOID.to_string(), VecDeque::new());
         stashes.insert(STASH_DEADENDED.to_string(), VecDeque::new());
         stashes.insert(STASH_ERRORED.to_string(), VecDeque::new());
-        stashes.insert("unconstrained".to_string(), VecDeque::new());
+        stashes.insert(STASH_PRUNED.to_string(), VecDeque::new());
+        stashes.insert(STASH_UNCONSTRAINED.to_string(), VecDeque::new());
 
         StashManager {
             stashes,
@@ -52,6 +57,8 @@ impl StashManager {
             avoided_count: 0,
             pruned_count: 0,
             deadended_count: 0,
+            errored_count: 0,
+            unconstrained_count: 0,
         }
     }
 
@@ -188,6 +195,8 @@ impl StashManager {
             "avoid" => self.avoided_count += 1,
             "pruned" => self.pruned_count += 1,
             "deadended" => self.deadended_count += 1,
+            "errored" => self.errored_count += 1,
+            "unconstrained" => self.unconstrained_count += 1,
             _ => {}
         }
         if !self.drop_terminal_states {
@@ -346,6 +355,8 @@ mod tests {
         assert!(mgr.get(STASH_AVOID).is_some());
         assert!(mgr.get(STASH_DEADENDED).is_some());
         assert!(mgr.get(STASH_ERRORED).is_some());
+        assert!(mgr.get(STASH_PRUNED).is_some());
+        assert!(mgr.get(STASH_UNCONSTRAINED).is_some());
         assert_eq!(mgr.active_count(), 0);
         assert_eq!(mgr.found_count(), 0);
     }
@@ -354,7 +365,7 @@ mod tests {
     fn test_counts() {
         let mgr = StashManager::new();
         let counts = mgr.counts();
-        assert_eq!(counts.len(), 6);
+        assert_eq!(counts.len(), 7);
         for (_, &count) in &counts {
             assert_eq!(count, 0);
         }

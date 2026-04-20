@@ -2349,6 +2349,16 @@ class RustExplorationManager(
         return self._get_stash_states('unconstrained')
 
     @property
+    def pruned(self) -> list:
+        """Get states in the pruned stash as angr SimStates.
+
+        These are states that were determined to be unsatisfiable during
+        exploration (e.g., both branches of a conditional were infeasible
+        given the current constraints).
+        """
+        return self._get_stash_states('pruned')
+
+    @property
     def proxy(self):
         """Get a RustSimulationManagerProxy for lightweight state access.
 

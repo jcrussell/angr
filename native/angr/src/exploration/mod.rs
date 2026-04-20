@@ -10,7 +10,7 @@
 //! minimizing Python callback overhead.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use crate::stash::{StashManager, STASH_ACTIVE, STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED};
+use crate::stash::{StashManager, STASH_ACTIVE, STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_PRUNED, STASH_UNCONSTRAINED};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -29,10 +29,6 @@ use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{VexArch, IRSB};
-
-// Stash name constants — use these instead of string literals to prevent typos.
-// Stash constants imported from crate::stash
-const STASH_PRUNED: &str = "pruned";
 
 use std::cell::Cell;
 
@@ -1721,7 +1717,7 @@ impl RustExplorationManager {
         }
 
         // Clear all other stashes
-        for stash in &["found", "avoid", "deadended", "errored", "unconstrained"] {
+        for stash in &[STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_UNCONSTRAINED] {
             self.sm.clear(stash);
         }
 
@@ -2617,10 +2613,7 @@ impl RustExplorationManager {
                 Err(StepError::Unconstrained(state)) => {
                     // State has too many symbolic jump targets - move to unconstrained stash
                     log::debug!("State {} moved to unconstrained stash", state.state_id());
-                    self.sm.stashes_mut()
-                        .entry("unconstrained".to_string())
-                        .or_insert_with(VecDeque::new)
-                        .push_back(state);
+                    self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
                 }
             }
 

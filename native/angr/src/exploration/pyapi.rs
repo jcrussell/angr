@@ -1248,6 +1248,8 @@
         dict.set_item("avoided_count", self.sm.avoided_count)?;
         dict.set_item("pruned_count", self.sm.pruned_count)?;
         dict.set_item("deadended_count", self.sm.deadended_count)?;
+        dict.set_item("errored_count", self.sm.errored_count)?;
+        dict.set_item("unconstrained_count", self.sm.unconstrained_count)?;
         dict.set_item("drop_terminal_states", self.sm.drop_terminal_states())?;
         dict.set_item("state_roots_size", self.sm.roots().len())?;
         Ok(dict)
