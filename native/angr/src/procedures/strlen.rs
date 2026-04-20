@@ -77,6 +77,64 @@ impl NativeSimProcedure for NativeStrlen {
     }
 }
 
+/// Native strnlen implementation.
+///
+/// ```c
+/// size_t strnlen(const char *s, size_t maxlen);
+/// ```
+///
+/// Returns the lesser of the string length and maxlen.
+pub struct NativeStrnlen;
+
+impl NativeSimProcedure for NativeStrnlen {
+    fn name(&self) -> &'static str {
+        "strnlen"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let addr = args[0].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("s".to_string())
+        })?;
+
+        let maxlen = args[1].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("maxlen".to_string())
+        })?;
+
+        // Cap at MAX_STRLEN to avoid huge scans
+        if maxlen > MAX_STRLEN as u64 {
+            return Err(ProcedureError::MaxIterations(maxlen as usize));
+        }
+
+        let mut length: u64 = maxlen;
+
+        for i in 0..maxlen {
+            let byte_addr = addr.wrapping_add(i);
+            let byte_val = state.memory_load(byte_addr, 1)
+                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+
+            let byte = byte_val.as_u64().ok_or_else(|| {
+                ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", byte_addr))
+            })?;
+
+            if byte == 0 {
+                length = i;
+                break;
+            }
+        }
+
+        let ptr_bits = state.arch().bits();
+        Ok(Some(RustBV::concrete(length as u128, ptr_bits)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +180,64 @@ mod tests {
         let result = proc.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(11));
+    }
+
+    #[test]
+    fn test_strnlen_within_limit() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+
+        let proc = NativeStrnlen;
+        let result = proc.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(10, 64),
+        ]).unwrap();
+
+        // String is 5 bytes, maxlen is 10 → return 5
+        assert_eq!(result.unwrap().as_u64(), Some(5));
+    }
+
+    #[test]
+    fn test_strnlen_at_limit() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+
+        let proc = NativeStrnlen;
+        let result = proc.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(5, 64),
+        ]).unwrap();
+
+        // String is 11 bytes, maxlen is 5 → return 5
+        assert_eq!(result.unwrap().as_u64(), Some(5));
+    }
+
+    #[test]
+    fn test_strnlen_zero_maxlen() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+
+        let proc = NativeStrnlen;
+        let result = proc.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0, 64),
+        ]).unwrap();
+
+        assert_eq!(result.unwrap().as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_strnlen_empty_string() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"\x00rest", Permission::RWX);
+
+        let proc = NativeStrnlen;
+        let result = proc.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(10, 64),
+        ]).unwrap();
+
+        assert_eq!(result.unwrap().as_u64(), Some(0));
     }
 
     #[test]

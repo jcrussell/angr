@@ -169,6 +169,7 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(memset::NativeMemset));
         registry.register(Arc::new(strcpy::NativeStrcpy));
         registry.register(Arc::new(strcpy::NativeStrncpy));
+        registry.register(Arc::new(strlen::NativeStrnlen));
         // exit/abort: NOT registered — they cause exploration flow issues
         // (infinite loops when states hit exit addresses, need Python callback
         // to properly handle avoid/find address interaction)
