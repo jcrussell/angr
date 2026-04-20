@@ -91,6 +91,12 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
 
         def patched_simulation_manager(factory_self, thing=None, **kwargs):
             nonlocal rust_mgr_instance
+            # Don't intercept calls from angr internals (CFG, analyses, etc.)
+            import traceback
+            caller_frames = traceback.extract_stack()
+            for frame in caller_frames[:-1]:
+                if '/angr/analyses/' in frame.filename or '/angr/exploration_techniques/' in frame.filename:
+                    return original_sm(factory_self, thing, **kwargs)
             if thing is None:
                 states = [factory_self.entry_state()]
             elif isinstance(thing, (list, tuple)):
