@@ -104,6 +104,13 @@ impl<'a> CallbackInterpreter<'a> {
                                 self.call_stack.pop();
                             }
 
+                            // Record detailed history entry
+                            self.detailed_history.push(crate::state::HistoryEntry {
+                                addr: self.pc, // block that just executed
+                                jumpkind: crate::state::HistoryEntry::jumpkind_from_vex(&jumpkind),
+                                jump_target: next_addr,
+                            });
+
                             self.pc = next_addr;
                             // Return for jumpkinds that need Python handling
                             if jumpkind.is_syscall() {

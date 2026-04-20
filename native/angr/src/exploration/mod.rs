@@ -2139,6 +2139,26 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Get the detailed execution history for a state by ID.
+    ///
+    /// Returns list of (addr, jumpkind, jump_target) tuples.
+    /// jumpkind: 0=Boring, 1=Call, 2=Ret, 3=Syscall, 4=Other
+    pub fn get_state_detailed_history(&self, state_id: u64) -> PyResult<Vec<(u64, u8, u64)>> {
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.detailed_history().iter()
+                .map(|e| (e.addr, e.jumpkind, e.jump_target))
+                .collect());
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(cb.state.detailed_history().iter()
+                    .map(|e| (e.addr, e.jumpkind, e.jump_target))
+                    .collect());
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Evaluate a stdin symbol by name using the state's solver.
     ///
     /// Returns the concrete value as Option<u64>, or None if the symbol

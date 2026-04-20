@@ -36,6 +36,48 @@ pub struct CallStackEntry {
     pub stack_ptr: u64,
 }
 
+/// Entry in the execution history trace.
+///
+/// Records block-level execution events with jumpkind and jump target.
+/// Appended at each block execution, cloned on state fork.
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    /// Block address that was executed.
+    pub addr: u64,
+    /// Jump kind at block exit (0=Boring, 1=Call, 2=Ret, 3=Syscall, 4=Other).
+    pub jumpkind: u8,
+    /// Target address of the jump (where execution went after this block).
+    pub jump_target: u64,
+}
+
+impl HistoryEntry {
+    /// Jumpkind constants matching VEX conventions.
+    pub const JK_BORING: u8 = 0;
+    pub const JK_CALL: u8 = 1;
+    pub const JK_RET: u8 = 2;
+    pub const JK_SYSCALL: u8 = 3;
+    pub const JK_OTHER: u8 = 4;
+
+    /// Create from JumpKind enum.
+    pub fn jumpkind_from_vex(jk: &crate::vex::JumpKind) -> u8 {
+        if jk.is_call() { Self::JK_CALL }
+        else if jk.is_ret() { Self::JK_RET }
+        else if jk.is_syscall() { Self::JK_SYSCALL }
+        else { Self::JK_BORING }
+    }
+
+    /// Convert jumpkind byte to string (for Python API).
+    pub fn jumpkind_str(jk: u8) -> &'static str {
+        match jk {
+            Self::JK_BORING => "Ijk_Boring",
+            Self::JK_CALL => "Ijk_Call",
+            Self::JK_RET => "Ijk_Ret",
+            Self::JK_SYSCALL => "Ijk_Sys_syscall",
+            _ => "Ijk_Other",
+        }
+    }
+}
+
 /// Unique identifier for states.
 static NEXT_STATE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -133,6 +175,8 @@ pub struct RustSimState {
     parent_id: Option<u64>,
     /// Basic block history (addresses visited).
     history: Vec<u64>,
+    /// Detailed execution history with jumpkind and target info.
+    detailed_history: Vec<HistoryEntry>,
     /// Maximum history length (0 = unlimited).
     max_history: usize,
     /// Hook addresses.
@@ -194,6 +238,7 @@ impl RustSimState {
             state_id: next_state_id(),
             parent_id: None,
             history: Vec::new(),
+            detailed_history: Vec::new(),
             max_history: 1000,
             hooks: HashSet::new(),
             concretizer: AddressConcretizer::default(),
@@ -225,6 +270,7 @@ impl RustSimState {
             state_id: next_state_id(),
             parent_id: None,
             history: Vec::new(),
+            detailed_history: Vec::new(),
             max_history: 1000,
             hooks: HashSet::new(),
             concretizer: AddressConcretizer::default(),
@@ -266,6 +312,7 @@ impl RustSimState {
             state_id: next_state_id(),
             parent_id: None,
             history: Vec::new(),
+            detailed_history: Vec::new(),
             max_history: 1000,
             hooks: HashSet::new(),
             concretizer: AddressConcretizer::default(),
@@ -386,6 +433,30 @@ impl RustSimState {
                 self.history.remove(0);
             }
         }
+    }
+
+    /// Get the detailed execution history.
+    pub fn detailed_history(&self) -> &[HistoryEntry] {
+        &self.detailed_history
+    }
+
+    /// Add a detailed history entry.
+    pub fn add_history_entry(&mut self, addr: u64, jumpkind: u8, jump_target: u64) {
+        if self.track_history {
+            self.detailed_history.push(HistoryEntry {
+                addr,
+                jumpkind,
+                jump_target,
+            });
+            if self.max_history > 0 && self.detailed_history.len() > self.max_history {
+                self.detailed_history.remove(0);
+            }
+        }
+    }
+
+    /// Replace the detailed history (used when restoring from interpreter).
+    pub fn set_detailed_history(&mut self, history: Vec<HistoryEntry>) {
+        self.detailed_history = history;
     }
 
     // =========================================================================
@@ -700,6 +771,7 @@ impl RustSimState {
             state_id: next_state_id(),
             parent_id: Some(self.state_id),
             history: self.history.clone(),
+            detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
@@ -726,6 +798,7 @@ impl RustSimState {
             state_id: next_state_id(),
             parent_id: Some(self.state_id),
             history: self.history.clone(),
+            detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
@@ -752,6 +825,7 @@ impl RustSimState {
             state_id: next_state_id(),
             parent_id: Some(self.state_id),
             history: self.history.clone(),
+            detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
@@ -786,6 +860,7 @@ impl RustSimState {
             state_id: next_state_id(),
             parent_id: Some(self.state_id),
             history: self.history.clone(),
+            detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
@@ -1234,6 +1309,8 @@ pub struct ExplorationStateSnapshot {
     named_registers: Vec<(String, u128, u32)>,
     /// Call stack entries: (call_site_addr, callee_addr, return_addr, stack_ptr).
     call_stack: Vec<(u64, u64, u64, u64)>,
+    /// Detailed execution history: (addr, jumpkind, jump_target).
+    detailed_history: Vec<(u64, u8, u64)>,
 }
 
 #[pymethods]
@@ -1267,6 +1344,24 @@ impl ExplorationStateSnapshot {
     /// Get call stack depth.
     pub fn get_call_stack_depth(&self) -> usize {
         self.call_stack.len()
+    }
+
+    /// Get detailed history as list of (addr, jumpkind, jump_target) tuples.
+    ///
+    /// jumpkind: 0=Boring, 1=Call, 2=Ret, 3=Syscall, 4=Other
+    pub fn get_detailed_history(&self) -> Vec<(u64, u8, u64)> {
+        self.detailed_history.clone()
+    }
+
+    /// Get detailed history with string jumpkinds.
+    ///
+    /// Returns list of (addr, jumpkind_str, jump_target) tuples.
+    pub fn get_detailed_history_str(&self) -> Vec<(u64, String, u64)> {
+        self.detailed_history.iter()
+            .map(|(addr, jk, target)| {
+                (*addr, HistoryEntry::jumpkind_str(*jk).to_string(), *target)
+            })
+            .collect()
     }
 
     /// Get the number of memory pages.
@@ -1366,6 +1461,11 @@ impl RustSimState {
             .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
             .collect();
 
+        // Export detailed history
+        let detailed_history: Vec<(u64, u8, u64)> = self.detailed_history.iter()
+            .map(|e| (e.addr, e.jumpkind, e.jump_target))
+            .collect();
+
         ExplorationStateSnapshot {
             state_id: self.state_id,
             parent_id: self.parent_id,
@@ -1377,6 +1477,7 @@ impl RustSimState {
             history: self.history.clone(),
             named_registers,
             call_stack,
+            detailed_history,
         }
     }
 

@@ -599,6 +599,8 @@ pub struct CallbackInterpreter<'a> {
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Transferred to/from RustSimState before/after interpreter runs.
     pub call_stack: Vec<crate::state::CallStackEntry>,
+    /// Detailed execution history. Transferred to/from RustSimState.
+    pub detailed_history: Vec<crate::state::HistoryEntry>,
 }
 impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
@@ -658,6 +660,7 @@ impl<'a> CallbackInterpreter<'a> {
             concrete_memory_sorted: false,
             concretize_cache: HashMap::new(),
             call_stack: Vec::new(),
+            detailed_history: Vec::new(),
         }
     }
 
@@ -1325,6 +1328,7 @@ impl<'a> CallbackInterpreter<'a> {
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
             concretize_cache: HashMap::new(), // Fresh cache for fork
             call_stack: self.call_stack.clone(), // Clone call stack for fork
+            detailed_history: self.detailed_history.clone(), // Clone history for fork
         }
     }
 

@@ -1722,5 +1722,80 @@ class TestCallStackTracking:
         assert snapshot.get_call_stack_depth() == 0
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestDetailedHistory:
+    """Tests for detailed execution history tracking."""
+
+    def test_detailed_history_on_unit_state(self):
+        """Test that new state has empty detailed history."""
+        state = RustSimState("amd64", True)
+        snapshot = state.export_full()
+        assert snapshot.get_detailed_history() == []
+
+    def test_detailed_history_on_found_states(self, fauxware_project):
+        """Test that found states have non-empty detailed history."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed)
+
+        assert len(mgr.found) > 0
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        for state_id in found_ids:
+            snapshot = mgr._rust_mgr.export_state(state_id)
+            history = snapshot.get_detailed_history()
+            assert isinstance(history, list)
+            assert len(history) > 0, "Found state should have non-empty history"
+            # Each entry is (addr, jumpkind, jump_target)
+            for entry in history:
+                assert len(entry) == 3
+                addr, jumpkind, target = entry
+                assert isinstance(addr, int) and addr > 0
+                assert isinstance(jumpkind, int) and 0 <= jumpkind <= 4
+                assert isinstance(target, int) and target > 0
+
+    def test_detailed_history_str(self, fauxware_project):
+        """Test get_detailed_history_str returns human-readable jumpkinds."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed)
+
+        assert len(mgr.found) > 0
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        snapshot = mgr._rust_mgr.export_state(found_ids[0])
+        history_str = snapshot.get_detailed_history_str()
+        assert len(history_str) > 0
+        valid_jumpkinds = {"Ijk_Boring", "Ijk_Call", "Ijk_Ret", "Ijk_Sys_syscall", "Ijk_Other"}
+        for addr, jk_str, target in history_str:
+            assert jk_str in valid_jumpkinds, f"Unknown jumpkind: {jk_str}"
+
+    def test_detailed_history_has_calls(self, fauxware_project):
+        """Test that fauxware's history contains Ijk_Call entries."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed)
+
+        assert len(mgr.found) > 0
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        history = mgr._rust_mgr.get_state_detailed_history(found_ids[0])
+        # fauxware calls authenticate() and other functions — should have Call entries
+        jumpkinds = [jk for _, jk, _ in history]
+        # 1 = Ijk_Call
+        assert 1 in jumpkinds, "History should contain at least one Ijk_Call"
+
+    def test_detailed_history_manager_api(self):
+        """Test get_state_detailed_history on the low-level manager."""
+        mgr = _RustExplorationManager("amd64")
+        state_id = mgr.create_state("active")
+        history = mgr.get_state_detailed_history(state_id)
+        assert isinstance(history, list)
+        assert history == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
