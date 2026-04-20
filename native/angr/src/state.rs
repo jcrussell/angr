@@ -84,6 +84,207 @@ impl HeapMetadata {
     }
 }
 
+/// File descriptor flags (matching POSIX O_ constants).
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum FdFlags {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+impl FdFlags {
+    /// Convert from POSIX O_RDONLY/O_WRONLY/O_RDWR integer flags.
+    pub fn from_posix(flags: u32) -> Self {
+        match flags & 3 {
+            0 => FdFlags::ReadOnly,
+            1 => FdFlags::WriteOnly,
+            _ => FdFlags::ReadWrite,
+        }
+    }
+
+    /// Convert to POSIX integer representation.
+    pub fn to_posix(&self) -> u32 {
+        match self {
+            FdFlags::ReadOnly => 0,
+            FdFlags::WriteOnly => 1,
+            FdFlags::ReadWrite => 2,
+        }
+    }
+}
+
+/// A tracked file descriptor with metadata.
+///
+/// Represents an open file descriptor with its name, position, flags,
+/// and content buffer. Cloned on state fork.
+#[derive(Clone, Debug)]
+pub struct FileDescriptor {
+    /// File path/name (e.g. "/dev/stdin", "flag.txt"). Empty for unnamed fds.
+    pub name: String,
+    /// Current read/write position (seek offset).
+    pub position: u64,
+    /// Open mode flags.
+    pub flags: FdFlags,
+    /// Accumulated content buffer (output for write fds, input data for read fds).
+    pub content: Vec<u8>,
+    /// Whether the fd is currently open.
+    pub is_open: bool,
+}
+
+impl FileDescriptor {
+    /// Create a new open file descriptor.
+    pub fn new(name: String, flags: FdFlags) -> Self {
+        FileDescriptor {
+            name,
+            position: 0,
+            flags,
+            content: Vec::new(),
+            is_open: true,
+        }
+    }
+
+    /// Create a new file descriptor with initial content (e.g. for readable files).
+    pub fn with_content(name: String, flags: FdFlags, content: Vec<u8>) -> Self {
+        FileDescriptor {
+            name,
+            position: 0,
+            flags,
+            content,
+            is_open: true,
+        }
+    }
+}
+
+/// File system state tracking.
+///
+/// Manages file descriptors beyond stdin/stdout/stderr. Tracks open/close/read/write/seek
+/// operations. Cloned on fork so each exploration path has its own file system state.
+#[derive(Clone, Debug)]
+pub struct FileSystem {
+    /// Open file descriptors. Standard fds: 0=stdin, 1=stdout, 2=stderr.
+    fds: HashMap<u32, FileDescriptor>,
+    /// Next file descriptor number to allocate.
+    next_fd: u32,
+}
+
+impl Default for FileSystem {
+    fn default() -> Self {
+        let mut fds = HashMap::new();
+        // Pre-register standard file descriptors
+        fds.insert(0, FileDescriptor::new("/dev/stdin".to_string(), FdFlags::ReadOnly));
+        fds.insert(1, FileDescriptor::new("/dev/stdout".to_string(), FdFlags::WriteOnly));
+        fds.insert(2, FileDescriptor::new("/dev/stderr".to_string(), FdFlags::WriteOnly));
+        FileSystem { fds, next_fd: 3 }
+    }
+}
+
+impl FileSystem {
+    /// Open a new file descriptor. Returns the allocated fd number.
+    pub fn open(&mut self, name: String, flags: FdFlags) -> u32 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        self.fds.insert(fd, FileDescriptor::new(name, flags));
+        fd
+    }
+
+    /// Open a file descriptor with pre-loaded content (for file-backed SimFiles).
+    pub fn open_with_content(&mut self, name: String, flags: FdFlags, content: Vec<u8>) -> u32 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        self.fds.insert(fd, FileDescriptor::with_content(name, flags, content));
+        fd
+    }
+
+    /// Close a file descriptor. Returns true if it was open.
+    pub fn close(&mut self, fd: u32) -> bool {
+        if let Some(desc) = self.fds.get_mut(&fd) {
+            if desc.is_open {
+                desc.is_open = false;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Write data to a file descriptor's content buffer.
+    pub fn write(&mut self, fd: u32, data: &[u8]) {
+        self.fds.entry(fd).or_insert_with(|| {
+            FileDescriptor::new(String::new(), FdFlags::WriteOnly)
+        }).content.extend_from_slice(data);
+    }
+
+    /// Read up to `count` bytes from a file descriptor at its current position.
+    /// Advances the position. Returns bytes read.
+    pub fn read(&mut self, fd: u32, count: usize) -> Vec<u8> {
+        if let Some(desc) = self.fds.get_mut(&fd) {
+            let pos = desc.position as usize;
+            let available = desc.content.len().saturating_sub(pos);
+            let n = count.min(available);
+            if n == 0 {
+                return Vec::new();
+            }
+            let data = desc.content[pos..pos + n].to_vec();
+            desc.position += n as u64;
+            data
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Seek a file descriptor. Returns the new position.
+    ///
+    /// whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END
+    pub fn seek(&mut self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
+        let desc = self.fds.get_mut(&fd)?;
+        let new_pos = match whence {
+            0 => offset.max(0) as u64,                                     // SEEK_SET
+            1 => (desc.position as i64 + offset).max(0) as u64,            // SEEK_CUR
+            2 => (desc.content.len() as i64 + offset).max(0) as u64,      // SEEK_END
+            _ => return None,
+        };
+        desc.position = new_pos;
+        Some(new_pos)
+    }
+
+    /// Get the content buffer for a file descriptor (read-only).
+    pub fn fd_content(&self, fd: u32) -> &[u8] {
+        self.fds.get(&fd).map(|d| d.content.as_slice()).unwrap_or(&[])
+    }
+
+    /// Check if a file descriptor is open.
+    pub fn is_open(&self, fd: u32) -> bool {
+        self.fds.get(&fd).is_some_and(|d| d.is_open)
+    }
+
+    /// Get file descriptor info: (name, position, flags, content_len, is_open).
+    pub fn fd_info(&self, fd: u32) -> Option<(&str, u64, u32, usize, bool)> {
+        self.fds.get(&fd).map(|d| {
+            (d.name.as_str(), d.position, d.flags.to_posix(), d.content.len(), d.is_open)
+        })
+    }
+
+    /// List all file descriptor numbers (including closed ones).
+    pub fn all_fds(&self) -> Vec<u32> {
+        let mut fds: Vec<u32> = self.fds.keys().copied().collect();
+        fds.sort();
+        fds
+    }
+
+    /// List only open file descriptor numbers.
+    pub fn open_fds(&self) -> Vec<u32> {
+        let mut fds: Vec<u32> = self.fds.iter()
+            .filter(|(_, d)| d.is_open)
+            .map(|(k, _)| *k)
+            .collect();
+        fds.sort();
+        fds
+    }
+
+    /// Get the next fd number (for pre-allocating).
+    pub fn next_fd(&self) -> u32 {
+        self.next_fd
+    }
+}
+
 /// Entry in the execution history trace.
 ///
 /// Records block-level execution events with jumpkind and jump target.
@@ -235,10 +436,9 @@ pub struct RustSimState {
     dirty_registers: u128,
     /// Whether to track detailed history.
     track_history: bool,
-    /// Per-fd output buffers — accumulates output from native puts/printf/write.
-    /// Cloned on fork so each path gets its own copy.
-    /// Key: file descriptor number (1=stdout, 2=stderr, etc.)
-    fd_buffers: HashMap<u32, Vec<u8>>,
+    /// File system state: tracks all file descriptors with metadata.
+    /// Cloned on fork so each path gets its own file system state.
+    fs: FileSystem,
     /// Heap brk pointer — simple bump allocator for malloc/calloc.
     /// Default: 0xC0000000 (matching angr's DEFAULT_HEAP_LOCATION).
     heap_brk: u64,
@@ -296,7 +496,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
-            fd_buffers: HashMap::new(),
+            fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -329,7 +529,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
-            fd_buffers: HashMap::new(),
+            fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -372,7 +572,7 @@ impl RustSimState {
             dirty_registers: 0,
             track_history: true,
             arch,
-            fd_buffers: HashMap::new(),
+            fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
@@ -430,17 +630,27 @@ impl RustSimState {
 
     /// Check if stdout has been written to.
     pub fn has_stdout(&self) -> bool {
-        self.fd_buffers.get(&1).is_some_and(|b| !b.is_empty())
+        !self.fs.fd_content(1).is_empty()
     }
 
     /// Get the output buffer for a file descriptor.
     pub fn fd_buffer(&self, fd: u32) -> &[u8] {
-        self.fd_buffers.get(&fd).map(|b| b.as_slice()).unwrap_or(&[])
+        self.fs.fd_content(fd)
     }
 
     /// Append bytes to a file descriptor's output buffer.
     pub fn write_fd(&mut self, fd: u32, data: &[u8]) {
-        self.fd_buffers.entry(fd).or_default().extend_from_slice(data);
+        self.fs.write(fd, data);
+    }
+
+    /// Get a mutable reference to the file system state.
+    pub fn file_system(&mut self) -> &mut FileSystem {
+        &mut self.fs
+    }
+
+    /// Get a read-only reference to the file system state.
+    pub fn file_system_ref(&self) -> &FileSystem {
+        &self.fs
     }
 
     /// Record a symbolic variable that was read from stdin.
@@ -842,7 +1052,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0, // Fresh dirty tracking for fork
             track_history: self.track_history,
-            fd_buffers: self.fd_buffers.clone(),
+            fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
@@ -870,7 +1080,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
-            fd_buffers: self.fd_buffers.clone(),
+            fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
@@ -898,7 +1108,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
-            fd_buffers: self.fd_buffers.clone(),
+            fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
@@ -934,7 +1144,7 @@ impl RustSimState {
             concretizer: self.concretizer.clone(),
             dirty_registers: 0,
             track_history: self.track_history,
-            fd_buffers: self.fd_buffers.clone(),
+            fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
@@ -1384,6 +1594,8 @@ pub struct ExplorationStateSnapshot {
     heap_allocated: Vec<(u64, u64)>,
     /// Heap freed addresses.
     heap_freed: Vec<u64>,
+    /// Open file descriptors: (fd, name, position, flags, content_len, is_open).
+    open_fds: Vec<(u32, String, u64, u32, usize, bool)>,
 }
 
 #[pymethods]
@@ -1492,6 +1704,16 @@ impl ExplorationStateSnapshot {
         self.heap_freed.len()
     }
 
+    /// Get open file descriptors as list of (fd, name, position, flags, content_len, is_open).
+    pub fn get_open_fds(&self) -> Vec<(u32, String, u64, u32, usize, bool)> {
+        self.open_fds.clone()
+    }
+
+    /// Get the number of tracked file descriptors.
+    pub fn get_fd_count(&self) -> usize {
+        self.open_fds.len()
+    }
+
     /// Get symbolic byte offsets for a page.
     /// Returns empty vec if page not found.
     pub fn get_symbolic_offsets(&self, page_addr: u64) -> Vec<u16> {
@@ -1575,6 +1797,10 @@ impl RustSimState {
                 .map(|(&addr, &size)| (addr, size))
                 .collect(),
             heap_freed: self.heap_metadata.freed.clone(),
+            open_fds: self.fs.all_fds().iter().map(|&fd| {
+                let info = self.fs.fd_info(fd).unwrap();
+                (fd, info.0.to_string(), info.1, info.2, info.3, info.4)
+            }).collect(),
         }
     }
 
@@ -1651,5 +1877,103 @@ mod tests {
         // state2 should have new value
         let val2 = state2.memory_load(0x1000, 2).unwrap();
         assert_eq!(val2.as_u64(), Some(0xBBBB));
+    }
+
+    #[test]
+    fn test_filesystem_default() {
+        let fs = FileSystem::default();
+        assert!(fs.is_open(0)); // stdin
+        assert!(fs.is_open(1)); // stdout
+        assert!(fs.is_open(2)); // stderr
+        assert!(!fs.is_open(3));
+        assert_eq!(fs.next_fd(), 3);
+    }
+
+    #[test]
+    fn test_filesystem_open_close() {
+        let mut fs = FileSystem::default();
+        let fd = fs.open("test.txt".to_string(), FdFlags::ReadOnly);
+        assert_eq!(fd, 3);
+        assert!(fs.is_open(3));
+
+        let closed = fs.close(3);
+        assert!(closed);
+        assert!(!fs.is_open(3));
+
+        // Double close returns false
+        assert!(!fs.close(3));
+    }
+
+    #[test]
+    fn test_filesystem_write_read() {
+        let mut fs = FileSystem::default();
+        let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, b"hello world".to_vec());
+
+        let data = fs.read(fd, 5);
+        assert_eq!(data, b"hello");
+
+        let data2 = fs.read(fd, 6);
+        assert_eq!(data2, b" world");
+
+        // Read past end
+        let data3 = fs.read(fd, 10);
+        assert!(data3.is_empty());
+    }
+
+    #[test]
+    fn test_filesystem_seek() {
+        let mut fs = FileSystem::default();
+        let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
+
+        // SEEK_SET
+        assert_eq!(fs.seek(fd, 50, 0), Some(50));
+        // SEEK_CUR
+        assert_eq!(fs.seek(fd, 10, 1), Some(60));
+        // SEEK_END
+        assert_eq!(fs.seek(fd, -5, 2), Some(95));
+        // Invalid whence
+        assert_eq!(fs.seek(fd, 0, 99), None);
+    }
+
+    #[test]
+    fn test_filesystem_fork_isolation() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.file_system().open("test.txt".to_string(), FdFlags::ReadOnly);
+        assert!(state.file_system_ref().is_open(3));
+
+        let mut forked = state.fork();
+        // Close in forked state
+        forked.file_system().close(3);
+        assert!(!forked.file_system_ref().is_open(3));
+        // Original should still be open
+        assert!(state.file_system_ref().is_open(3));
+    }
+
+    #[test]
+    fn test_filesystem_backward_compat() {
+        // fd_buffer/write_fd should still work through FileSystem
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.write_stdout(b"hello");
+        assert_eq!(state.stdout_buffer(), b"hello");
+        assert!(state.has_stdout());
+
+        state.write_fd(2, b"err");
+        assert_eq!(state.fd_buffer(2), b"err");
+    }
+
+    #[test]
+    fn test_filesystem_open_fds() {
+        let mut fs = FileSystem::default();
+        let open = fs.open_fds();
+        assert_eq!(open, vec![0, 1, 2]); // stdin, stdout, stderr
+
+        fs.open("a.txt".to_string(), FdFlags::ReadOnly);
+        fs.open("b.txt".to_string(), FdFlags::WriteOnly);
+        let open = fs.open_fds();
+        assert_eq!(open, vec![0, 1, 2, 3, 4]);
+
+        fs.close(3);
+        let open = fs.open_fds();
+        assert_eq!(open, vec![0, 1, 2, 4]);
     }
 }

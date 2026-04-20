@@ -35,6 +35,7 @@ pub mod strtol;
 pub mod strcat;
 pub mod fgets;
 pub mod sprintf;
+pub mod fileops;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -221,6 +222,10 @@ impl NativeProcedureRegistry {
         // plugin for fd tracking requires careful coordination.
         // registry.register(Arc::new(read::NativeRead));
         // registry.register(Arc::new(write::NativeWrite));
+        // File operations: registered for fd tracking in FileSystem.
+        registry.register(Arc::new(fileops::NativeOpen));
+        registry.register(Arc::new(fileops::NativeClose));
+        registry.register(Arc::new(fileops::NativeLseek));
 
         registry
     }
