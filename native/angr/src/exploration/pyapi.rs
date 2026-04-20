@@ -1615,3 +1615,35 @@
     pub fn py_eval_stdin_symbol(&self, state_id: u64, name: &str) -> Option<u64> {
         self.eval_stdin_symbol(state_id, name)
     }
+
+    /// Get the call stack for a state by ID.
+    ///
+    /// Returns list of (call_site_addr, callee_addr, return_addr, stack_ptr) tuples.
+    pub fn get_state_call_stack(&self, state_id: u64) -> PyResult<Vec<(u64, u64, u64, u64)>> {
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.call_stack().iter()
+                .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
+                .collect());
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(cb.state.call_stack().iter()
+                    .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
+                    .collect());
+            }
+        }
+        Err(pyo3::exceptions::PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Get the call stack depth for a state by ID.
+    pub fn get_state_call_stack_depth(&self, state_id: u64) -> PyResult<usize> {
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.call_stack_depth());
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(cb.state.call_stack_depth());
+            }
+        }
+        Err(pyo3::exceptions::PyValueError::new_err(format!("state {} not found", state_id)))
+    }

@@ -1659,5 +1659,68 @@ class TestCallableStepFunc:
             "Deadended states should be preserved during step_func execution"
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCallStackTracking:
+    """Tests for call stack tracking in the Rust engine."""
+
+    def test_call_stack_on_state_snapshot(self, fauxware_project):
+        """Test that call stack is available on exported state snapshots."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(n=100)
+
+        # Found states should have call stack accessible via snapshot
+        for s in mgr.found:
+            snapshot = mgr._rust_mgr.export_state(s.scratch._rust_state_id)
+            call_stack = snapshot.get_call_stack()
+            # Call stack is a list of (call_site, callee, ret_addr, sp) tuples
+            assert isinstance(call_stack, list)
+            depth = snapshot.get_call_stack_depth()
+            assert depth == len(call_stack)
+
+    def test_call_stack_api_on_low_level_manager(self):
+        """Test get_state_call_stack on the low-level Rust exploration manager."""
+        mgr = _RustExplorationManager("amd64")
+        state_id = mgr.create_state("active")
+        # New state should have empty call stack
+        call_stack = mgr.get_state_call_stack(state_id)
+        depth = mgr.get_state_call_stack_depth(state_id)
+        assert isinstance(call_stack, list)
+        assert call_stack == []
+        assert depth == 0
+
+    def test_call_stack_on_found_states(self, fauxware_project):
+        """Test that found state snapshots contain call stack data."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed)
+
+        assert len(mgr.found) > 0
+        # Check that the found state IDs are accessible via the Rust manager
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        for state_id in found_ids:
+            snapshot = mgr._rust_mgr.export_state(state_id)
+            call_stack = snapshot.get_call_stack()
+            depth = snapshot.get_call_stack_depth()
+            assert isinstance(call_stack, list)
+            assert depth == len(call_stack)
+            # Each entry is a tuple of 4 integers
+            for entry in call_stack:
+                assert len(entry) == 4
+                assert all(isinstance(v, int) for v in entry)
+
+    def test_call_stack_on_unit_state(self):
+        """Test call stack on a standalone RustSimState."""
+        state = RustSimState("amd64", True)
+        # New state should have empty call stack
+        snapshot = state.export_full()
+        assert snapshot.get_call_stack() == []
+        assert snapshot.get_call_stack_depth() == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

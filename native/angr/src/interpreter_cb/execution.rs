@@ -86,6 +86,24 @@ impl<'a> CallbackInterpreter<'a> {
                             // Continue to next block
                         }
                         BlockResult::BlockEnd { next_addr, jumpkind } => {
+                            // Track call stack before updating PC
+                            if jumpkind.is_call() {
+                                let sp_val = self.registers.get(
+                                    self.registers.arch().sp_offset(),
+                                    self.calling_convention.pointer_size(),
+                                    self.ctx,
+                                ).as_u64().unwrap_or(0);
+                                let ret_addr = self.get_return_addr().unwrap_or(0);
+                                self.call_stack.push(crate::state::CallStackEntry {
+                                    call_site_addr: self.current_insn_addr,
+                                    callee_addr: next_addr,
+                                    return_addr: ret_addr,
+                                    stack_ptr: sp_val,
+                                });
+                            } else if jumpkind.is_ret() {
+                                self.call_stack.pop();
+                            }
+
                             self.pc = next_addr;
                             // Return for jumpkinds that need Python handling
                             if jumpkind.is_syscall() {

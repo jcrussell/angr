@@ -43,7 +43,7 @@ impl RustExplorationManager {
         let solver_rc = state.solver().clone();
 
         // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, recovered_memory, step_stats, updated_block_cache) = {
+        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, new_call_stack, recovered_memory, step_stats, updated_block_cache) = {
             let solver_ref = solver_rc.borrow();
 
             // Create interpreter with the state's solver
@@ -62,6 +62,8 @@ impl RustExplorationManager {
             // Copy state registers to interpreter (including symbolic values)
             interp.registers = state.registers().fork();
             interp.set_pc(initial_pc);
+            // Transfer call stack to interpreter
+            interp.call_stack = state.call_stack().to_vec();
 
             // Set up hooks, skipping the one we just processed (for zero-length hooks)
             for &addr in &self.hooks {
@@ -132,6 +134,8 @@ impl RustExplorationManager {
             // Extract register state (including symbolic values)
             let new_registers = interp.registers.fork();
             let new_pc = interp.get_pc();
+            // Extract call stack from interpreter
+            let new_call_stack = std::mem::take(&mut interp.call_stack);
 
             // Flush any remaining pending stores to rust_memory
             interp.flush_stores_to_rust_memory();
@@ -145,7 +149,7 @@ impl RustExplorationManager {
             // Take profiling stats before interpreter is dropped
             let step_stats = interp.take_stats();
 
-            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, recovered_memory, step_stats, updated_cache)
+            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, new_call_stack, recovered_memory, step_stats, updated_cache)
         };
         // solver_ref dropped here, solver_rc borrow released
 
@@ -170,6 +174,8 @@ impl RustExplorationManager {
         // Restore registers (including symbolic values) from interpreter
         state.set_registers(new_registers);
         state.set_pc(new_pc);
+        // Restore call stack from interpreter
+        state.set_call_stack(new_call_stack);
 
         // Add to history
         state.add_to_history(state.pc());

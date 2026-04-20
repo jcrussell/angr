@@ -20,6 +20,22 @@ use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{Endness, VexArch};
 use crate::concretize::AddressConcretizer;
 
+/// Entry in the function call stack.
+///
+/// Tracks call/return pairs during symbolic execution. Pushed on `Ijk_Call`,
+/// popped on `Ijk_Ret`. Cloned on state fork.
+#[derive(Clone, Debug)]
+pub struct CallStackEntry {
+    /// Address of the call instruction (caller site).
+    pub call_site_addr: u64,
+    /// Address of the callee function entry.
+    pub callee_addr: u64,
+    /// Expected return address (instruction after the call).
+    pub return_addr: u64,
+    /// Stack pointer value at call time.
+    pub stack_ptr: u64,
+}
+
 /// Unique identifier for states.
 static NEXT_STATE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -139,6 +155,9 @@ pub struct RustSimState {
     /// fgets/fgetc/getchar. On export, Python recreates matching claripy BVS
     /// and writes them to the posix stdin plugin.
     stdin_symbols: Vec<(String, u32)>,
+    /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
+    /// Cloned on fork so each path has its own call stack.
+    call_stack: Vec<CallStackEntry>,
 }
 
 impl RustSimState {
@@ -184,6 +203,7 @@ impl RustSimState {
             fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
+            call_stack: Vec::new(),
         })
     }
 
@@ -214,6 +234,7 @@ impl RustSimState {
             fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
+            call_stack: Vec::new(),
         }
     }
 
@@ -254,6 +275,7 @@ impl RustSimState {
             fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
+            call_stack: Vec::new(),
         })
     }
 
@@ -364,6 +386,46 @@ impl RustSimState {
                 self.history.remove(0);
             }
         }
+    }
+
+    // =========================================================================
+    // Call Stack Tracking
+    // =========================================================================
+
+    /// Get the current call stack.
+    pub fn call_stack(&self) -> &[CallStackEntry] {
+        &self.call_stack
+    }
+
+    /// Get the call stack depth.
+    pub fn call_stack_depth(&self) -> usize {
+        self.call_stack.len()
+    }
+
+    /// Push a call onto the call stack (on Ijk_Call).
+    pub fn push_call(&mut self, call_site_addr: u64, callee_addr: u64, return_addr: u64, stack_ptr: u64) {
+        self.call_stack.push(CallStackEntry {
+            call_site_addr,
+            callee_addr,
+            return_addr,
+            stack_ptr,
+        });
+    }
+
+    /// Pop a call from the call stack (on Ijk_Ret).
+    /// Returns the popped entry, or None if the stack is empty.
+    pub fn pop_call(&mut self) -> Option<CallStackEntry> {
+        self.call_stack.pop()
+    }
+
+    /// Get the current function address (top of call stack), if any.
+    pub fn current_function_addr(&self) -> Option<u64> {
+        self.call_stack.last().map(|e| e.callee_addr)
+    }
+
+    /// Replace the call stack (used when restoring from interpreter).
+    pub fn set_call_stack(&mut self, call_stack: Vec<CallStackEntry>) {
+        self.call_stack = call_stack;
     }
 
     // =========================================================================
@@ -646,6 +708,7 @@ impl RustSimState {
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
+            call_stack: self.call_stack.clone(),
         }
     }
 
@@ -671,6 +734,7 @@ impl RustSimState {
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
+            call_stack: self.call_stack.clone(),
         }
     }
 
@@ -696,6 +760,7 @@ impl RustSimState {
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
+            call_stack: self.call_stack.clone(),
         }
     }
 
@@ -729,6 +794,7 @@ impl RustSimState {
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
+            call_stack: self.call_stack.clone(),
         }
     }
 
@@ -1166,6 +1232,8 @@ pub struct ExplorationStateSnapshot {
     /// Named register values: (name, concrete_value, size_bits).
     /// Pre-computed at export time so Python doesn't need offset tables.
     named_registers: Vec<(String, u128, u32)>,
+    /// Call stack entries: (call_site_addr, callee_addr, return_addr, stack_ptr).
+    call_stack: Vec<(u64, u64, u64, u64)>,
 }
 
 #[pymethods]
@@ -1189,6 +1257,16 @@ impl ExplorationStateSnapshot {
     /// Get history (basic block addresses visited).
     pub fn get_history(&self) -> Vec<u64> {
         self.history.clone()
+    }
+
+    /// Get call stack as list of (call_site_addr, callee_addr, return_addr, stack_ptr) tuples.
+    pub fn get_call_stack(&self) -> Vec<(u64, u64, u64, u64)> {
+        self.call_stack.clone()
+    }
+
+    /// Get call stack depth.
+    pub fn get_call_stack_depth(&self) -> usize {
+        self.call_stack.len()
     }
 
     /// Get the number of memory pages.
@@ -1283,6 +1361,11 @@ impl RustSimState {
         // Get constraint count
         let constraint_count = self.solver.borrow().num_constraints();
 
+        // Export call stack
+        let call_stack: Vec<(u64, u64, u64, u64)> = self.call_stack.iter()
+            .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
+            .collect();
+
         ExplorationStateSnapshot {
             state_id: self.state_id,
             parent_id: self.parent_id,
@@ -1293,6 +1376,7 @@ impl RustSimState {
             constraint_count,
             history: self.history.clone(),
             named_registers,
+            call_stack,
         }
     }
 
