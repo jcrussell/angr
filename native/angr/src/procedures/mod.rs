@@ -34,6 +34,7 @@ pub mod strchr;
 pub mod strtol;
 pub mod strcat;
 pub mod fgets;
+pub mod sprintf;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -212,6 +213,9 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fgets::NativeFgetc));
         registry.register(Arc::new(fgets::NativeGetchar));
         registry.register(Arc::new(fgets::NativeGetc));
+        // String formatting (sprintf, snprintf)
+        registry.register(Arc::new(sprintf::NativeSprintf));
+        registry.register(Arc::new(sprintf::NativeSnprintf));
         // I/O procedures: NOT registered by default — they only handle
         // stdin/stdout natively, and the interaction with Python's posix
         // plugin for fd tracking requires careful coordination.
