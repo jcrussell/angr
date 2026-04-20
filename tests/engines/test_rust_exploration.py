@@ -1106,5 +1106,53 @@ class TestMultiArchSupport:
             RustSimState("pdp11")
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust extension not available")
+class TestErroredStash:
+    """Tests for the errored stash and RustErrorRecord."""
+
+    def test_errored_returns_error_records(self, fauxware_project):
+        """errored property returns RustErrorRecord objects with error details."""
+        from angr.exploration import RustExplorationManager, RustErrorRecord
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Explore with a valid find address
+        ACCEPTED = 0x4006ed
+        mgr.explore(find=ACCEPTED, max_steps=50000)
+
+        # errored should be a list (possibly empty for successful exploration)
+        errored = mgr.errored
+        assert isinstance(errored, list)
+
+        # If there are errored states, they should be RustErrorRecord instances
+        for record in errored:
+            assert isinstance(record, RustErrorRecord)
+            assert hasattr(record, 'state')
+            assert hasattr(record, 'error')
+            assert hasattr(record, 'addr')
+            assert isinstance(record.error, Exception)
+            assert repr(record).startswith('<State errored')
+
+    def test_error_record_has_state(self):
+        """RustErrorRecord wraps a state with error info."""
+        from angr.exploration import RustErrorRecord
+
+        record = RustErrorRecord(None, "test error", 0x401000)
+        assert str(record.error) == "test error"
+        assert record.addr == 0x401000
+        assert record.state is None
+        assert "test error" in repr(record)
+        assert "0x401000" in repr(record)
+
+    def test_error_record_reraise(self):
+        """RustErrorRecord.reraise() re-raises the stored error."""
+        from angr.exploration import RustErrorRecord
+
+        record = RustErrorRecord(None, "test error", 0x401000)
+        with pytest.raises(RuntimeError, match="test error"):
+            record.reraise()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

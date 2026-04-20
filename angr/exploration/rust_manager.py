@@ -78,6 +78,27 @@ from angr.exploration.rust_state_sync import RustStateSyncMixin
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 
 
+class RustErrorRecord:
+    """Container for an errored state, matching angr's ErrorRecord interface.
+
+    Attributes:
+        state:  The SimState at the point of error.
+        error:  An Exception describing what went wrong.
+        addr:   The instruction address where the error occurred.
+    """
+
+    def __init__(self, state, message: str, addr: int = 0):
+        self.state = state
+        self.error = RuntimeError(message)
+        self.addr = addr
+
+    def reraise(self):
+        raise self.error
+
+    def __repr__(self):
+        return f'<State errored at {hex(self.addr)} with "{self.error}">'
+
+
 class RustExplorationManager(
     RustCallbackDispatchMixin,
     RustStateSyncMixin,
@@ -2290,8 +2311,31 @@ class RustExplorationManager(
 
     @property
     def errored(self) -> list:
-        """Get states in the errored stash as angr SimStates."""
-        return self._get_stash_states('errored')
+        """Get states in the errored stash as RustErrorRecord objects.
+
+        Each RustErrorRecord has .state, .error, and .addr attributes,
+        matching the interface of angr's ErrorRecord class.
+        """
+        states = self._get_stash_states('errored')
+        if not states:
+            return states
+
+        # Build error lookup: state_id -> (addr, message)
+        error_lookup = {}
+        try:
+            for addr, message, state_id in self._rust_mgr.get_errors():
+                error_lookup[state_id] = (addr, message)
+        except Exception:
+            pass
+
+        # Map states to error records using state_ids from the stash
+        state_ids = self._rust_mgr.get_state_ids('errored')
+        records = []
+        for i, state in enumerate(states):
+            state_id = state_ids[i] if i < len(state_ids) else None
+            addr, message = error_lookup.get(state_id, (0, "unknown error"))
+            records.append(RustErrorRecord(state, message, addr))
+        return records
 
     @property
     def unconstrained(self) -> list:
