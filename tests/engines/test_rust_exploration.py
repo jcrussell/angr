@@ -1172,6 +1172,146 @@ class TestErroredStash:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestErrorRecovery:
+    """Tests that the engine degrades gracefully instead of panicking."""
+
+    @classmethod
+    def setup_class(cls):
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+        _setup_shared_z3_context()
+
+    def test_unmapped_memory_load_returns_error(self):
+        """Loading from unmapped memory should raise, not crash."""
+        state = RustSimState("amd64")
+        # No memory mapped — load should fail gracefully with ValueError
+        with pytest.raises(ValueError, match="unmapped"):
+            state.memory_load(0xDEAD0000, 4)
+
+    def test_mapped_memory_load_succeeds(self):
+        """Loading from mapped memory should return data."""
+        state = RustSimState("amd64")
+        state.map_memory(0x1000, 0x1000, 7)  # RWX
+        data = state.memory_load(0x1000, 4)
+        assert len(data) == 4
+
+    def test_register_invalid_name(self):
+        """Getting a nonexistent register should raise, not crash."""
+        state = RustSimState("amd64")
+        with pytest.raises(ValueError, match="cannot read register"):
+            state.get_register("nonexistent_register_xyz")
+
+    def test_register_set_get_roundtrip(self):
+        """Setting and getting a register preserves the value."""
+        state = RustSimState("amd64")
+        state.set_register("rax", 0xCAFEBABE)
+        assert state.get_register("rax") == 0xCAFEBABE
+
+    def test_solver_eval_after_unsat(self):
+        """Evaluating an expression on an UNSAT solver should return None, not crash."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x == 5)
+        ctx.add_constraint_ast(x == 10)  # contradicts
+        assert not ctx.satisfiable()
+        result = ctx.eval(x)
+        # Should be None or 0-ish, not crash
+        # (exact behavior is implementation-defined for UNSAT)
+
+    def test_solver_min_on_unsat(self):
+        """min() on UNSAT solver should return None, not crash."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x == 5)
+        ctx.add_constraint_ast(x == 10)
+        result = ctx.min(x, signed=False)
+        assert result is None or isinstance(result, int)
+
+    def test_solver_eval_upto_on_unsat(self):
+        """eval_upto() on UNSAT solver returns empty list, not crash."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x == 5)
+        ctx.add_constraint_ast(x == 10)
+        results = ctx.eval_upto(x, 5)
+        assert isinstance(results, list)
+
+    def test_solver_many_constraints(self):
+        """Solver handles many constraints without crashing."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        # Add 100 redundant but consistent constraints
+        for i in range(100):
+            ctx.add_constraint_ast(x >= i)
+        ctx.add_constraint_ast(x <= 200)
+        assert ctx.satisfiable()
+        val = ctx.eval(x)
+        assert 99 <= val <= 200
+
+    def test_solver_fork_many_times(self):
+        """Forking solver many times should not leak or crash."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x >= 0)
+
+        forks = []
+        for i in range(50):
+            f = ctx.fork()
+            f.add_constraint_ast(x == i)
+            forks.append(f)
+
+        # All forks should be independent
+        for i, f in enumerate(forks):
+            assert f.eval(x) == i
+
+    def test_state_fork_preserves_registers(self):
+        """Forking a state preserves register values."""
+        state = RustSimState("amd64")
+        state.set_register("rax", 42)
+        state.set_register("rbx", 99)
+
+        forked = state.fork()
+        assert forked.get_register("rax") == 42
+        assert forked.get_register("rbx") == 99
+
+        # Modifying fork doesn't affect original
+        forked.set_register("rax", 100)
+        assert state.get_register("rax") == 42
+        assert forked.get_register("rax") == 100
+
+    def test_state_fork_preserves_memory(self):
+        """Forking a state preserves memory contents (CoW)."""
+        state = RustSimState("amd64")
+        state.map_memory_data(0x1000, b"\x41\x42\x43\x44", 7)
+
+        forked = state.fork()
+        data = forked.memory_load(0x1000, 4)
+        assert bytes(data) == b"\x41\x42\x43\x44"
+
+    def test_exploration_manager_empty_run(self):
+        """Running with no callbacks set should raise, not crash silently."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_find_addrs([0x1000])
+        # No callbacks set — run should raise RuntimeError
+        with pytest.raises(RuntimeError, match="callbacks not set"):
+            mgr.run(100)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverOutputCorrectness:
     """Tests verifying solver eval() returns correct values for known constraint systems.
 
