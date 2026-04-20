@@ -56,10 +56,14 @@ impl NativeSimProcedure for NativeFree {
 
     fn call(
         &self,
-        _state: &mut RustSimState,
-        _args: &[RustBV],
+        state: &mut RustSimState,
+        args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // SimHeapBrk's free is a no-op (returns unconstrained, but we skip that)
+        let ptr = args[0].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("ptr".to_string())
+        })?;
+        // Track the free (bump allocator doesn't reclaim memory)
+        state.heap_free(ptr);
         Ok(None)
     }
 }
@@ -162,15 +166,19 @@ impl NativeSimProcedure for NativeRealloc {
             )));
         }
 
+        // Get old allocation size before freeing (for copy length)
+        let old_size = state.heap_metadata().alloc_size(ptr);
         let new_addr = state.heap_alloc(size);
 
         // Copy old data if ptr != NULL
         if ptr != 0 && size > 0 {
-            // Copy min(size, old_size) bytes — we don't track old_size,
-            // so copy `size` bytes (may read garbage, which is fine for symbolic execution)
+            // Free the old allocation (metadata only, bump allocator doesn't reclaim)
+            state.heap_free(ptr);
+            // Copy min(size, old_size) bytes
+            let copy_len = old_size.map_or(size, |os| size.min(os));
             let mut offset = 0u64;
-            while offset < size {
-                let chunk = std::cmp::min(size - offset, 8);
+            while offset < copy_len {
+                let chunk = std::cmp::min(copy_len - offset, 8);
                 match state.memory_load(ptr.wrapping_add(offset), chunk as u32) {
                     Ok(val) => {
                         let _ = state.memory_store(new_addr.wrapping_add(offset), val);
@@ -197,6 +205,10 @@ mod tests {
         let result = NativeMalloc.call(&mut state, &[RustBV::concrete(100, 64)]).unwrap();
         let addr = result.unwrap().as_u64().unwrap();
         assert!(addr > 0);
+        // Verify heap metadata tracking
+        assert_eq!(state.heap_metadata().alloc_count(), 1);
+        assert!(state.heap_metadata().is_allocated(addr));
+        assert_eq!(state.heap_metadata().alloc_size(addr), Some(100));
     }
 
     #[test]
@@ -208,6 +220,8 @@ mod tests {
         let a2 = r2.unwrap().as_u64().unwrap();
         // Second allocation should be >= first + aligned size
         assert!(a2 >= a1 + 32);
+        // Both should be tracked
+        assert_eq!(state.heap_metadata().alloc_count(), 2);
     }
 
     #[test]
@@ -221,10 +235,28 @@ mod tests {
     }
 
     #[test]
-    fn test_free_noop() {
+    fn test_free_tracks_metadata() {
         let mut state = RustSimState::new("amd64").unwrap();
-        let result = NativeFree.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        // Allocate then free
+        let r = NativeMalloc.call(&mut state, &[RustBV::concrete(64, 64)]).unwrap();
+        let addr = r.unwrap().as_u64().unwrap();
+        assert_eq!(state.heap_metadata().alloc_count(), 1);
+
+        let result = NativeFree.call(&mut state, &[RustBV::concrete(addr as u128, 64)]).unwrap();
         assert!(result.is_none());
+        // After free: removed from allocated, added to freed
+        assert_eq!(state.heap_metadata().alloc_count(), 0);
+        assert_eq!(state.heap_metadata().free_count(), 1);
+        assert!(!state.heap_metadata().is_allocated(addr));
+    }
+
+    #[test]
+    fn test_free_null_no_crash() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeFree.call(&mut state, &[RustBV::concrete(0, 64)]).unwrap();
+        assert!(result.is_none());
+        // free(NULL) should not add to freed list
+        assert_eq!(state.heap_metadata().free_count(), 0);
     }
 
     #[test]
@@ -273,6 +305,40 @@ mod tests {
         ).unwrap();
         let addr = result.unwrap().as_u64().unwrap();
         assert!(addr > 0);
+    }
+
+    #[test]
+    fn test_realloc_tracks_metadata() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+
+        // Allocate initial block
+        let r1 = NativeMalloc.call(&mut state, &[RustBV::concrete(16, 64)]).unwrap();
+        let old_addr = r1.unwrap().as_u64().unwrap();
+        assert_eq!(state.heap_metadata().alloc_count(), 1);
+
+        // Realloc to larger size
+        let r2 = NativeRealloc.call(
+            &mut state,
+            &[RustBV::concrete(old_addr as u128, 64), RustBV::concrete(32, 64)],
+        ).unwrap();
+        let new_addr = r2.unwrap().as_u64().unwrap();
+
+        // Old allocation should be freed, new one tracked
+        assert!(!state.heap_metadata().is_allocated(old_addr));
+        assert!(state.heap_metadata().is_allocated(new_addr));
+        assert_eq!(state.heap_metadata().alloc_size(new_addr), Some(32));
+        assert_eq!(state.heap_metadata().free_count(), 1);
+    }
+
+    #[test]
+    fn test_heap_metadata_cloned_on_fork() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        NativeMalloc.call(&mut state, &[RustBV::concrete(100, 64)]).unwrap();
+        assert_eq!(state.heap_metadata().alloc_count(), 1);
+
+        let forked = state.fork();
+        assert_eq!(forked.heap_metadata().alloc_count(), 1);
     }
 
     #[test]

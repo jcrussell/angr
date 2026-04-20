@@ -2159,6 +2159,34 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Get heap metadata for a state by ID.
+    ///
+    /// Returns dict with:
+    /// - allocated: list of (addr, size) tuples for active allocations
+    /// - freed: list of freed addresses
+    /// - alloc_count: number of active allocations
+    /// - free_count: number of free calls
+    pub fn get_state_heap_metadata(&self, state_id: u64) -> PyResult<(Vec<(u64, u64)>, Vec<u64>)> {
+        let find_metadata = |state: &crate::state::RustSimState| {
+            let meta = state.heap_metadata();
+            let allocated: Vec<(u64, u64)> = meta.allocated.iter()
+                .map(|(&addr, &size)| (addr, size))
+                .collect();
+            let freed = meta.freed.clone();
+            (allocated, freed)
+        };
+
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(find_metadata(state));
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(find_metadata(&cb.state));
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Evaluate a stdin symbol by name using the state's solver.
     ///
     /// Returns the concrete value as Option<u64>, or None if the symbol

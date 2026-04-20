@@ -36,6 +36,54 @@ pub struct CallStackEntry {
     pub stack_ptr: u64,
 }
 
+/// Heap metadata tracking for malloc/free/calloc/realloc.
+///
+/// Tracks allocated regions and freed addresses for heap exploitation
+/// analysis. Cloned on fork so each exploration path has its own heap state.
+#[derive(Clone, Debug, Default)]
+pub struct HeapMetadata {
+    /// Currently allocated regions: address -> size in bytes.
+    pub allocated: HashMap<u64, u64>,
+    /// Freed addresses (in order of free calls).
+    pub freed: Vec<u64>,
+}
+
+impl HeapMetadata {
+    /// Record a new allocation.
+    pub fn record_alloc(&mut self, addr: u64, size: u64) {
+        self.allocated.insert(addr, size);
+    }
+
+    /// Record a free. Returns the size of the freed region, or None if not tracked.
+    pub fn record_free(&mut self, addr: u64) -> Option<u64> {
+        let size = self.allocated.remove(&addr);
+        if addr != 0 {
+            self.freed.push(addr);
+        }
+        size
+    }
+
+    /// Check if an address was allocated.
+    pub fn is_allocated(&self, addr: u64) -> bool {
+        self.allocated.contains_key(&addr)
+    }
+
+    /// Get the size of an allocation.
+    pub fn alloc_size(&self, addr: u64) -> Option<u64> {
+        self.allocated.get(&addr).copied()
+    }
+
+    /// Get the number of active allocations.
+    pub fn alloc_count(&self) -> usize {
+        self.allocated.len()
+    }
+
+    /// Get the number of free calls.
+    pub fn free_count(&self) -> usize {
+        self.freed.len()
+    }
+}
+
 /// Entry in the execution history trace.
 ///
 /// Records block-level execution events with jumpkind and jump target.
@@ -202,6 +250,9 @@ pub struct RustSimState {
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Cloned on fork so each path has its own call stack.
     call_stack: Vec<CallStackEntry>,
+    /// Heap metadata tracking: allocated regions and freed addresses.
+    /// Cloned on fork so each path has its own heap state.
+    heap_metadata: HeapMetadata,
 }
 
 impl RustSimState {
@@ -249,6 +300,7 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
+            heap_metadata: HeapMetadata::default(),
         })
     }
 
@@ -281,6 +333,7 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
+            heap_metadata: HeapMetadata::default(),
         }
     }
 
@@ -323,6 +376,7 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
+            heap_metadata: HeapMetadata::default(),
         })
     }
 
@@ -417,7 +471,18 @@ impl RustSimState {
         let aligned = (size + 15) & !15; // round up to 16
         let addr = self.heap_brk;
         self.heap_brk = addr.wrapping_add(aligned);
+        self.heap_metadata.record_alloc(addr, size);
         addr
+    }
+
+    /// Record a heap free. Returns the original allocation size if tracked.
+    pub fn heap_free(&mut self, addr: u64) -> Option<u64> {
+        self.heap_metadata.record_free(addr)
+    }
+
+    /// Get heap metadata (for analysis/export).
+    pub fn heap_metadata(&self) -> &HeapMetadata {
+        &self.heap_metadata
     }
 
     /// Get the history (basic block addresses visited).
@@ -781,6 +846,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
+            heap_metadata: self.heap_metadata.clone(),
         }
     }
 
@@ -808,6 +874,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
+            heap_metadata: self.heap_metadata.clone(),
         }
     }
 
@@ -835,6 +902,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
+            heap_metadata: self.heap_metadata.clone(),
         }
     }
 
@@ -870,6 +938,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
+            heap_metadata: self.heap_metadata.clone(),
         }
     }
 
@@ -1311,6 +1380,10 @@ pub struct ExplorationStateSnapshot {
     call_stack: Vec<(u64, u64, u64, u64)>,
     /// Detailed execution history: (addr, jumpkind, jump_target).
     detailed_history: Vec<(u64, u8, u64)>,
+    /// Heap allocations: (addr, size) for active allocations.
+    heap_allocated: Vec<(u64, u64)>,
+    /// Heap freed addresses.
+    heap_freed: Vec<u64>,
 }
 
 #[pymethods]
@@ -1399,6 +1472,26 @@ impl ExplorationStateSnapshot {
         None
     }
 
+    /// Get heap allocations as list of (addr, size) tuples.
+    pub fn get_heap_allocated(&self) -> Vec<(u64, u64)> {
+        self.heap_allocated.clone()
+    }
+
+    /// Get heap freed addresses.
+    pub fn get_heap_freed(&self) -> Vec<u64> {
+        self.heap_freed.clone()
+    }
+
+    /// Get number of active heap allocations.
+    pub fn get_heap_alloc_count(&self) -> usize {
+        self.heap_allocated.len()
+    }
+
+    /// Get number of heap free calls.
+    pub fn get_heap_free_count(&self) -> usize {
+        self.heap_freed.len()
+    }
+
     /// Get symbolic byte offsets for a page.
     /// Returns empty vec if page not found.
     pub fn get_symbolic_offsets(&self, page_addr: u64) -> Vec<u16> {
@@ -1478,6 +1571,10 @@ impl RustSimState {
             named_registers,
             call_stack,
             detailed_history,
+            heap_allocated: self.heap_metadata.allocated.iter()
+                .map(|(&addr, &size)| (addr, size))
+                .collect(),
+            heap_freed: self.heap_metadata.freed.clone(),
         }
     }
 
