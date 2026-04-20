@@ -191,6 +191,10 @@ impl VEXOps {
             IROp::DivModU64to32 => Self::divmod_64_to_32(left, right, false, ctx),
             IROp::DivModS64to32 => Self::divmod_64_to_32(left, right, true, ctx),
 
+            // DivMod: 128-bit / 64-bit -> 128-bit (low=quotient, high=remainder)
+            IROp::DivModU128to64 => Self::divmod_128_to_64(left, right, false, ctx),
+            IROp::DivModS128to64 => Self::divmod_128_to_64(left, right, true, ctx),
+
             // Bitwise
             IROp::And(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
@@ -518,6 +522,49 @@ impl VEXOps {
         // For symbolic values, we'd need to implement symbolic division
         // For now, fall back to concrete evaluation if possible
         Err(OpError::UnsupportedVectorOp("symbolic DivMod".to_string()))
+    }
+
+    /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit result.
+    /// Low 64 bits = quotient, High 64 bits = remainder.
+    fn divmod_128_to_64(
+        dividend: RustBV,
+        divisor: RustBV,
+        signed: bool,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        debug_assert_eq!(dividend.width(), 128);
+        debug_assert_eq!(divisor.width(), 64);
+
+        // For concrete values, compute directly
+        if let (Some(dvd), Some(dvs)) = (dividend.as_u128(), divisor.as_u128()) {
+            let dvs = dvs as u64;
+
+            if dvs == 0 {
+                // Division by zero - return 0 (caller should have checked)
+                return Ok(RustBV::concrete(0, 128));
+            }
+
+            let (quotient, remainder) = if signed {
+                // Signed division: treat as i128 / i64
+                let dvd_signed = dvd as i128;
+                let dvs_signed = dvs as i64 as i128;
+                let q = (dvd_signed / dvs_signed) as u64;
+                let r = (dvd_signed % dvs_signed) as u64;
+                (q, r)
+            } else {
+                // Unsigned division: u128 / u64
+                let q = (dvd / dvs as u128) as u64;
+                let r = (dvd % dvs as u128) as u64;
+                (q, r)
+            };
+
+            // Pack: low 64 bits = quotient, high 64 bits = remainder
+            let result = (quotient as u128) | ((remainder as u128) << 64);
+            return Ok(RustBV::concrete(result, 128));
+        }
+
+        // Symbolic division not yet supported
+        Err(OpError::UnsupportedVectorOp("symbolic DivMod128to64".to_string()))
     }
 
     /// Vector element-wise binary operation.

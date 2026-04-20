@@ -42,7 +42,7 @@ EXAMPLE_CATALOG = {
     "asisctffinals2015_license":{"tier": "medium", "rust_ok": False, "notes": "Rust list index error"},
     "0ctf_momo_3":             {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
     "csgames2018":             {"tier": "fast",    "rust_ok": True,  "notes": "Callable predicates, stdout check"},
-    "unmapped_analysis":       {"tier": "fast",    "rust_ok": False, "notes": "Rust state error"},
+    "unmapped_analysis":       {"tier": "fast",    "rust_ok": True,  "notes": "STRICT_PAGE_ACCESS, DivModU128to64 fix"},
     "hitcon2017_sakura":       {"tier": "very_slow","rust_ok": True,  "notes": "Multi-stage explore, disk cache fix"},
     "strcpy_find":             {"tier": "fast",    "rust_ok": True,  "notes": "Buffer overflow / strcpy detection, Py 0.8s Rust 4.0s"},
     "flareon2015_2":           {"tier": "fast",    "rust_ok": True,  "notes": "32-bit x86, correct output"},

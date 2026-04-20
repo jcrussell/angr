@@ -519,6 +519,10 @@ pub enum IROp {
     DivModU64to32, // Unsigned
     DivModS64to32, // Signed
 
+    /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit (low=quotient, high=remainder)
+    DivModU128to64, // Unsigned
+    DivModS128to64, // Signed
+
     // =========================================================================
     // Bitwise (parameterized by width)
     // =========================================================================
@@ -722,6 +726,9 @@ impl IROp {
 
             // DivMod: 64-bit / 32-bit -> 64-bit
             IROp::DivModU64to32 | IROp::DivModS64to32 => Some(IRType::I64),
+
+            // DivMod: 128-bit / 64-bit -> 128-bit
+            IROp::DivModU128to64 | IROp::DivModS128to64 => Some(IRType::I128),
 
             // Bitwise ops return same type
             IROp::And(t)

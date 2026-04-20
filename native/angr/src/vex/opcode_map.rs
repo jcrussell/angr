@@ -85,6 +85,8 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
         // DivMod - combined division and modulo
         "Iop_DivModU64to32" => Some(IROp::DivModU64to32),
         "Iop_DivModS64to32" => Some(IROp::DivModS64to32),
+        "Iop_DivModU128to64" => Some(IROp::DivModU128to64),
+        "Iop_DivModS128to64" => Some(IROp::DivModS128to64),
 
         // Neg
         "Iop_Neg8" => Some(IROp::Neg(IRType::I8)),
@@ -982,6 +984,9 @@ pub fn parse_opcode_from_u32(code: u32) -> Option<IROp> {
         0x1465 => Some(IROp::DivU(IRType::I64)),
         0x1466 => Some(IROp::DivS(IRType::I64)),
 
+        // DivModU128to64, DivModS128to64: 0x146A-0x146B
+        0x146A => Some(IROp::DivModU128to64),
+        0x146B => Some(IROp::DivModS128to64),
         // DivModU64to32, DivModS64to32: 0x146C-0x146D
         0x146C => Some(IROp::DivModU64to32),
         0x146D => Some(IROp::DivModS64to32),
