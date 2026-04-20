@@ -290,7 +290,7 @@ impl Arch for AMD64 {
             offsets::IDFLAG => Some("idflag"),
             offsets::FS_CONST => Some("fs_const"),
             offsets::GS_CONST => Some("gs_const"),
-            offsets::SSEROUND => Some("sseround"),
+            // offsets::SSEROUND => Some("sseround"),  // same value as GS_CONST (216), unreachable
             offsets::XMM0 => Some("xmm0"),
             offsets::XMM1 => Some("xmm1"),
             offsets::XMM2 => Some("xmm2"),

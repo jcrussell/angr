@@ -333,7 +333,7 @@
                                 let condition = pending.stored_conditions.get(&fork.condition_id);
                                 let reconstructed = if condition.is_none() {
                                     if let Some(ref py_ast) = fork.condition_ast {
-                                        Python::with_gil(|py| {
+                                        Python::attach(|py| {
                                             let ast = py_ast.bind(py);
                                             let solver_ref = fork_base.solver();
                                             let ctx: &SymContext = &*solver_ref.borrow();

@@ -391,6 +391,7 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a ternary operation (for ITE, etc.).
+    #[allow(unused_variables)]
     pub fn ternop(
         op: IROp,
         arg1: RustBV,
@@ -480,7 +481,7 @@ impl VEXOps {
         dividend: RustBV,
         divisor: RustBV,
         signed: bool,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(dividend.width(), 64);
         debug_assert_eq!(divisor.width(), 32);
@@ -540,7 +541,7 @@ impl VEXOps {
 
             for i in 0..count {
                 let lo = (i as u32) * elem_width;
-                let hi = lo + elem_width - 1;
+                let _hi = lo + elem_width - 1;
                 let mask = (1u128 << elem_width) - 1;
 
                 let l_elem = (l >> lo) & mask;
@@ -1101,7 +1102,7 @@ impl VEXOps {
     fn float_sqrt(
         arg: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         // For concrete values, compute directly
         if let Some(v) = arg.as_u128() {
@@ -1128,7 +1129,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
@@ -1153,7 +1154,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
@@ -1178,7 +1179,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
@@ -1203,7 +1204,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
@@ -1232,7 +1233,7 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         op: &str,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
@@ -1286,7 +1287,7 @@ impl VEXOps {
     fn vec_float_scalar_sqrt(
         arg: RustBV,
         elem: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(arg.width(), 128);
 
@@ -1318,7 +1319,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         elem: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
@@ -1351,7 +1352,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         elem: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
@@ -1423,7 +1424,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
@@ -1448,7 +1449,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
@@ -1473,7 +1474,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match ty {
@@ -1586,6 +1587,7 @@ impl VEXOps {
         Self::float_to_int_rte(arg, |v| Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as u64 as u128, 64)
     }
 
+    #[allow(dead_code)]
     fn round_f32_to_int(
         arg: RustBV,
         _ctx: &SymContext,
@@ -1599,6 +1601,7 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
+    #[allow(dead_code)]
     fn round_f64_to_int(
         arg: RustBV,
         _ctx: &SymContext,

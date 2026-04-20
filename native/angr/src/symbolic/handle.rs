@@ -10,7 +10,6 @@
 //! - Direct Rust-Z3 path without round-trips
 
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 
 /// Opaque handle to a RustBV value stored in the symbol table.
 ///

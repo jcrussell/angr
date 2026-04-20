@@ -120,6 +120,7 @@ impl DirtyHelperDispatch {
 
 /// Simulated CPUID values for a modern x86-64 CPU.
 /// These are safe defaults that indicate support for common features.
+#[allow(dead_code)]
 struct CpuidValues {
     eax: u32,
     ebx: u32,

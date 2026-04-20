@@ -224,7 +224,7 @@ impl<'a> VEXInterpreter<'a> {
                     return Ok(self.handle_exit(target, jumpkind));
                 }
                 StmtResult::SymbolicBranch {
-                    condition,
+                    condition: _condition,
                     true_target,
                     false_target,
                 } => {
@@ -250,7 +250,7 @@ impl<'a> VEXInterpreter<'a> {
         match stmt {
             IRStmt::NoOp => Ok(StmtResult::Continue),
 
-            IRStmt::IMark { addr, len, .. } => {
+            IRStmt::IMark { addr, len: _len, .. } => {
                 self.current_insn_addr = *addr;
                 // Check for hooks at this address
                 if self.is_hooked(*addr) {
@@ -319,7 +319,7 @@ impl<'a> VEXInterpreter<'a> {
                 guard,
                 dst,
                 jk,
-                offsIP,
+                offsIP: _offs_ip,
             } => {
                 let guard_val = self.eval_expr(guard, &irsb.tyenv)?;
 
@@ -447,7 +447,7 @@ impl<'a> VEXInterpreter<'a> {
                 Err(ExecutionError::Unsupported("GetI (rotating registers)".to_string()))
             }
 
-            IRExpr::Triop { op, arg1, arg2, arg3 } => {
+            IRExpr::Triop { op: _op, arg1: _arg1, arg2: _arg2, arg3: _arg3 } => {
                 // Triops are mostly for rounding mode in float operations
                 Err(ExecutionError::Unsupported("triop".to_string()))
             }

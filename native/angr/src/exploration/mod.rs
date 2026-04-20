@@ -24,10 +24,10 @@ use crate::callbacks::{ExecutionConfig, PythonCallbacks, RunResult, DeferredFork
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter_cb::{CallbackInterpreter, ExecutionStats};
 use crate::memory::Permission;
-use crate::procedures::{NativeProcedureRegistry, ProcedureError};
+use crate::procedures::NativeProcedureRegistry;
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
-use crate::symbolic::{RustBV, RustSymbolTable, SymContext};
+use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{VexArch, IRSB};
 
 // Stash name constants — use these instead of string literals to prevent typos.
@@ -41,7 +41,7 @@ mod helpers;
 
 use self::stepping::StepError;
 
-/// Thread-local stepping state ID, accessible from callbacks without borrow conflicts.
+// Thread-local stepping state ID, accessible from callbacks without borrow conflicts.
 thread_local! {
     static STEPPING_STATE_ID: Cell<Option<u64>> = Cell::new(None);
 }
@@ -153,6 +153,7 @@ impl ExplorationEvent {
         Self::base(STASH_FOUND, found_count, active_count, steps)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn deadended(found_count: usize, active_count: usize, steps: u64) -> Self {
         Self::base(STASH_DEADENDED, found_count, active_count, steps)
     }
@@ -299,6 +300,7 @@ pub(crate) struct NativeProcStats {
     /// Per-procedure call counts.
     pub(crate) call_counts: HashMap<String, u64>,
     /// Number of constraint sync failures.
+    #[allow(dead_code)]
     pub(crate) constraint_sync_failures: u64,
 }
 
@@ -670,7 +672,7 @@ impl RustExplorationManager {
         }
 
         // Copy hooks to state
-        for &addr in &self.hooks {
+        for &_addr in &self.hooks {
             // State hooks are checked during execution
         }
 
@@ -799,7 +801,7 @@ impl RustExplorationManager {
     /// Get the branch condition from the pending symbolic branch callback.
     ///
     /// Returns the condition as a claripy AST that Python can use for forking.
-    pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let pending = self.pending_callback.as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
 
@@ -833,7 +835,7 @@ impl RustExplorationManager {
     }
 
     /// Get register as claripy AST from pending state (handles symbolic).
-    pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+    pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         let pending = self.pending_callback.as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
         let bv = pending.state.get_register(name)
@@ -1058,7 +1060,7 @@ impl RustExplorationManager {
     ///
     /// Returns constraints that can be added to Python state.solver.
     /// This exports stored branch conditions accumulated during Rust execution.
-    pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         if let Some(ref pending) = self.pending_callback {
             let mut result = Vec::new();
 
@@ -1144,7 +1146,7 @@ impl RustExplorationManager {
             let mut ancestry = vec![pending.state.state_id()];
 
             // Walk the parent chain
-            let mut current_parent = pending.state.parent_id();
+            let current_parent = pending.state.parent_id();
             while let Some(parent_id) = current_parent {
                 ancestry.push(parent_id);
                 // We can't traverse further without access to parent state objects,
@@ -1439,7 +1441,7 @@ impl RustExplorationManager {
         &self,
         py: Python<'_>,
         state_id: u64,
-    ) -> PyResult<Vec<PyObject>> {
+    ) -> PyResult<Vec<Py<PyAny>>> {
         let claripy = py.import("claripy")?;
         if let Some(state) = self.find_state(state_id) {
             let solver_ref = state.solver();
@@ -1598,7 +1600,7 @@ impl RustExplorationManager {
     }
 
     /// Move states between stashes.
-    pub fn move_states(&mut self, from_stash: &str, to_stash: &str, filter_fn: Option<PyObject>) -> PyResult<usize> {
+    pub fn move_states(&mut self, from_stash: &str, to_stash: &str, filter_fn: Option<Py<PyAny>>) -> PyResult<usize> {
         // If no filter, move all
         if filter_fn.is_none() {
             if let Some(mut from) = self.sm.remove(from_stash) {
@@ -1624,7 +1626,7 @@ impl RustExplorationManager {
 
         // First pass: determine which states pass the filter (immutable borrow)
         let mut move_indices = Vec::new();
-        Python::with_gil(|py| -> PyResult<()> {
+        Python::attach(|py| -> PyResult<()> {
             for (i, state) in from.iter().enumerate() {
                 let result = filter_fn.call1(py, (state.state_id(),))?;
                 if result.extract::<bool>(py).unwrap_or(false) {
@@ -2400,7 +2402,7 @@ impl RustExplorationManager {
                                 let condition = pending.stored_conditions.get(&fork.condition_id);
                                 let reconstructed = if condition.is_none() {
                                     if let Some(ref py_ast) = fork.condition_ast {
-                                        Python::with_gil(|py| {
+                                        Python::attach(|py| {
                                             let ast = py_ast.bind(py);
                                             let solver_ref = fork_base.solver();
                                             let ctx: &SymContext = &*solver_ref.borrow();
@@ -2712,7 +2714,7 @@ impl RustExplorationManager {
             let reconstructed_condition = if condition.is_none() {
                 if let Some(ref py_ast) = fork.condition_ast {
                     // Try to convert the claripy AST to RustBV
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         let ast = py_ast.bind(py);
                         let fb = fork_base.as_ref().expect("fork_base set before deferred fork processing");
                         let solver_ref = fb.solver();
@@ -2974,12 +2976,15 @@ impl RustExplorationManager {
     #[pyo3(signature = (true_pc, false_pc, true_constraints=None, false_constraints=None))]
     pub fn resume_after_symbolic_branch(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         true_pc: u64,
         false_pc: u64,
         true_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
         false_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
+        // true_constraints and false_constraints are accepted for API compatibility but
+        // the branch condition is sourced from stored_conditions (set by interpreter).
+        let _ = (true_constraints, false_constraints);
         let pending = self.pending_callback.take()
             .ok_or_else(|| PyRuntimeError::new_err("no pending symbolic branch callback"))?;
 
@@ -3042,7 +3047,7 @@ impl RustExplorationManager {
                 // P11 fix: reconstruct from condition_ast if not in stored_conditions
                 let reconstructed_condition = if condition.is_none() {
                     if let Some(ref py_ast) = fork.condition_ast {
-                        Python::with_gil(|py| {
+                        Python::attach(|py| {
                             let ast = py_ast.bind(py);
                             let solver_ref = true_state.solver();
                             let ctx: &crate::symbolic::SymContext = &*solver_ref.borrow();
@@ -3259,7 +3264,7 @@ mod tests {
     #[test]
     fn test_exploration_manager_creation() {
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let mgr = RustExplorationManager::new("amd64", None).unwrap();
             assert_eq!(mgr.arch(), "amd64");
             assert_eq!(mgr.active_count(), 0);
@@ -3270,7 +3275,7 @@ mod tests {
     #[test]
     fn test_stash_management() {
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
 
             // Create state
@@ -3289,7 +3294,7 @@ mod tests {
     #[test]
     fn test_find_avoid_addresses() {
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
 
             mgr.set_find_addrs(vec![0x1000, 0x2000]);

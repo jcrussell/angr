@@ -12,12 +12,12 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::arch::arch_from_name;
-use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks, RunResult};
+use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks};
 use crate::claripy_bridge::claripy_to_rustbv;
 use crate::concretize::AddressConcretizer;
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
 use crate::interpreter_cb::CallbackInterpreter;
-use crate::memory::{Permission, SymbolicMemory, PAGE_SIZE};
+use crate::memory::{Permission, SymbolicMemory};
 use crate::solver::RustSolverContext;
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{deserialize_irsb, Endness, VexArch, IRSB};
@@ -1500,7 +1500,7 @@ mod tests {
     #[test]
     fn test_engine_creation() {
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let engine = RustVEXEngine::new("amd64").unwrap();
             assert_eq!(engine.arch(), "amd64");
             assert_eq!(engine.pc(), 0);
@@ -1510,7 +1510,7 @@ mod tests {
     #[test]
     fn test_register_access() {
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut engine = RustVEXEngine::new("amd64").unwrap();
 
             engine.set_register("rax", 0x12345678).unwrap();
@@ -1525,7 +1525,7 @@ mod tests {
     #[test]
     fn test_memory_access() {
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut engine = RustVEXEngine::new("amd64").unwrap();
 
             // Map memory
@@ -1542,7 +1542,7 @@ mod tests {
     fn test_x86_addss_full_flow() {
         // This tests the full execute_irsb_json flow for x86 ADDSS
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let mut engine = RustVEXEngine::new("x86").unwrap();
 
             // Set XMM0 = 1.0f, XMM1 = 2.0f

@@ -776,8 +776,6 @@ fn eval_condition(cond: u64, flags: &Flags) -> u64 {
 
 /// Evaluate condition from COPY operation (flags in cc_dep1)
 fn eval_condition_from_copy(cond: u64, cc_dep1: u64) -> u64 {
-    use cond_type::*;
-
     let cf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_C) & 1) as u8;
     let pf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_P) & 1) as u8;
     let zf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_Z) & 1) as u8;

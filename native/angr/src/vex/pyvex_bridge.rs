@@ -4,11 +4,10 @@
 //! representation into Rust's native IRSB types.
 
 use serde::Deserialize;
-use std::collections::HashMap;
 
 use super::ir::{
-    DirtyFx, Endness, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IROp, IRRegArray, IRStmt,
-    IRType, JumpKind, MBusEvent, TypeEnv, VexArch, IRSB,
+    DirtyFx, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IRRegArray, IRStmt,
+    IRType, MBusEvent, TypeEnv, VexArch, IRSB,
 };
 use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
 

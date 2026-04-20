@@ -6,7 +6,7 @@
 //! - State root tracking for fork lineage
 //! - Terminal state counters
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use crate::state::RustSimState;
 

@@ -20,7 +20,7 @@
 //! - `name_to_info`: Symbol name -> (id, width) for name-based lookup
 //!
 //! On import: Check registry before creating new symbol
-//! On export: Return original PyObject if in registry
+//! On export: Return original Py<PyAny> if in registry
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,8 +48,8 @@ pub struct SymbolicIdentityRegistry {
     py_hash_to_rust_id: RwLock<HashMap<i64, u64>>,
 
     /// Map from Rust symbol ID to original Python AST.
-    /// The PyObject is stored as a reference to preserve the original.
-    rust_id_to_py: RwLock<HashMap<u64, PyObject>>,
+    /// The Py<PyAny> is stored as a reference to preserve the original.
+    rust_id_to_py: RwLock<HashMap<u64, Py<PyAny>>>,
 
     /// Map from symbol name to info (for name-based lookup).
     /// This is used when we receive a symbol by name and need to find
@@ -106,7 +106,7 @@ impl SymbolicIdentityRegistry {
         rust_id: u64,
         name: &str,
         width: u32,
-        py_ast: PyObject,
+        py_ast: Py<PyAny>,
     ) {
         // Store mappings
         self.py_hash_to_rust_id.write().insert(py_hash, rust_id);
@@ -165,7 +165,7 @@ impl SymbolicIdentityRegistry {
     ///
     /// This is the critical method for identity preservation on export.
     /// If the symbol was imported from Python, return the original AST.
-    pub fn get_original_ast(&self, rust_id: u64) -> Option<PyObject> {
+    pub fn get_original_ast(&self, rust_id: u64) -> Option<Py<PyAny>> {
         let result = self.rust_id_to_py.read().get(&rust_id).cloned();
 
         if result.is_some() {
@@ -179,7 +179,7 @@ impl SymbolicIdentityRegistry {
     ///
     /// This is a simplified registration that doesn't require hash or name info.
     /// Used when storing claripy ASTs during conversion.
-    pub fn register_by_id(&self, rust_id: u64, py_ast: PyObject) {
+    pub fn register_by_id(&self, rust_id: u64, py_ast: Py<PyAny>) {
         self.rust_id_to_py.write().insert(rust_id, py_ast);
     }
 
@@ -342,7 +342,7 @@ mod tests {
 
         // Register a symbol
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let obj = py.None();
             registry.register(12345, 1, "x", 32, obj.into());
 
@@ -359,7 +359,7 @@ mod tests {
         let registry = SymbolicIdentityRegistry::new();
 
         pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let obj = py.None();
             registry.register(12345, 1, "x", 32, obj.into());
 

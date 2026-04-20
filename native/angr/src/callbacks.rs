@@ -39,7 +39,7 @@ pub struct DeferredFork {
     /// This is the original condition - path_taken indicates which path
     /// was explored. For the fork, we need the opposite constraint.
     #[pyo3(get)]
-    pub condition_ast: Option<PyObject>,
+    pub condition_ast: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -53,7 +53,7 @@ impl DeferredFork {
         unexplored_target: u64,
         condition_id: u64,
         push_level: u32,
-        condition_ast: Option<PyObject>,
+        condition_ast: Option<Py<PyAny>>,
     ) -> Self {
         DeferredFork {
             branch_addr,
@@ -208,7 +208,7 @@ pub struct MemoryLoadResult {
     /// Whether the value is symbolic (has an associated AST).
     pub is_symbolic: bool,
     /// The symbolic AST (if symbolic). This is a Python object reference.
-    pub symbolic_ast: Option<PyObject>,
+    pub symbolic_ast: Option<Py<PyAny>>,
     /// The RustBV representation for the engine.
     pub value: RustBV,
 }
@@ -296,45 +296,45 @@ pub enum RunResult {
 #[derive(Clone)]
 pub struct PythonCallbacks {
     /// Callback for memory loads: fn(addr: u64, size: u32) -> (bytes, is_symbolic, symbolic_ast?)
-    pub memory_load: Option<PyObject>,
+    pub memory_load: Option<Py<PyAny>>,
     /// Callback for memory stores: fn(addr: u64, data: bytes) -> None
-    pub memory_store: Option<PyObject>,
+    pub memory_store: Option<Py<PyAny>>,
     /// Callback for batched memory stores: fn(stores: list[tuple[int, bytes]]) -> None
     /// This is more efficient than individual stores when multiple stores can be batched.
-    pub memory_store_batch: Option<PyObject>,
+    pub memory_store_batch: Option<Py<PyAny>>,
     /// Callback for batched memory loads: fn(loads: list[tuple[int, int]]) -> list[tuple[bytes, bool, object | None]]
     /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
     /// This is more efficient than individual loads when multiple loads can be batched.
-    pub memory_load_batch: Option<PyObject>,
+    pub memory_load_batch: Option<Py<PyAny>>,
     /// Callback for symbolic memory loads: fn(addrs: list[int], size: int, addr_ast) -> RustBV
-    pub memory_load_symbolic: Option<PyObject>,
+    pub memory_load_symbolic: Option<Py<PyAny>>,
     /// Callback for symbolic memory stores: fn(addrs: list[int], data: bytes, addr_ast) -> None
-    pub memory_store_symbolic: Option<PyObject>,
+    pub memory_store_symbolic: Option<Py<PyAny>>,
     /// Callback for memory load with full symbolic address AST: fn(size: int) -> (bytes, is_symbolic, symbolic_ast?)
     /// This is used when the address range is too large to concretize, delegating to angr's memory model.
-    pub memory_load_ast: Option<PyObject>,
+    pub memory_load_ast: Option<Py<PyAny>>,
     /// Callback for memory store with full symbolic address AST: fn(data: bytes, size: int) -> None
     /// This is used when the address range is too large to concretize, delegating to angr's memory model.
-    pub memory_store_ast: Option<PyObject>,
+    pub memory_store_ast: Option<Py<PyAny>>,
     /// Callback for hook execution: fn(addr: u64) -> new_pc
-    pub on_hook: Option<PyObject>,
+    pub on_hook: Option<Py<PyAny>>,
     /// Callback for syscall handling: fn(num: u64) -> None
-    pub on_syscall: Option<PyObject>,
+    pub on_syscall: Option<Py<PyAny>>,
     /// Callback for lifting a block: fn(addr: u64) -> irsb_json
-    pub lift_block: Option<PyObject>,
+    pub lift_block: Option<Py<PyAny>>,
     /// Callback for getting register value: fn(offset: u32, size: u32) -> (bytes, is_symbolic, symbolic_ast?)
-    pub get_register: Option<PyObject>,
+    pub get_register: Option<Py<PyAny>>,
     /// Callback for setting register value: fn(offset: u32, data: bytes) -> None
-    pub put_register: Option<PyObject>,
+    pub put_register: Option<Py<PyAny>>,
     /// Callback for dirty helper calls: fn(name: str, args: list[int], ret_ty_bits: int) -> (bytes, bool, object | None)
     /// This handles VEX dirty calls to helper functions (CPUID, RDTSC, etc.)
-    pub dirty_call: Option<PyObject>,
+    pub dirty_call: Option<Py<PyAny>>,
     /// Callback for fetching a single 4KB page: fn(page_addr: u64) -> (bytes, permissions: u8, is_mapped: bool)
     /// This is used for on-demand page loading when Rust memory encounters an unmapped page.
-    pub fetch_page: Option<PyObject>,
+    pub fetch_page: Option<Py<PyAny>>,
     /// Callback for batched page fetching: fn(page_addrs: list[u64]) -> list[(bytes, u8, bool)]
     /// Returns list of (data, permissions, is_mapped) for each requested page.
-    pub batch_fetch_pages: Option<PyObject>,
+    pub batch_fetch_pages: Option<Py<PyAny>>,
     /// Callback for syncing constraints to Python: fn(constraints: list[(str, int, int, int | None)]) -> None
     /// Each constraint is (description, width, concrete_value, handle_id) where:
     /// - description: human-readable description (e.g., "addr_concretize_0x1234")
@@ -342,28 +342,28 @@ pub struct PythonCallbacks {
     /// - concrete_value: the value the expression was constrained to
     /// - handle_id: optional handle ID to look up the original claripy AST
     /// Python should add these constraints to its claripy solver.
-    pub sync_constraints: Option<PyObject>,
+    pub sync_constraints: Option<Py<PyAny>>,
     /// Callback for storing a symbolic value with full expression tree: fn(addr: int, ast: claripy.AST) -> None
     /// This is called when storing a symbolic value to memory. The AST is reconstructed from
     /// the Rust expression tree, preserving the original symbolic expression structure.
     /// This allows symbolic values to be properly stored without data loss.
-    pub memory_store_symbolic_value: Option<PyObject>,
+    pub memory_store_symbolic_value: Option<Py<PyAny>>,
     /// Callback for storing symbolic data at a symbolic address.
     /// Called when the address cannot be concretized (too many possibilities).
     /// Takes (addr_ast: claripy.AST, data_ast: claripy.AST) -> None
     /// Python should use state.memory.store(addr_ast, data_ast).
-    pub memory_store_symbolic_full: Option<PyObject>,
+    pub memory_store_symbolic_full: Option<Py<PyAny>>,
     /// Callback for loading data at a symbolic address.
     /// Called when the address cannot be concretized (too many possibilities).
     /// Takes (addr_ast: claripy.AST, size: int) -> claripy.AST
     /// Python should use state.memory.load(addr_ast, size) and return the result.
-    pub memory_load_symbolic_full: Option<PyObject>,
+    pub memory_load_symbolic_full: Option<Py<PyAny>>,
     /// Callback for resolving unmodeled function calls.
     /// Called when execution reaches a function that isn't hooked or modeled.
     /// Takes (addr: int, name: str | None) -> (name: str, num_args: int, no_return: bool) | None
     /// If returns None, the function is truly unmodeled and state should be deadended.
     /// If returns info, Rust will register the function as a SimProcedure and retry.
-    pub resolve_function: Option<PyObject>,
+    pub resolve_function: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -402,7 +402,7 @@ impl PythonCallbacks {
     /// `fn(addr: int, size: int) -> tuple[bytes, bool, object | None]`
     ///
     /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
-    pub fn set_memory_load(&mut self, cb: PyObject) {
+    pub fn set_memory_load(&mut self, cb: Py<PyAny>) {
         self.memory_load = Some(cb);
     }
 
@@ -410,7 +410,7 @@ impl PythonCallbacks {
     ///
     /// The callback should have signature:
     /// `fn(addr: int, data: bytes) -> None`
-    pub fn set_memory_store(&mut self, cb: PyObject) {
+    pub fn set_memory_store(&mut self, cb: Py<PyAny>) {
         self.memory_store = Some(cb);
     }
 
@@ -421,7 +421,7 @@ impl PythonCallbacks {
     ///
     /// This is called with a batch of stores for efficiency. Each element is
     /// a (address, data) tuple. If not set, falls back to individual stores.
-    pub fn set_memory_store_batch(&mut self, cb: PyObject) {
+    pub fn set_memory_store_batch(&mut self, cb: Py<PyAny>) {
         self.memory_store_batch = Some(cb);
     }
 
@@ -433,7 +433,7 @@ impl PythonCallbacks {
     /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
     /// This is called with a batch of loads for efficiency, reducing FFI overhead.
     /// If not set, falls back to individual loads.
-    pub fn set_memory_load_batch(&mut self, cb: PyObject) {
+    pub fn set_memory_load_batch(&mut self, cb: Py<PyAny>) {
         self.memory_load_batch = Some(cb);
     }
 
@@ -444,7 +444,7 @@ impl PythonCallbacks {
     ///
     /// This is called when the address is symbolic and concretizes to multiple values.
     /// The callback should build an ITE chain based on the possible addresses.
-    pub fn set_memory_load_symbolic(&mut self, cb: PyObject) {
+    pub fn set_memory_load_symbolic(&mut self, cb: Py<PyAny>) {
         self.memory_load_symbolic = Some(cb);
     }
 
@@ -455,7 +455,7 @@ impl PythonCallbacks {
     ///
     /// This is called when the address is symbolic and concretizes to multiple values.
     /// The callback should perform conditional stores to each possible address.
-    pub fn set_memory_store_symbolic(&mut self, cb: PyObject) {
+    pub fn set_memory_store_symbolic(&mut self, cb: Py<PyAny>) {
         self.memory_store_symbolic = Some(cb);
     }
 
@@ -469,7 +469,7 @@ impl PythonCallbacks {
     /// the symbolic address (which angr already has in the state).
     ///
     /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
-    pub fn set_memory_load_ast(&mut self, cb: PyObject) {
+    pub fn set_memory_load_ast(&mut self, cb: Py<PyAny>) {
         self.memory_load_ast = Some(cb);
     }
 
@@ -481,7 +481,7 @@ impl PythonCallbacks {
     /// This is called when the address is symbolic and the range is too large to
     /// concretize. The callback should use angr's full memory model to handle
     /// the symbolic address (which angr already has in the state).
-    pub fn set_memory_store_ast(&mut self, cb: PyObject) {
+    pub fn set_memory_store_ast(&mut self, cb: Py<PyAny>) {
         self.memory_store_ast = Some(cb);
     }
 
@@ -491,7 +491,7 @@ impl PythonCallbacks {
     /// `fn(addr: int) -> int`
     ///
     /// Returns the new PC after hook execution.
-    pub fn set_on_hook(&mut self, cb: PyObject) {
+    pub fn set_on_hook(&mut self, cb: Py<PyAny>) {
         self.on_hook = Some(cb);
     }
 
@@ -499,7 +499,7 @@ impl PythonCallbacks {
     ///
     /// The callback should have signature:
     /// `fn(num: int) -> None`
-    pub fn set_on_syscall(&mut self, cb: PyObject) {
+    pub fn set_on_syscall(&mut self, cb: Py<PyAny>) {
         self.on_syscall = Some(cb);
     }
 
@@ -509,7 +509,7 @@ impl PythonCallbacks {
     /// `fn(addr: int) -> str`
     ///
     /// Returns the IRSB as a JSON string.
-    pub fn set_lift_block(&mut self, cb: PyObject) {
+    pub fn set_lift_block(&mut self, cb: Py<PyAny>) {
         self.lift_block = Some(cb);
     }
 
@@ -519,7 +519,7 @@ impl PythonCallbacks {
     /// `fn(offset: int, size: int) -> tuple[bytes, bool, object | None]`
     ///
     /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
-    pub fn set_get_register(&mut self, cb: PyObject) {
+    pub fn set_get_register(&mut self, cb: Py<PyAny>) {
         self.get_register = Some(cb);
     }
 
@@ -527,7 +527,7 @@ impl PythonCallbacks {
     ///
     /// The callback should have signature:
     /// `fn(offset: int, data: bytes) -> None`
-    pub fn set_put_register(&mut self, cb: PyObject) {
+    pub fn set_put_register(&mut self, cb: Py<PyAny>) {
         self.put_register = Some(cb);
     }
 
@@ -538,7 +538,7 @@ impl PythonCallbacks {
     ///
     /// This handles VEX dirty calls to helper functions like CPUID, RDTSC, etc.
     /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
-    pub fn set_dirty_call(&mut self, cb: PyObject) {
+    pub fn set_dirty_call(&mut self, cb: Py<PyAny>) {
         self.dirty_call = Some(cb);
     }
 
@@ -549,7 +549,7 @@ impl PythonCallbacks {
     ///
     /// Returns (page_data_4kb, permissions, is_mapped).
     /// If is_mapped is False, the page doesn't exist in Python memory.
-    pub fn set_fetch_page(&mut self, cb: PyObject) {
+    pub fn set_fetch_page(&mut self, cb: Py<PyAny>) {
         self.fetch_page = Some(cb);
     }
 
@@ -559,7 +559,7 @@ impl PythonCallbacks {
     /// `fn(page_addrs: list[int]) -> list[tuple[bytes, int, bool]]`
     ///
     /// Each result is (page_data_4kb, permissions, is_mapped).
-    pub fn set_batch_fetch_pages(&mut self, cb: PyObject) {
+    pub fn set_batch_fetch_pages(&mut self, cb: Py<PyAny>) {
         self.batch_fetch_pages = Some(cb);
     }
 
@@ -571,7 +571,7 @@ impl PythonCallbacks {
     /// Each tuple is (description, width, concrete_value, handle_id).
     /// Python should add these constraints to its claripy solver.
     /// The handle_id can be used to look up the original claripy AST.
-    pub fn set_sync_constraints(&mut self, cb: PyObject) {
+    pub fn set_sync_constraints(&mut self, cb: Py<PyAny>) {
         self.sync_constraints = Some(cb);
     }
 
@@ -584,19 +584,19 @@ impl PythonCallbacks {
     /// is the fully reconstructed claripy expression from the Rust engine,
     /// preserving the original symbolic structure (e.g., `x + 10 ^ 0x42`
     /// instead of a fresh symbolic variable).
-    pub fn set_memory_store_symbolic_value(&mut self, cb: PyObject) {
+    pub fn set_memory_store_symbolic_value(&mut self, cb: Py<PyAny>) {
         self.memory_store_symbolic_value = Some(cb);
     }
 
     /// Set the callback for storing symbolic data at a symbolic address.
     /// Used when the address cannot be concretized (too many possibilities).
-    pub fn set_memory_store_symbolic_full(&mut self, cb: PyObject) {
+    pub fn set_memory_store_symbolic_full(&mut self, cb: Py<PyAny>) {
         self.memory_store_symbolic_full = Some(cb);
     }
 
     /// Set the callback for loading data at a symbolic address.
     /// Used when the address cannot be concretized (too many possibilities).
-    pub fn set_memory_load_symbolic_full(&mut self, cb: PyObject) {
+    pub fn set_memory_load_symbolic_full(&mut self, cb: Py<PyAny>) {
         self.memory_load_symbolic_full = Some(cb);
     }
 
@@ -610,7 +610,7 @@ impl PythonCallbacks {
     ///
     /// This is called when execution reaches a function that isn't hooked.
     /// The callback should check project._sim_procedures and angr's procedure registry.
-    pub fn set_resolve_function(&mut self, cb: PyObject) {
+    pub fn set_resolve_function(&mut self, cb: Py<PyAny>) {
         self.resolve_function = Some(cb);
     }
 
@@ -637,13 +637,13 @@ impl PythonCallbacks {
         py: Python<'_>,
         addr: u64,
         size: u32,
-    ) -> PyResult<(Vec<u8>, bool, Option<PyObject>)> {
+    ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
         let cb = self.memory_load.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("memory_load callback not set")
         })?;
 
         let result = cb.call1(py, (addr, size))?;
-        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+        let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
 
         // Extract (bytes, is_symbolic, symbolic_ast?)
         let data_obj = tuple.get_item(0)?;
@@ -717,7 +717,7 @@ impl PythonCallbacks {
         &self,
         py: Python<'_>,
         loads: &[(u64, u32)],  // (address, size) pairs
-    ) -> PyResult<Vec<(Vec<u8>, bool, Option<PyObject>)>> {
+    ) -> PyResult<Vec<(Vec<u8>, bool, Option<Py<PyAny>>)>> {
         if loads.is_empty() {
             return Ok(Vec::new());
         }
@@ -729,11 +729,11 @@ impl PythonCallbacks {
             let result = cb.call1(py, (py_loads,))?;
 
             // Parse the result list
-            let result_list = result.downcast_bound::<pyo3::types::PyList>(py)?;
+            let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
             let mut results = Vec::with_capacity(loads.len());
 
             for item in result_list.iter() {
-                let tuple = item.downcast::<pyo3::types::PyTuple>()?;
+                let tuple = item.cast::<pyo3::types::PyTuple>()?;
 
                 // Extract (bytes, is_symbolic, symbolic_ast?)
                 let data_obj = tuple.get_item(0)?;
@@ -837,7 +837,7 @@ impl PythonCallbacks {
         if data.is_symbolic() && self.memory_store_symbolic_value.is_some() {
             let claripy_mod = py.import("claripy")?;
             let data_ast = rustbv_to_claripy(py, data, &claripy_mod)?;
-            let addr_claripy = rustbv_to_claripy(py, addr_ast, &claripy_mod)?;
+            let _addr_claripy = rustbv_to_claripy(py, addr_ast, &claripy_mod)?;
 
             // Use the symbolic value callback with claripy AST
             if let Some(cb) = &self.memory_store_symbolic_value {
@@ -883,11 +883,11 @@ impl PythonCallbacks {
         &self,
         py: Python<'_>,
         size: u32,
-    ) -> PyResult<(Vec<u8>, bool, Option<PyObject>)> {
+    ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
         // If symbolic AST callback is set, use it
         if let Some(cb) = &self.memory_load_ast {
             let result = cb.call1(py, (size,))?;
-            let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+            let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
 
             // Extract (bytes, is_symbolic, symbolic_ast?)
             let data_obj = tuple.get_item(0)?;
@@ -978,13 +978,13 @@ impl PythonCallbacks {
         py: Python<'_>,
         offset: u32,
         size: u32,
-    ) -> PyResult<(Vec<u8>, bool, Option<PyObject>)> {
+    ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
         let cb = self.get_register.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("get_register callback not set")
         })?;
 
         let result = cb.call1(py, (offset, size))?;
-        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+        let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
 
         let data: Vec<u8> = tuple.get_item(0)?.extract()?;
         let is_symbolic: bool = tuple.get_item(1)?.extract()?;
@@ -1024,7 +1024,7 @@ impl PythonCallbacks {
         name: &str,
         args: &[u64],
         ret_ty_bits: u32,
-    ) -> PyResult<(Vec<u8>, bool, Option<PyObject>)> {
+    ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
         let cb = self.dirty_call.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("dirty_call callback not set")
         })?;
@@ -1033,7 +1033,7 @@ impl PythonCallbacks {
         let args_list: Vec<u64> = args.to_vec();
 
         let result = cb.call1(py, (name, args_list, ret_ty_bits))?;
-        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+        let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
 
         // Extract (bytes, is_symbolic, symbolic_ast?)
         let data_obj = tuple.get_item(0)?;
@@ -1080,7 +1080,7 @@ impl PythonCallbacks {
         })?;
 
         let result = cb.call1(py, (page_addr,))?;
-        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+        let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
 
         let data: Vec<u8> = tuple.get_item(0)?.extract()?;
         let permissions: u8 = tuple.get_item(1)?.extract()?;
@@ -1106,11 +1106,11 @@ impl PythonCallbacks {
             let addrs_list: Vec<u64> = page_addrs.to_vec();
             let result = cb.call1(py, (addrs_list,))?;
 
-            let result_list = result.downcast_bound::<pyo3::types::PyList>(py)?;
+            let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
             let mut results = Vec::with_capacity(page_addrs.len());
 
             for item in result_list.iter() {
-                let tuple = item.downcast::<pyo3::types::PyTuple>()?;
+                let tuple = item.cast::<pyo3::types::PyTuple>()?;
                 let data: Vec<u8> = tuple.get_item(0)?.extract()?;
                 let permissions: u8 = tuple.get_item(1)?.extract()?;
                 let is_mapped: bool = tuple.get_item(2)?.extract()?;
@@ -1247,7 +1247,7 @@ impl PythonCallbacks {
         py: Python<'_>,
         addr_val: &RustBV,
         size: u32,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         use crate::claripy_bridge::rustbv_to_claripy;
 
         if let Some(cb) = &self.memory_load_symbolic_full {
@@ -1297,7 +1297,7 @@ impl PythonCallbacks {
         }
 
         // Extract tuple (name, num_args, no_return)
-        let tuple = result.downcast_bound::<pyo3::types::PyTuple>(py)?;
+        let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
         if tuple.len() != 3 {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "resolve_function must return (name, num_args, no_return) or None"

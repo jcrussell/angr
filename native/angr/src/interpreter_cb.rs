@@ -13,10 +13,10 @@ use lru::LruCache;
 use pyo3::prelude::*;
 
 use crate::arch::{arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch, RegisterFile};
-use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
-use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, is_rust_handle, python_to_rustbv, rustbv_to_claripy, try_handle_to_rustbv};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
+use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
-use crate::memory::{MemoryError, Permission, SymbolicMemory, PAGE_SIZE};
+use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{BVOp, RustBV, RustSymbolTable, SymContext};
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;
@@ -882,7 +882,7 @@ impl<'a> CallbackInterpreter<'a> {
                         Ok(bv) => {
                             return Ok(bv);
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             // Fall back to creating a fresh symbolic value
                             // (claripy conversion can fail for complex/unsupported ops)
                         }
@@ -2082,7 +2082,7 @@ impl<'a> CallbackInterpreter<'a> {
                     // The condition is stored in stored_conditions (below) as a RustBV,
                     // which is the primary lookup path in fork processing. The claripy
                     // AST was only a P11 fallback for missing stored_conditions entries.
-                    let condition_ast: Option<PyObject> = None;
+                    let condition_ast: Option<Py<PyAny>> = None;
 
                     // Take the "true" path (jump to dst), defer the "false" path
                     let cond_id = self.next_cond_id();
@@ -3514,7 +3514,7 @@ impl<'a> CallbackInterpreter<'a> {
     fn eval_expr_simple(
         &self,
         expr: &IRExpr,
-        tyenv: &TypeEnv,
+        _tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         match expr {
             IRExpr::Const(c) => Ok(self.eval_const(c)),

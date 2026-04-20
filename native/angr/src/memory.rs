@@ -351,6 +351,7 @@ pub struct SymbolicMemory {
 impl PendingWrite {
     /// Compute a page hint from an address expression by trying to extract
     /// a concrete base from add(base, symbolic) patterns.
+    #[allow(dead_code)]
     fn compute_page_hint(addr: &RustBV, size: u32) -> Option<(u64, u64)> {
         // If the address has a concrete component, we can estimate the page range
         // For addr = base + sym where sym is 8-bit (0..255), range is base..base+255
@@ -433,8 +434,8 @@ impl SymbolicMemory {
 
     /// Map a region and initialize with data.
     pub fn map_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
-        let start_page = addr >> 12;
-        let offset_in_page = addr & PAGE_MASK;
+        let _start_page = addr >> 12;
+        let _offset_in_page = addr & PAGE_MASK;
 
         let mut remaining = data;
         let mut current_addr = addr;
@@ -1117,7 +1118,7 @@ impl SymbolicMemory {
     /// This function no longer auto-maps zero pages. When addresses are in lazy
     /// regions but unmapped, they are skipped. Callers should check if the result
     /// is incomplete and fall back to Python if needed.
-    pub fn prepare_addresses_for_ite(&mut self, addrs: &[u64], size: u32) -> Vec<u64> {
+    pub fn prepare_addresses_for_ite(&mut self, addrs: &[u64], _size: u32) -> Vec<u64> {
         let mut ready_addrs = Vec::with_capacity(addrs.len());
 
         for &addr in addrs {

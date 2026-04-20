@@ -4,7 +4,7 @@
 //! arguments from registers and stack. This is used to pre-extract arguments
 //! before returning to Python for SimProcedure execution.
 
-use crate::arch::{Arch, RegisterFile};
+use crate::arch::RegisterFile;
 use crate::memory::SymbolicMemory;
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;

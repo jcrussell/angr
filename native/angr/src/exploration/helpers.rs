@@ -8,6 +8,7 @@ impl RustExplorationManager {
     }
 
     /// Remove a state from the state_index.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn unindex_state(&mut self, state_id: u64) {
         self.sm.unindex(state_id);

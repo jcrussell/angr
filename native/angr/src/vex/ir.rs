@@ -4,12 +4,11 @@
 //! The key difference from libVEX is that operations are parameterized by width
 //! rather than having separate opcodes for each width (DRY principle).
 
-use std::fmt;
-
 use crate::symbolic::BitWidth;
 
 /// A VEX IR Super Block (IRSB) - a sequence of statements ending in a jump.
 #[derive(Debug, Clone)]
+#[allow(non_snake_case)]
 pub struct IRSB {
     /// The address of this block.
     pub addr: u64,
@@ -125,6 +124,7 @@ impl VexArch {
 
 /// IR statement types.
 #[derive(Debug, Clone)]
+#[allow(non_snake_case)]
 pub enum IRStmt {
     /// No operation.
     NoOp,
@@ -760,8 +760,8 @@ impl IROp {
             IROp::FCmpEQ(_) | IROp::FCmpLT(_) | IROp::FCmpLE(_) => Some(IRType::I1),
 
             // Scalar-in-vector float ops return V128
-            IROp::VFAddS { elem } | IROp::VFSubS { elem } | IROp::VFMulS { elem } | IROp::VFDivS { elem }
-            | IROp::VFSqrtS { elem } | IROp::VFMaxS { elem } | IROp::VFMinS { elem } => {
+            IROp::VFAddS { elem: _elem } | IROp::VFSubS { elem: _elem } | IROp::VFMulS { elem: _elem } | IROp::VFDivS { elem: _elem }
+            | IROp::VFSqrtS { elem: _elem } | IROp::VFMaxS { elem: _elem } | IROp::VFMinS { elem: _elem } => {
                 Some(IRType::V128)
             }
 
@@ -835,6 +835,7 @@ impl IROp {
 
 /// Jump kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(non_camel_case_types)]
 pub enum JumpKind {
     /// Normal jump (fallthrough or unconditional).
     Boring,
@@ -926,6 +927,7 @@ pub enum IRLoadGOp {
 
 /// Register array descriptor.
 #[derive(Debug, Clone, Copy)]
+#[allow(non_snake_case)]
 pub struct IRRegArray {
     pub base: u32,
     pub elemTy: IRType,
@@ -942,6 +944,7 @@ pub struct IRCallee {
 
 /// Dirty call info.
 #[derive(Debug, Clone)]
+#[allow(non_snake_case)]
 pub struct IRDirty {
     pub cee: IRCallee,
     pub guard: Option<Box<IRExpr>>,

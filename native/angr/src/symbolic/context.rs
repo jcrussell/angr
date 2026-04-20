@@ -275,10 +275,11 @@ impl SymContext {
     /// SAFETY: The pointer must be a valid Z3_ast Bool in the same Z3 context.
     #[cfg(feature = "vex-engine-z3")]
     pub unsafe fn add_constraint_raw(&self, z3_ast_ptr: usize) {
-        use z3::ast::Ast;
         let ctx = z3::Context::thread_local();
-        let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
-        let constraint: z3::ast::Bool = z3::ast::Ast::wrap(&ctx, raw_ast);
+        let constraint: z3::ast::Bool = unsafe {
+            let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
+            z3::ast::Ast::wrap(&ctx, raw_ast)
+        };
         // Cache Z3 Bool for fast fork replay
         self.z3_assertions_local.lock().push(constraint.clone());
         self.solver().assert(&constraint);
@@ -332,7 +333,6 @@ impl SymContext {
             }
             // Falls through to add False constraint (UNSAT)
         }
-        use z3::ast::Ast;
         let ast = bv.to_z3_ast();
         let val_ast = if bv.width() <= 64 {
             z3::ast::BV::from_u64(value as u64, bv.width())
@@ -341,7 +341,7 @@ impl SymContext {
             let hi = z3::ast::BV::from_u64((value >> 64) as u64, bv.width() - 64);
             hi.concat(&lo)
         };
-        let constraint = ast._eq(&val_ast);
+        let constraint = ast.eq(&val_ast);
         self.add_constraint(constraint);
     }
 
@@ -533,7 +533,7 @@ impl SymContext {
             let mut result = vec![0u8; byte_len];
             let bytes = v.to_be_bytes();
             let offset = byte_len.saturating_sub(16);
-            for (i, &b) in bytes.iter().enumerate() {
+            for (i, &_b) in bytes.iter().enumerate() {
                 let src_idx = 16 - byte_len.min(16) + i;
                 if src_idx < 16 && offset + i < byte_len {
                     result[offset + i] = bytes[src_idx];
@@ -610,8 +610,6 @@ impl SymContext {
     /// Evaluate a bitvector and return up to n solutions.
     #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto(&self, bv: &RustBV, n: usize) -> Vec<u128> {
-        use z3::ast::Ast;
-
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
             return vec![v];
@@ -646,7 +644,7 @@ impl SymContext {
                                     );
                                     hi.concat(&lo)
                                 };
-                                solver.assert(&ast._eq(&val_ast).not());
+                                solver.assert(&ast.eq(&val_ast).not());
                             } else {
                                 break;
                             }
@@ -669,8 +667,6 @@ impl SymContext {
     /// Handles values of any width without truncation.
     #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto_wide(&self, bv: &RustBV, n: usize) -> Vec<Vec<u8>> {
-        use z3::ast::Ast;
-
         let width = bv.width();
 
         // Fast path for concrete values
@@ -706,7 +702,7 @@ impl SymContext {
                                 // Exclude this value from future solutions
                                 // Build Z3 constant from bytes for full-precision exclusion
                                 let val_ast = Self::make_bv_from_bytes(&bytes, width);
-                                solver.assert(&ast._eq(&val_ast).not());
+                                solver.assert(&ast.eq(&val_ast).not());
                                 results.push(bytes);
                             } else {
                                 break;
@@ -786,8 +782,6 @@ impl SymContext {
     /// Based on claripy's _extrema algorithm.
     #[cfg(feature = "vex-engine-z3")]
     pub fn min(&self, bv: &RustBV, signed: bool) -> Option<u128> {
-        use z3::ast::Ast;
-
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
             return Some(v);
@@ -916,8 +910,6 @@ impl SymContext {
     /// Based on claripy's _extrema algorithm.
     #[cfg(feature = "vex-engine-z3")]
     pub fn max(&self, bv: &RustBV, signed: bool) -> Option<u128> {
-        use z3::ast::Ast;
-
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
             return Some(v);
@@ -1053,8 +1045,6 @@ impl SymContext {
     /// Check if a specific value is a valid solution for a bitvector.
     #[cfg(feature = "vex-engine-z3")]
     pub fn solution(&self, bv: &RustBV, value: u128) -> bool {
-        use z3::ast::Ast;
-
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
             return v == value;
@@ -1071,7 +1061,7 @@ impl SymContext {
             hi.concat(&lo)
         };
 
-        let constraint = ast._eq(&val_ast);
+        let constraint = ast.eq(&val_ast);
 
         let solver = self.solver();
         solver.push();
@@ -1736,7 +1726,7 @@ mod tests {
         // Try to find if x2 can be 5 (should be UNSAT if same as x1)
         ctx.push();
         let five = z3::ast::BV::from_u64(5, 32);
-        let eq_five = ast2._eq(&five);
+        let eq_five = ast2.eq(&five);
         ctx.add_constraint(eq_five);
         let can_be_five = ctx.is_sat();
         ctx.pop();

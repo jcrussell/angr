@@ -27,32 +27,32 @@ use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext, global_
 /// Maximum number of AST nodes to cache.
 const AST_CACHE_SIZE: usize = 10000;
 
-/// Thread-local LRU cache for AST conversions.
-/// Key is the claripy AST's `__hash__` value (stable across GC), value is the converted RustBV.
-/// Using hash instead of object ID avoids cache corruption when Python reuses object addresses.
+// Thread-local LRU cache for AST conversions.
+// Key is the claripy AST's `__hash__` value (stable across GC), value is the converted RustBV.
+// Using hash instead of object ID avoids cache corruption when Python reuses object addresses.
 thread_local! {
     static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).expect("AST_CACHE_SIZE is a non-zero constant")));
 }
 
-/// Thread-local cache for preserving original claripy ASTs.
-/// Maps RustBV symbol ID to the original claripy AST.
-/// This is critical for correctly reconstructing expressions that reference
-/// symbolic values imported from Python - without this, BVS("x", 32) would
-/// create a new symbol each time instead of referencing the original.
+// Thread-local cache for preserving original claripy ASTs.
+// Maps RustBV symbol ID to the original claripy AST.
+// This is critical for correctly reconstructing expressions that reference
+// symbolic values imported from Python - without this, BVS("x", 32) would
+// create a new symbol each time instead of referencing the original.
 thread_local! {
-    static CLARIPY_AST_CACHE: RefCell<HashMap<u64, PyObject>> =
+    static CLARIPY_AST_CACHE: RefCell<HashMap<u64, Py<PyAny>>> =
         RefCell::new(HashMap::new());
 }
 
-/// Thread-local bidirectional expression cache.
-/// Maps RustBV expression hash to the original claripy AST.
-/// This allows Expression variants to be efficiently converted back to their
-/// original claripy representation, preserving AST identity across FFI boundary.
-/// Critical for constraint sync - without this, complex expressions would be
-/// reconstructed from scratch, potentially losing identity with the original AST.
+// Thread-local bidirectional expression cache.
+// Maps RustBV expression hash to the original claripy AST.
+// This allows Expression variants to be efficiently converted back to their
+// original claripy representation, preserving AST identity across FFI boundary.
+// Critical for constraint sync - without this, complex expressions would be
+// reconstructed from scratch, potentially losing identity with the original AST.
 thread_local! {
-    static EXPRESSION_CACHE: RefCell<LruCache<u64, PyObject>> =
+    static EXPRESSION_CACHE: RefCell<LruCache<u64, Py<PyAny>>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression cache capacity is a non-zero constant")));
 }
 
@@ -61,7 +61,7 @@ thread_local! {
 ///
 /// This stores in both the global registry (for cross-thread access)
 /// and the thread-local cache (for fast repeated access).
-pub fn store_claripy_ast(symbol_id: u64, ast: PyObject) {
+pub fn store_claripy_ast(symbol_id: u64, ast: Py<PyAny>) {
     // Store in thread-local cache
     CLARIPY_AST_CACHE.with(|cache| {
         cache.borrow_mut().insert(symbol_id, ast.clone());
@@ -81,7 +81,7 @@ pub fn store_claripy_ast_with_info(
     symbol_id: u64,
     name: &str,
     width: u32,
-    ast: PyObject,
+    ast: Py<PyAny>,
 ) {
     // Store in thread-local cache
     CLARIPY_AST_CACHE.with(|cache| {
@@ -97,7 +97,7 @@ pub fn store_claripy_ast_with_info(
 ///
 /// Checks global registry first (for cross-thread access),
 /// then falls back to thread-local cache.
-pub fn get_claripy_ast(symbol_id: u64) -> Option<PyObject> {
+pub fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
     // Check global registry first (survives across threads/callbacks)
     if let Some(ast) = global_registry().get_original_ast(symbol_id) {
         return Some(ast);
@@ -132,7 +132,7 @@ pub fn lookup_symbol_by_name_and_width(name: &str, width: u32) -> Option<crate::
 
 /// Store a claripy AST in the expression cache by expression hash.
 /// Called when converting claripy→RustBV for compound expressions.
-pub fn store_expression_ast(expr_hash: u64, ast: PyObject) {
+pub fn store_expression_ast(expr_hash: u64, ast: Py<PyAny>) {
     EXPRESSION_CACHE.with(|cache| {
         cache.borrow_mut().put(expr_hash, ast);
     });
@@ -140,7 +140,7 @@ pub fn store_expression_ast(expr_hash: u64, ast: PyObject) {
 
 /// Retrieve a claripy AST from the expression cache by expression hash.
 /// Called when converting RustBV→claripy to return the original AST.
-pub fn get_expression_ast(expr_hash: u64) -> Option<PyObject> {
+pub fn get_expression_ast(expr_hash: u64) -> Option<Py<PyAny>> {
     EXPRESSION_CACHE.with(|cache| {
         cache.borrow_mut().get(&expr_hash).cloned()
     })
@@ -280,7 +280,7 @@ pub fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
         return None;
     }
     let args = ast.getattr("args").ok()?;
-    let args_tuple = args.downcast::<PyTuple>().ok()?;
+    let args_tuple = args.cast::<PyTuple>().ok()?;
     let value: u128 = extract_int_value(args_tuple.get_item(0).ok()?).ok()?;
     let width: u32 = args_tuple.get_item(1).ok()?.extract().ok()?;
     Some((value, width))
@@ -332,7 +332,7 @@ pub fn claripy_to_rustbv(
         // Concrete bitvector value
         "BVV" => {
             let args_tuple = args
-                .downcast::<PyTuple>()
+                .cast::<PyTuple>()
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let value: u128 = extract_int_value(args_tuple.get_item(0)?)?;
             let width: u32 = args_tuple.get_item(1)?.extract()?;
@@ -342,7 +342,7 @@ pub fn claripy_to_rustbv(
         // Symbolic bitvector value
         "BVS" => {
             let args_tuple = args
-                .downcast::<PyTuple>()
+                .cast::<PyTuple>()
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let name: String = args_tuple.get_item(0)?.extract()?;
             // Width might be in args[1] or in .length attribute
@@ -715,7 +715,7 @@ pub fn claripy_to_rustbv(
         // Boolean constant
         "BoolV" => {
             let args_tuple = args
-                .downcast::<PyTuple>()
+                .cast::<PyTuple>()
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let value: bool = args_tuple.get_item(0)?.extract()?;
             // Return 1-bit BV (1 for true, 0 for false)
@@ -809,7 +809,7 @@ pub fn claripy_to_rustbv(
     result
 }
 
-/// Ensure a PyObject is a claripy AST, wrapping ints/bools if needed.
+/// Ensure a Py<PyAny> is a claripy AST, wrapping ints/bools if needed.
 ///
 /// This is a defensive function to handle cases where a Python int or bool
 /// might be returned from cache or operations instead of a proper claripy AST.
@@ -817,10 +817,10 @@ pub fn claripy_to_rustbv(
 /// "'int' object has no attribute 'length'" if passed an int.
 fn ensure_claripy_ast(
     py: Python<'_>,
-    obj: &PyObject,
+    obj: &Py<PyAny>,
     claripy_mod: &Bound<'_, PyAny>,
     width_hint: Option<u32>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let bound = obj.bind(py);
 
     // Check if it's already a claripy AST by checking for 'op' attribute
@@ -896,7 +896,7 @@ pub fn rustbv_to_claripy(
     py: Python<'_>,
     bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     use crate::symbolic::BVOp;
 
     // Check cache first for Symbolic variants
@@ -965,13 +965,13 @@ pub fn rustbv_to_claripy(
         }
         RustBV::Expression { op, operands, .. } => {
             // Recursively convert operands to claripy ASTs
-            let raw_args: Vec<PyObject> = operands
+            let raw_args: Vec<Py<PyAny>> = operands
                 .iter()
                 .map(|operand| rustbv_to_claripy(py, operand.as_ref(), claripy_mod))
                 .collect::<Result<_, _>>()?;
 
             // Validate all args to ensure they're claripy ASTs with correct widths
-            let args: Vec<PyObject> = raw_args.iter().enumerate()
+            let args: Vec<Py<PyAny>> = raw_args.iter().enumerate()
                 .map(|(i, arg)| {
                     let width = operands.get(i).map(|o| o.width());
                     ensure_claripy_ast(py, arg, claripy_mod, width)
@@ -1439,7 +1439,7 @@ pub fn extract_concrete_value(ast: &Bound<'_, PyAny>) -> Option<u128> {
     }
 
     let args = ast.getattr("args").ok()?;
-    let args_tuple = args.downcast::<PyTuple>().ok()?;
+    let args_tuple = args.cast::<PyTuple>().ok()?;
     extract_int_value(args_tuple.get_item(0).ok()?).ok()
 }
 

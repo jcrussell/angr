@@ -10,7 +10,7 @@ use std::collections::HashMap;
 #[cfg(feature = "native-lift")]
 use super::libpyvex_ffi;
 use super::ir::{
-    Endness, IRConst, IRExpr, IROp, IRStmt, IRType, IRSB, JumpKind, TypeEnv, VexArch,
+    Endness, IRConst, IRExpr, IROp, IRStmt, IRType, IRSB, JumpKind, VexArch,
 };
 
 /// Errors from VEX lifting.
@@ -112,7 +112,7 @@ impl Default for NativeVEXLifter {
 }
 
 impl VEXLifter for NativeVEXLifter {
-    fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
+    fn lift(&self, _bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
         // Check cache first
         if let Some(irsb) = self.cache.read().get(&(addr, arch)) {
             return Ok(irsb.clone());

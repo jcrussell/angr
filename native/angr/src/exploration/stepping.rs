@@ -14,6 +14,7 @@ pub(crate) enum StepError {
 
 impl RustExplorationManager {
     /// Step a single state, returning successors.
+    #[allow(dead_code)]
     pub(crate) fn step_state(
         &mut self,
         py: Python<'_>,

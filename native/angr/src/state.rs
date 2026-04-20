@@ -15,7 +15,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::PyDict;
 
 use crate::arch::{arch_from_name, arch_from_vex, Arch, RegisterFile};
-use crate::memory::{MemoryError, Permission, SymbolicMemory, PAGE_SIZE};
+use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{Endness, VexArch};
 use crate::concretize::AddressConcretizer;

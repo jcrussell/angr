@@ -307,7 +307,7 @@
     /// Get the branch condition from the pending symbolic branch callback.
     ///
     /// Returns the condition as a claripy AST that Python can use for forking.
-    pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let pending = self.pending_callback.as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
 
@@ -341,7 +341,7 @@
     }
 
     /// Get register as claripy AST from pending state (handles symbolic).
-    pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+    pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         let pending = self.pending_callback.as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
         let bv = pending.state.get_register(name)
@@ -566,7 +566,7 @@
     ///
     /// Returns constraints that can be added to Python state.solver.
     /// This exports stored branch conditions accumulated during Rust execution.
-    pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         if let Some(ref pending) = self.pending_callback {
             let mut result = Vec::new();
 
@@ -953,7 +953,7 @@
         &self,
         py: Python<'_>,
         state_id: u64,
-    ) -> PyResult<Vec<PyObject>> {
+    ) -> PyResult<Vec<Py<PyAny>>> {
         let claripy = py.import("claripy")?;
         if let Some(state) = self.find_state(state_id) {
             let solver_ref = state.solver();
@@ -1112,7 +1112,7 @@
     }
 
     /// Move states between stashes.
-    pub fn move_states(&mut self, from_stash: &str, to_stash: &str, filter_fn: Option<PyObject>) -> PyResult<usize> {
+    pub fn move_states(&mut self, from_stash: &str, to_stash: &str, filter_fn: Option<Py<PyAny>>) -> PyResult<usize> {
         // If no filter, move all
         if filter_fn.is_none() {
             if let Some(mut from) = self.sm.remove(from_stash) {
@@ -1138,7 +1138,7 @@
 
         // First pass: determine which states pass the filter (immutable borrow)
         let mut move_indices = Vec::new();
-        Python::with_gil(|py| -> PyResult<()> {
+        Python::attach(|py| -> PyResult<()> {
             for (i, state) in from.iter().enumerate() {
                 let result = filter_fn.call1(py, (state.state_id(),))?;
                 if result.extract::<bool>(py).unwrap_or(false) {

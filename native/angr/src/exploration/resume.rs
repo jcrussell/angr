@@ -124,7 +124,7 @@
             let reconstructed_condition = if condition.is_none() {
                 if let Some(ref py_ast) = fork.condition_ast {
                     // Try to convert the claripy AST to RustBV
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         let ast = py_ast.bind(py);
                         let fb = fork_base.as_ref().expect("fork_base set before deferred fork processing");
                         let solver_ref = fb.solver();
@@ -457,7 +457,7 @@
                 // P11 fix: reconstruct from condition_ast if not in stored_conditions
                 let reconstructed_condition = if condition.is_none() {
                     if let Some(ref py_ast) = fork.condition_ast {
-                        Python::with_gil(|py| {
+                        Python::attach(|py| {
                             let ast = py_ast.bind(py);
                             let solver_ref = true_state.solver();
                             let ctx: &crate::symbolic::SymContext = &*solver_ref.borrow();

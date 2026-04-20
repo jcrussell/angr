@@ -178,7 +178,7 @@ impl RustSolverContext {
     ///
     /// Returns None if unsatisfiable or the expression cannot be evaluated.
     /// For values > 128 bits, use eval_wide which returns a Python int.
-    pub fn eval(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Option<PyObject>> {
+    pub fn eval(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
         // Fast path: concrete BVV doesn't need solver
         if let Some((value, _width)) = try_extract_bvv(ast) {
             return Ok(Some(value.into_pyobject(py)?.into()));
@@ -234,7 +234,7 @@ impl RustSolverContext {
         py: Python<'_>,
         z3_ptr: usize,
         ast: &Bound<'_, PyAny>,
-    ) -> PyResult<Option<PyObject>> {
+    ) -> PyResult<Option<Py<PyAny>>> {
         use z3::ast::Ast;
         let ctx = self.inner.ctx();
 
@@ -281,7 +281,7 @@ impl RustSolverContext {
         py: Python<'_>,
         ast: &Bound<'_, PyAny>,
         n: usize,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let result_list = pyo3::types::PyList::empty(py);
 
         // Fast path: concrete BVV has exactly one solution
