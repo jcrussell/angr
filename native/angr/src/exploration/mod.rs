@@ -2222,6 +2222,74 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Enable inspection for an event type on a state.
+    ///
+    /// event_type: 0=MemRead, 1=MemWrite, 2=RegRead, 3=RegWrite, 4=Fork, 5=Exit
+    pub fn enable_state_inspection(&mut self, state_id: u64, event_type: u8) -> PyResult<()> {
+        let event = crate::state::InspectEvent::from_u8(event_type)
+            .ok_or_else(|| PyValueError::new_err(format!("invalid event type: {}", event_type)))?;
+        if let Some(state) = self.find_state_mut(state_id) {
+            state.inspection_mut().enable(event);
+            return Ok(());
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Enable all inspections on a state.
+    pub fn enable_all_inspections(&mut self, state_id: u64) -> PyResult<()> {
+        if let Some(state) = self.find_state_mut(state_id) {
+            state.inspection_mut().enable_all();
+            return Ok(());
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Get inspection event counts for a state.
+    ///
+    /// Returns list of (event_name, count) tuples for events with count > 0.
+    pub fn get_state_inspection_counts(&self, state_id: u64) -> PyResult<Vec<(String, u64)>> {
+        let extract = |state: &crate::state::RustSimState| -> Vec<(String, u64)> {
+            state.inspection().event_counts().iter().enumerate()
+                .filter(|&(_, &count)| count > 0)
+                .map(|(i, &count)| {
+                    let event = crate::state::InspectEvent::from_u8(i as u8).unwrap();
+                    (event.name().to_string(), count)
+                })
+                .collect()
+        };
+
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(extract(state));
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(extract(&cb.state));
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Get inspection events for a state.
+    ///
+    /// Returns list of (event_type, event_name, addr, size, block_addr) tuples.
+    pub fn get_state_inspection_events(&self, state_id: u64) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
+        let extract = |state: &crate::state::RustSimState| -> Vec<(u8, String, u64, u32, u64)> {
+            state.inspection().events().iter().map(|e| {
+                (e.event as u8, e.event.name().to_string(), e.addr, e.size, e.block_addr)
+            }).collect()
+        };
+
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(extract(state));
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(extract(&cb.state));
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
     /// Evaluate a stdin symbol by name using the state's solver.
     ///
     /// Returns the concrete value as Option<u64>, or None if the symbol

@@ -285,6 +285,177 @@ impl FileSystem {
     }
 }
 
+/// Types of inspection events that can be tracked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum InspectEvent {
+    /// Memory read: (addr, size)
+    MemRead = 0,
+    /// Memory write: (addr, size)
+    MemWrite = 1,
+    /// Register read: (offset, size)
+    RegRead = 2,
+    /// Register write: (offset, size)
+    RegWrite = 3,
+    /// State fork (branch)
+    Fork = 4,
+    /// State exit/deadend
+    Exit = 5,
+}
+
+impl InspectEvent {
+    /// Number of event types.
+    pub const COUNT: usize = 6;
+
+    /// Convert from u8.
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(InspectEvent::MemRead),
+            1 => Some(InspectEvent::MemWrite),
+            2 => Some(InspectEvent::RegRead),
+            3 => Some(InspectEvent::RegWrite),
+            4 => Some(InspectEvent::Fork),
+            5 => Some(InspectEvent::Exit),
+            _ => None,
+        }
+    }
+
+    /// Convert to string name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            InspectEvent::MemRead => "mem_read",
+            InspectEvent::MemWrite => "mem_write",
+            InspectEvent::RegRead => "reg_read",
+            InspectEvent::RegWrite => "reg_write",
+            InspectEvent::Fork => "fork",
+            InspectEvent::Exit => "exit",
+        }
+    }
+}
+
+/// A recorded inspection event with address/offset and size.
+#[derive(Clone, Debug)]
+pub struct InspectRecord {
+    /// Event type.
+    pub event: InspectEvent,
+    /// Address (for mem events) or register offset (for reg events).
+    pub addr: u64,
+    /// Size in bytes.
+    pub size: u32,
+    /// Block address where the event occurred.
+    pub block_addr: u64,
+}
+
+/// Inspection/breakpoint manager for state events.
+///
+/// Tracks which event types are enabled for logging and maintains a
+/// ring buffer of recent events. Designed for minimal overhead when
+/// no inspections are registered (single bool check).
+#[derive(Clone, Debug)]
+pub struct InspectionManager {
+    /// Bitmask of enabled event types (bit N = InspectEvent with value N).
+    enabled: u8,
+    /// Ring buffer of recent events (capacity = max_events).
+    events: Vec<InspectRecord>,
+    /// Maximum number of events to retain (ring buffer capacity).
+    max_events: usize,
+    /// Total event count per type (never reset, for statistics).
+    event_counts: [u64; InspectEvent::COUNT],
+}
+
+impl Default for InspectionManager {
+    fn default() -> Self {
+        InspectionManager {
+            enabled: 0,
+            events: Vec::new(),
+            max_events: 1024,
+            event_counts: [0; InspectEvent::COUNT],
+        }
+    }
+}
+
+impl InspectionManager {
+    /// Check if any inspections are enabled. O(1).
+    #[inline(always)]
+    pub fn is_active(&self) -> bool {
+        self.enabled != 0
+    }
+
+    /// Check if a specific event type is enabled.
+    #[inline(always)]
+    pub fn is_enabled(&self, event: InspectEvent) -> bool {
+        self.enabled & (1 << event as u8) != 0
+    }
+
+    /// Enable tracking for an event type.
+    pub fn enable(&mut self, event: InspectEvent) {
+        self.enabled |= 1 << event as u8;
+    }
+
+    /// Disable tracking for an event type.
+    pub fn disable(&mut self, event: InspectEvent) {
+        self.enabled &= !(1 << event as u8);
+    }
+
+    /// Enable all event types.
+    pub fn enable_all(&mut self) {
+        self.enabled = (1 << InspectEvent::COUNT) - 1;
+    }
+
+    /// Disable all event types.
+    pub fn disable_all(&mut self) {
+        self.enabled = 0;
+    }
+
+    /// Set the maximum number of events to retain.
+    pub fn set_max_events(&mut self, max: usize) {
+        self.max_events = max;
+        if self.events.len() > max {
+            let drain = self.events.len() - max;
+            self.events.drain(0..drain);
+        }
+    }
+
+    /// Record an event. Only called when the event type is enabled.
+    pub fn record(&mut self, event: InspectEvent, addr: u64, size: u32, block_addr: u64) {
+        self.event_counts[event as usize] += 1;
+        if self.events.len() >= self.max_events {
+            self.events.remove(0);
+        }
+        self.events.push(InspectRecord { event, addr, size, block_addr });
+    }
+
+    /// Get all recorded events.
+    pub fn events(&self) -> &[InspectRecord] {
+        &self.events
+    }
+
+    /// Get event counts per type.
+    pub fn event_counts(&self) -> &[u64; InspectEvent::COUNT] {
+        &self.event_counts
+    }
+
+    /// Get events filtered by type.
+    pub fn events_of_type(&self, event: InspectEvent) -> Vec<&InspectRecord> {
+        self.events.iter().filter(|e| e.event == event).collect()
+    }
+
+    /// Clear all recorded events (keeps enabled state and counts).
+    pub fn clear_events(&mut self) {
+        self.events.clear();
+    }
+
+    /// Get the enabled bitmask (for serialization).
+    pub fn enabled_mask(&self) -> u8 {
+        self.enabled
+    }
+
+    /// Set the enabled bitmask (for deserialization).
+    pub fn set_enabled_mask(&mut self, mask: u8) {
+        self.enabled = mask;
+    }
+}
+
 /// Entry in the execution history trace.
 ///
 /// Records block-level execution events with jumpkind and jump target.
@@ -453,6 +624,9 @@ pub struct RustSimState {
     /// Heap metadata tracking: allocated regions and freed addresses.
     /// Cloned on fork so each path has its own heap state.
     heap_metadata: HeapMetadata,
+    /// Inspection/breakpoint system for tracking memory and register access.
+    /// Only records events when enabled (single bitmask check per operation).
+    inspection: InspectionManager,
 }
 
 impl RustSimState {
@@ -501,6 +675,7 @@ impl RustSimState {
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
+            inspection: InspectionManager::default(),
         })
     }
 
@@ -534,6 +709,7 @@ impl RustSimState {
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
+            inspection: InspectionManager::default(),
         }
     }
 
@@ -577,6 +753,7 @@ impl RustSimState {
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
+            inspection: InspectionManager::default(),
         })
     }
 
@@ -693,6 +870,48 @@ impl RustSimState {
     /// Get heap metadata (for analysis/export).
     pub fn heap_metadata(&self) -> &HeapMetadata {
         &self.heap_metadata
+    }
+
+    /// Get the inspection manager (read-only).
+    pub fn inspection(&self) -> &InspectionManager {
+        &self.inspection
+    }
+
+    /// Get the inspection manager (mutable).
+    pub fn inspection_mut(&mut self) -> &mut InspectionManager {
+        &mut self.inspection
+    }
+
+    /// Record a memory read event (if mem_read inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_mem_read(&mut self, addr: u64, size: u32) {
+        if self.inspection.is_enabled(InspectEvent::MemRead) {
+            self.inspection.record(InspectEvent::MemRead, addr, size, self.pc);
+        }
+    }
+
+    /// Record a memory write event (if mem_write inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_mem_write(&mut self, addr: u64, size: u32) {
+        if self.inspection.is_enabled(InspectEvent::MemWrite) {
+            self.inspection.record(InspectEvent::MemWrite, addr, size, self.pc);
+        }
+    }
+
+    /// Record a fork event (if fork inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_fork(&mut self) {
+        if self.inspection.is_enabled(InspectEvent::Fork) {
+            self.inspection.record(InspectEvent::Fork, 0, 0, self.pc);
+        }
+    }
+
+    /// Record an exit event (if exit inspection is enabled).
+    #[inline(always)]
+    pub fn inspect_exit(&mut self) {
+        if self.inspection.is_enabled(InspectEvent::Exit) {
+            self.inspection.record(InspectEvent::Exit, 0, 0, self.pc);
+        }
     }
 
     /// Get the history (basic block addresses visited).
@@ -1057,6 +1276,7 @@ impl RustSimState {
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
+            inspection: self.inspection.clone(),
         }
     }
 
@@ -1085,6 +1305,7 @@ impl RustSimState {
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
+            inspection: self.inspection.clone(),
         }
     }
 
@@ -1113,6 +1334,7 @@ impl RustSimState {
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
+            inspection: self.inspection.clone(),
         }
     }
 
@@ -1149,6 +1371,7 @@ impl RustSimState {
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
+            inspection: self.inspection.clone(),
         }
     }
 
@@ -1596,6 +1819,11 @@ pub struct ExplorationStateSnapshot {
     heap_freed: Vec<u64>,
     /// Open file descriptors: (fd, name, position, flags, content_len, is_open).
     open_fds: Vec<(u32, String, u64, u32, usize, bool)>,
+    /// Inspection event counts per type.
+    inspection_counts: Vec<(String, u64)>,
+    /// Inspection enabled bitmask.
+    #[pyo3(get)]
+    pub inspection_enabled: u8,
 }
 
 #[pymethods]
@@ -1714,6 +1942,11 @@ impl ExplorationStateSnapshot {
         self.open_fds.len()
     }
 
+    /// Get inspection event counts as list of (event_name, count) tuples.
+    pub fn get_inspection_counts(&self) -> Vec<(String, u64)> {
+        self.inspection_counts.clone()
+    }
+
     /// Get symbolic byte offsets for a page.
     /// Returns empty vec if page not found.
     pub fn get_symbolic_offsets(&self, page_addr: u64) -> Vec<u16> {
@@ -1801,6 +2034,14 @@ impl RustSimState {
                 let info = self.fs.fd_info(fd).unwrap();
                 (fd, info.0.to_string(), info.1, info.2, info.3, info.4)
             }).collect(),
+            inspection_counts: self.inspection.event_counts().iter().enumerate()
+                .filter(|&(_, &count)| count > 0)
+                .map(|(i, &count)| {
+                    let event = InspectEvent::from_u8(i as u8).unwrap();
+                    (event.name().to_string(), count)
+                })
+                .collect(),
+            inspection_enabled: self.inspection.enabled_mask(),
         }
     }
 
@@ -1975,5 +2216,108 @@ mod tests {
         fs.close(3);
         let open = fs.open_fds();
         assert_eq!(open, vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn test_inspection_default_inactive() {
+        let mgr = InspectionManager::default();
+        assert!(!mgr.is_active());
+        assert!(!mgr.is_enabled(InspectEvent::MemRead));
+    }
+
+    #[test]
+    fn test_inspection_enable_disable() {
+        let mut mgr = InspectionManager::default();
+        mgr.enable(InspectEvent::MemRead);
+        assert!(mgr.is_active());
+        assert!(mgr.is_enabled(InspectEvent::MemRead));
+        assert!(!mgr.is_enabled(InspectEvent::MemWrite));
+
+        mgr.enable_all();
+        assert!(mgr.is_enabled(InspectEvent::Fork));
+        assert!(mgr.is_enabled(InspectEvent::Exit));
+
+        mgr.disable(InspectEvent::MemRead);
+        assert!(!mgr.is_enabled(InspectEvent::MemRead));
+        assert!(mgr.is_enabled(InspectEvent::MemWrite));
+
+        mgr.disable_all();
+        assert!(!mgr.is_active());
+    }
+
+    #[test]
+    fn test_inspection_record_events() {
+        let mut mgr = InspectionManager::default();
+        mgr.enable(InspectEvent::MemWrite);
+
+        mgr.record(InspectEvent::MemWrite, 0x1000, 4, 0x400000);
+        mgr.record(InspectEvent::MemWrite, 0x1004, 8, 0x400010);
+
+        assert_eq!(mgr.events().len(), 2);
+        assert_eq!(mgr.event_counts()[InspectEvent::MemWrite as usize], 2);
+
+        let e = &mgr.events()[0];
+        assert_eq!(e.event, InspectEvent::MemWrite);
+        assert_eq!(e.addr, 0x1000);
+        assert_eq!(e.size, 4);
+        assert_eq!(e.block_addr, 0x400000);
+    }
+
+    #[test]
+    fn test_inspection_ring_buffer() {
+        let mut mgr = InspectionManager::default();
+        mgr.set_max_events(3);
+        mgr.enable(InspectEvent::MemRead);
+
+        for i in 0..5 {
+            mgr.record(InspectEvent::MemRead, i * 0x100, 4, 0);
+        }
+
+        // Only last 3 should remain
+        assert_eq!(mgr.events().len(), 3);
+        assert_eq!(mgr.events()[0].addr, 0x200);
+        assert_eq!(mgr.events()[2].addr, 0x400);
+        // But total count should be 5
+        assert_eq!(mgr.event_counts()[InspectEvent::MemRead as usize], 5);
+    }
+
+    #[test]
+    fn test_inspection_on_state() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.inspection_mut().enable(InspectEvent::MemWrite);
+        state.inspection_mut().enable(InspectEvent::MemRead);
+
+        state.set_pc(0x400000);
+        state.inspect_mem_write(0x1000, 8);
+        state.inspect_mem_read(0x2000, 4);
+
+        assert_eq!(state.inspection().event_counts()[InspectEvent::MemWrite as usize], 1);
+        assert_eq!(state.inspection().event_counts()[InspectEvent::MemRead as usize], 1);
+    }
+
+    #[test]
+    fn test_inspection_fork_isolation() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.inspection_mut().enable(InspectEvent::MemWrite);
+        state.inspect_mem_write(0x1000, 4);
+
+        let mut forked = state.fork();
+        forked.inspect_mem_write(0x2000, 4);
+
+        // Parent should have 1 event
+        assert_eq!(state.inspection().event_counts()[InspectEvent::MemWrite as usize], 1);
+        // Forked should have 2 (inherited 1 + new 1)
+        assert_eq!(forked.inspection().event_counts()[InspectEvent::MemWrite as usize], 2);
+    }
+
+    #[test]
+    fn test_inspection_disabled_no_record() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        // Don't enable anything
+        state.inspect_mem_write(0x1000, 4);
+        state.inspect_mem_read(0x2000, 4);
+
+        assert_eq!(state.inspection().events().len(), 0);
+        assert_eq!(state.inspection().event_counts()[InspectEvent::MemWrite as usize], 0);
     }
 }
