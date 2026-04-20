@@ -1,0 +1,707 @@
+use super::*;
+use super::helpers::{bytes_to_bv, build_balanced_ite};
+
+impl<'a> CallbackInterpreter<'a> {
+    /// Evaluate an IR expression using Python callbacks for memory loads.
+    pub(super) fn eval_expr_with_callbacks(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        expr: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        let expr_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        let result = self.eval_expr_with_callbacks_inner(py, callbacks, expr, tyenv);
+        if let Some(start) = expr_start {
+            self.stats.expr_eval_time_ns += start.elapsed().as_nanos() as u64;
+            self.stats.expr_eval_count += 1;
+        }
+        result
+    }
+
+    fn eval_expr_with_callbacks_inner(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        expr: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        match expr {
+            IRExpr::Const(c) => Ok(self.eval_const(c)),
+
+            IRExpr::RdTmp(tmp) => {
+                if let Some(Some(val)) = self.temps.get(*tmp as usize) {
+                    Ok(val.clone())
+                } else {
+                    Err(CbExecutionError::UnknownTemp(*tmp))
+                }
+            }
+
+            IRExpr::Get { offset, ty } => {
+                let size = ty.bytes();
+                Ok(self.registers.get(*offset, size, self.ctx))
+            }
+
+            IRExpr::Load { addr, ty, .. } => {
+                let load_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+                let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
+                let size = ty.bytes() as usize;
+                if self.profiling_enabled { self.stats.load_stmt_count += 1; }
+
+                // Try Rust-native memory first if enabled - use unified method
+                if self.use_rust_memory {
+                    // First attempt - may need page fetch
+                    let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
+                        Some(rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer))
+                    } else {
+                        None
+                    };
+
+                    if let Some(result) = first_result {
+                        match result {
+                            Ok(ref value) => {
+                                if let Some(start) = load_start {
+                                    self.stats.load_stmt_time_ns += start.elapsed().as_nanos() as u64;
+                                }
+                                return Ok(value.clone());
+                            }
+                            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
+                                let prefetch_count = self.page_prefetch_count;
+                                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+
+                                // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
+                                // Python may have actual data for this page from backers (file contents,
+                                // initialized data). Speculatively creating zero pages causes state
+                                // divergence between Rust and Python. Instead, we fall through to
+                                // the Python callback which handles memory correctly.
+
+                                if page_fetched {
+                                    // Page was fetched - retry with unified load
+                                    if let Some(ref mut rust_mem) = self.rust_memory {
+                                        match rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                                            Ok(value) => return Ok(value),
+                                            Err(_e) => {
+                                                // Still failed - fall through to Python callback
+                                            }
+                                        }
+                                    }
+                                }
+                                // If page not fetched, fall through to Python callback
+                            }
+                            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
+                                // Totally unmapped (not in lazy region) - fall through to Python
+                                log::debug!(
+                                    "Unmapped memory load at 0x{:x} (size={}), falling back to Python",
+                                    addr, unmapped_size
+                                );
+                            }
+                            Err(MemoryError::SymbolicAddress { .. }) => {
+                                // Symbolic bytes not fully tracked - fall through to Python
+                                // This happens when symbolic values were imported per-byte
+                                // but the load is multi-byte, or when the symbolic import
+                                // didn't cover all bytes at this address.
+                            }
+                            Err(e) => {
+                                return Err(CbExecutionError::Memory(e.to_string()));
+                            }
+                        }
+                    }
+                }
+
+                if let Some(addr_concrete) = addr_val.as_u64() {
+                    // FAST PATH 0: Check pending stores buffer
+                    // Stores within the same block are buffered in pending_stores.
+                    // We must check this buffer before falling through to Python
+                    // callbacks, which have stale state.
+
+                    // First check symbolic stores (preserves symbolic values)
+                    if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
+                        if sym_val.width() == (size * 8) as u32 {
+                            return Ok(sym_val.clone());
+                        } else if sym_val.width() > (size * 8) as u32 {
+                            return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+                        }
+                    }
+
+                    // Then check concrete stores (reverse order for most recent)
+                    for &(store_addr, ref store_data) in self.pending_stores.iter().rev() {
+                        if store_addr <= addr_concrete && addr_concrete + size as u64 <= store_addr + store_data.len() as u64 {
+                            let offset = (addr_concrete - store_addr) as usize;
+                            let data = &store_data[offset..offset + size];
+                            return Ok(bytes_to_bv(data, (size * 8) as u32));
+                        }
+                    }
+
+                    // Also check previously flushed symbolic stores (cross-block)
+                    if let Some(sym_val) = self.all_flushed_symbolic_stores.get(&addr_concrete) {
+                        if sym_val.width() == (size * 8) as u32 {
+                            return Ok(sym_val.clone());
+                        } else if sym_val.width() > (size * 8) as u32 {
+                            return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+                        }
+                    }
+
+                    // Also check previously flushed concrete stores (cross-block)
+                    if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
+                        if size <= store_data.len() {
+                            let data = &store_data[..size];
+                            return Ok(bytes_to_bv(data, (size * 8) as u32));
+                        }
+                    }
+
+                    // FAST PATH 1: Check prefetch cache (batch-loaded values)
+                    if let Some(prefetched) = self.load_prefetch_cache.get(&(addr_concrete, size)) {
+                        return Ok(prefetched.value.clone());
+                    }
+
+                    // FAST PATH 2: Check if address is in Rust-cached concrete memory
+                    if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+                        return Ok(bytes_to_bv(data, (size * 8) as u32));
+                    }
+                    // SLOW PATH: Fall back to Python callback
+                    self.load_from_callback(py, callbacks, addr_concrete, size)
+                } else {
+                    // Symbolic address - try to concretize for read
+                    match self.concretize_cached_read(&addr_val) {
+                        ConcretizationResult::Single(addr_concrete) => {
+                            if self.arch.pointer_size() == 32 && addr_concrete >= 0x400000 && addr_concrete < 0x420000 {
+                            }
+                            self.track_concretization_constraint(&addr_val, addr_concrete);
+                            if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+                                return Ok(bytes_to_bv(data, (size * 8) as u32));
+                            }
+                            self.load_from_callback(py, callbacks, addr_concrete, size)
+                        }
+                        ConcretizationResult::Multiple(addrs) => {
+                            // Sync constraints before batch load
+                            self.sync_before_callback(py, callbacks)?;
+                            // Build ITE chain in Rust instead of delegating to Python
+                            // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
+                            self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
+                        }
+                        ConcretizationResult::Strided { base, stride, count } => {
+                            // Sync constraints before batch load
+                            self.sync_before_callback(py, callbacks)?;
+                            // Strided access pattern - generate addresses and build ITE chain in Rust
+                            let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                            self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
+                        }
+                        ConcretizationResult::TooLarge { min, max, .. } => {
+                            // Address range too large - delegate to Python's memory model
+                            // which has access to angr's address concretization strategies
+
+                            // Sync any pending constraints to Python before fallback
+                            self.sync_before_callback(py, callbacks)?;
+
+                            // NEW: Use full symbolic load if available - passes address AST to Python
+                            // This allows Python's memory model to properly resolve the symbolic address
+                            // and return the actual stored value instead of a fresh unconstrained symbol
+                            if callbacks.has_memory_load_symbolic_full() {
+                                let result_ast = callbacks
+                                    .call_memory_load_symbolic_full(py, &addr_val, size as u32)
+                                    .map_err(|e| CbExecutionError::Callback(format!(
+                                        "symbolic load full callback failed at 0x{:x}-0x{:x}: {}",
+                                        min, max, e
+                                    )))?;
+
+                                // Try to convert claripy AST back to RustBV
+                                let ast = result_ast.bind(py);
+
+                                // Fast path: check for RustBVHandle first
+                                if let Some(ref table) = self.symbol_table {
+                                    if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                        return Ok(bv);
+                                    }
+                                }
+
+                                // Slow path: claripy AST conversion
+                                if is_claripy_ast(&ast) {
+                                    match claripy_to_rustbv(py, &ast, self.ctx) {
+                                        Ok(bv) => return Ok(bv),
+                                        Err(e) => {
+                                            // Log warning about conversion failure
+                                            log::warn!(
+                                                "Symbolic load at 0x{:x} (size={}): AST conversion failed: {}. \
+                                                 Creating fresh symbol - constraints may diverge!",
+                                                min, size, e
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // Fallback: create a fresh symbolic value with marker name
+                                log::debug!(
+                                    "Creating fresh symbolic value sym_pyref_{:x}_{} for symbolic load",
+                                    min, size
+                                );
+                                return Ok(RustBV::symbolic(
+                                    self.ctx,
+                                    &format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
+                                    (size * 8) as u32,
+                                ));
+                            }
+
+                            // LEGACY: Fall back to size-only callback if full callback not set
+                            let (data, is_symbolic, symbolic_ast) = callbacks
+                                .call_memory_load_symbolic_ast(py, size as u32)
+                                .map_err(|e| CbExecutionError::Callback(format!(
+                                    "symbolic load AST callback failed at 0x{:x}-0x{:x}: {}",
+                                    min, max, e
+                                )))?;
+
+                            if is_symbolic {
+                                // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
+                                if let Some(ast_obj) = symbolic_ast {
+                                    let ast = ast_obj.bind(py);
+
+                                    // Fast path: check for RustBVHandle first
+                                    if let Some(ref table) = self.symbol_table {
+                                        if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                            return Ok(bv);
+                                        }
+                                    }
+
+                                    // Slow path: claripy AST conversion
+                                    if is_claripy_ast(&ast) {
+                                        match claripy_to_rustbv(py, &ast, self.ctx) {
+                                            Ok(bv) => return Ok(bv),
+                                            Err(e) => {
+                                                // Log warning about conversion failure
+                                                log::warn!(
+                                                    "Symbolic load at 0x{:x} (size={}): legacy AST conversion failed: {}. \
+                                                     Creating fresh symbol - constraints may diverge!",
+                                                    min, size, e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                // Fallback: create a fresh symbolic value with marker name
+                                log::debug!(
+                                    "Creating fresh symbolic value sym_pyref_{:x}_{} for legacy symbolic load",
+                                    min, size
+                                );
+                                Ok(RustBV::symbolic(
+                                    self.ctx,
+                                    &format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
+                                    (size * 8) as u32,
+                                ))
+                            } else {
+                                // Concrete result from Python
+                                Ok(bytes_to_bv(&data, (size * 8) as u32))
+                            }
+                        }
+                        ConcretizationResult::Failed(reason) => {
+                            Err(CbExecutionError::Unsupported(format!(
+                                "symbolic load address: {}",
+                                reason
+                            )))
+                        }
+                    }
+                }
+            }
+
+            IRExpr::Unop { op, arg } => {
+                let arg_val = self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?;
+                let arg_is_sym = arg_val.is_symbolic();
+                VEXOps::unop(*op, arg_val, self.ctx).or_else(|_| {
+                    // Fallback for unsupported unary ops (e.g., float conversions).
+                    // Return fresh symbolic if input was symbolic, else zero.
+                    let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                    if arg_is_sym {
+                        Ok(RustBV::symbolic(self.ctx, &format!("unsup_unop_{:x}", self.pc), width))
+                    } else {
+                        Ok(RustBV::concrete(0, width))
+                    }
+                })
+            }
+
+            IRExpr::Binop { op, left, right } => {
+                let left_val = self.eval_expr_with_callbacks(py, callbacks, left, tyenv)?;
+                let right_val = self.eval_expr_with_callbacks(py, callbacks, right, tyenv)?;
+                let fallback_width = op.result_type().map(|t| t.bits()).unwrap_or(
+                    left_val.width().max(right_val.width())
+                );
+                let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
+                VEXOps::binop(*op, left_val, right_val, self.ctx).or_else(|_| {
+                    // Fallback for unsupported binary ops (e.g., vector float ops).
+                    if any_sym {
+                        Ok(RustBV::symbolic(self.ctx, &format!("unsup_binop_{:x}", self.pc), fallback_width))
+                    } else {
+                        Ok(RustBV::concrete(0, fallback_width))
+                    }
+                })
+            }
+
+            IRExpr::ITE { cond, iftrue, iffalse } => {
+                let cond_val = self.eval_expr_with_callbacks(py, callbacks, cond, tyenv)?;
+                let true_val = self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)?;
+                let false_val = self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)?;
+                Ok(cond_val.ite(&true_val, &false_val, self.ctx))
+            }
+
+            IRExpr::GetI { descr, ix, bias } => {
+                // Evaluate the index expression
+                let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, tyenv)?;
+
+                // GetI requires a concrete index to compute the register offset
+                let idx = if let Some(idx) = ix_val.as_u64() {
+                    idx
+                } else {
+                    // Symbolic index - concretize using solver
+                    if let Some(concrete) = self.ctx.eval(&ix_val) {
+                        concrete as u64
+                    } else {
+                        return Err(CbExecutionError::Unsupported("GetI index concretization failed".to_string()));
+                    }
+                };
+
+                // Calculate the rotating register offset:
+                // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+                let elem_size = descr.elemTy.bytes();
+                let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
+                let offset = descr.base + index * elem_size;
+
+                // Read from the register file
+                Ok(self.registers.get(offset, elem_size, self.ctx))
+            }
+
+            IRExpr::Triop { op, arg1, arg2, arg3 } => {
+                // Triops are typically float operations with rounding mode.
+                // Return fresh symbolic if any operand is symbolic, so that
+                // branches depending on float results remain explorable.
+                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() {
+                    Ok(RustBV::symbolic(self.ctx, &format!("triop_{:x}", self.pc), width))
+                } else {
+                    Ok(RustBV::concrete(0, width))
+                }
+            }
+
+            IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
+                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
+                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic() {
+                    Ok(RustBV::symbolic(self.ctx, &format!("qop_{:x}", self.pc), width))
+                } else {
+                    Ok(RustBV::concrete(0, width))
+                }
+            }
+
+            IRExpr::CCall { cee, retty, args } => {
+                let mut arg_vals = Vec::with_capacity(args.len());
+                for arg in args {
+                    arg_vals.push(self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?);
+                }
+
+                if let Some(result) = ccall::handle_ccall_with_ctx(&cee.name, &arg_vals, retty.bits(), Some(self.ctx)) {
+                    return Ok(result);
+                }
+
+                // For eflags/rflags CCalls that we couldn't handle symbolically,
+                // return a fresh symbolic variable rather than concrete 0.
+                // Concrete 0 corrupts register values; a symbolic variable is sound
+                // (unconstrained) and lets the solver handle it.
+                let is_cond_ccall = cee.name.contains("calculate_condition")
+                    || cee.name.contains("calculate_eflags")
+                    || cee.name.contains("calculate_rflags");
+                if is_cond_ccall {
+                    log::debug!(
+                        "CCall '{}' not handled symbolically at 0x{:x}, returning symbolic variable",
+                        cee.name, self.pc
+                    );
+                    return Ok(RustBV::symbolic(
+                        self.ctx,
+                        &format!("ccall_unsupported_{:x}", self.pc),
+                        retty.bits(),
+                    ));
+                }
+
+                Ok(RustBV::concrete(0, retty.bits()))
+            }
+
+            IRExpr::VECRET | IRExpr::GSPTR => {
+                // P7 fix: Request Python fallback instead of failing
+                // These special expressions require Python's VEX handling
+                Err(CbExecutionError::NeedPythonFallback(
+                    format!("special expr {:?} requires Python", expr)
+                ))
+            }
+        }
+    }
+
+    /// Build an ITE chain for symbolic memory load by loading each candidate address.
+    ///
+    /// This builds the ITE chain entirely in Rust instead of delegating to Python.
+    /// For each candidate address, we load the value via callback and create an ITE:
+    /// `ITE(addr == a1, mem[a1], ITE(addr == a2, mem[a2], ...))`
+    ///
+    /// This is more efficient than calling Python's symbolic memory handler because:
+    /// 1. We avoid FFI overhead for the ITE chain construction
+    /// 2. The RustBV ITE nodes stay in Rust's Z3 context
+    /// 3. We can use balanced ITE trees for better solver performance
+    fn build_ite_load_from_callbacks(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addrs: &[u64],
+        addr_expr: &RustBV,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        if addrs.is_empty() {
+            return Err(CbExecutionError::Memory("no candidate addresses".to_string()));
+        }
+
+        let width = (size * 8) as u32;
+        let addr_width = addr_expr.width();
+
+        // For a single address, just load it directly
+        if addrs.len() == 1 {
+            return self.load_from_callback(py, callbacks, addrs[0], size);
+        }
+
+        // Batch load all addresses at once for efficiency
+        let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
+        let load_results = callbacks
+            .call_memory_load_batch(py, &load_requests)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        // Build (condition, value) pairs for the ITE chain
+        let mut pairs: Vec<(RustBV, RustBV)> = Vec::with_capacity(addrs.len());
+
+        for (i, addr) in addrs.iter().enumerate() {
+            // Get the loaded value for this address
+            let value = if i < load_results.len() {
+                let (data, is_symbolic, symbolic_ast) = &load_results[i];
+                if *is_symbolic {
+                    // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
+                    if let Some(ast_obj) = symbolic_ast {
+                        let ast = ast_obj.bind(py);
+
+                        // Fast path: check for RustBVHandle first
+                        if let Some(ref table) = self.symbol_table {
+                            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                bv
+                            } else if is_claripy_ast(&ast) {
+                                // Slow path: claripy AST conversion
+                                match claripy_to_rustbv(py, &ast, self.ctx) {
+                                    Ok(bv) => bv,
+                                    Err(_) => {
+                                        // Fallback to fresh symbolic
+                                        RustBV::symbolic(
+                                            self.ctx,
+                                            &format!("ite_load_{:x}_{}", addr, size),
+                                            width,
+                                        )
+                                    }
+                                }
+                            } else {
+                                RustBV::symbolic(
+                                    self.ctx,
+                                    &format!("ite_load_{:x}_{}", addr, size),
+                                    width,
+                                )
+                            }
+                        } else if is_claripy_ast(&ast) {
+                            match claripy_to_rustbv(py, &ast, self.ctx) {
+                                Ok(bv) => bv,
+                                Err(_) => {
+                                    // Fallback to fresh symbolic
+                                    RustBV::symbolic(
+                                        self.ctx,
+                                        &format!("ite_load_{:x}_{}", addr, size),
+                                        width,
+                                    )
+                                }
+                            }
+                        } else {
+                            RustBV::symbolic(
+                                self.ctx,
+                                &format!("ite_load_{:x}_{}", addr, size),
+                                width,
+                            )
+                        }
+                    } else {
+                        RustBV::symbolic(
+                            self.ctx,
+                            &format!("ite_load_{:x}_{}", addr, size),
+                            width,
+                        )
+                    }
+                } else {
+                    bytes_to_bv(data, width)
+                }
+            } else {
+                // Missing result - create symbolic placeholder
+                RustBV::symbolic(
+                    self.ctx,
+                    &format!("ite_load_{:x}_{}", addr, size),
+                    width,
+                )
+            };
+
+            // Build condition: addr_expr == this address
+            let addr_const = RustBV::concrete(*addr as u128, addr_width);
+            let cond = addr_expr.eq(&addr_const, self.ctx);
+
+            pairs.push((cond, value));
+        }
+
+        // Use the last value as default (for robustness, though one condition should always match)
+        let default_value = pairs.last().map(|(_, v)| v.clone())
+            .unwrap_or_else(|| RustBV::symbolic(self.ctx, "ite_default", width));
+
+        // Build balanced ITE tree for better solver performance
+        Ok(build_balanced_ite(&pairs[..pairs.len()-1], default_value, self.ctx))
+    }
+
+    /// Build ITE chain stores for symbolic memory writes with multiple candidate addresses.
+    ///
+    /// For each candidate address `a_i`, computes:
+    ///   `mem[a_i] = ITE(addr == a_i, new_data, mem[a_i])`
+    /// This keeps the ITE construction in Rust's Z3 context, avoiding FFI round-trips
+    /// for the ITE chain building that Python would otherwise do.
+    pub(super) fn build_ite_store_from_callbacks(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addrs: &[u64],
+        addr_expr: &RustBV,
+        data_val: &RustBV,
+    ) -> Result<(), CbExecutionError> {
+        if addrs.is_empty() {
+            return Ok(());
+        }
+
+        let size = (data_val.width() / 8) as usize;
+        let addr_width = addr_expr.width();
+
+        // Batch load current values at all candidate addresses
+        let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
+        let load_results = callbacks
+            .call_memory_load_batch(py, &load_requests)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        // For each candidate address, build ITE and store back
+        for (i, &addr) in addrs.iter().enumerate() {
+            // Build condition: addr_expr == this address
+            let addr_const = RustBV::concrete(addr as u128, addr_width);
+            let cond = addr_expr.eq(&addr_const, self.ctx);
+
+            // Get current value at this address
+            let current = if i < load_results.len() {
+                let (data, is_symbolic, symbolic_ast) = &load_results[i];
+                if *is_symbolic {
+                    if let Some(ast_obj) = symbolic_ast {
+                        let ast = ast_obj.bind(py);
+                        if let Some(ref table) = self.symbol_table {
+                            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                                bv
+                            } else if is_claripy_ast(&ast) {
+                                claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
+                                    RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                                })
+                            } else {
+                                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                            }
+                        } else if is_claripy_ast(&ast) {
+                            claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
+                                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                            })
+                        } else {
+                            RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                        }
+                    } else {
+                        RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                    }
+                } else {
+                    bytes_to_bv(data, data_val.width())
+                }
+            } else {
+                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+            };
+
+            // Build ITE: if (addr == candidate) then new_data else current
+            let ite_value = cond.ite(data_val, &current, self.ctx);
+
+            // Store via symbolic value callback
+            callbacks
+                .call_memory_store_symbolic_value(py, addr, &ite_value)
+                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Evaluate an IR constant.
+    fn eval_const(&self, c: &IRConst) -> RustBV {
+        match c {
+            IRConst::U1(v) => RustBV::concrete(*v as u128, 1),
+            IRConst::U8(v) => RustBV::concrete(*v as u128, 8),
+            IRConst::U16(v) => RustBV::concrete(*v as u128, 16),
+            IRConst::U32(v) => RustBV::concrete(*v as u128, 32),
+            IRConst::U64(v) => RustBV::concrete(*v as u128, 64),
+            IRConst::U128(v) => RustBV::concrete(*v, 128),
+            IRConst::F32(v) => RustBV::concrete(v.to_bits() as u128, 32),
+            IRConst::F64(v) => RustBV::concrete(v.to_bits() as u128, 64),
+            IRConst::V128(v) => RustBV::concrete(*v, 128),
+            IRConst::V256(v) => {
+                RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128)
+            }
+        }
+    }
+
+    /// Apply LoadG conversion (widening) to loaded value.
+    ///
+    /// LoadG can widen the loaded value with sign or zero extension.
+    pub(super) fn apply_loadg_conversion(&self, cvt: IRLoadGOp, value: RustBV, target_bits: u32) -> RustBV {
+        let src_bits = value.width();
+        if src_bits >= target_bits {
+            // No widening needed, possibly truncate
+            if src_bits > target_bits {
+                value.extract(0, target_bits, self.ctx)
+            } else {
+                value
+            }
+        } else {
+            // Widen the value
+            match cvt {
+                IRLoadGOp::Identity => value, // Should not happen if sizes differ
+                IRLoadGOp::WidenS => value.sign_extend(target_bits, self.ctx),
+                IRLoadGOp::WidenZ => value.zero_extend(target_bits, self.ctx),
+            }
+        }
+    }
+
+    pub(super) fn eval_expr_simple(
+        &self,
+        expr: &IRExpr,
+        _tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        match expr {
+            IRExpr::Const(c) => Ok(self.eval_const(c)),
+            IRExpr::RdTmp(tmp) => {
+                if let Some(Some(val)) = self.temps.get(*tmp as usize) {
+                    Ok(val.clone())
+                } else {
+                    Err(CbExecutionError::UnknownTemp(*tmp))
+                }
+            }
+            IRExpr::Get { offset, ty } => {
+                let size = ty.bytes();
+                Ok(self.registers.get(*offset, size, self.ctx))
+            }
+            _ => Err(CbExecutionError::Unsupported(
+                "complex expr in default exit".to_string(),
+            )),
+        }
+    }
+
+}

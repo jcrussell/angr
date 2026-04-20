@@ -1,0 +1,225 @@
+use super::*;
+use super::helpers::extract_ite_targets;
+
+impl<'a> CallbackInterpreter<'a> {
+    /// Evaluate the next address from an IRSB.
+    /// Used for Exit statements where we still need callbacks for complex expressions.
+    pub(super) fn eval_next_addr(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        irsb: &IRSB,
+    ) -> Result<u64, CbExecutionError> {
+        let next_val = self.eval_expr_with_callbacks(py, callbacks, &irsb.next, &irsb.tyenv)?;
+        // Check for symbolic addresses FIRST - Constrained BV has concrete value but is still symbolic
+        if next_val.is_symbolic() {
+            // Try to concretize to a single value
+            match self.concretizer.concretize(&next_val, self.ctx) {
+                ConcretizationResult::Single(addr) => {
+                    // Add constraint that target == addr
+                    let concrete = RustBV::concrete(addr as u128, next_val.width());
+                    let constraint = next_val.eq(&concrete, self.ctx);
+                    self.ctx.assume_true(&constraint);
+                    return Ok(addr);
+                }
+                _ => {
+                    // For Exit statements mid-block, we can't easily fork
+                    // Return error to fall back to Python handling
+                    return Err(CbExecutionError::Unsupported("symbolic next address".to_string()));
+                }
+            }
+        }
+        next_val.as_u64().ok_or_else(|| {
+            CbExecutionError::Unsupported("non-concrete next address".to_string())
+        })
+    }
+
+    /// Evaluate and concretize the jump target for the default exit.
+    ///
+    /// This method handles symbolic jump targets (e.g., ret instructions with symbolic
+    /// return addresses) by concretizing them to a bounded set of concrete values.
+    fn eval_next_addr_concretized(
+        &mut self,
+        irsb: &IRSB,
+    ) -> Result<ConcretizedJump, CbExecutionError> {
+        let next_val = self.eval_expr_simple(&irsb.next, &irsb.tyenv)?;
+
+        // Fast path: concrete address
+        if let Some(addr) = next_val.as_u64() {
+            if !next_val.is_symbolic() {
+                return Ok(ConcretizedJump::Single(addr));
+            }
+        }
+
+        // ITE fast path: extract concrete targets from nested ITE chains
+        // without solver queries. Pattern: if(c1, addr1, if(c2, addr2, ...))
+        if let Some(targets) = extract_ite_targets(&next_val, self.config.max_symbolic_ip_targets) {
+            if targets.len() == 1 {
+                return Ok(ConcretizedJump::Single(targets[0]));
+            }
+            return Ok(ConcretizedJump::Multiple {
+                targets,
+                expr: next_val,
+            });
+        }
+
+        // Symbolic address - use AddressConcretizer
+        match self.concretizer.concretize(&next_val, self.ctx) {
+            ConcretizationResult::Single(addr) => {
+                // Add constraint that target == addr
+                let concrete = RustBV::concrete(addr as u128, next_val.width());
+                let constraint = next_val.eq(&concrete, self.ctx);
+                self.ctx.assume_true(&constraint);
+                Ok(ConcretizedJump::Single(addr))
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // Check if we exceed max_symbolic_ip_targets
+                if addrs.len() > self.config.max_symbolic_ip_targets {
+                    let min = *addrs.first().unwrap_or(&0);
+                    let max = *addrs.last().unwrap_or(&0);
+                    Ok(ConcretizedJump::TooMany {
+                        min,
+                        max,
+                        limit: self.config.max_symbolic_ip_targets,
+                    })
+                } else {
+                    Ok(ConcretizedJump::Multiple {
+                        targets: addrs,
+                        expr: next_val,
+                    })
+                }
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                // Convert strided to explicit list, but check limit first
+                let num_targets = count as usize;
+                if num_targets > self.config.max_symbolic_ip_targets {
+                    let max = base + (count - 1) * stride;
+                    Ok(ConcretizedJump::TooMany {
+                        min: base,
+                        max,
+                        limit: self.config.max_symbolic_ip_targets,
+                    })
+                } else {
+                    let targets: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                    Ok(ConcretizedJump::Multiple {
+                        targets,
+                        expr: next_val,
+                    })
+                }
+            }
+            ConcretizationResult::TooLarge { min, max, limit: _ } => {
+                Ok(ConcretizedJump::TooMany {
+                    min,
+                    max,
+                    limit: self.config.max_symbolic_ip_targets,
+                })
+            }
+            ConcretizationResult::Failed(msg) => {
+                Err(CbExecutionError::Unsupported(format!(
+                    "jump target concretization failed: {}",
+                    msg
+                )))
+            }
+        }
+    }
+
+    /// Handle the default exit (end of block).
+    pub(super) fn handle_default_exit(&mut self, irsb: &IRSB) -> Result<BlockResult, CbExecutionError> {
+        let concretized = self.eval_next_addr_concretized(irsb)?;
+        match concretized {
+            ConcretizedJump::Single(addr) => {
+                Ok(self.handle_exit(addr, irsb.jumpkind))
+            }
+            ConcretizedJump::Multiple { targets, expr } => {
+                // Store the expression for constraint addition later
+                let condition_id = self.next_condition_id;
+                self.next_condition_id += 1;
+                self.stored_conditions.insert(condition_id, expr.clone());
+
+                Ok(BlockResult::SymbolicJumpTarget {
+                    targets,
+                    condition_id,
+                    target_expr: expr,
+                    jumpkind: irsb.jumpkind,
+                })
+            }
+            ConcretizedJump::TooMany { min, max, limit } => {
+                Ok(BlockResult::UnconstrainedJump {
+                    min_target: min,
+                    max_target: max,
+                    limit,
+                    jumpkind: irsb.jumpkind,
+                })
+            }
+        }
+    }
+
+    /// Simple expression evaluation (no callbacks, for already-evaluated temps).
+
+    /// Handle an exit (update PC, return result).
+    pub(super) fn handle_exit(&mut self, target: u64, jumpkind: JumpKind) -> BlockResult {
+        self.set_pc(target);
+        // Trace removed after debugging
+
+        if jumpkind.is_syscall() {
+            let syscall_num = self.get_syscall_num();
+            return BlockResult::Syscall { num: syscall_num };
+        }
+
+        if self.is_hooked(target) {
+            return BlockResult::Hook { addr: target };
+        }
+
+        // For CALL instructions to external code, ask Python to resolve
+        if jumpkind.is_call() && !self.is_in_binary(target) {
+            let return_addr = self.get_return_addr().unwrap_or(0);
+            return BlockResult::UnmodeledCall {
+                addr: target,
+                return_addr,
+                symbol_name: None, // Symbol lookup done by Python
+            };
+        }
+
+        // For jumps/returns to external addresses that are NOT hooked,
+        // treat as UnmodeledCall so Python can handle them properly.
+        // This includes:
+        // - angr's internal continuation addresses (0x700000+)
+        // - extern stubs and SimProcedure return points
+        // - dynamically registered hooks that weren't synced yet
+        if !self.is_in_binary(target) {
+            let return_addr = self.get_return_addr().unwrap_or(0);
+            return BlockResult::UnmodeledCall {
+                addr: target,
+                return_addr,
+                symbol_name: Some("__extern_addr__".to_string()),
+            };
+        }
+
+        BlockResult::BlockEnd {
+            next_addr: target,
+            jumpkind,
+        }
+    }
+
+    /// Get the syscall number from the appropriate register.
+    pub(super) fn get_syscall_num(&self) -> u64 {
+        // Syscall number register varies by architecture:
+        // - AMD64: RAX (offset 16, 8 bytes)
+        // - X86: EAX (offset 8, 4 bytes)
+        // - ARM: R7 (offset 36, 4 bytes) - EABI syscall convention
+        // - ARM64: X8 (offset 80, 8 bytes)
+        // - MIPS32: v0/$2 (offset 16, 4 bytes)
+        // - MIPS64: v0/$2 (offset 32, 8 bytes)
+        let (offset, size) = match self.arch {
+            VexArch::AMD64 => (16, 8),   // RAX
+            VexArch::X86 => (8, 4),      // EAX
+            VexArch::ARM => (36, 4),     // R7 (EABI)
+            VexArch::ARM64 => (80, 8),   // X8
+            VexArch::MIPS32 => (16, 4),  // v0/$2
+            VexArch::MIPS64 => (32, 8),  // v0/$2
+            _ => (0, 8),                 // Default fallback
+        };
+        let syscall_bv = self.registers.get(offset, size, self.ctx);
+        syscall_bv.as_u64().unwrap_or(0)
+    }
+}

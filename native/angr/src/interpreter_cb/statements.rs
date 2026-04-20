@@ -1,0 +1,972 @@
+use super::*;
+use super::helpers::bv_to_bytes;
+
+impl<'a> CallbackInterpreter<'a> {
+    /// Execute a single statement using Python callbacks.
+    pub(super) fn execute_stmt_with_callbacks(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        stmt: &IRStmt,
+        irsb: &IRSB,
+    ) -> Result<StmtResult, CbExecutionError> {
+        match stmt {
+            IRStmt::NoOp => Ok(StmtResult::Continue),
+
+            IRStmt::IMark { addr, len, .. } => {
+                self.current_insn_addr = *addr;
+                self.current_insn_len = *len;
+                // Check for hooks at this address
+                if self.is_hooked(*addr) {
+                    return Ok(StmtResult::Exit {
+                        target: *addr,
+                        jumpkind: JumpKind::Boring,
+                    });
+                }
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::AbiHint { .. } => Ok(StmtResult::Continue),
+
+            IRStmt::Put { offset, data } => {
+                let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                self.registers.put(*offset, value);
+
+                // Mark register as dirty (4-byte granularity)
+                let bit_index = (*offset / 4) as u32;
+                if bit_index < 128 {
+                    self.dirty_registers |= 1u128 << bit_index;
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::WrTmp { tmp, data } => {
+                let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                if (*tmp as usize) < self.temps.len() {
+                    self.temps[*tmp as usize] = Some(value);
+                } else {
+                    return Err(CbExecutionError::UnknownTemp(*tmp));
+                }
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::Store { addr, data, .. } => {
+                let store_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+                let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let data_size = ((data_val.width() + 7) / 8) as usize;
+                if self.profiling_enabled { self.stats.store_stmt_count += 1; }
+
+                // Try Rust-native memory first if enabled
+                if self.use_rust_memory {
+                    // Concretize for write with per-block cache (avoids redundant Z3 calls)
+                    let conc_result = self.concretize_cached_write(&addr_val);
+
+                    // Attempt store using pre-computed concretization
+                    let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
+                        Some(rust_mem.store_with_concretization(&addr_val, data_val.clone(), &conc_result, self.ctx))
+                    } else {
+                        None
+                    };
+
+                    if let Some(result) = first_result {
+                        match result {
+                            Ok(()) => {
+                                // Update prefetch cache and track constraints
+                                match &conc_result {
+                                    ConcretizationResult::Single(addr_concrete) => {
+                                        self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
+                                        self.track_concretization_constraint(&addr_val, *addr_concrete);
+                                    }
+                                    _ => {
+                                        self.load_prefetch_cache.clear();
+                                    }
+                                }
+
+                                // Rust owns memory — no need to sync stores to Python.
+                                if let Some(start) = store_start {
+                                    self.stats.store_stmt_time_ns += start.elapsed().as_nanos() as u64;
+                                }
+                                return Ok(StmtResult::Continue);
+                            }
+                            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
+                                let prefetch_count = self.page_prefetch_count;
+                                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+
+                                if page_fetched {
+                                    // Page was fetched - retry store using cached concretization
+                                    if let Some(ref mut rust_mem) = self.rust_memory {
+                                        match rust_mem.store_with_concretization(&addr_val, data_val.clone(), &conc_result, self.ctx) {
+                                            Ok(()) => {
+                                                match &conc_result {
+                                                    ConcretizationResult::Single(addr_concrete) => {
+                                                        self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
+                                                        self.track_concretization_constraint(&addr_val, *addr_concrete);
+                                                    }
+                                                    _ => {
+                                                        self.load_prefetch_cache.clear();
+                                                    }
+                                                }
+
+                                                return Ok(StmtResult::Continue);
+                                            }
+                                            Err(_e) => {
+                                                // Still failed - fall through to Python callback
+                                            }
+                                        }
+                                    }
+                                }
+                                // If page not fetched, fall through to Python callback
+                            }
+                            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
+                                // Totally unmapped (not in lazy region) - fall through to Python
+                                log::debug!(
+                                    "Unmapped memory store at 0x{:x} (size={}), falling back to Python",
+                                    addr, unmapped_size
+                                );
+                            }
+                            Err(MemoryError::SymbolicAddress { description }) => {
+                                // Address range too large or symbolic - fall through to Python
+                                // Python's memory model handles large ranges natively
+                                log::debug!(
+                                    "Symbolic address store: {}, falling back to Python",
+                                    description
+                                );
+                            }
+                            Err(e) => {
+                                return Err(CbExecutionError::Memory(e.to_string()));
+                            }
+                        }
+                    }
+                }
+
+                // Store via callback - handle symbolic addresses
+                if let Some(addr_concrete) = addr_val.as_u64() {
+                    if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {
+                    }
+                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+
+                    // Check if data is symbolic - use symbolic store callback.
+                    // Only for 32-bit architectures where it's needed (e.g., flareon2015_5).
+                    // 64-bit: skip entirely (too many false positives from extern addresses).
+                    let use_sym_store = if self.arch.pointer_size() == 32 {
+                        let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
+                            // Non-wrapping distance check
+                            let dist = if addr_concrete >= sp_val {
+                                addr_concrete - sp_val
+                            } else {
+                                sp_val - addr_concrete
+                            };
+                            dist <= 0x10000
+                        });
+                        !is_stack
+                    } else {
+                        false  // Skip for 64-bit — too expensive
+                    };
+                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
+                        // Try symbolic store callback (preserves expression tree)
+                        let sym_ok = (|| -> Result<(), CbExecutionError> {
+                            self.flush_stores(py, callbacks)?;
+                            callbacks.call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                        })();
+                        if let Err(_e) = sym_ok {
+                            // Symbolic store callback failed — evaluate to concrete using
+                            // solver and store directly via Python callback (not pending_stores).
+                            // Using pending_stores would pollute all_flushed_stores with zeros
+                            // since bv_to_bytes returns zeros for symbolic expressions.
+                            let concrete_val = self.ctx.eval(&data_val).unwrap_or(0);
+                            let size_bytes = (data_val.width() / 8) as usize;
+                            let mut data_bytes = vec![0u8; size_bytes];
+                            for i in 0..size_bytes {
+                                data_bytes[i] = (concrete_val >> (i * 8)) as u8;
+                            }
+                            let _ = callbacks.call_memory_store(py, addr_concrete, &data_bytes);
+                        }
+                    } else {
+                        // Fast path: buffer for batch processing
+                        let data_bytes = bv_to_bytes(&data_val);
+                        // Track symbolic values for load forwarding
+                        if data_val.is_symbolic() {
+                            self.pending_symbolic_stores.insert(addr_concrete, data_val);
+                        }
+                        self.pending_stores.push((addr_concrete, data_bytes));
+
+                        // Auto-flush if buffer is full
+                        if self.pending_stores.len() >= self.max_pending_stores {
+                            self.flush_stores(py, callbacks)?;
+                        }
+                    }
+                } else {
+                    // Symbolic address - clear entire prefetch cache
+                    self.load_prefetch_cache.clear();
+                    // Symbolic address - flush buffer first, then handle specially
+                    self.flush_stores(py, callbacks)?;
+                    // Symbolic address - use cached write concretization
+                    let concret_result = self.concretize_cached_write(&addr_val);
+                    match concret_result {
+                        ConcretizationResult::Single(addr_concrete) => {
+                            // Track concretization constraint for Python sync
+                            self.track_concretization_constraint(&addr_val, addr_concrete);
+                            // Use symbolic store for symbolic values to preserve expression trees
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                callbacks
+                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                let data_bytes = bv_to_bytes(&data_val);
+                                callbacks
+                                    .call_memory_store(py, addr_concrete, &data_bytes)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
+                        }
+                        ConcretizationResult::Multiple(addrs) => {
+                            self.sync_before_callback(py, callbacks)?;
+                            // Build ITE chain in Rust for ≤16 addresses
+                            if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
+                                self.build_ite_store_from_callbacks(py, callbacks, &addrs, &addr_val, &data_val)?;
+                            } else {
+                                callbacks
+                                    .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
+                        }
+                        ConcretizationResult::Strided { base, stride, count } => {
+                            self.sync_before_callback(py, callbacks)?;
+                            let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                            if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
+                                self.build_ite_store_from_callbacks(py, callbacks, &addrs, &addr_val, &data_val)?;
+                            } else {
+                                callbacks
+                                    .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
+                        }
+                        ConcretizationResult::TooLarge { min, max, .. } => {
+                            // Address range too large - delegate to Python's memory model
+                            // which has access to angr's address concretization strategies
+
+                            // Sync any pending constraints to Python before fallback
+                            self.sync_before_callback(py, callbacks)?;
+
+                            // Use full symbolic callback to preserve expression trees
+                            if callbacks.has_memory_store_symbolic_full() {
+                                                                callbacks
+                                    .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(format!(
+                                        "symbolic store full callback failed at 0x{:x}-0x{:x}: {}",
+                                        min, max, e
+                                    )))?;
+                            } else {
+                                // Fallback to byte-based store (loses symbolic info)
+                                let data_bytes = bv_to_bytes(&data_val);
+                                callbacks
+                                    .call_memory_store_symbolic_ast(py, &data_bytes, data_bytes.len() as u32)
+                                    .map_err(|e| CbExecutionError::Callback(format!(
+                                        "symbolic store AST callback failed at 0x{:x}-0x{:x}: {}",
+                                        min, max, e
+                                    )))?;
+                            }
+                        }
+                        ConcretizationResult::Failed(reason) => {
+                            return Err(CbExecutionError::Unsupported(format!(
+                                "symbolic store address: {}",
+                                reason
+                            )));
+                        }
+                    }
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::Exit { guard, dst, jk, .. } => {
+                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+
+                // Check if guard is symbolic first (Constrained has concrete value but is still symbolic)
+                if !guard_val.is_symbolic() {
+                    // Truly concrete guard - simple check
+                    if let Some(g) = guard_val.as_u64() {
+                        if g != 0 {
+                            return Ok(StmtResult::Exit {
+                                target: *dst,
+                                jumpkind: *jk,
+                            });
+                        }
+                        return Ok(StmtResult::Continue);
+                    }
+                }
+
+                // Guard is symbolic — handle based on deferred fork mode
+                if !self.config.use_deferred_forks {
+                    // Non-deferred mode: return to Python immediately for forking.
+                    // Skip can_be_true/can_be_false Z3 checks — Python's
+                    // resume_after_symbolic_branch will add constraints and the
+                    // sat_cache optimization avoids redundant checks there.
+                    let fallthrough = self.eval_next_addr(py, callbacks, irsb)?;
+                    // Store condition for Rust-side constraint addition during resume
+                    let cond_id = self.next_cond_id();
+                    self.stored_conditions.insert(cond_id, guard_val.clone());
+                    let result_cond = guard_val.clone();
+                    self.last_branch_condition = Some(guard_val);
+                    return Ok(StmtResult::SymbolicBranch {
+                        condition: result_cond,
+                        true_target: *dst,
+                        false_target: fallthrough,
+                    });
+                }
+
+                // Deferred fork mode: check feasibility to decide which paths to explore.
+                // Determine branch feasibility. When lazy_solves is active,
+                // skip Z3 queries entirely and assume both paths are feasible.
+                let (can_be_true, can_be_false) = if self.lazy_solves {
+                    (true, true)
+                } else {
+                    // Incremental assertion: push once per block, assert new fork
+                    // conditions incrementally. This avoids re-asserting all N prior
+                    // conditions for the N-th Exit (O(N) → O(1) per check).
+                    if !self.deferred_forks.is_empty() {
+                        if !self.block_solver_pushed {
+                            // First time in this block with prior forks: push and assert all
+                            self.ctx.push();
+                            self.block_solver_pushed = true;
+                            for prev_fork in &self.deferred_forks {
+                                if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                                    if prev_fork.path_taken {
+                                        self.ctx.assume_true(cond);
+                                    } else {
+                                        self.ctx.assume_false(cond);
+                                    }
+                                }
+                            }
+                            self.block_forks_asserted = self.deferred_forks.len();
+                        } else {
+                            // Subsequent Exits: only assert NEW fork conditions
+                            while self.block_forks_asserted < self.deferred_forks.len() {
+                                let prev_fork = &self.deferred_forks[self.block_forks_asserted];
+                                if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                                    if prev_fork.path_taken {
+                                        self.ctx.assume_true(cond);
+                                    } else {
+                                        self.ctx.assume_false(cond);
+                                    }
+                                }
+                                self.block_forks_asserted += 1;
+                            }
+                        }
+                    }
+                    self.ctx.check_branch_feasibility(&guard_val)
+                };
+                if can_be_true && can_be_false {
+
+                    // The unexplored path (guard=false) should resume at the
+                    // next instruction after this conditional jump, NOT the
+                    // block's default exit. When a VEX IRSB contains multiple
+                    // Ist_Exit statements, using the block fallthrough would
+                    // skip all code between this exit and the end of the block.
+                    let false_target = self.current_insn_addr + self.current_insn_len as u64;
+
+                    // Skip expensive rustbv_to_claripy conversion for the condition.
+                    // The condition is stored in stored_conditions (below) as a RustBV,
+                    // which is the primary lookup path in fork processing. The claripy
+                    // AST was only a P11 fallback for missing stored_conditions entries.
+                    let condition_ast: Option<Py<PyAny>> = None;
+
+                    // Take the "true" path (jump to dst), defer the "false" path
+                    let cond_id = self.next_cond_id();
+                    // Store the Rust condition for later retrieval when processing forks
+                    self.stored_conditions.insert(cond_id, guard_val.clone());
+
+                    // Flush pending stores before snapshotting so the memory
+                    // snapshot includes all writes up to this branch point.
+                    self.flush_stores_to_rust_memory();
+
+                    // Snapshot full state BEFORE adding the branch constraint.
+                    // This enables correct alternate-path forking with solver,
+                    // registers, and memory from the branch point.
+                    self.fork_snapshots.insert(cond_id, BranchSnapshot {
+                        solver: self.ctx.fork(),
+                        registers: self.registers.fork(),
+                        memory: self.rust_memory.as_ref().map(|m| m.fork()),
+                    });
+
+                    // Decide which path to take based on branch direction.
+                    // For backward branches (loops), take the exit (loop back)
+                    // and defer the fall-through (loop exit). For forward branches,
+                    // take the fall-through and defer the exit. VEX often inverts
+                    // forward branch conditions (e.g., `jne target` becomes
+                    // `if (eq) goto exit; NEXT: target`), so fall-through follows
+                    // the natural execution flow for forward branches.
+                    let is_backward_branch = *dst < self.current_insn_addr;
+
+                    let deferred = if is_backward_branch {
+                        DeferredFork {
+                            branch_addr: self.current_insn_addr,
+                            path_taken: true,           // we took the exit (guard=true) path
+                            unexplored_target: false_target, // fall-through deferred
+                            condition_id: cond_id,
+                            push_level: self.push_level,
+                            condition_ast,
+                        }
+                    } else {
+                        DeferredFork {
+                            branch_addr: self.current_insn_addr,
+                            path_taken: false,          // we took the fallthrough (guard=false) path
+                            unexplored_target: *dst,    // the exit target is deferred
+                            condition_id: cond_id,
+                            push_level: self.push_level,
+                            condition_ast,
+                        }
+                    };
+                    self.deferred_forks.push(deferred);
+                    self.deferred_fork_this_step = true;
+
+                    // NOTE: We intentionally do NOT call assume_true/false() permanently.
+                    // The solver stays clean so snapshots capture unconstrained state.
+                    // Taken-path constraints are temporarily added via push/pop for
+                    // check_branch_feasibility() (above), then applied permanently
+                    // during fork processing in exploration.rs after the step completes.
+
+                    if is_backward_branch {
+                        // Take the exit path (loop back to target)
+                        return Ok(StmtResult::Exit {
+                            target: *dst,
+                            jumpkind: *jk,
+                        });
+                    } else {
+                        // Continue execution on the fallthrough path
+                        return Ok(StmtResult::Continue);
+                    }
+                } else if can_be_true {
+                    return Ok(StmtResult::Exit {
+                        target: *dst,
+                        jumpkind: *jk,
+                    });
+                }
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::MBE(_) => Ok(StmtResult::Continue),
+
+            IRStmt::PutI { descr, ix, bias, data } => {
+                // Evaluate the index expression
+                let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, &irsb.tyenv)?;
+
+                // PutI requires a concrete index to compute the register offset
+                let idx = if let Some(idx) = ix_val.as_u64() {
+                    idx
+                } else {
+                    // Symbolic index - concretize using solver
+                    if let Some(concrete) = self.ctx.eval(&ix_val) {
+                        concrete as u64
+                    } else {
+                        return Err(CbExecutionError::Unsupported("PutI index concretization failed".to_string()));
+                    }
+                };
+
+                // Calculate the rotating register offset:
+                // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+                let elem_size = descr.elemTy.bytes();
+                let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
+                let offset = descr.base + index * elem_size;
+
+                // Evaluate the data to write
+                let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+
+                // Write to the register file
+                self.registers.put(offset, data_val);
+
+                // Mark register as dirty (4-byte granularity)
+                let bit_index = (offset / 4) as u32;
+                if bit_index < 128 {
+                    self.dirty_registers |= 1u128 << bit_index;
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::StoreG { guard, addr, data, .. } => {
+                // Evaluate guard condition
+                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+
+                // Check if guard is symbolic
+                if guard_val.is_symbolic() {
+                    // Symbolic guard: need to handle conditional store
+                    // For now, check if guard can be true at all
+                    if !self.ctx.can_be_true(&guard_val) {
+                        // Guard is always false - skip store
+                        return Ok(StmtResult::Continue);
+                    }
+                    if !self.ctx.can_be_false(&guard_val) {
+                        // Guard is always true - perform store unconditionally
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                        let data_size = ((data_val.width() + 7) / 8) as usize;
+
+                        if let Some(addr_concrete) = addr_val.as_u64() {
+                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                            // Check if data is symbolic - use symbolic store callback
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                self.flush_stores(py, callbacks)?;
+                                callbacks
+                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                let data_bytes = bv_to_bytes(&data_val);
+                                self.pending_stores.push((addr_concrete, data_bytes));
+                                if self.pending_stores.len() >= self.max_pending_stores {
+                                    self.flush_stores(py, callbacks)?;
+                                }
+                            }
+                        }
+                        return Ok(StmtResult::Continue);
+                    }
+                    // Both paths possible with symbolic guard - use ITE for conditional store
+                    // Store ITE(guard, new_data, current_data)
+                    let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                    let data_size = ((data_val.width() + 7) / 8) as usize;
+
+                    if let Some(addr_concrete) = addr_val.as_u64() {
+                        // Load current value at address
+                        let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                        // Create ITE: if guard then new_data else current
+                        let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                        self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                        // ITE result is symbolic if guard or either operand is symbolic
+                        if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                            self.flush_stores(py, callbacks)?;
+                            callbacks
+                                .call_memory_store_symbolic_value(py, addr_concrete, &ite_result)
+                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        } else {
+                            let ite_bytes = bv_to_bytes(&ite_result);
+                            self.pending_stores.push((addr_concrete, ite_bytes));
+                            if self.pending_stores.len() >= self.max_pending_stores {
+                                self.flush_stores(py, callbacks)?;
+                            }
+                        }
+                    } else {
+                        // Symbolic address with symbolic guard - concretize for write
+                        match self.concretize_cached_write(&addr_val) {
+                            ConcretizationResult::Single(addr_concrete) => {
+                                // Track concretization constraint for Python sync
+                                self.track_concretization_constraint(&addr_val, addr_concrete);
+                                // Load current value and use ITE
+                                let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                                let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                                self.flush_stores(py, callbacks)?;
+                                // ITE result is symbolic - use symbolic store callback
+                                if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                    callbacks
+                                        .call_memory_store_symbolic_value(py, addr_concrete, &ite_result)
+                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                } else {
+                                    let ite_bytes = bv_to_bytes(&ite_result);
+                                    callbacks
+                                        .call_memory_store(py, addr_concrete, &ite_bytes)
+                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                }
+                            }
+                            _ => {
+                                // P20: Multiple addresses with symbolic guard - delegate to Python
+                                // instead of returning UNSUPPORTED error which deadends the state
+                                log::debug!(
+                                    "P20: Symbolic guarded store with multiple addresses - delegating to Python"
+                                );
+                                self.flush_stores(py, callbacks)?;
+                                if callbacks.has_memory_store_symbolic_full() {
+                                    // Use full symbolic store callback which handles complex cases
+                                    callbacks
+                                        .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                } else {
+                                    // No symbolic store callback - log warning but don't fail
+                                    log::warn!(
+                                        "P20: No symbolic_store_full callback for guarded store with symbolic address. \
+                                         Store may be lost, but continuing execution."
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    return Ok(StmtResult::Continue);
+                }
+
+                // Concrete guard: simple check
+                if let Some(g) = guard_val.as_u64() {
+                    if g != 0 {
+                        // Guard is true - perform the store
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                        let data_size = ((data_val.width() + 7) / 8) as usize;
+
+                        if let Some(addr_concrete) = addr_val.as_u64() {
+                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                            // Check if data is symbolic - use symbolic store callback
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                self.flush_stores(py, callbacks)?;
+                                callbacks
+                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                let data_bytes = bv_to_bytes(&data_val);
+                                self.pending_stores.push((addr_concrete, data_bytes));
+                                if self.pending_stores.len() >= self.max_pending_stores {
+                                    self.flush_stores(py, callbacks)?;
+                                }
+                            }
+                        } else {
+                            // Symbolic address with concrete guard - flush and use callback
+                            self.flush_stores(py, callbacks)?;
+                            // Check if data is symbolic - use symbolic store callback
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                // Concretize address for write (with cache)
+                                let concret_result = self.concretize_cached_write(&addr_val);
+                                match concret_result {
+                                    ConcretizationResult::Single(addr_concrete) => {
+                                        self.track_concretization_constraint(&addr_val, addr_concrete);
+                                        callbacks
+                                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                    }
+                                    ConcretizationResult::Multiple(addrs) => {
+                                        // Delegate to Python for conditional stores with symbolic data
+                                        if callbacks.has_memory_store_symbolic_full() {
+                                            callbacks
+                                                .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        } else {
+                                            // Fallback: store to first address
+                                            callbacks
+                                                .call_memory_store_symbolic_value(py, addrs[0], &data_val)
+                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        }
+                                    }
+                                    _ => {
+                                        // TooLarge or Failed - delegate to Python's full symbolic callback
+                                        if callbacks.has_memory_store_symbolic_full() {
+                                            callbacks
+                                                .call_memory_store_symbolic_full(py, &addr_val, &data_val)
+                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        } else {
+                                            return Err(CbExecutionError::Unsupported(
+                                                "symbolic store with unconcretizable address".to_string()
+                                            ));
+                                        }
+                                    }
+                                }
+                            } else {
+                                let data_bytes = bv_to_bytes(&data_val);
+                                callbacks
+                                    .call_memory_store(py, 0, &data_bytes)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
+                        }
+                    }
+                    // Guard is false - skip the store
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::LoadG { dst, guard, addr, alt, cvt, .. } => {
+                // Evaluate guard condition
+                let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+
+                // Evaluate the alternative value (used when guard is false)
+                let alt_val = self.eval_expr_with_callbacks(py, callbacks, alt, &irsb.tyenv)?;
+
+                // Determine the load size from the destination temp type
+                let dst_ty = irsb.tyenv.get(*dst).ok_or_else(|| {
+                    CbExecutionError::InvalidIR(format!("LoadG destination temp {} not in tyenv", dst))
+                })?;
+                let load_size = match cvt {
+                    IRLoadGOp::Identity => dst_ty.bytes() as usize,
+                    IRLoadGOp::WidenS | IRLoadGOp::WidenZ => {
+                        // For widening loads, the memory load is smaller
+                        // Typically 8->32, 16->32, 32->64
+                        match dst_ty.bytes() {
+                            4 => 1, // Could be 1 or 2, default to 1
+                            8 => 4, // 32->64
+                            _ => dst_ty.bytes() as usize,
+                        }
+                    }
+                };
+
+                // Check if guard is symbolic
+                if guard_val.is_symbolic() {
+                    // Check if guard can be true/false
+                    let can_be_true = self.ctx.can_be_true(&guard_val);
+                    let can_be_false = self.ctx.can_be_false(&guard_val);
+
+                    if can_be_true && !can_be_false {
+                        // Guard is always true - perform load unconditionally
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+
+                        // Get concrete address (directly or via concretization)
+                        let addr_concrete = match addr_val.as_u64() {
+                            Some(a) => a,
+                            None => {
+                                // Symbolic address - concretize for read
+                                match self.concretize_cached_read(&addr_val) {
+                                    ConcretizationResult::Single(a) => {
+                                        // Track concretization constraint for Python sync
+                                        self.track_concretization_constraint(&addr_val, a);
+                                        a
+                                    }
+                                    ConcretizationResult::Multiple(ref addrs) => {
+                                        *addrs.first().ok_or_else(|| {
+                                            CbExecutionError::Unsupported("LoadG with empty address set".to_string())
+                                        })?
+                                    }
+                                    _ => {
+                                        return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
+                                    }
+                                }
+                            }
+                        };
+
+                        let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
+
+                        // Apply conversion
+                        let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
+
+                        if (*dst as usize) < self.temps.len() {
+                            self.temps[*dst as usize] = Some(result);
+                        }
+                        return Ok(StmtResult::Continue);
+                    }
+
+                    if !can_be_true && can_be_false {
+                        // Guard is always false - use alt value
+                        if (*dst as usize) < self.temps.len() {
+                            self.temps[*dst as usize] = Some(alt_val);
+                        }
+                        return Ok(StmtResult::Continue);
+                    }
+
+                    // Both paths possible - evaluate address and load, then ITE
+                    let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+
+                    // Get concrete address
+                    let addr_concrete = match addr_val.as_u64() {
+                        Some(a) => a,
+                        None => {
+                            match self.concretize_cached_read(&addr_val) {
+                                ConcretizationResult::Single(a) => {
+                                    // Track concretization constraint for Python sync
+                                    self.track_concretization_constraint(&addr_val, a);
+                                    a
+                                }
+                                ConcretizationResult::Multiple(ref addrs) => {
+                                    *addrs.first().ok_or_else(|| {
+                                        CbExecutionError::Unsupported("LoadG with empty address set".to_string())
+                                    })?
+                                }
+                                _ => {
+                                    return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
+                                }
+                            }
+                        }
+                    };
+
+                    let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
+
+                    // Apply conversion to loaded value
+                    let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
+
+                    // Create ITE: if guard then loaded else alt
+                    let result = guard_val.ite(&converted, &alt_val, self.ctx);
+
+                    if (*dst as usize) < self.temps.len() {
+                        self.temps[*dst as usize] = Some(result);
+                    }
+                    return Ok(StmtResult::Continue);
+                }
+
+                // Concrete guard
+                if let Some(g) = guard_val.as_u64() {
+                    let result = if g != 0 {
+                        // Guard is true - perform the load
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+
+                        // Get concrete address
+                        let addr_concrete = match addr_val.as_u64() {
+                            Some(a) => a,
+                            None => {
+                                match self.concretize_cached_read(&addr_val) {
+                                    ConcretizationResult::Single(a) => {
+                                        // Track concretization constraint for Python sync
+                                        self.track_concretization_constraint(&addr_val, a);
+                                        a
+                                    }
+                                    ConcretizationResult::Multiple(ref addrs) => {
+                                        *addrs.first().ok_or_else(|| {
+                                            CbExecutionError::Unsupported("LoadG with empty address set".to_string())
+                                        })?
+                                    }
+                                    _ => {
+                                        return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
+                                    }
+                                }
+                            }
+                        };
+
+                        let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
+                        self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
+                    } else {
+                        // Guard is false - use alternative value
+                        alt_val
+                    };
+
+                    if (*dst as usize) < self.temps.len() {
+                        self.temps[*dst as usize] = Some(result);
+                    }
+                } else {
+                    // This shouldn't happen if guard_val is concrete
+                    return Err(CbExecutionError::InvalidIR("LoadG guard evaluation failed".to_string()));
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::CAS { .. } => Err(CbExecutionError::Unsupported("compare-and-swap".to_string())),
+            IRStmt::LLSC { .. } => {
+                Err(CbExecutionError::Unsupported("load-linked/store-conditional".to_string()))
+            }
+            IRStmt::Dirty(dirty) => {
+                // Check guard if present
+                if let Some(guard) = &dirty.guard {
+                    let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+                    if guard_val.is_symbolic() {
+                        // Symbolic guard - check if can be true/false
+                        if !self.ctx.can_be_true(&guard_val) {
+                            return Ok(StmtResult::Continue);
+                        }
+                        // Both paths possible - need Python to handle
+                        return Err(CbExecutionError::Unsupported(format!(
+                            "dirty call with symbolic guard: {}",
+                            dirty.cee.name
+                        )));
+                    } else if let Some(g) = guard_val.as_u64() {
+                        if g == 0 {
+                            // Guard is false - skip the dirty call
+                            return Ok(StmtResult::Continue);
+                        }
+                    }
+                }
+
+                // Evaluate arguments
+                let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
+                let mut all_args_concrete = true;
+                for arg in &dirty.args {
+                    let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
+                    if let Some(concrete) = val.as_u64() {
+                        arg_vals.push(concrete);
+                    } else {
+                        all_args_concrete = false;
+                        break;
+                    }
+                }
+
+                // Determine return type bits
+                let ret_ty_bits = if let Some(tmp) = dirty.tmp {
+                    irsb.tyenv.get(tmp).map(|t| t.bits()).unwrap_or(64)
+                } else {
+                    0 // No return value
+                };
+
+                // Try native dirty helper dispatch first
+                if all_args_concrete {
+                    if let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals) {
+                        // Native handler succeeded!
+                        log::trace!("Native dirty call: {} (args: {:?})", dirty.cee.name, arg_vals);
+
+                        // Store result in temporary if specified
+                        if let Some(tmp) = dirty.tmp {
+                            if let Some(return_value) = result.return_value {
+                                let value = RustBV::concrete(return_value as u128, ret_ty_bits);
+                                if (tmp as usize) < self.temps.len() {
+                                    self.temps[tmp as usize] = Some(value);
+                                }
+                            }
+                        }
+
+                        // Apply any register writes from the helper
+                        for (offset, value) in result.reg_writes {
+                            // Convert u64 value to RustBV and store in register
+                            let bv = RustBV::concrete(value as u128, 64);
+                            self.registers.put(offset, bv);
+                        }
+
+                        return Ok(StmtResult::Continue);
+                    }
+                }
+
+                // Fall back to Python callback
+                if !callbacks.has_dirty_call() {
+                    return Err(CbExecutionError::Unsupported(format!(
+                        "dirty call: {} (no callback and no native handler)",
+                        dirty.cee.name
+                    )));
+                }
+
+                if !all_args_concrete {
+                    // Re-evaluate args for Python (we aborted early above)
+                    arg_vals.clear();
+                    for arg in &dirty.args {
+                        let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
+                        if let Some(concrete) = val.as_u64() {
+                            arg_vals.push(concrete);
+                        } else {
+                            // Symbolic argument - Python needs to handle this
+                            return Err(CbExecutionError::Unsupported(format!(
+                                "dirty call with symbolic arg: {}",
+                                dirty.cee.name
+                            )));
+                        }
+                    }
+                }
+
+                // Call Python callback
+                let (data, is_symbolic, _symbolic_ast) = callbacks
+                    .call_dirty_call(py, &dirty.cee.name, &arg_vals, ret_ty_bits)
+                    .map_err(|e| CbExecutionError::Callback(format!(
+                        "dirty call {} failed: {}",
+                        dirty.cee.name, e
+                    )))?;
+
+                // Store result in temporary if specified
+                if let Some(tmp) = dirty.tmp {
+                    let result = if is_symbolic {
+                        // Create a symbolic value for the result
+                        RustBV::symbolic(
+                            self.ctx,
+                            &format!("dirty_{}", dirty.cee.name),
+                            ret_ty_bits,
+                        )
+                    } else {
+                        // Convert bytes to concrete value
+                        let mut value: u128 = 0;
+                        for (i, &byte) in data.iter().enumerate() {
+                            if (i * 8) as u32 >= ret_ty_bits {
+                                break;
+                            }
+                            value |= (byte as u128) << (i * 8);
+                        }
+                        RustBV::concrete(value, ret_ty_bits)
+                    };
+
+                    if (tmp as usize) < self.temps.len() {
+                        self.temps[tmp as usize] = Some(result);
+                    }
+                }
+
+                Ok(StmtResult::Continue)
+            }
+        }
+    }
+}

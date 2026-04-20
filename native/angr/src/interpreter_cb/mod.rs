@@ -1,0 +1,1375 @@
+//! Callback-aware VEX IR interpreter.
+//!
+//! This interpreter uses Python callbacks for memory operations instead of
+//! local SymbolicMemory. It can run multiple blocks in a loop, returning
+//! to Python only when an event requires Python handling.
+
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::Instant;
+
+use lru::LruCache;
+use pyo3::prelude::*;
+
+use crate::arch::{arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch, RegisterFile};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
+use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
+use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::memory::{MemoryError, Permission, SymbolicMemory};
+use crate::symbolic::{BVOp, RustBV, RustSymbolTable, SymContext};
+use crate::vex::ccall;
+use crate::vex::dirty::DirtyHelperDispatch;
+use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
+use crate::vex::ops::{OpError, VEXOps};
+use crate::vex::{deserialize_irsb, Endness};
+
+
+mod constraints;
+mod execution;
+mod exits;
+mod expressions;
+mod helpers;
+mod prefetch;
+mod statements;
+
+use helpers::bytes_to_bv;
+
+
+
+/// Full state snapshot at a symbolic branch point.
+/// Used by deferred forks to create correct alternate-path states
+/// with solver, registers, and memory from the branch point.
+pub struct BranchSnapshot {
+    pub solver: SymContext,
+    pub registers: RegisterFile,
+    pub memory: Option<SymbolicMemory>,
+}
+
+/// Execution statistics for profiling.
+///
+/// Tracks timing and counts for various operations during VEX execution.
+/// Times are in nanoseconds for precision.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionStats {
+    /// Number of load statements executed.
+    pub load_stmt_count: u64,
+    /// Time spent in load statements (nanoseconds).
+    pub load_stmt_time_ns: u64,
+    /// Number of store statements executed.
+    pub store_stmt_count: u64,
+    /// Time spent in store statements (nanoseconds).
+    pub store_stmt_time_ns: u64,
+    /// Number of exit statements executed.
+    pub exit_stmt_count: u64,
+    /// Time spent in exit statements (nanoseconds).
+    pub exit_stmt_time_ns: u64,
+    /// Number of Python callback invocations.
+    pub python_callback_count: u64,
+    /// Time spent in Python callbacks (nanoseconds).
+    pub python_callback_time_ns: u64,
+    /// Number of address concretizations performed.
+    pub concretize_count: u64,
+    /// Time spent in address concretization (nanoseconds).
+    pub concretize_time_ns: u64,
+    /// Number of IRSB cache hits.
+    pub cache_hit_count: u64,
+    /// Number of IRSB cache misses (lifts needed).
+    pub cache_miss_count: u64,
+    /// Time spent lifting blocks (nanoseconds).
+    pub lift_time_ns: u64,
+    /// Number of Rust memory loads (vs callback fallback).
+    pub rust_memory_load_count: u64,
+    /// Number of Python fallback memory loads.
+    pub fallback_memory_load_count: u64,
+    /// Number of Rust memory stores.
+    pub rust_memory_store_count: u64,
+    /// Number of Python fallback memory stores.
+    pub fallback_memory_store_count: u64,
+    /// Number of expression evaluations.
+    pub expr_eval_count: u64,
+    /// Time spent evaluating expressions (nanoseconds).
+    pub expr_eval_time_ns: u64,
+    /// Number of blocks executed.
+    pub blocks_executed: u64,
+    /// Total execution time (nanoseconds).
+    pub total_time_ns: u64,
+    /// Time spent setting up interpreter per step (nanoseconds).
+    pub step_setup_time_ns: u64,
+    /// Number of exploration steps executed.
+    pub step_count: u64,
+    /// Number of solver satisfiability checks.
+    pub solver_sat_count: u64,
+    /// Time spent in solver satisfiability checks (nanoseconds).
+    pub solver_sat_time_ns: u64,
+    /// Time spent executing blocks (nanoseconds) — the inner VEX execution.
+    pub block_exec_time_ns: u64,
+    /// Time spent in prefetch loads per block (nanoseconds).
+    pub prefetch_time_ns: u64,
+    /// Number of statements executed.
+    pub stmt_count: u64,
+    /// Number of deferred forks processed in exploration loop.
+    pub deferred_fork_count: u64,
+    /// Time spent processing deferred forks (nanoseconds).
+    pub deferred_fork_time_ns: u64,
+    /// Time spent in solver fork/clone operations (nanoseconds).
+    pub solver_fork_time_ns: u64,
+    /// Number of solver fork operations.
+    pub solver_fork_count: u64,
+    /// Number of active states at end of run.
+    pub active_states_count: u64,
+    /// Time spent in the main run() loop overhead (nanoseconds).
+    pub run_loop_time_ns: u64,
+}
+
+impl ExecutionStats {
+    /// Convert stats to a HashMap for Python exposure.
+    pub fn to_hashmap(&self) -> HashMap<String, u64> {
+        let mut map = HashMap::new();
+        map.insert("load_stmt_count".to_string(), self.load_stmt_count);
+        map.insert("load_stmt_time_ns".to_string(), self.load_stmt_time_ns);
+        map.insert("store_stmt_count".to_string(), self.store_stmt_count);
+        map.insert("store_stmt_time_ns".to_string(), self.store_stmt_time_ns);
+        map.insert("exit_stmt_count".to_string(), self.exit_stmt_count);
+        map.insert("exit_stmt_time_ns".to_string(), self.exit_stmt_time_ns);
+        map.insert("python_callback_count".to_string(), self.python_callback_count);
+        map.insert("python_callback_time_ns".to_string(), self.python_callback_time_ns);
+        map.insert("concretize_count".to_string(), self.concretize_count);
+        map.insert("concretize_time_ns".to_string(), self.concretize_time_ns);
+        map.insert("cache_hit_count".to_string(), self.cache_hit_count);
+        map.insert("cache_miss_count".to_string(), self.cache_miss_count);
+        map.insert("lift_time_ns".to_string(), self.lift_time_ns);
+        map.insert("rust_memory_load_count".to_string(), self.rust_memory_load_count);
+        map.insert("fallback_memory_load_count".to_string(), self.fallback_memory_load_count);
+        map.insert("rust_memory_store_count".to_string(), self.rust_memory_store_count);
+        map.insert("fallback_memory_store_count".to_string(), self.fallback_memory_store_count);
+        map.insert("expr_eval_count".to_string(), self.expr_eval_count);
+        map.insert("expr_eval_time_ns".to_string(), self.expr_eval_time_ns);
+        map.insert("blocks_executed".to_string(), self.blocks_executed);
+        map.insert("total_time_ns".to_string(), self.total_time_ns);
+        map.insert("step_setup_time_ns".to_string(), self.step_setup_time_ns);
+        map.insert("step_count".to_string(), self.step_count);
+        map.insert("solver_sat_count".to_string(), self.solver_sat_count);
+        map.insert("solver_sat_time_ns".to_string(), self.solver_sat_time_ns);
+        map.insert("block_exec_time_ns".to_string(), self.block_exec_time_ns);
+        map.insert("prefetch_time_ns".to_string(), self.prefetch_time_ns);
+        map.insert("stmt_count".to_string(), self.stmt_count);
+        map.insert("deferred_fork_count".to_string(), self.deferred_fork_count);
+        map.insert("deferred_fork_time_ns".to_string(), self.deferred_fork_time_ns);
+        map.insert("solver_fork_time_ns".to_string(), self.solver_fork_time_ns);
+        map.insert("solver_fork_count".to_string(), self.solver_fork_count);
+        map.insert("active_states_count".to_string(), self.active_states_count);
+        map.insert("run_loop_time_ns".to_string(), self.run_loop_time_ns);
+        map
+    }
+
+    /// Reset all statistics to zero.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Merge another stats instance into this one.
+    pub fn merge(&mut self, other: &ExecutionStats) {
+        self.load_stmt_count += other.load_stmt_count;
+        self.load_stmt_time_ns += other.load_stmt_time_ns;
+        self.store_stmt_count += other.store_stmt_count;
+        self.store_stmt_time_ns += other.store_stmt_time_ns;
+        self.exit_stmt_count += other.exit_stmt_count;
+        self.exit_stmt_time_ns += other.exit_stmt_time_ns;
+        self.python_callback_count += other.python_callback_count;
+        self.python_callback_time_ns += other.python_callback_time_ns;
+        self.concretize_count += other.concretize_count;
+        self.concretize_time_ns += other.concretize_time_ns;
+        self.cache_hit_count += other.cache_hit_count;
+        self.cache_miss_count += other.cache_miss_count;
+        self.lift_time_ns += other.lift_time_ns;
+        self.rust_memory_load_count += other.rust_memory_load_count;
+        self.fallback_memory_load_count += other.fallback_memory_load_count;
+        self.rust_memory_store_count += other.rust_memory_store_count;
+        self.fallback_memory_store_count += other.fallback_memory_store_count;
+        self.expr_eval_count += other.expr_eval_count;
+        self.expr_eval_time_ns += other.expr_eval_time_ns;
+        self.blocks_executed += other.blocks_executed;
+        self.total_time_ns += other.total_time_ns;
+        self.step_setup_time_ns += other.step_setup_time_ns;
+        self.step_count += other.step_count;
+        self.solver_sat_count += other.solver_sat_count;
+        self.solver_sat_time_ns += other.solver_sat_time_ns;
+        self.block_exec_time_ns += other.block_exec_time_ns;
+        self.prefetch_time_ns += other.prefetch_time_ns;
+        self.stmt_count += other.stmt_count;
+        self.deferred_fork_count += other.deferred_fork_count;
+        self.deferred_fork_time_ns += other.deferred_fork_time_ns;
+        self.solver_fork_time_ns += other.solver_fork_time_ns;
+        self.solver_fork_count += other.solver_fork_count;
+        self.active_states_count = other.active_states_count; // snapshot, not sum
+        self.run_loop_time_ns += other.run_loop_time_ns;
+    }
+}
+
+/// Errors during callback-based VEX execution.
+#[derive(Debug, Clone)]
+pub enum CbExecutionError {
+    /// Memory error from callback.
+    Memory(String),
+    /// Operation error.
+    Op(OpError),
+    /// Invalid VEX IR.
+    InvalidIR(String),
+    /// Unsupported feature.
+    Unsupported(String),
+    /// Type mismatch.
+    TypeMismatch { expected: IRType, got: IRType },
+    /// Unknown temporary variable.
+    UnknownTemp(u32),
+    /// Python callback error.
+    Callback(String),
+    /// Block lifting error.
+    LiftError(String),
+    /// Needs Python fallback for special expressions (P7 fix)
+    NeedPythonFallback(String),
+}
+
+impl From<OpError> for CbExecutionError {
+    fn from(e: OpError) -> Self {
+        CbExecutionError::Op(e)
+    }
+}
+
+impl std::fmt::Display for CbExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CbExecutionError::Memory(msg) => write!(f, "memory error: {}", msg),
+            CbExecutionError::Op(e) => write!(f, "operation error: {}", e),
+            CbExecutionError::InvalidIR(msg) => write!(f, "invalid VEX IR: {}", msg),
+            CbExecutionError::Unsupported(msg) => write!(f, "unsupported: {}", msg),
+            CbExecutionError::TypeMismatch { expected, got } => {
+                write!(f, "type mismatch: expected {:?}, got {:?}", expected, got)
+            }
+            CbExecutionError::UnknownTemp(tmp) => write!(f, "unknown temporary t{}", tmp),
+            CbExecutionError::Callback(msg) => write!(f, "callback error: {}", msg),
+            CbExecutionError::LiftError(msg) => write!(f, "lift error: {}", msg),
+            CbExecutionError::NeedPythonFallback(msg) => write!(f, "need Python fallback: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CbExecutionError {}
+
+/// Result of concretizing a symbolic jump target.
+enum ConcretizedJump {
+    /// Single concrete address (common case for deterministic jumps).
+    Single(u64),
+    /// Multiple concrete addresses (for symbolic ret/call/jmp).
+    /// Contains the list of targets and the original symbolic expression.
+    Multiple {
+        targets: Vec<u64>,
+        expr: RustBV,
+    },
+    /// Too many targets - exceeds max_symbolic_ip_targets limit.
+    /// State should be marked as unconstrained.
+    TooMany {
+        min: u64,
+        max: u64,
+        limit: usize,
+    },
+}
+
+/// Result of executing a single statement.
+enum StmtResult {
+    /// Continue to next statement.
+    Continue,
+    /// Exit the block early.
+    Exit { target: u64, jumpkind: JumpKind },
+    /// Symbolic branch detected - need to fork.
+    SymbolicBranch {
+        condition: RustBV,
+        true_target: u64,
+        false_target: u64,
+    },
+}
+
+/// Result of executing a single block.
+#[derive(Debug)]
+pub enum BlockResult {
+    /// Continue to the next block at given address.
+    Continue { next_addr: u64 },
+    /// Syscall encountered.
+    Syscall { num: u64 },
+    /// Symbolic branch - need to fork.
+    SymbolicBranch {
+        condition_id: u64,
+        true_target: u64,
+        false_target: u64,
+    },
+    /// Hook address hit.
+    Hook { addr: u64 },
+    /// Block execution error.
+    Error { message: String },
+    /// Normal block end with jumpkind.
+    BlockEnd { next_addr: u64, jumpkind: JumpKind },
+    /// Symbolic jump target with multiple concrete targets after concretization.
+    /// The exploration manager should fork states for each target.
+    SymbolicJumpTarget {
+        /// Concrete target addresses after concretization.
+        targets: Vec<u64>,
+        /// ID for the stored symbolic expression (for constraint addition).
+        condition_id: u64,
+        /// The symbolic expression for the jump target.
+        target_expr: RustBV,
+        /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
+        jumpkind: JumpKind,
+    },
+    /// Unconstrained jump - too many targets, exceeds limit.
+    /// The state should be moved to the "unconstrained" stash.
+    UnconstrainedJump {
+        /// Minimum possible target address.
+        min_target: u64,
+        /// Maximum possible target address.
+        max_target: u64,
+        /// The configured limit that was exceeded.
+        limit: usize,
+        /// Jump kind.
+        jumpkind: JumpKind,
+    },
+    /// Unmodeled function call - target is not hooked but is a CALL.
+    /// Need Python to check if a SimProcedure can be resolved.
+    UnmodeledCall {
+        /// Address of the unmodeled function.
+        addr: u64,
+        /// Return address (from stack).
+        return_addr: u64,
+        /// Symbol name if available.
+        symbol_name: Option<String>,
+    },
+}
+
+/// A concrete memory region cached locally in Rust.
+/// Uses Arc<Vec<u8>> for O(1) cloning — binary data is shared, not copied.
+#[derive(Clone)]
+pub struct ConcreteMemoryRegion {
+    /// Base address of the region.
+    pub base: u64,
+    /// Size of the region in bytes.
+    pub size: u64,
+    /// The concrete data (shared via Arc to avoid copying per step).
+    pub data: Arc<Vec<u8>>,
+}
+
+impl ConcreteMemoryRegion {
+    /// Check if this region contains the given address range.
+    #[inline]
+    pub fn contains(&self, addr: u64, size: u64) -> bool {
+        addr >= self.base && addr + size <= self.base + self.size
+    }
+
+    /// Read bytes from this region. Returns None if out of bounds.
+    #[inline]
+    pub fn read(&self, addr: u64, size: usize) -> Option<&[u8]> {
+        if addr < self.base {
+            return None;
+        }
+        let offset = (addr - self.base) as usize;
+        if offset + size > self.data.len() {
+            return None;
+        }
+        Some(&self.data[offset..offset + size])
+    }
+}
+
+/// Cached result of a prefetched memory load.
+#[derive(Clone)]
+pub struct PrefetchedLoad {
+    /// The loaded bitvector value.
+    pub value: RustBV,
+    /// Whether the value is symbolic.
+    pub is_symbolic: bool,
+}
+
+/// A constraint that was added in Rust and needs to be synced to Python.
+///
+/// When Rust concretizes a symbolic address or makes a branch decision,
+/// it adds constraints to its Z3 context. These constraints must be
+/// communicated to Python's claripy solver to maintain consistency
+/// when falling back to Python for complex operations.
+#[derive(Clone, Debug)]
+pub struct PendingConstraint {
+    /// The symbolic expression that was constrained.
+    /// For address concretization: the address expression
+    /// For branch: the condition
+    pub expression: RustBV,
+    /// The concrete value it was constrained to.
+    pub concrete_value: u128,
+    /// Description for debugging.
+    pub description: String,
+    /// Handle ID for looking up the original claripy AST in Python.
+    /// If the expression came from a Python callback that returned a handle,
+    /// this ID can be used to look up the original AST for constraint sync.
+    pub handle_id: Option<u64>,
+}
+
+impl PendingConstraint {
+    /// Create a new pending constraint for address concretization.
+    pub fn address_concretization(addr_expr: RustBV, concrete_addr: u64) -> Self {
+        PendingConstraint {
+            expression: addr_expr,
+            concrete_value: concrete_addr as u128,
+            description: format!("addr_concretize_0x{:x}", concrete_addr),
+            handle_id: None,
+        }
+    }
+
+    /// Create a new pending constraint for address concretization with handle_id.
+    pub fn address_concretization_with_handle(
+        addr_expr: RustBV,
+        concrete_addr: u64,
+        handle_id: Option<u64>,
+    ) -> Self {
+        PendingConstraint {
+            expression: addr_expr,
+            concrete_value: concrete_addr as u128,
+            description: format!("addr_concretize_0x{:x}", concrete_addr),
+            handle_id,
+        }
+    }
+
+    /// Create a new pending constraint for a branch taken (cond == 1).
+    pub fn branch_true(cond: RustBV) -> Self {
+        PendingConstraint {
+            expression: cond,
+            concrete_value: 1,
+            description: "branch_true".to_string(),
+            handle_id: None,
+        }
+    }
+
+    /// Create a new pending constraint for a branch not taken (cond == 0).
+    pub fn branch_false(cond: RustBV) -> Self {
+        PendingConstraint {
+            expression: cond,
+            concrete_value: 0,
+            description: "branch_false".to_string(),
+            handle_id: None,
+        }
+    }
+}
+
+/// Information about a registered SimProcedure.
+#[derive(Clone, Debug)]
+pub struct SimProcedureInfo {
+    /// Name of the SimProcedure (e.g., "strlen", "malloc").
+    pub name: String,
+    /// Number of arguments to extract.
+    pub num_args: usize,
+    /// Whether this is a no-return procedure (e.g., "exit", "abort").
+    pub no_return: bool,
+}
+
+/// Callback-aware VEX IR interpreter.
+///
+/// This interpreter uses Python callbacks for memory and register access,
+/// allowing it to work with angr's symbolic memory model.
+///
+/// When `use_rust_memory` is true, the interpreter uses `rust_memory` for
+/// memory operations, falling back to Python callbacks only for unmapped pages.
+/// This provides significant performance improvement for memory-intensive code.
+pub struct CallbackInterpreter<'a> {
+    /// Register file (local cache, synced via callbacks).
+    pub registers: RegisterFile,
+    /// Temporary variables for current block.
+    temps: Vec<Option<RustBV>>,
+    /// Solver context.
+    ctx: &'a SymContext,
+    /// Symbol table for handle-based claripy bypass.
+    /// When present, Python callbacks can return RustBVHandle instead of claripy ASTs.
+    symbol_table: Option<&'a RustSymbolTable>,
+    /// Current program counter.
+    pub pc: u64,
+    /// Current instruction address (within block).
+    current_insn_addr: u64,
+    /// Current instruction length (from IMark).
+    current_insn_len: u32,
+    /// Hook addresses (return to Python when hit).
+    hook_addrs: HashSet<u64>,
+    /// VEX architecture.
+    arch: VexArch,
+    /// Block cache (shared across runs) using Arc for O(1) cloning.
+    block_cache: LruCache<u64, Arc<IRSB>>,
+    /// Whether to use callbacks for memory (vs local registers).
+    use_memory_callbacks: bool,
+    /// Deferred forks collected during execution.
+    /// Each fork represents a branch where we took one path and deferred the other.
+    deferred_forks: Vec<DeferredFork>,
+    /// Whether a deferred fork was already created this step.
+    /// Limits to one deferred fork per run_until_event call to prevent
+    /// solver corruption from under-constrained multi-block execution.
+    deferred_fork_this_step: bool,
+    /// Whether we've pushed the solver for incremental branch constraint tracking.
+    /// When true, the solver has accumulated taken-path conditions from prior
+    /// deferred forks in this block. Must pop at block end.
+    block_solver_pushed: bool,
+    /// Number of deferred_forks conditions already asserted in the pushed context.
+    block_forks_asserted: usize,
+    /// Execution configuration.
+    config: ExecutionConfig,
+    /// Counter for alternating branch policy.
+    branch_counter: u64,
+    /// Next condition ID for tracking branch conditions.
+    next_condition_id: u64,
+    /// Current solver push level for constraint tracking.
+    /// Incremented when we push before adding a branch constraint.
+    push_level: u32,
+    /// Concrete memory regions cached locally for fast access.
+    /// These are read-only regions (e.g., binary .text/.rodata sections).
+    concrete_memory: Vec<ConcreteMemoryRegion>,
+    /// Address concretizer for handling symbolic addresses.
+    concretizer: AddressConcretizer,
+    /// Bitset tracking which register offsets have been modified.
+    /// Each bit represents a 4-byte aligned offset (offset / 4).
+    /// A u128 covers 512 bytes of register space (128 * 4 = 512).
+    dirty_registers: u128,
+    /// Pending concrete stores to batch for efficiency.
+    /// Each entry is (address, data_bytes).
+    pending_stores: Vec<(u64, Vec<u8>)>,
+    /// All stores flushed during this step (accumulated across block boundaries).
+    /// Used for same-step cross-block load forwarding and for applying to state memory.
+    /// HashMap for O(1) lookup by address. Value is the most recent store data.
+    all_flushed_stores: HashMap<u64, Vec<u8>>,
+    /// All symbolic stores flushed during this step (accumulated across block boundaries).
+    /// Preserves symbolic RustBV values for cross-block load forwarding.
+    /// Takes priority over all_flushed_stores (concrete) during loads.
+    all_flushed_symbolic_stores: HashMap<u64, RustBV>,
+    /// Pending symbolic stores - maps address to symbolic RustBV.
+    /// These override the concrete bytes in pending_stores for load forwarding.
+    pending_symbolic_stores: HashMap<u64, RustBV>,
+    /// Maximum pending stores before auto-flush.
+    max_pending_stores: usize,
+    /// Rust-native symbolic memory (replaces Python callbacks when enabled).
+    /// When Some, memory operations try Rust first before falling back to callbacks.
+    rust_memory: Option<SymbolicMemory>,
+    /// Whether to use Rust-native memory (vs Python callbacks).
+    /// When true and rust_memory is Some, memory ops use Rust directly.
+    use_rust_memory: bool,
+    /// When true, skip Z3 feasibility checks during deferred fork creation.
+    /// This mirrors angr's LAZY_SOLVES option for binaries with expensive constraints.
+    pub lazy_solves: bool,
+    /// Prefetch cache for batched memory loads.
+    /// Key is (address, size), value is the prefetched result.
+    /// This is populated at block start and used during Load expression evaluation.
+    load_prefetch_cache: HashMap<(u64, usize), PrefetchedLoad>,
+    /// Whether load prefetching is enabled.
+    use_load_prefetch: bool,
+    /// Number of pages to prefetch in each direction when fetching a page.
+    /// 0 = no prefetching, 1 = fetch 3 pages (main + 1 before + 1 after), etc.
+    /// Default is 2 for good locality on stack/heap access patterns.
+    page_prefetch_count: u32,
+    /// Dirty helper dispatch table for native handling of common helpers.
+    dirty_dispatch: DirtyHelperDispatch,
+    /// Registry mapping hook addresses to SimProcedure info.
+    /// When a hook is hit, we can extract arguments using this info.
+    simprocedure_registry: HashMap<u64, SimProcedureInfo>,
+    /// Calling convention for argument extraction.
+    calling_convention: Box<dyn CallingConvention>,
+    /// Last branch condition encountered (for symbolic branch handling).
+    /// Stored when a SymbolicBranch is created so callers can retrieve it.
+    last_branch_condition: Option<RustBV>,
+    /// Pending constraints that need to be synced to Python.
+    /// These accumulate when Rust adds constraints (e.g., address concretization)
+    /// and are synced to Python before falling back to Python callbacks.
+    pending_python_constraints: Vec<PendingConstraint>,
+    /// Stored branch conditions by ID for deferred fork handling.
+    /// When a deferred fork is created, we store the condition here so
+    /// callers can retrieve it to properly constrain forked states.
+    stored_conditions: HashMap<u64, RustBV>,
+    /// Full state snapshots taken BEFORE branch constraints were added.
+    /// Keyed by condition_id, these enable correct alternate-path forking
+    /// with solver, registers, and memory from the branch point.
+    fork_snapshots: HashMap<u64, BranchSnapshot>,
+    /// Execution statistics for profiling.
+    stats: ExecutionStats,
+    /// Whether profiling is enabled.
+    profiling_enabled: bool,
+    /// Concrete memory regions sorted by base address for binary search.
+    /// This is rebuilt when regions are added.
+    concrete_memory_sorted: bool,
+    /// Per-block concretization cache.
+    /// Maps BV id to cached ConcretizationResult.
+    /// Cleared at the start of each block since constraints don't change within a block.
+    concretize_cache: HashMap<u64, ConcretizationResult>,
+}
+impl<'a> CallbackInterpreter<'a> {
+    /// Create a new callback-aware interpreter.
+    pub fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
+        Self::with_config(arch, ctx, ExecutionConfig::default())
+    }
+
+    /// Create a new callback-aware interpreter with custom config.
+    pub fn with_config(arch: VexArch, ctx: &'a SymContext, config: ExecutionConfig) -> Self {
+        let arch_box = arch_from_vex(arch);
+        let arch_name = arch_box.name();
+        let cc = default_cc_for_arch(arch_name);
+
+        CallbackInterpreter {
+            registers: RegisterFile::new(arch_box),
+            temps: Vec::with_capacity(64), // Pre-allocate for typical block size
+            ctx,
+            symbol_table: None,  // Set via set_symbol_table() when using handles
+            pc: 0,
+            current_insn_addr: 0,
+            current_insn_len: 0,
+            hook_addrs: HashSet::new(),
+            arch,
+            block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
+            use_memory_callbacks: true,
+            deferred_forks: Vec::new(),
+            deferred_fork_this_step: false,
+            block_solver_pushed: false,
+            block_forks_asserted: 0,
+            config,
+            branch_counter: 0,
+            next_condition_id: 0,
+            push_level: 0,
+            concrete_memory: Vec::new(),
+            concretizer: AddressConcretizer::new(),
+            dirty_registers: 0,
+            pending_stores: Vec::with_capacity(256),
+            all_flushed_stores: HashMap::new(),
+            all_flushed_symbolic_stores: HashMap::new(),
+            pending_symbolic_stores: HashMap::new(),
+            max_pending_stores: 256,
+            rust_memory: None,
+            use_rust_memory: false,
+            lazy_solves: false,
+            load_prefetch_cache: HashMap::new(),
+            use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
+            page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
+            dirty_dispatch: DirtyHelperDispatch::new(),
+            simprocedure_registry: HashMap::new(),
+            calling_convention: cc,
+            last_branch_condition: None,
+            pending_python_constraints: Vec::new(),
+            stored_conditions: HashMap::new(),
+            fork_snapshots: HashMap::new(),
+            stats: ExecutionStats::default(),
+            profiling_enabled: false,
+            concrete_memory_sorted: false,
+            concretize_cache: HashMap::new(),
+        }
+    }
+
+    /// Get the address concretizer.
+    pub fn concretizer(&self) -> &AddressConcretizer {
+        &self.concretizer
+    }
+
+    /// Set custom concretizer settings.
+    pub fn set_concretizer(&mut self, concretizer: AddressConcretizer) {
+        self.concretizer = concretizer;
+    }
+
+    /// Concretize for read with per-block caching.
+    /// Uses read_range_limit and falls back to Any (single solution) if range is too large.
+    fn concretize_cached_read(&mut self, addr: &RustBV) -> ConcretizationResult {
+        if let Some(concrete_addr) = addr.as_u64() {
+            return ConcretizationResult::Single(concrete_addr);
+        }
+
+        let cache_key = Self::bv_cache_key(addr);
+        // Note: read and write may produce different results for same address,
+        // but within a block they're typically used consistently for a given address.
+        // Cache the raw result and apply fallback after cache lookup.
+        if let Some(cached) = self.concretize_cache.get(&cache_key) {
+            let result = cached.clone();
+            // Apply read fallback to cached result
+            return match result {
+                ConcretizationResult::TooLarge { .. } if self.concretizer.read_fallback_any => {
+                    if let Some(val) = self.ctx.eval(addr) {
+                        ConcretizationResult::Single(val as u64)
+                    } else {
+                        result
+                    }
+                }
+                _ => result,
+            };
+        }
+
+        let conc_start = std::time::Instant::now();
+        let result = self.concretizer.concretize_read(addr, self.ctx);
+        let conc_elapsed = conc_start.elapsed();
+        if self.profiling_enabled {
+            self.stats.concretize_count += 1;
+            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+        }
+        self.concretize_cache.insert(cache_key, result.clone());
+        result
+    }
+
+    /// Concretize for write with per-block caching.
+    /// Uses write_range_limit and falls back to Max solution if range is too large.
+    fn concretize_cached_write(&mut self, addr: &RustBV) -> ConcretizationResult {
+        if let Some(concrete_addr) = addr.as_u64() {
+            return ConcretizationResult::Single(concrete_addr);
+        }
+
+        let cache_key = Self::bv_cache_key(addr);
+        if let Some(cached) = self.concretize_cache.get(&cache_key) {
+            let result = cached.clone();
+            // Apply write fallback to cached result
+            return match result {
+                ConcretizationResult::TooLarge { .. } if self.concretizer.write_fallback_max => {
+                    if let Some((_min, max)) = self.ctx.range(addr) {
+                        ConcretizationResult::Single(max as u64)
+                    } else if let Some(val) = self.ctx.eval(addr) {
+                        ConcretizationResult::Single(val as u64)
+                    } else {
+                        result
+                    }
+                }
+                _ => result,
+            };
+        }
+
+        let conc_start = std::time::Instant::now();
+        let result = self.concretizer.concretize_write(addr, self.ctx);
+        let conc_elapsed = conc_start.elapsed();
+        if self.profiling_enabled {
+            self.stats.concretize_count += 1;
+            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+        }
+        self.concretize_cache.insert(cache_key, result.clone());
+        result
+    }
+
+    /// Compute a cache key for a RustBV value.
+    /// Uses the symbolic id for Symbolic/Constrained, and a hash of op+operand structure for Expression.
+    fn bv_cache_key(bv: &RustBV) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        match bv {
+            RustBV::Concrete { value, .. } => *value as u64,
+            RustBV::Symbolic { id, .. } => *id,
+            RustBV::Constrained { id, .. } => *id,
+            RustBV::Expression { op, operands, width, .. } => {
+                let mut hasher = DefaultHasher::new();
+                // Hash op discriminant + width + operand keys recursively (1 level deep)
+                std::mem::discriminant(op).hash(&mut hasher);
+                width.hash(&mut hasher);
+                for operand in operands {
+                    match operand.as_ref() {
+                        RustBV::Concrete { value, .. } => { value.hash(&mut hasher); }
+                        RustBV::Symbolic { id, .. } => { id.hash(&mut hasher); }
+                        RustBV::Constrained { id, .. } => { id.hash(&mut hasher); }
+                        RustBV::Expression { op: sub_op, width: sub_w, .. } => {
+                            std::mem::discriminant(sub_op).hash(&mut hasher);
+                            sub_w.hash(&mut hasher);
+                        }
+                    }
+                }
+                hasher.finish()
+            }
+        }
+    }
+
+    /// Set the symbol table for handle-based claripy bypass.
+    ///
+    /// When set, Python callbacks can return RustBVHandle instead of claripy ASTs,
+    /// providing significant performance improvement by bypassing AST conversion.
+    pub fn set_symbol_table(&mut self, table: &'a RustSymbolTable) {
+        self.symbol_table = Some(table);
+    }
+
+    /// Add a concrete memory region for fast local access.
+    ///
+    /// This allows the interpreter to read from binary sections (e.g., .text, .rodata)
+    /// without going through Python callbacks, significantly improving performance.
+    pub fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
+        let size = data.len() as u64;
+        self.concrete_memory.push(ConcreteMemoryRegion { base, size, data: Arc::new(data) });
+        self.concrete_memory_sorted = false;
+    }
+
+    /// Add a concrete memory region using pre-shared Arc data (O(1) clone).
+    pub fn add_concrete_memory_shared(&mut self, base: u64, data: Arc<Vec<u8>>) {
+        let size = data.len() as u64;
+        self.concrete_memory.push(ConcreteMemoryRegion { base, size, data });
+        self.concrete_memory_sorted = false;
+    }
+
+    /// Sort concrete memory regions by base address for binary search.
+    fn sort_concrete_memory(&mut self) {
+        if !self.concrete_memory_sorted && self.concrete_memory.len() > 1 {
+            self.concrete_memory.sort_by_key(|r| r.base);
+            self.concrete_memory_sorted = true;
+        }
+    }
+
+    /// Clear all concrete memory regions.
+    pub fn clear_concrete_memory(&mut self) {
+        self.concrete_memory.clear();
+        self.concrete_memory_sorted = false;
+    }
+
+    /// Try to read from concrete memory cache using binary search.
+    /// Returns Some(data) if the address range is fully contained in a cached region.
+    #[inline]
+    fn try_read_concrete_memory(&self, addr: u64, size: usize) -> Option<&[u8]> {
+        if self.concrete_memory.is_empty() {
+            return None;
+        }
+
+        // Use binary search if we have many regions
+        if self.concrete_memory.len() > 4 && self.concrete_memory_sorted {
+            // Binary search: find the region where base <= addr
+            let idx = self.concrete_memory.partition_point(|r| r.base <= addr);
+            if idx > 0 {
+                // Check the region just before this index
+                let region = &self.concrete_memory[idx - 1];
+                if let Some(data) = region.read(addr, size) {
+                    return Some(data);
+                }
+            }
+            return None;
+        }
+
+        // Linear scan for small number of regions
+        for region in &self.concrete_memory {
+            if let Some(data) = region.read(addr, size) {
+                return Some(data);
+            }
+        }
+        None
+    }
+
+    /// Enable or disable profiling.
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.profiling_enabled = enabled;
+        if enabled {
+            self.stats.reset();
+        }
+    }
+
+    /// Get execution statistics.
+    pub fn stats(&self) -> &ExecutionStats {
+        &self.stats
+    }
+
+    /// Get mutable execution statistics.
+    pub fn stats_mut(&mut self) -> &mut ExecutionStats {
+        &mut self.stats
+    }
+
+    /// Take the execution statistics, replacing with default.
+    pub fn take_stats(&mut self) -> ExecutionStats {
+        std::mem::take(&mut self.stats)
+    }
+
+    /// Load from memory via Python callback.
+    /// This handles the common case of loading from a concrete address.
+    fn load_from_callback(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        let (data, is_symbolic, symbolic_ast) = callbacks
+            .call_memory_load(py, addr_concrete, size as u32)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        if is_symbolic {
+            // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
+            if let Some(ast_obj) = symbolic_ast {
+                let ast = ast_obj.bind(py);
+
+                // Fast path: check for RustBVHandle first
+                if let Some(ref table) = self.symbol_table {
+                    if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                        return Ok(bv);
+                    }
+                }
+
+                // Slow path: claripy AST conversion
+                if is_claripy_ast(&ast) {
+                    match claripy_to_rustbv(py, &ast, self.ctx) {
+                        Ok(bv) => {
+                            return Ok(bv);
+                        }
+                        Err(_e) => {
+                            // Fall back to creating a fresh symbolic value
+                            // (claripy conversion can fail for complex/unsupported ops)
+                        }
+                    }
+                } else {
+                }
+            } else {
+            }
+            // Fallback: create a fresh symbolic value
+            let bv = RustBV::symbolic(
+                self.ctx,
+                &format!("mem_{:x}_{}", addr_concrete, size),
+                (size * 8) as u32,
+            );
+            Ok(bv)
+        } else {
+            // Convert bytes to concrete value
+            Ok(bytes_to_bv(&data, (size * 8) as u32))
+        }
+    }
+
+    /// Get the execution configuration.
+    pub fn config(&self) -> &ExecutionConfig {
+        &self.config
+    }
+
+    /// Set the execution configuration.
+    pub fn set_config(&mut self, config: ExecutionConfig) {
+        self.config = config;
+    }
+
+    /// Get the deferred forks collected during execution.
+    pub fn deferred_forks(&self) -> &[DeferredFork] {
+        &self.deferred_forks
+    }
+
+    /// Take the deferred forks, leaving an empty vector.
+    pub fn take_deferred_forks(&mut self) -> Vec<DeferredFork> {
+        std::mem::take(&mut self.deferred_forks)
+    }
+
+    /// Clear the deferred forks.
+    pub fn clear_deferred_forks(&mut self) {
+        self.deferred_forks.clear();
+    }
+
+    /// Get the number of deferred forks.
+    pub fn num_deferred_forks(&self) -> usize {
+        self.deferred_forks.len()
+    }
+
+    /// Get the next condition ID.
+    fn next_cond_id(&mut self) -> u64 {
+        let id = self.next_condition_id;
+        self.next_condition_id += 1;
+        id
+    }
+
+    /// Get the current solver push level.
+    pub fn push_level(&self) -> u32 {
+        self.push_level
+    }
+
+    /// Get the solver context.
+    pub fn context(&self) -> &SymContext {
+        self.ctx
+    }
+
+    /// Get list of dirty register offsets (registers modified since last clear).
+    /// Returns offsets in 4-byte granularity.
+    pub fn get_dirty_register_offsets(&self) -> Vec<u32> {
+        let mut offsets = Vec::new();
+        for bit in 0..128u32 {
+            if (self.dirty_registers & (1u128 << bit)) != 0 {
+                offsets.push(bit * 4);
+            }
+        }
+        offsets
+    }
+
+    /// Get the raw dirty register bitset.
+    pub fn dirty_registers(&self) -> u128 {
+        self.dirty_registers
+    }
+
+    /// Clear dirty register tracking (called after sync).
+    pub fn clear_dirty_registers(&mut self) {
+        self.dirty_registers = 0;
+    }
+
+    /// Flush pending stores to Python via batch callback.
+    ///
+    /// This sends all buffered stores in a single callback, reducing
+    /// FFI overhead compared to individual store callbacks.
+    fn flush_stores(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+    ) -> Result<(), CbExecutionError> {
+        if self.pending_stores.is_empty() && self.pending_symbolic_stores.is_empty() {
+            return Ok(());
+        }
+
+        if self.use_rust_memory {
+            // When Rust owns memory, flush stores to rust_memory instead of Python.
+            if let Some(ref mut rust_mem) = self.rust_memory {
+                for (addr, data) in &self.pending_stores {
+                    let width = (data.len() * 8) as u32;
+                    let mut val: u128 = 0;
+                    for (i, &b) in data.iter().enumerate() {
+                        val |= (b as u128) << (i * 8);
+                    }
+                    let bv = RustBV::concrete(val, width);
+                    let _ = rust_mem.store_concrete_automap_internal(*addr, bv);
+                }
+                // Also flush symbolic stores to rust_memory so that subsequent
+                // loads via load_concrete_lazy_inner find the symbolic values
+                // instead of returning concrete zeros from the page fill.
+                for (addr, bv) in &self.pending_symbolic_stores {
+                    rust_mem.import_symbolic_value(*addr, bv.clone(), None);
+                }
+            }
+            // Still accumulate for cross-block load forwarding
+            for (addr, data) in &self.pending_stores {
+                self.all_flushed_stores.insert(*addr, data.clone());
+            }
+            // Preserve symbolic values across block boundaries
+            for (addr, bv) in self.pending_symbolic_stores.drain() {
+                self.all_flushed_symbolic_stores.insert(addr, bv);
+            }
+            self.pending_stores.clear();
+            return Ok(());
+        }
+
+        // Python callback path (when Rust memory is not used)
+        callbacks
+            .call_memory_store_batch(py, &self.pending_stores)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+
+        // Accumulate flushed stores for cross-block load forwarding.
+        for (addr, data) in &self.pending_stores {
+            self.all_flushed_stores.insert(*addr, data.clone());
+        }
+        // Preserve symbolic values across block boundaries
+        for (addr, bv) in self.pending_symbolic_stores.drain() {
+            self.all_flushed_symbolic_stores.insert(addr, bv);
+        }
+        self.pending_stores.clear();
+        Ok(())
+    }
+
+    /// Flush all pending stores into rust_memory.
+    /// Called before extracting rust_memory back to the state.
+    pub fn flush_stores_to_rust_memory(&mut self) {
+        if let Some(ref mut rust_mem) = self.rust_memory {
+            // Flush concrete pending stores
+            for (addr, data) in self.pending_stores.drain(..) {
+                let width = (data.len() * 8) as u32;
+                let mut val: u128 = 0;
+                for (i, &b) in data.iter().enumerate() {
+                    val |= (b as u128) << (i * 8);
+                }
+                let bv = RustBV::concrete(val, width);
+                let _ = rust_mem.store_concrete_automap_internal(addr, bv);
+            }
+            // Flush symbolic pending stores
+            for (addr, bv) in self.pending_symbolic_stores.drain() {
+                rust_mem.import_symbolic_value(addr, bv, None);
+            }
+            self.all_flushed_stores.clear();
+            self.all_flushed_symbolic_stores.clear();
+        }
+    }
+
+    /// Take all stores from this step (both pending and previously flushed).
+    pub fn take_all_stores(&mut self) -> Vec<(u64, Vec<u8>)> {
+        self.pending_symbolic_stores.clear();
+        self.all_flushed_symbolic_stores.clear();
+        // Merge pending into flushed
+        for (addr, data) in self.pending_stores.drain(..) {
+            self.all_flushed_stores.insert(addr, data);
+        }
+        std::mem::take(&mut self.all_flushed_stores).into_iter().collect()
+    }
+
+    /// Set the program counter.
+    pub fn set_pc(&mut self, addr: u64) {
+        self.pc = addr;
+        let pc_bv = RustBV::concrete(addr as u128, self.registers.arch().bits());
+        self.registers.set_ip(pc_bv);
+    }
+
+    /// Get the program counter.
+    pub fn get_pc(&self) -> u64 {
+        self.pc
+    }
+
+    /// Add a hook address.
+    pub fn add_hook(&mut self, addr: u64) {
+        self.hook_addrs.insert(addr);
+    }
+
+    /// Remove a hook address.
+    pub fn remove_hook(&mut self, addr: u64) {
+        self.hook_addrs.remove(&addr);
+    }
+
+    /// Add multiple hooks at once.
+    pub fn add_hooks(&mut self, addrs: &[u64]) {
+        for &addr in addrs {
+            self.hook_addrs.insert(addr);
+        }
+    }
+
+    /// Clear all hooks.
+    pub fn clear_hooks(&mut self) {
+        self.hook_addrs.clear();
+    }
+
+    /// Check if an address is hooked.
+    pub fn is_hooked(&self, addr: u64) -> bool {
+        self.hook_addrs.contains(&addr)
+    }
+
+    /// Check if an address is within loaded binary (concrete memory) regions.
+    /// Used to distinguish internal function calls from external/library calls.
+    pub fn is_in_binary(&self, addr: u64) -> bool {
+        self.concrete_memory.iter().any(|region| {
+            addr >= region.base && addr < region.base + region.size
+        })
+    }
+
+    /// Register a SimProcedure at an address.
+    ///
+    /// This allows the interpreter to pre-extract arguments when the hook is hit,
+    /// reducing Python callback overhead.
+    pub fn register_simprocedure(&mut self, addr: u64, name: String, num_args: usize, no_return: bool) {
+        self.hook_addrs.insert(addr);
+        self.simprocedure_registry.insert(addr, SimProcedureInfo {
+            name,
+            num_args,
+            no_return,
+        });
+    }
+
+    /// Register multiple SimProcedures at once.
+    ///
+    /// Each tuple is (address, name, num_args, no_return).
+    pub fn register_simprocedures(&mut self, procs: &[(u64, String, usize, bool)]) {
+        for (addr, name, num_args, no_return) in procs {
+            self.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
+        }
+    }
+
+    /// Get SimProcedure info for an address, if registered.
+    pub fn get_simprocedure_info(&self, addr: u64) -> Option<&SimProcedureInfo> {
+        self.simprocedure_registry.get(&addr)
+    }
+
+    /// Clear all SimProcedure registrations.
+    pub fn clear_simprocedures(&mut self) {
+        self.simprocedure_registry.clear();
+    }
+
+    /// Extract arguments for a SimProcedure call.
+    ///
+    /// Uses the calling convention to extract arguments from registers and stack.
+    pub fn extract_simprocedure_args(&self, num_args: usize) -> Vec<RustBV> {
+        self.calling_convention.extract_args(
+            &self.registers,
+            self.rust_memory.as_ref(),
+            self.ctx,
+            num_args,
+        )
+    }
+
+    /// Get the return address for a function call.
+    ///
+    /// Checks pending_stores and all_flushed_stores first, since the call
+    /// instruction pushes the return address via VEX stores before the
+    /// interpreter detects the SimProcedure hook.
+    pub fn get_return_addr(&self) -> Option<u64> {
+        let ptr_size = self.calling_convention.pointer_size();
+        let sp = self.registers.get(
+            self.registers.arch().sp_offset(),
+            ptr_size,
+            self.ctx,
+        );
+        let sp_val = sp.as_u64()?;
+
+        // Check pending_stores first (most recent writes, same block)
+        for (addr, data) in self.pending_stores.iter().rev() {
+            if *addr == sp_val && data.len() >= ptr_size as usize {
+                let mut bytes = [0u8; 8];
+                let len = std::cmp::min(ptr_size as usize, 8);
+                bytes[..len].copy_from_slice(&data[..len]);
+                return Some(u64::from_le_bytes(bytes));
+            }
+        }
+
+        // Check all_flushed_stores (cross-block within same step)
+        if let Some(data) = self.all_flushed_stores.get(&sp_val) {
+            if data.len() >= ptr_size as usize {
+                let mut bytes = [0u8; 8];
+                let len = std::cmp::min(ptr_size as usize, 8);
+                bytes[..len].copy_from_slice(&data[..len]);
+                return Some(u64::from_le_bytes(bytes));
+            }
+        }
+
+        // Fall back to rust_memory
+        self.calling_convention.get_return_addr(
+            &self.registers,
+            self.rust_memory.as_ref(),
+            self.ctx,
+        )
+    }
+
+    /// Check if we have a cached block at the given address.
+    pub fn has_cached_block(&self, addr: u64) -> bool {
+        self.block_cache.contains(&addr)
+    }
+
+    /// Add a block to the cache.
+    pub fn cache_block(&mut self, addr: u64, irsb: IRSB) {
+        self.block_cache.put(addr, Arc::new(irsb));
+    }
+
+    /// Get a block from the cache.
+    pub fn get_cached_block(&mut self, addr: u64) -> Option<&IRSB> {
+        self.block_cache.get(&addr).map(|arc| arc.as_ref())
+    }
+
+    /// Swap in a shared block cache, returning the interpreter's current cache.
+    pub fn swap_block_cache(&mut self, cache: LruCache<u64, Arc<IRSB>>) -> LruCache<u64, Arc<IRSB>> {
+        std::mem::replace(&mut self.block_cache, cache)
+    }
+
+    /// Take the last branch condition, if any.
+    ///
+    /// This is set when a SymbolicBranch result is created, and can be retrieved
+    /// by callers who need to add constraints for forked states.
+    /// The condition is cleared after being retrieved.
+    pub fn take_last_branch_condition(&mut self) -> Option<RustBV> {
+        self.last_branch_condition.take()
+    }
+
+    /// Get a stored condition by ID.
+    ///
+    /// Returns the branch condition associated with the given condition ID,
+    /// if one was stored. This is used for deferred fork handling.
+    pub fn get_stored_condition(&self, condition_id: u64) -> Option<&RustBV> {
+        self.stored_conditions.get(&condition_id)
+    }
+
+    /// Take all stored conditions.
+    ///
+    /// Returns all stored conditions as a HashMap. The internal map is cleared.
+    /// This is useful for bulk retrieval when processing multiple deferred forks.
+    pub fn take_stored_conditions(&mut self) -> HashMap<u64, RustBV> {
+        std::mem::take(&mut self.stored_conditions)
+    }
+
+    /// Take all branch snapshots for deferred forks.
+    ///
+    /// Returns full state snapshots captured BEFORE branch constraints were added,
+    /// keyed by condition_id. Used for correct alternate-path forking.
+    pub fn take_fork_snapshots(&mut self) -> HashMap<u64, BranchSnapshot> {
+        std::mem::take(&mut self.fork_snapshots)
+    }
+
+    /// Run the execution loop until an event requires Python handling.
+
+    /// Fork the interpreter state.
+    pub fn fork(&self) -> CallbackInterpreter<'a> {
+        // Clone the calling convention based on its type
+        let arch_box = arch_from_vex(self.arch);
+        let cc = default_cc_for_arch(arch_box.name());
+
+        CallbackInterpreter {
+            registers: self.registers.fork(),
+            temps: self.temps.clone(),
+            ctx: self.ctx,
+            symbol_table: self.symbol_table, // Share symbol table reference
+            pc: self.pc,
+            current_insn_addr: self.current_insn_addr,
+            current_insn_len: self.current_insn_len,
+            hook_addrs: self.hook_addrs.clone(),
+            arch: self.arch,
+            block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
+            use_memory_callbacks: self.use_memory_callbacks,
+            deferred_forks: Vec::new(), // Fresh deferred forks for fork
+            deferred_fork_this_step: false,
+            block_solver_pushed: false,
+            block_forks_asserted: 0,
+            config: self.config.clone(),
+            branch_counter: self.branch_counter,
+            next_condition_id: self.next_condition_id,
+            push_level: self.push_level, // Inherit push level for forked interpreter
+            concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
+            concretizer: self.concretizer.clone(), // Share concretizer settings
+            dirty_registers: 0, // Fresh dirty tracking for fork
+            pending_stores: Vec::with_capacity(256), // Fresh store buffer for fork
+            all_flushed_stores: HashMap::new(),
+            all_flushed_symbolic_stores: HashMap::new(),
+            pending_symbolic_stores: HashMap::new(),
+            max_pending_stores: self.max_pending_stores,
+            // Fork Rust memory with O(1) CoW
+            rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),
+            use_rust_memory: self.use_rust_memory,
+            lazy_solves: self.lazy_solves,
+            load_prefetch_cache: HashMap::new(), // Fresh prefetch cache for fork
+            use_load_prefetch: self.use_load_prefetch,
+            page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
+            dirty_dispatch: DirtyHelperDispatch::new(), // Fresh dispatch (stateless)
+            simprocedure_registry: self.simprocedure_registry.clone(), // Share SimProcedure registry
+            calling_convention: cc,
+            last_branch_condition: None, // Fresh for fork
+            pending_python_constraints: Vec::new(), // Fresh constraints for fork
+            stored_conditions: HashMap::new(), // Fresh for fork
+            fork_snapshots: HashMap::new(), // Fresh for fork
+            stats: ExecutionStats::default(), // Fresh stats for fork
+            profiling_enabled: self.profiling_enabled, // Inherit profiling setting
+            concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
+            concretize_cache: HashMap::new(), // Fresh cache for fork
+        }
+    }
+
+    /// Enable Rust-native memory mode.
+    ///
+    /// When enabled, memory operations will try to use the Rust SymbolicMemory
+    /// first, falling back to Python callbacks only for unmapped regions.
+    /// This can significantly improve performance for memory-intensive code.
+    pub fn enable_rust_memory(&mut self, endness: Endness) {
+        self.rust_memory = Some(SymbolicMemory::new(endness));
+        self.use_rust_memory = true;
+    }
+
+    /// Disable Rust-native memory mode.
+    pub fn disable_rust_memory(&mut self) {
+        self.use_rust_memory = false;
+    }
+
+    /// Get mutable reference to Rust memory (for initialization).
+    pub fn rust_memory_mut(&mut self) -> Option<&mut SymbolicMemory> {
+        self.rust_memory.as_mut()
+    }
+
+    /// Get reference to Rust memory.
+    pub fn rust_memory(&self) -> Option<&SymbolicMemory> {
+        self.rust_memory.as_ref()
+    }
+
+    /// Set the Rust memory instance.
+    pub fn set_rust_memory(&mut self, memory: SymbolicMemory) {
+        self.rust_memory = Some(memory);
+        self.use_rust_memory = true;
+    }
+
+    /// Take the Rust memory instance (for transferring to engine).
+    pub fn take_rust_memory(&mut self) -> Option<SymbolicMemory> {
+        self.rust_memory.take()
+    }
+
+    pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
+        if let Some(ref mut rust_mem) = self.rust_memory {
+            rust_mem.add_lazy_region(start_addr, size);
+        }
+    }
+
+    /// Get statistics about Rust memory usage.
+    pub fn rust_memory_stats(&self) -> Option<(usize, usize, usize)> {
+        self.rust_memory.as_ref().map(|m| {
+            (m.page_count(), m.lazy_region_count(), m.get_dirty_pages().len())
+        })
+    }
+
+}
