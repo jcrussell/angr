@@ -961,12 +961,17 @@ impl PythonCallbacks {
     /// Call the block lifting callback.
     ///
     /// Returns the IRSB as a JSON string.
-    pub fn call_lift_block(&self, py: Python<'_>, addr: u64) -> PyResult<String> {
+    /// If opt_level is Some, passes it as keyword argument to the callback.
+    pub fn call_lift_block(&self, py: Python<'_>, addr: u64, opt_level: Option<i32>) -> PyResult<String> {
         let cb = self.lift_block.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("lift_block callback not set")
         })?;
 
-        let result = cb.call1(py, (addr,))?;
+        let result = if let Some(level) = opt_level {
+            cb.call1(py, (addr, level))?
+        } else {
+            cb.call1(py, (addr,))?
+        };
         result.extract(py)
     }
 

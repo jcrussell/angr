@@ -429,6 +429,10 @@ pub struct RustExplorationManager {
     pub(crate) little_endian: Option<bool>,
     /// Address concretization configuration, propagated to each engine/interpreter.
     pub(crate) concretizer_config: crate::concretize::AddressConcretizer,
+    /// VEX optimization level (0-3). None = use pyvex default (typically 1).
+    pub(crate) vex_opt_level: Option<i32>,
+    /// Per-address VEX optimization level overrides.
+    pub(crate) vex_opt_level_overrides: HashMap<u64, i32>,
 }
 
 #[pymethods]
@@ -481,6 +485,8 @@ impl RustExplorationManager {
             accumulated_stats: ExecutionStats::default(),
             little_endian,
             concretizer_config: crate::concretize::AddressConcretizer::default(),
+            vex_opt_level: None,
+            vex_opt_level_overrides: HashMap::new(),
         })
     }
 
@@ -578,6 +584,51 @@ impl RustExplorationManager {
     /// Set the Z3 solver timeout in milliseconds (default: 30000).
     pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
         self.solver_timeout_ms = timeout_ms;
+    }
+
+    /// Set the global VEX optimization level (0-3).
+    /// None = use pyvex default (typically 1).
+    /// Level 0: no optimization. Level 1: standard. Level 2-3: aggressive.
+    #[pyo3(signature = (level=None))]
+    pub fn set_vex_opt_level(&mut self, level: Option<i32>) {
+        self.vex_opt_level = level;
+        // Invalidate block cache since opt_level affects IR output
+        self.block_cache.clear();
+    }
+
+    /// Get the current VEX optimization level.
+    pub fn get_vex_opt_level(&self) -> Option<i32> {
+        self.vex_opt_level
+    }
+
+    /// Set a per-address VEX optimization level override.
+    /// Blocks at this address will be lifted with the specified opt_level.
+    pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {
+        self.vex_opt_level_overrides.insert(addr, level);
+        // Remove this address from block cache since opt_level changed
+        self.block_cache.pop(&addr);
+    }
+
+    /// Remove a per-address VEX optimization level override.
+    pub fn remove_vex_opt_level_override(&mut self, addr: u64) {
+        self.vex_opt_level_overrides.remove(&addr);
+        self.block_cache.pop(&addr);
+    }
+
+    /// Clear all per-address VEX optimization level overrides.
+    pub fn clear_vex_opt_level_overrides(&mut self) {
+        let addrs: Vec<u64> = self.vex_opt_level_overrides.keys().copied().collect();
+        self.vex_opt_level_overrides.clear();
+        for addr in addrs {
+            self.block_cache.pop(&addr);
+        }
+    }
+
+    /// Resolve the VEX optimization level for a given address.
+    /// Per-address overrides take precedence over the global level.
+    pub fn resolve_vex_opt_level(&self, addr: u64) -> Option<i32> {
+        self.vex_opt_level_overrides.get(&addr).copied()
+            .or(self.vex_opt_level)
     }
 
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.

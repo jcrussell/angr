@@ -817,6 +817,7 @@ pub fn lift_native(
     arch: VexArch,
     max_insns: u32,
     max_bytes: u32,
+    opt_level: i32,
 ) -> Result<IRSB, NativeLiftError> {
     // Initialize VEX if needed
     init_vex()?;
@@ -832,7 +833,7 @@ pub fn lift_native(
             addr,
             max_insns,
             max_bytes,
-            1,                                       // opt_level
+            opt_level,                               // opt_level
             0,                                       // traceflags
             1,                                       // allow_arch_optimizations
             0,                                       // strict_block_end

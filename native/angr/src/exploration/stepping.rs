@@ -58,6 +58,9 @@ impl RustExplorationManager {
             interp.set_profiling(self.profiling_enabled);
             // Propagate concretization strategy config
             interp.set_concretizer(self.concretizer_config.clone());
+            // Propagate VEX optimization level settings
+            interp.vex_opt_level = self.vex_opt_level;
+            interp.vex_opt_level_overrides = self.vex_opt_level_overrides.clone();
 
             // Copy state registers to interpreter (including symbolic values)
             interp.registers = state.registers().fork();

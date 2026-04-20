@@ -558,11 +558,14 @@ class RustExplorationManager(
         except Exception as e:
             l.warning(f"Memory store error at 0x{addr:x}: {e}")
 
-    def _cb_lift_block(self, addr: int) -> str:
+    def _cb_lift_block(self, addr: int, opt_level: int = None) -> str:
         _lb_start = time.perf_counter_ns()
         try:
             try:
-                block = self._project.factory.block(addr)
+                kwargs = {}
+                if opt_level is not None:
+                    kwargs['opt_level'] = opt_level
+                block = self._project.factory.block(addr, **kwargs)
                 irsb = block.vex
                 return self._serialize_irsb(irsb)
             except Exception as e:

@@ -601,6 +601,10 @@ pub struct CallbackInterpreter<'a> {
     pub call_stack: Vec<crate::state::CallStackEntry>,
     /// Detailed execution history. Transferred to/from RustSimState.
     pub detailed_history: Vec<crate::state::HistoryEntry>,
+    /// VEX optimization level (None = pyvex default).
+    pub vex_opt_level: Option<i32>,
+    /// Per-address VEX optimization level overrides.
+    pub vex_opt_level_overrides: HashMap<u64, i32>,
 }
 impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
@@ -661,6 +665,8 @@ impl<'a> CallbackInterpreter<'a> {
             concretize_cache: HashMap::new(),
             call_stack: Vec::new(),
             detailed_history: Vec::new(),
+            vex_opt_level: None,
+            vex_opt_level_overrides: HashMap::new(),
         }
     }
 
@@ -1329,6 +1335,8 @@ impl<'a> CallbackInterpreter<'a> {
             concretize_cache: HashMap::new(), // Fresh cache for fork
             call_stack: self.call_stack.clone(), // Clone call stack for fork
             detailed_history: self.detailed_history.clone(), // Clone history for fork
+            vex_opt_level: self.vex_opt_level, // Inherit VEX opt level
+            vex_opt_level_overrides: self.vex_opt_level_overrides.clone(), // Inherit overrides
         }
     }
 

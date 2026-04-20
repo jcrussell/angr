@@ -1875,5 +1875,54 @@ class TestNativeTechniques:
         assert mgr.native_technique_count() == 3
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestVexOptLevel:
+    """Tests for VEX optimization level control."""
+
+    def test_set_get_vex_opt_level(self):
+        """Test setting and getting VEX optimization level."""
+        mgr = _RustExplorationManager("amd64")
+        assert mgr.get_vex_opt_level() is None
+        mgr.set_vex_opt_level(0)
+        assert mgr.get_vex_opt_level() == 0
+        mgr.set_vex_opt_level(2)
+        assert mgr.get_vex_opt_level() == 2
+        mgr.set_vex_opt_level(None)
+        assert mgr.get_vex_opt_level() is None
+
+    def test_per_address_override(self):
+        """Test per-address VEX optimization level overrides."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_vex_opt_level(1)  # global level
+
+        # Per-address override
+        mgr.set_vex_opt_level_override(0x401000, 0)
+        assert mgr.resolve_vex_opt_level(0x401000) == 0  # override
+        assert mgr.resolve_vex_opt_level(0x402000) == 1  # global fallback
+
+        # Remove override
+        mgr.remove_vex_opt_level_override(0x401000)
+        assert mgr.resolve_vex_opt_level(0x401000) == 1  # falls back to global
+
+    def test_clear_overrides(self):
+        """Test clearing all per-address overrides."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_vex_opt_level_override(0x401000, 0)
+        mgr.set_vex_opt_level_override(0x402000, 2)
+        mgr.clear_vex_opt_level_overrides()
+        assert mgr.resolve_vex_opt_level(0x401000) is None
+        assert mgr.resolve_vex_opt_level(0x402000) is None
+
+    def test_opt_level_with_exploration(self, fauxware_project):
+        """Test that opt_level doesn't break exploration."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        # Set opt_level 0 (no optimization) and verify exploration still works
+        mgr._rust_mgr.set_vex_opt_level(0)
+        mgr.explore(find=0x4006ED)
+        assert len(mgr.found) > 0, "Should find target with opt_level=0"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

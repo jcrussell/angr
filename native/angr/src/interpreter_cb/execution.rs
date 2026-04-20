@@ -333,12 +333,17 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                         if max_bytes >= 1 {
                             let bytes = &region.data[offset..offset + max_bytes];
+                            // Resolve VEX opt_level for native lifting
+                            let native_opt_level = self.vex_opt_level_overrides.get(&addr).copied()
+                                .or(self.vex_opt_level)
+                                .unwrap_or(1);  // pyvex default is 1
                             match crate::vex::libpyvex_ffi::lift_native(
                                 bytes,
                                 addr,
                                 self.arch,
                                 99,  // max_insns
                                 max_bytes as u32,
+                                native_opt_level,
                             ) {
                                 Ok(irsb) => {
                                     // Native lift succeeded!
@@ -364,8 +369,11 @@ impl<'a> CallbackInterpreter<'a> {
 
         // Fall back to lifting via Python callback
         let callback_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        // Resolve VEX opt_level: per-address override > global > None (pyvex default)
+        let opt_level = self.vex_opt_level_overrides.get(&addr).copied()
+            .or(self.vex_opt_level);
         let irsb_json = callbacks
-            .call_lift_block(py, addr)
+            .call_lift_block(py, addr, opt_level)
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {}", e)))?;
         if let Some(start) = callback_start {
             self.stats.python_callback_count += 1;
