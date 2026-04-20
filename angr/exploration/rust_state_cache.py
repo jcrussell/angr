@@ -195,8 +195,10 @@ class RustStateCacheMixin:
         evaluate them. Checks both cached Python states and uncached Rust-only
         states (created by Rust forking without SimProcedure callbacks).
 
-        States are re-evaluated each call because their stdout may grow between
-        batches (e.g. puts/printf executes after the state was first seen).
+        Uses change-detection caching: states are only re-evaluated when their
+        address or stdout length has changed since the last evaluation. This
+        avoids redundant predicate calls (which involve FFI + state creation).
+
         States already moved to found/avoid stashes are excluded by the stash
         query (only active + deadended are checked).
         """
@@ -206,20 +208,27 @@ class RustStateCacheMixin:
         if not hasattr(self, '_predicate_matched_ids'):
             self._predicate_matched_ids = set()
 
+        # Cache: state_id -> (addr, stdout_len) at last evaluation time
+        # If state's current (addr, stdout_len) matches, skip re-evaluation
+        if not hasattr(self, '_predicate_eval_cache'):
+            self._predicate_eval_cache = {}
+
         found_sids = set()
         avoid_sids = set()
         _proxy_states = {}  # state_id -> RustStateProxy for uncached states
 
-        # Collect all state IDs from active + deadended Rust stashes
-        all_state_ids = set()
+        # Collect (state_id, addr, stdout_len) from active + deadended in bulk
+        # This is much cheaper than per-state FFI calls
+        state_info = {}  # state_id -> (addr, stdout_len)
         for stash in ('active', 'deadended'):
             try:
-                ids = self._rust_mgr.get_state_ids(stash)
-                all_state_ids.update(ids)
+                for sid, addr, stdout_len in self._rust_mgr.get_state_predicate_info(stash):
+                    state_info[sid] = (addr, stdout_len)
             except Exception:
                 pass
 
         # Also include cached states (may have been moved between stashes)
+        all_state_ids = set(state_info.keys())
         all_state_ids.update(self._state_cache.keys())
 
         for state_id in all_state_ids:
@@ -228,6 +237,17 @@ class RustStateCacheMixin:
 
             # Get or create a state for predicate evaluation
             state = self._state_cache.get(state_id)
+            is_cached = state is not None
+
+            # Change-detection cache: only for uncached (Rust-only) states.
+            # Cached states may have Python-side stdout from SimProcedure
+            # callbacks that isn't reflected in Rust's stdout_len.
+            current_info = state_info.get(state_id)
+            if not is_cached and current_info is not None:
+                cached_info = self._predicate_eval_cache.get(state_id)
+                if cached_info == current_info:
+                    continue
+
             if state is None:
                 # Uncached state — use RustStateProxy for live register/memory access
                 stdout_data = b""
@@ -252,6 +272,8 @@ class RustStateCacheMixin:
                     try:
                         if self._find_predicate(state):
                             found_sids.add(state_id)
+                            if not is_cached and current_info is not None:
+                                self._predicate_eval_cache[state_id] = current_info
                             continue
                     except Exception:
                         pass
@@ -264,6 +286,10 @@ class RustStateCacheMixin:
                         pass
             except Exception:
                 pass
+
+            # Mark uncached state as evaluated at its current (addr, stdout_len)
+            if not is_cached and current_info is not None:
+                self._predicate_eval_cache[state_id] = current_info
 
         # Move matched states to found/avoid stashes
         for sid in found_sids:
@@ -356,6 +382,9 @@ class RustStateCacheMixin:
         self._state_cache.pop(state_id, None)
         # Remove from symbolic pages cache
         self._symbolic_pages.pop(state_id, None)
+        # Remove from predicate evaluation cache
+        if hasattr(self, '_predicate_eval_cache'):
+            self._predicate_eval_cache.pop(state_id, None)
         # Mark symbols as inactive
         self._identity_tracker.mark_inactive(state_id)
 

@@ -742,6 +742,18 @@ impl RustExplorationManager {
             .unwrap_or_default()
     }
 
+    /// Get (state_id, addr, stdout_len) tuples for states in a stash.
+    /// Used by Python predicate caching to skip re-evaluation when
+    /// a state's address and stdout haven't changed.
+    #[pyo3(signature = (stash="active"))]
+    pub fn get_state_predicate_info(&self, stash: &str) -> Vec<(u64, u64, usize)> {
+        self.sm.get(stash)
+            .map(|s| s.iter().map(|state| {
+                (state.state_id(), state.pc(), state.stdout_buffer().len())
+            }).collect())
+            .unwrap_or_default()
+    }
+
     /// Check if there are any active states (O(1), no allocation).
     pub fn has_active_states(&self) -> bool {
         self.sm.get(STASH_ACTIVE).map_or(false, |s| !s.is_empty())
