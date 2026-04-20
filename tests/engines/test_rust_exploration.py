@@ -270,6 +270,12 @@ class TestExplorationEvent:
 class TestRustEdgeCases:
     """Edge-case tests for Rust state and solver."""
 
+    @classmethod
+    def setup_class(cls):
+        """Ensure the shared Z3 context is initialized for solver tests."""
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+        _setup_shared_z3_context()
+
     def test_page_boundary_store_load(self):
         """Store 6 bytes at offset 4090, crossing a 4096-byte page boundary."""
         state = RustSimState("amd64")
@@ -616,6 +622,12 @@ class TestStateManagement:
 class TestSolverOperations:
     """Tests for solver constraint operations."""
 
+    @classmethod
+    def setup_class(cls):
+        """Ensure the shared Z3 context is initialized for solver tests."""
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+        _setup_shared_z3_context()
+
     def test_solver_min_max(self):
         """min() and max() return correct bounds."""
         from angr.rustylib.vex_engine import RustSolverContext
@@ -854,6 +866,11 @@ class TestExplorationIntegration:
 class TestAdversarial:
     """Adversarial tests: edge cases, API misuse, resource bounds."""
 
+    @classmethod
+    def setup_class(cls):
+        """Ensure the shared Z3 context is initialized for solver tests."""
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+        _setup_shared_z3_context()
 
     # --- API misuse ---
 
@@ -1152,6 +1169,159 @@ class TestErroredStash:
         record = RustErrorRecord(None, "test error", 0x401000)
         with pytest.raises(RuntimeError, match="test error"):
             record.reraise()
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestSolverOutputCorrectness:
+    """Tests verifying solver eval() returns correct values for known constraint systems.
+
+    These complement existing tests (which check satisfiable/count) by checking
+    that the actual solved values are correct.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        """Ensure the shared Z3 context is initialized for solver tests."""
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+        _setup_shared_z3_context()
+
+    def _make_ctx(self):
+        from angr.rustylib.vex_engine import RustSolverContext
+        return RustSolverContext()
+
+    def test_single_equality(self):
+        """x == 42 should eval to exactly 42."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x == 42)
+        assert ctx.eval(x) == 42
+
+    def test_arithmetic_chain(self):
+        """x + 10 == 50 should give x == 40."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x + 10 == 50)
+        assert ctx.eval(x) == 40
+
+    def test_bitwise_and_mask(self):
+        """x & 0xFF == 0x41 constrains the low byte to 'A'."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x & 0xFF == 0x41)
+        val = ctx.eval(x)
+        assert (val & 0xFF) == 0x41
+
+    def test_xor_constraint(self):
+        """x ^ key == target should give x == key ^ target."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        key = 0xDEADBEEF
+        target = 0x12345678
+        ctx.add_constraint_ast(x ^ key == target)
+        assert ctx.eval(x) == (key ^ target)
+
+    def test_shift_left(self):
+        """(x << 4) == 0x120 should give x == 0x12."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x << 4 == 0x120)
+        # x could be anything where (x << 4) == 0x120, i.e. low 4 bits of x are lost
+        # but (x << 4) forces low 4 bits to 0, so x must be 0x12
+        val = ctx.eval(x)
+        assert (val << 4) & 0xFFFFFFFF == 0x120
+
+    def test_extract_byte(self):
+        """Extract byte 1 (bits 15:8) == 0xBE constrains that byte."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(claripy.Extract(15, 8, x) == 0xBE)
+        val = ctx.eval(x)
+        assert ((val >> 8) & 0xFF) == 0xBE
+
+    def test_concat_constraint(self):
+        """Concat(a, b) == 0xAABB constrains both a and b."""
+        import claripy
+        ctx = self._make_ctx()
+        a = claripy.BVS("a", 8)
+        b = claripy.BVS("b", 8)
+        ctx.add_constraint_ast(claripy.Concat(a, b) == 0xAABB)
+        assert ctx.eval(a) == 0xAA
+        assert ctx.eval(b) == 0xBB
+
+    def test_signed_comparison(self):
+        """Signed comparison: x >s -5 and x <s 5 should give value in (-5, 5)."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(claripy.SGT(x, claripy.BVV(-5, 32)))
+        ctx.add_constraint_ast(claripy.SLT(x, claripy.BVV(5, 32)))
+        val = ctx.eval(x)
+        # Interpret as signed 32-bit
+        if val >= 0x80000000:
+            signed_val = val - 0x100000000
+        else:
+            signed_val = val
+        assert -5 < signed_val < 5
+
+    def test_multi_variable_system(self):
+        """System of equations: x + y == 100, x - y == 20 => x=60, y=40."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        y = claripy.BVS("y", 32)
+        ctx.add_constraint_ast(x + y == 100)
+        ctx.add_constraint_ast(x - y == 20)
+        assert ctx.eval(x) == 60
+        assert ctx.eval(y) == 40
+
+    def test_eval_upto_exact_range(self):
+        """eval_upto on tightly constrained variable returns all valid values."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 8)
+        ctx.add_constraint_ast(claripy.UGE(x, 0x41))  # >= 'A'
+        ctx.add_constraint_ast(claripy.ULE(x, 0x45))  # <= 'E'
+        results = ctx.eval_upto(x, 10)
+        assert set(results) == {0x41, 0x42, 0x43, 0x44, 0x45}
+
+    def test_min_max_with_complex_constraints(self):
+        """min/max with multiple overlapping constraints."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x >= 100)
+        ctx.add_constraint_ast(x <= 200)
+        ctx.add_constraint_ast(x >= 150)  # tightens lower bound
+        assert ctx.min(x, signed=False) == 150
+        assert ctx.max(x, signed=False) == 200
+
+    def test_fork_preserves_values(self):
+        """Forked solver preserves parent constraints and returns correct values."""
+        import claripy
+        ctx = self._make_ctx()
+        x = claripy.BVS("x", 32)
+        y = claripy.BVS("y", 32)
+        ctx.add_constraint_ast(x == 10)
+        ctx.add_constraint_ast(y >= 20)
+        ctx.add_constraint_ast(y <= 30)
+
+        forked = ctx.fork()
+        forked.add_constraint_ast(y == 25)
+
+        # Forked context: both constraints hold
+        assert forked.eval(x) == 10
+        assert forked.eval(y) == 25
+
+        # Parent: x still 10, y still in range
+        assert ctx.eval(x) == 10
+        vy = ctx.eval(y)
+        assert 20 <= vy <= 30
 
 
 if __name__ == "__main__":
