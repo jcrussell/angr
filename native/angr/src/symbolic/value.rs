@@ -316,12 +316,13 @@ impl RustBV {
 
     /// Create a bitvector with all bits set to 1.
     pub fn ones(width: u32) -> Self {
-        let mask = if width >= 128 {
-            u128::MAX
-        } else {
-            (1u128 << width) - 1
-        };
-        RustBV::Concrete { value: mask, width }
+        RustBV::Concrete { value: Self::all_ones_mask(width), width }
+    }
+
+    /// Return the all-ones mask for a given bit width.
+    #[inline]
+    fn all_ones_mask(width: u32) -> u128 {
+        if width >= 128 { u128::MAX } else { (1u128 << width) - 1 }
     }
 
     /// Create a symbolic bitvector variable.
@@ -501,15 +502,16 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), self.width()),
-            _ => {
-                // Build expression tree for claripy reconstruction
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: self.width(),
-                    op: BVOp::Add,
-                    operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-                }
-            }
+            // x + 0 → x
+            (None, Some(0)) => self.clone(),
+            // 0 + x → x
+            (Some(0), None) => other.clone(),
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width: self.width(),
+                op: BVOp::Add,
+                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+            },
         }
     }
 
@@ -518,6 +520,8 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), self.width()),
+            // x - 0 → x
+            (None, Some(0)) => self.clone(),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -532,6 +536,12 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), self.width()),
+            // x * 0 → 0
+            (_, Some(0)) | (Some(0), _) => Self::zero(self.width()),
+            // x * 1 → x
+            (None, Some(1)) => self.clone(),
+            // 1 * x → x
+            (Some(1), None) => other.clone(),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -629,12 +639,18 @@ impl RustBV {
     pub fn neg(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Neg,
-                operands: vec![Arc::new(self.clone())],
-            },
+            None => {
+                // neg(neg(x)) → x
+                if let RustBV::Expression { op: BVOp::Neg, operands, .. } = self {
+                    return (*operands[0]).clone();
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: self.width(),
+                    op: BVOp::Neg,
+                    operands: vec![Arc::new(self.clone())],
+                }
+            }
         }
     }
 
@@ -645,8 +661,14 @@ impl RustBV {
     /// Bitwise AND.
     pub fn and(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
+        let all_ones = Self::all_ones_mask(self.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a & b, self.width()),
+            // x & 0 → 0
+            (_, Some(0)) | (Some(0), _) => Self::zero(self.width()),
+            // x & all_ones → x
+            (None, Some(v)) if v == all_ones => self.clone(),
+            (Some(v), None) if v == all_ones => other.clone(),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -659,8 +681,15 @@ impl RustBV {
     /// Bitwise OR.
     pub fn or(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
+        let all_ones = Self::all_ones_mask(self.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a | b, self.width()),
+            // x | 0 → x
+            (None, Some(0)) => self.clone(),
+            (Some(0), None) => other.clone(),
+            // x | all_ones → all_ones
+            (_, Some(v)) if v == all_ones => Self::ones(self.width()),
+            (Some(v), _) if v == all_ones => Self::ones(self.width()),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -675,6 +704,9 @@ impl RustBV {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a ^ b, self.width()),
+            // x ^ 0 → x
+            (None, Some(0)) => self.clone(),
+            (Some(0), None) => other.clone(),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -688,12 +720,18 @@ impl RustBV {
     pub fn not(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(!v, self.width()),
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Not,
-                operands: vec![Arc::new(self.clone())],
-            },
+            None => {
+                // not(not(x)) → x
+                if let RustBV::Expression { op: BVOp::Not, operands, .. } = self {
+                    return (*operands[0]).clone();
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: self.width(),
+                    op: BVOp::Not,
+                    operands: vec![Arc::new(self.clone())],
+                }
+            }
         }
     }
 
@@ -714,12 +752,18 @@ impl RustBV {
                 }
                 Self::concrete(result, w)
             }
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: w,
-                op: BVOp::Reverse,
-                operands: vec![Arc::new(self.clone())],
-            },
+            None => {
+                // reverse(reverse(x)) → x
+                if let RustBV::Expression { op: BVOp::Reverse, operands, .. } = self {
+                    return (*operands[0]).clone();
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: w,
+                    op: BVOp::Reverse,
+                    operands: vec![Arc::new(self.clone())],
+                }
+            }
         }
     }
 
@@ -735,6 +779,10 @@ impl RustBV {
                 let amt = (a as u32).min(self.width());
                 Self::concrete(v.wrapping_shl(amt), self.width())
             }
+            // x << 0 → x
+            (None, Some(0)) => self.clone(),
+            // 0 << x → 0
+            (Some(0), None) => Self::zero(self.width()),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -752,6 +800,10 @@ impl RustBV {
                 let amt = (a as u32).min(self.width());
                 Self::concrete(v.wrapping_shr(amt), self.width())
             }
+            // x >> 0 → x
+            (None, Some(0)) => self.clone(),
+            // 0 >> x → 0
+            (Some(0), None) => Self::zero(self.width()),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -770,6 +822,8 @@ impl RustBV {
                 let signed = sign_extend(v, self.width());
                 Self::concrete((signed >> amt) as u128, self.width())
             }
+            // x >>> 0 → x
+            (None, Some(0)) => self.clone(),
             _ => RustBV::Expression {
                 id: Self::EXPRESSION_ID,
                 width: self.width(),
@@ -1005,6 +1059,10 @@ impl RustBV {
     /// Sign-extend to a wider width.
     pub fn sign_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width >= self.width());
+        // No extension needed
+        if to_width == self.width() {
+            return self.clone();
+        }
         let extend_bits = to_width - self.width();
         match self.as_u128() {
             Some(v) => {
@@ -1082,6 +1140,26 @@ impl RustBV {
                     && high % 8 == 7 && low % 8 == 0 => {
                     let w = operands[0].width();
                     return operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
+                }
+
+                // Rule 4: Extract(ZeroExt(x)) — if entirely within original width,
+                // extract from x directly; if entirely in extended bits, result is 0
+                BVOp::ZeroExt(_) => {
+                    let inner_width = operands[0].width();
+                    if high < inner_width {
+                        return operands[0].extract(high, low, _ctx);
+                    } else if low >= inner_width {
+                        return Self::zero(result_width);
+                    }
+                }
+
+                // Rule 5: Extract(SignExt(x)) — if entirely within original width,
+                // extract from x directly
+                BVOp::SignExt(_) => {
+                    let inner_width = operands[0].width();
+                    if high < inner_width {
+                        return operands[0].extract(high, low, _ctx);
+                    }
                 }
 
                 _ => {}
@@ -1872,5 +1950,173 @@ mod tests {
 
         assert_eq!(a.slt(&b, &ctx).as_u64(), Some(1)); // -1 < 1
         assert_eq!(a.ult(&b, &ctx).as_u64(), Some(0)); // 255 > 1 unsigned
+    }
+
+    // =========================================================================
+    // Expression simplification tests
+    // =========================================================================
+
+    #[test]
+    fn test_add_identity() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let zero = RustBV::zero(32);
+        // x + 0 → x (should return symbolic, not expression)
+        let r1 = x.add(&zero, &ctx);
+        assert!(matches!(r1, RustBV::Symbolic { .. }));
+        // 0 + x → x
+        let r2 = zero.add(&x, &ctx);
+        assert!(matches!(r2, RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_sub_identity() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let zero = RustBV::zero(32);
+        // x - 0 → x
+        let r = x.sub(&zero, &ctx);
+        assert!(matches!(r, RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_mul_identity_and_annihilator() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let zero = RustBV::zero(32);
+        let one = RustBV::concrete(1, 32);
+        // x * 0 → 0
+        assert_eq!(x.mul(&zero, &ctx).as_u128(), Some(0));
+        // 0 * x → 0
+        assert_eq!(zero.mul(&x, &ctx).as_u128(), Some(0));
+        // x * 1 → x
+        assert!(matches!(x.mul(&one, &ctx), RustBV::Symbolic { .. }));
+        // 1 * x → x
+        assert!(matches!(one.mul(&x, &ctx), RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_and_identity_and_annihilator() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zero = RustBV::zero(8);
+        let ones = RustBV::ones(8);
+        // x & 0 → 0
+        assert_eq!(x.and(&zero, &ctx).as_u128(), Some(0));
+        // x & 0xFF → x
+        assert!(matches!(x.and(&ones, &ctx), RustBV::Symbolic { .. }));
+        // 0xFF & x → x
+        assert!(matches!(ones.and(&x, &ctx), RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_or_identity_and_annihilator() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zero = RustBV::zero(8);
+        let ones = RustBV::ones(8);
+        // x | 0 → x
+        assert!(matches!(x.or(&zero, &ctx), RustBV::Symbolic { .. }));
+        // 0 | x → x
+        assert!(matches!(zero.or(&x, &ctx), RustBV::Symbolic { .. }));
+        // x | 0xFF → 0xFF
+        assert_eq!(x.or(&ones, &ctx).as_u128(), Some(0xFF));
+    }
+
+    #[test]
+    fn test_xor_identity() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let zero = RustBV::zero(32);
+        // x ^ 0 → x
+        assert!(matches!(x.xor(&zero, &ctx), RustBV::Symbolic { .. }));
+        // 0 ^ x → x
+        assert!(matches!(zero.xor(&x, &ctx), RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_not_double_negation() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        // not(not(x)) → x
+        let r = x.not(&ctx).not(&ctx);
+        assert!(matches!(r, RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_neg_double_negation() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        // neg(neg(x)) → x
+        let r = x.neg(&ctx).neg(&ctx);
+        assert!(matches!(r, RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_reverse_double() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        // reverse(reverse(x)) → x
+        let r = x.reverse(&ctx).reverse(&ctx);
+        assert!(matches!(r, RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_shift_by_zero() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let zero = RustBV::zero(32);
+        // x << 0 → x
+        assert!(matches!(x.shl(&zero, &ctx), RustBV::Symbolic { .. }));
+        // x >> 0 → x
+        assert!(matches!(x.lshr(&zero, &ctx), RustBV::Symbolic { .. }));
+        // x >>> 0 → x
+        assert!(matches!(x.ashr(&zero, &ctx), RustBV::Symbolic { .. }));
+    }
+
+    #[test]
+    fn test_shift_zero_value() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let zero = RustBV::zero(32);
+        // 0 << x → 0
+        assert_eq!(zero.shl(&x, &ctx).as_u128(), Some(0));
+        // 0 >> x → 0
+        assert_eq!(zero.lshr(&x, &ctx).as_u128(), Some(0));
+    }
+
+    #[test]
+    fn test_sign_extend_identity() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        // sign_extend to same width → x
+        let r = x.sign_extend(32, &ctx);
+        assert!(matches!(r, RustBV::Symbolic { .. }));
+        assert_eq!(r.width(), 32);
+    }
+
+    #[test]
+    fn test_extract_zero_ext() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let ext = x.zero_extend(32, &ctx); // 8-bit → 32-bit
+        // Extract low 8 bits → original x
+        let lo = ext.extract(7, 0, &ctx);
+        assert!(matches!(lo, RustBV::Symbolic { .. }));
+        assert_eq!(lo.width(), 8);
+        // Extract high 8 bits → 0
+        let hi = ext.extract(31, 24, &ctx);
+        assert_eq!(hi.as_u128(), Some(0));
+    }
+
+    #[test]
+    fn test_extract_sign_ext_low_bits() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let ext = x.sign_extend(32, &ctx);
+        // Extract low 8 bits → original x
+        let lo = ext.extract(7, 0, &ctx);
+        assert!(matches!(lo, RustBV::Symbolic { .. }));
+        assert_eq!(lo.width(), 8);
     }
 }
