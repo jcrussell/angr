@@ -28,6 +28,14 @@ from run_single import _run_in_child, EXAMPLES_DIR, DEFAULT_MEM_LIMIT_MB
 
 BASELINE_FILE = os.path.join(os.path.dirname(__file__), "baseline_timings.json")
 
+# Tracked metrics beyond timing. Each entry: (key_in_stats, key_in_baseline, regression_threshold_pct)
+# A regression is flagged when the metric INCREASES by more than threshold_pct.
+TRACKED_METRICS = [
+    ("callback_count",   "callback_count",   0.10),  # 10% more callbacks = algorithmic regression
+    ("state_creations",  "state_creations",   0.10),
+    ("steps",            "steps",             0.15),  # 15% more steps
+]
+
 # Tiered benchmark suites. Each entry: (name, timeout_seconds)
 # Fast tier: < 10s, always run
 FAST_SUITE = [
@@ -115,6 +123,8 @@ def main():
                         help="Only run Rust engine (skip Python comparison)")
     parser.add_argument("--full", action="store_true",
                         help="Run full suite (fast + medium tier)")
+    parser.add_argument("--check-counts", action="store_true",
+                        help="Check algorithmic metrics (callback_count, state_creations, steps) for regressions")
     args = parser.parse_args()
 
     global REGRESSION_SUITE
@@ -183,7 +193,11 @@ def main():
         else:
             print()
 
-        # Check regression against baseline
+        # Collect algorithmic metrics from Rust stats
+        rust_stats = rust_result.get("stats") or {}
+        rust_peak_mem = rust_result.get("peak_memory_mb")
+
+        # Check timing regression against baseline
         if name in baseline and not args.update:
             bl = baseline[name]["rust_time"]
             if rust_time > bl * (1 + args.threshold):
@@ -191,10 +205,40 @@ def main():
                 print(f"  REGRESSION: {rust_time:.2f}s vs baseline {bl:.2f}s (+{pct:.0f}%)")
                 failures.append(f"{name}: {pct:.0f}% regression ({rust_time:.2f}s vs {bl:.2f}s)")
 
-        results[name] = {
+            # Check algorithmic metric regressions
+            if args.check_counts:
+                for stat_key, bl_key, threshold_pct in TRACKED_METRICS:
+                    current_val = rust_stats.get(stat_key)
+                    baseline_val = baseline[name].get(bl_key)
+                    if current_val is not None and baseline_val is not None and baseline_val > 0:
+                        if current_val > baseline_val * (1 + threshold_pct):
+                            pct = ((current_val / baseline_val) - 1) * 100
+                            print(f"  METRIC REGRESSION: {bl_key} {current_val} vs baseline {baseline_val} (+{pct:.0f}%)")
+                            failures.append(f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)")
+
+        # Print metric summary
+        metric_parts = []
+        for stat_key, bl_key, _ in TRACKED_METRICS:
+            val = rust_stats.get(stat_key)
+            if val is not None:
+                metric_parts.append(f"{bl_key}={val}")
+        if rust_peak_mem:
+            metric_parts.append(f"peak_mem={rust_peak_mem:.0f}MB")
+        if metric_parts:
+            print(f"  metrics: {', '.join(metric_parts)}")
+
+        entry = {
             "rust_time": round(rust_time, 3),
             "python_time": round(py_time, 3) if py_time is not None else None,
         }
+        # Store algorithmic metrics in baseline
+        for stat_key, bl_key, _ in TRACKED_METRICS:
+            val = rust_stats.get(stat_key)
+            if val is not None:
+                entry[bl_key] = val
+        if rust_peak_mem:
+            entry["peak_memory_mb"] = round(rust_peak_mem, 1)
+        results[name] = entry
 
     total_elapsed = time.perf_counter() - total_start
     print(f"\n{'='*50}")

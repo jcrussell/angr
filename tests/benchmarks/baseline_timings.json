@@ -1,7 +1,11 @@
 {
   "ais3_crackme": {
-    "python_time": 2.50,
-    "rust_time": 0.86
+    "callback_count": 47,
+    "peak_memory_mb": 363.0,
+    "python_time": null,
+    "rust_time": 0.894,
+    "state_creations": 0,
+    "steps": 47
   },
   "codegate_2017-angrybird": {
     "python_time": 6.89,
@@ -16,44 +20,68 @@
     "rust_time": 0.97
   },
   "defcamp_r100": {
-    "python_time": 1.03,
-    "rust_time": 0.70
+    "callback_count": 0,
+    "peak_memory_mb": 206.5,
+    "python_time": null,
+    "rust_time": 0.225,
+    "state_creations": 0,
+    "steps": 2
   },
   "ekopartyctf2016_rev250": {
     "python_time": 32.41,
     "rust_time": 4.14
   },
   "fauxware": {
-    "python_time": 0.38,
-    "rust_time": 0.42
-  },
-  "flareon2015_2": {
-    "python_time": 4.11,
-    "rust_time": 3.76
-  },
-  "flareon2015_5": {
-    "python_time": 39.45,
-    "rust_time": 6.66
+    "callback_count": 6,
+    "peak_memory_mb": 177.4,
+    "python_time": null,
+    "rust_time": 0.4,
+    "state_creations": 0,
+    "steps": 2
   },
   "flareon2015_10": {
     "python_time": 7.47,
     "rust_time": 5.54
   },
+  "flareon2015_2": {
+    "callback_count": 0,
+    "peak_memory_mb": 414.8,
+    "python_time": null,
+    "rust_time": 3.781,
+    "state_creations": 0,
+    "steps": 0
+  },
+  "flareon2015_5": {
+    "python_time": 39.45,
+    "rust_time": 6.66
+  },
   "google2016_unbreakable_0": {
-    "python_time": 1.36,
-    "rust_time": 0.90
+    "callback_count": 1,
+    "peak_memory_mb": 426.2,
+    "python_time": null,
+    "rust_time": 0.914,
+    "state_creations": 0,
+    "steps": 0
   },
   "google2016_unbreakable_1": {
-    "python_time": 3.82,
-    "rust_time": 3.50
+    "callback_count": 0,
+    "peak_memory_mb": 631.1,
+    "python_time": null,
+    "rust_time": 3.203,
+    "state_creations": 0,
+    "steps": 0
   },
   "securityfest_fairlight": {
     "python_time": 9.76,
     "rust_time": 23.72
   },
   "strcpy_find": {
-    "python_time": 0.84,
-    "rust_time": 3.97
+    "callback_count": 98,
+    "peak_memory_mb": 201.0,
+    "python_time": null,
+    "rust_time": 0.445,
+    "state_creations": 1,
+    "steps": 94
   },
   "sym-write": {
     "python_time": 0.98,

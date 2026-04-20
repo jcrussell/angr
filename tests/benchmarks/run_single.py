@@ -143,6 +143,10 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
         elapsed = time.perf_counter() - start
         output = captured.getvalue()
 
+        # Collect peak memory usage (includes child processes)
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+        peak_memory_mb = rusage.ru_maxrss / 1024  # ru_maxrss is in KB on Linux
+
         # Collect stats if available
         stats = None
         perf_report = None
@@ -162,6 +166,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
             "output": output,
             "stats": stats,
             "perf_report": perf_report,
+            "peak_memory_mb": round(peak_memory_mb, 1),
         }
 
     finally:
@@ -204,8 +209,10 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
     output = result.get("output", "")
     stats = result.get("stats")
     perf_report = result.get("perf_report")
+    peak_memory_mb = result.get("peak_memory_mb")
 
-    print(f"OK {engine} {example_name} {elapsed:.2f}s")
+    mem_str = f" peak_mem={peak_memory_mb:.0f}MB" if peak_memory_mb else ""
+    print(f"OK {engine} {example_name} {elapsed:.2f}s{mem_str}")
     if output.strip():
         lines = output.strip().split("\n")
         for line in lines[:3]:
