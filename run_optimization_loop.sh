@@ -88,11 +88,17 @@ Rules:
 
 MEMORY SAFETY (8GB machine, no swap):
 - NEVER run tests/benchmarks/run_comparison_10.py — it OOM-kills the orchestrator
-- For benchmarking use: python tests/benchmarks/run_single.py <example> --engine rust
+- NEVER run angr exploration/debug scripts directly (e.g. python debug_*.py, python my_script.py).
+  They run in-process with NO memory limit and WILL OOM-kill this machine (no swap).
+  This has happened multiple times — the script balloons to 6GB+ and kills the loop agent.
+- ALWAYS use run_single.py to run any angr exploration, even for debugging:
+    python tests/benchmarks/run_single.py <example> --engine rust
+  run_single.py spawns a subprocess with RLIMIT_AS=4GB — safe even if the example OOMs.
+- If you need custom debug logic, ADD it to run_single.py or write a wrapper that uses
+  subprocess + resource.setrlimit(RLIMIT_AS, 4GB) — NEVER run angr directly in your process.
 - Safe quick-check examples: fauxware, ais3_crackme, defcamp_r100
 - AVOID running: grub (OOM/crash), hackcon2016_angry-reverser (67s), sym-write (30s)
-- For engine comparison: python tests/benchmarks/run_single.py <example> --both
-- run_single.py runs in a subprocess with 4GB memory limit — safe even if example OOMs'
+- For engine comparison: python tests/benchmarks/run_single.py <example> --both'
 
 while [ $ITERATION -lt $MAX_ITERATIONS ]; do
   ITERATION=$((ITERATION + 1))

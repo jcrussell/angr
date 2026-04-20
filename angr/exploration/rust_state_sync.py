@@ -226,6 +226,35 @@ class RustStateSyncMixin:
 
         l.debug(f"Pre-populated {pages_mapped} pages from loaded objects")
 
+        # Overlay Python state's concrete memory on top of loader pages.
+        # Critical for multi-stage explore: when a found state from stage N
+        # is re-imported into a new RustExplorationManager for stage N+1,
+        # the loader's static data (e.g. zeros in .bss) overwrites runtime
+        # modifications (e.g. result buffer at 0x612040 in sakura). Fix:
+        # overlay the Python state's page data, which has the most recent
+        # values from _sync_rust_memory_to_state.
+        state_overlay_count = 0
+        mem_pages = getattr(angr_state.memory, '_pages', None)
+        if mem_pages is not None:
+            for page_no in list(mem_pages.keys()):
+                page_addr = page_no * page_size
+                if page_addr not in mapped_page_addrs:
+                    continue  # Non-loader pages handled separately below
+                if page_addr in symbolic_pages:
+                    continue  # Symbolic pages use callback path
+                page_obj = mem_pages.get(page_no)
+                if page_obj is None:
+                    continue
+                try:
+                    concrete = bytes(page_obj.concrete_load(0, page_size))
+                    if len(concrete) == page_size:
+                        rust_state.map_memory_data(page_addr, concrete, 7)
+                        state_overlay_count += 1
+                except Exception:
+                    pass
+        if state_overlay_count:
+            l.debug(f"Overlaid {state_overlay_count} loader pages with Python state data")
+
         # Add lazy regions for ALL loader objects + stack so the fetch_page
         # callback can populate any unmapped page on demand.
         for obj in self._project.loader.all_objects:
@@ -338,6 +367,47 @@ class RustStateSyncMixin:
                 pass
         if pages_synced:
             l.debug(f"Pre-populated {pages_synced} stack pages in Rust memory")
+
+        # Sync non-loader, non-stack memory pages from the Python state.
+        # This is critical for multi-stage explore: when a found state from
+        # stage 1 is passed to a new RustExplorationManager for stage 2,
+        # pages written during stage 1 (ctype tables, heap data, extra stack
+        # frames from SimProcedures) must be synced or the Rust engine will
+        # read zeros and diverge.
+        extra_pages_synced = 0
+        try:
+            mem_pages = getattr(angr_state.memory, '_pages', None)
+            if mem_pages is not None:
+                for page_no in list(mem_pages.keys()):
+                    page_addr = page_no * page_size
+                    # Skip pages already mapped from the loader
+                    if page_addr in mapped_page_addrs:
+                        continue
+                    # Skip the stack page we already synced
+                    if page_addr == sp_page:
+                        continue
+                    # Skip pages in symbolic_pages (handled later via symbolic import)
+                    if page_addr in symbolic_pages:
+                        continue
+                    page_obj = mem_pages.get(page_no)
+                    if page_obj is None:
+                        continue
+                    # Use fast concrete_load to extract page bytes
+                    try:
+                        concrete = bytes(page_obj.concrete_load(0, page_size))
+                        if len(concrete) == page_size and any(concrete):
+                            # Determine permissions: stack pages get RW, others get RWX
+                            perms = 6 if stack_start <= page_addr < stack_base else 7
+                            rust_state.map_memory_data(page_addr, concrete, perms)
+                            # Also add lazy region so fetch_page can handle neighbors
+                            rust_state.add_lazy_region(page_addr, page_size)
+                            extra_pages_synced += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if extra_pages_synced:
+            l.debug(f"Synced {extra_pages_synced} extra pages from Python state (non-loader)")
 
         # Scan non-stack memory pages for user-written symbolic data.
         # Import WIDE symbolic objects (not byte-by-byte) to preserve identity.

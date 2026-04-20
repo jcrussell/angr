@@ -43,7 +43,7 @@ EXAMPLE_CATALOG = {
     "0ctf_momo_3":             {"tier": "very_slow","rust_ok": None, "notes": "Both engines timeout >60s"},
     "csgames2018":             {"tier": "fast",    "rust_ok": True,  "notes": "Callable predicates, stdout check"},
     "unmapped_analysis":       {"tier": "fast",    "rust_ok": False, "notes": "Rust state error"},
-    "hitcon2017_sakura":       {"tier": "very_slow","rust_ok": False, "notes": "Python >60s, Rust list index error"},
+    "hitcon2017_sakura":       {"tier": "very_slow","rust_ok": True,  "notes": "Multi-stage explore, disk cache fix"},
     "strcpy_find":             {"tier": "fast",    "rust_ok": True,  "notes": "Buffer overflow / strcpy detection, Py 0.8s Rust 4.0s"},
     "flareon2015_2":           {"tier": "fast",    "rust_ok": True,  "notes": "32-bit x86, correct output"},
     "whitehatvn2015_re400":    {"tier": "fast",    "rust_ok": True,  "notes": "2.7x speedup, partial output divergence (leading zeros)"},

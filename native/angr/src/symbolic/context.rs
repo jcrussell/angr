@@ -238,6 +238,36 @@ impl SymContext {
         self.assumed_constraints.lock().push((bv, is_true));
     }
 
+    /// Export all Z3 assertion pointers from the assertion cache.
+    /// Uses z3_assertions_shared + z3_assertions_local which track
+    /// every assertion made via assume_true/assume_false/add_constraint_raw.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn export_z3_assertion_ptrs(&self) -> Vec<usize> {
+        use z3::ast::Ast;
+        let mut ptrs = Vec::new();
+        for constraint in self.z3_assertions_shared.iter() {
+            ptrs.push(constraint.get_z3_ast().as_ptr() as usize);
+        }
+        let local = self.z3_assertions_local.lock();
+        for constraint in local.iter() {
+            ptrs.push(constraint.get_z3_ast().as_ptr() as usize);
+        }
+        ptrs
+    }
+
+    /// Debug: dump solver state as string for comparison.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn debug_solver_string(&self) -> String {
+        let solver = self.solver();
+        format!("{}", solver)
+    }
+
+    /// Debug: get the Z3 solver's internal push level.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn debug_push_level(&self) -> usize {
+        self.push_level.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Add a constraint from a raw Z3_ast pointer (shared context fast path).
     ///
     /// This bypasses the RustBV → build_z3_ast() conversion, preserving the

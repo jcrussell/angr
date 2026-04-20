@@ -845,8 +845,41 @@
             let sym_ctx = solver_ref.borrow();
             let ctx_ref: &SymContext = &*sym_ctx;
 
+            // Pre-fetch Z3 backend for fast path
+            #[cfg(feature = "vex-engine-z3")]
+            let z3_backend = py.import("claripy")
+                .and_then(|c| c.getattr("backends"))
+                .and_then(|b| b.getattr("z3"))
+                .ok();
+
             let mut added = 0u32;
             for item in constraints.iter() {
+                // Fast path: extract raw Z3 AST and assert directly.
+                // This preserves the exact Z3 structure from the previous
+                // exploration, avoiding lossy RustBV round-trips that can
+                // drop constraints (critical for multi-stage explore).
+                #[cfg(feature = "vex-engine-z3")]
+                {
+                    if let Some(ref backend) = z3_backend {
+                        if let Ok(z3_obj) = backend.call_method1("convert", (&item,)) {
+                            if let Ok(ast_ref) = z3_obj.call_method0("as_ast") {
+                                if let Ok(ptr) = ast_ref.getattr("value").and_then(|v| v.extract::<usize>()) {
+                                    if ptr != 0 {
+                                        unsafe { ctx_ref.add_constraint_raw(ptr); }
+                                        // Track in assumed_constraints for re-export
+                                        if let Ok(bv) = claripy_to_rustbv(py, &item, ctx_ref) {
+                                            ctx_ref.assumed_constraints_push(bv, true);
+                                        }
+                                        added += 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Slow path: convert via RustBV
                 match claripy_to_rustbv(py, &item, ctx_ref) {
                     Ok(bv) => {
                         if bv.width() == 1 {
@@ -865,6 +898,52 @@
             }
             log::debug!("Added {} initial constraints to state {}", added, state_id);
             return Ok(state.satisfiable());
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Export raw Z3 assertion pointers from a state's solver.
+    /// Returns a list of usize pointers that can be passed to import_z3_constraints.
+    /// This is lossless — captures ALL Z3 assertions, not just those tracked
+    /// in assumed_constraints (which drops constraints where claripy_to_rustbv fails).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn export_z3_constraint_ptrs(&self, state_id: u64) -> PyResult<Vec<usize>> {
+        if let Some(state) = self.find_state(state_id) {
+            let solver_ref = state.solver();
+            let ctx = solver_ref.borrow();
+            return Ok(ctx.export_z3_assertion_ptrs());
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Import raw Z3 assertion pointers to a state's solver.
+    /// Uses add_constraint_raw for each pointer, preserving exact Z3 structure.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn import_z3_constraint_ptrs(&mut self, state_id: u64, ptrs: Vec<usize>) -> PyResult<bool> {
+        if let Some(state) = self.find_state_mut(state_id) {
+            let solver_ref = state.solver();
+            let ctx = solver_ref.borrow();
+            for ptr in &ptrs {
+                if *ptr != 0 {
+                    unsafe { ctx.add_constraint_raw(*ptr); }
+                }
+            }
+            log::debug!("Imported {} Z3 constraints to state {}", ptrs.len(), state_id);
+            return Ok(state.satisfiable());
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Debug: dump solver state for a given state.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn debug_solver_info(&self, state_id: u64) -> PyResult<String> {
+        if let Some(state) = self.find_state(state_id) {
+            let solver_ref = state.solver();
+            let ctx = solver_ref.borrow();
+            let push_level = ctx.debug_push_level();
+            let solver_str = ctx.debug_solver_string();
+            let n_assertions = solver_str.matches('\n').count();
+            return Ok(format!("push_level={}, assertions_lines={}, solver:\n{}", push_level, n_assertions, &solver_str[..solver_str.len().min(2000)]));
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }

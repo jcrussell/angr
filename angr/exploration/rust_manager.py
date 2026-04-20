@@ -287,6 +287,32 @@ class RustExplorationManager(
         # Used to restore stdin content on found states that were forked purely in Rust.
         self._stdin_content: list = []
 
+        # Multi-stage explore reuse: if the initial state came from a previous
+        # RustExplorationManager for the same project, reuse the old Rust manager
+        # instead of creating a new one. This avoids lossy constraint transfer
+        # that fails after ~50 stages (Z3 dedup causes UNSAT, claripy loses constraints).
+        self._reused_from = None
+        if active_states:
+            _single = active_states[0] if isinstance(active_states, (list, tuple)) else active_states
+            old_mgr = getattr(getattr(_single, 'scratch', None), 'rust_mgr', None)
+            old_state_id = getattr(getattr(_single, 'scratch', None), 'rust_found_state_id', None)
+            if old_mgr is not None and old_state_id is not None:
+                try:
+                    old_mgr.reset_for_stage(old_state_id)
+                    # Reuse the old Rust manager — it has the correct solver state
+                    self._rust_mgr = old_mgr
+                    self._reused_from = old_state_id
+                    # Cache the angr state with the reused state ID
+                    self._state_cache[old_state_id] = _single
+                    self._state_roots[old_state_id] = old_state_id
+                    l.debug(f"Multi-stage reuse: reset manager for state {old_state_id}")
+                    # Skip ALL remaining init — callbacks, binary, simprocedures
+                    # are already set up on the old manager
+                    self._perf_stats['init_total_ns'] = time.perf_counter_ns() - _init_start
+                    return
+                except Exception as e:
+                    l.debug(f"Multi-stage reuse failed, falling back to normal init: {e}")
+
         # Add initial states
         if active_states:
             # Handle single state or list of states
@@ -1049,16 +1075,49 @@ class RustExplorationManager(
                             pass
             data['section_patches'] = section_patches
 
-            # Extract continuation addresses from callstack
+            # Extract non-loader memory pages created during init
+            # (e.g., ctype tables written by SimProcedures at addresses like 0xc0000000).
+            # These pages are not in any loader segment but are needed for correct
+            # exploration when the found state is passed to a new RustExplorationManager.
+            extra_pages = []
+            if hasattr(state.memory, '_pages'):
+                mem_page_size = getattr(state.memory, 'page_size', page_size)
+                for page_num in state.memory._pages:
+                    page_addr = page_num * mem_page_size
+                    if page_addr in mapped_page_addrs:
+                        continue  # Already in loader pages
+                    if data.get('stack_page') and page_addr == data['stack_page'][0]:
+                        continue  # Already saved as stack page
+                    page = state.memory._pages[page_num]
+                    if page is None:
+                        continue
+                    try:
+                        page_data = page.concrete_load(0, mem_page_size)
+                        if any(page_data):  # Skip all-zero pages
+                            extra_pages.append((page_addr, bytes(page_data)))
+                    except Exception:
+                        pass
+            data['extra_pages'] = extra_pages
+
+            # Extract callstack frames for restoration
+            callstack_frames = []
             frame = state.callstack.top if hasattr(state, 'callstack') else None
             while frame is not None:
                 pdata = getattr(frame, 'procedure_data', None)
+                frame_data = {
+                    'call_site_addr': frame.call_site_addr,
+                    'func_addr': frame.func_addr,
+                    'ret_addr': frame.ret_addr,
+                    'stack_ptr': frame.stack_ptr,
+                }
                 if pdata is not None and len(pdata) >= 5:
                     try:
-                        data['continuation_addrs'].append(int(pdata[4]))
+                        data.setdefault('continuation_addrs', []).append(int(pdata[4]))
                     except (TypeError, ValueError):
                         pass
+                callstack_frames.append(frame_data)
                 frame = getattr(frame, 'next', None)
+            data['callstack_frames'] = callstack_frames
 
             cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
             with open(cache_path, 'wb') as f:
@@ -1096,6 +1155,37 @@ class RustExplorationManager(
                 state.memory.store(
                     sp_page, claripy.BVV(page_bytes), endness='Iend_BE',
                     inspect=False, disable_actions=True)
+
+            # Restore extra memory pages created during init
+            # (e.g., ctype tables at 0xc0000000 written by SimProcedures)
+            for page_addr, page_bytes in data.get('extra_pages', []):
+                try:
+                    state.memory.store(
+                        page_addr, claripy.BVV(page_bytes), endness='Iend_BE',
+                        inspect=False, disable_actions=True)
+                except Exception:
+                    pass
+
+            # Restore callstack frames
+            callstack_frames = data.get('callstack_frames', [])
+            if callstack_frames and len(callstack_frames) > 1:
+                # The first frame is the top of the callstack (main's frame).
+                # We need to push frames from bottom to top.
+                try:
+                    from angr.state_plugins.callstack import CallStack
+                    cs = state.callstack
+                    for frame_data in reversed(callstack_frames[:-1]):
+                        # Skip the bottom sentinel frame (all zeros)
+                        if frame_data['call_site_addr'] == 0 and frame_data['func_addr'] == 0:
+                            continue
+                        cs.call(
+                            frame_data['call_site_addr'],
+                            frame_data['func_addr'],
+                            return_address=frame_data['ret_addr'],
+                            stack_pointer=frame_data['stack_ptr'],
+                        )
+                except Exception as e:
+                    l.debug(f"Failed to restore callstack: {e}")
 
             # Restore continuation data
             for cont_addr in data.get('continuation_addrs', []):
@@ -1384,31 +1474,71 @@ class RustExplorationManager(
             # (multi-stage explore pattern), the Python solver may have 0 constraints
             # because they all live in the old Rust solver. Detect this and transfer
             # constraints from the old Rust manager.
-            constraints = []
-            if hasattr(angr_state, 'solver') and angr_state.solver.constraints:
-                constraints = list(angr_state.solver.constraints)
-
-            # Transfer constraints from the old Rust solver if present
+            #
+            # Prefer Z3 pointer transfer (lossless) over claripy AST round-trip
+            # (which silently drops constraints where claripy_to_rustbv fails).
+            z3_transferred = False
             old_rust_mgr = getattr(angr_state.scratch, 'rust_mgr', None)
             old_state_id = getattr(angr_state.scratch, 'rust_found_state_id', None)
             if old_rust_mgr is not None and old_state_id is not None:
                 try:
-                    exported = old_rust_mgr.export_state_constraints(old_state_id)
-                    if exported:
-                        l.debug(f"Transferring {len(exported)} constraints from previous "
-                                f"Rust manager (state {old_state_id})")
-                        constraints = exported + constraints
-                except Exception as e:
-                    l.debug(f"Could not export constraints from old Rust manager: {e}")
+                    z3_ptrs = old_rust_mgr.export_z3_constraint_ptrs(old_state_id)
+                    if z3_ptrs:
+                        # Debug: compare solver states
+                        try:
+                            old_info = old_rust_mgr.debug_solver_info(old_state_id)
+                            l.debug(f"OLD solver ({old_state_id}): {old_info[:300]}")
+                        except Exception as e:
+                            l.debug(f"OLD solver debug failed: {e}")
 
-            if constraints:
-                try:
-                    sat = self._rust_mgr.add_constraints_to_state(
-                        actual_state_id, constraints)
-                    l.debug(f"Synced {len(constraints)} initial constraints to Rust state "
-                            f"{actual_state_id}, sat={sat}")
-                except Exception as e:
-                    l.warning(f"Failed to sync initial constraints: {e}")
+                        sat = self._rust_mgr.import_z3_constraint_ptrs(
+                            actual_state_id, z3_ptrs)
+
+                        try:
+                            new_info = self._rust_mgr.debug_solver_info(actual_state_id)
+                            l.debug(f"NEW solver ({actual_state_id}): {new_info[:300]}")
+                        except Exception as e:
+                            l.debug(f"NEW solver debug failed: {e}")
+
+                        l.debug(f"Transferred {len(z3_ptrs)} Z3 constraints from previous "
+                                f"Rust manager (state {old_state_id}), sat={sat}")
+                        z3_transferred = True
+                except (AttributeError, Exception) as e:
+                    l.debug(f"Z3 pointer transfer failed, falling back to claripy: {e}")
+
+            if not z3_transferred:
+                # Fallback: claripy AST round-trip (lossy but works without Z3)
+                constraints = []
+                if hasattr(angr_state, 'solver') and angr_state.solver.constraints:
+                    constraints = list(angr_state.solver.constraints)
+                if old_rust_mgr is not None and old_state_id is not None:
+                    try:
+                        exported = old_rust_mgr.export_state_constraints(old_state_id)
+                        if exported:
+                            l.debug(f"Transferring {len(exported)} constraints from previous "
+                                    f"Rust manager (state {old_state_id})")
+                            constraints = exported + constraints
+                    except Exception as e:
+                        l.debug(f"Could not export constraints from old Rust manager: {e}")
+                if constraints:
+                    try:
+                        sat = self._rust_mgr.add_constraints_to_state(
+                            actual_state_id, constraints)
+                        l.debug(f"Synced {len(constraints)} initial constraints to Rust state "
+                                f"{actual_state_id}, sat={sat}")
+                    except Exception as e:
+                        l.warning(f"Failed to sync initial constraints: {e}")
+
+            # Also sync any Python-side constraints (user-added post-exploration)
+            if z3_transferred and hasattr(angr_state, 'solver') and angr_state.solver.constraints:
+                py_constraints = list(angr_state.solver.constraints)
+                if py_constraints:
+                    try:
+                        self._rust_mgr.add_constraints_to_state(
+                            actual_state_id, py_constraints)
+                        l.debug(f"Synced {len(py_constraints)} additional Python constraints")
+                    except Exception as e:
+                        l.debug(f"Could not sync Python constraints: {e}")
 
             self._state_cache[actual_state_id] = angr_state
             # P10 fix: Track this as a root state for plugin restoration
