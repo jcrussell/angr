@@ -48,6 +48,7 @@ class RustStateExportMixin:
                 state = self._state_cache[state_id]
                 self._restore_plugins_to_state(state, state_id)
                 self._inject_rust_stdout(state, state_id)
+                self._inject_rust_stdin(state, state_id)
                 # Attach Rust solver fallback BEFORE constraint sync.
                 # The Rust solver has the correct constraints from exploration.
                 # Constraint sync is expensive (5.9s for sym-write) and often
@@ -80,6 +81,7 @@ class RustStateExportMixin:
                     state = self._state_cache[root].copy()
                     self._restore_plugins_to_state(state, sid)
                     self._inject_rust_stdout(state, sid)
+                    self._inject_rust_stdin(state, sid)
                     # Skip _sync_exported_constraints — Rust solver fallback
                     # handles all solver operations directly.
                     self._attach_rust_solver_fallback(state, sid)
@@ -103,6 +105,7 @@ class RustStateExportMixin:
                     state = self._state_cache[stepping_id].copy()
                     self._restore_plugins_to_state(state, sid)
                     self._inject_rust_stdout(state, sid)
+                    self._inject_rust_stdin(state, sid)
                     # Skip _sync_exported_constraints — Rust solver fallback
                     # handles all solver operations directly.
                     self._attach_rust_solver_fallback(state, sid)
@@ -122,6 +125,7 @@ class RustStateExportMixin:
                             try:
                                 angr_state = self._snapshot_to_angr(snapshot)
                                 self._inject_rust_stdout(angr_state, snapshot.state_id)
+                                self._inject_rust_stdin(angr_state, snapshot.state_id)
                                 # Skip _sync_exported_constraints — it's O(n^2) on
                                 # constraint ASTs (5.9s for sym-write) and causes
                                 # identity mismatches. The Rust solver fallback

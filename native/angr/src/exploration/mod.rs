@@ -2069,6 +2069,48 @@ impl RustExplorationManager {
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
+    /// Check if a state has recorded stdin symbols from native fgets/fgetc/getchar.
+    pub fn has_state_stdin_symbols(&self, state_id: u64) -> bool {
+        if let Some(state) = self.find_state(state_id) {
+            return state.has_stdin_symbols();
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return cb.state.has_stdin_symbols();
+            }
+        }
+        false
+    }
+
+    /// Get the stdin symbols for a state by ID.
+    ///
+    /// Returns list of (name, bit_width) tuples for symbolic variables
+    /// created by native fgets/fgetc/getchar. Used to reconstruct stdin
+    /// data in Python's posix plugin for posix.dumps(0).
+    pub fn get_state_stdin_symbols(&self, state_id: u64) -> PyResult<Vec<(String, u32)>> {
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.stdin_symbols().to_vec());
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(cb.state.stdin_symbols().to_vec());
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Evaluate a stdin symbol by name using the state's solver.
+    ///
+    /// Returns the concrete value as Option<u64>, or None if the symbol
+    /// cannot be found or evaluated.
+    pub fn eval_stdin_symbol(&self, state_id: u64, name: &str) -> Option<u64> {
+        let state = self.find_state(state_id)?;
+        let ctx = state.solver().borrow();
+        // Find the symbol by name in the solver context
+        let sym = crate::symbolic::RustBV::symbolic(&ctx, name, 8);
+        ctx.eval(&sym).map(|v| v as u64)
+    }
+
     // =========================================================================
     // Run loop (from run_loop.rs)
     // =========================================================================

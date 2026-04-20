@@ -134,6 +134,11 @@ pub struct RustSimState {
     /// Heap brk pointer — simple bump allocator for malloc/calloc.
     /// Default: 0xC0000000 (matching angr's DEFAULT_HEAP_LOCATION).
     heap_brk: u64,
+    /// Symbolic variable names read from stdin (for posix.dumps(0) export).
+    /// Each entry is (name, bit_width) for a symbolic BVS created by native
+    /// fgets/fgetc/getchar. On export, Python recreates matching claripy BVS
+    /// and writes them to the posix stdin plugin.
+    stdin_symbols: Vec<(String, u32)>,
 }
 
 impl RustSimState {
@@ -178,6 +183,7 @@ impl RustSimState {
             arch,
             fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
+            stdin_symbols: Vec::new(),
         })
     }
 
@@ -207,6 +213,7 @@ impl RustSimState {
             arch,
             fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
+            stdin_symbols: Vec::new(),
         }
     }
 
@@ -246,6 +253,7 @@ impl RustSimState {
             arch,
             fd_buffers: HashMap::new(),
             heap_brk: 0xC000_0000,
+            stdin_symbols: Vec::new(),
         })
     }
 
@@ -310,6 +318,23 @@ impl RustSimState {
     /// Append bytes to a file descriptor's output buffer.
     pub fn write_fd(&mut self, fd: u32, data: &[u8]) {
         self.fd_buffers.entry(fd).or_default().extend_from_slice(data);
+    }
+
+    /// Record a symbolic variable that was read from stdin.
+    /// Used by native fgets/fgetc/getchar to track stdin reads for posix.dumps(0).
+    pub fn record_stdin_symbol(&mut self, name: String, bits: u32) {
+        self.stdin_symbols.push((name, bits));
+    }
+
+    /// Get the list of symbolic variables read from stdin.
+    /// Returns (name, bit_width) tuples in read order.
+    pub fn stdin_symbols(&self) -> &[(String, u32)] {
+        &self.stdin_symbols
+    }
+
+    /// Check if any stdin symbols have been recorded.
+    pub fn has_stdin_symbols(&self) -> bool {
+        !self.stdin_symbols.is_empty()
     }
 
     /// Get the current heap brk pointer.
@@ -620,6 +645,7 @@ impl RustSimState {
             track_history: self.track_history,
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
+            stdin_symbols: self.stdin_symbols.clone(),
         }
     }
 
@@ -644,6 +670,7 @@ impl RustSimState {
             track_history: self.track_history,
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
+            stdin_symbols: self.stdin_symbols.clone(),
         }
     }
 
@@ -668,6 +695,7 @@ impl RustSimState {
             track_history: self.track_history,
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
+            stdin_symbols: self.stdin_symbols.clone(),
         }
     }
 
@@ -700,6 +728,7 @@ impl RustSimState {
             track_history: self.track_history,
             fd_buffers: self.fd_buffers.clone(),
             heap_brk: self.heap_brk,
+            stdin_symbols: self.stdin_symbols.clone(),
         }
     }
 

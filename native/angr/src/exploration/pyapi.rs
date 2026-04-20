@@ -1566,3 +1566,38 @@
         }
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
+
+    /// Check if a state has recorded stdin symbols from native fgets/fgetc/getchar.
+    pub fn has_state_stdin_symbols(&self, state_id: u64) -> bool {
+        if let Some(state) = self.find_state(state_id) {
+            return state.has_stdin_symbols();
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return cb.state.has_stdin_symbols();
+            }
+        }
+        false
+    }
+
+    /// Get the stdin symbols for a state by ID.
+    ///
+    /// Returns list of (name, bit_width) tuples for symbolic variables
+    /// created by native fgets/fgetc/getchar. Used to reconstruct stdin
+    /// data in Python's posix plugin for posix.dumps(0).
+    pub fn get_state_stdin_symbols(&self, state_id: u64) -> PyResult<Vec<(String, u32)>> {
+        if let Some(state) = self.find_state(state_id) {
+            return Ok(state.stdin_symbols().to_vec());
+        }
+        if let Some(ref cb) = self.pending_callback {
+            if cb.state.state_id() == state_id {
+                return Ok(cb.state.stdin_symbols().to_vec());
+            }
+        }
+        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+    }
+
+    /// Evaluate a stdin symbol by name using the state's solver.
+    pub fn py_eval_stdin_symbol(&self, state_id: u64, name: &str) -> Option<u64> {
+        self.eval_stdin_symbol(state_id, name)
+    }

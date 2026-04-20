@@ -285,6 +285,44 @@ class RustCallbackDispatchMixin:
         except Exception as e:
             l.debug("Failed to inject Rust stdout into posix: %s", e)
 
+    def _inject_rust_stdin(self, state, state_id):
+        """Inject Rust-side stdin data into posix.dumps(0).
+
+        Native fgets/fgetc/getchar create symbolic stdin bytes in Rust.
+        Since these BVS variables live in the Rust Z3 context (not Python's),
+        we evaluate them via the Rust solver and inject the concrete result
+        into the stdin stream so posix.dumps(0) returns the correct value.
+
+        Must catch ALL exceptions (including AttributeError) to prevent
+        propagation through @property descriptors which triggers __getattr__.
+        """
+        try:
+            if not self._rust_mgr.has_state_stdin_symbols(state_id):
+                return
+            stdin_symbols = self._rust_mgr.get_state_stdin_symbols(state_id)
+            if not stdin_symbols:
+                return
+            posix = getattr(state, 'posix', None)
+            if posix is None:
+                return
+            stdin_stream = getattr(posix, 'stdin', None)
+            if stdin_stream is None:
+                return
+            # Evaluate each stdin symbol via Rust solver to get concrete bytes
+            concrete_bytes = bytearray()
+            for name, bits in stdin_symbols:
+                val = self._rust_mgr.eval_stdin_symbol(state_id, name)
+                if val is not None:
+                    concrete_bytes.append(val & 0xFF)
+                else:
+                    concrete_bytes.append(0)
+            if concrete_bytes:
+                data = claripy.BVV(bytes(concrete_bytes))
+                size = claripy.BVV(len(concrete_bytes), state.arch.bits)
+                stdin_stream.content.append((data, size))
+        except Exception as e:
+            l.debug("Failed to inject Rust stdin data into posix: %s", e)
+
     def _handle_simprocedure_callback(self, event: "_ExplorationEvent"):
         """Handle SimProcedure callback from Rust.
 

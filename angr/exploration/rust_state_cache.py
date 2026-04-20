@@ -246,6 +246,7 @@ class RustStateCacheMixin:
             try:
                 if not isinstance(state, RustStateProxy):
                     self._inject_rust_stdout(state, state_id)
+                    self._inject_rust_stdin(state, state_id)
 
                 if self._find_predicate is not None:
                     try:

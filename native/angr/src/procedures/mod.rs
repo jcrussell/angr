@@ -33,6 +33,7 @@ pub mod ctype;
 pub mod strchr;
 pub mod strtol;
 pub mod strcat;
+pub mod fgets;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -205,6 +206,12 @@ impl NativeProcedureRegistry {
         // String concatenation
         registry.register(Arc::new(strcat::NativeStrcat));
         registry.register(Arc::new(strcat::NativeStrncat));
+        // Input procedures (stdin) — create symbolic bytes and track them
+        // in state.stdin_symbols for posix.dumps(0) export.
+        registry.register(Arc::new(fgets::NativeFgets));
+        registry.register(Arc::new(fgets::NativeFgetc));
+        registry.register(Arc::new(fgets::NativeGetchar));
+        registry.register(Arc::new(fgets::NativeGetc));
         // I/O procedures: NOT registered by default — they only handle
         // stdin/stdout natively, and the interaction with Python's posix
         // plugin for fd tracking requires careful coordination.
