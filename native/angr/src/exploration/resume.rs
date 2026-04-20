@@ -249,6 +249,8 @@
 
         // Apply native uniqueness filter if enabled
         self.apply_uniqueness_filter();
+        // Apply native techniques (LengthLimiter, Timeout, LoopBound)
+        self.apply_native_techniques();
 
         Ok(())
     }
@@ -589,6 +591,8 @@
 
         // Apply native uniqueness filter if enabled
         self.apply_uniqueness_filter();
+        // Apply native techniques (LengthLimiter, Timeout, LoopBound)
+        self.apply_native_techniques();
 
         Ok(())
     }

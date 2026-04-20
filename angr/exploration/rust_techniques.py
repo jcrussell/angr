@@ -148,20 +148,30 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
         else:
             l.debug(f"P9: CheckUniqueness registered (Python fallback)")
 
-    # LengthLimiter: Limit path length (block count)
+    # LengthLimiter: Limit path length (block count) — native Rust implementation
     elif tech_name == 'LengthLimiter':
         max_length = getattr(technique, '_max_length', None)
         drop = getattr(technique, '_drop', False)
         if max_length is not None:
-            l.debug(f"P9: LengthLimiter registered (max_length={max_length}, drop={drop})")
+            try:
+                mgr._rust_mgr.register_length_limiter(max_length, drop)
+                technique._native_length_limiter = True
+                l.debug(f"P9: LengthLimiter registered natively (max_length={max_length}, drop={drop})")
+            except Exception as e:
+                l.debug(f"P9: LengthLimiter native registration failed: {e}, using Python fallback")
         else:
             l.debug(f"P9: LengthLimiter registered (no max_length found)")
 
-    # Timeout: Wall-clock timeout for exploration
+    # Timeout: Wall-clock timeout — native Rust implementation
     elif tech_name == 'Timeout':
         timeout_val = getattr(technique, 'timeout', None)
         if timeout_val is not None:
-            l.debug(f"P9: Timeout technique registered ({timeout_val}s)")
+            try:
+                mgr._rust_mgr.register_timeout(float(timeout_val))
+                technique._native_timeout = True
+                l.debug(f"P9: Timeout registered natively ({timeout_val}s)")
+            except Exception as e:
+                l.debug(f"P9: Timeout native registration failed: {e}, using Python fallback")
         else:
             l.debug(f"P9: Timeout technique registered (no timeout value)")
 
@@ -244,6 +254,10 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                 # Skip techniques handled natively in Rust
                 if getattr(tech, '_native_uniqueness', False):
                     continue
+                if getattr(tech, '_native_length_limiter', False):
+                    continue
+                if getattr(tech, '_native_timeout', False):
+                    continue
 
                 tech_name = type(tech).__name__
 
@@ -322,7 +336,10 @@ def check_technique_complete(mgr: "RustExplorationManager") -> bool:
         tech_name = type(tech).__name__
 
         # Timeout: check wall-clock and move all active states to "timeout"
+        # Skip if handled natively in Rust
         if tech_name == 'Timeout':
+            if getattr(tech, '_native_timeout', False):
+                continue  # Handled in Rust apply_native_techniques()
             timeout_val = getattr(tech, 'timeout', None)
             if timeout_val is not None:
                 if tech.start_time is None:

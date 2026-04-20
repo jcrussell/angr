@@ -496,6 +496,16 @@
 
             // Apply native uniqueness filter if enabled
             self.apply_uniqueness_filter();
+
+            // Apply native exploration techniques (LengthLimiter, Timeout, LoopBound)
+            if self.apply_native_techniques() {
+                // A technique signaled completion (e.g., Timeout)
+                return Ok(ExplorationEvent::step_complete(
+                    self.found_count(),
+                    self.active_count(),
+                    self.steps,
+                ));
+            }
         }
 
         // Record run loop timing and active state count

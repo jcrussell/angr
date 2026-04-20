@@ -286,6 +286,31 @@ impl PendingCallback {
     }
 }
 
+/// Native exploration technique variants.
+///
+/// These techniques run entirely in Rust during the exploration loop,
+/// avoiding Python callback overhead for common technique patterns.
+#[derive(Debug, Clone)]
+pub(crate) enum NativeTechnique {
+    /// Limits path length by block count. States exceeding `max_length` blocks
+    /// are moved to "cut" (or "_DROP" if `drop` is true).
+    LengthLimiter {
+        max_length: usize,
+        drop: bool,
+    },
+    /// Wall-clock timeout. Exploration stops after `timeout_secs` seconds.
+    Timeout {
+        timeout_secs: f64,
+        start_time: Option<std::time::Instant>,
+    },
+    /// Basic loop bounding: limits how many times a single address can appear
+    /// in a state's history. States exceeding the bound are moved to `discard_stash`.
+    LoopBound {
+        bound: usize,
+        discard_stash: String,
+    },
+}
+
 /// Statistics for native procedure execution.
 #[derive(Debug, Clone)]
 pub(crate) struct NativeProcStats {
@@ -386,6 +411,8 @@ pub struct RustExplorationManager {
     pub(crate) uniqueness_registers: Vec<String>,
     /// Set of seen register tuple hashes for uniqueness checking.
     pub(crate) uniqueness_set: HashSet<u64>,
+    /// Native exploration techniques that run entirely in Rust.
+    pub(crate) native_techniques: Vec<NativeTechnique>,
     /// State IDs to skip find predicate check for on next pop.
     /// Set after resume_find_predicate(false) to prevent infinite loop —
     /// states are already checked and should continue to hook/step.
@@ -447,6 +474,7 @@ impl RustExplorationManager {
             max_active_states: None,
             uniqueness_registers: Vec::new(),
             uniqueness_set: HashSet::new(),
+            native_techniques: Vec::new(),
             skip_find_predicate_states: HashSet::new(),
             skip_avoid_predicate_states: HashSet::new(),
             profiling_enabled: false,
@@ -1853,6 +1881,60 @@ impl RustExplorationManager {
     }
 
     // =========================================================================
+    // Native Exploration Techniques
+    // =========================================================================
+
+    /// Register a native LengthLimiter technique.
+    ///
+    /// States whose history exceeds `max_length` blocks are moved to "cut"
+    /// (or "_DROP" if `drop` is true). Runs entirely in Rust with zero FFI overhead.
+    pub fn register_length_limiter(&mut self, max_length: usize, drop: bool) {
+        self.native_techniques.push(NativeTechnique::LengthLimiter {
+            max_length,
+            drop,
+        });
+        if !drop {
+            self.sm.stashes_mut().entry("cut".to_string()).or_insert_with(VecDeque::new);
+        }
+    }
+
+    /// Register a native Timeout technique.
+    ///
+    /// Exploration stops after `timeout_secs` seconds. All active states are
+    /// moved to "timeout" stash. Timer starts on first call to apply_native_techniques().
+    pub fn register_timeout(&mut self, timeout_secs: f64) {
+        self.native_techniques.push(NativeTechnique::Timeout {
+            timeout_secs,
+            start_time: None,
+        });
+        self.sm.stashes_mut().entry("timeout".to_string()).or_insert_with(VecDeque::new);
+    }
+
+    /// Register a native LoopBound technique.
+    ///
+    /// States where any single address appears more than `bound` times in
+    /// their history are moved to `discard_stash`. This is a simplified
+    /// version of LoopSeer that doesn't require CFG analysis.
+    #[pyo3(signature = (bound, discard_stash="spinning"))]
+    pub fn register_loop_bound(&mut self, bound: usize, discard_stash: &str) {
+        self.native_techniques.push(NativeTechnique::LoopBound {
+            bound,
+            discard_stash: discard_stash.to_string(),
+        });
+        self.sm.stashes_mut().entry(discard_stash.to_string()).or_insert_with(VecDeque::new);
+    }
+
+    /// Get the number of registered native techniques.
+    pub fn native_technique_count(&self) -> usize {
+        self.native_techniques.len()
+    }
+
+    /// Clear all native techniques.
+    pub fn clear_native_techniques(&mut self) {
+        self.native_techniques.clear();
+    }
+
+    // =========================================================================
     // State Export Methods
     // =========================================================================
 
@@ -2804,6 +2886,8 @@ impl RustExplorationManager {
 
             // Apply native uniqueness filter if enabled
             self.apply_uniqueness_filter();
+            // Apply native techniques (LengthLimiter, Timeout, LoopBound)
+            self.apply_native_techniques();
         }
 
         // Record run loop timing and active state count
@@ -3073,6 +3157,8 @@ impl RustExplorationManager {
 
         // Apply native uniqueness filter if enabled
         self.apply_uniqueness_filter();
+        // Apply native techniques (LengthLimiter, Timeout, LoopBound)
+        self.apply_native_techniques();
 
         Ok(())
     }
@@ -3417,6 +3503,8 @@ impl RustExplorationManager {
 
         // Apply native uniqueness filter if enabled
         self.apply_uniqueness_filter();
+        // Apply native techniques (LengthLimiter, Timeout, LoopBound)
+        self.apply_native_techniques();
 
         Ok(())
     }

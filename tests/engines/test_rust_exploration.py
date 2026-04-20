@@ -1797,5 +1797,83 @@ class TestDetailedHistory:
         assert history == []
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeTechniques:
+    """Tests for native exploration technique hooks in Rust."""
+
+    def test_register_length_limiter(self):
+        """Test that LengthLimiter can be registered natively."""
+        mgr = _RustExplorationManager("amd64")
+        assert mgr.native_technique_count() == 0
+        mgr.register_length_limiter(100, False)
+        assert mgr.native_technique_count() == 1
+        mgr.register_length_limiter(200, True)
+        assert mgr.native_technique_count() == 2
+        mgr.clear_native_techniques()
+        assert mgr.native_technique_count() == 0
+
+    def test_register_timeout(self):
+        """Test that Timeout can be registered natively."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.register_timeout(10.0)
+        assert mgr.native_technique_count() == 1
+
+    def test_register_loop_bound(self):
+        """Test that LoopBound can be registered natively."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.register_loop_bound(5, "spinning")
+        assert mgr.native_technique_count() == 1
+
+    def test_length_limiter_via_use_technique(self, fauxware_project):
+        """Test LengthLimiter registered through use_technique()."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LengthLimiter
+        tech = LengthLimiter(max_length=50)
+        mgr.use_technique(tech)
+
+        # Verify it was registered natively
+        assert getattr(tech, '_native_length_limiter', False), \
+            "LengthLimiter should be marked as native"
+        assert mgr._rust_mgr.native_technique_count() == 1
+
+    def test_length_limiter_cuts_long_paths(self, fauxware_project):
+        """Test that LengthLimiter actually moves states to 'cut' stash."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import LengthLimiter
+        mgr.use_technique(LengthLimiter(max_length=5))
+
+        # Explore — paths beyond 5 blocks should be cut
+        mgr.run(max_steps=200)
+
+        # Should have states in 'cut' stash
+        cut_ids = list(mgr._rust_mgr.get_state_ids("cut"))
+        assert len(cut_ids) > 0, "LengthLimiter should have moved some states to 'cut'"
+
+    def test_timeout_via_use_technique(self, fauxware_project):
+        """Test Timeout registered through use_technique()."""
+        state = fauxware_project.factory.entry_state()
+        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+
+        from angr.exploration_techniques import Timeout
+        tech = Timeout(timeout=30)
+        mgr.use_technique(tech)
+
+        assert getattr(tech, '_native_timeout', False), \
+            "Timeout should be marked as native"
+        assert mgr._rust_mgr.native_technique_count() == 1
+
+    def test_multiple_native_techniques(self):
+        """Test that multiple native techniques can coexist."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.register_length_limiter(100, False)
+        mgr.register_timeout(30.0)
+        mgr.register_loop_bound(10, "spinning")
+        assert mgr.native_technique_count() == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

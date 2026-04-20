@@ -144,6 +144,146 @@ impl RustExplorationManager {
         // else dropped states are simply discarded
     }
 
+    /// Apply native exploration techniques to the active stash.
+    ///
+    /// Runs after each step in the exploration loop. Checks each technique
+    /// and moves/stops states as needed, entirely in Rust.
+    pub(crate) fn apply_native_techniques(&mut self) -> bool {
+        if self.native_techniques.is_empty() {
+            return false;
+        }
+
+        let mut complete = false;
+
+        for tech_idx in 0..self.native_techniques.len() {
+            match &mut self.native_techniques[tech_idx] {
+                NativeTechnique::Timeout { timeout_secs, start_time } => {
+                    let start = start_time.get_or_insert_with(std::time::Instant::now);
+                    if start.elapsed().as_secs_f64() > *timeout_secs {
+                        log::info!("Native Timeout: exploration timed out after {:.1}s", timeout_secs);
+                        // Move all active states to "timeout" stash
+                        if let Some(active) = self.sm.get_mut(STASH_ACTIVE) {
+                            let states: Vec<_> = active.drain(..).collect();
+                            let timeout_stash = self.sm.stashes_mut()
+                                .entry("timeout".to_string())
+                                .or_insert_with(VecDeque::new);
+                            for s in states {
+                                timeout_stash.push_back(s);
+                            }
+                        }
+                        complete = true;
+                    }
+                }
+                NativeTechnique::LengthLimiter { max_length, drop } => {
+                    let max_len = *max_length;
+                    let do_drop = *drop;
+
+                    // Find states exceeding the length limit
+                    let to_remove = {
+                        let active = match self.sm.get(STASH_ACTIVE) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        let mut indices = Vec::new();
+                        for (i, state) in active.iter().enumerate() {
+                            if state.history().len() > max_len {
+                                indices.push(i);
+                            }
+                        }
+                        indices
+                    };
+
+                    if to_remove.is_empty() {
+                        continue;
+                    }
+
+                    let active = match self.sm.get_mut(STASH_ACTIVE) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let mut removed_states = Vec::new();
+                    for &idx in to_remove.iter().rev() {
+                        if let Some(state) = active.remove(idx) {
+                            removed_states.push(state);
+                        }
+                    }
+
+                    if do_drop {
+                        // States are simply discarded
+                    } else {
+                        let cut_stash = self.sm.stashes_mut()
+                            .entry("cut".to_string())
+                            .or_insert_with(VecDeque::new);
+                        for state in removed_states {
+                            cut_stash.push_back(state);
+                        }
+                    }
+                }
+                NativeTechnique::LoopBound { bound, discard_stash } => {
+                    let max_bound = *bound;
+                    let stash_name = discard_stash.clone();
+
+                    // Find states where any address appears more than `bound` times
+                    let to_remove = {
+                        let active = match self.sm.get(STASH_ACTIVE) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        let mut indices = Vec::new();
+                        for (i, state) in active.iter().enumerate() {
+                            let history = state.history();
+                            if Self::exceeds_loop_bound(history, max_bound) {
+                                indices.push(i);
+                            }
+                        }
+                        indices
+                    };
+
+                    if to_remove.is_empty() {
+                        continue;
+                    }
+
+                    let active = match self.sm.get_mut(STASH_ACTIVE) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let mut removed_states = Vec::new();
+                    for &idx in to_remove.iter().rev() {
+                        if let Some(state) = active.remove(idx) {
+                            removed_states.push(state);
+                        }
+                    }
+
+                    if !self.sm.drop_terminal_states() {
+                        let target = self.sm.stashes_mut()
+                            .entry(stash_name)
+                            .or_insert_with(VecDeque::new);
+                        for state in removed_states {
+                            target.push_back(state);
+                        }
+                    }
+                }
+            }
+        }
+
+        complete
+    }
+
+    /// Check if any address in the history exceeds the loop bound.
+    fn exceeds_loop_bound(history: &[u64], bound: usize) -> bool {
+        // Use a small HashMap to count address frequencies.
+        // For typical histories this is fast since most addresses appear once.
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        for &addr in history {
+            let count = counts.entry(addr).or_insert(0);
+            *count += 1;
+            if *count > bound {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Push a state to a terminal stash (avoid/pruned/deadended), or drop it
     /// if `drop_terminal_states` is enabled. Increments the appropriate counter.
     pub(crate) fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
