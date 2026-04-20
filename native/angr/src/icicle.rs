@@ -395,7 +395,7 @@ impl Icicle {
     pub fn set_isa_mode(&mut self, mode: u8) {
         // https://github.com/icicle-emu/icicle-emu/issues/70#issuecomment-2857265222
         self.vm.cpu.set_isa_mode(mode);
-        self.set_pc(self.get_pc()).unwrap();
+        let _ = self.set_pc(self.get_pc());
     }
 
     // Execution

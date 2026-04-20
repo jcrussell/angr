@@ -975,11 +975,11 @@ impl RustSolverContext {
     ///
     /// This is used by the Rust VEX engine to share the solver context,
     /// ensuring branch constraints are properly tracked during execution.
-    /// Only works for owned contexts (panics on shared).
-    pub fn sym_context(&self) -> &SymContext {
+    /// Only works for owned contexts; returns None for shared contexts.
+    pub fn sym_context(&self) -> Option<&SymContext> {
         match &self.inner.sym_ctx {
-            SolverCtxStorage::Owned(ctx) => ctx,
-            SolverCtxStorage::Shared(_) => panic!("sym_context() not supported on shared solver contexts"),
+            SolverCtxStorage::Owned(ctx) => Some(ctx),
+            SolverCtxStorage::Shared(_) => None,
         }
     }
 

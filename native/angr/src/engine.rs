@@ -918,7 +918,14 @@ impl RustVEXEngine {
         // automatically added to the shared solver context.
         let default_ctx;
         let ctx: &SymContext = if let Some(solver) = solver_ctx {
-            solver.sym_context()
+            match solver.sym_context() {
+                Some(ctx) => ctx,
+                None => {
+                    return Err(PyRuntimeError::new_err(
+                        "sym_context() not available on shared solver contexts",
+                    ));
+                }
+            }
         } else {
             default_ctx = SymContext::new_mock();
             &default_ctx
