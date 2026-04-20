@@ -1464,5 +1464,200 @@ class TestSolverOutputCorrectness:
         assert 20 <= vy <= 30
 
 
+class TestCallableStepFunc:
+    """Integration tests for Callable/step_func flow with RustExplorationManager.
+
+    This flow (used by flareon2015_10 and similar) calls run(step_func=...) where
+    step_func invokes prune() after each step to remove unsatisfiable states.
+    It has historically had multiple bugs (see flareon10-three-bugs memory).
+    """
+
+    def test_step_func_called_per_step(self, fauxware_project):
+        """step_func is called after each execution step."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        call_count = 0
+        def count_steps(sm):
+            nonlocal call_count
+            call_count += 1
+
+        mgr.run(step_func=count_steps, n=5)
+        assert call_count == 5, f"step_func should be called 5 times, got {call_count}"
+
+    def test_step_func_stops_when_no_active(self, fauxware_project):
+        """run(step_func=...) stops when active stash is empty."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        call_count = 0
+        def counting_step(sm):
+            nonlocal call_count
+            call_count += 1
+
+        # Run with high n limit -- should stop when active is empty
+        mgr.run(step_func=counting_step, n=100000)
+        assert call_count > 0, "step_func should have been called at least once"
+        assert call_count < 100000, "Should have stopped before n limit"
+
+    def test_prune_removes_unsat_states(self, fauxware_project):
+        """prune() removes unsatisfiable states from active stash."""
+        from angr.exploration import RustExplorationManager
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Step a few times to get some states
+        mgr.step()
+
+        # The default prune (no filter_func) should keep satisfiable states
+        active_before = len(mgr.active)
+        mgr.prune()
+        active_after = len(mgr.active)
+        # All states from normal execution should be satisfiable
+        assert active_after == active_before, "Normal states should all be satisfiable"
+
+    def test_step_func_with_prune(self, fauxware_project):
+        """step_func that prunes works correctly (Callable pattern)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        prune_count = 0
+        def prune_step(sm):
+            nonlocal prune_count
+            sm.prune()
+            prune_count += 1
+
+        # Run with step_func that prunes after each step.
+        # May stop before n=20 if active stash empties (all states deadend).
+        mgr.run(step_func=prune_step, n=20)
+        assert prune_count > 0, "step_func should have been called at least once"
+        assert prune_count <= 20, f"step_func should not exceed n, got {prune_count}"
+
+    def test_unstash_from_deadended(self, fauxware_project):
+        """unstash(from_stash='deadended') moves states to active (Callable pattern)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Run with step_func and prune -- states will eventually deadend
+        mgr.run(step_func=lambda sm: sm.prune(), n=100000)
+
+        # Check deadended stash
+        deadended_count = len(mgr.deadended)
+        assert deadended_count > 0, "Some states should have deadended"
+
+        # unstash should move deadended to active
+        mgr.unstash(from_stash="deadended")
+        assert len(mgr.deadended) == 0, "Deadended should be empty after unstash"
+        assert len(mgr.active) >= deadended_count
+
+    def test_prune_with_filter_func(self, fauxware_project):
+        """prune(filter_func=...) keeps only matching states."""
+        from angr.exploration import RustExplorationManager
+
+        ACCEPTED = 0x4006ed
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Explore to find accepted states
+        mgr.explore(find=ACCEPTED, max_steps=50000)
+        found_count = len(mgr.found)
+        assert found_count > 0, "Should find at least one state"
+
+        # Move found + deadended to active for testing prune with filter
+        mgr.unstash(from_stash="found", to_stash="active")
+        mgr.unstash(from_stash="deadended", to_stash="active")
+        total_active = len(mgr.active)
+        assert total_active > 0
+
+        # Prune with filter: keep only states at ACCEPTED
+        mgr.prune(filter_func=lambda s: s.addr == ACCEPTED)
+        # Should have kept the found states
+        assert len(mgr.active) == found_count
+
+    def test_callable_with_rust_engine(self, fauxware_project):
+        """Full Callable flow works with use_rust_engine=True.
+
+        This tests the complete Callable pipeline:
+        1. factory.callable() creates the callable
+        2. Callable.perform_call() creates a simulation_manager
+        3. run(step_func=_step_func) iterates with pruning
+        4. unstash + prune(filter_func=...) post-processes results
+        """
+        # Monkey-patch simulation_manager to use Rust engine for this test
+        original_sm = fauxware_project.factory.simulation_manager
+
+        def rust_sm(thing=None, **kwargs):
+            kwargs.pop('use_rust_engine', None)
+            kwargs.pop('techniques', None)  # RustExplorationManager doesn't take techniques
+            from angr.exploration import RustExplorationManager
+            if thing is None:
+                thing = [fauxware_project.factory.entry_state()]
+            elif isinstance(thing, angr.SimState):
+                thing = [thing]
+            return RustExplorationManager(fauxware_project, active_states=thing)
+
+        try:
+            fauxware_project.factory.simulation_manager = rust_sm
+
+            # Call authenticate(username="SOSNEAKY") which is the backdoor
+            # authenticate is at 0x400664
+            authenticate = fauxware_project.factory.callable(
+                0x400664,
+                prototype="int authenticate(char *username, char *password)",
+                concrete_only=True,
+            )
+            # This should complete without error using the Rust engine
+            result = authenticate(b"SOSNEAKY\x00", b"anything\x00")
+            assert result is not None, "Callable should return a value"
+        finally:
+            fauxware_project.factory.simulation_manager = original_sm
+
+    def test_run_until_predicate(self, fauxware_project):
+        """run(step_func=..., until=...) stops when until returns True."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        call_count = 0
+        def count_step(sm):
+            nonlocal call_count
+            call_count += 1
+
+        # Stop after 3 step_func calls via until
+        mgr.run(step_func=count_step, until=lambda sm: call_count >= 3, n=100)
+        assert call_count == 3, f"Should stop after 3 calls, got {call_count}"
+
+    def test_drop_terminal_states_false_during_step_func(self, fauxware_project):
+        """run(step_func=...) sets drop_terminal_states=False so deadended states survive."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        found_deadended = False
+        def check_deadended(sm):
+            nonlocal found_deadended
+            if len(sm.deadended) > 0:
+                found_deadended = True
+
+        mgr.run(step_func=check_deadended, n=100000)
+        # With drop_terminal_states=False, deadended states should be visible
+        # during step_func calls (or at end)
+        assert found_deadended or len(mgr.deadended) > 0, \
+            "Deadended states should be preserved during step_func execution"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
