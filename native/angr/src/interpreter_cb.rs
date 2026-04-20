@@ -1845,6 +1845,14 @@ impl<'a> CallbackInterpreter<'a> {
                                     addr, unmapped_size
                                 );
                             }
+                            Err(MemoryError::SymbolicAddress { description }) => {
+                                // Address range too large or symbolic - fall through to Python
+                                // Python's memory model handles large ranges natively
+                                log::debug!(
+                                    "Symbolic address store: {}, falling back to Python",
+                                    description
+                                );
+                            }
                             Err(e) => {
                                 return Err(CbExecutionError::Memory(e.to_string()));
                             }

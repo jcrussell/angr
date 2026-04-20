@@ -1233,14 +1233,15 @@ impl SymbolicMemory {
                 self.prepare_strided_region(base, stride, count, size);
                 self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
             }
-            ConcretizationResult::TooLarge { .. } => {
-                // With read_fallback_any enabled, TooLarge shouldn't reach here
-                // (concretize_read would have returned Single). But as a safety net:
-                RustBV::symbolic(
-                    ctx,
-                    &format!("mem_unbounded_{}", size),
-                    size * 8,
-                )
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                // Return error so caller can fall back to Python's memory model,
+                // which handles large symbolic address ranges natively.
+                return Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                });
             }
             ConcretizationResult::Failed(reason) => {
                 return Err(MemoryError::SymbolicAddress { description: reason });
@@ -1380,9 +1381,15 @@ impl SymbolicMemory {
                 self.store_strided(&addr, &value, base, stride, count, ctx)?;
                 Ok(Some(result))
             }
-            ConcretizationResult::TooLarge { .. } => {
-                // With write_fallback_max enabled, TooLarge shouldn't reach here
-                Ok(Some(result))
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                // Return error so caller can fall back to Python's memory model,
+                // which handles large symbolic address ranges natively.
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
             }
             ConcretizationResult::Failed(reason) => {
                 Err(MemoryError::SymbolicAddress { description: reason.clone() })
@@ -1412,8 +1419,15 @@ impl SymbolicMemory {
                 self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
                 self.store_strided(addr, &value, *base, *stride, *count, ctx)
             }
-            ConcretizationResult::TooLarge { .. } => {
-                Ok(())
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                // Return error so caller can fall back to Python's memory model,
+                // which handles large symbolic address ranges natively.
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
             }
             ConcretizationResult::Failed(reason) => {
                 Err(MemoryError::SymbolicAddress { description: reason.clone() })
