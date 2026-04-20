@@ -1,6 +1,29 @@
 use super::*;
 
 impl RustExplorationManager {
+    /// Push a new state to the active stash, respecting max_active_states limit.
+    /// If the limit is reached, the state is dropped (pruned) instead.
+    /// Returns true if the state was added, false if dropped.
+    #[inline]
+    pub(crate) fn push_to_active_or_drop(&mut self, state: RustSimState) -> bool {
+        if let Some(limit) = self.max_active_states {
+            if self.sm.active_count() >= limit {
+                log::debug!(
+                    "max_active_states limit ({}) reached, dropping state {}",
+                    limit,
+                    state.state_id()
+                );
+                self.push_or_drop_terminal(STASH_PRUNED, state);
+                return false;
+            }
+        }
+        self.sm.stashes_mut()
+            .entry(STASH_ACTIVE.to_string())
+            .or_insert_with(VecDeque::new)
+            .push_back(state);
+        true
+    }
+
     /// Track a state in the state_index.
     #[inline]
     pub(crate) fn index_state(&mut self, state_id: u64, stash: &str) {

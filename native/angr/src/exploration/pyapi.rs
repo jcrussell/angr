@@ -92,6 +92,19 @@
         self.solver_timeout_ms = timeout_ms;
     }
 
+    /// Set the maximum number of states in the active stash.
+    /// When the limit is reached, new forked states are dropped to avoid OOM.
+    /// None (default) means no limit.
+    #[pyo3(signature = (limit=None))]
+    pub fn set_max_active_states(&mut self, limit: Option<usize>) {
+        self.max_active_states = limit;
+    }
+
+    /// Get the current max_active_states limit.
+    pub fn get_max_active_states(&self) -> Option<usize> {
+        self.max_active_states
+    }
+
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
     /// When true (default), terminal states are dropped to save memory.
     /// Set to false when states need to be recovered (e.g., factory.callable()).

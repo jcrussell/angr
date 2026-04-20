@@ -122,6 +122,7 @@ class RustExplorationManager(
         active_states: Optional[list] = None,
         save_unconstrained: bool = False,
         solver_timeout_ms: int = 30000,
+        max_active_states: Optional[int] = None,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -132,6 +133,8 @@ class RustExplorationManager(
             save_unconstrained: If True, save states with unconstrained IP
                 to the 'unconstrained' stash instead of dropping them.
             solver_timeout_ms: Z3 solver timeout in milliseconds (default: 30000).
+            max_active_states: Maximum number of states in the active stash.
+                When reached, new forked states are pruned. None = no limit.
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
@@ -150,6 +153,10 @@ class RustExplorationManager(
         # Configure solver timeout
         if solver_timeout_ms != 30000:
             self._rust_mgr.set_solver_timeout(solver_timeout_ms)
+
+        # Configure max active states limit
+        if max_active_states is not None:
+            self._rust_mgr.set_max_active_states(max_active_states)
 
         # Performance profiling counters
         self._perf_stats = {

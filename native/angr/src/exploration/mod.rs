@@ -382,6 +382,8 @@ pub struct RustExplorationManager {
     pub(crate) zero_fill_unconstrained: bool,
     /// Z3 solver timeout in milliseconds (default: 30000).
     pub(crate) solver_timeout_ms: u32,
+    /// Maximum number of states in the active stash. None = unlimited.
+    pub(crate) max_active_states: Option<usize>,
     // drop_terminal_states, avoided_count, pruned_count, deadended_count
     // are now in self.sm (StashManager)
     /// Native uniqueness filter: register names to check.
@@ -446,6 +448,7 @@ impl RustExplorationManager {
             lazy_solves: false,
             zero_fill_unconstrained: false,
             solver_timeout_ms: 30000,
+            max_active_states: None,
             uniqueness_registers: Vec::new(),
             uniqueness_set: HashSet::new(),
             skip_find_predicate_states: HashSet::new(),

@@ -238,8 +238,7 @@
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
             } else {
-                self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                    .or_insert_with(VecDeque::new).push_back(s);
+                self.push_to_active_or_drop(s);
             }
         }
 
@@ -345,8 +344,7 @@
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, forked);
                         } else {
-                            self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                                .or_insert_with(VecDeque::new).push_back(forked);
+                            self.push_to_active_or_drop(forked);
                         }
                     }
                 }
@@ -575,12 +573,9 @@
             }
         }
 
-        // Add to active stash
-        let active = self.sm.stashes_mut()
-            .entry(STASH_ACTIVE.to_string())
-            .or_insert_with(VecDeque::new);
+        // Add to active stash (respecting max_active_states limit)
         for s in active_states {
-            active.push_back(s);
+            self.push_to_active_or_drop(s);
         }
 
         // Add to pruned stash

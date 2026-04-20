@@ -303,8 +303,7 @@
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, successor);
                         } else {
-                            self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                                .or_insert_with(VecDeque::new).push_back(successor);
+                            self.push_to_active_or_drop(successor);
                         }
                     }
                 }
@@ -380,9 +379,7 @@
                                             self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                                             self.accumulated_stats.solver_sat_count += 1;
                                         }
-                                        self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                                            .or_insert_with(VecDeque::new)
-                                            .push_back(forked);
+                                        self.push_to_active_or_drop(forked);
                                     } else if let Some(start) = sat_start {
                                         self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                                         self.accumulated_stats.solver_sat_count += 1;
