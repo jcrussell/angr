@@ -588,6 +588,7 @@ class RustExplorationManager(
                 concrete = state.solver.eval(data).to_bytes(4096, 'little')
                 return (concrete, 7, True)
             except Exception:
+                l.debug("fetch_page 0x%x: failed to load/eval, returning empty", page_addr, exc_info=True)
                 return (bytes(4096), 0, False)
         finally:
             self._perf_stats['callback_fetch_page_count'] += 1
@@ -982,7 +983,7 @@ class RustExplorationManager(
                 for name in page_data.variables:
                     if not name.startswith(_user_prefixes):
                         return True
-        except Exception:
+        except (AttributeError, KeyError, TypeError):
             pass
         # Also check non-stack pages with symbolic_data (e.g., user stores
         # a BVS into .data/.bss segment via state.memory.store()).
@@ -998,7 +999,7 @@ class RustExplorationManager(
                         for name in bv.variables:
                             if not name.startswith(_user_prefixes):
                                 return True
-        except Exception:
+        except (AttributeError, KeyError, TypeError):
             pass
         return False
 
@@ -1011,7 +1012,7 @@ class RustExplorationManager(
                 for chunk in iter(lambda: f.read(65536), b''):
                     h.update(chunk)
             return h.hexdigest()
-        except Exception:
+        except OSError:
             return ""
 
     def _save_init_to_disk_cache(self, cache_key: str, state: "angr.SimState"):
@@ -1035,7 +1036,7 @@ class RustExplorationManager(
                     val = getattr(state.regs, reg_name)
                     if not val.symbolic:
                         data['registers'][reg_name] = state.solver.eval(val)
-                except Exception:
+                except (AttributeError, KeyError, TypeError, ValueError):
                     pass
 
             # Extract stack page at SP (always concretize, even if symbolic)
@@ -1051,7 +1052,7 @@ class RustExplorationManager(
                 stack_base = (sp & ~(page_size - 1)) + page_size
                 stack_start = stack_base - 0x11_0000
                 data['lazy_regions'].append((stack_start, 0x11_0000))
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 pass
 
             # Extract loader pages (same logic as _sync_memory_to_rust)
@@ -1074,14 +1075,14 @@ class RustExplorationManager(
                                 if page_data and len(page_data) == page_size:
                                     data['batch_pages'].append((page_addr, bytes(page_data), 7))
                                     mapped_page_addrs.add(page_addr)
-                            except Exception:
+                            except (KeyError, TypeError, ValueError):
                                 pass
                     # Lazy region for this object
                     region_start = obj.min_addr & ~(page_size - 1)
                     region_end = (obj.max_addr + page_size) & ~(page_size - 1)
                     if region_end - region_start > 0:
                         data['lazy_regions'].append((region_start, region_end - region_start))
-                except Exception:
+                except (AttributeError, KeyError, TypeError):
                     pass
 
             # Section overlay: capture post-init section data (GOT fixups etc.)
@@ -1099,7 +1100,7 @@ class RustExplorationManager(
                                 section_patches.append(
                                     (section.min_addr,
                                      state.solver.eval(val).to_bytes(section.memsize, 'big')))
-                        except Exception:
+                        except (AttributeError, TypeError, ValueError):
                             pass
             data['section_patches'] = section_patches
 
@@ -1123,7 +1124,7 @@ class RustExplorationManager(
                         page_data = page.concrete_load(0, mem_page_size)
                         if any(page_data):  # Skip all-zero pages
                             extra_pages.append((page_addr, bytes(page_data)))
-                    except Exception:
+                    except (AttributeError, TypeError, ValueError):
                         pass
             data['extra_pages'] = extra_pages
 
@@ -1176,7 +1177,7 @@ class RustExplorationManager(
             for reg_name, val in data['registers'].items():
                 try:
                     setattr(state.regs, reg_name, val)
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     pass
             if data.get('stack_page'):
                 sp_page, page_bytes = data['stack_page']
@@ -1191,7 +1192,7 @@ class RustExplorationManager(
                     state.memory.store(
                         page_addr, claripy.BVV(page_bytes), endness='Iend_BE',
                         inspect=False, disable_actions=True)
-                except Exception:
+                except (TypeError, ValueError):
                     pass
 
             # Restore callstack frames
@@ -1634,8 +1635,8 @@ class RustExplorationManager(
                         self._register_handle(id(ast), ast, addr=addr,
                                               size=ast.length // 8 if hasattr(ast, 'length') else 1,
                                               state_id=rust_state.state_id)
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError, RuntimeError):
+                        l.debug("Failed to import symbolic region at 0x%x", addr, exc_info=True)
             # Enforce state cache limit
             self._cleanup_state_cache()
             l.warning(f"Could not determine actual Rust state ID, using Python-side ID {rust_state.state_id}")
@@ -2085,7 +2086,7 @@ class RustExplorationManager(
                     if until(self):
                         break
                 except Exception:
-                    pass
+                    l.debug("until predicate raised exception", exc_info=True)
 
         # Final predicate check on deadended/remaining states
         self._evaluate_predicates_on_active()
@@ -2169,7 +2170,7 @@ class RustExplorationManager(
             if not self._save_unconstrained:
                 try:
                     self._rust_mgr.clear_stash('unconstrained')
-                except Exception:
+                except (RuntimeError, KeyError):
                     pass
 
             # Periodically clean Python state cache to prevent memory leaks
@@ -2229,7 +2230,7 @@ class RustExplorationManager(
             for sid in list(self._state_cache.keys()):
                 if sid not in keep:
                     del self._state_cache[sid]
-        except Exception:
+        except (RuntimeError, KeyError):
             pass
 
     def step(self, n: int = 1, **kwargs) -> "RustExplorationManager":
@@ -2325,7 +2326,7 @@ class RustExplorationManager(
         try:
             for addr, message, state_id in self._rust_mgr.get_errors():
                 error_lookup[state_id] = (addr, message)
-        except Exception:
+        except (RuntimeError, IndexError):
             pass
 
         # Map states to error records using state_ids from the stash
@@ -2438,7 +2439,7 @@ class RustExplorationManager(
             rust_exec_stats = self._rust_mgr.get_execution_stats()
             for k, v in rust_exec_stats.items():
                 result[f'rust_{k}'] = v
-        except Exception:
+        except (RuntimeError, AttributeError):
             pass
         return result
 
@@ -2547,7 +2548,7 @@ class RustExplorationManager(
             for state_id in move_ids:
                 try:
                     self._rust_mgr.move_state(state_id, from_stash, to_stash)
-                except Exception:
+                except (RuntimeError, KeyError):
                     pass  # State may have already been moved
 
         return self
@@ -2614,7 +2615,7 @@ class RustExplorationManager(
         for state_id in prune_ids:
             try:
                 self._rust_mgr.move_state(state_id, stash, 'pruned')
-            except Exception:
+            except (RuntimeError, KeyError):
                 pass
 
         return self
@@ -2641,12 +2642,12 @@ class RustExplorationManager(
                 try:
                     if not self._rust_mgr.state_satisfiable(state_id):
                         prune_ids.append(state_id)
-                except Exception:
+                except (RuntimeError, KeyError):
                     pass  # Keep on error
             for state_id in prune_ids:
                 try:
                     self._rust_mgr.move_state(state_id, stash, 'pruned')
-                except Exception:
+                except (RuntimeError, KeyError):
                     pass
             return self
 
@@ -2684,7 +2685,7 @@ class RustExplorationManager(
                     if filter_func(py_state):
                         try:
                             self._rust_mgr.move_state(state_id, stash, 'deadended')
-                        except Exception:
+                        except (RuntimeError, KeyError):
                             pass
                 except Exception as e:
                     if _DBG:
@@ -2717,7 +2718,7 @@ class RustExplorationManager(
         for state_id in excess_ids:
             try:
                 self._rust_mgr.move_state(state_id, stash_from, stash_to)
-            except Exception:
+            except (RuntimeError, KeyError):
                 pass
 
         return self
@@ -2734,7 +2735,7 @@ class RustExplorationManager(
             try:
                 state_ids = list(self._rust_mgr.get_state_ids(stash_name))
                 result[stash_name] = state_ids
-            except Exception:
+            except (RuntimeError, KeyError):
                 result[stash_name] = []
         return result
 
@@ -2802,7 +2803,7 @@ class RustExplorationManager(
                 elif merge_func is not None:
                     try:
                         merged.append(merge_func(*group))
-                    except Exception:
+                    except (TypeError, ValueError, RuntimeError):
                         l.warning("merge_func failed for group at %s, keeping unmerged", key)
                         merged.extend(group)
                 else:
@@ -2811,7 +2812,7 @@ class RustExplorationManager(
                         others = group[1:]
                         m, _, _ = base.merge(*others)
                         merged.append(m)
-                    except Exception:
+                    except (AttributeError, TypeError, ValueError):
                         l.warning("State merge failed for group at %s, keeping unmerged", key)
                         merged.extend(group)
 
@@ -2819,11 +2820,11 @@ class RustExplorationManager(
             for sid in state_ids:
                 try:
                     self._rust_mgr.move_state(sid, stash, '_merge_drop')
-                except Exception:
+                except (RuntimeError, KeyError):
                     pass
             try:
                 self._rust_mgr.clear_stash('_merge_drop')
-            except Exception:
+            except (RuntimeError, KeyError):
                 pass
 
             # Re-add merged states
@@ -2857,5 +2858,5 @@ class RustExplorationManager(
 
         try:
             return self._rust_mgr.get_state_ids(name)
-        except Exception:
+        except (RuntimeError, KeyError):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
