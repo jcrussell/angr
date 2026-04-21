@@ -59,7 +59,7 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 
 ## Current Status
 
-**Tests:** 85/85 passing
+**Tests:** 146/146 passing
 **Benchmarks:** 16 benchmarks, all correct (16/16)
 **Performance:** 14/16 faster than Python
 
