@@ -1375,6 +1375,88 @@ impl RustSimState {
         }
     }
 
+    /// Merge this state with one or more other states using symbolic merge conditions.
+    ///
+    /// Creates a new merged state where registers and memory that differ between
+    /// states are represented as ITE expressions guarded by merge conditions.
+    /// The solver receives guarded constraints from all input states.
+    ///
+    /// `merge_conditions` has one entry per state: self first, then each of `others`.
+    /// Each condition is a fresh 1-bit symbolic variable indicating that path is active.
+    ///
+    /// Returns a new merged RustSimState.
+    pub fn merge(&self, others: &[&RustSimState], merge_conditions: &[RustBV]) -> Self {
+        assert_eq!(
+            others.len() + 1,
+            merge_conditions.len(),
+            "merge_conditions must have one entry per state (self + others)"
+        );
+
+        // Merge solver contexts
+        let other_solvers: Vec<_> = others.iter().map(|s| s.solver.borrow()).collect();
+        let other_solver_refs: Vec<&SymContext> = other_solvers.iter().map(|s| &**s).collect();
+        let merged_solver = self.solver.borrow().merge(&other_solver_refs, merge_conditions);
+
+        // Start with a clone of self's registers and merge each other into it
+        let mut merged_regs = self.registers.fork();
+        for (i, other) in others.iter().enumerate() {
+            let cond = &merge_conditions[i + 1]; // skip self's condition
+            merged_regs.merge(&other.registers, cond, &merged_solver);
+        }
+
+        // Start with a clone of self's memory and merge each other into it
+        let mut merged_mem = self.memory.fork();
+        for (i, other) in others.iter().enumerate() {
+            let cond = &merge_conditions[i + 1];
+            merged_mem.merge(&other.memory, cond, &merged_solver);
+        }
+
+        // Merge stdout buffers: pick the longest (heuristic — full merge would need ITE on bytes)
+        let mut best_fs = self.fs.clone();
+        let mut best_len = self.stdout_buffer().len();
+        for other in others {
+            let other_len = other.stdout_buffer().len();
+            if other_len > best_len {
+                best_fs = other.fs.clone();
+                best_len = other_len;
+            }
+        }
+
+        // Merge stdin symbols (union)
+        let mut merged_stdin = self.stdin_symbols.clone();
+        for other in others {
+            for sym in &other.stdin_symbols {
+                if !merged_stdin.iter().any(|(n, _)| n == &sym.0) {
+                    merged_stdin.push(sym.clone());
+                }
+            }
+        }
+
+        RustSimState {
+            arch: self.arch.clone(),
+            vex_arch: self.vex_arch,
+            registers: merged_regs,
+            memory: merged_mem,
+            solver: Rc::new(RefCell::new(merged_solver)),
+            pc: self.pc,
+            state_id: next_state_id(),
+            parent_id: Some(self.state_id),
+            history: self.history.clone(),
+            detailed_history: self.detailed_history.clone(),
+            max_history: self.max_history,
+            hooks: self.hooks.clone(),
+            concretizer: self.concretizer.clone(),
+            dirty_registers: 0,
+            track_history: self.track_history,
+            fs: best_fs,
+            heap_brk: self.heap_brk,
+            stdin_symbols: merged_stdin,
+            call_stack: self.call_stack.clone(),
+            heap_metadata: self.heap_metadata.clone(),
+            inspection: self.inspection.clone(),
+        }
+    }
+
     // =========================================================================
     // Incremental State Changes
     // =========================================================================

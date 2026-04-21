@@ -413,6 +413,117 @@ impl RegisterFile {
             arch: self.arch.clone(),
         }
     }
+
+    /// Merge another register file into this one using a merge condition.
+    ///
+    /// For each register offset, if the values differ between `self` and `other`,
+    /// the result is `ITE(merge_cond_other, other_val, self_val)`.
+    ///
+    /// `merge_cond_other` is the 1-bit condition for `other`'s path being active.
+    ///
+    /// Returns true if any register was actually merged (values differed).
+    pub fn merge(
+        &mut self,
+        other: &RegisterFile,
+        merge_cond_other: &crate::symbolic::RustBV,
+        ctx: &crate::symbolic::SymContext,
+    ) -> bool {
+        use crate::symbolic::RustBV;
+
+        let mut merged = false;
+
+        // Collect all symbolic offsets from both register files
+        let mut all_offsets: std::collections::HashSet<u32> = self.symbolic.keys().copied().collect();
+        all_offsets.extend(other.symbolic.keys());
+
+        // Merge symbolic registers
+        for &offset in &all_offsets {
+            let self_val = self.symbolic.get(&offset);
+            let other_val = other.symbolic.get(&offset);
+
+            match (self_val, other_val) {
+                (Some(sv), Some(ov)) => {
+                    if sv.width() == ov.width() {
+                        // Both symbolic at same width — ITE merge
+                        let ite_val = merge_cond_other.ite(ov, sv, ctx);
+                        self.symbolic.insert(offset, ite_val);
+                        merged = true;
+                    }
+                    // Width mismatch: keep self's value (edge case)
+                }
+                (Some(_sv), None) => {
+                    // self is symbolic, other is concrete — read other's concrete
+                    let size = _sv.width() / 8;
+                    let start = offset as usize;
+                    let end = start + size as usize;
+                    if end <= other.data.len() {
+                        let mut v: u128 = 0;
+                        for (i, &byte) in other.data[start..end].iter().enumerate() {
+                            v |= (byte as u128) << (i * 8);
+                        }
+                        let other_concrete = RustBV::concrete(v, _sv.width());
+                        let ite_val = merge_cond_other.ite(&other_concrete, _sv, ctx);
+                        self.symbolic.insert(offset, ite_val);
+                        merged = true;
+                    }
+                }
+                (None, Some(ov)) => {
+                    // self is concrete, other is symbolic — read self's concrete
+                    let size = ov.width() / 8;
+                    let start = offset as usize;
+                    let end = start + size as usize;
+                    if end <= self.data.len() {
+                        let mut v: u128 = 0;
+                        for (i, &byte) in self.data[start..end].iter().enumerate() {
+                            v |= (byte as u128) << (i * 8);
+                        }
+                        let self_concrete = RustBV::concrete(v, ov.width());
+                        let ite_val = merge_cond_other.ite(ov, &self_concrete, ctx);
+                        self.symbolic.insert(offset, ite_val);
+                        merged = true;
+                    }
+                }
+                (None, None) => {
+                    // Both concrete — handled below in data comparison
+                }
+            }
+        }
+
+        // Check concrete data for differences at non-symbolic offsets.
+        // We iterate register-sized chunks. For simplicity, use the arch's
+        // native register width (e.g. 8 bytes for amd64).
+        let reg_bytes = (self.arch.bits() / 8) as usize;
+        let len = self.data.len().min(other.data.len());
+        let mut off = 0;
+        while off + reg_bytes <= len {
+            let u32_off = off as u32;
+            // Skip offsets that are already handled by symbolic merge
+            if !all_offsets.contains(&u32_off) {
+                let self_slice = &self.data[off..off + reg_bytes];
+                let other_slice = &other.data[off..off + reg_bytes];
+                if self_slice != other_slice {
+                    // Concrete values differ — create ITE
+                    let width = (reg_bytes * 8) as u32;
+                    let mut sv: u128 = 0;
+                    for (i, &byte) in self_slice.iter().enumerate() {
+                        sv |= (byte as u128) << (i * 8);
+                    }
+                    let mut ov: u128 = 0;
+                    for (i, &byte) in other_slice.iter().enumerate() {
+                        ov |= (byte as u128) << (i * 8);
+                    }
+                    let self_bv = RustBV::concrete(sv, width);
+                    let other_bv = RustBV::concrete(ov, width);
+                    let ite_val = merge_cond_other.ite(&other_bv, &self_bv, ctx);
+                    self.symbolic.insert(u32_off, ite_val);
+                    merged = true;
+                }
+            }
+            off += reg_bytes;
+        }
+
+        merged
+    }
 }
 
 impl Clone for Box<dyn Arch> {

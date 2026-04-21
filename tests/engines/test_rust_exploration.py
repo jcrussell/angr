@@ -1924,5 +1924,58 @@ class TestVexOptLevel:
         assert len(mgr.found) > 0, "Should find target with opt_level=0"
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStateMerging:
+    """Tests for state merging with symbolic merge conditions."""
+
+    def test_merge_states_basic(self):
+        """Test merging two states produces a valid merged state."""
+        mgr = _RustExplorationManager("amd64")
+        sid1 = mgr.create_state("active")
+        sid2 = mgr.create_state("active")
+
+        merged_id = mgr.merge_states([sid1, sid2], "merged")
+        merged_ids = mgr.get_state_ids("merged")
+        assert merged_id in merged_ids
+
+    def test_merge_states_requires_two(self):
+        """Test that merge_states requires at least 2 states."""
+        mgr = _RustExplorationManager("amd64")
+        sid1 = mgr.create_state("active")
+
+        with pytest.raises(Exception):
+            mgr.merge_states([sid1], "merged")
+
+    def test_merge_states_invalid_id(self):
+        """Test that merge_states raises on invalid state IDs."""
+        mgr = _RustExplorationManager("amd64")
+        sid1 = mgr.create_state("active")
+
+        with pytest.raises(Exception):
+            mgr.merge_states([sid1, 999999], "merged")
+
+    def test_merge_three_states(self):
+        """Test merging three states."""
+        mgr = _RustExplorationManager("amd64")
+        sid1 = mgr.create_state("active")
+        sid2 = mgr.create_state("active")
+        sid3 = mgr.create_state("active")
+
+        merged_id = mgr.merge_states([sid1, sid2, sid3], "merged")
+        merged_ids = mgr.get_state_ids("merged")
+        assert merged_id in merged_ids
+
+    def test_merge_states_default_stash(self):
+        """Test merge_states with default dest_stash."""
+        mgr = _RustExplorationManager("amd64")
+        sid1 = mgr.create_state("stash1")
+        sid2 = mgr.create_state("stash2")
+
+        merged_id = mgr.merge_states([sid1, sid2])
+        # Default dest_stash is "active"
+        active_ids = mgr.get_state_ids("active")
+        assert merged_id in active_ids
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

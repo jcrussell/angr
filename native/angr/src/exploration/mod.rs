@@ -790,6 +790,65 @@ impl RustExplorationManager {
             .push_back(forked);
     }
 
+    /// Merge multiple states into one using symbolic merge conditions.
+    ///
+    /// Each state's constraints are guarded by a fresh 1-bit merge flag.
+    /// Registers and memory that differ between states become ITE expressions.
+    /// The merged state is placed into `dest_stash`.
+    ///
+    /// Returns the merged state's ID.
+    #[pyo3(signature = (state_ids, dest_stash="active"))]
+    pub fn merge_states(&mut self, state_ids: Vec<u64>, dest_stash: &str) -> PyResult<u64> {
+        use crate::symbolic::RustBV;
+
+        if state_ids.len() < 2 {
+            return Err(PyValueError::new_err("merge_states requires at least 2 state IDs"));
+        }
+
+        // Look up all states by ID across all stashes
+        let mut states: Vec<RustSimState> = Vec::new();
+        for &sid in &state_ids {
+            let mut found = false;
+            for (_stash_name, stash) in self.sm.stashes() {
+                for state in stash.iter() {
+                    if state.state_id() == sid {
+                        states.push(state.fork());
+                        found = true;
+                        break;
+                    }
+                }
+                if found { break; }
+            }
+            if !found {
+                return Err(PyValueError::new_err(format!("state {} not found", sid)));
+            }
+        }
+
+        // Create merge conditions: one 1-bit BVS per state
+        let solver = states[0].solver();
+        let merge_conditions: Vec<RustBV> = (0..states.len())
+            .map(|i| {
+                let name = format!("merge_flag_{}", i);
+                solver.borrow().new_bv(&name, 1)
+            })
+            .collect();
+
+        // Perform the merge
+        let others: Vec<&RustSimState> = states[1..].iter().collect();
+        let merged = states[0].merge(&others, &merge_conditions);
+        let merged_id = merged.state_id();
+
+        // Track state root
+        self.sm.set_root(merged_id, merged_id);
+        self.index_state(merged_id, dest_stash);
+        self.sm.stashes_mut()
+            .entry(dest_stash.to_string())
+            .or_insert_with(VecDeque::new)
+            .push_back(merged);
+
+        Ok(merged_id)
+    }
+
     /// Get the PC of a state in a stash by index.
     #[pyo3(signature = (stash="active", index=0))]
     pub fn get_state_pc(&self, stash: &str, index: usize) -> Option<u64> {

@@ -2246,6 +2246,123 @@ impl SymbolicMemory {
         // All pages now mapped, proceed with store
         self.store_concrete(addr, value)
     }
+
+    /// Merge another memory into this one using a merge condition.
+    ///
+    /// For each byte that differs between `self` and `other`, the merged
+    /// value is `ITE(merge_cond_other, other_byte, self_byte)`.
+    ///
+    /// Returns true if any memory was actually merged (values differed).
+    pub fn merge(
+        &mut self,
+        other: &SymbolicMemory,
+        merge_cond_other: &crate::symbolic::RustBV,
+        ctx: &crate::symbolic::SymContext,
+    ) -> bool {
+        use crate::symbolic::RustBV;
+
+        let mut merged = false;
+
+        // Collect all page numbers from both memories
+        let self_pages: std::collections::HashSet<u64> = self.pages.keys().copied().collect();
+        let other_pages: std::collections::HashSet<u64> = other.pages.keys().copied().collect();
+        let all_pages: std::collections::HashSet<u64> = self_pages.union(&other_pages).copied().collect();
+
+        // Collect merge operations first to avoid borrow conflicts
+        let mut merge_ops: Vec<(u64, u64, RustBV)> = Vec::new(); // (page_num, addr, ite_val)
+        let mut pages_to_add: Vec<(u64, MemoryPage)> = Vec::new();
+
+        for &page_num in &all_pages {
+            let self_page = self.pages.get(&page_num);
+            let other_page = other.pages.get(&page_num);
+
+            match (self_page, other_page) {
+                (Some(sp), Some(op)) => {
+                    // Both have this page — compare concrete data
+                    let s_data = sp.load_concrete(0, PAGE_SIZE as u16);
+                    let o_data = op.load_concrete(0, PAGE_SIZE as u16);
+
+                    if s_data == o_data && !sp.has_symbolic() && !op.has_symbolic() {
+                        continue;
+                    }
+
+                    let base_addr = page_num << 12;
+                    for i in 0..PAGE_SIZE as usize {
+                        let s_byte = s_data[i];
+                        let o_byte = o_data[i];
+
+                        let s_sym = sp.has_symbolic() && sp.is_symbolic(i as u16);
+                        let o_sym = op.has_symbolic() && op.is_symbolic(i as u16);
+
+                        if !s_sym && !o_sym && s_byte == o_byte {
+                            continue;
+                        }
+
+                        let addr = base_addr + i as u64;
+                        let self_val = if s_sym {
+                            self.symbolic_objects
+                                .get(&addr)
+                                .cloned()
+                                .unwrap_or_else(|| RustBV::concrete(s_byte as u128, 8))
+                        } else {
+                            RustBV::concrete(s_byte as u128, 8)
+                        };
+
+                        let other_val = if o_sym {
+                            other
+                                .symbolic_objects
+                                .get(&addr)
+                                .cloned()
+                                .unwrap_or_else(|| RustBV::concrete(o_byte as u128, 8))
+                        } else {
+                            RustBV::concrete(o_byte as u128, 8)
+                        };
+
+                        let ite_val = merge_cond_other.ite(&other_val, &self_val, ctx);
+                        merge_ops.push((page_num, addr, ite_val));
+                    }
+                }
+                (None, Some(op)) => {
+                    pages_to_add.push((page_num, op.clone()));
+                }
+                (Some(_), None) | (None, None) => {}
+            }
+        }
+
+        // Apply collected merge operations
+        for (page_num, addr, ite_val) in merge_ops {
+            self.next_sym_id += 1;
+            self.symbolic_objects.insert(addr, ite_val);
+            self.symbolic_spans.insert(addr, (addr, 8));
+            let offset_in_page = (addr & (PAGE_SIZE as u64 - 1)) as u16;
+            if let Some(page) = self.pages.get_mut(&page_num) {
+                page.mark_symbolic(offset_in_page, 1);
+            }
+            merged = true;
+        }
+
+        for (page_num, page) in pages_to_add {
+            self.pages.insert(page_num, page);
+            merged = true;
+        }
+
+        // Merge symbolic objects from other that aren't page-based
+        for (&addr, other_obj) in &other.symbolic_objects {
+            if !self.symbolic_objects.contains_key(&addr) {
+                self.symbolic_objects.insert(addr, other_obj.clone());
+                self.symbolic_spans.insert(addr, (addr, other_obj.width()));
+                merged = true;
+            }
+        }
+
+        // Merge pending writes
+        if !other.pending_writes.is_empty() {
+            self.pending_writes.extend(other.pending_writes.clone());
+            merged = true;
+        }
+
+        merged
+    }
 }
 
 impl Clone for SymbolicMemory {

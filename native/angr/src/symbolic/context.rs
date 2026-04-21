@@ -1489,6 +1489,126 @@ impl SymContext {
     pub fn fork_false(&self, _cond: &RustBV) -> Self {
         self.fork()
     }
+
+    /// Merge multiple solver contexts into one.
+    ///
+    /// Creates a new context whose constraint set is the disjunction of the
+    /// input contexts' constraints, each guarded by its merge condition.
+    /// The merge conditions are 1-bit RustBV values; the merged context
+    /// asserts `Or(all merge conditions)` to ensure at least one path holds.
+    ///
+    /// # Arguments
+    /// * `others` - The other contexts to merge with `self`
+    /// * `merge_conditions` - One condition per context (`self` first, then `others`)
+    ///
+    /// # Returns
+    /// A new SymContext containing the merged constraints.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn merge(&self, others: &[&SymContext], merge_conditions: &[RustBV]) -> Self {
+        assert_eq!(
+            others.len() + 1,
+            merge_conditions.len(),
+            "merge_conditions must have one entry per context (self + others)"
+        );
+
+        // Start with a fresh context
+        let merged = Self::with_timeout(self.timeout_ms.load(Ordering::SeqCst));
+
+        // Merge symbol tables
+        {
+            let mut merged_table = merged.symbol_table.write();
+            let self_table = self.symbol_table.read();
+            merged_table.extend(self_table.iter().map(|(k, v)| (k.clone(), *v)));
+            for other in others {
+                let other_table = other.symbol_table.read();
+                for (k, v) in other_table.iter() {
+                    merged_table.entry(k.clone()).or_insert(*v);
+                }
+            }
+        }
+
+        // Set next_id to max across all contexts
+        let mut max_id = self.next_id.load(Ordering::SeqCst);
+        for other in others {
+            max_id = max_id.max(other.next_id.load(Ordering::SeqCst));
+        }
+        merged.next_id.store(max_id, Ordering::SeqCst);
+
+        // For each input context, guard its constraints with the merge condition:
+        //   merge_cond_i => (constraint_1 AND constraint_2 AND ...)
+        // Which is equivalent to: NOT(merge_cond_i) OR (constraint_1 AND constraint_2 AND ...)
+        let all_contexts: Vec<&SymContext> = std::iter::once(self).chain(others.iter().copied()).collect();
+        let mut all_z3_conditions = Vec::new();
+
+        for (ctx, cond) in all_contexts.iter().zip(merge_conditions.iter()) {
+            let cond_bool = cond.to_z3_bool();
+            all_z3_conditions.push(cond_bool.clone());
+
+            // Collect all Z3 assertions from this context
+            let shared = &ctx.z3_assertions_shared;
+            let local = ctx.z3_assertions_local.lock();
+
+            // For each constraint c_j in context i:
+            //   assert (NOT merge_cond_i OR c_j)
+            // This means: if this merge path is active, all its constraints hold
+            let not_cond = cond_bool.not();
+            for assertion in shared.iter().chain(local.iter()) {
+                let guarded = z3::ast::Bool::or(&[&not_cond, assertion]);
+                merged.z3_assertions_local.lock().push(guarded.clone());
+                merged.add_constraint(guarded);
+            }
+
+            // Also merge assumed_constraints for Python export
+            let assumed = ctx.assumed_constraints.lock();
+            merged
+                .assumed_constraints
+                .lock()
+                .extend(assumed.iter().cloned());
+        }
+
+        // Assert that at least one merge condition is true
+        let cond_refs: Vec<&z3::ast::Bool> = all_z3_conditions.iter().collect();
+        let or_conds = z3::ast::Bool::or(&cond_refs);
+        merged.z3_assertions_local.lock().push(or_conds.clone());
+        merged.add_constraint(or_conds);
+
+        merged
+    }
+
+    /// Merge without Z3 — just combines assumed constraints.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn merge(&self, others: &[&SymContext], merge_conditions: &[RustBV]) -> Self {
+        let _ = merge_conditions;
+        let merged = Self::new();
+
+        // Merge symbol tables
+        {
+            let mut merged_table = merged.symbol_table.write();
+            let self_table = self.symbol_table.read();
+            merged_table.extend(self_table.iter().map(|(k, v)| (k.clone(), *v)));
+            for other in others {
+                let other_table = other.symbol_table.read();
+                for (k, v) in other_table.iter() {
+                    merged_table.entry(k.clone()).or_insert(*v);
+                }
+            }
+        }
+
+        let mut max_id = self.next_id.load(Ordering::SeqCst);
+        for other in others {
+            max_id = max_id.max(other.next_id.load(Ordering::SeqCst));
+        }
+        merged.next_id.store(max_id, Ordering::SeqCst);
+
+        // Merge assumed constraints
+        let mut merged_assumed = merged.assumed_constraints.lock();
+        merged_assumed.extend(self.assumed_constraints.lock().iter().cloned());
+        for other in others {
+            merged_assumed.extend(other.assumed_constraints.lock().iter().cloned());
+        }
+
+        merged
+    }
 }
 
 impl Clone for SymContext {
