@@ -30,10 +30,10 @@ pip install -e . --no-build-isolation --no-deps
 ## Running Tests
 
 ```bash
-# Run RustExplorationManager tests (82/82 passing)
+# Run RustExplorationManager tests (146/146 passing)
 python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 
-# Run benchmark regression tests (5 fast-tier benchmarks)
+# Run benchmark regression tests (7 fast-tier benchmarks)
 python tests/benchmarks/run_regression.py
 
 # Run single benchmark (safe, subprocess with 4GB memory limit)
@@ -45,12 +45,14 @@ python tests/benchmarks/run_single.py fauxware --both
 ## Key Files
 
 - **Build config**: `pyproject.toml`, `native/angr/Cargo.toml`
-- **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration.rs`
+- **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (mod.rs, run_loop.rs, stepping.rs, resume.rs, helpers.rs, pyapi.rs)
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
 - **Claripy bridge**: `native/angr/src/claripy_bridge.rs`
-- **VEX interpreter**: `native/angr/src/interpreter.rs`, `native/angr/src/vex/`
+- **VEX interpreter**: `native/angr/src/interpreter.rs`, `native/angr/src/interpreter_cb/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, constraints.rs, helpers.rs, prefetch.rs), `native/angr/src/vex/`
 - **Native SimProcedures**: `native/angr/src/procedures/` (strlen, memcpy, strcmp, malloc, free, etc.)
 - **State proxy**: `angr/exploration/rust_state_proxy.py`
+- **State export**: `angr/exploration/rust_state_export.py`
+- **State sync**: `angr/exploration/rust_state_sync.py`
 - **Tests**: `tests/engines/test_rust_exploration.py`
 
 ## Branch: rust-symex
