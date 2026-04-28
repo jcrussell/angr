@@ -19,6 +19,7 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a unary operation.
+    #[inline]
     pub fn unop(
         op: IROp,
         arg: RustBV,
@@ -130,6 +131,7 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a binary operation.
+    #[inline]
     pub fn binop(
         op: IROp,
         left: RustBV,
@@ -395,6 +397,7 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a ternary operation (for ITE, etc.).
+    #[inline]
     #[allow(unused_variables)]
     pub fn ternop(
         op: IROp,
@@ -1546,6 +1549,7 @@ impl VEXOps {
     // Generated via macros to eliminate boilerplate across 18 conversion functions.
 
     /// Normalize shift amount width to match the operand width.
+    #[inline]
     fn normalize_shift_amount(amt: RustBV, target_width: u32, ctx: &SymContext) -> RustBV {
         if amt.width() != target_width {
             if amt.width() > target_width {

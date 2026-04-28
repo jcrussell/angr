@@ -498,6 +498,7 @@ impl RustBV {
     // =========================================================================
 
     /// Add two bitvectors.
+    #[inline]
     pub fn add(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -516,6 +517,7 @@ impl RustBV {
     }
 
     /// Subtract two bitvectors.
+    #[inline]
     pub fn sub(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -532,6 +534,7 @@ impl RustBV {
     }
 
     /// Multiply two bitvectors.
+    #[inline]
     pub fn mul(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -552,6 +555,7 @@ impl RustBV {
     }
 
     /// Unsigned division.
+    #[inline]
     pub fn udiv(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -572,6 +576,7 @@ impl RustBV {
     }
 
     /// Signed division.
+    #[inline]
     pub fn sdiv(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -594,6 +599,7 @@ impl RustBV {
     }
 
     /// Unsigned remainder.
+    #[inline]
     pub fn urem(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -614,6 +620,7 @@ impl RustBV {
     }
 
     /// Signed remainder.
+    #[inline]
     pub fn srem(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -636,6 +643,7 @@ impl RustBV {
     }
 
     /// Negate (two's complement).
+    #[inline]
     pub fn neg(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
@@ -659,6 +667,7 @@ impl RustBV {
     // =========================================================================
 
     /// Bitwise AND.
+    #[inline]
     pub fn and(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         let all_ones = Self::all_ones_mask(self.width());
@@ -679,6 +688,7 @@ impl RustBV {
     }
 
     /// Bitwise OR.
+    #[inline]
     pub fn or(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         let all_ones = Self::all_ones_mask(self.width());
@@ -700,6 +710,7 @@ impl RustBV {
     }
 
     /// Bitwise XOR.
+    #[inline]
     pub fn xor(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -717,6 +728,7 @@ impl RustBV {
     }
 
     /// Bitwise NOT.
+    #[inline]
     pub fn not(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(!v, self.width()),
@@ -736,6 +748,7 @@ impl RustBV {
     }
 
     /// Byte-reverse a bitvector (endianness swap).
+    #[inline]
     pub fn reverse(&self, _ctx: &SymContext) -> Self {
         let w = self.width();
         debug_assert!(w % 8 == 0, "reverse requires byte-aligned width");
@@ -772,6 +785,7 @@ impl RustBV {
     // =========================================================================
 
     /// Logical shift left.
+    #[inline]
     pub fn shl(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
@@ -793,6 +807,7 @@ impl RustBV {
     }
 
     /// Logical shift right.
+    #[inline]
     pub fn lshr(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
@@ -814,6 +829,7 @@ impl RustBV {
     }
 
     /// Arithmetic shift right (sign-extending).
+    #[inline]
     pub fn ashr(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
@@ -834,6 +850,7 @@ impl RustBV {
     }
 
     /// Rotate left.
+    #[inline]
     pub fn rotl(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
@@ -853,6 +870,7 @@ impl RustBV {
     }
 
     /// Rotate right.
+    #[inline]
     pub fn rotr(&self, amount: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
@@ -876,6 +894,7 @@ impl RustBV {
     // =========================================================================
 
     /// Equality comparison (returns 1-bit result).
+    #[inline]
     pub fn eq(&self, other: &Self, _ctx: &SymContext) -> Self {
         // Width mismatch guard — return concrete 0 instead of panicking
         if self.width() != other.width() {
@@ -893,6 +912,7 @@ impl RustBV {
     }
 
     /// Inequality comparison (returns 1-bit result).
+    #[inline]
     pub fn ne(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -907,6 +927,7 @@ impl RustBV {
     }
 
     /// Unsigned less-than comparison.
+    #[inline]
     pub fn ult(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -921,6 +942,7 @@ impl RustBV {
     }
 
     /// Unsigned less-than-or-equal comparison.
+    #[inline]
     pub fn ule(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -935,6 +957,7 @@ impl RustBV {
     }
 
     /// Unsigned greater-than comparison.
+    #[inline]
     pub fn ugt(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -949,6 +972,7 @@ impl RustBV {
     }
 
     /// Unsigned greater-than-or-equal comparison.
+    #[inline]
     pub fn uge(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -963,6 +987,7 @@ impl RustBV {
     }
 
     /// Signed less-than comparison.
+    #[inline]
     pub fn slt(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -981,6 +1006,7 @@ impl RustBV {
     }
 
     /// Signed less-than-or-equal comparison.
+    #[inline]
     pub fn sle(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -999,6 +1025,7 @@ impl RustBV {
     }
 
     /// Signed greater-than comparison.
+    #[inline]
     pub fn sgt(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -1017,6 +1044,7 @@ impl RustBV {
     }
 
     /// Signed greater-than-or-equal comparison.
+    #[inline]
     pub fn sge(&self, other: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
@@ -1039,6 +1067,7 @@ impl RustBV {
     // =========================================================================
 
     /// Zero-extend to a wider width.
+    #[inline]
     pub fn zero_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
         if to_width <= self.width() {
             // No extension needed (or truncation — just return self)
@@ -1057,6 +1086,7 @@ impl RustBV {
     }
 
     /// Sign-extend to a wider width.
+    #[inline]
     pub fn sign_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width >= self.width());
         // No extension needed
@@ -1079,6 +1109,7 @@ impl RustBV {
     }
 
     /// Truncate to a narrower width.
+    #[inline]
     pub fn truncate(&self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width <= self.width());
         match self.as_u128() {
@@ -1093,6 +1124,7 @@ impl RustBV {
     }
 
     /// Extract bits [high:low] (inclusive).
+    #[inline]
     pub fn extract(&self, high: u32, low: u32, _ctx: &SymContext) -> Self {
         debug_assert!(high >= low);
         debug_assert!(high < self.width());
@@ -1175,6 +1207,7 @@ impl RustBV {
     }
 
     /// Concatenate two bitvectors (self becomes high bits).
+    #[inline]
     pub fn concat(&self, other: &Self, _ctx: &SymContext) -> Self {
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
@@ -1192,6 +1225,7 @@ impl RustBV {
     }
 
     /// Extract bits without requiring a SymContext (same logic, ctx unused).
+    #[inline]
     pub fn extract_no_ctx(&self, high: u32, low: u32) -> Self {
         debug_assert!(high >= low);
         debug_assert!(high < self.width());
@@ -1215,6 +1249,7 @@ impl RustBV {
     }
 
     /// Concatenate without requiring a SymContext (same logic, ctx unused).
+    #[inline]
     pub fn concat_no_ctx(&self, other: &Self) -> Self {
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
@@ -1236,6 +1271,7 @@ impl RustBV {
     // =========================================================================
 
     /// If-then-else: returns `then_val` if `self` is non-zero, else `else_val`.
+    #[inline]
     pub fn ite(&self, then_val: &Self, else_val: &Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(then_val.width(), else_val.width());
         match self.as_u128() {
@@ -1260,6 +1296,7 @@ impl RustBV {
     }
 
     /// Count leading zeros.
+    #[inline]
     pub fn clz(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
@@ -1280,6 +1317,7 @@ impl RustBV {
     }
 
     /// Count trailing zeros.
+    #[inline]
     pub fn ctz(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
@@ -1300,6 +1338,7 @@ impl RustBV {
     }
 
     /// Population count (number of set bits).
+    #[inline]
     pub fn popcount(&self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(v.count_ones() as u128, self.width()),

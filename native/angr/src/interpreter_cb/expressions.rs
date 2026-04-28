@@ -336,6 +336,14 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRExpr::ITE { cond, iftrue, iffalse } => {
                 let cond_val = self.eval_expr_with_callbacks(py, callbacks, cond, tyenv)?;
+                // Short-circuit: skip evaluating the dead branch when condition is concrete
+                if let Some(v) = cond_val.as_u128() {
+                    return if v != 0 {
+                        self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)
+                    } else {
+                        self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)
+                    };
+                }
                 let true_val = self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)?;
                 let false_val = self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)?;
                 Ok(cond_val.ite(&true_val, &false_val, self.ctx))
