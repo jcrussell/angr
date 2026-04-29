@@ -1630,22 +1630,7 @@ class RustCallbackDispatchMixin:
                 registers = bundle['registers']
                 self._last_bundle_registers = registers
                 reg_map = self._get_register_offset_map(arch)
-                # Skip callee-saved registers when reusing the same state object
-                # and we've already synced them in a previous callback for this state.
-                # They're preserved by calling convention and already correct on the state.
-                _callee_synced = getattr(self, '_callee_saved_synced_states', None)
-                if _callee_synced is None:
-                    _callee_synced = set()
-                    self._callee_saved_synced_states = _callee_synced
-                if not has_predicates and state_id in _callee_synced:
-                    callee_saved = self._CALLEE_SAVED_REGS.get(arch.name, frozenset())
-                else:
-                    callee_saved = frozenset()
-                    if state_id is not None:
-                        _callee_synced.add(state_id)
                 for reg_name, val in registers.items():
-                    if reg_name in callee_saved:
-                        continue
                     try:
                         if val is not None:
                             offset_size = reg_map.get(reg_name)

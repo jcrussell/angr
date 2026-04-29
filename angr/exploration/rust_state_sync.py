@@ -814,18 +814,6 @@ class RustStateSyncMixin:
         else:
             return []
 
-    # Callee-saved registers that extern SimProcedures shouldn't modify.
-    # Used to skip unnecessary register comparisons during sync-back.
-    _CALLEE_SAVED_REGS = {
-        'AMD64': frozenset({'rbx', 'rbp', 'r12', 'r13', 'r14', 'r15'}),
-        'X86_64': frozenset({'rbx', 'rbp', 'r12', 'r13', 'r14', 'r15'}),
-        'X86': frozenset({'ebx', 'ebp', 'esi', 'edi'}),
-        'ARMEL': frozenset({'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'}),
-        'ARMHF': frozenset({'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'}),
-        'ARM': frozenset({'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'}),
-        'AARCH64': frozenset({'x' + str(i) for i in range(19, 31)}),
-    }
-
     @staticmethod
     def _get_reg_map_and_return_regs(arch):
         """Get architecture-specific register map and return registers.
@@ -923,14 +911,7 @@ class RustStateSyncMixin:
         if reg_map is None:
             return []
 
-        # Skip callee-saved registers for snapshot mode (extern SimProcedures).
-        # These registers are preserved by calling convention and the SimProcedure
-        # won't modify them, saving ~6 getattr(state.regs, ...) calls per callback.
-        callee_saved = self._CALLEE_SAVED_REGS.get(arch.name, frozenset()) if is_snapshot else frozenset()
-
         for reg_name, (offset, size) in reg_map.items():
-            if reg_name in callee_saved:
-                continue
             try:
                 new_val = getattr(new_state.regs, reg_name)
 
