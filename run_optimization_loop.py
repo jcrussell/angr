@@ -46,7 +46,6 @@ RATE_LIMIT_BASE_BACKOFF = 300  # 5 minutes
 MAX_BACKOFF = 4800  # 80 minutes
 
 CLAUDE_MODEL = "opus"
-CLAUDE_MAX_BUDGET = "5"  # USD per session
 
 log = logging.getLogger("loop")
 
@@ -329,7 +328,6 @@ def run_claude_session(prompt: str, iteration: int, timeout: int,
         "claude", "-p", prompt,
         "--dangerously-skip-permissions",
         "--model", CLAUDE_MODEL,
-        "--max-budget-usd", CLAUDE_MAX_BUDGET,
     ]
 
     env = os.environ.copy()
@@ -381,6 +379,15 @@ def run_claude_session(prompt: str, iteration: int, timeout: int,
     exit_code = proc.returncode
     rate_limited, rate_reset = detect_rate_limit(stdout_str, stderr_str)
     killed_by_oom = detect_oom(exit_code, stderr_str, scope_unit)
+
+    # Reset the finished scope so it doesn't linger as "failed" in systemd
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", scope_unit],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
 
     # Try to parse JSON output from claude
     claude_json = None
@@ -551,7 +558,7 @@ def _setup_signal_handlers():
 
 
 def _cleanup_stale_scopes():
-    """Kill any leftover angr-loop-* scopes from previous crashes."""
+    """Kill active and reset failed angr-loop-* scopes from previous runs."""
     try:
         result = subprocess.run(
             ["systemctl", "--user", "list-units", "--type=scope",
@@ -559,9 +566,25 @@ def _cleanup_stale_scopes():
             capture_output=True, text=True, timeout=5,
         )
         for line in result.stdout.splitlines():
-            unit = line.split()[0] if line.strip() else ""
-            if unit.startswith("angr-loop-"):
-                log.warning(f"Cleaning up stale scope: {unit}")
+            parts = line.split()
+            if not parts:
+                continue
+            unit = parts[0]
+            if not unit.startswith("angr-loop-"):
+                continue
+            # Determine state: "active" means processes still running, "failed" means exited
+            state = parts[3] if len(parts) > 3 else ""
+            if state == "failed":
+                log.info(f"Resetting failed scope: {unit}")
+                try:
+                    subprocess.run(
+                        ["systemctl", "--user", "reset-failed", unit],
+                        capture_output=True, timeout=5,
+                    )
+                except Exception:
+                    pass
+            else:
+                log.warning(f"Killing stale active scope: {unit}")
                 try:
                     subprocess.run(
                         ["systemctl", "--user", "kill", unit],
