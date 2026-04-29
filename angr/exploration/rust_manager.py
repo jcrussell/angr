@@ -1969,6 +1969,16 @@ class RustExplorationManager(
             return True
         return False
 
+    def set_exploration_strategy(self, strategy: str):
+        """Set exploration strategy: 'bfs' (default) or 'dfs'."""
+        strategy = strategy.lower()
+        if strategy == 'dfs':
+            self._rust_mgr.set_state_selection_lifo()
+        elif strategy == 'bfs':
+            self._rust_mgr.set_state_selection_fifo()
+        else:
+            raise ValueError(f"Unknown exploration strategy: {strategy!r}. Use 'bfs' or 'dfs'.")
+
     def explore(
         self,
         find: Optional[Union[int, list, Callable]] = None,

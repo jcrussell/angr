@@ -1977,5 +1977,52 @@ class TestStateMerging:
         assert merged_id in active_ids
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestExplorationStrategy:
+    """Tests for DFS/BFS exploration strategy."""
+
+    def test_set_exploration_strategy_dfs(self, fauxware_project):
+        """Test setting DFS strategy finds the same result."""
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy('dfs')
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "DFS should find at least one state"
+
+    def test_set_exploration_strategy_bfs(self, fauxware_project):
+        """Test BFS strategy (default) works."""
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_exploration_strategy('bfs')
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "BFS should find at least one state"
+
+    def test_set_exploration_strategy_invalid(self, fauxware_project):
+        """Test invalid strategy raises ValueError."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        with pytest.raises(ValueError, match="Unknown exploration strategy"):
+            mgr.set_exploration_strategy('random')
+
+    def test_dfs_technique_auto_detection(self, fauxware_project):
+        """Test that angr DFS technique is auto-detected."""
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.use_technique(angr.exploration_techniques.DFS())
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "DFS technique should find at least one state"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
