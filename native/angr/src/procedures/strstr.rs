@@ -1,0 +1,158 @@
+//! Native strstr implementation.
+//!
+//! strstr finds the first occurrence of a substring in a string.
+//!
+//! Symbolic arguments fall back to Python.
+
+use crate::state::RustSimState;
+use crate::symbolic::RustBV;
+use super::{NativeSimProcedure, ProcedureError};
+
+const MAX_SCAN: usize = 4096;
+
+/// strstr: find substring in string.
+///
+/// ```c
+/// char *strstr(const char *haystack, const char *needle);
+/// ```
+///
+/// Returns pointer to first occurrence of needle in haystack, or NULL.
+pub struct NativeStrstr;
+
+impl NativeSimProcedure for NativeStrstr {
+    fn name(&self) -> &'static str { "strstr" }
+    fn num_args(&self) -> usize { 2 }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let haystack_addr = args[0].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("haystack".to_string())
+        })?;
+        let needle_addr = args[1].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("needle".to_string())
+        })?;
+
+        let bits = state.arch().bits();
+
+        // Read needle into a Vec
+        let mut needle = Vec::new();
+        for i in 0..MAX_SCAN as u64 {
+            let val = state.memory_load(needle_addr.wrapping_add(i), 1)
+                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            let byte = val.as_u64().ok_or_else(|| {
+                ProcedureError::SymbolicArgument(format!("needle[{}]", i))
+            })? as u8;
+            if byte == 0 { break; }
+            needle.push(byte);
+        }
+
+        // Empty needle: return haystack
+        if needle.is_empty() {
+            return Ok(Some(RustBV::concrete(haystack_addr as u128, bits)));
+        }
+
+        // Scan haystack
+        for i in 0..MAX_SCAN as u64 {
+            let h_addr = haystack_addr.wrapping_add(i);
+
+            // Check first byte of haystack at this position
+            let first_val = state.memory_load(h_addr, 1)
+                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            let first = first_val.as_u64().ok_or_else(|| {
+                ProcedureError::SymbolicArgument(format!("haystack[{}]", i))
+            })? as u8;
+
+            // End of haystack
+            if first == 0 {
+                return Ok(Some(RustBV::concrete(0u128, bits)));
+            }
+
+            // Try to match needle at this position
+            if first == needle[0] {
+                let mut matched = true;
+                for j in 1..needle.len() {
+                    let h_byte_addr = h_addr.wrapping_add(j as u64);
+                    let val = state.memory_load(h_byte_addr, 1)
+                        .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                    let byte = val.as_u64().ok_or_else(|| {
+                        ProcedureError::SymbolicArgument(format!("haystack[{}]", i as usize + j))
+                    })? as u8;
+                    if byte != needle[j] {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    return Ok(Some(RustBV::concrete(h_addr as u128, bits)));
+                }
+            }
+        }
+
+        Err(ProcedureError::MaxIterations(MAX_SCAN))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Permission;
+
+    #[test]
+    fn test_strstr_found() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+        state.map_memory_data(0x2000, b"world\x00", Permission::RWX);
+
+        let p = NativeStrstr;
+        let result = p.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+        ]).unwrap().unwrap();
+        assert_eq!(result.as_u64(), Some(0x1006)); // "world" starts at offset 6
+    }
+
+    #[test]
+    fn test_strstr_not_found() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+        state.map_memory_data(0x2000, b"xyz\x00", Permission::RWX);
+
+        let p = NativeStrstr;
+        let result = p.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+        ]).unwrap().unwrap();
+        assert_eq!(result.as_u64(), Some(0)); // NULL
+    }
+
+    #[test]
+    fn test_strstr_empty_needle() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+        state.map_memory_data(0x2000, b"\x00", Permission::RWX);
+
+        let p = NativeStrstr;
+        let result = p.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+        ]).unwrap().unwrap();
+        assert_eq!(result.as_u64(), Some(0x1000)); // Return haystack
+    }
+
+    #[test]
+    fn test_strstr_at_start() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+        state.map_memory_data(0x2000, b"hello\x00", Permission::RWX);
+
+        let p = NativeStrstr;
+        let result = p.call(&mut state, &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+        ]).unwrap().unwrap();
+        assert_eq!(result.as_u64(), Some(0x1000));
+    }
+}

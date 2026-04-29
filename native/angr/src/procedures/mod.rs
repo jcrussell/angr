@@ -36,6 +36,8 @@ pub mod strcat;
 pub mod fgets;
 pub mod sprintf;
 pub mod fileops;
+pub mod memcmp;
+pub mod strstr;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -214,6 +216,10 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fgets::NativeFgetc));
         registry.register(Arc::new(fgets::NativeGetchar));
         registry.register(Arc::new(fgets::NativeGetc));
+        // Memory comparison
+        registry.register(Arc::new(memcmp::NativeMemcmp));
+        // String search
+        registry.register(Arc::new(strstr::NativeStrstr));
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
