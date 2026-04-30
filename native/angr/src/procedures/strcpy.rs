@@ -133,6 +133,66 @@ impl NativeSimProcedure for NativeStrncpy {
     }
 }
 
+/// Native strdup implementation.
+///
+/// ```c
+/// char *strdup(const char *s);
+/// ```
+///
+/// Allocates a new string via heap_alloc, copies the source string
+/// (including null terminator), and returns pointer to the new string.
+pub struct NativeStrdup;
+
+impl NativeSimProcedure for NativeStrdup {
+    fn name(&self) -> &'static str {
+        "strdup"
+    }
+
+    fn num_args(&self) -> usize {
+        1
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let src = args[0].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("s".to_string())
+        })?;
+
+        // Read source string until null terminator
+        let mut buf = Vec::with_capacity(256);
+        for i in 0..MAX_STRLEN as u64 {
+            let byte_val = state.memory_load(src.wrapping_add(i), 1)
+                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            let byte = byte_val.as_u64().ok_or_else(|| {
+                ProcedureError::SymbolicArgument(format!("src byte at offset {}", i))
+            })? as u8;
+            buf.push(byte);
+            if byte == 0 {
+                break;
+            }
+            if i == MAX_STRLEN as u64 - 1 {
+                return Err(ProcedureError::MaxIterations(MAX_STRLEN));
+            }
+        }
+
+        // Allocate new buffer (strlen + 1 for null terminator)
+        let new_addr = state.heap_alloc(buf.len() as u64);
+
+        // Copy bytes to new allocation
+        for (i, &byte) in buf.iter().enumerate() {
+            let bv = RustBV::concrete(byte as u128, 8);
+            state.memory_store(new_addr.wrapping_add(i as u64), bv)
+                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+        }
+
+        let bits = state.arch().bits();
+        Ok(Some(RustBV::concrete(new_addr as u128, bits)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +274,51 @@ mod tests {
             let byte = state.memory_load(0x2000 + i, 1).unwrap();
             assert_eq!(byte.as_u64(), Some(0));
         }
+    }
+
+    #[test]
+    fn test_strdup_basic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+        state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+
+        let result = NativeStrdup.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let new_addr = result.unwrap().as_u64().unwrap();
+        assert!(new_addr >= 0xC000_0000);
+
+        // Verify "hello\0" was copied
+        for (i, &expected) in b"hello\x00".iter().enumerate() {
+            let byte = state.memory_load(new_addr + i as u64, 1).unwrap();
+            assert_eq!(byte.as_u64(), Some(expected as u64));
+        }
+
+        // Verify heap metadata
+        assert!(state.heap_metadata().is_allocated(new_addr));
+        assert_eq!(state.heap_metadata().alloc_size(new_addr), Some(6));
+    }
+
+    #[test]
+    fn test_strdup_empty_string() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+        state.map_memory_data(0x1000, b"\x00", Permission::RWX);
+
+        let result = NativeStrdup.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let new_addr = result.unwrap().as_u64().unwrap();
+
+        // Should allocate 1 byte for null terminator
+        let byte = state.memory_load(new_addr, 1).unwrap();
+        assert_eq!(byte.as_u64(), Some(0));
+        assert_eq!(state.heap_metadata().alloc_size(new_addr), Some(1));
+    }
+
+    #[test]
+    fn test_strdup_symbolic_arg() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "ptr", 64);
+        drop(ctx);
+        let result = NativeStrdup.call(&mut state, &[sym]);
+        assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
     }
 }
