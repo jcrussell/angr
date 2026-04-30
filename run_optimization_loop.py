@@ -726,16 +726,27 @@ def main():
             consecutive_dirty += 1
             if consecutive_dirty >= DIRTY_REVERT_THRESHOLD:
                 log.warning(f"Dirty state persisted for {consecutive_dirty} iterations — auto-reverting")
+                # Capture what we're reverting for the record
+                _, diff_stat, _ = _run_cmd(["git", "diff", "--stat"], timeout=10)
                 _run_cmd(["git", "checkout", "--", "."], timeout=10)
                 _run_cmd(["git", "clean", "-fd"], timeout=10)
-                # Reset any in-progress tasks
+                # Defer any in-progress tasks so the agent doesn't re-claim them
                 rc, ip_out, _ = _run_cmd(["bd", "list", "--status=in_progress", "--json"])
                 try:
                     for issue in json.loads(ip_out):
                         issue_id = issue.get("id", "")
+                        title = issue.get("title", "unknown")
                         if issue_id:
-                            _run_cmd(["bd", "update", issue_id, "--status=open"])
-                            log.info(f"Reset in-progress task {issue_id} to open")
+                            _run_cmd(["bd", "defer", issue_id], timeout=10)
+                            log.warning(f"Deferred stuck task {issue_id} ({title})")
+                            # Record why so future sessions don't repeat
+                            reason = f"Auto-deferred: {consecutive_dirty} dirty iterations, agent couldn't commit. Files: {diff_stat.strip()[:200]}"
+                            _run_cmd(["bd", "update", issue_id,
+                                      f"--notes={reason}"], timeout=10)
+                            _run_cmd(["bd", "remember",
+                                      f"--key=avoid-stuck-{issue_id}",
+                                      f"Task {issue_id} ({title}) was auto-deferred after {consecutive_dirty} consecutive dirty iterations. The agent could not complete build/test/commit cycle within session time limits. May need to be broken into smaller subtasks or done manually."],
+                                     timeout=10)
                 except (json.JSONDecodeError, TypeError):
                     pass
                 consecutive_dirty = 0
