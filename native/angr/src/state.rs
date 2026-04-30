@@ -627,6 +627,10 @@ pub struct RustSimState {
     /// Inspection/breakpoint system for tracking memory and register access.
     /// Only records events when enabled (single bitmask check per operation).
     inspection: InspectionManager,
+    /// Environment variables map for native getenv/setenv.
+    /// Keys and values are byte vectors (no NUL terminator in storage).
+    /// Cloned on fork so each path has its own environment.
+    environment: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 impl RustSimState {
@@ -676,6 +680,7 @@ impl RustSimState {
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
+            environment: HashMap::new(),
         })
     }
 
@@ -710,6 +715,7 @@ impl RustSimState {
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
+            environment: HashMap::new(),
         }
     }
 
@@ -754,6 +760,7 @@ impl RustSimState {
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
+            environment: HashMap::new(),
         })
     }
 
@@ -845,6 +852,21 @@ impl RustSimState {
     /// Check if any stdin symbols have been recorded.
     pub fn has_stdin_symbols(&self) -> bool {
         !self.stdin_symbols.is_empty()
+    }
+
+    /// Get an environment variable value by key.
+    pub fn getenv(&self, key: &[u8]) -> Option<&[u8]> {
+        self.environment.get(key).map(|v| v.as_slice())
+    }
+
+    /// Set an environment variable.
+    pub fn setenv(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.environment.insert(key, value);
+    }
+
+    /// Get the environment map (for export).
+    pub fn environment(&self) -> &HashMap<Vec<u8>, Vec<u8>> {
+        &self.environment
     }
 
     /// Get the current heap brk pointer.
@@ -1277,6 +1299,7 @@ impl RustSimState {
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
+            environment: self.environment.clone(),
         }
     }
 
@@ -1306,6 +1329,7 @@ impl RustSimState {
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
+            environment: self.environment.clone(),
         }
     }
 
@@ -1335,6 +1359,7 @@ impl RustSimState {
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
+            environment: self.environment.clone(),
         }
     }
 
@@ -1372,6 +1397,7 @@ impl RustSimState {
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
+            environment: self.environment.clone(),
         }
     }
 
@@ -1454,6 +1480,7 @@ impl RustSimState {
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
+            environment: self.environment.clone(),
         }
     }
 

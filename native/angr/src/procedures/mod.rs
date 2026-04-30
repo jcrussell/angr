@@ -39,6 +39,7 @@ pub mod fileops;
 pub mod memcmp;
 pub mod strstr;
 pub mod scanf;
+pub mod getenv;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -231,6 +232,10 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(scanf::NativeScanf));
         registry.register(Arc::new(scanf::NativeIsoc99Scanf));
         registry.register(Arc::new(scanf::NativeSscanf));
+        // Environment variable access
+        registry.register(Arc::new(getenv::NativeGetenv));
+        registry.register(Arc::new(getenv::NativeSetenv));
+        registry.register(Arc::new(getenv::NativePutenv));
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
