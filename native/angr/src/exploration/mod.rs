@@ -2166,6 +2166,13 @@ impl RustExplorationManager {
                 // Only export Expression values (Rust-computed).
                 // Skip Symbolic values (imported from Python) — Python already
                 // has those with proper claripy identity.
+                // Also skip addresses that were originally imported from Python,
+                // even if the binary modified them (Symbolic→Expression).
+                // Python's memory has the correct original value; overwriting
+                // it would break post-exploration constraint solving (flareon5).
+                if mem.is_imported_addr(addr) {
+                    continue;
+                }
                 if matches!(bv, RustBV::Expression { .. }) {
                     let z3_ast = bv.to_z3_ast();
                     let raw_ptr = z3_ast.get_z3_ast().as_ptr() as usize;

@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug calls
 
+# Disk cache version — increment when Rust engine changes affect init state data.
+# This ensures stale cache entries are invalidated after engine updates.
+_DISK_CACHE_VERSION = 2
+
 # Try to import the Rust exploration manager
 try:
     from angr.rustylib.vex_engine import (
@@ -1008,9 +1012,11 @@ class RustExplorationManager(
 
     @staticmethod
     def _disk_cache_key(binary_path: str) -> str:
-        """Compute a cache key from binary file content hash."""
+        """Compute a cache key from binary file content hash + engine version."""
         try:
             h = hashlib.md5()
+            # Include cache version so engine updates invalidate stale entries
+            h.update(f"v{_DISK_CACHE_VERSION}:".encode())
             with open(binary_path, 'rb') as f:
                 for chunk in iter(lambda: f.read(65536), b''):
                     h.update(chunk)

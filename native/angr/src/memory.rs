@@ -346,6 +346,11 @@ pub struct SymbolicMemory {
     /// If true, fill unconstrained memory with zeros instead of symbolic values.
     /// Corresponds to angr's ZERO_FILL_UNCONSTRAINED_MEMORY option.
     zero_fill_unconstrained: bool,
+    /// Addresses of symbolic values imported from Python.
+    /// Used to filter get_state_symbolic_z3_asts: even if the binary modifies
+    /// an imported value (turning Symbolic→Expression), the address should be
+    /// excluded from export since Python already has the correct original value.
+    imported_addrs: HashSet<u64>,
 }
 
 impl PendingWrite {
@@ -401,6 +406,7 @@ impl SymbolicMemory {
             symbolic_spans: HashMap::new(),
             pending_writes: Vec::new(),
             zero_fill_unconstrained: false,
+            imported_addrs: HashSet::new(),
         }
     }
 
@@ -1480,6 +1486,7 @@ impl SymbolicMemory {
             symbolic_spans: self.symbolic_spans.clone(),
             pending_writes: self.pending_writes.clone(),
             zero_fill_unconstrained: self.zero_fill_unconstrained,
+            imported_addrs: self.imported_addrs.clone(),
         }
     }
 
@@ -1667,6 +1674,8 @@ impl SymbolicMemory {
     /// * `value` - The symbolic value to store
     /// * `symbol_id` - Optional symbol ID for identity tracking
     pub fn import_symbolic_value(&mut self, addr: u64, value: RustBV, _symbol_id: Option<u64>) {
+        // Track as Python-imported so get_state_symbolic_z3_asts can filter it out
+        self.imported_addrs.insert(addr);
         // Store in symbolic_objects for lookup
         self.symbolic_objects.insert(addr, value.clone());
         // Update reverse span index
@@ -1708,6 +1717,11 @@ impl SymbolicMemory {
     /// Get the count of symbolic objects.
     pub fn symbolic_object_count(&self) -> usize {
         self.symbolic_objects.len()
+    }
+
+    /// Check if an address was imported from Python.
+    pub fn is_imported_addr(&self, addr: u64) -> bool {
+        self.imported_addrs.contains(&addr)
     }
 
     /// Iterate over all symbolic objects in memory.
