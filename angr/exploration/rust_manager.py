@@ -2044,6 +2044,13 @@ class RustExplorationManager(
         except (ImportError, Exception):
             pass
 
+        # Reset solver profiling stats for this exploration run
+        try:
+            from angr.rustylib.vex_engine import RustExplorationManager as _REM
+            _REM.reset_solver_stats()
+        except (ImportError, RuntimeError, AttributeError):
+            pass
+
         # Route to appropriate exploration strategy
         has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
         if has_predicates or bool(self._active_techniques):
@@ -2469,6 +2476,14 @@ class RustExplorationManager(
             for k, v in rust_exec_stats.items():
                 result[f'rust_{k}'] = v
         except (RuntimeError, AttributeError):
+            pass
+        # Include Z3 solver profiling stats
+        try:
+            from angr.rustylib.vex_engine import RustExplorationManager as _REM
+            solver_stats = _REM.get_solver_stats()
+            for k, v in solver_stats.items():
+                result[k] = v
+        except (ImportError, RuntimeError, AttributeError):
             pass
         return result
 

@@ -920,6 +920,22 @@ impl RustSolverContext {
         self.inner.symbol_table.op_ite(cond_id, then_id, else_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
+
+    // =========================================================================
+    // Solver Profiling Stats
+    // =========================================================================
+
+    /// Get global Z3 solver profiling stats as a dict.
+    #[staticmethod]
+    pub fn get_solver_stats() -> std::collections::HashMap<String, u64> {
+        crate::symbolic::get_solver_stats()
+    }
+
+    /// Reset global Z3 solver profiling stats to zero.
+    #[staticmethod]
+    pub fn reset_solver_stats() {
+        crate::symbolic::reset_solver_stats()
+    }
 }
 
 impl Default for RustSolverContext {

@@ -1363,6 +1363,7 @@ impl RustBV {
     /// lazy evaluation approach).
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_ast(&self) -> z3::ast::BV {
+        super::context::record_z3_ast_build();
         let mut cache = std::collections::HashMap::new();
         self.to_z3_ast_cached(&mut cache)
     }
@@ -1416,6 +1417,7 @@ impl RustBV {
     /// `._eq(BV(1,1))`. Saves 3 Z3 AST nodes per comparison constraint.
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool(&self) -> z3::ast::Bool {
+        super::context::record_z3_ast_build();
         let mut cache = std::collections::HashMap::new();
         self.to_z3_bool_cached(&mut cache)
     }

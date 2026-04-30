@@ -14,6 +14,75 @@ use parking_lot::{Mutex, RwLock};
 
 use super::RustBV;
 
+// =============================================================================
+// Global Z3 Solver Profiling Counters
+// =============================================================================
+// Zero-cost when not read: atomic fetch_add is ~1ns on x86.
+
+/// Total number of Z3 solver.check() calls.
+static Z3_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Total time (nanoseconds) spent in Z3 solver.check() calls.
+static Z3_CHECK_TIME_NS: AtomicU64 = AtomicU64::new(0);
+/// Number of solver materializations (lazy fork → first access).
+static Z3_MATERIALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Total time (nanoseconds) spent materializing solvers.
+static Z3_MATERIALIZE_TIME_NS: AtomicU64 = AtomicU64::new(0);
+/// Number of assume_true/assume_false calls that hit the concrete fast path.
+static Z3_ASSUME_CONCRETE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of assume_true/assume_false calls that went to Z3.
+static Z3_ASSUME_SYMBOLIC_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of check_branch_feasibility calls.
+static Z3_BRANCH_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of branch checks where condition was concrete.
+static Z3_BRANCH_CONCRETE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
+static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Get all solver profiling stats as a HashMap.
+pub fn get_solver_stats() -> HashMap<String, u64> {
+    let mut stats = HashMap::new();
+    stats.insert("z3_check_count".into(), Z3_CHECK_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_check_time_ns".into(), Z3_CHECK_TIME_NS.load(Ordering::Relaxed));
+    stats.insert("z3_materialize_count".into(), Z3_MATERIALIZE_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_materialize_time_ns".into(), Z3_MATERIALIZE_TIME_NS.load(Ordering::Relaxed));
+    stats.insert("z3_assume_concrete".into(), Z3_ASSUME_CONCRETE_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_assume_symbolic".into(), Z3_ASSUME_SYMBOLIC_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_branch_check".into(), Z3_BRANCH_CHECK_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_branch_concrete".into(), Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_ast_build".into(), Z3_AST_BUILD_COUNT.load(Ordering::Relaxed));
+    stats
+}
+
+/// Reset all solver profiling stats to zero.
+pub fn reset_solver_stats() {
+    Z3_CHECK_COUNT.store(0, Ordering::Relaxed);
+    Z3_CHECK_TIME_NS.store(0, Ordering::Relaxed);
+    Z3_MATERIALIZE_COUNT.store(0, Ordering::Relaxed);
+    Z3_MATERIALIZE_TIME_NS.store(0, Ordering::Relaxed);
+    Z3_ASSUME_CONCRETE_COUNT.store(0, Ordering::Relaxed);
+    Z3_ASSUME_SYMBOLIC_COUNT.store(0, Ordering::Relaxed);
+    Z3_BRANCH_CHECK_COUNT.store(0, Ordering::Relaxed);
+    Z3_BRANCH_CONCRETE_COUNT.store(0, Ordering::Relaxed);
+    Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Increment Z3 AST build counter (called from value.rs).
+#[inline]
+pub fn record_z3_ast_build() {
+    Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Timed wrapper around solver.check() — records count and elapsed time.
+#[cfg(feature = "vex-engine-z3")]
+#[inline]
+fn timed_check(solver: &z3::Solver) -> z3::SatResult {
+    let start = std::time::Instant::now();
+    let result = solver.check();
+    Z3_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
+    Z3_CHECK_TIME_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    result
+}
+
 /// Error type for constraint sync operations.
 #[derive(Debug, Clone)]
 pub enum ConstraintSyncError {
@@ -181,6 +250,7 @@ impl SymContext {
     fn solver(&self) -> parking_lot::MappedMutexGuard<'_, z3::Solver> {
         let mut guard = self.solver.lock();
         if guard.is_none() {
+            let start = std::time::Instant::now();
             let new_solver = z3::Solver::new();
             let mut params = z3::Params::new();
             params.set_u32("timeout", self.timeout_ms.load(Ordering::SeqCst));
@@ -197,6 +267,8 @@ impl SymContext {
             }
 
             *guard = Some(new_solver);
+            Z3_MATERIALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
+            Z3_MATERIALIZE_TIME_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         parking_lot::MutexGuard::map(guard, |opt| opt.as_mut().expect("solver was just initialized in the None branch above"))
     }
@@ -354,10 +426,12 @@ impl SymContext {
         // Fast path: concrete true is a tautology — skip Z3 entirely
         if let Some(v) = cond.as_u128() {
             if v != 0 {
+                Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
                 return; // Asserting True is a no-op
             }
             // v == 0: asserting False makes solver UNSAT — still add it
         }
+        Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
         // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
         // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
         let constraint = cond.to_z3_bool();
@@ -375,10 +449,12 @@ impl SymContext {
         // Fast path: concrete false (== 0) means not(False) = True — skip Z3
         if let Some(v) = cond.as_u128() {
             if v == 0 {
+                Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
                 return; // Asserting not(False) = True is a no-op
             }
             // v != 0: asserting not(True) = False makes solver UNSAT — still add it
         }
+        Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
         // Negate the bool directly
         let constraint = cond.to_z3_bool().not();
         // Cache Z3 Bool for fast fork replay
@@ -398,7 +474,7 @@ impl SymContext {
             return cached;
         }
         // Perform actual SAT check
-        let result = matches!(self.solver().check(), z3::SatResult::Sat);
+        let result = matches!(timed_check(&self.solver()), z3::SatResult::Sat);
         self.sat_cache.set(Some(result));
         result
     }
@@ -455,8 +531,10 @@ impl SymContext {
         debug_assert_eq!(cond.width(), 1);
         // Quick check for concrete values
         if let Some(v) = cond.as_u128() {
+            Z3_BRANCH_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
             return (v != 0, v == 0);
         }
+        Z3_BRANCH_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
         // Use native Bool to avoid ITE wrapping overhead
         let bool_ast = cond.to_z3_bool();
 
@@ -465,7 +543,7 @@ impl SymContext {
         // Check true branch
         solver.push();
         solver.assert(&bool_ast);
-        let can_true = matches!(solver.check(), z3::SatResult::Sat);
+        let can_true = matches!(timed_check(&solver), z3::SatResult::Sat);
         solver.pop(1);
 
         if !can_true {
@@ -475,7 +553,7 @@ impl SymContext {
         // Check false branch
         solver.push();
         solver.assert(&bool_ast.not());
-        let can_false = matches!(solver.check(), z3::SatResult::Sat);
+        let can_false = matches!(timed_check(&solver), z3::SatResult::Sat);
         solver.pop(1);
 
         (can_true, can_false)
@@ -502,7 +580,7 @@ impl SymContext {
 
         // Need to get a fresh model - must call check() first for Z3
         let solver = self.solver();
-        match solver.check() {
+        match timed_check(&solver) {
             z3::SatResult::Sat => {
                 self.sat_cache.set(Some(true));
             }
@@ -548,7 +626,7 @@ impl SymContext {
 
         // Need to get a model from Z3
         let solver = self.solver();
-        match solver.check() {
+        match timed_check(&solver) {
             z3::SatResult::Sat => {}
             _ => return None,
         }
@@ -627,7 +705,7 @@ impl SymContext {
         solver.push();
 
         for _ in 0..n {
-            match solver.check() {
+            match timed_check(&solver) {
                 z3::SatResult::Sat => {
                     if let Some(model) = solver.get_model() {
                         if let Some(result) = model.eval(&ast, true) {
@@ -694,7 +772,7 @@ impl SymContext {
         solver.push();
 
         for _ in 0..n {
-            match solver.check() {
+            match timed_check(&solver) {
                 z3::SatResult::Sat => {
                     if let Some(model) = solver.get_model() {
                         if let Some(result) = model.eval(&ast, true) {
@@ -824,7 +902,7 @@ impl SymContext {
             solver.push();
             let zero = Self::make_bv_const(0, width);
             solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
-            let has_negative = matches!(solver.check(), z3::SatResult::Sat);
+            let has_negative = matches!(timed_check(&solver), z3::SatResult::Sat);
             solver.pop(1);
 
             if has_negative {
@@ -846,7 +924,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be <= mid (signed comparison)
                     solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
+                    let can_be_le_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_le_mid {
@@ -869,7 +947,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be <= mid (signed comparison)
                     solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
+                    let can_be_le_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_le_mid {
@@ -888,7 +966,7 @@ impl SymContext {
                 let mid_ast = Self::make_bv_const(mid, width);
                 // Check if bv can be <= mid (unsigned comparison)
                 solver.assert(&ast.bvule(&mid_ast));
-                let can_be_le_mid = matches!(solver.check(), z3::SatResult::Sat);
+                let can_be_le_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
                 solver.pop(1);
 
                 if can_be_le_mid {
@@ -934,7 +1012,7 @@ impl SymContext {
 
             solver.push();
             solver.assert(&ast.bvsge(&zero)); // bv >= 0 (signed)
-            let has_non_negative = matches!(solver.check(), z3::SatResult::Sat);
+            let has_non_negative = matches!(timed_check(&solver), z3::SatResult::Sat);
             solver.pop(1);
 
             if has_non_negative {
@@ -952,7 +1030,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be >= mid (signed comparison)
                     solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
+                    let can_be_ge_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_ge_mid {
@@ -981,7 +1059,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be >= mid (signed comparison)
                     solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
+                    let can_be_ge_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_ge_mid {
@@ -1009,7 +1087,7 @@ impl SymContext {
                 let mid_ast = Self::make_bv_const(mid, width);
                 // Check if bv can be >= mid (unsigned comparison)
                 solver.assert(&ast.bvuge(&mid_ast));
-                let can_be_ge_mid = matches!(solver.check(), z3::SatResult::Sat);
+                let can_be_ge_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
                 solver.pop(1);
 
                 if can_be_ge_mid {
@@ -1066,7 +1144,7 @@ impl SymContext {
         let solver = self.solver();
         solver.push();
         solver.assert(&constraint);
-        let result = matches!(solver.check(), z3::SatResult::Sat);
+        let result = matches!(timed_check(&solver), z3::SatResult::Sat);
         solver.pop(1);
 
         result

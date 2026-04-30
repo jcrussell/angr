@@ -263,6 +263,20 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
                 elif key == "rust_step_count":
                     print(f"    step_count: {val}")
 
+        # Print Z3 solver stats
+        z3_keys = [k for k in stats if k.startswith("z3_")]
+        if z3_keys and any(stats.get(k, 0) > 0 for k in z3_keys):
+            print(f"  z3 solver stats:")
+            for key in sorted(z3_keys):
+                val = stats[key]
+                if val == 0:
+                    continue
+                if key.endswith("_time_ns"):
+                    label = key[:-8]  # strip "_time_ns"
+                    print(f"    {label}: {val/1e6:.1f}ms ({val/1e9:.3f}s)")
+                else:
+                    print(f"    {key}: {val}")
+
     if engine == "rust" and perf_report:
         print(f"  {perf_report}")
 
