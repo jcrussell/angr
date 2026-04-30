@@ -46,11 +46,15 @@ RATE_LIMIT_BASE_BACKOFF = 300  # 5 minutes
 MAX_BACKOFF = 4800  # 80 minutes
 
 CLAUDE_MODEL = "opus"
+DIRTY_REVERT_THRESHOLD = 3  # Auto-revert after this many consecutive dirty iterations
+PID_FILE = Path("/home/ubuntu/repos/angr/.claude/loop.pid")
 
 log = logging.getLogger("loop")
 
 # Track current systemd scope for signal handler cleanup
 _current_scope_unit: Optional[str] = None
+# Unique run ID for scope names (prevents cross-run collisions)
+_run_id: str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
@@ -271,12 +275,17 @@ def detect_rate_limit(stdout: str, stderr: str) -> tuple[bool, Optional[float]]:
 
 
 def detect_oom(exit_code: int, stderr: str, scope_unit: Optional[str]) -> bool:
-    """Detect if the session was killed by OOM."""
-    if exit_code in (137, 143, -9, -15, 9, 15):
+    """Detect if the session was killed by OOM.
+
+    Only returns True for confirmed OOM kills (cgroup oom_kill event or
+    exit code 137/-9). Exit 143 is NOT assumed to be OOM — it can also be
+    Claude CLI self-termination or other SIGTERM sources.
+    """
+    if exit_code in (137, -9):
         return True
-    if "killed" in stderr.lower() or "oom" in stderr.lower():
+    if "oom" in stderr.lower():
         return True
-    # Check cgroup memory.events if we know the scope unit
+    # Check cgroup memory.events for actual oom_kill count
     if scope_unit:
         events_path = f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/{scope_unit}/memory.events"
         try:
@@ -314,8 +323,8 @@ def run_claude_session(prompt: str, iteration: int, timeout: int,
     """Launch a claude -p session inside a cgroup scope with timeout."""
     global _current_scope_unit
 
-    # Use predictable scope name so we always know how to kill it (fixes F1/F2)
-    scope_name = f"angr-loop-iter{iteration}"
+    # Use predictable scope name with run_id to avoid cross-run collisions
+    scope_name = f"angr-loop-{_run_id}-iter{iteration}"
     scope_unit = f"{scope_name}.scope"
     _current_scope_unit = scope_unit
 
@@ -537,6 +546,35 @@ def log_iteration(iteration: int, git_before: dict, git_after: dict,
     log.info(f"Logged iteration {iteration} to {detail_file.name}")
 
 
+# ── PID Lockfile ──────────────────────────────────────────────────────────────
+
+def _acquire_pidfile() -> bool:
+    """Write PID file, return False if another instance is running."""
+    if PID_FILE.exists():
+        try:
+            old_pid = int(PID_FILE.read_text().strip())
+            # Check if the process is still running
+            os.kill(old_pid, 0)
+            log.error(f"Another loop instance is running (PID {old_pid}). Exiting.")
+            return False
+        except (ProcessLookupError, ValueError):
+            log.info(f"Removing stale PID file (PID was gone)")
+        except PermissionError:
+            log.error(f"Another loop instance is running (PID file exists, permission denied)")
+            return False
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PID_FILE.write_text(str(os.getpid()))
+    return True
+
+
+def _release_pidfile():
+    """Remove PID file."""
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 # ── Signal Handling ────────────────────────────────────────────────────────────
 
 def _setup_signal_handlers():
@@ -551,6 +589,7 @@ def _setup_signal_handlers():
                 )
             except Exception:
                 pass
+        _release_pidfile()
         sys.exit(128 + signum)
 
     signal.signal(signal.SIGTERM, handler)
@@ -643,6 +682,10 @@ def main():
         log.error("cgroup isolation not available. Cannot proceed safely on 8GB/0-swap machine.")
         sys.exit(2)
 
+    # Acquire PID lockfile
+    if not _acquire_pidfile():
+        sys.exit(1)
+
     # Clean up stale scopes from previous crashes (F4)
     _cleanup_stale_scopes()
 
@@ -660,6 +703,7 @@ def main():
              f"timeout={args.timeout}s, memory_limit={args.memory_limit}")
 
     consecutive_failures = 0
+    consecutive_dirty = 0
     iteration = 0
 
     for iteration in range(1, args.max_iterations + 1):
@@ -676,6 +720,29 @@ def main():
 
         # Detect git state and choose prompt
         git_before = detect_git_state()
+
+        # Dirty state circuit breaker
+        if git_before["is_dirty"]:
+            consecutive_dirty += 1
+            if consecutive_dirty >= DIRTY_REVERT_THRESHOLD:
+                log.warning(f"Dirty state persisted for {consecutive_dirty} iterations — auto-reverting")
+                _run_cmd(["git", "checkout", "--", "."], timeout=10)
+                _run_cmd(["git", "clean", "-fd"], timeout=10)
+                # Reset any in-progress tasks
+                rc, ip_out, _ = _run_cmd(["bd", "list", "--status=in_progress", "--json"])
+                try:
+                    for issue in json.loads(ip_out):
+                        issue_id = issue.get("id", "")
+                        if issue_id:
+                            _run_cmd(["bd", "update", issue_id, "--status=open"])
+                            log.info(f"Reset in-progress task {issue_id} to open")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                consecutive_dirty = 0
+                git_before = detect_git_state()  # Re-detect after revert
+        else:
+            consecutive_dirty = 0
+
         prompt = build_prompt(git_before)
         prompt_type = "dirty" if git_before["is_dirty"] else "clean"
         log.info(f"Prompt: {prompt_type} | HEAD: {git_before['head_sha']} {git_before['head_msg'][:60]}")
@@ -729,6 +796,7 @@ def main():
 
     log.info(f"Loop complete after {iteration} iterations.")
     log.info(f"Review logs: cat {LOG_DIR / 'summary.jsonl'} | python -m json.tool --no-ensure-ascii")
+    _release_pidfile()
 
 
 if __name__ == "__main__":
