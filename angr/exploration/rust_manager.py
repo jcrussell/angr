@@ -441,6 +441,53 @@ class RustExplorationManager(
             lines.append(f"  Avg per call: {s['callback_lift_block_total_ns']/s['callback_lift_block_count']/1e3:.1f}us")
         return "\n".join(lines)
 
+    def get_exploration_summary(self) -> str:
+        """Return a high-level summary of the exploration run."""
+        s = self._perf_stats
+        lines = ["=== Exploration Summary ==="]
+
+        # Duration
+        explore_ns = getattr(self, '_time_in_explore_ns', 0)
+        init_ns = s.get('init_total_ns', 0)
+        total_ns = init_ns + explore_ns
+        lines.append(f"Total time: {total_ns/1e6:.1f}ms (init: {init_ns/1e6:.1f}ms, explore: {explore_ns/1e6:.1f}ms)")
+
+        # Steps and throughput
+        explore_s = explore_ns / 1e9 if explore_ns > 0 else 0
+        steps_per_sec = f" ({self._stats_ffi_crossings / explore_s:.0f} steps/sec)" if explore_s > 0.001 else ""
+        lines.append(f"Steps: {self._stats_ffi_crossings}{steps_per_sec}")
+
+        # State counts
+        try:
+            n_found = len(self._rust_mgr.get_state_ids('found'))
+            n_active = len(self._rust_mgr.get_state_ids('active'))
+            n_deadended = len(self._rust_mgr.get_state_ids('deadended'))
+            n_avoided = len(self._rust_mgr.get_state_ids('avoided'))
+            lines.append(f"States: {n_found} found, {n_active} active, {n_avoided} avoided, {n_deadended} deadended")
+        except Exception:
+            pass
+
+        # Callback breakdown
+        cb_total = self._stats_callback_count
+        sp_count = s.get('callback_simprocedure_count', 0)
+        native_count = cb_total - sp_count  # memory/lift/fetch callbacks
+        lines.append(f"Callbacks: {cb_total} total ({sp_count} SimProcedure, {native_count} other)")
+        if self._stats_time_in_callbacks_ns > 0:
+            lines.append(f"  Time in callbacks: {self._stats_time_in_callbacks_ns/1e6:.1f}ms")
+
+        # Per-procedure breakdown (top 5)
+        if self._procedure_times:
+            sorted_procs = sorted(self._procedure_times.items(), key=lambda x: -x[1]['execute_ns'])
+            lines.append(f"SimProcedure breakdown ({len(sorted_procs)} unique):")
+            for pname, pt in sorted_procs[:5]:
+                lines.append(f"  {pname}: {pt['count']}x, {pt['execute_ns']/1e6:.1f}ms")
+
+        # FFI stats
+        lines.append(f"State creations: {self._stats_state_creations}")
+        lines.append(f"Cache: {self._stats_cache_hits} hits, {self._stats_cache_misses} misses")
+
+        return "\n".join(lines)
+
     def _setup_callbacks(self):
         """Set up Python callbacks for the Rust engine.
 
