@@ -38,6 +38,7 @@ pub mod sprintf;
 pub mod fileops;
 pub mod memcmp;
 pub mod strstr;
+pub mod scanf;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -226,6 +227,10 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(memcmp::NativeMemcmp));
         // String search
         registry.register(Arc::new(strstr::NativeStrstr));
+        // Input parsing (scanf family)
+        registry.register(Arc::new(scanf::NativeScanf));
+        registry.register(Arc::new(scanf::NativeIsoc99Scanf));
+        registry.register(Arc::new(scanf::NativeSscanf));
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
