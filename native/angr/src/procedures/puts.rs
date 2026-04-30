@@ -73,6 +73,87 @@ impl NativeSimProcedure for NativePuts {
     }
 }
 
+/// Native putchar implementation.
+///
+/// ```c
+/// int putchar(int c);
+/// ```
+///
+/// Writes one byte to stdout. Returns the character written (as int).
+pub struct NativePutchar;
+
+impl NativeSimProcedure for NativePutchar {
+    fn name(&self) -> &'static str {
+        "putchar"
+    }
+
+    fn num_args(&self) -> usize {
+        1
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let c = args[0].as_u64().ok_or_else(|| {
+            ProcedureError::SymbolicArgument("c".to_string())
+        })?;
+        let byte = (c & 0xFF) as u8;
+        state.write_stdout(&[byte]);
+        Ok(Some(RustBV::concrete(byte as u128, 32)))
+    }
+}
+
+/// Native fputc implementation.
+///
+/// ```c
+/// int fputc(int c, FILE *stream);
+/// ```
+///
+/// Writes one byte to the stream. Stream argument is ignored (treated as stdout).
+pub struct NativeFputc;
+
+impl NativeSimProcedure for NativeFputc {
+    fn name(&self) -> &'static str {
+        "fputc"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        // Delegate to putchar (ignore FILE* stream arg)
+        NativePutchar.call(state, &args[..1])
+    }
+}
+
+/// Native putc implementation (alias for fputc).
+pub struct NativePutc;
+
+impl NativeSimProcedure for NativePutc {
+    fn name(&self) -> &'static str {
+        "putc"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        NativeFputc.call(state, args)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +198,42 @@ mod tests {
         drop(ctx);
         let result = NativePuts.call(&mut state, &[sym]);
         assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+    }
+
+    #[test]
+    fn test_putchar_basic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativePutchar.call(&mut state, &[RustBV::concrete(b'A' as u128, 32)]).unwrap();
+        assert_eq!(result.unwrap().as_u64(), Some(b'A' as u64));
+        assert_eq!(state.stdout_buffer(), b"A");
+    }
+
+    #[test]
+    fn test_putchar_multiple() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        NativePutchar.call(&mut state, &[RustBV::concrete(b'H' as u128, 32)]).unwrap();
+        NativePutchar.call(&mut state, &[RustBV::concrete(b'i' as u128, 32)]).unwrap();
+        assert_eq!(state.stdout_buffer(), b"Hi");
+    }
+
+    #[test]
+    fn test_putchar_symbolic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "c", 32);
+        drop(ctx);
+        let result = NativePutchar.call(&mut state, &[sym]);
+        assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+    }
+
+    #[test]
+    fn test_fputc_basic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeFputc.call(
+            &mut state,
+            &[RustBV::concrete(b'X' as u128, 32), RustBV::concrete(0, 64)],
+        ).unwrap();
+        assert_eq!(result.unwrap().as_u64(), Some(b'X' as u64));
+        assert_eq!(state.stdout_buffer(), b"X");
     }
 }
