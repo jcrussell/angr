@@ -39,7 +39,7 @@ SESSION_FILE = REPO_DIR / ".claude" / "loop-session.md"
 VENV_PYTHON = REPO_DIR / ".venv" / "bin" / "python"
 CARGO_BIN = Path.home() / ".cargo" / "bin"
 
-DEFAULT_MEMORY_LIMIT = "6G"
+DEFAULT_MEMORY_LIMIT = "7G"
 DEFAULT_TIMEOUT_SECS = 3600  # 60 minutes
 DEFAULT_MAX_ITERATIONS = 30
 RATE_LIMIT_BASE_BACKOFF = 300  # 5 minutes
@@ -272,7 +272,7 @@ def detect_rate_limit(stdout: str, stderr: str) -> tuple[bool, Optional[float]]:
 
 def detect_oom(exit_code: int, stderr: str, scope_unit: Optional[str]) -> bool:
     """Detect if the session was killed by OOM."""
-    if exit_code in (137, -9, 9):
+    if exit_code in (137, 143, -9, -15, 9, 15):
         return True
     if "killed" in stderr.lower() or "oom" in stderr.lower():
         return True
