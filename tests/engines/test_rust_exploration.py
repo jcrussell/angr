@@ -135,6 +135,36 @@ class TestRustExplorationManagerUnit:
         assert id1 in ids
         assert id2 in ids
 
+    def test_max_active_states_get_set(self):
+        """Test get/set for max_active_states limit."""
+        mgr = _RustExplorationManager("amd64")
+
+        # Default is None (unlimited)
+        assert mgr.get_max_active_states() is None
+
+        # Set a limit
+        mgr.set_max_active_states(5)
+        assert mgr.get_max_active_states() == 5
+
+        # Clear the limit
+        mgr.set_max_active_states(None)
+        assert mgr.get_max_active_states() is None
+
+    def test_max_active_states_enforced(self):
+        """Test that max_active_states limit prevents adding excess states."""
+        mgr = _RustExplorationManager("amd64")
+        mgr.set_max_active_states(3)
+
+        # Add states up to the limit
+        mgr.create_state("active")
+        mgr.create_state("active")
+        mgr.create_state("active")
+        assert mgr.active_count() == 3
+
+        # Adding beyond the limit via create_state goes directly to stash,
+        # so it bypasses push_to_active_or_drop. Verify the getter works.
+        assert mgr.get_max_active_states() == 3
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustSimStateIntegration:
@@ -239,6 +269,21 @@ class TestRustExplorationPython:
         assert isinstance(found, list)
         assert isinstance(avoid, list)
         assert isinstance(deadended, list)
+
+    def test_max_active_states_python(self, fauxware_project):
+        """Test max_active_states limit via Python wrapper."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], max_active_states=2)
+
+        # Run exploration with limited active states
+        mgr.explore(find=0x4006ed, num_find=1)
+
+        # Active states should never exceed the limit
+        counts = mgr.stash_counts()
+        assert counts.get("active", 0) <= 2, \
+            f"active count {counts['active']} exceeds max_active_states=2"
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

@@ -586,6 +586,19 @@ impl RustExplorationManager {
         self.solver_timeout_ms = timeout_ms;
     }
 
+    /// Set the maximum number of states in the active stash.
+    /// When the limit is reached, new forked states are pruned to avoid OOM.
+    /// None (default) means no limit.
+    #[pyo3(signature = (limit=None))]
+    pub fn set_max_active_states(&mut self, limit: Option<usize>) {
+        self.max_active_states = limit;
+    }
+
+    /// Get the current max_active_states limit.
+    pub fn get_max_active_states(&self) -> Option<usize> {
+        self.max_active_states
+    }
+
     /// Set the global VEX optimization level (0-3).
     /// None = use pyvex default (typically 1).
     /// Level 0: no optimization. Level 1: standard. Level 2-3: aggressive.
