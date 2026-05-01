@@ -1,59 +1,56 @@
-# Loop session notes (2026-05-01, tenth session)
+# Loop session notes (2026-05-01, eleventh session)
 
 ## Closed this session
 
-### angr-l85c — Fix vex-engine-only (no z3) build
+### angr-7c9j — Add feature flag correctness tests to CI
 
-Final feature-flag build fix. Pre-fix: 43 cargo-check errors when
-building `--no-default-features --features "vex-engine"`. All E0599
-"no method named X found" — the interpreter and exploration code call
-`assume_true`, `assume_false`, `check_branch_feasibility`,
-`set_timeout` unconditionally, but those methods are
-`#[cfg(feature = "vex-engine-z3")]`-gated.
+Final feature-flag CI follow-up. Pre-fix: `rust_feature_flags` matrix
+in `.github/workflows/nightly-ci.yml` only ran `cargo check` +
+`cargo test` per combo. Compile/unit-test coverage existed, but no
+named test exercised each combo's primary public API end-to-end —
+so a feature-gating regression that compiled and passed unit tests
+but broke the public surface (cf. angr-asth, angr-l85c) could land
+silently.
 
-Fix: added 4 no-z3 stubs in
-`native/angr/src/symbolic/context.rs` near the existing
-"Mock implementations when Z3 is not available" block (around lines
-1611-1637). Followed the established pattern (`push`/`pop`/`is_sat`/
-`can_be_true`/`eval` etc. all already had no-z3 mocks).
+Fix: added `native/angr/tests/feature_flag_smoke.rs` with
+feature-gated tests:
 
-Stub semantics:
+| Combo                          | Smoke tests                                            |
+|--------------------------------|--------------------------------------------------------|
+| `""`                           | concrete arithmetic, symbolic handle construction (2)  |
+| `automaton`                    | + DFA build/transition (3)                             |
+| `vex-engine`                   | + VEX IR public surface (Endness::Little/Big)  (3)     |
+| `vex-engine,vex-engine-z3`     | + Z3 solve `x == 0xDEADBEEF` (4)                       |
+| default (release)              | all of the above (5)                                   |
 
-- `assume_true` / `assume_false`: still push to
-  `assumed_constraints_local` so `get_assumed_constraints()` (the
-  Python export path) sees the constraint. That field is *not*
-  z3-gated by design — it backs both feature combos.
-- `check_branch_feasibility`: concrete fast-path
-  `(v != 0, v == 0)`; symbolic returns `(true, true)` to match the
-  existing `can_be_true`/`can_be_false` stubs.
-- `set_timeout`: no-op.
+`cargo test` already picks these up; `nightly-ci.yml` gains an
+explicit `cargo test --test feature_flag_smoke` step per matrix
+entry so the named "Behavioral smoke test" is searchable in CI logs.
 
 **Verification:**
-- `cargo check --no-default-features --features ""` clean
-- `cargo check --no-default-features --features "automaton"` clean
-- `cargo check --no-default-features --features "vex-engine"` clean
-  (was 43 errors)
-- `cargo check --no-default-features --features "vex-engine,vex-engine-z3"` clean
-- `cargo check --release` (default) clean
-- `cargo test --no-default-features --features "vex-engine"` 346/346
-- `cargo test --no-default-features --features ""` 44/44
-- `cargo test --no-default-features --features "automaton"` 59/59
-- `python -m pytest tests/engines/test_rust_exploration.py` 208/208
-- `run_single.py fauxware --engine rust` recovers SOSNEAKY
+- `cargo test --no-default-features --features ""` → 44 unit + 2 smoke
+- `cargo test --no-default-features --features automaton` → 59 + 3
+- `cargo test --no-default-features --features vex-engine` → 346 + 3
+- `cargo test --no-default-features --features vex-engine,vex-engine-z3` → 349 + 4
+- `cargo test --release` (default) → 364 + 5
+- `python -m pytest tests/engines/test_rust_exploration.py` → 208/208
+- `run_single.py fauxware --engine rust` → SOSNEAKY recovered, 0.35s
 
-**Commit:** 97cf549ea (1 file, +29 −0)
+**Commit:** f3f3c19e3 (2 files, +94 −0)
 
-**Memory saved:** `invariant-no-z3-stub-export` — captures the
-non-obvious requirement that no-z3 stubs of assume_true/assume_false
-still push to the un-gated `assumed_constraints_local` so the Python
-export path doesn't silently lose constraints.
-
-## Unblocked
-
-- **angr-7c9j** (CI feature-flag correctness tests) — was waiting on
-  both angr-asth and angr-l85c. Both now closed; ready to pick up.
+**Memories saved:**
+- `invariant-feature-flag-smoke` — what each combo's smoke test
+  exercises, how to extend when adding combos.
+- `gotcha-endness-variants` — `rustylib::vex::ir::Endness` variants
+  are `Little`/`Big`, not `LE`/`BE` (cost one rebuild).
+- `benchmark-feature-flag-test-counts` — per-combo counts as
+  baseline for detecting missing feature-gated tests.
 
 ## Ready P-tasks remaining
+
+After this session the nightly feature-flag matrix has end-to-end
+behavioral coverage in addition to unit tests. Remaining ready
+items (`bd ready`):
 
 - angr-vt0t (P3 categorize remaining ~280 except blocks)
 - angr-8em4 (P3 panic audit — 543 sites, must split)
@@ -62,4 +59,5 @@ export path doesn't silently lose constraints.
 - angr-awm3 (P3 CAS/LLSC statement handling)
 - angr-dja4 (P3 expand benchmark baseline)
 - angr-v4db (P3 extract god-methods)
-- angr-7c9j (P3 feature-flag correctness in CI — now unblocked!)
+- angr-4dxi (P4 memory permission enforcement)
+- angr-borb (P4 StateId / Address newtypes)
