@@ -745,10 +745,10 @@ class RustStateExportMixin:
                                 end = offset
                         regions.append((start, end - start + 1))
 
-                        # P6 fix: Track symbolic values for constraint sync
+                        # Track symbolic values for constraint sync
                         symbolic_values_to_constrain = []
 
-                        # Restore symbolic values - try to recover original ASTs first (P1 fix)
+                        # Restore symbolic values - try to recover original ASTs first
                         for offset, size in regions:
                             sym_addr = page_addr + offset
                             original_ast = None
@@ -798,7 +798,7 @@ class RustStateExportMixin:
                                 state.memory.store(sym_addr, original_ast,
                                                    endness=arch.memory_endness,
                                                    inspect=False)
-                                # P6 fix: Track for constraint sync
+                                # Track for constraint sync
                                 symbolic_values_to_constrain.append((sym_addr, size, original_ast))
                             else:
                                 # Fallback: create fresh symbolic (for Rust-created symbols)
@@ -807,10 +807,10 @@ class RustStateExportMixin:
                                 state.memory.store(sym_addr, sym_val,
                                                    endness=arch.memory_endness,
                                                    inspect=False)
-                                # P6 fix: Also track fresh symbols for constraint sync
+                                # Also track fresh symbols for constraint sync
                                 symbolic_values_to_constrain.append((sym_addr, size, sym_val))
 
-                        # P6 fix: Add constraints for symbolic values based on Rust solver evaluation
+                        # Add constraints for symbolic values based on Rust solver evaluation
                         for sym_addr, size, ast in symbolic_values_to_constrain:
                             try:
                                 # Evaluate the symbolic value using Rust's solver context
@@ -823,10 +823,10 @@ class RustStateExportMixin:
                                     # Add constraint: original_ast == concrete_value
                                     constraint = ast == claripy.BVV(concrete_val, size * 8)
                                     state.solver.add(constraint)
-                                    l.debug(f"P6: Added constraint at 0x{sym_addr:x}: "
+                                    l.debug(f"Added constraint at 0x{sym_addr:x}: "
                                             f"{ast} == {concrete_val:#x}")
                             except Exception as e:
-                                l.debug(f"P6: Could not add constraint at 0x{sym_addr:x}: {e}")
+                                l.debug(f"Could not add constraint at 0x{sym_addr:x}: {e}")
 
                 except Exception as e:
                     l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
@@ -835,7 +835,7 @@ class RustStateExportMixin:
         state.scratch.rust_state_id = snapshot.state_id
         state.scratch.rust_parent_id = snapshot.parent_id
 
-        # P10 fix: Restore state plugins from initial state template
+        # Restore state plugins from initial state template
         self._restore_plugins_to_state(state, snapshot.state_id)
 
         return state
@@ -843,7 +843,7 @@ class RustStateExportMixin:
     def _restore_plugins_to_state(self, state: "angr.SimState", state_id: int):
         """Restore plugins to an exported state from the initial state template.
 
-        P10 fix: Exported states are missing critical plugins (posix, libc, heap)
+        Exported states are missing critical plugins (posix, libc, heap)
         that scripts expect. This method restores them from the template state.
 
         Args:
@@ -871,7 +871,7 @@ class RustStateExportMixin:
             template = next(iter(self._state_cache.values()))
 
         if template is None:
-            l.debug("P10: No template state found for plugin restoration")
+            l.debug("No template state found for plugin restoration")
             return
 
         # Copy plugins that are commonly needed
@@ -885,9 +885,9 @@ class RustStateExportMixin:
                         # Only copy if not already present
                         if not hasattr(state, plugin_name) or getattr(state, plugin_name) is None:
                             state.register_plugin(plugin_name, plugin.copy())
-                            l.debug(f"P10: Restored {plugin_name} plugin to state")
+                            l.debug(f"Restored {plugin_name} plugin to state")
             except Exception as e:
-                l.debug(f"P10: Could not restore {plugin_name} plugin: {e}")
+                l.debug(f"Could not restore {plugin_name} plugin: {e}")
 
         # Fix nested plugin state references for posix (stdin/stdout/stderr)
         # These nested SimPacketsStream objects hold weakrefs to the state that
@@ -905,7 +905,7 @@ class RustStateExportMixin:
                         if fd_obj is not None and hasattr(fd_obj, 'set_state'):
                             fd_obj.set_state(state)
         except Exception as e:
-            l.debug(f"P10: Could not fix posix nested state refs: {e}")
+            l.debug(f"Could not fix posix nested state refs: {e}")
 
     def eval_memory(self, state_id: int, addr: int, size: int) -> Optional[bytes]:
         """Evaluate memory from a Rust state's solver context.

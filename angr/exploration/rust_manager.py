@@ -302,17 +302,17 @@ class RustExplorationManager(
         # Track which Rust state is being stepped for per-fork memory isolation
         self._current_stepping_state_id: Optional[int] = None
 
-        # Track symbolic memory by address for state export recovery (P1 fix)
-        # Maps state_id -> {addr -> (ast, size)}
-        # This allows recovering original symbols during state export instead of
-        # creating fresh BVS variables that lose constraint linkage
+        # Track symbolic memory by address for state export recovery.
+        # Maps state_id -> {addr -> (ast, size)}.
+        # Allows recovering original symbols during state export instead of
+        # creating fresh BVS variables that lose constraint linkage.
         self._addr_to_ast: Dict[int, Dict[int, Tuple[object, int]]] = {}
 
-        # Track procedure_data for SimProcedure continuations (P1 fix)
+        # Track procedure_data for SimProcedure continuations.
         # When a SimProcedure uses self.call() to invoke a function and register
         # a continuation, the procedure_data is stored here keyed by the continuation
         # address. When Rust invokes the continuation, we restore this data.
-        # Maps continuation_addr -> procedure_data tuple
+        # Maps continuation_addr -> procedure_data tuple.
         self._pending_procedure_data: Dict[int, Tuple] = {}
 
         # Cache for addresses where SimProcedure continuations always result in exit.
@@ -320,13 +320,12 @@ class RustExplorationManager(
         # successors, all subsequent callbacks are fast-deadended without state creation.
         self._exit_continuation_addrs: set = set()
 
-        # P10 fix: Track root state IDs for plugin restoration
-        # Maps state_id -> root_state_id (the original state from Python)
-        # When Rust forks states, this allows finding the original state for plugin copying
+        # Track root state IDs for plugin restoration.
+        # Maps state_id -> root_state_id (the original state from Python).
+        # When Rust forks states, this allows finding the original state for plugin copying.
         self._state_roots: Dict[int, int] = {}
 
-        # P9 fix: Track active exploration techniques
-        # Techniques are applied during exploration steps
+        # Track active exploration techniques (applied during exploration steps).
         self._active_techniques: list = []
 
         # Cached memory layout from disk cache for fast _sync_memory_to_rust
@@ -1680,7 +1679,7 @@ class RustExplorationManager(
                         l.debug(f"Could not sync Python constraints: {e}")
 
             self._state_cache[actual_state_id] = angr_state
-            # P10 fix: Track this as a root state for plugin restoration
+            # Track this as a root state for plugin restoration
             self._state_roots[actual_state_id] = actual_state_id
             # Extract and cache symbolic memory regions for preservation
             # This ensures symbolic values survive Rust<->Python transitions
@@ -1731,7 +1730,7 @@ class RustExplorationManager(
         else:
             # Fallback: cache with the Python-side state ID
             self._state_cache[rust_state.state_id] = angr_state
-            # P10 fix: Track this as a root state for plugin restoration
+            # Track this as a root state for plugin restoration
             self._state_roots[rust_state.state_id] = rust_state.state_id
             symbolic_pages = self._extract_symbolic_pages(angr_state)
             if symbolic_pages:
@@ -2690,8 +2689,6 @@ class RustExplorationManager(
     def move(self, from_stash: str, to_stash: str, filter_func=None) -> "RustExplorationManager":
         """Move states between stashes.
 
-        P8 fix: Full support for filter functions.
-
         Args:
             from_stash: Source stash name.
             to_stash: Destination stash name.
@@ -2722,7 +2719,7 @@ class RustExplorationManager(
                         keep_ids.append(state_id)
                 except Exception as e:
                     if _DBG:
-                        l.debug(f"P8: move filter error for state {state_id}: {e}")
+                        l.debug(f"move filter error for state {state_id}: {e}")
                     keep_ids.append(state_id)  # Keep on error
 
             # Use Rust to move matching states
@@ -2745,7 +2742,7 @@ class RustExplorationManager(
     def filter(self, stash: str = 'active', filter_func=None) -> "RustExplorationManager":
         """Filter states in a stash by predicate.
 
-        P8 fix: States not matching the predicate are removed (moved to 'pruned').
+        States not matching the predicate are removed (moved to 'pruned').
 
         Args:
             stash: The stash to filter. Defaults to 'active'.
@@ -2789,7 +2786,7 @@ class RustExplorationManager(
                     prune_ids.append(state_id)
             except Exception as e:
                 if _DBG:
-                    l.debug(f"P8: filter error for state {state_id}: {e}")
+                    l.debug(f"filter error for state {state_id}: {e}")
                 keep_ids.append(state_id)  # Keep on error
 
         # Move non-matching states to pruned stash
@@ -2804,7 +2801,7 @@ class RustExplorationManager(
     def prune(self, stash: str = 'active', filter_func=None) -> "RustExplorationManager":
         """Remove states from a stash based on predicate.
 
-        P8 fix: Default behavior prunes unsatisfiable states.
+        Default behavior prunes unsatisfiable states.
 
         Args:
             stash: The stash to prune. Defaults to 'active'.
@@ -2837,7 +2834,7 @@ class RustExplorationManager(
     def drop(self, stash: str = 'active', filter_func=None) -> "RustExplorationManager":
         """Drop states from a stash.
 
-        P8 fix: States matching the predicate (or all if no predicate) are removed.
+        States matching the predicate (or all if no predicate) are removed.
 
         Args:
             stash: The stash to drop from. Defaults to 'active'.
@@ -2870,7 +2867,7 @@ class RustExplorationManager(
                             pass
                 except Exception as e:
                     if _DBG:
-                        l.debug(f"P8: drop filter error for state {state_id}: {e}")
+                        l.debug(f"drop filter error for state {state_id}: {e}")
 
         return self
 
@@ -2878,7 +2875,7 @@ class RustExplorationManager(
               limit: int = 8, filter_func=None) -> "RustExplorationManager":
         """Split states between stashes.
 
-        P8 fix: Moves excess states to another stash to limit exploration width.
+        Moves excess states to another stash to limit exploration width.
 
         Args:
             stash_from: Source stash. Defaults to 'active'.
@@ -2908,7 +2905,7 @@ class RustExplorationManager(
     def stashes(self) -> dict:
         """Get all stashes as a dictionary for SimulationManager compatibility.
 
-        P8 fix: Returns state IDs per stash for compatibility.
+        Returns state IDs per stash.
         """
         result = {}
         for stash_name in ['active', 'found', 'avoid', 'deadended', 'errored',

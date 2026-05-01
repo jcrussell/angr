@@ -80,8 +80,8 @@ class RustStateCacheMixin:
         # Also register with identity tracker for bidirectional lookup
         self._identity_tracker.register(ast, handle_id)
 
-        # Track address -> AST mapping for state export recovery (P1 fix)
-        # P5 fix: Use effective state ID to ensure forked states share parent's data
+        # Track address -> AST mapping for state export recovery.
+        # Use effective state ID so forked states share parent's data.
         if addr is not None and state_id is not None:
             effective_id = self._get_effective_state_id(state_id)
             if effective_id is not None:

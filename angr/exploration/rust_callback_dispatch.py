@@ -55,8 +55,8 @@ class RustCallbackDispatchMixin:
         # Directly set recent_bbl_addrs to prevent IndexError
         # This is the critical fix - hooks access state.history.recent_bbl_addrs[-1]
         if hasattr(state.history, 'recent_bbl_addrs'):
-            # Use Rust history if available, otherwise use callback address
-            # P1 Fix: Always ensure history has at least one entry, even if callback_addr is 0
+            # Use Rust history if available, otherwise use callback address.
+            # Always ensure history has at least one entry, even if callback_addr is 0.
             if rust_history:
                 state.history.recent_bbl_addrs = list(rust_history)
             else:
@@ -81,7 +81,7 @@ class RustCallbackDispatchMixin:
         SimProcedures may need procedure_data for continuations (e.g., when
         using self.call()). This method initializes the required data.
 
-        P1 fix: Check for stored procedure_data from a previous self.call() and
+        Check for stored procedure_data from a previous self.call() and
         restore it. This is critical for continuations like __libc_start_main
         which call init/fini functions and expect to resume with saved args.
 
@@ -96,8 +96,8 @@ class RustCallbackDispatchMixin:
         # Ensure consistent int type for lookup
         addr_int = int(addr) if addr is not None else None
 
-        # P1 fix: Check for stored procedure_data from a previous self.call()
-        # This restores the full context (arguments, local vars) for continuations
+        # Check for stored procedure_data from a previous self.call().
+        # This restores the full context (arguments, local vars) for continuations.
         if addr_int in self._pending_procedure_data:
             stored_data = self._pending_procedure_data.pop(addr_int)
             try:
@@ -471,7 +471,7 @@ class RustCallbackDispatchMixin:
             orig_state = state
         self._perf_stats['callback_simprocedure_state_copy_ns'] += time.perf_counter_ns() - _sp_copy_start
 
-        # GAP 2 fix: Save original constraint COUNT before hook execution.
+        # Save original constraint COUNT before hook execution.
         # Building set(constraints) is expensive (~6ms per call with many constraints).
         # Save just the count; only build the full set if count changes after callback.
         # When using a register snapshot (no full state copy), eagerly capture
@@ -484,7 +484,7 @@ class RustCallbackDispatchMixin:
         else:
             orig_constraints = None  # Deferred — only built if needed
 
-        # GAP 5: Track memory writes during callback execution
+        # Track memory writes during callback execution
         memory_tracker = CallbackMemoryTracker(state)
 
         # Run the SimProcedure
@@ -495,7 +495,7 @@ class RustCallbackDispatchMixin:
             # Create SimSuccessors object for the procedure
             successors = SimSuccessors(addr=addr, initial_state=state)
 
-            # Execute the procedure with memory tracking (GAP 5)
+            # Execute the procedure with memory tracking
             with memory_tracker:
                 proc_instance = proc
                 if hasattr(proc, 'run'):
@@ -546,7 +546,7 @@ class RustCallbackDispatchMixin:
                 except Exception:
                     pass
 
-            # P1 fix: Capture procedure_data from successors that use self.call()
+            # Capture procedure_data from successors that use self.call().
             # When a SimProcedure uses self.call() to invoke another function,
             # it stores arguments and continuation info in procedure_data.
             # We capture this here so we can restore it when the continuation runs.
@@ -557,7 +557,7 @@ class RustCallbackDispatchMixin:
                     if top is None:
                         continue
 
-                    # P1 fix: When jumpkind is Ijk_Call, add_successor pushes a NEW callstack frame.
+                    # When jumpkind is Ijk_Call, add_successor pushes a NEW callstack frame.
                     # The procedure_data is on the PREVIOUS frame (the caller's frame).
                     # Check both top and top.next for procedure_data.
                     frames_to_check = [top]
@@ -737,9 +737,9 @@ class RustCallbackDispatchMixin:
                     else:
                         self._rust_mgr.deadend_pending_callback()
                 elif is_zero_length_hook:
-                    # Tell Rust to skip the hook and execute from addr
-                    # GAP 2: Pass original constraints for constraint sync
-                    # GAP 5: Pass tracked writes for memory sync
+                    # Tell Rust to skip the hook and execute from addr.
+                    # Pass original constraints for constraint sync.
+                    # Pass tracked writes for memory sync.
                     self._resume_with_skip_hook(addr, state, orig_state, event, orig_constraints,
                                                tracked_writes=tracked_writes,
                                                tracked_symbolic_writes=tracked_symbolic_writes,
@@ -781,23 +781,22 @@ class RustCallbackDispatchMixin:
             # Other TypeErrors fall through to generic handler
             raise
         except Exception as e:
-            # P17: On exception, move state to errored stash instead of resuming with corrupted state
-            l.warning(f"P17: SimProcedure execution error at 0x{addr:x}: {e}")
+            # On exception, move state to errored stash instead of resuming with corrupted state
+            l.warning(f"SimProcedure execution error at 0x{addr:x}: {e}")
             import traceback
             traceback.print_exc()
             # Signal error to Rust - this will move the state to errored stash
             try:
                 self._rust_mgr.resume_after_error(str(e))
             except Exception as resume_err:
-                l.warning(f"P17: Could not signal error to Rust: {resume_err}")
-            # P19: Clear callback state since we've handled the error
+                l.warning(f"Could not signal error to Rust: {resume_err}")
+            # Clear callback state since we've handled the error
             self._set_callback_state(None)
             self._current_callback_state_id = None
             self._perf_stats['callback_simprocedure_count'] += 1
             self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
-        # P19: Only clear callback state on success, not in finally
-        # This ensures state isn't lost if resume fails
+        # Only clear callback state on success, not in finally.
         self._set_callback_state(None)
         self._current_callback_state_id = None
         self._perf_stats['callback_simprocedure_sync_back_ns'] += time.perf_counter_ns() - _sp_sync_start
@@ -827,7 +826,7 @@ class RustCallbackDispatchMixin:
             skip_hook_addr: If set, tells Rust to skip the hook at this address
                            for the next step (prevents infinite loops with
                            zero-length hooks).
-            tracked_writes: GAP 5 - Memory writes tracked during callback execution.
+            tracked_writes: Memory writes tracked during callback execution.
             tracked_symbolic_writes: List of (addr, ast) for symbolic memory imports.
         """
         # Handle symbolic IP: pick first concrete solution if symbolic
@@ -852,7 +851,7 @@ class RustCallbackDispatchMixin:
         else:
             mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, succ_state)
 
-        # GAP 5: Merge tracked writes with extracted memory changes
+        # Merge tracked writes with extracted memory changes
         if tracked_writes:
             existing_addrs = {addr for addr, _ in mem_changes}
             for addr, data in tracked_writes:
@@ -1452,8 +1451,8 @@ class RustCallbackDispatchMixin:
                 l.warning("Resumed after symbolic branch with fallback (no constraints)")
             except Exception as e2:
                 l.error(f"Failed to resume after symbolic branch: {e2}")
-                # Recovery: Move the pending state to errored stash to avoid hanging
-                # This uses the same error handling as other callback failures (P17 fix)
+                # Recovery: Move the pending state to errored stash to avoid hanging.
+                # Uses the same error handling as other callback failures.
                 try:
                     self._rust_mgr.resume_after_error(f"symbolic_branch_error: {e2}")
                     l.warning("Moved state to errored stash after symbolic branch failure")
@@ -1495,7 +1494,7 @@ class RustCallbackDispatchMixin:
     def _get_effective_state_id(self, state_id: Optional[int]) -> Optional[int]:
         """Get effective state ID following lineage for lookups.
 
-        P5 fix: When a state is forked in Rust, its ID changes but Python's caches
+        When a state is forked in Rust, its ID changes but Python's caches
         are keyed by the original state ID. This method follows the lineage chain
         to find a state ID that exists in our caches.
 

@@ -36,30 +36,30 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
     try:
         if hasattr(technique, 'setup'):
             technique.setup(mgr)
-            l.debug(f"P9: Called setup() on technique {tech_name}")
+            l.debug(f"Called setup() on technique {tech_name}")
     except Exception as e:
-        l.warning(f"P9: Technique {tech_name} setup failed: {e}")
+        l.warning(f"Technique {tech_name} setup failed: {e}")
 
     # Handle specific technique types
     # DFS: Use depth-first state selection (LIFO)
     if tech_name == 'DFS' or tech_name == 'DepthFirst':
         try:
             mgr._rust_mgr.set_state_selection_lifo()
-            l.debug("P9: Enabled DFS (LIFO) state selection")
+            l.debug("Enabled DFS (LIFO) state selection")
         except AttributeError:
-            l.debug("P9: DFS technique registered (LIFO not natively supported)")
+            l.debug("DFS technique registered (LIFO not natively supported)")
 
     # BFS: Use breadth-first state selection (FIFO) - default behavior
     elif tech_name == 'BFS' or tech_name == 'BreadthFirst':
         try:
             mgr._rust_mgr.set_state_selection_fifo()
-            l.debug("P9: Enabled BFS (FIFO) state selection")
+            l.debug("Enabled BFS (FIFO) state selection")
         except AttributeError:
-            l.debug("P9: BFS technique registered (default FIFO selection)")
+            l.debug("BFS technique registered (default FIFO selection)")
 
     # LoopSeer: Loop detection and handling
     elif tech_name == 'LoopSeer':
-        l.debug("P9: LoopSeer technique registered (basic support)")
+        l.debug("LoopSeer technique registered (basic support)")
 
     # Explorer: Extract find/avoid addresses
     elif tech_name == 'Explorer':
@@ -118,7 +118,7 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
             mgr._has_technique_avoids = True
         num_find = getattr(technique, 'num_find', 1)
         mgr._rust_mgr.set_num_find(num_find)
-        l.debug(f"P9: Explorer technique: find={[hex(a) for a in find_addrs]}, "
+        l.debug(f"Explorer technique: find={[hex(a) for a in find_addrs]}, "
                 f"avoid={len(avoid_addrs)} addrs")
 
     # CheckUniqueness: Native register uniqueness filter in Rust
@@ -142,11 +142,11 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
                 mgr._rust_mgr.register_uniqueness_filter(regs)
                 # Mark as natively handled so filter() is skipped in Python
                 technique._native_uniqueness = True
-                l.debug(f"P9: CheckUniqueness registered natively with {len(regs)} registers")
+                l.debug(f"CheckUniqueness registered natively with {len(regs)} registers")
             except Exception as e:
-                l.debug(f"P9: Failed to register native uniqueness: {e}")
+                l.debug(f"Failed to register native uniqueness: {e}")
         else:
-            l.debug(f"P9: CheckUniqueness registered (Python fallback)")
+            l.debug(f"CheckUniqueness registered (Python fallback)")
 
     # LengthLimiter: Limit path length (block count) — native Rust implementation
     elif tech_name == 'LengthLimiter':
@@ -156,11 +156,11 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
             try:
                 mgr._rust_mgr.register_length_limiter(max_length, drop)
                 technique._native_length_limiter = True
-                l.debug(f"P9: LengthLimiter registered natively (max_length={max_length}, drop={drop})")
+                l.debug(f"LengthLimiter registered natively (max_length={max_length}, drop={drop})")
             except Exception as e:
-                l.debug(f"P9: LengthLimiter native registration failed: {e}, using Python fallback")
+                l.debug(f"LengthLimiter native registration failed: {e}, using Python fallback")
         else:
-            l.debug(f"P9: LengthLimiter registered (no max_length found)")
+            l.debug(f"LengthLimiter registered (no max_length found)")
 
     # Timeout: Wall-clock timeout — native Rust implementation
     elif tech_name == 'Timeout':
@@ -169,15 +169,15 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
             try:
                 mgr._rust_mgr.register_timeout(float(timeout_val))
                 technique._native_timeout = True
-                l.debug(f"P9: Timeout registered natively ({timeout_val}s)")
+                l.debug(f"Timeout registered natively ({timeout_val}s)")
             except Exception as e:
-                l.debug(f"P9: Timeout native registration failed: {e}, using Python fallback")
+                l.debug(f"Timeout native registration failed: {e}, using Python fallback")
         else:
-            l.debug(f"P9: Timeout technique registered (no timeout value)")
+            l.debug(f"Timeout technique registered (no timeout value)")
 
     # Other techniques
     else:
-        l.debug(f"P9: Technique {tech_name} registered (limited support)")
+        l.debug(f"Technique {tech_name} registered (limited support)")
 
     return technique
 

@@ -103,9 +103,9 @@ class SymbolicIdentityTracker:
 class CallbackMemoryTracker:
     """Tracks memory writes during SimProcedure callback execution.
 
-    GAP 5: This class automatically tracks all state.memory.store() calls
-    during callback execution, ensuring memory changes are properly synced
-    back to Rust without relying on changed_bytes() comparison.
+    Automatically tracks all state.memory.store() calls during callback
+    execution, ensuring memory changes are properly synced back to Rust
+    without relying on changed_bytes() comparison.
 
     Usage:
         with CallbackMemoryTracker(state) as tracker:
@@ -182,8 +182,7 @@ class CallbackMemoryTracker:
 
                         tracker._writes.append((concrete_addr, bytes(data_bytes)))
                 except Exception as e:
-                    # P18: Log tracking errors for debugging instead of silently passing
-                    l.debug(f"P18: Memory tracking error at addr={addr}: {e}")
+                    l.debug(f"Memory tracking error at addr={addr}: {e}")
 
                 return result
 
