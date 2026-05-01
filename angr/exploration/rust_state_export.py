@@ -567,12 +567,16 @@ class RustStateExportMixin:
             try:
                 rust_ctx = rust_mgr.fork_state_solver(state_id)
                 return rust_ctx.satisfiable()
-            except Exception:
-                pass
+            except Exception as e_rust:
+                l.debug("Rust satisfiable() failed, trying Python: %s", e_rust)
             try:
                 return original_satisfiable(**kwargs)
-            except Exception:
-                return False
+            except Exception as e_py:
+                # CRITICAL: returning False here is a wrong answer (UNSAT).
+                # Re-raise so callers can handle solver failure explicitly.
+                l.warning("Both Rust and Python satisfiable() failed for "
+                          "state — Python error: %s", e_py)
+                raise
 
         state.solver.eval = eval_rust_primary
         state.solver.eval_upto = eval_upto_rust_primary
