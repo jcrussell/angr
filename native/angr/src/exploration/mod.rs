@@ -876,15 +876,8 @@ impl RustExplorationManager {
 
     /// Get the PC of a state by its ID (O(1) via state index, no full export).
     pub fn get_state_pc_by_id(&self, state_id: u64) -> Option<u64> {
-        if let Some(state) = self.find_state(state_id) {
-            return Some(state.pc());
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Some(cb.state.pc());
-            }
-        }
-        None
+        // find_state already checks pending_callback first.
+        self.find_state(state_id).map(|s| s.pc())
     }
 
     /// Get state IDs in a stash.
@@ -932,12 +925,10 @@ impl RustExplorationManager {
 
     /// Set the PC of the pending callback state (for external initialization).
     pub fn set_pending_state_pc(&mut self, pc: u64) -> PyResult<()> {
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             pending.state.set_pc(pc);
             Ok(())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Map memory in the pending state.
@@ -948,12 +939,10 @@ impl RustExplorationManager {
         data: &[u8],
         permissions: u8,
     ) -> PyResult<()> {
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             pending.state.map_memory_data(addr, data, Permission::from_bits(permissions));
             Ok(())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Map memory in active states.
@@ -970,47 +959,44 @@ impl RustExplorationManager {
     ///
     /// Returns the condition as a claripy AST that Python can use for forking.
     pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let pending = self.pending_callback.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        self.with_pending(|pending| {
+            // Get the condition ID from the callback reason
+            let condition_id = match &pending.reason {
+                CallbackReason::SymbolicBranch { condition_id, .. } => *condition_id,
+                _ => return Err(PyValueError::new_err("pending callback is not a symbolic branch")),
+            };
 
-        // Get the condition ID from the callback reason
-        let condition_id = match &pending.reason {
-            CallbackReason::SymbolicBranch { condition_id, .. } => *condition_id,
-            _ => return Err(PyValueError::new_err("pending callback is not a symbolic branch")),
-        };
+            // Look up the condition in stored_conditions
+            let condition = pending.stored_conditions.get(&condition_id)
+                .ok_or_else(|| PyValueError::new_err(
+                    format!("condition {} not found in stored_conditions", condition_id)
+                ))?;
 
-        // Look up the condition in stored_conditions
-        let condition = pending.stored_conditions.get(&condition_id)
-            .ok_or_else(|| PyValueError::new_err(
-                format!("condition {} not found in stored_conditions", condition_id)
-            ))?;
-
-        // Convert to claripy AST
-        let claripy = py.import("claripy")?;
-        rustbv_to_claripy(py, condition, claripy.as_any())
-            .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {}", e)))
+            // Convert to claripy AST
+            let claripy = py.import("claripy")?;
+            rustbv_to_claripy(py, condition, claripy.as_any())
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {}", e)))
+        })
     }
 
     /// Get register value from pending state (concrete only).
     pub fn get_pending_register(&self, name: &str) -> PyResult<Option<u128>> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             pending.state.get_register(name)
                 .map(|bv| bv.as_u128())
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Get register as claripy AST from pending state (handles symbolic).
     pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-        let pending = self.pending_callback.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
-        let bv = pending.state.get_register(name)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
-        let claripy = py.import("claripy")?;
-        rustbv_to_claripy(py, &bv, claripy.as_any())
-            .map_err(|e| PyRuntimeError::new_err(format!("register conversion: {}", e)))
+        self.with_pending(|pending| {
+            let bv = pending.state.get_register(name)
+                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
+            let claripy = py.import("claripy")?;
+            rustbv_to_claripy(py, &bv, claripy.as_any())
+                .map_err(|e| PyRuntimeError::new_err(format!("register conversion: {}", e)))
+        })
     }
 
     /// Get history (BBL addresses) from pending callback state.
@@ -1018,11 +1004,7 @@ impl RustExplorationManager {
     /// This is used by Python to initialize history on callback states,
     /// preventing IndexError when hooks access `state.history.recent_bbl_addrs[-1]`.
     pub fn get_pending_history(&self) -> PyResult<Vec<u64>> {
-        if let Some(ref pending) = self.pending_callback {
-            Ok(pending.state.history().to_vec())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        self.with_pending(|pending| Ok(pending.state.history().to_vec()))
     }
 
     /// Get jumpkind for pending callback.
@@ -1030,16 +1012,14 @@ impl RustExplorationManager {
     /// Returns the jumpkind that led to this callback (e.g., "Ijk_Call", "Ijk_Boring").
     /// This is used by Python to properly initialize callstack management.
     pub fn get_pending_jumpkind(&self) -> PyResult<String> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             Ok(pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Set register value in pending state.
     pub fn set_pending_register(&mut self, name: &str, value: u128) -> PyResult<()> {
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             let size = pending.state.arch().register_size(name)
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
             let bv = crate::symbolic::RustBV::concrete(value, size * 8);
@@ -1048,9 +1028,7 @@ impl RustExplorationManager {
             } else {
                 Err(PyValueError::new_err(format!("failed to set register: {}", name)))
             }
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Set register to a symbolic value from a handle ID.
@@ -1058,7 +1036,7 @@ impl RustExplorationManager {
     /// Used for syncing symbolic return values from SimProcedures.
     /// The handle_id should reference a RustBV in the solver's symbol table.
     pub fn set_pending_register_symbolic(&mut self, name: &str, handle_id: u64) -> PyResult<()> {
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             // Look up the RustBV from the symbol table
             let bv = if let Some(ref solver) = pending.solver_ctx {
                 solver.symbol_table().get(handle_id)
@@ -1074,9 +1052,7 @@ impl RustExplorationManager {
             } else {
                 Err(PyValueError::new_err(format!("failed to set register: {}", name)))
             }
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Set a symbolic register value in the pending state from claripy AST.
@@ -1089,7 +1065,7 @@ impl RustExplorationManager {
         reg_name: &str,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
             let ctx_ref: &SymContext = &*sym_ctx;
@@ -1106,9 +1082,7 @@ impl RustExplorationManager {
             } else {
                 Err(PyValueError::new_err(format!("failed to set register: {}", reg_name)))
             }
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Import symbolic memory from Python hook into Rust's symbolic_objects.
@@ -1124,16 +1098,15 @@ impl RustExplorationManager {
         addr: u64,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        if let Some(state) = self.find_state_mut(state_id) {
+        self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let sym_ctx = solver_ref.borrow();
             let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
                 .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?;
             drop(sym_ctx);
             state.memory_mut().import_symbolic_value(addr, bv, None);
-            return Ok(());
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(())
+        })
     }
 
     pub fn import_symbolic_memory(
@@ -1142,27 +1115,25 @@ impl RustExplorationManager {
         addr: u64,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let pending = self.pending_callback.as_mut().ok_or_else(|| {
-            PyRuntimeError::new_err("no pending callback state")
-        })?;
+        self.with_pending_mut(|pending| {
+            // Convert claripy AST to RustBV (caches original AST for round-trip)
+            let solver_ref = pending.state.solver();
+            let sym_ctx = solver_ref.borrow();
+            let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
+                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
+            drop(sym_ctx);
 
-        // Convert claripy AST to RustBV (caches original AST for round-trip)
-        let solver_ref = pending.state.solver();
-        let sym_ctx = solver_ref.borrow();
-        let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
-            .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
-        drop(sym_ctx);
-
-        // Import into symbolic memory via existing infrastructure
-        // Symbol ID is not used by import_symbolic_value, so pass None
-        pending.state.memory_mut().import_symbolic_value(addr, bv, None);
-        log::debug!("Imported symbolic memory at 0x{:x}", addr);
-        Ok(())
+            // Import into symbolic memory via existing infrastructure
+            // Symbol ID is not used by import_symbolic_value, so pass None
+            pending.state.memory_mut().import_symbolic_value(addr, bv, None);
+            log::debug!("Imported symbolic memory at 0x{:x}", addr);
+            Ok(())
+        })
     }
 
     /// Get memory from pending state.
     pub fn get_pending_memory(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             let bv = pending.state.memory_load(addr, size)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
@@ -1171,14 +1142,12 @@ impl RustExplorationManager {
                 .map(|i| (value >> (i * 8)) as u8)
                 .collect();
             Ok(bytes)
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Store memory in pending state.
     pub fn set_pending_memory(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             let width = (data.len() * 8) as u32;
             let mut value: u128 = 0;
             for (i, &b) in data.iter().enumerate() {
@@ -1187,9 +1156,7 @@ impl RustExplorationManager {
             let bv = crate::symbolic::RustBV::concrete(value, width);
             pending.state.memory_store(addr, bv)
                 .map_err(|e| PyValueError::new_err(e.to_string()))
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Get dirty page addresses from pending state.
@@ -1197,31 +1164,21 @@ impl RustExplorationManager {
     /// This returns the list of page-aligned addresses that have been
     /// modified in the pending callback state.
     pub fn get_pending_dirty_pages(&self) -> PyResult<Vec<u64>> {
-        if let Some(ref pending) = self.pending_callback {
-            Ok(pending.state.get_dirty_pages())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        self.with_pending(|pending| Ok(pending.state.get_dirty_pages()))
     }
 
     /// Get dirty register offsets from pending state.
     pub fn get_pending_dirty_registers(&self) -> PyResult<Vec<u32>> {
-        if let Some(ref pending) = self.pending_callback {
-            Ok(pending.state.get_dirty_registers())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        self.with_pending(|pending| Ok(pending.state.get_dirty_registers()))
     }
 
     /// Clear dirty tracking in pending state.
     pub fn clear_pending_dirty_tracking(&mut self) -> PyResult<()> {
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             pending.state.clear_dirty_pages();
             pending.state.clear_dirty_registers();
             Ok(())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Export pending constraints as a list of claripy ASTs.
@@ -1229,7 +1186,7 @@ impl RustExplorationManager {
     /// Returns constraints that can be added to Python state.solver.
     /// This exports stored branch conditions accumulated during Rust execution.
     pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             let mut result = Vec::new();
 
             // Import claripy for AST conversion
@@ -1249,9 +1206,7 @@ impl RustExplorationManager {
 
             log::debug!("Exported {} pending constraints", result.len());
             Ok(result)
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Get handle IDs that are actively referenced in the pending state.
@@ -1278,11 +1233,7 @@ impl RustExplorationManager {
     /// This allows Python to get a complete snapshot of the pending state
     /// including all registers, memory pages, and metadata.
     pub fn export_pending_state(&self) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        if let Some(ref pending) = self.pending_callback {
-            Ok(pending.state.export_full())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        self.with_pending(|pending| Ok(pending.state.export_full()))
     }
 
     /// Get the root state ID for the pending callback state.
@@ -1294,12 +1245,10 @@ impl RustExplorationManager {
     /// Returns:
     ///     The root state ID if available, or None if the state has no tracked root.
     pub fn get_pending_root_state_id(&self) -> PyResult<Option<u64>> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             let state_id = pending.state.state_id();
             Ok(self.sm.roots().get(&state_id).copied())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Get the full ancestry chain for the pending callback state.
@@ -1310,7 +1259,7 @@ impl RustExplorationManager {
     /// This is used by Python to find cached state data when the current state
     /// is a multi-level fork of an original state.
     pub fn get_pending_ancestry(&self) -> PyResult<Vec<u64>> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             let mut ancestry = vec![pending.state.state_id()];
 
             // Walk the parent chain
@@ -1331,9 +1280,7 @@ impl RustExplorationManager {
             }
 
             Ok(ancestry)
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Fork the pending state's solver context for Python callbacks.
@@ -1363,68 +1310,65 @@ impl RustExplorationManager {
         register_names: Vec<String>,
         shared_solver: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let pending = self.pending_callback.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        self.with_pending(|pending| {
+            let dict = PyDict::new(py);
 
-        let dict = PyDict::new(py);
-
-        // Registers: batch export all requested registers
-        let reg_dict = PyDict::new(py);
-        for name in &register_names {
-            match pending.state.get_register(name) {
-                Some(bv) => {
-                    if let Some(val) = bv.as_u128() {
-                        reg_dict.set_item(name, val)?;
-                    } else {
-                        // Symbolic — set to None, Python will fetch AST if needed
+            // Registers: batch export all requested registers
+            let reg_dict = PyDict::new(py);
+            for name in &register_names {
+                match pending.state.get_register(name) {
+                    Some(bv) => {
+                        if let Some(val) = bv.as_u128() {
+                            reg_dict.set_item(name, val)?;
+                        } else {
+                            // Symbolic — set to None, Python will fetch AST if needed
+                            reg_dict.set_item(name, py.None())?;
+                        }
+                    }
+                    None => {
                         reg_dict.set_item(name, py.None())?;
                     }
                 }
-                None => {
-                    reg_dict.set_item(name, py.None())?;
-                }
             }
-        }
-        dict.set_item("registers", reg_dict)?;
+            dict.set_item("registers", reg_dict)?;
 
-        // Solver context: shared (O(1) Rc clone) or forked (~3ms Z3 clone)
-        let solver_ref = pending.state.solver();
-        if shared_solver {
-            let rust_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
-            let constraint_count = rust_ctx.num_constraints();
-            dict.set_item("solver", Py::new(py, rust_ctx)?)?;
-            dict.set_item("constraint_count", constraint_count)?;
-        } else {
-            let forked_ctx = solver_ref.borrow().fork();
-            let rust_ctx = RustSolverContext::from_sym_context(forked_ctx);
-            let constraint_count = rust_ctx.num_constraints();
-            dict.set_item("solver", Py::new(py, rust_ctx)?)?;
-            dict.set_item("constraint_count", constraint_count)?;
-        }
+            // Solver context: shared (O(1) Rc clone) or forked (~3ms Z3 clone)
+            let solver_ref = pending.state.solver();
+            if shared_solver {
+                let rust_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+                let constraint_count = rust_ctx.num_constraints();
+                dict.set_item("solver", Py::new(py, rust_ctx)?)?;
+                dict.set_item("constraint_count", constraint_count)?;
+            } else {
+                let forked_ctx = solver_ref.borrow().fork();
+                let rust_ctx = RustSolverContext::from_sym_context(forked_ctx);
+                let constraint_count = rust_ctx.num_constraints();
+                dict.set_item("solver", Py::new(py, rust_ctx)?)?;
+                dict.set_item("constraint_count", constraint_count)?;
+            }
 
-        // History
-        dict.set_item("history", pending.state.history().to_vec())?;
+            // History
+            dict.set_item("history", pending.state.history().to_vec())?;
 
-        // Jumpkind
-        dict.set_item("jumpkind",
-            pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))?;
+            // Jumpkind
+            dict.set_item("jumpkind",
+                pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))?;
 
-        // Stdout buffer
-        dict.set_item("stdout", pending.state.stdout_buffer().to_vec())?;
+            // Stdout buffer
+            dict.set_item("stdout", pending.state.stdout_buffer().to_vec())?;
 
-        Ok(dict)
+            Ok(dict)
+        })
     }
 
     pub fn fork_pending_solver(&self) -> PyResult<RustSolverContext> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             // Fork the pending state's solver context
             let solver_ref = pending.state.solver();
             let forked_ctx = solver_ref.borrow().fork();
             // Create a new RustSolverContext wrapping the forked SymContext
             Ok(RustSolverContext::from_sym_context(forked_ctx))
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Borrow the pending state's solver context without forking.
@@ -1437,12 +1381,10 @@ impl RustExplorationManager {
     /// so post-callback constraint sync via add_constraints_to_pending() should
     /// be skipped to avoid double-adding.
     pub fn borrow_pending_solver(&self) -> PyResult<RustSolverContext> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             let solver_rc = pending.state.solver().clone();
             Ok(RustSolverContext::from_shared_sym_context(solver_rc))
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Add constraints from Python callbacks back to the pending state.
@@ -1460,7 +1402,7 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         use pyo3::types::PyListMethods;
 
-        if let Some(ref mut pending) = self.pending_callback {
+        self.with_pending_mut(|pending| {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
             let ctx_ref: &SymContext = &*sym_ctx;
@@ -1489,9 +1431,7 @@ impl RustExplorationManager {
                 }
             }
             Ok(())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Add constraints from Python to a state in a stash by state ID.
@@ -1502,7 +1442,7 @@ impl RustExplorationManager {
         state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<bool> {
-        if let Some(state) = self.find_state_mut(state_id) {
+        self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let sym_ctx = solver_ref.borrow();
             let ctx_ref: &SymContext = &*sym_ctx;
@@ -1555,9 +1495,8 @@ impl RustExplorationManager {
                 }
             }
             log::debug!("Added {} initial constraints to state {}", added, state_id);
-            return Ok(state.satisfiable());
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(state.satisfiable())
+        })
     }
 
     /// Export raw Z3 assertion pointers from a state's solver.
@@ -1565,18 +1504,17 @@ impl RustExplorationManager {
     /// in assumed_constraints (which drops constraints where claripy_to_rustbv fails).
     #[cfg(feature = "vex-engine-z3")]
     pub fn export_z3_constraint_ptrs(&self, state_id: u64) -> PyResult<Vec<usize>> {
-        if let Some(state) = self.find_state(state_id) {
+        self.with_state(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
-            return Ok(ctx.export_z3_assertion_ptrs());
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(ctx.export_z3_assertion_ptrs())
+        })
     }
 
     /// Import raw Z3 assertion pointers to a state's solver.
     #[cfg(feature = "vex-engine-z3")]
     pub fn import_z3_constraint_ptrs(&mut self, state_id: u64, ptrs: Vec<usize>) -> PyResult<bool> {
-        if let Some(state) = self.find_state_mut(state_id) {
+        self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
             for ptr in &ptrs {
@@ -1585,23 +1523,21 @@ impl RustExplorationManager {
                 }
             }
             log::debug!("Imported {} Z3 constraints to state {}", ptrs.len(), state_id);
-            return Ok(state.satisfiable());
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(state.satisfiable())
+        })
     }
 
     /// Debug: dump solver state for a given state.
     #[cfg(feature = "vex-engine-z3")]
     pub fn debug_solver_info(&self, state_id: u64) -> PyResult<String> {
-        if let Some(state) = self.find_state(state_id) {
+        self.with_state(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
             let push_level = ctx.debug_push_level();
             let n_constraints = ctx.num_constraints();
             let ptrs = ctx.export_z3_assertion_ptrs();
-            return Ok(format!("push_level={}, num_constraints={}, exported_ptrs={}", push_level, n_constraints, ptrs.len()));
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(format!("push_level={}, num_constraints={}, exported_ptrs={}", push_level, n_constraints, ptrs.len()))
+        })
     }
 
     /// Export constraints from a state in any stash as claripy ASTs.
@@ -1611,7 +1547,7 @@ impl RustExplorationManager {
         state_id: u64,
     ) -> PyResult<Vec<Py<PyAny>>> {
         let claripy = py.import("claripy")?;
-        if let Some(state) = self.find_state(state_id) {
+        self.with_state(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
             let assumed = ctx.get_assumed_constraints();
@@ -1631,9 +1567,8 @@ impl RustExplorationManager {
                     Err(_) => {}
                 }
             }
-            return Ok(results);
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(results)
+        })
     }
 
     /// Fork the solver context of an arbitrary state (by ID).
@@ -1642,25 +1577,23 @@ impl RustExplorationManager {
     /// allowing Python to evaluate/solve against any state — not just the
     /// pending callback state.  This is used by RustStateProxy.
     pub fn fork_state_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
-        if let Some(state) = self.find_state(state_id) {
-            let solver_ref = state.solver();
-            let forked_ctx = solver_ref.borrow().fork();
-            return Ok(RustSolverContext::from_sym_context(forked_ctx));
-        }
-        Err(PyValueError::new_err(format!(
-            "fork_state_solver: state {} not found",
-            state_id
-        )))
+        let state = self.find_state(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "fork_state_solver: state {} not found",
+                state_id
+            ))
+        })?;
+        let solver_ref = state.solver();
+        let forked_ctx = solver_ref.borrow().fork();
+        Ok(RustSolverContext::from_sym_context(forked_ctx))
     }
 
     /// Get the number of constraints in the pending state's solver.
     pub fn pending_constraint_count(&self) -> PyResult<usize> {
-        if let Some(ref pending) = self.pending_callback {
+        self.with_pending(|pending| {
             let solver_ref = pending.state.solver();
             Ok(solver_ref.borrow().num_constraints())
-        } else {
-            Err(PyRuntimeError::new_err("no pending callback state"))
-        }
+        })
     }
 
     /// Get the ID of the state currently being stepped.
@@ -1672,63 +1605,63 @@ impl RustExplorationManager {
     /// Used by SimProcedure callbacks to read the correct per-state memory.
     /// Get all mapped page addresses from pending callback state's memory.
     pub fn get_pending_mapped_pages(&self) -> PyResult<Vec<u64>> {
-        let pending = self.pending_callback.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
-        Ok(pending.state.memory().pages().keys().map(|&pn| pn << 12).collect())
+        self.with_pending(|pending| {
+            Ok(pending.state.memory().pages().keys().map(|&pn| pn << 12).collect())
+        })
     }
 
     /// Load an entire page (4096 bytes) from pending callback state's memory.
     pub fn pending_memory_load_page(&self, page_addr: u64) -> PyResult<Vec<u8>> {
-        let pending = self.pending_callback.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
-        pending.state.memory().load_page_concrete(page_addr)
-            .map_err(|e| PyValueError::new_err(format!("page load failed: {}", e)))
+        self.with_pending(|pending| {
+            pending.state.memory().load_page_concrete(page_addr)
+                .map_err(|e| PyValueError::new_err(format!("page load failed: {}", e)))
+        })
     }
 
     pub fn pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        let pending = self.pending_callback.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
-        let solver_ref = pending.state.solver();
-        let ctx = solver_ref.borrow();
-        match pending.state.memory().load_concrete(addr, size, &*ctx) {
-            Ok(bv) => {
-                if let Some(val) = bv.as_u128() {
-                    let byte_count = (size as usize).min(16);
-                    Ok(val.to_le_bytes()[..byte_count].to_vec())
-                } else {
-                    let solver = pending.state.solver();
-                    let ctx = solver.borrow();
-                    if let Some(val) = ctx.eval(&bv) {
+        self.with_pending(|pending| {
+            let solver_ref = pending.state.solver();
+            let ctx = solver_ref.borrow();
+            match pending.state.memory().load_concrete(addr, size, &*ctx) {
+                Ok(bv) => {
+                    if let Some(val) = bv.as_u128() {
                         let byte_count = (size as usize).min(16);
                         Ok(val.to_le_bytes()[..byte_count].to_vec())
                     } else {
-                        Ok(vec![0u8; size as usize])
+                        let solver = pending.state.solver();
+                        let ctx = solver.borrow();
+                        if let Some(val) = ctx.eval(&bv) {
+                            let byte_count = (size as usize).min(16);
+                            Ok(val.to_le_bytes()[..byte_count].to_vec())
+                        } else {
+                            Ok(vec![0u8; size as usize])
+                        }
                     }
                 }
+                Err(_) => Ok(vec![0u8; size as usize]),
             }
-            Err(_) => Ok(vec![0u8; size as usize]),
-        }
+        })
     }
 
     /// Store to pending callback state's Rust memory.
     pub fn pending_memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        let pending = self.pending_callback.as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
-        let mut value: u128 = 0;
-        for (i, &byte) in data.iter().enumerate() {
-            if i < 16 { value |= (byte as u128) << (i * 8); }
-        }
-        let bv = RustBV::concrete(value, (data.len() * 8) as u32);
-        pending.state.memory_mut().store_concrete(addr, bv)
-            .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
+        self.with_pending_mut(|pending| {
+            let mut value: u128 = 0;
+            for (i, &byte) in data.iter().enumerate() {
+                if i < 16 { value |= (byte as u128) << (i * 8); }
+            }
+            let bv = RustBV::concrete(value, (data.len() * 8) as u32);
+            pending.state.memory_mut().store_concrete(addr, bv)
+                .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
+        })
     }
 
     /// Map memory with data in pending callback state.
     pub fn pending_memory_map_data(&mut self, addr: u64, data: &[u8], perm: u8) -> PyResult<()> {
-        let pending = self.pending_callback.as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
-        pending.state.map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));
-        Ok(())
+        self.with_pending_mut(|pending| {
+            pending.state.map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));
+            Ok(())
+        })
     }
 
     /// Set address to skip hook check for on next step.
@@ -2090,33 +2023,20 @@ impl RustExplorationManager {
     /// This searches all stashes for the state with the given ID and returns
     /// a complete snapshot that can be used to reconstruct an angr SimState.
     pub fn export_state(&self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.export_full());
-        }
-
-        // Also check pending callback state
-        if let Some(ref pending) = self.pending_callback {
-            if pending.state.state_id() == state_id {
-                return Ok(pending.state.export_full());
-            }
-        }
-
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        self.with_state(state_id, |state| Ok(state.export_full()))
     }
 
     /// Export a state by ID, flushing pending writes first.
     pub fn export_state_flushed(&mut self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
+        // find_state_mut only checks stashes; we still need an explicit pending fallback.
         if let Some(state) = self.find_state_mut(state_id) {
             return Ok(state.flush_and_export_full());
         }
-
-        // Also check pending callback state
         if let Some(ref mut pending) = self.pending_callback {
             if pending.state.state_id() == state_id {
                 return Ok(pending.state.flush_and_export_full());
             }
         }
-
         Err(PyValueError::new_err(format!("state {} not found", state_id)))
     }
 
@@ -2146,7 +2066,7 @@ impl RustExplorationManager {
     /// This allows Python to get concrete values for symbolic inputs
     /// that were found during exploration.
     pub fn eval_in_state(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
-        if let Some(state) = self.find_state(state_id) {
+        self.with_state(state_id, |state| {
             match state.memory_load(addr, size) {
                 Ok(bv) => {
                     if let Some(val) = state.eval(&bv) {
@@ -2155,18 +2075,16 @@ impl RustExplorationManager {
                             .collect();
                         return Ok(Some(bytes));
                     }
-                    return Ok(None);
+                    Ok(None)
                 }
-                Err(_) => return Ok(None),
+                Err(_) => Ok(None),
             }
-        }
-
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        })
     }
 
     /// Debug: Get symbolic object info for a state.
     pub fn state_symbolic_info(&self, state_id: u64, addr: u64) -> PyResult<String> {
-        if let Some(state) = self.find_state(state_id) {
+        self.with_state(state_id, |state| {
             let mem = state.memory();
             let total = mem.symbolic_object_count();
             let has_at_addr = mem.get_symbolic_object(addr).map(|bv| bv.width());
@@ -2177,12 +2095,11 @@ impl RustExplorationManager {
             } else {
                 "page=unmapped".to_string()
             };
-            return Ok(format!(
+            Ok(format!(
                 "total_sym_objs={} at_0x{:x}={:?} {}",
                 total, addr, has_at_addr, page_info
-            ));
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            ))
+        })
     }
 
     /// Get Z3 AST pointers for all symbolic objects in a state's memory.
@@ -2196,7 +2113,7 @@ impl RustExplorationManager {
     #[cfg(feature = "vex-engine-z3")]
     pub fn get_state_symbolic_z3_asts(&self, state_id: u64) -> PyResult<Vec<(u64, usize, u32)>> {
         use z3::ast::Ast;
-        if let Some(state) = self.find_state(state_id) {
+        self.with_state(state_id, |state| {
             let mem = state.memory();
             let mut result = Vec::new();
             for (&addr, bv) in mem.symbolic_objects_iter() {
@@ -2219,42 +2136,35 @@ impl RustExplorationManager {
                     result.push((addr, raw_ptr, bv.width()));
                 }
             }
-            return Ok(result);
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(result)
+        })
     }
 
     /// Check if constraints are satisfiable for a state.
     pub fn state_satisfiable(&self, state_id: u64) -> PyResult<bool> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.satisfiable());
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        self.with_state(state_id, |state| Ok(state.satisfiable()))
     }
 
     /// Get a register value from a state.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.get_register(name).and_then(|bv| bv.as_u128()));
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        self.with_state(state_id, |state| {
+            Ok(state.get_register(name).and_then(|bv| bv.as_u128()))
+        })
     }
 
     /// Get multiple register values from a state in one FFI call.
     /// Returns a list of Option<u128> in the same order as the input names.
     pub fn get_state_registers_batch(&self, state_id: u64, names: Vec<String>) -> PyResult<Vec<Option<u128>>> {
-        if let Some(state) = self.find_state(state_id) {
-            let results: Vec<Option<u128>> = names.iter()
+        self.with_state(state_id, |state| {
+            Ok(names.iter()
                 .map(|name| state.get_register(name).and_then(|bv| bv.as_u128()))
-                .collect();
-            return Ok(results);
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+                .collect())
+        })
     }
 
     /// Get memory from a state.
     pub fn get_state_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
-        if let Some(state) = self.find_state(state_id) {
+        self.with_state(state_id, |state| {
             match state.memory_load(addr, size) {
                 Ok(bv) => {
                     if let Some(val) = bv.as_u128() {
@@ -2269,25 +2179,17 @@ impl RustExplorationManager {
                             .collect();
                         return Ok(Some(bytes));
                     }
-                    return Ok(None);
+                    Ok(None)
                 }
-                Err(_) => return Ok(None),
+                Err(_) => Ok(None),
             }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        })
     }
 
     /// Check if a state has stdout output (dirty flag check, no allocation).
     pub fn has_state_stdout(&self, state_id: u64) -> bool {
-        if let Some(state) = self.find_state(state_id) {
-            return state.has_stdout();
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return cb.state.has_stdout();
-            }
-        }
-        false
+        // find_state already checks pending_callback first.
+        self.find_state(state_id).map_or(false, |s| s.has_stdout())
     }
 
     /// Get the stdout buffer for a state by ID.
@@ -2301,29 +2203,12 @@ impl RustExplorationManager {
     ///
     /// Returns the accumulated output from native write/puts/printf calls.
     pub fn get_state_fd_output(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.fd_buffer(fd).to_vec());
-        }
-        // Also check pending callback state
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(cb.state.fd_buffer(fd).to_vec());
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        self.with_state(state_id, |state| Ok(state.fd_buffer(fd).to_vec()))
     }
 
     /// Check if a state has recorded stdin symbols from native fgets/fgetc/getchar.
     pub fn has_state_stdin_symbols(&self, state_id: u64) -> bool {
-        if let Some(state) = self.find_state(state_id) {
-            return state.has_stdin_symbols();
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return cb.state.has_stdin_symbols();
-            }
-        }
-        false
+        self.find_state(state_id).map_or(false, |s| s.has_stdin_symbols())
     }
 
     /// Get the stdin symbols for a state by ID.
@@ -2332,47 +2217,23 @@ impl RustExplorationManager {
     /// created by native fgets/fgetc/getchar. Used to reconstruct stdin
     /// data in Python's posix plugin for posix.dumps(0).
     pub fn get_state_stdin_symbols(&self, state_id: u64) -> PyResult<Vec<(String, u32)>> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.stdin_symbols().to_vec());
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(cb.state.stdin_symbols().to_vec());
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        self.with_state(state_id, |state| Ok(state.stdin_symbols().to_vec()))
     }
 
     /// Get the call stack for a state by ID.
     ///
     /// Returns list of (call_site_addr, callee_addr, return_addr, stack_ptr) tuples.
     pub fn get_state_call_stack(&self, state_id: u64) -> PyResult<Vec<(u64, u64, u64, u64)>> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.call_stack().iter()
+        self.with_state(state_id, |state| {
+            Ok(state.call_stack().iter()
                 .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
-                .collect());
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(cb.state.call_stack().iter()
-                    .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
-                    .collect());
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+                .collect())
+        })
     }
 
     /// Get the call stack depth for a state by ID.
     pub fn get_state_call_stack_depth(&self, state_id: u64) -> PyResult<usize> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.call_stack_depth());
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(cb.state.call_stack_depth());
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        self.with_state(state_id, |state| Ok(state.call_stack_depth()))
     }
 
     /// Get the detailed execution history for a state by ID.
@@ -2380,19 +2241,11 @@ impl RustExplorationManager {
     /// Returns list of (addr, jumpkind, jump_target) tuples.
     /// jumpkind: 0=Boring, 1=Call, 2=Ret, 3=Syscall, 4=Other
     pub fn get_state_detailed_history(&self, state_id: u64) -> PyResult<Vec<(u64, u8, u64)>> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.detailed_history().iter()
+        self.with_state(state_id, |state| {
+            Ok(state.detailed_history().iter()
                 .map(|e| (e.addr, e.jumpkind, e.jump_target))
-                .collect());
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(cb.state.detailed_history().iter()
-                    .map(|e| (e.addr, e.jumpkind, e.jump_target))
-                    .collect());
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+                .collect())
+        })
     }
 
     /// Get heap metadata for a state by ID.
@@ -2403,59 +2256,33 @@ impl RustExplorationManager {
     /// - alloc_count: number of active allocations
     /// - free_count: number of free calls
     pub fn get_state_heap_metadata(&self, state_id: u64) -> PyResult<(Vec<(u64, u64)>, Vec<u64>)> {
-        let find_metadata = |state: &crate::state::RustSimState| {
+        self.with_state(state_id, |state| {
             let meta = state.heap_metadata();
             let allocated: Vec<(u64, u64)> = meta.allocated.iter()
                 .map(|(&addr, &size)| (addr, size))
                 .collect();
             let freed = meta.freed.clone();
-            (allocated, freed)
-        };
-
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(find_metadata(state));
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(find_metadata(&cb.state));
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok((allocated, freed))
+        })
     }
 
     /// Get the list of open file descriptors for a state.
     ///
     /// Returns list of (fd, name, position, flags, content_len, is_open) tuples.
     pub fn get_state_open_fds(&self, state_id: u64) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
-        let extract = |state: &crate::state::RustSimState| {
-            state.file_system_ref().all_fds().iter().filter_map(|&fd| {
+        self.with_state(state_id, |state| {
+            Ok(state.file_system_ref().all_fds().iter().filter_map(|&fd| {
                 let info = state.file_system_ref().fd_info(fd)?;
                 Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
-            }).collect()
-        };
-
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(extract(state));
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(extract(&cb.state));
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            }).collect())
+        })
     }
 
     /// Get the content of a file descriptor for a state.
     pub fn get_state_fd_content(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(state.file_system_ref().fd_content(fd).to_vec());
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(cb.state.file_system_ref().fd_content(fd).to_vec());
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        self.with_state(state_id, |state| {
+            Ok(state.file_system_ref().fd_content(fd).to_vec())
+        })
     }
 
     /// Enable inspection for an event type on a state.
@@ -2464,66 +2291,44 @@ impl RustExplorationManager {
     pub fn enable_state_inspection(&mut self, state_id: u64, event_type: u8) -> PyResult<()> {
         let event = crate::state::InspectEvent::from_u8(event_type)
             .ok_or_else(|| PyValueError::new_err(format!("invalid event type: {}", event_type)))?;
-        if let Some(state) = self.find_state_mut(state_id) {
+        self.with_state_mut(state_id, |state| {
             state.inspection_mut().enable(event);
-            return Ok(());
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(())
+        })
     }
 
     /// Enable all inspections on a state.
     pub fn enable_all_inspections(&mut self, state_id: u64) -> PyResult<()> {
-        if let Some(state) = self.find_state_mut(state_id) {
+        self.with_state_mut(state_id, |state| {
             state.inspection_mut().enable_all();
-            return Ok(());
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            Ok(())
+        })
     }
 
     /// Get inspection event counts for a state.
     ///
     /// Returns list of (event_name, count) tuples for events with count > 0.
     pub fn get_state_inspection_counts(&self, state_id: u64) -> PyResult<Vec<(String, u64)>> {
-        let extract = |state: &crate::state::RustSimState| -> Vec<(String, u64)> {
-            state.inspection().event_counts().iter().enumerate()
+        self.with_state(state_id, |state| {
+            Ok(state.inspection().event_counts().iter().enumerate()
                 .filter(|&(_, &count)| count > 0)
                 .filter_map(|(i, &count)| {
                     let event = crate::state::InspectEvent::from_u8(i as u8)?;
                     Some((event.name().to_string(), count))
                 })
-                .collect()
-        };
-
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(extract(state));
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(extract(&cb.state));
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+                .collect())
+        })
     }
 
     /// Get inspection events for a state.
     ///
     /// Returns list of (event_type, event_name, addr, size, block_addr) tuples.
     pub fn get_state_inspection_events(&self, state_id: u64) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
-        let extract = |state: &crate::state::RustSimState| -> Vec<(u8, String, u64, u32, u64)> {
-            state.inspection().events().iter().map(|e| {
+        self.with_state(state_id, |state| {
+            Ok(state.inspection().events().iter().map(|e| {
                 (e.event as u8, e.event.name().to_string(), e.addr, e.size, e.block_addr)
-            }).collect()
-        };
-
-        if let Some(state) = self.find_state(state_id) {
-            return Ok(extract(state));
-        }
-        if let Some(ref cb) = self.pending_callback {
-            if cb.state.state_id() == state_id {
-                return Ok(extract(&cb.state));
-            }
-        }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+            }).collect())
+        })
     }
 
     /// Evaluate a stdin symbol by name using the state's solver.

@@ -1,6 +1,57 @@
 use super::*;
 
 impl RustExplorationManager {
+    /// Run a closure with an immutable borrow of the pending callback state.
+    /// Returns Err(PyRuntimeError) when no callback is pending.
+    #[inline]
+    pub(crate) fn with_pending<T, F>(&self, f: F) -> PyResult<T>
+    where
+        F: FnOnce(&PendingCallback) -> PyResult<T>,
+    {
+        let pending = self.pending_callback.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        f(pending)
+    }
+
+    /// Run a closure with a mutable borrow of the pending callback state.
+    /// Returns Err(PyRuntimeError) when no callback is pending.
+    #[inline]
+    pub(crate) fn with_pending_mut<T, F>(&mut self, f: F) -> PyResult<T>
+    where
+        F: FnOnce(&mut PendingCallback) -> PyResult<T>,
+    {
+        let pending = self.pending_callback.as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        f(pending)
+    }
+
+    /// Run a closure with an immutable borrow of a state by ID.
+    /// Looks up the pending callback first (matching `find_state` semantics),
+    /// then the stashes. Returns Err(PyValueError) when not found.
+    #[inline]
+    pub(crate) fn with_state<T, F>(&self, state_id: u64, f: F) -> PyResult<T>
+    where
+        F: FnOnce(&RustSimState) -> PyResult<T>,
+    {
+        let state = self.find_state(state_id)
+            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", state_id)))?;
+        f(state)
+    }
+
+    /// Run a closure with a mutable borrow of a state by ID.
+    /// Note: unlike `with_state`, this does NOT check the pending callback —
+    /// it follows the existing `find_state_mut` semantics (stashes only).
+    /// Returns Err(PyValueError) when not found.
+    #[inline]
+    pub(crate) fn with_state_mut<T, F>(&mut self, state_id: u64, f: F) -> PyResult<T>
+    where
+        F: FnOnce(&mut RustSimState) -> PyResult<T>,
+    {
+        let state = self.find_state_mut(state_id)
+            .ok_or_else(|| PyValueError::new_err(format!("state {} not found", state_id)))?;
+        f(state)
+    }
+
     /// Push a new state to the active stash, respecting max_active_states limit.
     /// If the limit is reached, the state is dropped (pruned) instead.
     /// Returns true if the state was added, false if dropped.
