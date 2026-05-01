@@ -14,34 +14,21 @@ use super::ir::{
 };
 
 /// Errors from VEX lifting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum LiftError {
     /// Invalid architecture.
+    #[error("invalid architecture: {0}")]
     InvalidArch(String),
     /// Failed to lift the given bytes.
+    #[error("lift failed at 0x{addr:x}: {reason}")]
     LiftFailed { addr: u64, reason: String },
     /// Invalid instruction.
+    #[error("invalid instruction at 0x{addr:x}")]
     InvalidInstruction { addr: u64 },
     /// Unsupported feature.
+    #[error("unsupported: {0}")]
     Unsupported(String),
 }
-
-impl std::fmt::Display for LiftError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LiftError::InvalidArch(arch) => write!(f, "invalid architecture: {}", arch),
-            LiftError::LiftFailed { addr, reason } => {
-                write!(f, "lift failed at 0x{:x}: {}", addr, reason)
-            }
-            LiftError::InvalidInstruction { addr } => {
-                write!(f, "invalid instruction at 0x{:x}", addr)
-            }
-            LiftError::Unsupported(msg) => write!(f, "unsupported: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for LiftError {}
 
 /// VEX lifter trait.
 ///

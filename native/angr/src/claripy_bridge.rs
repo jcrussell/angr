@@ -181,30 +181,21 @@ pub fn cache_stats() -> (usize, usize) {
 }
 
 /// Error type for claripy bridge operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum BridgeError {
     /// Unsupported claripy operation.
+    #[error("unsupported claripy op: {0}")]
     UnsupportedOp(String),
     /// Type mismatch.
+    #[error("type mismatch: {0}")]
     TypeMismatch(String),
     /// Python error.
+    #[error("python error: {0}")]
     PythonError(String),
     /// Invalid arguments.
+    #[error("invalid arguments: {0}")]
     InvalidArgs(String),
 }
-
-impl std::fmt::Display for BridgeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BridgeError::UnsupportedOp(op) => write!(f, "unsupported claripy op: {}", op),
-            BridgeError::TypeMismatch(msg) => write!(f, "type mismatch: {}", msg),
-            BridgeError::PythonError(msg) => write!(f, "python error: {}", msg),
-            BridgeError::InvalidArgs(msg) => write!(f, "invalid arguments: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for BridgeError {}
 
 impl From<PyErr> for BridgeError {
     fn from(err: PyErr) -> Self {

@@ -210,53 +210,36 @@ impl ExecutionStats {
 }
 
 /// Errors during callback-based VEX execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum CbExecutionError {
     /// Memory error from callback.
+    #[error("memory error: {0}")]
     Memory(String),
     /// Operation error.
-    Op(OpError),
+    #[error("operation error: {0}")]
+    Op(#[from] OpError),
     /// Invalid VEX IR.
+    #[error("invalid VEX IR: {0}")]
     InvalidIR(String),
     /// Unsupported feature.
+    #[error("unsupported: {0}")]
     Unsupported(String),
     /// Type mismatch.
+    #[error("type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: IRType, got: IRType },
     /// Unknown temporary variable.
+    #[error("unknown temporary t{0}")]
     UnknownTemp(u32),
     /// Python callback error.
+    #[error("callback error: {0}")]
     Callback(String),
     /// Block lifting error.
+    #[error("lift error: {0}")]
     LiftError(String),
     /// Needs Python fallback for special expressions (P7 fix)
+    #[error("need Python fallback: {0}")]
     NeedPythonFallback(String),
 }
-
-impl From<OpError> for CbExecutionError {
-    fn from(e: OpError) -> Self {
-        CbExecutionError::Op(e)
-    }
-}
-
-impl std::fmt::Display for CbExecutionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CbExecutionError::Memory(msg) => write!(f, "memory error: {}", msg),
-            CbExecutionError::Op(e) => write!(f, "operation error: {}", e),
-            CbExecutionError::InvalidIR(msg) => write!(f, "invalid VEX IR: {}", msg),
-            CbExecutionError::Unsupported(msg) => write!(f, "unsupported: {}", msg),
-            CbExecutionError::TypeMismatch { expected, got } => {
-                write!(f, "type mismatch: expected {:?}, got {:?}", expected, got)
-            }
-            CbExecutionError::UnknownTemp(tmp) => write!(f, "unknown temporary t{}", tmp),
-            CbExecutionError::Callback(msg) => write!(f, "callback error: {}", msg),
-            CbExecutionError::LiftError(msg) => write!(f, "lift error: {}", msg),
-            CbExecutionError::NeedPythonFallback(msg) => write!(f, "need Python fallback: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for CbExecutionError {}
 
 /// Result of concretizing a symbolic jump target.
 enum ConcretizedJump {

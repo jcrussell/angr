@@ -12,31 +12,16 @@ use super::ir::{
 use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
 
 /// Error type for IRSB deserialization.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeserializeError {
-    JsonError(serde_json::Error),
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
+    #[error("Missing field: {0}")]
     MissingField(String),
+    #[error("Invalid type: {0}")]
     InvalidType(String),
+    #[error("Invalid architecture: {0}")]
     InvalidArch(String),
-}
-
-impl std::fmt::Display for DeserializeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DeserializeError::JsonError(e) => write!(f, "JSON error: {}", e),
-            DeserializeError::MissingField(s) => write!(f, "Missing field: {}", s),
-            DeserializeError::InvalidType(s) => write!(f, "Invalid type: {}", s),
-            DeserializeError::InvalidArch(s) => write!(f, "Invalid architecture: {}", s),
-        }
-    }
-}
-
-impl std::error::Error for DeserializeError {}
-
-impl From<serde_json::Error> for DeserializeError {
-    fn from(e: serde_json::Error) -> Self {
-        DeserializeError::JsonError(e)
-    }
 }
 
 /// JSON representation of a pyvex IRSB.

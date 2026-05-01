@@ -41,50 +41,27 @@ pub enum ExecutionResult {
 }
 
 /// Errors during VEX execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ExecutionError {
     /// Memory error.
-    Memory(MemoryError),
+    #[error("memory error: {0}")]
+    Memory(#[from] MemoryError),
     /// Operation error.
-    Op(OpError),
+    #[error("operation error: {0}")]
+    Op(#[from] OpError),
     /// Invalid VEX IR.
+    #[error("invalid VEX IR: {0}")]
     InvalidIR(String),
     /// Unsupported feature.
+    #[error("unsupported: {0}")]
     Unsupported(String),
     /// Type mismatch.
+    #[error("type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: IRType, got: IRType },
     /// Unknown temporary variable.
+    #[error("unknown temporary t{0}")]
     UnknownTemp(u32),
 }
-
-impl From<MemoryError> for ExecutionError {
-    fn from(e: MemoryError) -> Self {
-        ExecutionError::Memory(e)
-    }
-}
-
-impl From<OpError> for ExecutionError {
-    fn from(e: OpError) -> Self {
-        ExecutionError::Op(e)
-    }
-}
-
-impl std::fmt::Display for ExecutionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ExecutionError::Memory(e) => write!(f, "memory error: {}", e),
-            ExecutionError::Op(e) => write!(f, "operation error: {}", e),
-            ExecutionError::InvalidIR(msg) => write!(f, "invalid VEX IR: {}", msg),
-            ExecutionError::Unsupported(msg) => write!(f, "unsupported: {}", msg),
-            ExecutionError::TypeMismatch { expected, got } => {
-                write!(f, "type mismatch: expected {:?}, got {:?}", expected, got)
-            }
-            ExecutionError::UnknownTemp(tmp) => write!(f, "unknown temporary t{}", tmp),
-        }
-    }
-}
-
-impl std::error::Error for ExecutionError {}
 
 /// Result of executing a single statement.
 enum StmtResult {

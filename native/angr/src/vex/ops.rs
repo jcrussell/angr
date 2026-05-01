@@ -1769,47 +1769,36 @@ impl VEXOps {
 }
 
 /// Errors from VEX operation execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum OpError {
     /// Operation is not a unary operation.
+    #[error("operation {0:?} is not unary")]
     NotUnary(IROp),
     /// Operation is not a binary operation.
+    #[error("operation {0:?} is not binary")]
     NotBinary(IROp),
     /// Operation is not a ternary operation.
+    #[error("operation {0:?} is not ternary")]
     NotTernary(IROp),
     /// Operation is not a quaternary operation.
+    #[error("operation {0:?} is not quaternary")]
     NotQuaternary(IROp),
     /// Type mismatch.
+    #[error("type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: IRType, got: IRType },
     /// Invalid float type.
+    #[error("invalid float type: {0:?}")]
     InvalidFloatType(IRType),
     /// Symbolic float operations not supported.
+    #[error("symbolic float operations not supported")]
     SymbolicFloatUnsupported,
     /// Unsupported vector operation.
+    #[error("unsupported vector operation: {0}")]
     UnsupportedVectorOp(String),
     /// Raw/unimplemented opcode.
+    #[error("raw/unimplemented opcode: {0}")]
     RawOpcode(u32),
 }
-
-impl std::fmt::Display for OpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OpError::NotUnary(op) => write!(f, "operation {:?} is not unary", op),
-            OpError::NotBinary(op) => write!(f, "operation {:?} is not binary", op),
-            OpError::NotTernary(op) => write!(f, "operation {:?} is not ternary", op),
-            OpError::NotQuaternary(op) => write!(f, "operation {:?} is not quaternary", op),
-            OpError::TypeMismatch { expected, got } => {
-                write!(f, "type mismatch: expected {:?}, got {:?}", expected, got)
-            }
-            OpError::InvalidFloatType(ty) => write!(f, "invalid float type: {:?}", ty),
-            OpError::SymbolicFloatUnsupported => write!(f, "symbolic float operations not supported"),
-            OpError::UnsupportedVectorOp(op) => write!(f, "unsupported vector operation: {}", op),
-            OpError::RawOpcode(code) => write!(f, "raw/unimplemented opcode: {}", code),
-        }
-    }
-}
-
-impl std::error::Error for OpError {}
 
 #[cfg(test)]
 mod tests {

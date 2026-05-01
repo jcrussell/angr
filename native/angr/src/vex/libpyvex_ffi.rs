@@ -760,30 +760,21 @@ static VEX_INIT: Once = Once::new();
 static mut VEX_INITIALIZED: bool = false;
 
 /// Error type for native lifting
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum NativeLiftError {
     /// VEX initialization failed
+    #[error("VEX initialization failed")]
     InitFailed,
     /// Lifting failed (invalid code, unsupported instruction, etc.)
+    #[error("lifting failed: {0}")]
     LiftFailed(String),
     /// Null pointer returned
+    #[error("null result from vex_lift")]
     NullResult,
     /// Invalid IR structure
+    #[error("invalid IR: {0}")]
     InvalidIR(String),
 }
-
-impl std::fmt::Display for NativeLiftError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NativeLiftError::InitFailed => write!(f, "VEX initialization failed"),
-            NativeLiftError::LiftFailed(s) => write!(f, "lifting failed: {}", s),
-            NativeLiftError::NullResult => write!(f, "null result from vex_lift"),
-            NativeLiftError::InvalidIR(s) => write!(f, "invalid IR: {}", s),
-        }
-    }
-}
-
-impl std::error::Error for NativeLiftError {}
 
 /// Initialize the VEX library (called automatically on first lift)
 pub fn init_vex() -> Result<(), NativeLiftError> {

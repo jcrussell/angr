@@ -39,55 +39,28 @@ pub const PAGE_SIZE: u64 = 4096;
 pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
 
 /// Errors from memory operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum MemoryError {
     /// Unmapped memory access.
+    #[error("unmapped memory at 0x{addr:x} (size {size})")]
     Unmapped { addr: u64, size: u64 },
     /// Unmapped page in a mapped region (can be fetched on-demand).
+    #[error("unmapped page at 0x{page_addr:x} in mapped region")]
     UnmappedPageInRegion { page_addr: u64 },
     /// Permission violation.
+    #[error("permission violation at 0x{addr:x}: required {required:?}, have {actual:?}")]
     Permission {
         addr: u64,
         required: Permission,
         actual: Permission,
     },
     /// Unresolvable symbolic address.
+    #[error("symbolic address: {description}")]
     SymbolicAddress { description: String },
     /// Out of bounds access.
+    #[error("out of bounds access at 0x{addr:x} (size {size})")]
     OutOfBounds { addr: u64, size: u64 },
 }
-
-impl std::fmt::Display for MemoryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MemoryError::Unmapped { addr, size } => {
-                write!(f, "unmapped memory at 0x{:x} (size {})", addr, size)
-            }
-            MemoryError::UnmappedPageInRegion { page_addr } => {
-                write!(f, "unmapped page at 0x{:x} in mapped region", page_addr)
-            }
-            MemoryError::Permission {
-                addr,
-                required,
-                actual,
-            } => {
-                write!(
-                    f,
-                    "permission violation at 0x{:x}: required {:?}, have {:?}",
-                    addr, required, actual
-                )
-            }
-            MemoryError::SymbolicAddress { description } => {
-                write!(f, "symbolic address: {}", description)
-            }
-            MemoryError::OutOfBounds { addr, size } => {
-                write!(f, "out of bounds access at 0x{:x} (size {})", addr, size)
-            }
-        }
-    }
-}
-
-impl std::error::Error for MemoryError {}
 
 /// Memory permissions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

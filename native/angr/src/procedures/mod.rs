@@ -51,45 +51,28 @@ use crate::memory::MemoryError;
 /// Error during native procedure execution.
 ///
 /// Errors trigger fallback to Python SimProcedure handling.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ProcedureError {
     /// Argument is symbolic, need Python for constraint handling.
+    #[error("symbolic argument: {0}")]
     SymbolicArgument(String),
     /// Memory operation failed.
+    #[error("memory error: {0}")]
     MemoryError(String),
     /// Procedure not implemented in Rust.
+    #[error("procedure not implemented")]
     NotImplemented,
     /// Max iteration limit reached (e.g., unbounded strlen).
+    #[error("max iterations reached: {0}")]
     MaxIterations(usize),
     /// Generic error with message.
+    #[error("{0}")]
     Other(String),
 }
 
 impl From<MemoryError> for ProcedureError {
     fn from(e: MemoryError) -> Self {
         ProcedureError::MemoryError(e.to_string())
-    }
-}
-
-impl std::fmt::Display for ProcedureError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProcedureError::SymbolicArgument(name) => {
-                write!(f, "symbolic argument: {}", name)
-            }
-            ProcedureError::MemoryError(msg) => {
-                write!(f, "memory error: {}", msg)
-            }
-            ProcedureError::NotImplemented => {
-                write!(f, "procedure not implemented")
-            }
-            ProcedureError::MaxIterations(n) => {
-                write!(f, "max iterations reached: {}", n)
-            }
-            ProcedureError::Other(msg) => {
-                write!(f, "{}", msg)
-            }
-        }
     }
 }
 
