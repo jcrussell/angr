@@ -408,6 +408,20 @@ impl VEXOps {
         Ok(product.extract_into(double_width - 1, width, ctx))
     }
 
+    /// Concatenate symbolic vector elements into a single BV, where
+    /// `elements[0]` is the low-order element and `elements[len-1]` is the
+    /// high-order element. Used by all vector ops with a symbolic fallback.
+    #[inline]
+    fn concat_le_elements(mut elements: Vec<RustBV>, ctx: &SymContext) -> RustBV {
+        let mut result = elements
+            .pop()
+            .expect("vec elements guaranteed non-empty by counted loop");
+        while let Some(elem) = elements.pop() {
+            result = result.concat_into(elem, ctx);
+        }
+        result
+    }
+
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit result.
     /// Low 32 bits = quotient, High 32 bits = remainder.
     fn divmod_64_to_32(
@@ -556,13 +570,7 @@ impl VEXOps {
             elements.push(res_elem);
         }
 
-        // Concatenate from high to low
-        let mut result = elements.pop().expect("vec_binop elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = result.concat_into(elem, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// Vector multiply keeping low half (PMULLD).
@@ -637,13 +645,7 @@ impl VEXOps {
             elements.push(res_elem);
         }
 
-        // Concatenate from high to low
-        let mut result = elements.pop().expect("vec_mul_lo elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = result.concat_into(elem, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     // =========================================================================
@@ -726,13 +728,7 @@ impl VEXOps {
             elements.push(extended);
         }
 
-        // Concatenate
-        let mut result = elements.pop().expect("vec_cmp elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = result.concat_into(elem, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// Vector interleave low halves.
@@ -781,14 +777,7 @@ impl VEXOps {
             elements.push(l_elem);
         }
 
-        // Concatenate from high to low
-        elements.reverse();
-        let mut result = elements.pop().expect("vec_interleave_lo elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = elem.concat_into(result, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// Vector interleave high halves.
@@ -837,14 +826,7 @@ impl VEXOps {
             elements.push(l_elem);
         }
 
-        // Concatenate from high to low
-        elements.reverse();
-        let mut result = elements.pop().expect("vec_interleave_hi elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = elem.concat_into(result, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     // =========================================================================
@@ -901,12 +883,7 @@ impl VEXOps {
             elements.push(shifted);
         }
 
-        let mut result = elements.pop().expect("vec_shl_n elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = result.concat_into(elem, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// Vector shift right logical by immediate.
@@ -958,12 +935,7 @@ impl VEXOps {
             elements.push(shifted);
         }
 
-        let mut result = elements.pop().expect("vec_shr_n elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = result.concat_into(elem, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// Vector shift right arithmetic by immediate.
@@ -1032,12 +1004,7 @@ impl VEXOps {
             elements.push(shifted);
         }
 
-        let mut result = elements.pop().expect("vec_sar_n elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = result.concat_into(elem, ctx);
-        }
-
-        Ok(result)
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     // =========================================================================
