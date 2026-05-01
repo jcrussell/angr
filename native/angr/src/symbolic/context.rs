@@ -141,9 +141,14 @@ pub struct SymContext {
     /// Local Z3 cache length at each push level (for rollback truncation).
     #[cfg(feature = "vex-engine-z3")]
     push_local_cache_lengths: Mutex<Vec<usize>>,
+    /// Local assumed_constraints length at each push level (for rollback truncation).
+    push_assumed_local_lengths: Mutex<Vec<usize>>,
     /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
-    /// Each entry is (constraint, is_assumed_true) - constraint == 1 if true, == 0 if false.
-    assumed_constraints: Mutex<Vec<(RustBV, bool)>>,
+    /// Each entry is (constraint, is_assumed_true). Split into Arc-shared frozen
+    /// prefix (O(1) clone on fork) and a local Vec for additions after fork —
+    /// mirrors the z3_assertions_shared/local layout.
+    assumed_constraints_shared: Arc<Vec<(RustBV, bool)>>,
+    assumed_constraints_local: Mutex<Vec<(RustBV, bool)>>,
 
     /// Shared (frozen) Z3 Bool assertions from parent — O(1) clone via Arc.
     #[cfg(feature = "vex-engine-z3")]
@@ -183,7 +188,9 @@ impl SymContext {
             symbol_table: RwLock::new(HashMap::new()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
-            assumed_constraints: Mutex::new(Vec::new()),
+            push_assumed_local_lengths: Mutex::new(Vec::new()),
+            assumed_constraints_shared: Arc::new(Vec::new()),
+            assumed_constraints_local: Mutex::new(Vec::new()),
         }
     }
 
@@ -221,9 +228,11 @@ impl SymContext {
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
             push_local_cache_lengths: Mutex::new(Vec::new()),
+            push_assumed_local_lengths: Mutex::new(Vec::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
-            assumed_constraints: Mutex::new(Vec::new()),
+            assumed_constraints_shared: Arc::new(Vec::new()),
+            assumed_constraints_local: Mutex::new(Vec::new()),
             z3_assertions_shared: Arc::new(Vec::new()),
             z3_assertions_local: Mutex::new(Vec::new()),
             solver: Mutex::new(Some(solver)),
@@ -307,7 +316,7 @@ impl SymContext {
     /// Used by the fast path that bypasses assume_true.
     #[cfg(feature = "vex-engine-z3")]
     pub fn assumed_constraints_push(&self, bv: RustBV, is_true: bool) {
-        self.assumed_constraints.lock().push((bv, is_true));
+        self.assumed_constraints_local.lock().push((bv, is_true));
     }
 
     /// Export all Z3 assertion pointers from the assertion cache.
@@ -422,7 +431,7 @@ impl SymContext {
     pub fn assume_true(&self, cond: &RustBV) {
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python
-        self.assumed_constraints.lock().push((cond.clone(), true));
+        self.assumed_constraints_local.lock().push((cond.clone(), true));
         // Fast path: concrete true is a tautology — skip Z3 entirely
         if let Some(v) = cond.as_u128() {
             if v != 0 {
@@ -445,7 +454,7 @@ impl SymContext {
     pub fn assume_false(&self, cond: &RustBV) {
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python
-        self.assumed_constraints.lock().push((cond.clone(), false));
+        self.assumed_constraints_local.lock().push((cond.clone(), false));
         // Fast path: concrete false (== 0) means not(False) = True — skip Z3
         if let Some(v) = cond.as_u128() {
             if v == 0 {
@@ -1183,6 +1192,8 @@ impl SymContext {
         self.push_constraint_counts.lock().push(current_count);
         let local_len = self.z3_assertions_local.lock().len();
         self.push_local_cache_lengths.lock().push(local_len);
+        let assumed_local_len = self.assumed_constraints_local.lock().len();
+        self.push_assumed_local_lengths.lock().push(assumed_local_len);
         self.push_level.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -1234,6 +1245,11 @@ impl SymContext {
         // Truncate local Z3 cache to pre-transaction length
         if let Some(prev_len) = self.push_local_cache_lengths.lock().pop() {
             self.z3_assertions_local.lock().truncate(prev_len);
+        }
+
+        // Truncate local assumed_constraints to pre-transaction length
+        if let Some(prev_len) = self.push_assumed_local_lengths.lock().pop() {
+            self.assumed_constraints_local.lock().truncate(prev_len);
         }
 
         self.push_level.fetch_sub(1, Ordering::SeqCst);
@@ -1474,12 +1490,16 @@ impl SymContext {
     /// ASTs for Python constraint sync. Each constraint is a 1-bit RustBV that was
     /// either assumed true or false during symbolic execution.
     pub fn get_assumed_constraints(&self) -> Vec<(RustBV, bool)> {
-        self.assumed_constraints.lock().clone()
+        let local = self.assumed_constraints_local.lock();
+        let mut out = Vec::with_capacity(self.assumed_constraints_shared.len() + local.len());
+        out.extend_from_slice(&self.assumed_constraints_shared);
+        out.extend_from_slice(&local);
+        out
     }
 
     /// Get the number of assumed constraints.
     pub fn assumed_constraint_count(&self) -> usize {
-        self.assumed_constraints.lock().len()
+        self.assumed_constraints_shared.len() + self.assumed_constraints_local.lock().len()
     }
 
     // =========================================================================
@@ -1494,11 +1514,7 @@ impl SymContext {
     /// without ever querying the solver.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
-        // Clone assumed constraints for the fork.
-        // The actual Z3 solver is created lazily on first access.
-        let cloned_assumed = self.assumed_constraints.lock().clone();
-
-        // Freeze local assertions into the shared prefix (Arc).
+        // Freeze local Z3 assertions into the shared prefix (Arc).
         // If local is empty, this is O(1) — just Arc::clone.
         // If local is non-empty, merge shared + local into a new Arc.
         let local = self.z3_assertions_local.lock();
@@ -1512,14 +1528,29 @@ impl SymContext {
         };
         drop(local);
 
+        // Same freeze for assumed_constraints (Python export tracking).
+        let assumed_local = self.assumed_constraints_local.lock();
+        let frozen_assumed = if assumed_local.is_empty() {
+            Arc::clone(&self.assumed_constraints_shared)
+        } else {
+            let mut merged = Vec::with_capacity(self.assumed_constraints_shared.len() + assumed_local.len());
+            merged.extend_from_slice(&self.assumed_constraints_shared);
+            merged.extend_from_slice(&assumed_local);
+            Arc::new(merged)
+        };
+        let assumed_total_len = frozen_assumed.len();
+        drop(assumed_local);
+
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
-            constraint_count: AtomicUsize::new(cloned_assumed.len()),
+            constraint_count: AtomicUsize::new(assumed_total_len),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
             push_local_cache_lengths: Mutex::new(Vec::new()),
-            assumed_constraints: Mutex::new(cloned_assumed),
+            push_assumed_local_lengths: Mutex::new(Vec::new()),
+            assumed_constraints_shared: frozen_assumed,
+            assumed_constraints_local: Mutex::new(Vec::new()),
             z3_assertions_shared: frozen_shared,
             z3_assertions_local: Mutex::new(Vec::new()),
             solver: Mutex::new(None),
@@ -1532,13 +1563,26 @@ impl SymContext {
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn fork(&self) -> Self {
+        let assumed_local = self.assumed_constraints_local.lock();
+        let frozen_assumed = if assumed_local.is_empty() {
+            Arc::clone(&self.assumed_constraints_shared)
+        } else {
+            let mut merged = Vec::with_capacity(self.assumed_constraints_shared.len() + assumed_local.len());
+            merged.extend_from_slice(&self.assumed_constraints_shared);
+            merged.extend_from_slice(&assumed_local);
+            Arc::new(merged)
+        };
+        drop(assumed_local);
+
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(Vec::new()),
-            assumed_constraints: Mutex::new(self.assumed_constraints.lock().clone()),
+            push_assumed_local_lengths: Mutex::new(Vec::new()),
+            assumed_constraints_shared: frozen_assumed,
+            assumed_constraints_local: Mutex::new(Vec::new()),
         }
     }
 
@@ -1637,11 +1681,10 @@ impl SymContext {
             }
 
             // Also merge assumed_constraints for Python export
-            let assumed = ctx.assumed_constraints.lock();
-            merged
-                .assumed_constraints
-                .lock()
-                .extend(assumed.iter().cloned());
+            let assumed_local = ctx.assumed_constraints_local.lock();
+            let mut merged_assumed_local = merged.assumed_constraints_local.lock();
+            merged_assumed_local.extend(ctx.assumed_constraints_shared.iter().cloned());
+            merged_assumed_local.extend(assumed_local.iter().cloned());
         }
 
         // Assert that at least one merge condition is true
@@ -1678,11 +1721,13 @@ impl SymContext {
         }
         merged.next_id.store(max_id, Ordering::SeqCst);
 
-        // Merge assumed constraints
-        let mut merged_assumed = merged.assumed_constraints.lock();
-        merged_assumed.extend(self.assumed_constraints.lock().iter().cloned());
+        // Merge assumed constraints (shared + local from each context).
+        let mut merged_assumed = merged.assumed_constraints_local.lock();
+        merged_assumed.extend(self.assumed_constraints_shared.iter().cloned());
+        merged_assumed.extend(self.assumed_constraints_local.lock().iter().cloned());
         for other in others {
-            merged_assumed.extend(other.assumed_constraints.lock().iter().cloned());
+            merged_assumed.extend(other.assumed_constraints_shared.iter().cloned());
+            merged_assumed.extend(other.assumed_constraints_local.lock().iter().cloned());
         }
 
         merged
