@@ -28,44 +28,44 @@ impl VEXOps {
         match op {
             IROp::Not(ty) => {
                 debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.not(ctx))
+                Ok(arg.not_into(ctx))
             }
 
             IROp::Neg(ty) => {
                 debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.neg(ctx))
+                Ok(arg.neg_into(ctx))
             }
 
             IROp::Clz(ty) => {
                 debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.clz(ctx))
+                Ok(arg.clz_into(ctx))
             }
 
             IROp::Ctz(ty) => {
                 debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.ctz(ctx))
+                Ok(arg.ctz_into(ctx))
             }
 
             IROp::PopCount(ty) => {
                 debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.popcount(ctx))
+                Ok(arg.popcount_into(ctx))
             }
 
             // Sign/Zero extension
             IROp::SignExtend { from, to } => {
                 debug_assert_eq!(arg.width(), from.bits());
-                Ok(arg.sign_extend(to.bits(), ctx))
+                Ok(arg.sign_extend_into(to.bits(), ctx))
             }
 
             IROp::ZeroExtend { from, to } => {
                 debug_assert_eq!(arg.width(), from.bits());
-                Ok(arg.zero_extend(to.bits(), ctx))
+                Ok(arg.zero_extend_into(to.bits(), ctx))
             }
 
             // Truncation
             IROp::Truncate { from, to } => {
                 debug_assert_eq!(arg.width(), from.bits());
-                Ok(arg.truncate(to.bits(), ctx))
+                Ok(arg.truncate_into(to.bits(), ctx))
             }
 
             // Extraction (unary form - low_bit is encoded in opcode)
@@ -73,7 +73,7 @@ impl VEXOps {
                 debug_assert_eq!(arg.width(), from.bits());
                 let hi = low_bit as u32 + to.bits() - 1;
                 let lo = low_bit as u32;
-                Ok(arg.extract(hi, lo, ctx))
+                Ok(arg.extract_into(hi, lo, ctx))
             }
 
             // Float operations
@@ -104,7 +104,7 @@ impl VEXOps {
             // Vector not
             IROp::VNot(ty) => {
                 debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.not(ctx))
+                Ok(arg.not_into(ctx))
             }
 
             // Reinterpret (just changes type, not bits)
@@ -113,9 +113,9 @@ impl VEXOps {
                 if from.bits() == to.bits() {
                     Ok(arg)
                 } else if to.bits() > from.bits() {
-                    Ok(arg.zero_extend(to.bits(), ctx))
+                    Ok(arg.zero_extend_into(to.bits(), ctx))
                 } else {
-                    Ok(arg.truncate(to.bits(), ctx))
+                    Ok(arg.truncate_into(to.bits(), ctx))
                 }
             }
 
@@ -143,43 +143,43 @@ impl VEXOps {
             IROp::Add(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.add(&right, ctx))
+                Ok(left.add_into(right, ctx))
             }
 
             IROp::Sub(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.sub(&right, ctx))
+                Ok(left.sub_into(right, ctx))
             }
 
             IROp::Mul(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.mul(&right, ctx))
+                Ok(left.mul_into(right, ctx))
             }
 
             IROp::DivU(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.udiv(&right, ctx))
+                Ok(left.udiv_into(right, ctx))
             }
 
             IROp::DivS(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.sdiv(&right, ctx))
+                Ok(left.sdiv_into(right, ctx))
             }
 
             IROp::ModU(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.urem(&right, ctx))
+                Ok(left.urem_into(right, ctx))
             }
 
             IROp::ModS(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.srem(&right, ctx))
+                Ok(left.srem_into(right, ctx))
             }
 
             // Widening multiply
@@ -201,75 +201,75 @@ impl VEXOps {
             IROp::And(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.and(&right, ctx))
+                Ok(left.and_into(right, ctx))
             }
 
             IROp::Or(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.or(&right, ctx))
+                Ok(left.or_into(right, ctx))
             }
 
             IROp::Xor(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.xor(&right, ctx))
+                Ok(left.xor_into(right, ctx))
             }
 
             // Shifts — normalize shift amount width to match operand
             IROp::Shl(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
-                Ok(left.shl(&amt, ctx))
+                Ok(left.shl_into(amt, ctx))
             }
 
             IROp::Shr(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
-                Ok(left.lshr(&amt, ctx))
+                Ok(left.lshr_into(amt, ctx))
             }
 
             IROp::Sar(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
-                Ok(left.ashr(&amt, ctx))
+                Ok(left.ashr_into(amt, ctx))
             }
 
             // Comparisons
             IROp::CmpEQ(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.eq(&right, ctx))
+                Ok(left.eq_into(right, ctx))
             }
 
             IROp::CmpNE(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.ne(&right, ctx))
+                Ok(left.ne_into(right, ctx))
             }
 
             IROp::CmpLT(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.slt(&right, ctx))
+                Ok(left.slt_into(right, ctx))
             }
 
             IROp::CmpLE(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.sle(&right, ctx))
+                Ok(left.sle_into(right, ctx))
             }
 
             IROp::CmpLTU(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.ult(&right, ctx))
+                Ok(left.ult_into(right, ctx))
             }
 
             IROp::CmpLEU(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.ule(&right, ctx))
+                Ok(left.ule_into(right, ctx))
             }
 
             // Float arithmetic
@@ -297,24 +297,24 @@ impl VEXOps {
             IROp::VAnd(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.and(&right, ctx))
+                Ok(left.and_into(right, ctx))
             }
 
             IROp::VOr(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.or(&right, ctx))
+                Ok(left.or_into(right, ctx))
             }
 
             IROp::VXor(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.xor(&right, ctx))
+                Ok(left.xor_into(right, ctx))
             }
 
             // Concatenate
             IROp::Concat { ty } => {
-                let result = left.concat(&right, ctx);
+                let result = left.concat_into(right, ctx);
                 debug_assert_eq!(result.width(), ty.bits());
                 Ok(result)
             }
@@ -413,7 +413,7 @@ impl VEXOps {
                 debug_assert_eq!(arg1.width(), from.bits());
                 let hi = low_bit as u32 + to.bits() - 1;
                 let lo = low_bit as u32;
-                Ok(arg1.extract(hi, lo, ctx))
+                Ok(arg1.extract_into(hi, lo, ctx))
             }
             _ => Err(OpError::NotTernary(op)),
         }
@@ -438,17 +438,17 @@ impl VEXOps {
         // Extend both operands
         let (left_ext, right_ext) = if signed {
             (
-                left.sign_extend(out_width, ctx),
-                right.sign_extend(out_width, ctx),
+                left.sign_extend_into(out_width, ctx),
+                right.sign_extend_into(out_width, ctx),
             )
         } else {
             (
-                left.zero_extend(out_width, ctx),
-                right.zero_extend(out_width, ctx),
+                left.zero_extend_into(out_width, ctx),
+                right.zero_extend_into(out_width, ctx),
             )
         };
 
-        Ok(left_ext.mul(&right_ext, ctx))
+        Ok(left_ext.mul_into(right_ext, ctx))
     }
 
     /// High half of multiplication.
@@ -466,20 +466,20 @@ impl VEXOps {
         // Extend and multiply
         let (left_ext, right_ext) = if signed {
             (
-                left.sign_extend(double_width, ctx),
-                right.sign_extend(double_width, ctx),
+                left.sign_extend_into(double_width, ctx),
+                right.sign_extend_into(double_width, ctx),
             )
         } else {
             (
-                left.zero_extend(double_width, ctx),
-                right.zero_extend(double_width, ctx),
+                left.zero_extend_into(double_width, ctx),
+                right.zero_extend_into(double_width, ctx),
             )
         };
 
-        let product = left_ext.mul(&right_ext, ctx);
+        let product = left_ext.mul_into(right_ext, ctx);
 
         // Extract high half
-        Ok(product.extract(double_width - 1, width, ctx))
+        Ok(product.extract_into(double_width - 1, width, ctx))
     }
 
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit result.
@@ -621,9 +621,9 @@ impl VEXOps {
             let r_elem = right.extract(hi, lo, ctx);
 
             let res_elem = match op {
-                "add" => l_elem.add(&r_elem, ctx),
-                "sub" => l_elem.sub(&r_elem, ctx),
-                "mul" => l_elem.mul(&r_elem, ctx),
+                "add" => l_elem.add_into(r_elem, ctx),
+                "sub" => l_elem.sub_into(r_elem, ctx),
+                "mul" => l_elem.mul_into(r_elem, ctx),
                 _ => return Err(OpError::UnsupportedVectorOp(op.to_string())),
             };
 
@@ -633,7 +633,7 @@ impl VEXOps {
         // Concatenate from high to low
         let mut result = elements.pop().expect("vec_binop elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = result.concat(&elem, ctx);
+            result = result.concat_into(elem, ctx);
         }
 
         Ok(result)
@@ -707,14 +707,14 @@ impl VEXOps {
             let r_elem = right.extract(hi, lo, ctx);
 
             // For symbolic, just do regular multiply (low bits are the same for signed/unsigned)
-            let res_elem = l_elem.mul(&r_elem, ctx);
+            let res_elem = l_elem.mul_into(r_elem, ctx);
             elements.push(res_elem);
         }
 
         // Concatenate from high to low
         let mut result = elements.pop().expect("vec_mul_lo elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = result.concat(&elem, ctx);
+            result = result.concat_into(elem, ctx);
         }
 
         Ok(result)
@@ -790,20 +790,20 @@ impl VEXOps {
             let r_elem = right.extract(hi, lo, ctx);
 
             let cmp_result = match op {
-                "eq" => l_elem.eq(&r_elem, ctx),
-                "gt" => l_elem.sgt(&r_elem, ctx),
+                "eq" => l_elem.eq_into(r_elem, ctx),
+                "gt" => l_elem.sgt_into(r_elem, ctx),
                 _ => return Err(OpError::UnsupportedVectorOp(op.to_string())),
             };
 
             // Extend the 1-bit result to full element width (all 1s or all 0s)
-            let extended = cmp_result.sign_extend(elem_width, ctx);
+            let extended = cmp_result.sign_extend_into(elem_width, ctx);
             elements.push(extended);
         }
 
         // Concatenate
         let mut result = elements.pop().expect("vec_cmp elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = result.concat(&elem, ctx);
+            result = result.concat_into(elem, ctx);
         }
 
         Ok(result)
@@ -859,7 +859,7 @@ impl VEXOps {
         elements.reverse();
         let mut result = elements.pop().expect("vec_interleave_lo elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = elem.concat(&result, ctx);
+            result = elem.concat_into(result, ctx);
         }
 
         Ok(result)
@@ -915,7 +915,7 @@ impl VEXOps {
         elements.reverse();
         let mut result = elements.pop().expect("vec_interleave_hi elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = elem.concat(&result, ctx);
+            result = elem.concat_into(result, ctx);
         }
 
         Ok(result)
@@ -971,13 +971,13 @@ impl VEXOps {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.shl(&shift_bv, ctx);
+            let shifted = elem_val.shl_into(shift_bv.clone(), ctx);
             elements.push(shifted);
         }
 
         let mut result = elements.pop().expect("vec_shl_n elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = result.concat(&elem, ctx);
+            result = result.concat_into(elem, ctx);
         }
 
         Ok(result)
@@ -1028,13 +1028,13 @@ impl VEXOps {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.lshr(&shift_bv, ctx);
+            let shifted = elem_val.lshr_into(shift_bv.clone(), ctx);
             elements.push(shifted);
         }
 
         let mut result = elements.pop().expect("vec_shr_n elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = result.concat(&elem, ctx);
+            result = result.concat_into(elem, ctx);
         }
 
         Ok(result)
@@ -1102,13 +1102,13 @@ impl VEXOps {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.ashr(&shift_bv, ctx);
+            let shifted = elem_val.ashr_into(shift_bv.clone(), ctx);
             elements.push(shifted);
         }
 
         let mut result = elements.pop().expect("vec_sar_n elements guaranteed non-empty by counted loop");
         while let Some(elem) = elements.pop() {
-            result = result.concat(&elem, ctx);
+            result = result.concat_into(elem, ctx);
         }
 
         Ok(result)
@@ -1131,7 +1131,7 @@ impl VEXOps {
         };
 
         let mask = RustBV::concrete(1u128 << sign_bit, arg.width());
-        Ok(arg.xor(&mask, ctx))
+        Ok(arg.xor_into(mask, ctx))
     }
 
     fn float_abs(
@@ -1146,7 +1146,7 @@ impl VEXOps {
             _ => return Err(OpError::InvalidFloatType(ty)),
         };
 
-        Ok(arg.and(&mask, ctx))
+        Ok(arg.and_into(mask, ctx))
     }
 
     fn float_sqrt(

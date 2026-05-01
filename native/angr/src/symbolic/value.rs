@@ -507,64 +507,101 @@ impl RustBV {
 
     /// Add two bitvectors.
     #[inline]
-    pub fn add(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn add(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().add_into(other.clone(), ctx)
+    }
+
+    /// Add two bitvectors, consuming both arguments.
+    ///
+    /// Avoids `self.clone()`/`other.clone()` for the Expression branch and
+    /// identity simplifications. Hot-path callers (e.g. `VEXOps::binop`) that
+    /// already own the operands should prefer this.
+    #[inline]
+    pub fn add_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), self.width()),
             // x + 0 → x
-            (None, Some(0)) => self.clone(),
+            (None, Some(0)) => self,
             // 0 + x → x
-            (Some(0), None) => other.clone(),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Add,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            (Some(0), None) => other,
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Add,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Subtract two bitvectors.
     #[inline]
-    pub fn sub(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn sub(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().sub_into(other.clone(), ctx)
+    }
+
+    /// Subtract two bitvectors, consuming both arguments.
+    #[inline]
+    pub fn sub_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), self.width()),
             // x - 0 → x
-            (None, Some(0)) => self.clone(),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Sub,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            (None, Some(0)) => self,
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Sub,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Multiply two bitvectors.
     #[inline]
-    pub fn mul(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn mul(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().mul_into(other.clone(), ctx)
+    }
+
+    /// Multiply two bitvectors, consuming both arguments.
+    #[inline]
+    pub fn mul_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), self.width()),
             // x * 0 → 0
             (_, Some(0)) | (Some(0), _) => Self::zero(self.width()),
             // x * 1 → x
-            (None, Some(1)) => self.clone(),
+            (None, Some(1)) => self,
             // 1 * x → x
-            (Some(1), None) => other.clone(),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Mul,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            (Some(1), None) => other,
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Mul,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Unsigned division.
     #[inline]
-    pub fn udiv(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn udiv(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().udiv_into(other.clone(), ctx)
+    }
+
+    /// Unsigned division, consuming both arguments.
+    #[inline]
+    pub fn udiv_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -574,18 +611,27 @@ impl RustBV {
                     Self::concrete(a / b, self.width())
                 }
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::UDiv,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::UDiv,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Signed division.
     #[inline]
-    pub fn sdiv(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn sdiv(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().sdiv_into(other.clone(), ctx)
+    }
+
+    /// Signed division, consuming both arguments.
+    #[inline]
+    pub fn sdiv_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -597,74 +643,102 @@ impl RustBV {
                     Self::concrete((a_signed / b_signed) as u128, self.width())
                 }
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::SDiv,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::SDiv,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Unsigned remainder.
     #[inline]
-    pub fn urem(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn urem(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().urem_into(other.clone(), ctx)
+    }
+
+    /// Unsigned remainder, consuming both arguments.
+    #[inline]
+    pub fn urem_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
                 if b == 0 {
-                    self.clone()
+                    self
                 } else {
                     Self::concrete(a % b, self.width())
                 }
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::URem,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::URem,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Signed remainder.
     #[inline]
-    pub fn srem(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn srem(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().srem_into(other.clone(), ctx)
+    }
+
+    /// Signed remainder, consuming both arguments.
+    #[inline]
+    pub fn srem_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
                 if b == 0 {
-                    self.clone()
+                    self
                 } else {
                     let a_signed = sign_extend(a, self.width());
                     let b_signed = sign_extend(b, self.width());
                     Self::concrete((a_signed % b_signed) as u128, self.width())
                 }
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::SRem,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::SRem,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Negate (two's complement).
     #[inline]
-    pub fn neg(&self, _ctx: &SymContext) -> Self {
+    pub fn neg(&self, ctx: &SymContext) -> Self {
+        self.clone().neg_into(ctx)
+    }
+
+    /// Negate (two's complement), consuming the argument.
+    #[inline]
+    pub fn neg_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
             None => {
                 // neg(neg(x)) → x
-                if let RustBV::Expression { op: BVOp::Neg, operands, .. } = self {
+                if let RustBV::Expression { op: BVOp::Neg, operands, .. } = &self {
                     return (*operands[0]).clone();
                 }
+                let width = self.width();
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
-                    width: self.width(),
+                    width,
                     op: BVOp::Neg,
-                    operands: vec![Arc::new(self.clone())],
+                    operands: vec![Arc::new(self)],
                 }
             }
         }
@@ -676,7 +750,13 @@ impl RustBV {
 
     /// Bitwise AND.
     #[inline]
-    pub fn and(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn and(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().and_into(other.clone(), ctx)
+    }
+
+    /// Bitwise AND, consuming both arguments.
+    #[inline]
+    pub fn and_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         let all_ones = Self::all_ones_mask(self.width());
         match (self.as_u128(), other.as_u128()) {
@@ -684,72 +764,100 @@ impl RustBV {
             // x & 0 → 0
             (_, Some(0)) | (Some(0), _) => Self::zero(self.width()),
             // x & all_ones → x
-            (None, Some(v)) if v == all_ones => self.clone(),
-            (Some(v), None) if v == all_ones => other.clone(),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::And,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            (None, Some(v)) if v == all_ones => self,
+            (Some(v), None) if v == all_ones => other,
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::And,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Bitwise OR.
     #[inline]
-    pub fn or(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn or(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().or_into(other.clone(), ctx)
+    }
+
+    /// Bitwise OR, consuming both arguments.
+    #[inline]
+    pub fn or_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         let all_ones = Self::all_ones_mask(self.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a | b, self.width()),
             // x | 0 → x
-            (None, Some(0)) => self.clone(),
-            (Some(0), None) => other.clone(),
+            (None, Some(0)) => self,
+            (Some(0), None) => other,
             // x | all_ones → all_ones
             (_, Some(v)) if v == all_ones => Self::ones(self.width()),
             (Some(v), _) if v == all_ones => Self::ones(self.width()),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Or,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Or,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Bitwise XOR.
     #[inline]
-    pub fn xor(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn xor(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().xor_into(other.clone(), ctx)
+    }
+
+    /// Bitwise XOR, consuming both arguments.
+    #[inline]
+    pub fn xor_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(a ^ b, self.width()),
             // x ^ 0 → x
-            (None, Some(0)) => self.clone(),
-            (Some(0), None) => other.clone(),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Xor,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
-            },
+            (None, Some(0)) => self,
+            (Some(0), None) => other,
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Xor,
+                    operands: vec![Arc::new(self), Arc::new(other)],
+                }
+            }
         }
     }
 
     /// Bitwise NOT.
     #[inline]
-    pub fn not(&self, _ctx: &SymContext) -> Self {
+    pub fn not(&self, ctx: &SymContext) -> Self {
+        self.clone().not_into(ctx)
+    }
+
+    /// Bitwise NOT, consuming the argument.
+    #[inline]
+    pub fn not_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(!v, self.width()),
             None => {
                 // not(not(x)) → x
-                if let RustBV::Expression { op: BVOp::Not, operands, .. } = self {
+                if let RustBV::Expression { op: BVOp::Not, operands, .. } = &self {
                     return (*operands[0]).clone();
                 }
+                let width = self.width();
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
-                    width: self.width(),
+                    width,
                     op: BVOp::Not,
-                    operands: vec![Arc::new(self.clone())],
+                    operands: vec![Arc::new(self)],
                 }
             }
         }
@@ -757,11 +865,17 @@ impl RustBV {
 
     /// Byte-reverse a bitvector (endianness swap).
     #[inline]
-    pub fn reverse(&self, _ctx: &SymContext) -> Self {
+    pub fn reverse(&self, ctx: &SymContext) -> Self {
+        self.clone().reverse_into(ctx)
+    }
+
+    /// Byte-reverse a bitvector, consuming the argument.
+    #[inline]
+    pub fn reverse_into(self, _ctx: &SymContext) -> Self {
         let w = self.width();
         debug_assert!(w % 8 == 0, "reverse requires byte-aligned width");
         if w <= 8 {
-            return self.clone(); // Single byte, no-op
+            return self; // Single byte, no-op
         }
         match self.as_u128() {
             Some(v) => {
@@ -775,14 +889,14 @@ impl RustBV {
             }
             None => {
                 // reverse(reverse(x)) → x
-                if let RustBV::Expression { op: BVOp::Reverse, operands, .. } = self {
+                if let RustBV::Expression { op: BVOp::Reverse, operands, .. } = &self {
                     return (*operands[0]).clone();
                 }
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width: w,
                     op: BVOp::Reverse,
-                    operands: vec![Arc::new(self.clone())],
+                    operands: vec![Arc::new(self)],
                 }
             }
         }
@@ -794,7 +908,13 @@ impl RustBV {
 
     /// Logical shift left.
     #[inline]
-    pub fn shl(&self, amount: &Self, _ctx: &SymContext) -> Self {
+    pub fn shl(&self, amount: &Self, ctx: &SymContext) -> Self {
+        self.clone().shl_into(amount.clone(), ctx)
+    }
+
+    /// Logical shift left, consuming both arguments.
+    #[inline]
+    pub fn shl_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -802,21 +922,30 @@ impl RustBV {
                 Self::concrete(v.wrapping_shl(amt), self.width())
             }
             // x << 0 → x
-            (None, Some(0)) => self.clone(),
+            (None, Some(0)) => self,
             // 0 << x → 0
             (Some(0), None) => Self::zero(self.width()),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Shl,
-                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Shl,
+                    operands: vec![Arc::new(self), Arc::new(amount)],
+                }
+            }
         }
     }
 
     /// Logical shift right.
     #[inline]
-    pub fn lshr(&self, amount: &Self, _ctx: &SymContext) -> Self {
+    pub fn lshr(&self, amount: &Self, ctx: &SymContext) -> Self {
+        self.clone().lshr_into(amount.clone(), ctx)
+    }
+
+    /// Logical shift right, consuming both arguments.
+    #[inline]
+    pub fn lshr_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -824,21 +953,30 @@ impl RustBV {
                 Self::concrete(v.wrapping_shr(amt), self.width())
             }
             // x >> 0 → x
-            (None, Some(0)) => self.clone(),
+            (None, Some(0)) => self,
             // 0 >> x → 0
             (Some(0), None) => Self::zero(self.width()),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Lshr,
-                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Lshr,
+                    operands: vec![Arc::new(self), Arc::new(amount)],
+                }
+            }
         }
     }
 
     /// Arithmetic shift right (sign-extending).
     #[inline]
-    pub fn ashr(&self, amount: &Self, _ctx: &SymContext) -> Self {
+    pub fn ashr(&self, amount: &Self, ctx: &SymContext) -> Self {
+        self.clone().ashr_into(amount.clone(), ctx)
+    }
+
+    /// Arithmetic shift right, consuming both arguments.
+    #[inline]
+    pub fn ashr_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -847,19 +985,28 @@ impl RustBV {
                 Self::concrete((signed >> amt) as u128, self.width())
             }
             // x >>> 0 → x
-            (None, Some(0)) => self.clone(),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Ashr,
-                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
-            },
+            (None, Some(0)) => self,
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Ashr,
+                    operands: vec![Arc::new(self), Arc::new(amount)],
+                }
+            }
         }
     }
 
     /// Rotate left.
     #[inline]
-    pub fn rotl(&self, amount: &Self, _ctx: &SymContext) -> Self {
+    pub fn rotl(&self, amount: &Self, ctx: &SymContext) -> Self {
+        self.clone().rotl_into(amount.clone(), ctx)
+    }
+
+    /// Rotate left, consuming both arguments.
+    #[inline]
+    pub fn rotl_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -868,18 +1015,27 @@ impl RustBV {
                 let rotated = (v << amt) | (v >> (w - amt));
                 Self::concrete(rotated, w)
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::RotL,
-                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::RotL,
+                    operands: vec![Arc::new(self), Arc::new(amount)],
+                }
+            }
         }
     }
 
     /// Rotate right.
     #[inline]
-    pub fn rotr(&self, amount: &Self, _ctx: &SymContext) -> Self {
+    pub fn rotr(&self, amount: &Self, ctx: &SymContext) -> Self {
+        self.clone().rotr_into(amount.clone(), ctx)
+    }
+
+    /// Rotate right, consuming both arguments.
+    #[inline]
+    pub fn rotr_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
@@ -888,12 +1044,15 @@ impl RustBV {
                 let rotated = (v >> amt) | (v << (w - amt));
                 Self::concrete(rotated, w)
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::RotR,
-                operands: vec![Arc::new(self.clone()), Arc::new(amount.clone())],
-            },
+            _ => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::RotR,
+                    operands: vec![Arc::new(self), Arc::new(amount)],
+                }
+            }
         }
     }
 
@@ -903,7 +1062,13 @@ impl RustBV {
 
     /// Equality comparison (returns 1-bit result).
     #[inline]
-    pub fn eq(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn eq(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().eq_into(other.clone(), ctx)
+    }
+
+    /// Equality comparison, consuming both arguments.
+    #[inline]
+    pub fn eq_into(self, other: Self, _ctx: &SymContext) -> Self {
         // Width mismatch guard — return concrete 0 instead of panicking
         if self.width() != other.width() {
             return Self::concrete(0, 1);
@@ -914,14 +1079,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Eq,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Inequality comparison (returns 1-bit result).
     #[inline]
-    pub fn ne(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn ne(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().ne_into(other.clone(), ctx)
+    }
+
+    /// Inequality comparison, consuming both arguments.
+    #[inline]
+    pub fn ne_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a != b { 1 } else { 0 }, 1),
@@ -929,14 +1100,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ne,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Unsigned less-than comparison.
     #[inline]
-    pub fn ult(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn ult(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().ult_into(other.clone(), ctx)
+    }
+
+    /// Unsigned less-than, consuming both arguments.
+    #[inline]
+    pub fn ult_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a < b { 1 } else { 0 }, 1),
@@ -944,14 +1121,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ult,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Unsigned less-than-or-equal comparison.
     #[inline]
-    pub fn ule(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn ule(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().ule_into(other.clone(), ctx)
+    }
+
+    /// Unsigned less-than-or-equal, consuming both arguments.
+    #[inline]
+    pub fn ule_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a <= b { 1 } else { 0 }, 1),
@@ -959,14 +1142,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ule,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Unsigned greater-than comparison.
     #[inline]
-    pub fn ugt(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn ugt(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().ugt_into(other.clone(), ctx)
+    }
+
+    /// Unsigned greater-than, consuming both arguments.
+    #[inline]
+    pub fn ugt_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a > b { 1 } else { 0 }, 1),
@@ -974,14 +1163,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ugt,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Unsigned greater-than-or-equal comparison.
     #[inline]
-    pub fn uge(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn uge(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().uge_into(other.clone(), ctx)
+    }
+
+    /// Unsigned greater-than-or-equal, consuming both arguments.
+    #[inline]
+    pub fn uge_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a >= b { 1 } else { 0 }, 1),
@@ -989,14 +1184,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Uge,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Signed less-than comparison.
     #[inline]
-    pub fn slt(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn slt(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().slt_into(other.clone(), ctx)
+    }
+
+    /// Signed less-than, consuming both arguments.
+    #[inline]
+    pub fn slt_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -1008,14 +1209,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Slt,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Signed less-than-or-equal comparison.
     #[inline]
-    pub fn sle(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn sle(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().sle_into(other.clone(), ctx)
+    }
+
+    /// Signed less-than-or-equal, consuming both arguments.
+    #[inline]
+    pub fn sle_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -1027,14 +1234,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Sle,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Signed greater-than comparison.
     #[inline]
-    pub fn sgt(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn sgt(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().sgt_into(other.clone(), ctx)
+    }
+
+    /// Signed greater-than, consuming both arguments.
+    #[inline]
+    pub fn sgt_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -1046,14 +1259,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Sgt,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
 
     /// Signed greater-than-or-equal comparison.
     #[inline]
-    pub fn sge(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn sge(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().sge_into(other.clone(), ctx)
+    }
+
+    /// Signed greater-than-or-equal, consuming both arguments.
+    #[inline]
+    pub fn sge_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => {
@@ -1065,7 +1284,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Sge,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
@@ -1076,10 +1295,16 @@ impl RustBV {
 
     /// Zero-extend to a wider width.
     #[inline]
-    pub fn zero_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
+    pub fn zero_extend(&self, to_width: u32, ctx: &SymContext) -> Self {
+        self.clone().zero_extend_into(to_width, ctx)
+    }
+
+    /// Zero-extend to a wider width, consuming the argument.
+    #[inline]
+    pub fn zero_extend_into(self, to_width: u32, _ctx: &SymContext) -> Self {
         if to_width <= self.width() {
             // No extension needed (or truncation — just return self)
-            return self.clone();
+            return self;
         }
         let extend_bits = to_width - self.width();
         match self.as_u128() {
@@ -1088,18 +1313,24 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
                 op: BVOp::ZeroExt(extend_bits),
-                operands: vec![Arc::new(self.clone())],
+                operands: vec![Arc::new(self)],
             },
         }
     }
 
     /// Sign-extend to a wider width.
     #[inline]
-    pub fn sign_extend(&self, to_width: u32, _ctx: &SymContext) -> Self {
+    pub fn sign_extend(&self, to_width: u32, ctx: &SymContext) -> Self {
+        self.clone().sign_extend_into(to_width, ctx)
+    }
+
+    /// Sign-extend to a wider width, consuming the argument.
+    #[inline]
+    pub fn sign_extend_into(self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width >= self.width());
         // No extension needed
         if to_width == self.width() {
-            return self.clone();
+            return self;
         }
         let extend_bits = to_width - self.width();
         match self.as_u128() {
@@ -1111,14 +1342,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
                 op: BVOp::SignExt(extend_bits),
-                operands: vec![Arc::new(self.clone())],
+                operands: vec![Arc::new(self)],
             },
         }
     }
 
     /// Truncate to a narrower width.
     #[inline]
-    pub fn truncate(&self, to_width: u32, _ctx: &SymContext) -> Self {
+    pub fn truncate(&self, to_width: u32, ctx: &SymContext) -> Self {
+        self.clone().truncate_into(to_width, ctx)
+    }
+
+    /// Truncate to a narrower width, consuming the argument.
+    #[inline]
+    pub fn truncate_into(self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width <= self.width());
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
@@ -1126,14 +1363,20 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
                 op: BVOp::Extract(to_width - 1, 0),
-                operands: vec![Arc::new(self.clone())],
+                operands: vec![Arc::new(self)],
             },
         }
     }
 
     /// Extract bits [high:low] (inclusive).
     #[inline]
-    pub fn extract(&self, high: u32, low: u32, _ctx: &SymContext) -> Self {
+    pub fn extract(&self, high: u32, low: u32, ctx: &SymContext) -> Self {
+        self.clone().extract_into(high, low, ctx)
+    }
+
+    /// Extract bits [high:low] (inclusive), consuming the argument.
+    #[inline]
+    pub fn extract_into(self, high: u32, low: u32, _ctx: &SymContext) -> Self {
         debug_assert!(high >= low);
         debug_assert!(high < self.width());
         let result_width = high - low + 1;
@@ -1146,11 +1389,12 @@ impl RustBV {
 
         // Identity extraction: Extract(width-1, 0, x) → x
         if high == self.width() - 1 && low == 0 {
-            return self.clone();
+            return self;
         }
 
-        // Canonicalization rules for Expression nodes
-        if let RustBV::Expression { op, operands, .. } = self {
+        // Canonicalization rules for Expression nodes — borrow self to inspect,
+        // then either delegate (returning early) or fall through to construct.
+        if let RustBV::Expression { op, operands, .. } = &self {
             match op {
                 // Rule 1: Extract(Extract(x)) → fused single Extract
                 // Extract(h2, l2, Extract(h1, l1, x)) → Extract(l1+h2, l1+l2, x)
@@ -1171,7 +1415,7 @@ impl RustBV {
                     // Crosses boundary — extract from each part and concat
                     let lo_part = operands[1].extract(b_width - 1, low, _ctx);
                     let hi_part = operands[0].extract(high - b_width, 0, _ctx);
-                    return hi_part.concat(&lo_part, _ctx);
+                    return hi_part.concat_into(lo_part, _ctx);
                 }
 
                 // Rule 3: Extract(Reverse(x)) with byte-aligned bounds
@@ -1210,13 +1454,19 @@ impl RustBV {
             id: Self::EXPRESSION_ID,
             width: result_width,
             op: BVOp::Extract(high, low),
-            operands: vec![Arc::new(self.clone())],
+            operands: vec![Arc::new(self)],
         }
     }
 
     /// Concatenate two bitvectors (self becomes high bits).
     #[inline]
-    pub fn concat(&self, other: &Self, _ctx: &SymContext) -> Self {
+    pub fn concat(&self, other: &Self, ctx: &SymContext) -> Self {
+        self.clone().concat_into(other.clone(), ctx)
+    }
+
+    /// Concatenate two bitvectors, consuming both arguments.
+    #[inline]
+    pub fn concat_into(self, other: Self, _ctx: &SymContext) -> Self {
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
             (Some(hi), Some(lo)) => {
@@ -1227,7 +1477,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: result_width,
                 op: BVOp::Concat,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: vec![Arc::new(self), Arc::new(other)],
             },
         }
     }
@@ -1280,14 +1530,20 @@ impl RustBV {
 
     /// If-then-else: returns `then_val` if `self` is non-zero, else `else_val`.
     #[inline]
-    pub fn ite(&self, then_val: &Self, else_val: &Self, _ctx: &SymContext) -> Self {
+    pub fn ite(&self, then_val: &Self, else_val: &Self, ctx: &SymContext) -> Self {
+        self.clone().ite_into(then_val.clone(), else_val.clone(), ctx)
+    }
+
+    /// If-then-else, consuming all three arguments.
+    #[inline]
+    pub fn ite_into(self, then_val: Self, else_val: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(then_val.width(), else_val.width());
         match self.as_u128() {
             Some(v) => {
                 if v != 0 {
-                    then_val.clone()
+                    then_val
                 } else {
-                    else_val.clone()
+                    else_val
                 }
             }
             None => RustBV::Expression {
@@ -1295,9 +1551,9 @@ impl RustBV {
                 width: then_val.width(),
                 op: BVOp::Ite,
                 operands: vec![
-                    Arc::new(self.clone()),
-                    Arc::new(then_val.clone()),
-                    Arc::new(else_val.clone()),
+                    Arc::new(self),
+                    Arc::new(then_val),
+                    Arc::new(else_val),
                 ],
             },
         }
@@ -1305,7 +1561,13 @@ impl RustBV {
 
     /// Count leading zeros.
     #[inline]
-    pub fn clz(&self, _ctx: &SymContext) -> Self {
+    pub fn clz(&self, ctx: &SymContext) -> Self {
+        self.clone().clz_into(ctx)
+    }
+
+    /// Count leading zeros, consuming the argument.
+    #[inline]
+    pub fn clz_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
                 let leading = if v == 0 {
@@ -1315,18 +1577,27 @@ impl RustBV {
                 };
                 Self::concrete(leading as u128, self.width())
             }
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Clz,
-                operands: vec![Arc::new(self.clone())],
-            },
+            None => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Clz,
+                    operands: vec![Arc::new(self)],
+                }
+            }
         }
     }
 
     /// Count trailing zeros.
     #[inline]
-    pub fn ctz(&self, _ctx: &SymContext) -> Self {
+    pub fn ctz(&self, ctx: &SymContext) -> Self {
+        self.clone().ctz_into(ctx)
+    }
+
+    /// Count trailing zeros, consuming the argument.
+    #[inline]
+    pub fn ctz_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
                 let trailing = if v == 0 {
@@ -1336,26 +1607,38 @@ impl RustBV {
                 };
                 Self::concrete(trailing as u128, self.width())
             }
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Ctz,
-                operands: vec![Arc::new(self.clone())],
-            },
+            None => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Ctz,
+                    operands: vec![Arc::new(self)],
+                }
+            }
         }
     }
 
     /// Population count (number of set bits).
     #[inline]
-    pub fn popcount(&self, _ctx: &SymContext) -> Self {
+    pub fn popcount(&self, ctx: &SymContext) -> Self {
+        self.clone().popcount_into(ctx)
+    }
+
+    /// Population count, consuming the argument.
+    #[inline]
+    pub fn popcount_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(v.count_ones() as u128, self.width()),
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: self.width(),
-                op: BVOp::Popcount,
-                operands: vec![Arc::new(self.clone())],
-            },
+            None => {
+                let width = self.width();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Popcount,
+                    operands: vec![Arc::new(self)],
+                }
+            }
         }
     }
 
