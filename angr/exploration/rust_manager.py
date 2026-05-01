@@ -2238,8 +2238,11 @@ class RustExplorationManager(
             _t2 = time.perf_counter_ns()
             self._evaluate_predicates_on_active()
             _time_in_predicate_eval += time.perf_counter_ns() - _t2
-            pf = getattr(self, '_predicate_found', [])
-            if pf and len(pf) >= num_find:
+            # Stop when num_find is reached — counts both Python-predicate matches
+            # and Rust-native find_addr matches. Without this check, exploring with
+            # an int find addr but an active technique (use_technique path) would
+            # never terminate even after Rust populated the found stash.
+            if self._found_count() >= num_find:
                 break
             if until is not None:
                 try:
