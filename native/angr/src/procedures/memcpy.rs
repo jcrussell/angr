@@ -11,7 +11,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Maximum copy size before falling back to Python.
 const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
@@ -63,18 +63,9 @@ impl NativeSimProcedure for NativeMemcpy {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // Get arguments
-        let dst = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dst".to_string())
-        })?;
-
-        let src = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("src".to_string())
-        })?;
-
-        let size = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })? as usize;
+        let dst = extract_concrete_arg(&args[0], "dst")?;
+        let src = extract_concrete_arg(&args[1], "src")?;
+        let size = extract_concrete_arg(&args[2], "size")? as usize;
 
         // Check size limit
         if size > MAX_COPY_SIZE {
@@ -114,18 +105,9 @@ impl NativeSimProcedure for NativeMemmove {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // Get arguments
-        let dst = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dst".to_string())
-        })?;
-
-        let src = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("src".to_string())
-        })?;
-
-        let size = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })? as usize;
+        let dst = extract_concrete_arg(&args[0], "dst")?;
+        let src = extract_concrete_arg(&args[1], "src")?;
+        let size = extract_concrete_arg(&args[2], "size")? as usize;
 
         // Check size limit
         if size > MAX_COPY_SIZE {

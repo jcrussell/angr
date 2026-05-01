@@ -5,7 +5,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_DIGITS: usize = 64;
 
@@ -15,9 +15,7 @@ fn read_concrete_string(state: &mut RustSimState, addr: u64, max_len: usize) -> 
     for i in 0..max_len as u64 {
         let byte_val = state.memory_load(addr.wrapping_add(i), 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-        let byte = byte_val.as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", addr.wrapping_add(i)))
-        })? as u8;
+        let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", addr.wrapping_add(i)))? as u8;
         if byte == 0 { break; }
         result.push(byte);
     }
@@ -110,15 +108,9 @@ impl NativeSimProcedure for NativeStrtol {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("nptr".to_string())
-        })?;
-        let endptr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("endptr".to_string())
-        })?;
-        let base = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("base".to_string())
-        })? as i64;
+        let addr = extract_concrete_arg(&args[0], "nptr")?;
+        let endptr = extract_concrete_arg(&args[1], "endptr")?;
+        let base = extract_concrete_arg(&args[2], "base")? as i64;
 
         let s = read_concrete_string(state, addr, MAX_DIGITS)?;
         let (value, consumed) = parse_strtol(&s, base)?;
@@ -165,9 +157,7 @@ impl NativeSimProcedure for NativeAtoi {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("nptr".to_string())
-        })?;
+        let addr = extract_concrete_arg(&args[0], "nptr")?;
 
         let s = read_concrete_string(state, addr, MAX_DIGITS)?;
         let (value, _) = parse_strtol(&s, 10)?;
@@ -190,9 +180,7 @@ impl NativeSimProcedure for NativeAtol {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("nptr".to_string())
-        })?;
+        let addr = extract_concrete_arg(&args[0], "nptr")?;
 
         let s = read_concrete_string(state, addr, MAX_DIGITS)?;
         let (value, _) = parse_strtol(&s, 10)?;

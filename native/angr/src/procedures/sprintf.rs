@@ -6,7 +6,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_FMT_LEN: usize = 4096;
 const MAX_OUTPUT_LEN: usize = 4096;
@@ -17,9 +17,7 @@ fn read_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedure
     for i in 0..MAX_FMT_LEN as u64 {
         match state.memory_load(addr.wrapping_add(i), 1) {
             Ok(bv) => {
-                let byte = bv.as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("byte at 0x{:x}", addr.wrapping_add(i)))
-                })? as u8;
+                let byte = extract_concrete_arg(&bv, &format!("byte at 0x{:x}", addr.wrapping_add(i)))? as u8;
                 if byte == 0 {
                     break;
                 }
@@ -93,9 +91,7 @@ fn format_string(
             if arg_idx >= args.len() {
                 return Err(ProcedureError::SymbolicArgument("width arg".to_string()));
             }
-            let w = args[arg_idx].as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument("width".to_string())
-            })?;
+            let w = extract_concrete_arg(&args[arg_idx], "width")?;
             width = w as usize;
             arg_idx += 1;
             i += 1;
@@ -115,9 +111,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("precision arg".to_string()));
                 }
-                let p = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument("precision".to_string())
-                })?;
+                let p = extract_concrete_arg(&args[arg_idx], "precision")?;
                 prec = p as usize;
                 arg_idx += 1;
                 i += 1;
@@ -171,9 +165,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("int arg".to_string()));
                 }
-                let val = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("arg{}", arg_idx))
-                })?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 // Interpret as signed
                 let signed_val = if long || long_long {
@@ -194,9 +186,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("uint arg".to_string()));
                 }
-                let val = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("arg{}", arg_idx))
-                })?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 let unsigned_val = if long || long_long {
                     val
@@ -210,9 +200,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("hex arg".to_string()));
                 }
-                let val = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("arg{}", arg_idx))
-                })?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 let unsigned_val = if long || long_long {
                     val
@@ -234,9 +222,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("octal arg".to_string()));
                 }
-                let val = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("arg{}", arg_idx))
-                })?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 let unsigned_val = if long || long_long {
                     val
@@ -253,9 +239,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("char arg".to_string()));
                 }
-                let val = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("arg{}", arg_idx))
-                })?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 let ch = [val as u8];
                 pad_and_push(&mut output, &ch, width, left_align, false, false);
@@ -264,9 +248,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("string arg".to_string()));
                 }
-                let str_addr = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("arg{}", arg_idx))
-                })?;
+                let str_addr = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 let s = read_string(state, str_addr)?;
                 let s = if let Some(prec) = _precision {
@@ -280,9 +262,7 @@ fn format_string(
                 if arg_idx >= args.len() {
                     return Err(ProcedureError::SymbolicArgument("ptr arg".to_string()));
                 }
-                let val = args[arg_idx].as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("arg{}", arg_idx))
-                })?;
+                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 let formatted = format!("0x{:x}", val);
                 pad_and_push(&mut output, formatted.as_bytes(), width, left_align, false, false);
@@ -355,12 +335,8 @@ impl NativeSimProcedure for NativeSprintf {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dest".to_string())
-        })?;
-        let fmt_addr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("format".to_string())
-        })?;
+        let dest = extract_concrete_arg(&args[0], "dest")?;
+        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
 
         let fmt = read_string(state, fmt_addr)?;
         let varargs = &args[2..];
@@ -399,15 +375,9 @@ impl NativeSimProcedure for NativeSnprintf {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dest".to_string())
-        })?;
-        let size = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })? as usize;
-        let fmt_addr = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("format".to_string())
-        })?;
+        let dest = extract_concrete_arg(&args[0], "dest")?;
+        let size = extract_concrete_arg(&args[1], "size")? as usize;
+        let fmt_addr = extract_concrete_arg(&args[2], "format")?;
 
         let fmt = read_string(state, fmt_addr)?;
         let varargs = &args[3..];

@@ -10,7 +10,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Maximum memset size before falling back to Python.
 const MAX_MEMSET_SIZE: u64 = 1024 * 1024;
@@ -38,18 +38,10 @@ impl NativeSimProcedure for NativeMemset {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dest".to_string())
-        })?;
-
-        let value = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("value".to_string())
-        })?;
+        let dest = extract_concrete_arg(&args[0], "dest")?;
+        let value = extract_concrete_arg(&args[1], "value")?;
         let byte_val = (value & 0xFF) as u8;
-
-        let size = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })?;
+        let size = extract_concrete_arg(&args[2], "size")?;
 
         if size > MAX_MEMSET_SIZE {
             return Err(ProcedureError::Other(format!(

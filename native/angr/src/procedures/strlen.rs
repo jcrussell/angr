@@ -11,7 +11,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Maximum string length before falling back to Python.
 const MAX_STRLEN: usize = 4096;
@@ -39,10 +39,7 @@ impl NativeSimProcedure for NativeStrlen {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // Get the string address
-        let addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("addr".to_string())
-        })?;
+        let addr = extract_concrete_arg(&args[0], "addr")?;
 
         // Scan for null terminator
         let mut length: u64 = 0;
@@ -55,9 +52,7 @@ impl NativeSimProcedure for NativeStrlen {
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
             // Check if byte is concrete
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", byte_addr))
-            })?;
+            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))?;
 
             // Check for null terminator
             if byte == 0 {
@@ -100,13 +95,8 @@ impl NativeSimProcedure for NativeStrnlen {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s".to_string())
-        })?;
-
-        let maxlen = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("maxlen".to_string())
-        })?;
+        let addr = extract_concrete_arg(&args[0], "s")?;
+        let maxlen = extract_concrete_arg(&args[1], "maxlen")?;
 
         // Cap at MAX_STRLEN to avoid huge scans
         if maxlen > MAX_STRLEN as u64 {
@@ -120,9 +110,7 @@ impl NativeSimProcedure for NativeStrnlen {
             let byte_val = state.memory_load(byte_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", byte_addr))
-            })?;
+            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))?;
 
             if byte == 0 {
                 length = i;

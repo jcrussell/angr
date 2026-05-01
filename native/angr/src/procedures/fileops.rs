@@ -6,7 +6,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Native open implementation.
 ///
@@ -32,12 +32,8 @@ impl NativeSimProcedure for NativeOpen {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let pathname_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("pathname".to_string())
-        })?;
-        let flags = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("flags".to_string())
-        })?;
+        let pathname_addr = extract_concrete_arg(&args[0], "pathname")?;
+        let flags = extract_concrete_arg(&args[1], "flags")?;
 
         // Read pathname string from memory (max 256 bytes)
         let mut name = Vec::new();
@@ -91,9 +87,7 @@ impl NativeSimProcedure for NativeClose {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("fd".to_string())
-        })?;
+        let fd = extract_concrete_arg(&args[0], "fd")?;
 
         let success = state.file_system().close(fd as u32);
         let bits = state.arch().bits();
@@ -125,15 +119,9 @@ impl NativeSimProcedure for NativeLseek {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("fd".to_string())
-        })?;
-        let offset = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("offset".to_string())
-        })?;
-        let whence = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("whence".to_string())
-        })?;
+        let fd = extract_concrete_arg(&args[0], "fd")?;
+        let offset = extract_concrete_arg(&args[1], "offset")?;
+        let whence = extract_concrete_arg(&args[2], "whence")?;
 
         let bits = state.arch().bits();
         match state.file_system().seek(fd as u32, offset as i64, whence as u32) {

@@ -9,7 +9,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_PRINTF_LEN: usize = 4096;
 
@@ -36,9 +36,7 @@ impl NativeSimProcedure for NativePrintf {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let fmt_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("format".to_string())
-        })?;
+        let fmt_addr = extract_concrete_arg(&args[0], "format")?;
 
         // Read the format string byte-by-byte from memory
         let mut buf = Vec::new();

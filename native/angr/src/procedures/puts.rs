@@ -13,7 +13,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_PUTS_LEN: usize = 4096;
 
@@ -40,9 +40,7 @@ impl NativeSimProcedure for NativePuts {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let s_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s".to_string())
-        })?;
+        let s_addr = extract_concrete_arg(&args[0], "s")?;
 
         // Read the string byte-by-byte from memory
         let mut buf = Vec::new();
@@ -96,9 +94,7 @@ impl NativeSimProcedure for NativePutchar {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let c = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("c".to_string())
-        })?;
+        let c = extract_concrete_arg(&args[0], "c")?;
         let byte = (c & 0xFF) as u8;
         state.write_stdout(&[byte]);
         Ok(Some(RustBV::concrete(byte as u128, 32)))

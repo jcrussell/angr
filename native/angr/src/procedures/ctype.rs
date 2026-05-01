@@ -8,13 +8,10 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 fn get_concrete_arg(args: &[RustBV]) -> Result<u8, ProcedureError> {
-    let val = args[0].as_u64().ok_or_else(|| {
-        ProcedureError::SymbolicArgument("c".to_string())
-    })?;
-    Ok(val as u8)
+    Ok(extract_concrete_arg(&args[0], "c")? as u8)
 }
 
 fn bool_result(state: &RustSimState, v: bool) -> Result<Option<RustBV>, ProcedureError> {

@@ -9,7 +9,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_STR_LEN: usize = 4096;
 
@@ -19,9 +19,7 @@ fn read_cstring(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedur
     for i in 0..MAX_STR_LEN as u64 {
         match state.memory_load(addr.wrapping_add(i), 1) {
             Ok(bv) => {
-                let byte = bv.as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument("string byte".to_string())
-                })? as u8;
+                let byte = extract_concrete_arg(&bv, "string byte")? as u8;
                 if byte == 0 {
                     break;
                 }
@@ -57,9 +55,7 @@ impl NativeSimProcedure for NativeGetenv {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let name_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("name".to_string())
-        })?;
+        let name_addr = extract_concrete_arg(&args[0], "name")?;
 
         let key = read_cstring(state, name_addr)?;
         let bits = state.arch().bits();
@@ -115,15 +111,9 @@ impl NativeSimProcedure for NativeSetenv {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let name_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("name".to_string())
-        })?;
-        let value_addr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("value".to_string())
-        })?;
-        let overwrite = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("overwrite".to_string())
-        })?;
+        let name_addr = extract_concrete_arg(&args[0], "name")?;
+        let value_addr = extract_concrete_arg(&args[1], "value")?;
+        let overwrite = extract_concrete_arg(&args[2], "overwrite")?;
 
         let key = read_cstring(state, name_addr)?;
         let value = read_cstring(state, value_addr)?;
@@ -161,9 +151,7 @@ impl NativeSimProcedure for NativePutenv {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let str_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("string".to_string())
-        })?;
+        let str_addr = extract_concrete_arg(&args[0], "string")?;
 
         let s = read_cstring(state, str_addr)?;
 

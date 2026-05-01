@@ -5,7 +5,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_WRITE_SIZE: u64 = 4096;
 
@@ -32,9 +32,7 @@ impl NativeSimProcedure for NativeWrite {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let fd = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("fd".to_string())
-        })?;
+        let fd = extract_concrete_arg(&args[0], "fd")?;
 
         // Handle stdout (fd=1) and stderr (fd=2) natively
         if fd != 1 && fd != 2 {
@@ -43,12 +41,8 @@ impl NativeSimProcedure for NativeWrite {
             )));
         }
 
-        let buf = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("buf".to_string())
-        })?;
-        let count = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("count".to_string())
-        })?;
+        let buf = extract_concrete_arg(&args[1], "buf")?;
+        let count = extract_concrete_arg(&args[2], "count")?;
 
         if count > MAX_WRITE_SIZE {
             return Err(ProcedureError::Other(format!(

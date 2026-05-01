@@ -5,7 +5,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Native malloc implementation.
 ///
@@ -28,9 +28,7 @@ impl NativeSimProcedure for NativeMalloc {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let size = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })?;
+        let size = extract_concrete_arg(&args[0], "size")?;
 
         let addr = state.heap_alloc(size);
         let bits = state.arch().bits();
@@ -59,9 +57,7 @@ impl NativeSimProcedure for NativeFree {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let ptr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("ptr".to_string())
-        })?;
+        let ptr = extract_concrete_arg(&args[0], "ptr")?;
         // Track the free (bump allocator doesn't reclaim memory)
         state.heap_free(ptr);
         Ok(None)
@@ -89,12 +85,8 @@ impl NativeSimProcedure for NativeCalloc {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let nmemb = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("nmemb".to_string())
-        })?;
-        let size = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })?;
+        let nmemb = extract_concrete_arg(&args[0], "nmemb")?;
+        let size = extract_concrete_arg(&args[1], "size")?;
 
         let total = nmemb.checked_mul(size).ok_or_else(|| {
             ProcedureError::Other("calloc overflow".to_string())
@@ -153,12 +145,8 @@ impl NativeSimProcedure for NativeRealloc {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let ptr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("ptr".to_string())
-        })?;
-        let size = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })?;
+        let ptr = extract_concrete_arg(&args[0], "ptr")?;
+        let size = extract_concrete_arg(&args[1], "size")?;
 
         if size > 1024 * 1024 {
             return Err(ProcedureError::Other(format!(

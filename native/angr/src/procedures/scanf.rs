@@ -9,7 +9,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -25,9 +25,7 @@ fn read_format_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Pr
     for i in 0..MAX_FMT_LEN as u64 {
         match state.memory_load(addr.wrapping_add(i), 1) {
             Ok(bv) => {
-                let byte = bv.as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument("format string byte".to_string())
-                })? as u8;
+                let byte = extract_concrete_arg(&bv, "format string byte")? as u8;
                 if byte == 0 {
                     break;
                 }
@@ -202,9 +200,7 @@ fn do_scanf(
             break;
         }
 
-        let ptr = ptr_args[arg_idx].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument(format!("scanf arg {}", arg_idx))
-        })?;
+        let ptr = extract_concrete_arg(&ptr_args[arg_idx], &format!("scanf arg {}", arg_idx))?;
         arg_idx += 1;
 
         if spec.is_string {
@@ -277,9 +273,7 @@ impl NativeSimProcedure for NativeScanf {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let fmt_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("format".to_string())
-        })?;
+        let fmt_addr = extract_concrete_arg(&args[0], "format")?;
         do_scanf(state, fmt_addr, &args[1..])
     }
 }
@@ -303,9 +297,7 @@ impl NativeSimProcedure for NativeIsoc99Scanf {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let fmt_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("format".to_string())
-        })?;
+        let fmt_addr = extract_concrete_arg(&args[0], "format")?;
         do_scanf(state, fmt_addr, &args[1..])
     }
 }
@@ -338,12 +330,8 @@ impl NativeSimProcedure for NativeSscanf {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         // args[0] = source string (we don't actually parse it — just check it's concrete)
-        let _src_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("str".to_string())
-        })?;
-        let fmt_addr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("format".to_string())
-        })?;
+        let _src_addr = extract_concrete_arg(&args[0], "str")?;
+        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
         // For sscanf, we create symbolic values just like scanf
         // (the parsed values are unconstrained in symbolic execution)
         do_scanf(state, fmt_addr, &args[2..])

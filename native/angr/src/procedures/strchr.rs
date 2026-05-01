@@ -7,7 +7,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_SCAN: usize = 4096;
 
@@ -29,12 +29,8 @@ impl NativeSimProcedure for NativeStrchr {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s".to_string())
-        })?;
-        let target = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("c".to_string())
-        })? as u8;
+        let addr = extract_concrete_arg(&args[0], "s")?;
+        let target = extract_concrete_arg(&args[1], "c")? as u8;
 
         let bits = state.arch().bits();
 
@@ -42,9 +38,7 @@ impl NativeSimProcedure for NativeStrchr {
             let byte_addr = addr.wrapping_add(i);
             let byte_val = state.memory_load(byte_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", byte_addr))
-            })? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))? as u8;
 
             if byte == target {
                 return Ok(Some(RustBV::concrete(byte_addr as u128, bits)));
@@ -76,15 +70,9 @@ impl NativeSimProcedure for NativeMemchr {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s".to_string())
-        })?;
-        let target = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("c".to_string())
-        })? as u8;
-        let n = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("n".to_string())
-        })?;
+        let addr = extract_concrete_arg(&args[0], "s")?;
+        let target = extract_concrete_arg(&args[1], "c")? as u8;
+        let n = extract_concrete_arg(&args[2], "n")?;
 
         let bits = state.arch().bits();
         let scan_len = n.min(MAX_SCAN as u64);
@@ -93,9 +81,7 @@ impl NativeSimProcedure for NativeMemchr {
             let byte_addr = addr.wrapping_add(i);
             let byte_val = state.memory_load(byte_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", byte_addr))
-            })? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))? as u8;
 
             if byte == target {
                 return Ok(Some(RustBV::concrete(byte_addr as u128, bits)));

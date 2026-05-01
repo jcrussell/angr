@@ -11,7 +11,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Maximum string length before falling back to Python.
 const MAX_STRCMP_LEN: usize = 4096;
@@ -42,48 +42,32 @@ impl NativeSimProcedure for NativeStrcmp {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // Get string addresses
-        let s1_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s1".to_string())
-        })?;
-
-        let s2_addr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s2".to_string())
-        })?;
+        let s1_addr = extract_concrete_arg(&args[0], "s1")?;
+        let s2_addr = extract_concrete_arg(&args[1], "s2")?;
 
         // Compare byte by byte
         for i in 0..MAX_STRCMP_LEN as u64 {
             let c1_addr = s1_addr.wrapping_add(i);
             let c2_addr = s2_addr.wrapping_add(i);
 
-            // Load bytes
             let c1_val = state.memory_load(c1_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             let c2_val = state.memory_load(c2_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
-            // Get concrete values
-            let c1 = c1_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("s1[{}]", i))
-            })? as u8;
-            let c2 = c2_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("s2[{}]", i))
-            })? as u8;
+            let c1 = extract_concrete_arg(&c1_val, &format!("s1[{}]", i))? as u8;
+            let c2 = extract_concrete_arg(&c2_val, &format!("s2[{}]", i))? as u8;
 
-            // Compare
             if c1 != c2 {
-                // Return difference (using signed comparison semantics)
                 let diff = (c1 as i32) - (c2 as i32);
                 return Ok(Some(RustBV::concrete(diff as u128, 32)));
             }
 
-            // Check for end of both strings
             if c1 == 0 {
                 return Ok(Some(RustBV::zero(32)));
             }
         }
 
-        // Max iterations reached
         Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN))
     }
 }
@@ -111,18 +95,9 @@ impl NativeSimProcedure for NativeStrncmp {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // Get arguments
-        let s1_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s1".to_string())
-        })?;
-
-        let s2_addr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s2".to_string())
-        })?;
-
-        let n = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("n".to_string())
-        })? as usize;
+        let s1_addr = extract_concrete_arg(&args[0], "s1")?;
+        let s2_addr = extract_concrete_arg(&args[1], "s2")?;
+        let n = extract_concrete_arg(&args[2], "n")? as usize;
 
         // Handle zero-length comparison
         if n == 0 {
@@ -144,12 +119,8 @@ impl NativeSimProcedure for NativeStrncmp {
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
             // Get concrete values
-            let c1 = c1_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("s1[{}]", i))
-            })? as u8;
-            let c2 = c2_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("s2[{}]", i))
-            })? as u8;
+            let c1 = extract_concrete_arg(&c1_val, &format!("s1[{}]", i))? as u8;
+            let c2 = extract_concrete_arg(&c2_val, &format!("s2[{}]", i))? as u8;
 
             // Compare
             if c1 != c2 {
@@ -193,13 +164,8 @@ impl NativeSimProcedure for NativeStrcasecmp {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let s1_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s1".to_string())
-        })?;
-
-        let s2_addr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s2".to_string())
-        })?;
+        let s1_addr = extract_concrete_arg(&args[0], "s1")?;
+        let s2_addr = extract_concrete_arg(&args[1], "s2")?;
 
         for i in 0..MAX_STRCMP_LEN as u64 {
             let c1_addr = s1_addr.wrapping_add(i);
@@ -210,12 +176,8 @@ impl NativeSimProcedure for NativeStrcasecmp {
             let c2_val = state.memory_load(c2_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
-            let c1 = c1_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("s1[{}]", i))
-            })? as u8;
-            let c2 = c2_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("s2[{}]", i))
-            })? as u8;
+            let c1 = extract_concrete_arg(&c1_val, &format!("s1[{}]", i))? as u8;
+            let c2 = extract_concrete_arg(&c2_val, &format!("s2[{}]", i))? as u8;
 
             // Convert to lowercase for comparison
             let c1_lower = to_lower(c1);

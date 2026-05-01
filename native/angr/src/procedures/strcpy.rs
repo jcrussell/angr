@@ -8,7 +8,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_STRLEN: usize = 4096;
 
@@ -33,21 +33,15 @@ impl NativeSimProcedure for NativeStrcpy {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dest".to_string())
-        })?;
-        let src = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("src".to_string())
-        })?;
+        let dest = extract_concrete_arg(&args[0], "dest")?;
+        let src = extract_concrete_arg(&args[1], "src")?;
 
         // Read source string until null terminator
         let mut buf = Vec::with_capacity(256);
         for i in 0..MAX_STRLEN as u64 {
             let byte_val = state.memory_load(src.wrapping_add(i), 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("src byte at offset {}", i))
-            })? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
             buf.push(byte);
             if byte == 0 {
                 break;
@@ -89,15 +83,9 @@ impl NativeSimProcedure for NativeStrncpy {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dest".to_string())
-        })?;
-        let src = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("src".to_string())
-        })?;
-        let n = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("n".to_string())
-        })?;
+        let dest = extract_concrete_arg(&args[0], "dest")?;
+        let src = extract_concrete_arg(&args[1], "src")?;
+        let n = extract_concrete_arg(&args[2], "n")?;
 
         if n > MAX_STRLEN as u64 {
             return Err(ProcedureError::MaxIterations(n as usize));
@@ -112,9 +100,7 @@ impl NativeSimProcedure for NativeStrncpy {
             } else {
                 let byte_val = state.memory_load(src.wrapping_add(i), 1)
                     .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-                let byte = byte_val.as_u64().ok_or_else(|| {
-                    ProcedureError::SymbolicArgument(format!("src byte at offset {}", i))
-                })? as u8;
+                let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
                 buf.push(byte);
                 if byte == 0 {
                     null_found = true;
@@ -157,18 +143,14 @@ impl NativeSimProcedure for NativeStrdup {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let src = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s".to_string())
-        })?;
+        let src = extract_concrete_arg(&args[0], "s")?;
 
         // Read source string until null terminator
         let mut buf = Vec::with_capacity(256);
         for i in 0..MAX_STRLEN as u64 {
             let byte_val = state.memory_load(src.wrapping_add(i), 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("src byte at offset {}", i))
-            })? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
             buf.push(byte);
             if byte == 0 {
                 break;

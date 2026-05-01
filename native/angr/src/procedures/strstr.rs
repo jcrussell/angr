@@ -6,7 +6,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_SCAN: usize = 4096;
 
@@ -28,12 +28,8 @@ impl NativeSimProcedure for NativeStrstr {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let haystack_addr = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("haystack".to_string())
-        })?;
-        let needle_addr = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("needle".to_string())
-        })?;
+        let haystack_addr = extract_concrete_arg(&args[0], "haystack")?;
+        let needle_addr = extract_concrete_arg(&args[1], "needle")?;
 
         let bits = state.arch().bits();
 
@@ -42,9 +38,7 @@ impl NativeSimProcedure for NativeStrstr {
         for i in 0..MAX_SCAN as u64 {
             let val = state.memory_load(needle_addr.wrapping_add(i), 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("needle[{}]", i))
-            })? as u8;
+            let byte = extract_concrete_arg(&val, &format!("needle[{}]", i))? as u8;
             if byte == 0 { break; }
             needle.push(byte);
         }
@@ -61,9 +55,7 @@ impl NativeSimProcedure for NativeStrstr {
             // Check first byte of haystack at this position
             let first_val = state.memory_load(h_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let first = first_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("haystack[{}]", i))
-            })? as u8;
+            let first = extract_concrete_arg(&first_val, &format!("haystack[{}]", i))? as u8;
 
             // End of haystack
             if first == 0 {
@@ -77,9 +69,7 @@ impl NativeSimProcedure for NativeStrstr {
                     let h_byte_addr = h_addr.wrapping_add(j as u64);
                     let val = state.memory_load(h_byte_addr, 1)
                         .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-                    let byte = val.as_u64().ok_or_else(|| {
-                        ProcedureError::SymbolicArgument(format!("haystack[{}]", i as usize + j))
-                    })? as u8;
+                    let byte = extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))? as u8;
                     if byte != needle[j] {
                         matched = false;
                         break;

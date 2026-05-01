@@ -4,7 +4,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_STRLEN: usize = 4096;
 
@@ -14,9 +14,7 @@ fn find_null(state: &mut RustSimState, addr: u64) -> Result<u64, ProcedureError>
         let byte_addr = addr.wrapping_add(i);
         let byte_val = state.memory_load(byte_addr, 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-        let byte = byte_val.as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", byte_addr))
-        })? as u8;
+        let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))? as u8;
         if byte == 0 {
             return Ok(byte_addr);
         }
@@ -36,12 +34,8 @@ impl NativeSimProcedure for NativeStrcat {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dest".to_string())
-        })?;
-        let src = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("src".to_string())
-        })?;
+        let dest = extract_concrete_arg(&args[0], "dest")?;
+        let src = extract_concrete_arg(&args[1], "src")?;
 
         // Find end of dest
         let dest_end = find_null(state, dest)?;
@@ -51,9 +45,7 @@ impl NativeSimProcedure for NativeStrcat {
             let src_addr = src.wrapping_add(i);
             let byte_val = state.memory_load(src_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", src_addr))
-            })? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
 
             let dst_addr = dest_end.wrapping_add(i);
             state.memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
@@ -79,15 +71,9 @@ impl NativeSimProcedure for NativeStrncat {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let dest = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("dest".to_string())
-        })?;
-        let src = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("src".to_string())
-        })?;
-        let n = args[2].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("n".to_string())
-        })?;
+        let dest = extract_concrete_arg(&args[0], "dest")?;
+        let src = extract_concrete_arg(&args[1], "src")?;
+        let n = extract_concrete_arg(&args[2], "n")?;
 
         let dest_end = find_null(state, dest)?;
         let max_copy = n.min(MAX_STRLEN as u64);
@@ -97,9 +83,7 @@ impl NativeSimProcedure for NativeStrncat {
             let src_addr = src.wrapping_add(i);
             let byte_val = state.memory_load(src_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = byte_val.as_u64().ok_or_else(|| {
-                ProcedureError::SymbolicArgument(format!("memory byte at 0x{:x}", src_addr))
-            })? as u8;
+            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
 
             if byte == 0 { break; }
 

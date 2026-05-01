@@ -13,7 +13,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
+use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,12 +49,8 @@ impl NativeSimProcedure for NativeFgets {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let buf = args[0].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("s".to_string())
-        })?;
-        let size = args[1].as_u64().ok_or_else(|| {
-            ProcedureError::SymbolicArgument("size".to_string())
-        })?;
+        let buf = extract_concrete_arg(&args[0], "s")?;
+        let size = extract_concrete_arg(&args[1], "size")?;
         // args[2] is FILE* stream — ignored (treated as stdin)
 
         if size == 0 {
