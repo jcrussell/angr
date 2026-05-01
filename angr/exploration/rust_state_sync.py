@@ -67,6 +67,29 @@ class RustStateSyncMixin:
             if _DBG:
                 l.debug(f"Synced {len(procs)} dynamically created hooks")
 
+    @staticmethod
+    def _supported_register_names(arch) -> list:
+        """Registers that the Rust engine models for `arch`.
+
+        Used by both the slow sync path and the disk-cache fast path so they
+        agree on which registers cross the FFI boundary. archinfo defines many
+        registers (cr0..8, ymm0..15, fs_seg, cmstart, ...) that the Rust engine
+        does not model; passing them to set_registers_bulk raises ValueError.
+        """
+        if arch.name in ('AMD64', 'X86_64'):
+            return ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
+                    'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11',
+                    'r12', 'r13', 'r14', 'r15', 'rip']
+        if arch.name == 'X86':
+            return ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
+                    'ebp', 'esp', 'eip',
+                    'dflag', 'idflag', 'acflag',
+                    'cc_op', 'cc_dep1', 'cc_dep2', 'cc_ndep']
+        if arch.name.startswith('ARM'):
+            return ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
+                    'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
+        return []
+
     def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState",
                                precomputed_regs: dict = None):
         """Sync registers from angr state to Rust state.
@@ -76,30 +99,22 @@ class RustStateSyncMixin:
                 When provided (e.g. from disk cache), skips reading registers
                 from the SimState, saving ~0.5ms of angr register plugin overhead.
         """
+        arch = angr_state.arch
+        reg_names = self._supported_register_names(arch)
+
         if precomputed_regs is not None:
-            # Fast path: use pre-computed concrete register values directly
-            if precomputed_regs:
-                rust_state.set_registers_bulk(precomputed_regs)
+            # Fast path: use pre-computed concrete register values directly.
+            # Filter to registers Rust actually models — the disk cache stores
+            # everything in arch.register_names but Rust only knows the subset
+            # in _supported_register_names.
+            supported = set(reg_names)
+            filtered = {name: val for name, val in precomputed_regs.items()
+                        if name in supported}
+            if filtered:
+                rust_state.set_registers_bulk(filtered)
             return
 
         regs = angr_state.regs
-        arch = angr_state.arch
-
-        # Sync common registers based on architecture
-        if arch.name in ('AMD64', 'X86_64'):
-            reg_names = ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
-                        'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11',
-                        'r12', 'r13', 'r14', 'r15', 'rip']
-        elif arch.name == 'X86':
-            reg_names = ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
-                        'ebp', 'esp', 'eip',
-                        'dflag', 'idflag', 'acflag',
-                        'cc_op', 'cc_dep1', 'cc_dep2', 'cc_ndep']
-        elif arch.name.startswith('ARM'):
-            reg_names = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
-                        'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
-        else:
-            reg_names = []
 
         # Build dict of all register values, then send in single FFI call.
         # Symbolic registers are imported via Z3 AST pointers (shared context).
