@@ -17,6 +17,164 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 
 
+class RustSolverFallback:
+    """Wraps state.solver so eval/min/max/satisfiable defer to the Rust solver.
+
+    Holds a forked Rust Z3 context (lazily created, cached across calls) and
+    the original Python solver methods. Each wrapper method tries the Rust
+    solver first and falls back to Python on failure or when Rust returns
+    None. Constraints added to the Python state after attach() (e.g.,
+    flareon2015_5 hash equalities) are synced into the cached Rust context
+    on the next call.
+    """
+
+    _ATTACH_FLAG = '_rust_fallback_attached'
+
+    def __init__(self, state, state_id, rust_mgr):
+        self._state = state
+        self._state_id = state_id
+        self._rust_mgr = rust_mgr
+        self._original_eval = state.solver.eval
+        self._original_eval_upto = state.solver.eval_upto
+        self._original_min = state.solver.min
+        self._original_max = state.solver.max
+        self._original_satisfiable = state.solver.satisfiable
+        # Cache the forked Rust solver: fork_state_solver() clones the Z3
+        # solver (~3ms), so caching saves significant time when the solve
+        # script calls eval() many times (ais3 ~100 byte evals).
+        self._cached_rust_ctx = None
+        # Track constraint count at attach time so we can detect when the
+        # caller adds constraints post-exploration and replay them into Rust.
+        n = len(state.solver.constraints)
+        self._initial_constraint_count = n
+        self._synced_constraint_count = n
+
+    def attach(self):
+        """Bind wrapper methods onto state.solver. No-op if already attached."""
+        state = self._state
+        state.scratch.rust_mgr = self._rust_mgr
+        state.scratch.rust_found_state_id = self._state_id
+        # Guard against double-patching (which would cause infinite recursion
+        # since the second wrapper's "originals" would be the first wrapper).
+        solver = state.solver
+        if getattr(solver, self._ATTACH_FLAG, False):
+            return
+        setattr(solver, self._ATTACH_FLAG, True)
+        solver.eval = self.eval
+        solver.eval_upto = self.eval_upto
+        solver.min = self.min
+        solver.max = self.max
+        solver.satisfiable = self.satisfiable
+
+    def _get_rust_ctx(self):
+        if self._cached_rust_ctx is None:
+            ctx = self._rust_mgr.fork_state_solver(self._state_id)
+            # Default 30s is too short for complex post-exploration solving (asisctf)
+            try:
+                ctx.set_timeout(120000)
+            except Exception:
+                pass
+            self._cached_rust_ctx = ctx
+        # Replay constraints that the caller added after attach
+        current = len(self._state.solver.constraints)
+        if current != self._synced_constraint_count:
+            new_constraints = self._state.solver.constraints[self._synced_constraint_count:]
+            for c in new_constraints:
+                try:
+                    self._cached_rust_ctx.add_constraint_ast(c)
+                except Exception:
+                    pass
+            self._synced_constraint_count = current
+        return self._cached_rust_ctx
+
+    def _rust_eval(self, expr, cast_to):
+        rust_ctx = self._get_rust_ctx()
+        result = rust_ctx.eval(expr)
+        if result is not None:
+            if cast_to == bytes:
+                nbytes = (expr.length + 7) // 8
+                raw = result.to_bytes(nbytes, 'little')
+                return raw[::-1]
+            return result
+        # Wide BVS (e.g. 160-bit flag): Rust eval returns None because the
+        # full symbol isn't in Rust's table. Decompose into byte-sized evals.
+        if hasattr(expr, 'length') and expr.length > 64:
+            nbytes = expr.length // 8
+            byte_vals = []
+            for i in range(nbytes):
+                hi = expr.length - 1 - i * 8
+                lo = hi - 7
+                byte_expr = claripy.Extract(hi, lo, expr)
+                byte_result = rust_ctx.eval(byte_expr)
+                if byte_result is None:
+                    return None
+                byte_vals.append(byte_result & 0xFF)
+            value = 0
+            for bv in byte_vals:
+                value = (value << 8) | bv
+            if cast_to == bytes:
+                return value.to_bytes(nbytes, 'big')
+            return value
+        return None
+
+    def eval(self, expr, cast_to=None, **kwargs):
+        try:
+            result = self._rust_eval(expr, cast_to)
+            if result is not None:
+                return result
+        except Exception:
+            pass
+        return self._original_eval(expr, cast_to=cast_to, **kwargs)
+
+    def eval_upto(self, expr, n, cast_to=None, **kwargs):
+        try:
+            rust_ctx = self._get_rust_ctx()
+            results = rust_ctx.eval_upto(expr, n)
+            if results:
+                if cast_to == bytes:
+                    nbytes = (expr.length + 7) // 8
+                    return [r.to_bytes(nbytes, 'big') for r in results]
+                return list(results)
+        except Exception:
+            pass
+        return self._original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
+
+    def min(self, expr, **kwargs):
+        try:
+            rust_ctx = self._get_rust_ctx()
+            result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
+            if result is not None:
+                return result
+        except Exception:
+            pass
+        return self._original_min(expr, **kwargs)
+
+    def max(self, expr, **kwargs):
+        try:
+            rust_ctx = self._get_rust_ctx()
+            result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
+            if result is not None:
+                return result
+        except Exception:
+            pass
+        return self._original_max(expr, **kwargs)
+
+    def satisfiable(self, **kwargs):
+        try:
+            rust_ctx = self._get_rust_ctx()
+            return rust_ctx.satisfiable()
+        except Exception as e_rust:
+            l.debug("Rust satisfiable() failed, trying Python: %s", e_rust)
+        try:
+            return self._original_satisfiable(**kwargs)
+        except Exception as e_py:
+            # CRITICAL: returning False here would mean "UNSAT" — a wrong
+            # answer that masks the underlying solver failure.
+            l.warning("Both Rust and Python satisfiable() failed for "
+                      "state — Python error: %s", e_py)
+            raise
+
+
 class RustStateExportMixin:
     """Mixin providing state export/conversion methods for RustExplorationManager.
 
@@ -341,248 +499,13 @@ class RustStateExportMixin:
                 l.debug("Failed to sync symbolic object at 0x%x: %s", addr, e)
 
     def _attach_rust_solver_fallback(self, state, state_id):
-        """Monkey-patch state.solver to use Rust solver as primary for eval operations.
+        """Wrap state.solver so eval/min/max/satisfiable defer to the Rust solver.
 
-        The Rust solver has the correct constraints from exploration. Rather than
-        syncing all constraints to Python (which is expensive and can cause identity
-        mismatches), we use the Rust solver directly for eval/eval_upto/min/max/
-        satisfiable calls.
+        The Rust solver holds the authoritative constraints from exploration;
+        syncing them to Python is expensive and can cause identity mismatches.
+        Re-attaching the same state is a no-op.
         """
-        rust_mgr = self._rust_mgr
-        state.scratch.rust_mgr = rust_mgr
-        state.scratch.rust_found_state_id = state_id
-
-        # Guard against double-patching (which causes infinite recursion)
-        if getattr(state.solver, '_rust_fallback_attached', False):
-            return
-        state.solver._rust_fallback_attached = True
-
-        original_eval = state.solver.eval
-        original_eval_upto = state.solver.eval_upto
-        original_min = state.solver.min
-        original_max = state.solver.max
-        original_satisfiable = state.solver.satisfiable
-
-        # Cache the forked Rust solver to avoid re-forking on every eval call.
-        # fork_state_solver() clones the Z3 solver (~3ms), so caching saves
-        # significant time when the solve script calls eval() many times
-        # (e.g., ais3 evaluates ~100 flag bytes → ~100 eval calls).
-        _cached_rust_ctx = [None]
-        # Track constraint count at attach time so we can detect when the user
-        # adds constraints post-exploration (e.g., flareon2015_5 adds hash
-        # equality constraints after finding the state).
-        _initial_constraint_count = [len(state.solver.constraints)]
-        _synced_constraint_count = [_initial_constraint_count[0]]
-
-        def _get_rust_ctx():
-            if _cached_rust_ctx[0] is None:
-                _cached_rust_ctx[0] = rust_mgr.fork_state_solver(state_id)
-                # Increase timeout for post-exploration solving (default 30s
-                # is too short for complex constraint systems like asisctf)
-                try:
-                    _cached_rust_ctx[0].set_timeout(120000)
-                except Exception:
-                    pass
-            # If user added constraints after export, sync them to Rust solver
-            current_count = len(state.solver.constraints)
-            if current_count != _synced_constraint_count[0]:
-                ctx = _cached_rust_ctx[0]
-                # Add new constraints (those beyond what we've already synced)
-                new_constraints = state.solver.constraints[_synced_constraint_count[0]:]
-                for c in new_constraints:
-                    try:
-                        ctx.add_constraint_ast(c)
-                    except Exception:
-                        pass
-                _synced_constraint_count[0] = current_count
-            return _cached_rust_ctx[0]
-
-        def _rust_eval(expr, cast_to=None):
-            """Evaluate using Rust solver, with byte decomposition for wide BVS."""
-            rust_ctx = _get_rust_ctx()
-            result = rust_ctx.eval(expr)
-            if result is not None:
-                if cast_to == bytes:
-                    nbytes = (expr.length + 7) // 8
-                    raw = result.to_bytes(nbytes, 'little')
-                    return raw[::-1]
-                return result
-            # Wide BVS (e.g. 160-bit flag): Rust eval returns None because
-            # the full symbol isn't in Rust's table. Decompose into byte evals.
-            if hasattr(expr, 'length') and expr.length > 64:
-                import claripy
-                nbytes = expr.length // 8
-                byte_vals = []
-                for i in range(nbytes):
-                    hi = expr.length - 1 - i * 8
-                    lo = hi - 7
-                    byte_expr = claripy.Extract(hi, lo, expr)
-                    byte_result = rust_ctx.eval(byte_expr)
-                    if byte_result is None:
-                        return None  # Can't decompose
-                    byte_vals.append(byte_result & 0xFF)
-                # Reassemble
-                value = 0
-                for bv in byte_vals:
-                    value = (value << 8) | bv
-                if cast_to == bytes:
-                    return value.to_bytes(nbytes, 'big')
-                return value
-            return None
-
-        def eval_with_fallback(expr, cast_to=None, **kwargs):
-            # Try Rust solver first — avoids expensive SolverComposite path
-            # which can take 81s for LAZY_SOLVES examples (hackcon2016)
-            try:
-                result = _rust_eval(expr, cast_to=cast_to)
-                if result is not None:
-                    return result
-            except Exception:
-                pass
-            # Fall back to Python solver
-            return original_eval(expr, cast_to=cast_to, **kwargs)
-
-        def eval_upto_with_fallback(expr, n, cast_to=None, **kwargs):
-            # Try Rust solver first
-            try:
-                rust_ctx = _get_rust_ctx()
-                results = rust_ctx.eval_upto(expr, n)
-                if results:
-                    if cast_to == bytes:
-                        nbytes = (expr.length + 7) // 8
-                        return [r.to_bytes(nbytes, 'big') for r in results]
-                    return list(results)
-            except Exception:
-                pass
-            return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
-
-        def min_with_fallback(expr, **kwargs):
-            try:
-                rust_ctx = _get_rust_ctx()
-                result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
-                if result is not None:
-                    return result
-            except Exception:
-                pass
-            return original_min(expr, **kwargs)
-
-        def max_with_fallback(expr, **kwargs):
-            try:
-                rust_ctx = _get_rust_ctx()
-                result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
-                if result is not None:
-                    return result
-            except Exception:
-                pass
-            return original_max(expr, **kwargs)
-
-        def satisfiable_with_fallback(**kwargs):
-            try:
-                rust_ctx = _get_rust_ctx()
-                return rust_ctx.satisfiable()
-            except Exception as e_rust:
-                l.debug("Rust satisfiable() failed, trying Python: %s", e_rust)
-            try:
-                return original_satisfiable(**kwargs)
-            except Exception as e_py:
-                # CRITICAL: Both solvers failed. Returning False here would
-                # mean "UNSAT" — a wrong answer that masks the underlying
-                # solver failure. Re-raise so the caller can react.
-                l.warning("Both Rust and Python satisfiable() failed for "
-                          "state — Python error: %s", e_py)
-                raise
-
-        state.solver.eval = eval_with_fallback
-        state.solver.eval_upto = eval_upto_with_fallback
-        state.solver.min = min_with_fallback
-        state.solver.max = max_with_fallback
-        state.solver.satisfiable = satisfiable_with_fallback
-
-    def _attach_rust_solver_primary(self, state, state_id):
-        """Monkey-patch state.solver to use Rust solver as PRIMARY for all operations.
-
-        Used for uncached states where constraint sync was skipped. The Rust
-        solver has the correct constraints from exploration. Python solver is
-        only used as a fallback (e.g., for expressions with Python-only symbols).
-        """
-        rust_mgr = self._rust_mgr
-        state.scratch.rust_mgr = rust_mgr
-        state.scratch.rust_found_state_id = state_id
-
-        original_eval = state.solver.eval
-        original_eval_upto = state.solver.eval_upto
-        original_min = state.solver.min
-        original_max = state.solver.max
-        original_satisfiable = state.solver.satisfiable
-
-        def eval_rust_primary(expr, cast_to=None, **kwargs):
-            try:
-                rust_ctx = rust_mgr.fork_state_solver(state_id)
-                result = rust_ctx.eval(expr)
-                if result is not None:
-                    if cast_to == bytes:
-                        nbytes = (expr.length + 7) // 8
-                        raw = result.to_bytes(nbytes, 'little')
-                        return raw[::-1]
-                    return (result,)
-            except Exception:
-                pass
-            # Fallback to Python solver
-            return original_eval(expr, cast_to=cast_to, **kwargs)
-
-        def eval_upto_rust_primary(expr, n, cast_to=None, **kwargs):
-            try:
-                rust_ctx = rust_mgr.fork_state_solver(state_id)
-                results = rust_ctx.eval_upto(expr, n)
-                if results:
-                    if cast_to == bytes:
-                        nbytes = (expr.length + 7) // 8
-                        return [r.to_bytes(nbytes, 'big') for r in results]
-                    return list(results)
-            except Exception:
-                pass
-            return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
-
-        def min_rust_primary(expr, **kwargs):
-            try:
-                rust_ctx = rust_mgr.fork_state_solver(state_id)
-                result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
-                if result is not None:
-                    return result
-            except Exception:
-                pass
-            return original_min(expr, **kwargs)
-
-        def max_rust_primary(expr, **kwargs):
-            try:
-                rust_ctx = rust_mgr.fork_state_solver(state_id)
-                result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
-                if result is not None:
-                    return result
-            except Exception:
-                pass
-            return original_max(expr, **kwargs)
-
-        def satisfiable_rust_primary(**kwargs):
-            try:
-                rust_ctx = rust_mgr.fork_state_solver(state_id)
-                return rust_ctx.satisfiable()
-            except Exception as e_rust:
-                l.debug("Rust satisfiable() failed, trying Python: %s", e_rust)
-            try:
-                return original_satisfiable(**kwargs)
-            except Exception as e_py:
-                # CRITICAL: returning False here is a wrong answer (UNSAT).
-                # Re-raise so callers can handle solver failure explicitly.
-                l.warning("Both Rust and Python satisfiable() failed for "
-                          "state — Python error: %s", e_py)
-                raise
-
-        state.solver.eval = eval_rust_primary
-        state.solver.eval_upto = eval_upto_rust_primary
-        state.solver.min = min_rust_primary
-        state.solver.max = max_rust_primary
-        state.solver.satisfiable = satisfiable_rust_primary
+        RustSolverFallback(state, state_id, self._rust_mgr).attach()
 
     def _sync_exported_constraints(self, state, state_id):
         """Sync constraints from Rust solver to Python state.
