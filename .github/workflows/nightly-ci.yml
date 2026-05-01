@@ -83,6 +83,8 @@ jobs:
         run: cargo check --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}"
       - name: Test with features "${{ matrix.features }}"
         run: cargo test --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}"
+      - name: Behavioral smoke test with features "${{ matrix.features }}"
+        run: cargo test --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}" --test feature_flag_smoke
 
   benchmark_regression:
     name: Benchmark Regression
