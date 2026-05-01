@@ -144,6 +144,15 @@ class RustExplorationManager(
     _init_cache: Dict[str, "angr.SimState"] = {}
     _init_cache_max = 10
 
+    # Class-level cache for disk cache keys (MD5 of binary content).
+    # Avoids re-hashing the same file on every RustExplorationManager construction.
+    _disk_key_cache: Dict[str, str] = {}
+
+    # Class-level cache for blank_state objects keyed by (binary_path, addr).
+    # blank_state() is expensive (~1ms); caching + copy() is <0.1ms.
+    _blank_state_cache: Dict[tuple, "angr.SimState"] = {}
+    _blank_state_cache_max = 10
+
     # SimProcedures known to write memory (need full state.copy() for changed_bytes)
     _MEMORY_WRITING_PROCS = frozenset({
         'read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
@@ -322,6 +331,9 @@ class RustExplorationManager(
 
         # Cached memory layout from disk cache for fast _sync_memory_to_rust
         self._mem_cache: Optional[dict] = None
+
+        # Pre-computed register dict from disk cache for fast register sync
+        self._precomputed_regs: Optional[dict] = None
 
         # Track stdin BVS variables for state export.
         # List of (claripy_bvs, size_ast) tuples from SimPacketsStream.content.
@@ -1067,9 +1079,16 @@ class RustExplorationManager(
             pass
         return False
 
-    @staticmethod
-    def _disk_cache_key(binary_path: str) -> str:
-        """Compute a cache key from binary file content hash + engine version."""
+    @classmethod
+    def _disk_cache_key(cls, binary_path: str) -> str:
+        """Compute a cache key from binary file content hash + engine version.
+
+        Results are cached per binary path to avoid re-hashing the same file
+        on every RustExplorationManager construction (~0.5ms for 100KB binary).
+        """
+        cached = cls._disk_key_cache.get(binary_path)
+        if cached is not None:
+            return cached
         try:
             h = hashlib.md5()
             # Include cache version so engine updates invalidate stale entries
@@ -1077,7 +1096,9 @@ class RustExplorationManager(
             with open(binary_path, 'rb') as f:
                 for chunk in iter(lambda: f.read(65536), b''):
                     h.update(chunk)
-            return h.hexdigest()
+            result = h.hexdigest()
+            cls._disk_key_cache[binary_path] = result
+            return result
         except OSError:
             return ""
 
@@ -1223,6 +1244,22 @@ class RustExplorationManager(
         except Exception as e:
             l.debug(f"Failed to save disk cache: {e}")
 
+    def _get_cached_blank_state(self, addr: int) -> "angr.SimState":
+        """Get a blank state, using class-level cache when possible.
+
+        blank_state() is expensive (~1ms) due to plugin initialization.
+        Caching + copy() is <0.1ms.
+        """
+        binary_path = getattr(self._project.loader.main_object, 'binary', None) or ''
+        cache_key = (binary_path, addr)
+        cached = RustExplorationManager._blank_state_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+        state = self._project.factory.blank_state(addr=addr)
+        if binary_path and len(RustExplorationManager._blank_state_cache) < RustExplorationManager._blank_state_cache_max:
+            RustExplorationManager._blank_state_cache[cache_key] = state.copy()
+        return state
+
     def _load_init_from_disk_cache(self, cache_key: str):
         """Load post-init state from disk cache.
 
@@ -1238,8 +1275,8 @@ class RustExplorationManager(
             with open(cache_path, 'rb') as f:
                 data = pickle.load(f)
 
-            # Restore to a blank state
-            state = self._project.factory.blank_state(addr=data['addr'])
+            # Restore to a blank state (cached for repeat constructions)
+            state = self._get_cached_blank_state(data['addr'])
             for reg_name, val in data['registers'].items():
                 try:
                     setattr(state.regs, reg_name, val)
@@ -1296,6 +1333,10 @@ class RustExplorationManager(
                     'section_patches': data.get('section_patches', []),
                     'stack_page': data.get('stack_page'),
                 }
+
+            # Store raw register dict for fast Rust sync (avoids reading
+            # registers back from SimState's register plugin)
+            self._precomputed_regs = data.get('registers', {})
 
             l.info(f"Disk cache hit: restored state at 0x{data['addr']:x}")
             return state, mem_cache
@@ -1540,9 +1581,12 @@ class RustExplorationManager(
         # Set PC
         rust_state.pc = angr_state.addr
 
-        # Sync registers
+        # Sync registers (use precomputed dict from disk cache when available)
         _t_reg = time.perf_counter_ns()
-        self._sync_registers_to_rust(angr_state, rust_state)
+        precomputed = self._precomputed_regs
+        self._precomputed_regs = None  # Consume once
+        self._sync_registers_to_rust(angr_state, rust_state,
+                                     precomputed_regs=precomputed)
         self._perf_stats['init_register_sync_ns'] += time.perf_counter_ns() - _t_reg
 
         # Map memory regions

@@ -67,8 +67,21 @@ class RustStateSyncMixin:
             if _DBG:
                 l.debug(f"Synced {len(procs)} dynamically created hooks")
 
-    def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState"):
-        """Sync registers from angr state to Rust state."""
+    def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState",
+                               precomputed_regs: dict = None):
+        """Sync registers from angr state to Rust state.
+
+        Args:
+            precomputed_regs: Optional dict of {reg_name: concrete_value}.
+                When provided (e.g. from disk cache), skips reading registers
+                from the SimState, saving ~0.5ms of angr register plugin overhead.
+        """
+        if precomputed_regs is not None:
+            # Fast path: use pre-computed concrete register values directly
+            if precomputed_regs:
+                rust_state.set_registers_bulk(precomputed_regs)
+            return
+
         regs = angr_state.regs
         arch = angr_state.arch
 
