@@ -2428,9 +2428,9 @@ impl RustExplorationManager {
     /// Returns list of (fd, name, position, flags, content_len, is_open) tuples.
     pub fn get_state_open_fds(&self, state_id: u64) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
         let extract = |state: &crate::state::RustSimState| {
-            state.file_system_ref().all_fds().iter().map(|&fd| {
-                let info = state.file_system_ref().fd_info(fd).unwrap();
-                (fd, info.0.to_string(), info.1, info.2, info.3, info.4)
+            state.file_system_ref().all_fds().iter().filter_map(|&fd| {
+                let info = state.file_system_ref().fd_info(fd)?;
+                Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
             }).collect()
         };
 
@@ -2487,9 +2487,9 @@ impl RustExplorationManager {
         let extract = |state: &crate::state::RustSimState| -> Vec<(String, u64)> {
             state.inspection().event_counts().iter().enumerate()
                 .filter(|&(_, &count)| count > 0)
-                .map(|(i, &count)| {
-                    let event = crate::state::InspectEvent::from_u8(i as u8).unwrap();
-                    (event.name().to_string(), count)
+                .filter_map(|(i, &count)| {
+                    let event = crate::state::InspectEvent::from_u8(i as u8)?;
+                    Some((event.name().to_string(), count))
                 })
                 .collect()
         };
