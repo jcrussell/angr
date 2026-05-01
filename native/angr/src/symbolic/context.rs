@@ -11,8 +11,14 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
+use smallvec::SmallVec;
 
 use super::RustBV;
+
+/// Inline capacity for SymContext push_* stacks. Branch nesting is typically
+/// shallow (≤8) within a single block; SmallVec avoids the heap allocation
+/// for the first push.
+type PushStack = SmallVec<[usize; 8]>;
 
 // =============================================================================
 // Global Z3 Solver Profiling Counters
@@ -204,12 +210,12 @@ pub struct SymContext {
     /// Current push level for transaction tracking.
     push_level: AtomicUsize,
     /// Constraint count at each push level (for rollback).
-    push_constraint_counts: Mutex<Vec<usize>>,
+    push_constraint_counts: Mutex<PushStack>,
     /// Local Z3 cache length at each push level (for rollback truncation).
     #[cfg(feature = "vex-engine-z3")]
-    push_local_cache_lengths: Mutex<Vec<usize>>,
+    push_local_cache_lengths: Mutex<PushStack>,
     /// Local assumed_constraints length at each push level (for rollback truncation).
-    push_assumed_local_lengths: Mutex<Vec<usize>>,
+    push_assumed_local_lengths: Mutex<PushStack>,
     /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). Split into Arc-shared frozen
     /// prefix (O(1) clone on fork) and a local Vec for additions after fork —
@@ -254,8 +260,8 @@ impl SymContext {
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(Vec::new()),
-            push_assumed_local_lengths: Mutex::new(Vec::new()),
+            push_constraint_counts: Mutex::new(PushStack::new()),
+            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Arc::new(Vec::new()),
             assumed_constraints_local: Mutex::new(Vec::new()),
         }
@@ -293,9 +299,9 @@ impl SymContext {
         SymContext {
             next_id: AtomicU64::new(0),
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(Vec::new()),
-            push_local_cache_lengths: Mutex::new(Vec::new()),
-            push_assumed_local_lengths: Mutex::new(Vec::new()),
+            push_constraint_counts: Mutex::new(PushStack::new()),
+            push_local_cache_lengths: Mutex::new(PushStack::new()),
+            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(HashMap::new()),
             assumed_constraints_shared: Arc::new(Vec::new()),
@@ -1690,9 +1696,9 @@ impl SymContext {
             constraint_count: AtomicUsize::new(assumed_total_len),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(Vec::new()),
-            push_local_cache_lengths: Mutex::new(Vec::new()),
-            push_assumed_local_lengths: Mutex::new(Vec::new()),
+            push_constraint_counts: Mutex::new(PushStack::new()),
+            push_local_cache_lengths: Mutex::new(PushStack::new()),
+            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             assumed_constraints_shared: frozen_assumed,
             assumed_constraints_local: Mutex::new(Vec::new()),
             z3_assertions_shared: frozen_shared,
@@ -1723,8 +1729,8 @@ impl SymContext {
             constraint_count: AtomicUsize::new(0),
             symbol_table: RwLock::new(self.symbol_table.read().clone()),
             push_level: AtomicUsize::new(0),
-            push_constraint_counts: Mutex::new(Vec::new()),
-            push_assumed_local_lengths: Mutex::new(Vec::new()),
+            push_constraint_counts: Mutex::new(PushStack::new()),
+            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             assumed_constraints_shared: frozen_assumed,
             assumed_constraints_local: Mutex::new(Vec::new()),
         }
