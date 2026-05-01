@@ -124,13 +124,12 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                     }
 
-                    // Then check concrete stores (reverse order for most recent)
-                    for &(store_addr, ref store_data) in self.pending_stores.iter().rev() {
-                        if store_addr <= addr_concrete && addr_concrete + size as u64 <= store_addr + store_data.len() as u64 {
-                            let offset = (addr_concrete - store_addr) as usize;
-                            let data = &store_data[offset..offset + size];
-                            return Ok(bytes_to_bv(data, (size * 8) as u32));
-                        }
+                    // Then check concrete stores via the indexed buffer.
+                    // try_load fast-skips when no pending store overlaps the
+                    // load address; falls back to a reverse scan only when the
+                    // most recent covering store is smaller than the load.
+                    if let Some(data) = self.pending_stores.try_load(addr_concrete, size) {
+                        return Ok(bytes_to_bv(data, (size * 8) as u32));
                     }
 
                     // Also check previously flushed symbolic stores (cross-block)

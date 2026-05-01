@@ -192,7 +192,7 @@ impl<'a> CallbackInterpreter<'a> {
                         if data_val.is_symbolic() {
                             self.pending_symbolic_stores.insert(addr_concrete, data_val);
                         }
-                        self.pending_stores.push((addr_concrete, data_bytes));
+                        self.pending_stores.push(addr_concrete, data_bytes);
 
                         // Auto-flush if buffer is full
                         if self.pending_stores.len() >= self.max_pending_stores {
@@ -515,7 +515,7 @@ impl<'a> CallbackInterpreter<'a> {
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             } else {
                                 let data_bytes = bv_to_bytes(&data_val);
-                                self.pending_stores.push((addr_concrete, data_bytes));
+                                self.pending_stores.push(addr_concrete, data_bytes);
                                 if self.pending_stores.len() >= self.max_pending_stores {
                                     self.flush_stores(py, callbacks)?;
                                 }
@@ -543,7 +543,7 @@ impl<'a> CallbackInterpreter<'a> {
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         } else {
                             let ite_bytes = bv_to_bytes(&ite_result);
-                            self.pending_stores.push((addr_concrete, ite_bytes));
+                            self.pending_stores.push(addr_concrete, ite_bytes);
                             if self.pending_stores.len() >= self.max_pending_stores {
                                 self.flush_stores(py, callbacks)?;
                             }
@@ -613,7 +613,7 @@ impl<'a> CallbackInterpreter<'a> {
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             } else {
                                 let data_bytes = bv_to_bytes(&data_val);
-                                self.pending_stores.push((addr_concrete, data_bytes));
+                                self.pending_stores.push(addr_concrete, data_bytes);
                                 if self.pending_stores.len() >= self.max_pending_stores {
                                     self.flush_stores(py, callbacks)?;
                                 }

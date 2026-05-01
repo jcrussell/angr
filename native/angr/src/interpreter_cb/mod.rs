@@ -30,10 +30,12 @@ mod execution;
 mod exits;
 mod expressions;
 mod helpers;
+mod pending_store;
 mod prefetch;
 mod statements;
 
 use helpers::bytes_to_bv;
+use pending_store::PendingStoreBuffer;
 
 
 
@@ -529,8 +531,9 @@ pub struct CallbackInterpreter<'a> {
     /// A u128 covers 512 bytes of register space (128 * 4 = 512).
     dirty_registers: u128,
     /// Pending concrete stores to batch for efficiency.
-    /// Each entry is (address, data_bytes).
-    pending_stores: Vec<(u64, Vec<u8>)>,
+    /// Each entry is (address, data_bytes). Wrapped in a buffer that maintains
+    /// a per-byte-address index so loads can fast-skip the reverse scan.
+    pending_stores: PendingStoreBuffer,
     /// All stores flushed during this step (accumulated across block boundaries).
     /// Used for same-step cross-block load forwarding and for applying to state memory.
     /// HashMap for O(1) lookup by address. Value is the most recent store data.
@@ -641,7 +644,7 @@ impl<'a> CallbackInterpreter<'a> {
             concrete_memory: Vec::new(),
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
-            pending_stores: Vec::with_capacity(256),
+            pending_stores: PendingStoreBuffer::with_capacity(256),
             all_flushed_stores: HashMap::new(),
             all_flushed_symbolic_stores: HashMap::new(),
             pending_symbolic_stores: HashMap::new(),
@@ -1014,7 +1017,7 @@ impl<'a> CallbackInterpreter<'a> {
         if self.use_rust_memory {
             // When Rust owns memory, flush stores to rust_memory instead of Python.
             if let Some(ref mut rust_mem) = self.rust_memory {
-                for (addr, data) in &self.pending_stores {
+                for (addr, data) in self.pending_stores.iter() {
                     let width = (data.len() * 8) as u32;
                     let mut val: u128 = 0;
                     for (i, &b) in data.iter().enumerate() {
@@ -1031,7 +1034,7 @@ impl<'a> CallbackInterpreter<'a> {
                 }
             }
             // Still accumulate for cross-block load forwarding
-            for (addr, data) in &self.pending_stores {
+            for (addr, data) in self.pending_stores.iter() {
                 self.all_flushed_stores.insert(*addr, data.clone());
             }
             // Preserve symbolic values across block boundaries
@@ -1044,11 +1047,11 @@ impl<'a> CallbackInterpreter<'a> {
 
         // Python callback path (when Rust memory is not used)
         callbacks
-            .call_memory_store_batch(py, &self.pending_stores)
+            .call_memory_store_batch(py, self.pending_stores.as_slice())
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         // Accumulate flushed stores for cross-block load forwarding.
-        for (addr, data) in &self.pending_stores {
+        for (addr, data) in self.pending_stores.iter() {
             self.all_flushed_stores.insert(*addr, data.clone());
         }
         // Preserve symbolic values across block boundaries
@@ -1064,7 +1067,7 @@ impl<'a> CallbackInterpreter<'a> {
     pub fn flush_stores_to_rust_memory(&mut self) {
         if let Some(ref mut rust_mem) = self.rust_memory {
             // Flush concrete pending stores
-            for (addr, data) in self.pending_stores.drain(..) {
+            for (addr, data) in self.pending_stores.drain() {
                 let width = (data.len() * 8) as u32;
                 let mut val: u128 = 0;
                 for (i, &b) in data.iter().enumerate() {
@@ -1087,7 +1090,7 @@ impl<'a> CallbackInterpreter<'a> {
         self.pending_symbolic_stores.clear();
         self.all_flushed_symbolic_stores.clear();
         // Merge pending into flushed
-        for (addr, data) in self.pending_stores.drain(..) {
+        for (addr, data) in self.pending_stores.drain() {
             self.all_flushed_stores.insert(addr, data);
         }
         std::mem::take(&mut self.all_flushed_stores).into_iter().collect()
@@ -1199,13 +1202,11 @@ impl<'a> CallbackInterpreter<'a> {
         let sp_val = sp.as_u64()?;
 
         // Check pending_stores first (most recent writes, same block)
-        for (addr, data) in self.pending_stores.iter().rev() {
-            if *addr == sp_val && data.len() >= ptr_size as usize {
-                let mut bytes = [0u8; 8];
-                let len = std::cmp::min(ptr_size as usize, 8);
-                bytes[..len].copy_from_slice(&data[..len]);
-                return Some(u64::from_le_bytes(bytes));
-            }
+        if let Some(data) = self.pending_stores.try_load_exact(sp_val, ptr_size as usize) {
+            let mut bytes = [0u8; 8];
+            let len = std::cmp::min(ptr_size as usize, 8);
+            bytes[..len].copy_from_slice(&data[..len]);
+            return Some(u64::from_le_bytes(bytes));
         }
 
         // Check all_flushed_stores (cross-block within same step)
@@ -1310,7 +1311,7 @@ impl<'a> CallbackInterpreter<'a> {
             concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
             concretizer: self.concretizer.clone(), // Share concretizer settings
             dirty_registers: 0, // Fresh dirty tracking for fork
-            pending_stores: Vec::with_capacity(256), // Fresh store buffer for fork
+            pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
             all_flushed_stores: HashMap::new(),
             all_flushed_symbolic_stores: HashMap::new(),
             pending_symbolic_stores: HashMap::new(),
