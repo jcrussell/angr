@@ -8,6 +8,23 @@ use crate::symbolic::{RustBV, SymContext};
 
 use super::ir::{IROp, IRType};
 
+/// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
+macro_rules! width_unop {
+    ($arg:ident, $ty:expr, $method:ident, $ctx:expr) => {{
+        debug_assert_eq!($arg.width(), $ty.bits());
+        Ok($arg.$method($ctx))
+    }};
+}
+
+/// Compress same-width binary arms `assert width(left)==width(right)==ty.bits(); left.$method(right, ctx)`.
+macro_rules! width_binop {
+    ($left:ident, $right:ident, $ty:expr, $method:ident, $ctx:expr) => {{
+        debug_assert_eq!($left.width(), $ty.bits());
+        debug_assert_eq!($right.width(), $ty.bits());
+        Ok($left.$method($right, $ctx))
+    }};
+}
+
 /// VEX operation executor.
 ///
 /// This struct provides methods to execute VEX operations on `RustBV` values.
@@ -26,30 +43,11 @@ impl VEXOps {
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         match op {
-            IROp::Not(ty) => {
-                debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.not_into(ctx))
-            }
-
-            IROp::Neg(ty) => {
-                debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.neg_into(ctx))
-            }
-
-            IROp::Clz(ty) => {
-                debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.clz_into(ctx))
-            }
-
-            IROp::Ctz(ty) => {
-                debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.ctz_into(ctx))
-            }
-
-            IROp::PopCount(ty) => {
-                debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.popcount_into(ctx))
-            }
+            IROp::Not(ty) => width_unop!(arg, ty, not_into, ctx),
+            IROp::Neg(ty) => width_unop!(arg, ty, neg_into, ctx),
+            IROp::Clz(ty) => width_unop!(arg, ty, clz_into, ctx),
+            IROp::Ctz(ty) => width_unop!(arg, ty, ctz_into, ctx),
+            IROp::PopCount(ty) => width_unop!(arg, ty, popcount_into, ctx),
 
             // Sign/Zero extension
             IROp::SignExtend { from, to } => {
@@ -102,10 +100,7 @@ impl VEXOps {
             IROp::F64toI64U => Self::f64_to_i64u(arg, ctx),
 
             // Vector not
-            IROp::VNot(ty) => {
-                debug_assert_eq!(arg.width(), ty.bits());
-                Ok(arg.not_into(ctx))
-            }
+            IROp::VNot(ty) => width_unop!(arg, ty, not_into, ctx),
 
             // Reinterpret (just changes type, not bits)
             IROp::Reinterpret { from, to } => {
@@ -140,47 +135,13 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         match op {
             // Arithmetic
-            IROp::Add(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.add_into(right, ctx))
-            }
-
-            IROp::Sub(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.sub_into(right, ctx))
-            }
-
-            IROp::Mul(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.mul_into(right, ctx))
-            }
-
-            IROp::DivU(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.udiv_into(right, ctx))
-            }
-
-            IROp::DivS(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.sdiv_into(right, ctx))
-            }
-
-            IROp::ModU(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.urem_into(right, ctx))
-            }
-
-            IROp::ModS(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.srem_into(right, ctx))
-            }
+            IROp::Add(ty) => width_binop!(left, right, ty, add_into, ctx),
+            IROp::Sub(ty) => width_binop!(left, right, ty, sub_into, ctx),
+            IROp::Mul(ty) => width_binop!(left, right, ty, mul_into, ctx),
+            IROp::DivU(ty) => width_binop!(left, right, ty, udiv_into, ctx),
+            IROp::DivS(ty) => width_binop!(left, right, ty, sdiv_into, ctx),
+            IROp::ModU(ty) => width_binop!(left, right, ty, urem_into, ctx),
+            IROp::ModS(ty) => width_binop!(left, right, ty, srem_into, ctx),
 
             // Widening multiply
             IROp::MullU(ty) => Self::widening_mul(left, right, ty, false, ctx),
@@ -198,23 +159,9 @@ impl VEXOps {
             IROp::DivModS128to64 => Self::divmod_128_to_64(left, right, true, ctx),
 
             // Bitwise
-            IROp::And(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.and_into(right, ctx))
-            }
-
-            IROp::Or(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.or_into(right, ctx))
-            }
-
-            IROp::Xor(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.xor_into(right, ctx))
-            }
+            IROp::And(ty) => width_binop!(left, right, ty, and_into, ctx),
+            IROp::Or(ty) => width_binop!(left, right, ty, or_into, ctx),
+            IROp::Xor(ty) => width_binop!(left, right, ty, xor_into, ctx),
 
             // Shifts — normalize shift amount width to match operand
             IROp::Shl(ty) => {
@@ -236,41 +183,12 @@ impl VEXOps {
             }
 
             // Comparisons
-            IROp::CmpEQ(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.eq_into(right, ctx))
-            }
-
-            IROp::CmpNE(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.ne_into(right, ctx))
-            }
-
-            IROp::CmpLT(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.slt_into(right, ctx))
-            }
-
-            IROp::CmpLE(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.sle_into(right, ctx))
-            }
-
-            IROp::CmpLTU(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.ult_into(right, ctx))
-            }
-
-            IROp::CmpLEU(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.ule_into(right, ctx))
-            }
+            IROp::CmpEQ(ty) => width_binop!(left, right, ty, eq_into, ctx),
+            IROp::CmpNE(ty) => width_binop!(left, right, ty, ne_into, ctx),
+            IROp::CmpLT(ty) => width_binop!(left, right, ty, slt_into, ctx),
+            IROp::CmpLE(ty) => width_binop!(left, right, ty, sle_into, ctx),
+            IROp::CmpLTU(ty) => width_binop!(left, right, ty, ult_into, ctx),
+            IROp::CmpLEU(ty) => width_binop!(left, right, ty, ule_into, ctx),
 
             // Float arithmetic
             IROp::FAdd(ty) => Self::float_add(left, right, ty, ctx),
@@ -294,23 +212,9 @@ impl VEXOps {
             IROp::VFDivS { elem } => Self::vec_float_scalar_op(left, right, elem, "div", ctx),
 
             // Vector bitwise
-            IROp::VAnd(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.and_into(right, ctx))
-            }
-
-            IROp::VOr(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.or_into(right, ctx))
-            }
-
-            IROp::VXor(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
-                debug_assert_eq!(right.width(), ty.bits());
-                Ok(left.xor_into(right, ctx))
-            }
+            IROp::VAnd(ty) => width_binop!(left, right, ty, and_into, ctx),
+            IROp::VOr(ty) => width_binop!(left, right, ty, or_into, ctx),
+            IROp::VXor(ty) => width_binop!(left, right, ty, xor_into, ctx),
 
             // Concatenate
             IROp::Concat { ty } => {
