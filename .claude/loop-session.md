@@ -1,59 +1,42 @@
-# Loop session notes (2026-05-01, sixth session)
+# Loop session notes (2026-05-01, seventh session)
 
 ## Closed this session
 
-### angr-jmiz — Fix max_active_states + delete dead files — commit 15960a013
+### angr-sc8h — RustSolverFallback wrapper class — commit 96f297bf9
 
-Two-part fix for the bug surfaced during last session:
+Replaced the monkey-patching logic in `_attach_rust_solver_fallback` with
+a proper class-based wrapper.
 
-**Part 1 — Delete dead source files (~2.8K lines removed):**
-- `native/angr/src/exploration/pyapi.rs`
-- `native/angr/src/exploration/resume.rs`
-- `native/angr/src/exploration/run_loop.rs`
+**Before:** ~160-line inline closure block in `rust_state_export.py:343`
+sharing state via list-cell hacks (`_cached_rust_ctx[0]`,
+`_synced_constraint_count[0]`).
 
-These claimed in their header comments to be "included into mod.rs"
-but were never declared as modules. Their content had been duplicated
-into the live mod.rs ages ago, and the dead copies were diverging
-silently. Verified via diff that no live functionality was lost
-(only `py_eval_stdin_symbol` differed — a thin wrapper around the
-live `eval_stdin_symbol`, unused from Python).
+**After:** `RustSolverFallback` class at module level (~150 lines)
+that owns the cached fork ctx, original method handles, and constraint
+sync counter as proper instance attrs. The mixin method is now a
+two-line trampoline:
 
-**Part 2 — Restore max_active_states enforcement:**
-- Restored `push_to_active_or_drop` helper in `exploration/helpers.rs`
-  using `sm.push()` (which indexes) rather than raw `push_back`.
-- Replaced 8 direct STASH_ACTIVE push sites in mod.rs with helper:
-  - native procedure return path (~line 2580)
-  - regular successors after step (~line 2648)
-  - deferred forks at find/avoid boundaries (~line 2725)
-  - regular successors final path (~line 3106)
-  - deadend deferred forks (~line 3212)
-  - resume_after_symbolic_branch bulk push (~line 3447)
-  - resume_find_predicate not-matched (~line 3494)
-  - resume_avoid_predicate not-matched (~line 3520)
+    RustSolverFallback(state, state_id, self._rust_mgr).attach()
 
-**Part 3 — Functional test:**
-Added `test_max_active_states_prunes_forks` — sets limit=1 on
-fauxware, explores, asserts `counts['pruned'] > 0`. The prior test
-only checked `active <= limit` which passed even when the limit
-was a silent no-op.
+`attach()` handles the double-patch guard (still uses
+`_rust_fallback_attached` flag to prevent infinite recursion if
+called twice), scratch wiring, and method binding.
 
-Tests: 208/208 Python passing; 364/364 cargo lib tests; cargo
-release build warning-free.
+**Bonus cleanup:** Deleted `_attach_rust_solver_primary` (~85 lines).
+Was defined but never called from any code path. Grep confirmed
+only its own definition site referenced the name.
 
-Memories updated:
-- `invariant-active-stash-push` (NEW) — must use helper at new push sites
-- `invariant-dead-source-files` — updated: now resolved
-- `max-active-states-test-pattern` (NEW) — how to verify wiring
-- `bug-max-active-states-unenforced` — forgotten (resolved)
-- `invariant-pyapi-dead-code` — forgotten (resolved by deletion)
+**Net change:** 1 file, 163 insertions, 240 deletions.
 
-## Closed previously
+**Verification:**
+- 208/208 Python tests pass
+- cargo check release clean
+- ais3_crackme benchmark recovers `b'ais3{I_tak3_g00d_n0t3s}'` end-to-end
+  (uses ~100 byte evals via fallback, exercises caching path)
 
-### angr-gste — Remove dead code — commit 1992563dd
-8 dead items removed; surfaced angr-jmiz (this session's work).
-
-### angr-742d — Register accessor macros — commit a25cdc3ef
-Replaced hand-rolled VexArch match with Arch trait methods.
+### Memories added
+- `invariant-rust-solver-fallback-class` — where the wrapper lives
+- `invariant-attach-flag-prevents-recursion` — why the guard matters
 
 ## Ready P-tasks remaining
 
@@ -64,6 +47,5 @@ Replaced hand-rolled VexArch match with Arch trait methods.
 - angr-awm3 (P3 CAS/LLSC statement handling)
 - angr-7c9j (P3 feature flag correctness in CI)
 - angr-dja4 (P3 expand benchmark baseline)
-- angr-sc8h (P3 replace solver fallback monkey-patching)
 - angr-wpi7 (P3 consolidate P1-P19/GAP fix workarounds)
 - angr-v4db (P3 extract god-methods)
