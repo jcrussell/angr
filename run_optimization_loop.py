@@ -652,7 +652,16 @@ def main():
                         help="Skip benchmark regression gate after commits")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the prompt that would be used and exit")
+    parser.add_argument("--stress-test", action="store_true",
+                        help="Stress-test mode: 300s timeout, 512M memory, 3 iterations, skip benchmarks")
     args = parser.parse_args()
+
+    # Apply stress-test presets
+    if args.stress_test:
+        args.timeout = 300
+        args.memory_limit = "512M"
+        args.max_iterations = 3
+        args.skip_benchmarks = True
 
     # Setup logging
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -667,6 +676,10 @@ def main():
     )
 
     _setup_signal_handlers()
+
+    if args.stress_test:
+        log.info("STRESS TEST MODE: timeout=%ds, memory=%s, iterations=%d, benchmarks=off",
+                 args.timeout, args.memory_limit, args.max_iterations)
 
     # Verify prerequisites
     for cmd_name in ["claude", "bd", "git", "systemd-run"]:
