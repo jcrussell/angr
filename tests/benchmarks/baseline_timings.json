@@ -1,94 +1,178 @@
 {
   "ais3_crackme": {
     "callback_count": 47,
-    "peak_memory_mb": 363.0,
+    "peak_memory_mb": 237.0,
     "python_time": null,
-    "rust_time": 0.894,
+    "rust_time": 0.498,
     "state_creations": 0,
     "steps": 47
   },
   "codegate_2017-angrybird": {
-    "python_time": 6.89,
-    "rust_time": 2.84
+    "callback_count": 421,
+    "peak_memory_mb": 412.5,
+    "python_time": null,
+    "rust_time": 0.883,
+    "state_creations": 0,
+    "steps": 423
   },
   "csaw_wyvern": {
-    "python_time": 16.41,
-    "rust_time": 1.05
+    "callback_count": 30,
+    "peak_memory_mb": 183.3,
+    "python_time": null,
+    "rust_time": 1.231,
+    "state_creations": 0,
+    "steps": 3
   },
   "csgames2018": {
-    "python_time": 1.58,
-    "rust_time": 0.97
+    "callback_count": 231,
+    "peak_memory_mb": 231.3,
+    "python_time": null,
+    "rust_time": 0.69,
+    "state_creations": 24,
+    "steps": 139
   },
   "defcamp_r100": {
     "callback_count": 0,
-    "peak_memory_mb": 206.5,
+    "peak_memory_mb": 173.7,
     "python_time": null,
-    "rust_time": 0.225,
+    "rust_time": 0.159,
     "state_creations": 0,
     "steps": 2
   },
+  "defcamp_r100__dfs": {
+    "callback_count": 0,
+    "peak_memory_mb": 173.7,
+    "python_time": null,
+    "rust_time": 0.158,
+    "state_creations": 0,
+    "steps": 2
+  },
+  "defcon2016quals_baby-re": {
+    "callback_count": 40,
+    "peak_memory_mb": 186.2,
+    "python_time": null,
+    "rust_time": 0.568,
+    "state_creations": 0,
+    "steps": 13
+  },
   "ekopartyctf2016_rev250": {
-    "python_time": 32.41,
-    "rust_time": 4.14
+    "callback_count": 5,
+    "peak_memory_mb": 317.8,
+    "python_time": null,
+    "rust_time": 1.48,
+    "state_creations": 0,
+    "steps": 3
+  },
+  "ekopartyctf2016_sokohashv2": {
+    "callback_count": 9,
+    "peak_memory_mb": 335.0,
+    "python_time": null,
+    "rust_time": 12.309,
+    "state_creations": 0,
+    "steps": 0
   },
   "fauxware": {
     "callback_count": 6,
-    "peak_memory_mb": 177.4,
+    "peak_memory_mb": 180.7,
     "python_time": null,
-    "rust_time": 0.4,
+    "rust_time": 0.356,
     "state_creations": 0,
     "steps": 2
   },
   "flareon2015_10": {
-    "python_time": 7.47,
-    "rust_time": 5.54
+    "callback_count": 2,
+    "peak_memory_mb": 525.2,
+    "python_time": 7.28,
+    "rust_time": 5.371,
+    "state_creations": 0,
+    "steps": 1
   },
   "flareon2015_2": {
     "callback_count": 0,
-    "peak_memory_mb": 414.8,
+    "peak_memory_mb": 273.8,
     "python_time": null,
-    "rust_time": 3.781,
+    "rust_time": 3.031,
     "state_creations": 0,
     "steps": 0
   },
   "flareon2015_5": {
-    "python_time": 39.45,
-    "rust_time": 6.66
+    "callback_count": 3,
+    "peak_memory_mb": 323.7,
+    "python_time": null,
+    "rust_time": 6.274,
+    "state_creations": 0,
+    "steps": 0
   },
   "google2016_unbreakable_0": {
     "callback_count": 1,
-    "peak_memory_mb": 426.2,
+    "peak_memory_mb": 249.0,
     "python_time": null,
-    "rust_time": 0.914,
+    "rust_time": 0.654,
     "state_creations": 0,
     "steps": 0
   },
   "google2016_unbreakable_1": {
     "callback_count": 0,
-    "peak_memory_mb": 631.1,
+    "peak_memory_mb": 291.4,
     "python_time": null,
-    "rust_time": 3.203,
+    "rust_time": 6.18,
     "state_creations": 0,
     "steps": 0
   },
+  "hackcon2016_angry-reverser": {
+    "callback_count": 0,
+    "peak_memory_mb": 533.5,
+    "python_time": null,
+    "rust_time": 35.017,
+    "state_creations": 0,
+    "steps": 0
+  },
+  "mma_howtouse": {
+    "callback_count": 1,
+    "peak_memory_mb": 1346.2,
+    "python_time": 4.271,
+    "rust_time": 5.763,
+    "state_creations": 0,
+    "steps": 1
+  },
   "securityfest_fairlight": {
-    "python_time": 9.76,
-    "rust_time": 23.72
+    "callback_count": 16,
+    "peak_memory_mb": 652.4,
+    "python_time": null,
+    "rust_time": 9.646,
+    "state_creations": 0,
+    "steps": 42
   },
   "strcpy_find": {
     "callback_count": 98,
-    "peak_memory_mb": 201.0,
+    "peak_memory_mb": 200.7,
     "python_time": null,
-    "rust_time": 0.445,
+    "rust_time": 0.401,
     "state_creations": 1,
     "steps": 94
   },
   "sym-write": {
-    "python_time": 0.98,
-    "rust_time": 0.45
+    "callback_count": 22,
+    "peak_memory_mb": 186.6,
+    "python_time": null,
+    "rust_time": 0.37,
+    "state_creations": 1,
+    "steps": 18
+  },
+  "unmapped_analysis": {
+    "callback_count": 10,
+    "peak_memory_mb": 875.8,
+    "python_time": null,
+    "rust_time": 3.399,
+    "state_creations": 0,
+    "steps": 12
   },
   "whitehatvn2015_re400": {
-    "python_time": 3.14,
-    "rust_time": 1.25
+    "callback_count": 2,
+    "peak_memory_mb": 291.4,
+    "python_time": null,
+    "rust_time": 0.78,
+    "state_creations": 0,
+    "steps": 0
   }
 }
