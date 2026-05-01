@@ -1609,6 +1609,35 @@ impl SymContext {
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn assume_true(&self, cond: &RustBV) {
+        debug_assert_eq!(cond.width(), 1);
+        // Track for export to Python; no Z3 to assert against.
+        self.assumed_constraints_local.lock().push((cond.clone(), true));
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn assume_false(&self, cond: &RustBV) {
+        debug_assert_eq!(cond.width(), 1);
+        self.assumed_constraints_local.lock().push((cond.clone(), false));
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn check_branch_feasibility(&self, cond: &RustBV) -> (bool, bool) {
+        debug_assert_eq!(cond.width(), 1);
+        if let Some(v) = cond.as_u128() {
+            return (v != 0, v == 0);
+        }
+        // Without Z3, assume both directions are feasible — matches the
+        // can_be_true/can_be_false stubs.
+        (true, true)
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn set_timeout(&self, _timeout_ms: u32) {
+        // No-op without Z3
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
     pub fn unsat_core(&self) -> Vec<usize> {
         // Without Z3, no unsat core available
         vec![]
