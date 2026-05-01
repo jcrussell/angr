@@ -1472,6 +1472,49 @@ fn reset_shared_z3_context() -> PyResult<()> {
     Ok(())
 }
 
+/// Minimal stderr logger for Rust log messages.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool { true }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[rust:{}] {}: {}", record.level(), record.target(), record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
+static LOGGER: StderrLogger = StderrLogger;
+
+/// Set the Rust log level from Python.
+///
+/// Valid levels: "error", "warn", "info", "debug", "trace", "off".
+/// Initializes a stderr logger on first call.
+#[pyfunction]
+#[pyo3(signature = (level="info"))]
+fn set_rust_log_level(level: &str) -> PyResult<()> {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = log::set_logger(&LOGGER);
+    });
+
+    let filter = match level.to_lowercase().as_str() {
+        "error" => log::LevelFilter::Error,
+        "warn" | "warning" => log::LevelFilter::Warn,
+        "info" => log::LevelFilter::Info,
+        "debug" => log::LevelFilter::Debug,
+        "trace" => log::LevelFilter::Trace,
+        "off" => log::LevelFilter::Off,
+        _ => return Err(PyValueError::new_err(
+            format!("invalid log level '{}': use error/warn/info/debug/trace/off", level)
+        )),
+    };
+    log::set_max_level(filter);
+    Ok(())
+}
+
 /// Register the VEX engine module with Python.
 pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustVEXEngine>()?;
@@ -1497,6 +1540,7 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(set_shared_z3_context, m)?)?;
     #[cfg(feature = "vex-engine-z3")]
     m.add_function(pyo3::wrap_pyfunction!(reset_shared_z3_context, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
     Ok(())
 }
 

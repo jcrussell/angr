@@ -73,6 +73,16 @@ def _setup_shared_z3_context():
         l.debug("Z3 context sharing not available: %s", e)
 
 
+def set_rust_log_level(level: str = "info") -> None:
+    """Set the Rust-side log level.
+
+    Args:
+        level: One of "error", "warn", "info", "debug", "trace", "off".
+    """
+    from angr.rustylib.vex_engine import set_rust_log_level as _set_level
+    _set_level(level)
+
+
 from angr.exploration.rust_identity import SymbolicIdentityTracker, CallbackMemoryTracker
 
 

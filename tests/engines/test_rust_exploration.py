@@ -135,6 +135,16 @@ class TestRustExplorationManagerUnit:
         assert id1 in ids
         assert id2 in ids
 
+    def test_set_rust_log_level(self):
+        """Test setting Rust log level from Python."""
+        from angr.rustylib.vex_engine import set_rust_log_level
+        # Should accept all valid levels without error
+        for level in ("error", "warn", "info", "debug", "trace", "off"):
+            set_rust_log_level(level)
+        # Invalid level should raise
+        with pytest.raises(ValueError):
+            set_rust_log_level("invalid")
+
     def test_max_active_states_get_set(self):
         """Test get/set for max_active_states limit."""
         mgr = _RustExplorationManager("amd64")
