@@ -157,18 +157,27 @@ fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
 }
 
 /// Error type for constraint sync operations.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone)]
 pub enum ConstraintSyncError {
     /// Conversion failed for a constraint.
-    #[error("constraint conversion failed: {0}")]
     ConversionFailed(String),
     /// Constraints became unsatisfiable after sync.
-    #[error("constraints became unsatisfiable after sync")]
     Unsatisfiable,
     /// Invalid rollback (no transaction to rollback).
-    #[error("no transaction to rollback")]
     NoTransaction,
 }
+
+impl std::fmt::Display for ConstraintSyncError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConversionFailed(msg) => write!(f, "constraint conversion failed: {msg}"),
+            Self::Unsatisfiable => write!(f, "constraints became unsatisfiable after sync"),
+            Self::NoTransaction => write!(f, "no transaction to rollback"),
+        }
+    }
+}
+
+impl std::error::Error for ConstraintSyncError {}
 
 /// Solver context for symbolic execution.
 ///
@@ -583,6 +592,7 @@ impl SymContext {
     }
 
     /// Set the Z3 solver timeout in milliseconds.
+    #[cfg(feature = "vex-engine-z3")]
     pub fn set_timeout(&self, timeout_ms: u32) {
         self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
         if let Some(solver) = self.solver.lock().as_ref() {
@@ -594,6 +604,7 @@ impl SymContext {
     }
 
     /// Get the Z3 solver timeout in milliseconds.
+    #[cfg(feature = "vex-engine-z3")]
     pub fn timeout_ms(&self) -> u32 {
         self.timeout_ms.load(Ordering::SeqCst)
     }
@@ -1857,12 +1868,14 @@ impl SymContext {
         merged.next_id.store(max_id, Ordering::SeqCst);
 
         // Merge assumed constraints (shared + local from each context).
-        let mut merged_assumed = merged.assumed_constraints_local.lock();
-        merged_assumed.extend(self.assumed_constraints_shared.iter().cloned());
-        merged_assumed.extend(self.assumed_constraints_local.lock().iter().cloned());
-        for other in others {
-            merged_assumed.extend(other.assumed_constraints_shared.iter().cloned());
-            merged_assumed.extend(other.assumed_constraints_local.lock().iter().cloned());
+        {
+            let mut merged_assumed = merged.assumed_constraints_local.lock();
+            merged_assumed.extend(self.assumed_constraints_shared.iter().cloned());
+            merged_assumed.extend(self.assumed_constraints_local.lock().iter().cloned());
+            for other in others {
+                merged_assumed.extend(other.assumed_constraints_shared.iter().cloned());
+                merged_assumed.extend(other.assumed_constraints_local.lock().iter().cloned());
+            }
         }
 
         merged
