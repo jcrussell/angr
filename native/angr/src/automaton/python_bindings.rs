@@ -169,11 +169,6 @@ impl ObjectMapper {
         }
     }
 
-    #[allow(dead_code)]
-    fn get_state_by_id(&self, id: StateId) -> Option<&Py<PyAny>> {
-        self.id_to_state.get(id as usize)
-    }
-
     fn get_or_create_symbol_id(&mut self, py: Python<'_>, symbol: &PySymbol) -> PyResult<SymbolId> {
         let hash = symbol.value.bind(py).hash()?;
         let repr = symbol.value.bind(py).repr()?.to_string();

@@ -13,17 +13,6 @@ pub(crate) enum StepError {
 }
 
 impl RustExplorationManager {
-    /// Step a single state, returning successors.
-    #[allow(dead_code)]
-    pub(crate) fn step_state(
-        &mut self,
-        py: Python<'_>,
-        callbacks: &PythonCallbacks,
-        state: RustSimState,
-    ) -> Result<Vec<RustSimState>, StepError> {
-        self.step_state_with_skip(py, callbacks, state, None)
-    }
-
     /// Step a state, optionally skipping a hook address.
     ///
     /// The skip_addr parameter is used for zero-length hooks: after the hook

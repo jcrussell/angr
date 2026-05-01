@@ -321,9 +321,6 @@ pub(crate) struct NativeProcStats {
     pub(crate) python_fallbacks: u64,
     /// Per-procedure call counts.
     pub(crate) call_counts: HashMap<String, u64>,
-    /// Number of constraint sync failures.
-    #[allow(dead_code)]
-    pub(crate) constraint_sync_failures: u64,
 }
 
 impl Default for NativeProcStats {
@@ -332,7 +329,6 @@ impl Default for NativeProcStats {
             native_calls: 0,
             python_fallbacks: 0,
             call_counts: HashMap::new(),
-            constraint_sync_failures: 0,
         }
     }
 }

@@ -327,32 +327,6 @@ pub struct SymbolicMemory {
 }
 
 impl PendingWrite {
-    /// Compute a page hint from an address expression by trying to extract
-    /// a concrete base from add(base, symbolic) patterns.
-    #[allow(dead_code)]
-    fn compute_page_hint(addr: &RustBV, size: u32) -> Option<(u64, u64)> {
-        // If the address has a concrete component, we can estimate the page range
-        // For addr = base + sym where sym is 8-bit (0..255), range is base..base+255
-        if let Some(concrete) = addr.as_u64() {
-            let end = concrete + size as u64 - 1;
-            return Some((concrete >> 12, end >> 12));
-        }
-
-        // Try to extract concrete base from expression
-        if let Some((base, sym_width)) = addr.concrete_base_and_sym_width() {
-            // sym_width bits → max value is (1 << sym_width) - 1
-            let max_offset = if sym_width >= 64 {
-                return None; // Too wide to estimate
-            } else {
-                (1u64 << sym_width) - 1
-            };
-            let end = base.saturating_add(max_offset).saturating_add(size as u64 - 1);
-            return Some((base >> 12, end >> 12));
-        }
-
-        None // Can't determine range — must check all loads
-    }
-
     /// Check if a concrete address could possibly overlap with this pending write.
     pub fn could_overlap_page(&self, addr: u64) -> bool {
         match self.page_hint {

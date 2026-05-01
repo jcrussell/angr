@@ -1589,34 +1589,6 @@ impl VEXOps {
         Self::float_to_int_rte(arg, |v| Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as u64 as u128, 64)
     }
 
-    #[allow(dead_code)]
-    fn round_f32_to_int(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f32::from_bits(v as u32);
-            let rounded = Self::round_ties_to_even_f32(f);
-            let result = rounded.to_bits();
-            return Ok(RustBV::concrete(result as u128, 32));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
-    #[allow(dead_code)]
-    fn round_f64_to_int(
-        arg: RustBV,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        if let Some(v) = arg.as_u128() {
-            let f = f64::from_bits(v as u64);
-            let rounded = Self::round_ties_to_even_f64(f);
-            let result = rounded.to_bits();
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-        Err(OpError::SymbolicFloatUnsupported)
-    }
-
     /// Round F32 to integer using specified rounding mode (binop version).
     /// left = rounding mode (U32), right = value (F32)
     /// VEX rounding modes: 0=nearest, 1=down(-inf), 2=up(+inf), 3=zero(truncate)

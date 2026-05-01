@@ -6,8 +6,8 @@
 use serde::Deserialize;
 
 use super::ir::{
-    DirtyFx, Endness, IRCallee, IRConst, IRDirty, IRExpr, IROp, IRLoadGOp,
-    IRRegArray, IRStmt, IRType, JumpKind, MBusEvent, TypeEnv, VexArch, IRSB,
+    DirtyFx, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp,
+    IRRegArray, IRStmt, IRType, MBusEvent, TypeEnv, VexArch, IRSB,
 };
 use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
 
@@ -650,6 +650,7 @@ pub fn convert_pyvex_irsb(pyvex: &PyVexIRSB) -> Result<IRSB, DeserializeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::ir::{IROp, JumpKind};
 
     #[test]
     fn test_simple_irsb_deserialization() {
