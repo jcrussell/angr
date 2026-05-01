@@ -1,57 +1,62 @@
-# Loop session notes (2026-05-01, fifth session)
+# Loop session notes (2026-05-01, sixth session)
 
 ## Closed this session
 
-### angr-gste — Remove dead code — commit 1992563dd
+### angr-jmiz — Fix max_active_states + delete dead files — commit 15960a013
 
-Removed 8 dead items, all `#[allow(dead_code)]` and `#[warn(unused)]`
-warnings now resolved:
+Two-part fix for the bug surfaced during last session:
 
-Original 5 of 6 from the task description:
-- exploration/stepping.rs: `step_state()` wrapper
-- vex/ops.rs: `round_f32_to_int()`, `round_f64_to_int()`
-- memory.rs: `PendingWrite::compute_page_hint()`
-- automaton/python_bindings.rs: `ObjectMapper::get_state_by_id()`
-- exploration/mod.rs: `NativeProcStats::constraint_sync_failures`
+**Part 1 — Delete dead source files (~2.8K lines removed):**
+- `native/angr/src/exploration/pyapi.rs`
+- `native/angr/src/exploration/resume.rs`
+- `native/angr/src/exploration/run_loop.rs`
 
-Cascading dead code also removed:
-- symbolic/value.rs: `concrete_base_and_sym_width()` (only caller was compute_page_hint)
-- vex/pyvex_bridge.rs: unused module-level imports `Endness/IROp/JumpKind`
-  (IROp/JumpKind kept in test scope where needed)
-- exploration/helpers.rs: `push_to_active_or_drop()` (see below)
+These claimed in their header comments to be "included into mod.rs"
+but were never declared as modules. Their content had been duplicated
+into the live mod.rs ages ago, and the dead copies were diverging
+silently. Verified via diff that no live functionality was lost
+(only `py_eval_stdin_symbol` differed — a thin wrapper around the
+live `eval_stdin_symbol`, unused from Python).
 
-Skipped: vex/dirty.rs `CpuidValues` ebx/ecx fields — design intent
-preservation. Documents CPUID feature flags for future complete emulation.
+**Part 2 — Restore max_active_states enforcement:**
+- Restored `push_to_active_or_drop` helper in `exploration/helpers.rs`
+  using `sm.push()` (which indexes) rather than raw `push_back`.
+- Replaced 8 direct STASH_ACTIVE push sites in mod.rs with helper:
+  - native procedure return path (~line 2580)
+  - regular successors after step (~line 2648)
+  - deferred forks at find/avoid boundaries (~line 2725)
+  - regular successors final path (~line 3106)
+  - deadend deferred forks (~line 3212)
+  - resume_after_symbolic_branch bulk push (~line 3447)
+  - resume_find_predicate not-matched (~line 3494)
+  - resume_avoid_predicate not-matched (~line 3520)
 
-### Major latent issue surfaced — angr-jmiz (created P2 bug)
+**Part 3 — Functional test:**
+Added `test_max_active_states_prunes_forks` — sets limit=1 on
+fauxware, explores, asserts `counts['pruned'] > 0`. The prior test
+only checked `active <= limit` which passed even when the limit
+was a silent no-op.
 
-`exploration/resume.rs` and `exploration/run_loop.rs` claim in their
-header comments to be "included into mod.rs" but mod.rs only declares
-`mod stepping` and `mod helpers`. **Those files are never compiled.**
+Tests: 208/208 Python passing; 364/364 cargo lib tests; cargo
+release build warning-free.
 
-Consequence: `push_to_active_or_drop` (the only enforcement of
-`max_active_states`) was called only from those dead files. The live
-mod.rs pushes raw `push_back(STASH_ACTIVE)` everywhere — so
-`set_max_active_states()` silently does nothing.
-
-Same pattern as `pyapi.rs` (see `invariant-pyapi-dead-code` memory).
-
-Saved memories:
-- `invariant-dead-source-files` — list of dead files + how to detect.
-- `bug-max-active-states-unenforced` — concrete latent bug for follow-up.
-
-Tests: 207/207 Python passing; 364/364 cargo lib tests; cargo release
-build warning-free.
+Memories updated:
+- `invariant-active-stash-push` (NEW) — must use helper at new push sites
+- `invariant-dead-source-files` — updated: now resolved
+- `max-active-states-test-pattern` (NEW) — how to verify wiring
+- `bug-max-active-states-unenforced` — forgotten (resolved)
+- `invariant-pyapi-dead-code` — forgotten (resolved by deletion)
 
 ## Closed previously
 
+### angr-gste — Remove dead code — commit 1992563dd
+8 dead items removed; surfaced angr-jmiz (this session's work).
+
 ### angr-742d — Register accessor macros — commit a25cdc3ef
-Replaced hand-rolled VexArch match with Arch trait methods. Latent
-SP-offset bug for ARM/ARM64 fixed silently.
+Replaced hand-rolled VexArch match with Arch trait methods.
 
 ## Ready P-tasks remaining
 
-- angr-jmiz (P2 — NEW: dead source-files audit + max_active_states fix)
 - angr-vt0t (P3 categorize remaining ~280 except blocks)
 - angr-8em4 (P3 panic audit — 543 sites)
 - angr-3ijo (P3 bincode for IRSB serialization spike)
