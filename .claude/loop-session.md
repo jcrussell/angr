@@ -1,46 +1,64 @@
-# Loop session notes (2026-05-01, fourth session)
+# Loop session notes (2026-05-01, fifth session)
 
 ## Closed this session
 
-### angr-742d — Register accessor macros (offset/size lookup) — commit a25cdc3ef
+### angr-gste — Remove dead code — commit 1992563dd
 
-Replaced two hand-rolled `match VexArch { ... => (offset, size) }`
-tables with Arch trait method calls.
+Removed 8 dead items, all `#[allow(dead_code)]` and `#[warn(unused)]`
+warnings now resolved:
 
-- Added `syscall_num_offset() -> Option<u32>` to Arch trait
-  (default impl returns None).
-- Implemented for AMD64 (RAX), X86 (EAX), ARM (R7/EABI),
-  ARM64 (X8), MIPS32 (v0), MIPS64 (v0).
-- exits.rs `get_syscall_num()` now uses
-  `self.registers.arch().syscall_num_offset()` + `arch.bytes()`.
-- prefetch.rs `get_stack_pointer()` now uses `arch.sp_offset()`
-  + `arch.bytes()`.
+Original 5 of 6 from the task description:
+- exploration/stepping.rs: `step_state()` wrapper
+- vex/ops.rs: `round_f32_to_int()`, `round_f64_to_int()`
+- memory.rs: `PendingWrite::compute_page_hint()`
+- automaton/python_bindings.rs: `ObjectMapper::get_state_by_id()`
+- exploration/mod.rs: `NativeProcStats::constraint_sync_failures`
 
-Latent bug fixed: prefetch.rs's hand-coded SP table had wrong
-offsets for ARM (52 vs actual 60) and ARM64 (52 vs actual 264).
-This meant `is_stack_region()` never matched real ARM/ARM64
-stacks — stack prefetching was effectively disabled on those
-archs. Routing through the trait fixes it silently.
+Cascading dead code also removed:
+- symbolic/value.rs: `concrete_base_and_sym_width()` (only caller was compute_page_hint)
+- vex/pyvex_bridge.rs: unused module-level imports `Endness/IROp/JumpKind`
+  (IROp/JumpKind kept in test scope where needed)
+- exploration/helpers.rs: `push_to_active_or_drop()` (see below)
 
-Tests: 207/207 passing. cargo test arch:: 21/21 passing.
+Skipped: vex/dirty.rs `CpuidValues` ebx/ecx fields — design intent
+preservation. Documents CPUID feature flags for future complete emulation.
+
+### Major latent issue surfaced — angr-jmiz (created P2 bug)
+
+`exploration/resume.rs` and `exploration/run_loop.rs` claim in their
+header comments to be "included into mod.rs" but mod.rs only declares
+`mod stepping` and `mod helpers`. **Those files are never compiled.**
+
+Consequence: `push_to_active_or_drop` (the only enforcement of
+`max_active_states`) was called only from those dead files. The live
+mod.rs pushes raw `push_back(STASH_ACTIVE)` everywhere — so
+`set_max_active_states()` silently does nothing.
+
+Same pattern as `pyapi.rs` (see `invariant-pyapi-dead-code` memory).
 
 Saved memories:
-- `prefetch-sp-offset-bug` — concrete details of the latent bug.
-- `invariant-arch-register-offsets` — guidance to always go
-  through Arch trait methods, never duplicate the VexArch match.
+- `invariant-dead-source-files` — list of dead files + how to detect.
+- `bug-max-active-states-unenforced` — concrete latent bug for follow-up.
+
+Tests: 207/207 Python passing; 364/364 cargo lib tests; cargo release
+build warning-free.
 
 ## Closed previously
 
-(see git log / earlier loop-session.md backups)
+### angr-742d — Register accessor macros — commit a25cdc3ef
+Replaced hand-rolled VexArch match with Arch trait methods. Latent
+SP-offset bug for ARM/ARM64 fixed silently.
 
-## Ready P3 tasks remaining
+## Ready P-tasks remaining
 
-- angr-vt0t (categorize remaining ~280 except blocks)
-- angr-8em4 (panic audit — 543 sites)
-- angr-3ijo (bincode for IRSB serialization spike)
-- angr-bgv0 (Z3 FP theory)
-- angr-awm3 (CAS/LLSC statement handling)
-- angr-7c9j (feature flag correctness in CI)
-- angr-dja4 (expand benchmark baseline)
-- angr-sc8h (replace solver fallback monkey-patching)
-- angr-wpi7 (consolidate P1-P19/GAP fix workarounds)
+- angr-jmiz (P2 — NEW: dead source-files audit + max_active_states fix)
+- angr-vt0t (P3 categorize remaining ~280 except blocks)
+- angr-8em4 (P3 panic audit — 543 sites)
+- angr-3ijo (P3 bincode for IRSB serialization spike)
+- angr-bgv0 (P3 Z3 FP theory)
+- angr-awm3 (P3 CAS/LLSC statement handling)
+- angr-7c9j (P3 feature flag correctness in CI)
+- angr-dja4 (P3 expand benchmark baseline)
+- angr-sc8h (P3 replace solver fallback monkey-patching)
+- angr-wpi7 (P3 consolidate P1-P19/GAP fix workarounds)
+- angr-v4db (P3 extract god-methods)
