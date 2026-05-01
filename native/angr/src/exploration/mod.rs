@@ -2575,11 +2575,7 @@ impl RustExplorationManager {
                                 if no_return {
                                     self.push_or_drop_terminal(STASH_DEADENDED, state);
                                 } else {
-                                    // Add back to active stash
-                                    self.sm.stashes_mut()
-                                        .entry(STASH_ACTIVE.to_string())
-                                        .or_insert_with(VecDeque::new)
-                                        .push_back(state);
+                                    self.push_to_active_or_drop(state);
                                 }
                                 continue;
                             }
@@ -2645,8 +2641,7 @@ impl RustExplorationManager {
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, successor);
                         } else {
-                            self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                                .or_insert_with(VecDeque::new).push_back(successor);
+                            self.push_to_active_or_drop(successor);
                         }
                     }
                 }
@@ -2722,9 +2717,7 @@ impl RustExplorationManager {
                                             self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                                             self.accumulated_stats.solver_sat_count += 1;
                                         }
-                                        self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                                            .or_insert_with(VecDeque::new)
-                                            .push_back(forked);
+                                        self.push_to_active_or_drop(forked);
                                     } else if let Some(start) = sat_start {
                                         self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                                         self.accumulated_stats.solver_sat_count += 1;
@@ -3103,8 +3096,7 @@ impl RustExplorationManager {
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
             } else {
-                self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                    .or_insert_with(VecDeque::new).push_back(s);
+                self.push_to_active_or_drop(s);
             }
         }
 
@@ -3209,8 +3201,7 @@ impl RustExplorationManager {
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, forked);
                         } else {
-                            self.sm.stashes_mut().entry(STASH_ACTIVE.to_string())
-                                .or_insert_with(VecDeque::new).push_back(forked);
+                            self.push_to_active_or_drop(forked);
                         }
                     }
                 }
@@ -3442,12 +3433,9 @@ impl RustExplorationManager {
             }
         }
 
-        // Add to active stash
-        let active = self.sm.stashes_mut()
-            .entry(STASH_ACTIVE.to_string())
-            .or_insert_with(VecDeque::new);
+        // Add to active stash, respecting max_active_states.
         for s in active_states {
-            active.push_back(s);
+            self.push_to_active_or_drop(s);
         }
 
         // Add to pruned stash
@@ -3490,11 +3478,7 @@ impl RustExplorationManager {
             // preventing infinite loop (state was already checked at this PC).
             let state_id = pending.state.state_id();
             self.skip_find_predicate_states.insert(state_id);
-            self.sm.stashes_mut()
-                .entry(STASH_ACTIVE.to_string())
-                .or_insert_with(VecDeque::new)
-                .push_back(pending.state);
-            self.sm.index(state_id, STASH_ACTIVE);
+            self.push_to_active_or_drop(pending.state);
         }
 
         Ok(())
@@ -3516,11 +3500,7 @@ impl RustExplorationManager {
             log::debug!("Avoid predicate did not match - continuing exploration");
             let state_id = pending.state.state_id();
             self.skip_avoid_predicate_states.insert(state_id);
-            self.sm.stashes_mut()
-                .entry(STASH_ACTIVE.to_string())
-                .or_insert_with(VecDeque::new)
-                .push_back(pending.state);
-            self.sm.index(state_id, STASH_ACTIVE);
+            self.push_to_active_or_drop(pending.state);
         }
 
         Ok(())

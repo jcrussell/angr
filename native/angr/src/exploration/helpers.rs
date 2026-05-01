@@ -52,6 +52,27 @@ impl RustExplorationManager {
         f(state)
     }
 
+    /// Push a new state to the active stash, respecting `max_active_states`.
+    /// If the limit is reached, the state is sent to the pruned stash (or
+    /// dropped, if `drop_terminal_states` is enabled). Returns true if the
+    /// state was added to the active stash, false if pruned.
+    #[inline]
+    pub(crate) fn push_to_active_or_drop(&mut self, state: RustSimState) -> bool {
+        if let Some(limit) = self.max_active_states {
+            if self.sm.active_count() >= limit {
+                log::debug!(
+                    "max_active_states limit ({}) reached, pruning state {}",
+                    limit,
+                    state.state_id()
+                );
+                self.push_or_drop_terminal(STASH_PRUNED, state);
+                return false;
+            }
+        }
+        self.sm.push(STASH_ACTIVE, state);
+        true
+    }
+
     /// Track a state in the state_index.
     #[inline]
     pub(crate) fn index_state(&mut self, state_id: u64, stash: &str) {

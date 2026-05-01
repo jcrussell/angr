@@ -295,6 +295,25 @@ class TestRustExplorationPython:
         assert counts.get("active", 0) <= 2, \
             f"active count {counts['active']} exceeds max_active_states=2"
 
+    def test_max_active_states_prunes_forks(self, fauxware_project):
+        """Excess forks should be pruned when max_active_states is reached.
+
+        With limit=1, fauxware's symbolic strcmp branches must produce at
+        least one pruned state — otherwise the limit is being silently
+        ignored (the bug fixed by angr-jmiz).
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], max_active_states=1)
+        mgr.explore(find=0x4006ed, num_find=1)
+
+        counts = mgr.stash_counts()
+        assert counts.get("active", 0) <= 1, \
+            f"active count {counts.get('active', 0)} exceeds max_active_states=1"
+        assert counts.get("pruned", 0) > 0, \
+            f"expected pruned states with max_active_states=1, got counts={counts}"
+
     def test_progress_callback(self, fauxware_project):
         """Test that progress callback fires during exploration."""
         from angr.exploration import RustExplorationManager
