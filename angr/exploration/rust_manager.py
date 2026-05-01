@@ -2024,6 +2024,25 @@ class RustExplorationManager(
 
     def _check_limits(self, start_time, steps_taken, timeout, max_steps) -> bool:
         """Check if timeout or max_steps limits have been reached."""
+        # Fire progress callback if due
+        cb = getattr(self, '_progress_callback', None)
+        if cb is not None:
+            interval = getattr(self, '_progress_interval', 100)
+            last = getattr(self, '_progress_last_fired', 0)
+            if steps_taken - last >= interval:
+                self._progress_last_fired = steps_taken
+                counts = self._rust_mgr.stash_counts()
+                try:
+                    cb({
+                        'step_count': steps_taken,
+                        'active_count': counts.get('active', 0),
+                        'found_count': counts.get('found', 0),
+                        'deadended_count': counts.get('deadened', 0),
+                        'elapsed_seconds': time.time() - start_time,
+                    })
+                except Exception:
+                    pass
+
         if timeout is not None and (time.time() - start_time) > timeout:
             l.warning(f"Exploration timeout reached ({timeout}s)")
             return True
@@ -2031,6 +2050,20 @@ class RustExplorationManager(
             l.warning(f"Max exploration steps reached ({max_steps})")
             return True
         return False
+
+    def set_progress_callback(self, callback: Callable, interval_steps: int = 100) -> None:
+        """Set a progress callback that fires every `interval_steps` steps.
+
+        The callback receives a dict with:
+            step_count, active_count, found_count, deadended_count, elapsed_seconds.
+
+        Args:
+            callback: Callable that receives the progress dict.
+            interval_steps: How often to fire (default: every 100 steps).
+        """
+        self._progress_callback = callback
+        self._progress_interval = interval_steps
+        self._progress_last_fired = 0
 
     def set_exploration_strategy(self, strategy: str):
         """Set exploration strategy: 'bfs' (default) or 'dfs'."""

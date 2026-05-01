@@ -295,6 +295,29 @@ class TestRustExplorationPython:
         assert counts.get("active", 0) <= 2, \
             f"active count {counts['active']} exceeds max_active_states=2"
 
+    def test_progress_callback(self, fauxware_project):
+        """Test that progress callback fires during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        progress_reports = []
+
+        def on_progress(info):
+            progress_reports.append(info)
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.set_progress_callback(on_progress, interval_steps=1)
+        mgr.explore(find=0x4006ed, num_find=1)
+
+        # Progress callback should have fired at least once
+        assert len(progress_reports) > 0, "progress callback never fired"
+        # Each report should have the expected keys
+        report = progress_reports[0]
+        assert 'step_count' in report
+        assert 'active_count' in report
+        assert 'found_count' in report
+        assert 'elapsed_seconds' in report
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestExplorationEvent:
