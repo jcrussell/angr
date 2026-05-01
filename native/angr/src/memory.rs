@@ -1176,7 +1176,7 @@ impl SymbolicMemory {
                 } else {
                     // Generate a unique name for the unconstrained memory read
                     *counter += 1;
-                    RustBV::symbolic(ctx, &format!("unc_mem_{:x}_{}", addr, counter), size * 8)
+                    RustBV::symbolic(ctx, format!("unc_mem_{:x}_{}", addr, counter), size * 8)
                 }
             }
         }
@@ -1227,7 +1227,7 @@ impl SymbolicMemory {
                 if ready_addrs.is_empty() {
                     return Ok(RustBV::symbolic(
                         ctx,
-                        &format!("mem_all_unmapped_{}", size),
+                        format!("mem_all_unmapped_{}", size),
                         size * 8,
                     ));
                 }
@@ -1271,7 +1271,7 @@ impl SymbolicMemory {
         if addrs.is_empty() {
             return Ok(RustBV::symbolic(
                 ctx,
-                &format!("mem_empty_ite_{}", size),
+                format!("mem_empty_ite_{}", size),
                 size * 8,
             ));
         }

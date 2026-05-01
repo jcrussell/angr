@@ -237,7 +237,7 @@ impl<'a> CallbackInterpreter<'a> {
                                 );
                                 return Ok(RustBV::symbolic(
                                     self.ctx,
-                                    &format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
+                                    format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
                                     (size * 8) as u32,
                                 ));
                             }
@@ -284,7 +284,7 @@ impl<'a> CallbackInterpreter<'a> {
                                 );
                                 Ok(RustBV::symbolic(
                                     self.ctx,
-                                    &format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
+                                    format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
                                     (size * 8) as u32,
                                 ))
                             } else {
@@ -310,7 +310,7 @@ impl<'a> CallbackInterpreter<'a> {
                     // Return fresh symbolic if input was symbolic, else zero.
                     let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                     if arg_is_sym {
-                        Ok(RustBV::symbolic(self.ctx, &format!("unsup_unop_{:x}", self.pc), width))
+                        Ok(RustBV::symbolic(self.ctx, format!("unsup_unop_{:x}", self.pc), width))
                     } else {
                         Ok(RustBV::concrete(0, width))
                     }
@@ -327,7 +327,7 @@ impl<'a> CallbackInterpreter<'a> {
                 VEXOps::binop(*op, left_val, right_val, self.ctx).or_else(|_| {
                     // Fallback for unsupported binary ops (e.g., vector float ops).
                     if any_sym {
-                        Ok(RustBV::symbolic(self.ctx, &format!("unsup_binop_{:x}", self.pc), fallback_width))
+                        Ok(RustBV::symbolic(self.ctx, format!("unsup_binop_{:x}", self.pc), fallback_width))
                     } else {
                         Ok(RustBV::concrete(0, fallback_width))
                     }
@@ -384,7 +384,7 @@ impl<'a> CallbackInterpreter<'a> {
                 let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                 if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() {
-                    Ok(RustBV::symbolic(self.ctx, &format!("triop_{:x}", self.pc), width))
+                    Ok(RustBV::symbolic(self.ctx, format!("triop_{:x}", self.pc), width))
                 } else {
                     Ok(RustBV::concrete(0, width))
                 }
@@ -397,7 +397,7 @@ impl<'a> CallbackInterpreter<'a> {
                 let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                 if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic() {
-                    Ok(RustBV::symbolic(self.ctx, &format!("qop_{:x}", self.pc), width))
+                    Ok(RustBV::symbolic(self.ctx, format!("qop_{:x}", self.pc), width))
                 } else {
                     Ok(RustBV::concrete(0, width))
                 }
@@ -427,7 +427,7 @@ impl<'a> CallbackInterpreter<'a> {
                     );
                     return Ok(RustBV::symbolic(
                         self.ctx,
-                        &format!("ccall_unsupported_{:x}", self.pc),
+                        format!("ccall_unsupported_{:x}", self.pc),
                         retty.bits(),
                     ));
                 }
@@ -505,7 +505,7 @@ impl<'a> CallbackInterpreter<'a> {
                                         // Fallback to fresh symbolic
                                         RustBV::symbolic(
                                             self.ctx,
-                                            &format!("ite_load_{:x}_{}", addr, size),
+                                            format!("ite_load_{:x}_{}", addr, size),
                                             width,
                                         )
                                     }
@@ -513,7 +513,7 @@ impl<'a> CallbackInterpreter<'a> {
                             } else {
                                 RustBV::symbolic(
                                     self.ctx,
-                                    &format!("ite_load_{:x}_{}", addr, size),
+                                    format!("ite_load_{:x}_{}", addr, size),
                                     width,
                                 )
                             }
@@ -524,7 +524,7 @@ impl<'a> CallbackInterpreter<'a> {
                                     // Fallback to fresh symbolic
                                     RustBV::symbolic(
                                         self.ctx,
-                                        &format!("ite_load_{:x}_{}", addr, size),
+                                        format!("ite_load_{:x}_{}", addr, size),
                                         width,
                                     )
                                 }
@@ -532,14 +532,14 @@ impl<'a> CallbackInterpreter<'a> {
                         } else {
                             RustBV::symbolic(
                                 self.ctx,
-                                &format!("ite_load_{:x}_{}", addr, size),
+                                format!("ite_load_{:x}_{}", addr, size),
                                 width,
                             )
                         }
                     } else {
                         RustBV::symbolic(
                             self.ctx,
-                            &format!("ite_load_{:x}_{}", addr, size),
+                            format!("ite_load_{:x}_{}", addr, size),
                             width,
                         )
                     }
@@ -550,7 +550,7 @@ impl<'a> CallbackInterpreter<'a> {
                 // Missing result - create symbolic placeholder
                 RustBV::symbolic(
                     self.ctx,
-                    &format!("ite_load_{:x}_{}", addr, size),
+                    format!("ite_load_{:x}_{}", addr, size),
                     width,
                 )
             };
@@ -614,26 +614,26 @@ impl<'a> CallbackInterpreter<'a> {
                                 bv
                             } else if is_claripy_ast(&ast) {
                                 claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
-                                    RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                                    RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
                                 })
                             } else {
-                                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                                RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
                             }
                         } else if is_claripy_ast(&ast) {
                             claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
-                                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                                RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
                             })
                         } else {
-                            RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                            RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
                         }
                     } else {
-                        RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                        RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
                     }
                 } else {
                     bytes_to_bv(data, data_val.width())
                 }
             } else {
-                RustBV::symbolic(self.ctx, &format!("ite_store_cur_{:x}", addr), data_val.width())
+                RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
             };
 
             // Build ITE: if (addr == candidate) then new_data else current

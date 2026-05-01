@@ -326,15 +326,21 @@ impl RustBV {
     }
 
     /// Create a symbolic bitvector variable.
-    pub fn symbolic(ctx: &SymContext, name: &str, width: u32) -> Self {
+    ///
+    /// Accepts both `&str` (allocates once) and `String` (consumed without
+    /// realloc). Hot paths that build the name with `format!()` should pass
+    /// the `String` directly to avoid a redundant clone.
+    pub fn symbolic(ctx: &SymContext, name: impl Into<String>, width: u32) -> Self {
         let id = ctx.next_id();
+        let name = name.into();
         #[cfg(feature = "vex-engine-z3")]
         {
+            let ast = z3::ast::BV::new_const(name.as_str(), width);
             RustBV::Symbolic {
                 id,
                 width,
-                name: name.to_string(),
-                ast: z3::ast::BV::new_const(name, width),
+                name,
+                ast,
             }
         }
         #[cfg(not(feature = "vex-engine-z3"))]
@@ -342,7 +348,7 @@ impl RustBV {
             RustBV::Symbolic {
                 id,
                 width,
-                name: name.to_string(),
+                name,
             }
         }
     }
@@ -352,14 +358,16 @@ impl RustBV {
     /// This is used for identity preservation when the same symbol
     /// was previously imported from Python. By reusing the same ID,
     /// we ensure that constraints on the original symbol apply correctly.
-    pub fn symbolic_with_id(id: u64, name: &str, width: u32) -> Self {
+    pub fn symbolic_with_id(id: u64, name: impl Into<String>, width: u32) -> Self {
+        let name = name.into();
         #[cfg(feature = "vex-engine-z3")]
         {
+            let ast = z3::ast::BV::new_const(name.as_str(), width);
             RustBV::Symbolic {
                 id,
                 width,
-                name: name.to_string(),
-                ast: z3::ast::BV::new_const(name, width),
+                name,
+                ast,
             }
         }
         #[cfg(not(feature = "vex-engine-z3"))]
@@ -367,7 +375,7 @@ impl RustBV {
             RustBV::Symbolic {
                 id,
                 width,
-                name: name.to_string(),
+                name,
             }
         }
     }
