@@ -980,6 +980,237 @@ fn calculate_eflags_all_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64
     Some(pack_eflags(&flags))
 }
 
+// ============================================================
+// ARM condition code support
+// ============================================================
+
+/// ARM CC_OP values (from VEX's libvex_guest_arm.h)
+pub mod arm_cc_op {
+    pub const ARMG_CC_OP_COPY: u64 = 0;  // DEP1 = NZCV in 31:28
+    pub const ARMG_CC_OP_ADD: u64 = 1;   // DEP1 = argL, DEP2 = argR
+    pub const ARMG_CC_OP_SUB: u64 = 2;   // DEP1 = argL, DEP2 = argR
+    pub const ARMG_CC_OP_ADC: u64 = 3;   // DEP1 = argL, DEP2 = argR, NDEP = oldC
+    pub const ARMG_CC_OP_SBB: u64 = 4;   // DEP1 = argL, DEP2 = argR, NDEP = oldC
+    pub const ARMG_CC_OP_LOGIC: u64 = 5; // DEP1 = result, DEP2 = shifter_carry_out, NDEP = oldV
+    pub const ARMG_CC_OP_MUL: u64 = 6;   // DEP1 = result, NDEP = oldC:oldV
+    pub const ARMG_CC_OP_MULL: u64 = 7;  // DEP1 = resLO32, DEP2 = resHI32, NDEP = oldC:oldV
+}
+
+/// ARM condition codes
+pub mod arm_cond {
+    pub const ARM_COND_EQ: u64 = 0;  // Z=1
+    pub const ARM_COND_NE: u64 = 1;  // Z=0
+    pub const ARM_COND_HS: u64 = 2;  // C=1
+    pub const ARM_COND_LO: u64 = 3;  // C=0
+    pub const ARM_COND_MI: u64 = 4;  // N=1
+    pub const ARM_COND_PL: u64 = 5;  // N=0
+    pub const ARM_COND_VS: u64 = 6;  // V=1
+    pub const ARM_COND_VC: u64 = 7;  // V=0
+    pub const ARM_COND_HI: u64 = 8;  // C=1 && Z=0
+    pub const ARM_COND_LS: u64 = 9;  // C=0 || Z=1
+    pub const ARM_COND_GE: u64 = 10; // N=V
+    pub const ARM_COND_LT: u64 = 11; // N!=V
+    pub const ARM_COND_GT: u64 = 12; // Z=0 && N=V
+    pub const ARM_COND_LE: u64 = 13; // Z=1 || N!=V
+    pub const ARM_COND_AL: u64 = 14; // always
+    pub const ARM_COND_NV: u64 = 15; // never
+}
+
+/// ARM NZCV flag bit positions
+mod arm_flag_shift {
+    pub const SHIFT_N: u32 = 31;
+    pub const SHIFT_Z: u32 = 30;
+    pub const SHIFT_C: u32 = 29;
+    pub const SHIFT_V: u32 = 28;
+}
+
+/// Compute ARM N (negative) flag for a given cc_op.
+fn armg_calc_flag_n(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
+    use arm_cc_op::*;
+    match cc_op {
+        ARMG_CC_OP_COPY => Some((dep1 >> arm_flag_shift::SHIFT_N) & 1),
+        ARMG_CC_OP_ADD => Some((dep1.wrapping_add(dep2)) >> 31),
+        ARMG_CC_OP_SUB => Some((dep1.wrapping_sub(dep2)) >> 31),
+        ARMG_CC_OP_ADC => Some((dep1.wrapping_add(dep2).wrapping_add(ndep)) >> 31),
+        ARMG_CC_OP_SBB => Some((dep1.wrapping_sub(dep2).wrapping_sub(ndep ^ 1)) >> 31),
+        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => Some(dep1 >> 31),
+        ARMG_CC_OP_MULL => Some(dep2 >> 31),
+        _ => None,
+    }
+}
+
+/// Compute ARM Z (zero) flag for a given cc_op.
+fn armg_calc_flag_z(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
+    use arm_cc_op::*;
+    let dep1 = dep1 & 0xFFFFFFFF;
+    let dep2 = dep2 & 0xFFFFFFFF;
+    let ndep = ndep & 0xFFFFFFFF;
+    match cc_op {
+        ARMG_CC_OP_COPY => Some((dep1 >> arm_flag_shift::SHIFT_Z) & 1),
+        ARMG_CC_OP_ADD => {
+            let res = dep1.wrapping_add(dep2) & 0xFFFFFFFF;
+            Some(if res == 0 { 1 } else { 0 })
+        }
+        ARMG_CC_OP_SUB => {
+            let res = dep1.wrapping_sub(dep2) & 0xFFFFFFFF;
+            Some(if res == 0 { 1 } else { 0 })
+        }
+        ARMG_CC_OP_ADC => {
+            let res = dep1.wrapping_add(dep2).wrapping_add(ndep) & 0xFFFFFFFF;
+            Some(if res == 0 { 1 } else { 0 })
+        }
+        ARMG_CC_OP_SBB => {
+            let res = dep1.wrapping_sub(dep2).wrapping_sub(ndep ^ 1) & 0xFFFFFFFF;
+            Some(if res == 0 { 1 } else { 0 })
+        }
+        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => {
+            Some(if (dep1 & 0xFFFFFFFF) == 0 { 1 } else { 0 })
+        }
+        ARMG_CC_OP_MULL => {
+            Some(if (dep1 | dep2) & 0xFFFFFFFF == 0 { 1 } else { 0 })
+        }
+        _ => None,
+    }
+}
+
+/// Compute ARM C (carry) flag for a given cc_op.
+fn armg_calc_flag_c(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
+    use arm_cc_op::*;
+    let dep1 = dep1 & 0xFFFFFFFF;
+    let dep2 = dep2 & 0xFFFFFFFF;
+    let ndep = ndep & 0xFFFFFFFF;
+    match cc_op {
+        ARMG_CC_OP_COPY => Some((dep1 >> arm_flag_shift::SHIFT_C) & 1),
+        ARMG_CC_OP_ADD => {
+            let res = dep1.wrapping_add(dep2) & 0xFFFFFFFF;
+            Some(if res < dep1 { 1 } else { 0 })
+        }
+        ARMG_CC_OP_SUB => {
+            Some(if dep1 >= dep2 { 1 } else { 0 })
+        }
+        ARMG_CC_OP_ADC => {
+            let res = dep1.wrapping_add(dep2).wrapping_add(ndep) & 0xFFFFFFFF;
+            if ndep != 0 {
+                Some(if res <= dep1 { 1 } else { 0 })
+            } else {
+                Some(if res < dep1 { 1 } else { 0 })
+            }
+        }
+        ARMG_CC_OP_SBB => {
+            if ndep != 0 {
+                Some(if dep1 >= dep2 { 1 } else { 0 })
+            } else {
+                Some(if dep1 > dep2 { 1 } else { 0 })
+            }
+        }
+        ARMG_CC_OP_LOGIC => Some(dep2 & 1), // shifter_carry_out
+        ARMG_CC_OP_MUL | ARMG_CC_OP_MULL => Some((ndep >> 1) & 1),
+        _ => None,
+    }
+}
+
+/// Compute ARM V (overflow) flag for a given cc_op.
+fn armg_calc_flag_v(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
+    use arm_cc_op::*;
+    let dep1 = dep1 & 0xFFFFFFFF;
+    let dep2 = dep2 & 0xFFFFFFFF;
+    let ndep = ndep & 0xFFFFFFFF;
+    match cc_op {
+        ARMG_CC_OP_COPY => Some((dep1 >> arm_flag_shift::SHIFT_V) & 1),
+        ARMG_CC_OP_ADD => {
+            let res = dep1.wrapping_add(dep2) & 0xFFFFFFFF;
+            Some(((res ^ dep1) & (res ^ dep2)) >> 31)
+        }
+        ARMG_CC_OP_SUB => {
+            let res = dep1.wrapping_sub(dep2) & 0xFFFFFFFF;
+            Some(((dep1 ^ dep2) & (dep1 ^ res)) >> 31)
+        }
+        ARMG_CC_OP_ADC => {
+            let res = dep1.wrapping_add(dep2).wrapping_add(ndep) & 0xFFFFFFFF;
+            Some(((res ^ dep1) & (res ^ dep2)) >> 31)
+        }
+        ARMG_CC_OP_SBB => {
+            let res = dep1.wrapping_sub(dep2).wrapping_sub(ndep ^ 1) & 0xFFFFFFFF;
+            Some(((dep1 ^ dep2) & (dep1 ^ res)) >> 31)
+        }
+        ARMG_CC_OP_LOGIC => Some(ndep & 1), // old V flag
+        ARMG_CC_OP_MUL | ARMG_CC_OP_MULL => Some(ndep & 1),
+        _ => None,
+    }
+}
+
+/// Concrete ARM condition evaluation.
+///
+/// `cond_n_op` encodes: cond in bits [7:4], cc_op in bits [3:0].
+/// Returns 1 if condition is true, 0 if false, None if unsupported.
+pub fn armg_calculate_condition(
+    cond_n_op: u64, dep1: u64, dep2: u64, ndep: u64,
+) -> Option<u64> {
+    let cond = (cond_n_op >> 4) & 0xF;
+    let cc_op = cond_n_op & 0xF;
+    let inv = cond & 1;
+
+    use arm_cond::*;
+
+    let flag = match cond & !1 {
+        ARM_COND_EQ => {
+            // EQ/NE: test Z flag
+            armg_calc_flag_z(cc_op, dep1, dep2, ndep)?
+        }
+        ARM_COND_HS => {
+            // HS/LO: test C flag
+            armg_calc_flag_c(cc_op, dep1, dep2, ndep)?
+        }
+        ARM_COND_MI => {
+            // MI/PL: test N flag
+            armg_calc_flag_n(cc_op, dep1, dep2, ndep)?
+        }
+        ARM_COND_VS => {
+            // VS/VC: test V flag
+            armg_calc_flag_v(cc_op, dep1, dep2, ndep)?
+        }
+        ARM_COND_HI => {
+            // HI/LS: C=1 && Z=0 / C=0 || Z=1
+            let cf = armg_calc_flag_c(cc_op, dep1, dep2, ndep)?;
+            let zf = armg_calc_flag_z(cc_op, dep1, dep2, ndep)?;
+            cf & (!zf & 1)
+        }
+        ARM_COND_GE => {
+            // GE/LT: N==V / N!=V
+            let nf = armg_calc_flag_n(cc_op, dep1, dep2, ndep)?;
+            let vf = armg_calc_flag_v(cc_op, dep1, dep2, ndep)?;
+            1 & !(nf ^ vf)
+        }
+        ARM_COND_GT => {
+            // GT/LE: Z=0 && N==V / Z=1 || N!=V
+            let nf = armg_calc_flag_n(cc_op, dep1, dep2, ndep)?;
+            let vf = armg_calc_flag_v(cc_op, dep1, dep2, ndep)?;
+            let zf = armg_calc_flag_z(cc_op, dep1, dep2, ndep)?;
+            1 & !(zf | (nf ^ vf))
+        }
+        ARM_COND_AL => return Some(1),
+        _ => return None,
+    };
+
+    Some(inv ^ (flag & 1))
+}
+
+/// Compute all ARM NZCV flags and pack into bits [31:28].
+pub fn armg_calculate_flags_nzcv(
+    cc_op: u64, dep1: u64, dep2: u64, ndep: u64,
+) -> Option<u64> {
+    let n = armg_calc_flag_n(cc_op, dep1, dep2, ndep)?;
+    let z = armg_calc_flag_z(cc_op, dep1, dep2, ndep)?;
+    let c = armg_calc_flag_c(cc_op, dep1, dep2, ndep)?;
+    let v = armg_calc_flag_v(cc_op, dep1, dep2, ndep)?;
+    Some(
+        ((n & 1) << arm_flag_shift::SHIFT_N)
+            | ((z & 1) << arm_flag_shift::SHIFT_Z)
+            | ((c & 1) << arm_flag_shift::SHIFT_C)
+            | ((v & 1) << arm_flag_shift::SHIFT_V),
+    )
+}
+
 /// Handle a CCall expression.
 ///
 /// Returns Some(result) if the call was handled, None if not supported.
@@ -1258,6 +1489,167 @@ pub fn handle_ccall_with_ctx(
         return None;
     }
 
+    // ARM: armg_calculate_condition
+    // Args: cond_n_op, cc_dep1, cc_dep2, cc_ndep (cc_dep3 in Python naming)
+    if name == "armg_calculate_condition" {
+        if args.len() < 4 {
+            return None;
+        }
+
+        // Concrete path
+        if let (Some(cond_n_op), Some(dep1), Some(dep2), Some(ndep)) = (
+            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+        ) {
+            let result = armg_calculate_condition(cond_n_op, dep1, dep2, ndep)?;
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
+
+        // Symbolic path: handle concrete cond_n_op with symbolic deps
+        if let (Some(cond_n_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+            let cond = (cond_n_op >> 4) & 0xF;
+            let cc_op = cond_n_op & 0xF;
+            let inv = (cond & 1) != 0;
+
+            use arm_cond::*;
+            use arm_cc_op::*;
+
+            // AL: always true
+            if cond == ARM_COND_AL {
+                return Some(RustBV::concrete(1, ret_bits));
+            }
+            // NV: always false
+            if cond == ARM_COND_NV {
+                return Some(RustBV::concrete(0, ret_bits));
+            }
+
+            let dep1 = &args[1];
+            let dep2 = &args[2];
+
+            // For SUB cc_op, we can compute symbolic comparisons directly
+            if cc_op == ARMG_CC_OP_SUB {
+                let result_flag = match cond & !1 {
+                    ARM_COND_EQ => {
+                        // Z flag: dep1 == dep2
+                        Some(dep1.eq(dep2, sym_ctx))
+                    }
+                    ARM_COND_HS => {
+                        // C flag: dep1 >= dep2 (unsigned)
+                        Some(dep1.uge(dep2, sym_ctx))
+                    }
+                    ARM_COND_MI => {
+                        // N flag: (dep1 - dep2)[31]
+                        let res = dep1.sub(dep2, sym_ctx);
+                        Some(res.extract(31, 31, sym_ctx))
+                    }
+                    ARM_COND_HI => {
+                        // C && !Z: dep1 > dep2 (unsigned)
+                        Some(dep1.ugt(dep2, sym_ctx))
+                    }
+                    ARM_COND_GE => {
+                        // N == V: signed >=
+                        Some(dep1.sge(dep2, sym_ctx))
+                    }
+                    ARM_COND_GT => {
+                        // !Z && N==V: signed >
+                        Some(dep1.sgt(dep2, sym_ctx))
+                    }
+                    _ => None,
+                };
+                if let Some(flag) = result_flag {
+                    let r = if inv { flag.not(sym_ctx) } else { flag };
+                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                }
+            }
+
+            // For ADD cc_op
+            if cc_op == ARMG_CC_OP_ADD {
+                let result_flag = match cond & !1 {
+                    ARM_COND_EQ => {
+                        // Z: result == 0
+                        let res = dep1.add(dep2, sym_ctx);
+                        let zero = RustBV::concrete(0, 32);
+                        let res32 = extract_to_nbits(&res, 32, sym_ctx);
+                        Some(res32.eq(&zero, sym_ctx))
+                    }
+                    ARM_COND_MI => {
+                        // N: result[31]
+                        let res = dep1.add(dep2, sym_ctx);
+                        let res32 = extract_to_nbits(&res, 32, sym_ctx);
+                        Some(res32.extract(31, 31, sym_ctx))
+                    }
+                    _ => None,
+                };
+                if let Some(flag) = result_flag {
+                    let r = if inv { flag.not(sym_ctx) } else { flag };
+                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                }
+            }
+
+            // For LOGIC cc_op
+            if cc_op == ARMG_CC_OP_LOGIC {
+                let result_flag = match cond & !1 {
+                    ARM_COND_EQ => {
+                        // Z: dep1 == 0
+                        let zero = RustBV::concrete(0, dep1.width());
+                        Some(dep1.eq(&zero, sym_ctx))
+                    }
+                    ARM_COND_MI => {
+                        // N: dep1[31]
+                        let d1 = extract_to_nbits(dep1, 32, sym_ctx);
+                        Some(d1.extract(31, 31, sym_ctx))
+                    }
+                    _ => None,
+                };
+                if let Some(flag) = result_flag {
+                    let r = if inv { flag.not(sym_ctx) } else { flag };
+                    return Some(r.zero_extend(ret_bits, sym_ctx));
+                }
+            }
+        }
+
+        return None;
+    }
+
+    // ARM: armg_calculate_flags_nzcv
+    if name == "armg_calculate_flags_nzcv" {
+        if args.len() < 4 {
+            return None;
+        }
+
+        if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
+            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+        ) {
+            let result = armg_calculate_flags_nzcv(cc_op, dep1, dep2, ndep)?;
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
+
+        return None;
+    }
+
+    // ARM: individual flag calculations
+    if name == "armg_calculate_flag_n" || name == "armg_calculate_flag_z"
+        || name == "armg_calculate_flag_c" || name == "armg_calculate_flag_v"
+    {
+        if args.len() < 4 {
+            return None;
+        }
+
+        if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
+            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+        ) {
+            let result = match name {
+                "armg_calculate_flag_n" => armg_calc_flag_n(cc_op, dep1, dep2, ndep)?,
+                "armg_calculate_flag_z" => armg_calc_flag_z(cc_op, dep1, dep2, ndep)?,
+                "armg_calculate_flag_c" => armg_calc_flag_c(cc_op, dep1, dep2, ndep)?,
+                "armg_calculate_flag_v" => armg_calc_flag_v(cc_op, dep1, dep2, ndep)?,
+                _ => return None,
+            };
+            return Some(RustBV::concrete(result as u128, ret_bits));
+        }
+
+        return None;
+    }
+
     // Not a supported CCall
     None
 }
@@ -1404,5 +1796,200 @@ mod tests {
 
         let result = x86g_calculate_condition(COND_Z, G_CC_OP_SUBL, 5, 5, 0);
         assert_eq!(result, Some(1));
+    }
+
+    // ARM condition code tests
+
+    /// Helper: encode ARM cond_n_op from condition and cc_op
+    fn arm_cond_n_op(cond: u64, cc_op: u64) -> u64 {
+        (cond << 4) | cc_op
+    }
+
+    #[test]
+    fn test_arm_cond_eq_sub_equal() {
+        // CMP 5, 5 (SUB) → EQ should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_SUB), 5, 5, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_ne_sub_equal() {
+        // CMP 5, 5 (SUB) → NE should be 0
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_NE, ARMG_CC_OP_SUB), 5, 5, 0);
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_arm_cond_ne_sub_different() {
+        // CMP 5, 3 (SUB) → NE should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_NE, ARMG_CC_OP_SUB), 5, 3, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_hs_sub() {
+        // CMP 5, 3 → HS (unsigned >=) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_HS, ARMG_CC_OP_SUB), 5, 3, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_lo_sub() {
+        // CMP 3, 5 → LO (unsigned <) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LO, ARMG_CC_OP_SUB), 3, 5, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_mi_sub() {
+        // CMP 3, 5 → MI (negative) should be 1 (3-5 = -2, N set)
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_MI, ARMG_CC_OP_SUB), 3, 5, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_pl_sub() {
+        // CMP 5, 3 → PL (positive) should be 1 (5-3 = 2, N clear)
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_PL, ARMG_CC_OP_SUB), 5, 3, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_gt_sub() {
+        // CMP 5, 3 → GT (signed >) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_GT, ARMG_CC_OP_SUB), 5, 3, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_le_sub() {
+        // CMP 3, 5 → LE (signed <=) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LE, ARMG_CC_OP_SUB), 3, 5, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_ge_sub_equal() {
+        // CMP 5, 5 → GE (signed >=) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_GE, ARMG_CC_OP_SUB), 5, 5, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_lt_sub_signed() {
+        // CMP -1 (0xFFFFFFFF), 1 → LT (signed <) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LT, ARMG_CC_OP_SUB), 0xFFFFFFFF, 1, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_hi_sub() {
+        // CMP 5, 3 → HI (unsigned >) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_HI, ARMG_CC_OP_SUB), 5, 3, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_ls_sub() {
+        // CMP 3, 5 → LS (unsigned <=) should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LS, ARMG_CC_OP_SUB), 3, 5, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_al() {
+        // AL (always) → 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_AL, ARMG_CC_OP_SUB), 0, 0, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_add_eq() {
+        // ADD 5+(-5) = 0, EQ should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(
+            arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_ADD),
+            5, 0xFFFFFFFB, 0, // 5 + (-5) = 0
+        );
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_cond_logic_eq() {
+        // LOGIC result=0, EQ should be 1
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let result = armg_calculate_condition(
+            arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_LOGIC), 0, 0, 0,
+        );
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_arm_flags_nzcv_sub_zero() {
+        // SUB 5 - 5 = 0: N=0, Z=1, C=1 (no borrow), V=0
+        use arm_cc_op::*;
+        let nzcv = armg_calculate_flags_nzcv(ARMG_CC_OP_SUB, 5, 5, 0).unwrap();
+        assert_eq!((nzcv >> 31) & 1, 0); // N
+        assert_eq!((nzcv >> 30) & 1, 1); // Z
+        assert_eq!((nzcv >> 29) & 1, 1); // C (no borrow on ARM means C=1)
+        assert_eq!((nzcv >> 28) & 1, 0); // V
+    }
+
+    #[test]
+    fn test_arm_flags_nzcv_copy() {
+        // COPY with NZCV = 0xA0000000 (N=1, Z=0, C=1, V=0)
+        use arm_cc_op::*;
+        let nzcv = armg_calculate_flags_nzcv(ARMG_CC_OP_COPY, 0xA0000000, 0, 0).unwrap();
+        assert_eq!((nzcv >> 31) & 1, 1); // N
+        assert_eq!((nzcv >> 30) & 1, 0); // Z
+        assert_eq!((nzcv >> 29) & 1, 1); // C
+        assert_eq!((nzcv >> 28) & 1, 0); // V
+    }
+
+    #[test]
+    fn test_arm_handle_ccall_concrete() {
+        // Test via handle_ccall dispatch
+        use arm_cond::*;
+        use arm_cc_op::*;
+        let cond_n_op = arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_SUB);
+        let args = vec![
+            RustBV::concrete(cond_n_op as u128, 32),
+            RustBV::concrete(5, 32),
+            RustBV::concrete(5, 32),
+            RustBV::concrete(0, 32),
+        ];
+        let result = handle_ccall("armg_calculate_condition", &args, 32);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_u64(), Some(1));
     }
 }

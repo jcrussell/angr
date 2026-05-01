@@ -238,6 +238,7 @@ impl CallingConvention for Cdecl {
 ///
 /// Integer/pointer arguments: R0-R3
 /// Return value: R0 (with R1 for 64-bit)
+/// Return address: LR (R14) — ARM uses BL which stores return addr in LR, not stack.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ARMEABI;
 
@@ -273,6 +274,18 @@ impl CallingConvention for ARMEABI {
     fn return_register(&self) -> u32 {
         8 // R0
     }
+
+    /// On ARM, BL stores the return address in LR (R14), not on the stack.
+    fn get_return_addr(
+        &self,
+        regs: &RegisterFile,
+        _memory: Option<&SymbolicMemory>,
+        ctx: &SymContext,
+    ) -> Option<u64> {
+        // LR offset = 64 (R14 in ARM VEX guest state)
+        let lr = regs.get(64, 4, ctx);
+        lr.as_u64()
+    }
 }
 
 /// AArch64 (ARM64) calling convention.
@@ -280,6 +293,7 @@ impl CallingConvention for ARMEABI {
 /// Integer/pointer arguments: X0-X7
 /// Floating-point arguments: V0-V7
 /// Return value: X0 (with X1 for 128-bit)
+/// Return address: LR (X30) — ARM64 uses BL which stores return addr in X30.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AArch64CC;
 
@@ -312,6 +326,18 @@ impl CallingConvention for AArch64CC {
 
     fn return_register(&self) -> u32 {
         16 // X0
+    }
+
+    /// On AArch64, BL stores the return address in X30 (LR), not on the stack.
+    fn get_return_addr(
+        &self,
+        regs: &RegisterFile,
+        _memory: Option<&SymbolicMemory>,
+        ctx: &SymContext,
+    ) -> Option<u64> {
+        // X30 (LR) offset = 256 in ARM64 VEX guest state
+        let lr = regs.get(256, 8, ctx);
+        lr.as_u64()
     }
 }
 
