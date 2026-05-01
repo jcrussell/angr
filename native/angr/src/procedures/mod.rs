@@ -239,9 +239,14 @@ impl NativeProcedureRegistry {
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
-        // I/O procedures: NOT registered by default — they only handle
-        // stdin/stdout natively, and the interaction with Python's posix
-        // plugin for fd tracking requires careful coordination.
+        // I/O procedures: NOT registered by default. Enabling NativeRead breaks
+        // benchmarks where a later Python SimProc fallback (e.g., strcmp) needs
+        // to read the bytes NativeRead wrote: the cached Python callback state
+        // is not synced from Rust memory between callbacks, so it sees stale
+        // (concrete-zero) bytes and divergent paths fail. Re-enabling requires
+        // syncing Rust symbolic_objects to the Python cached state on each
+        // callback (or extending RustMemoryProxy beyond concrete pointer values
+        // on the SP page). See angr-mme3.
         // registry.register(Arc::new(read::NativeRead));
         // registry.register(Arc::new(write::NativeWrite));
         // File operations: registered for fd tracking in FileSystem.
