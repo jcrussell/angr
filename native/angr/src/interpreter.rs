@@ -447,13 +447,28 @@ impl<'a> VEXInterpreter<'a> {
                 Err(ExecutionError::Unsupported("GetI (rotating registers)".to_string()))
             }
 
-            IRExpr::Triop { op: _op, arg1: _arg1, arg2: _arg2, arg3: _arg3 } => {
-                // Triops are mostly for rounding mode in float operations
-                Err(ExecutionError::Unsupported("triop".to_string()))
+            IRExpr::Triop { op, arg1, arg2, arg3 } => {
+                // VEX Triops are float arithmetic with a rounding mode (rm, a, b).
+                // Drop the rm (arg1) and dispatch via VEXOps::binop. Concrete
+                // float math is correct under default IEEE round-to-nearest;
+                // symbolic floats are unsupported (mirror of binop fallback).
+                let _rm = self.eval_expr(arg1, tyenv)?;
+                let v2 = self.eval_expr(arg2, tyenv)?;
+                let v3 = self.eval_expr(arg3, tyenv)?;
+                VEXOps::binop(*op, v2, v3, self.ctx).map_err(|_| {
+                    ExecutionError::Unsupported(format!("triop {:?}", op))
+                })
             }
 
-            IRExpr::Qop { .. } => {
-                Err(ExecutionError::Unsupported("qop".to_string()))
+            IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
+                // VEX Qops are typically fused multiply-add/sub: (rm, a, b, c).
+                let _rm = self.eval_expr(arg1, tyenv)?;
+                let v2 = self.eval_expr(arg2, tyenv)?;
+                let v3 = self.eval_expr(arg3, tyenv)?;
+                let v4 = self.eval_expr(arg4, tyenv)?;
+                VEXOps::qop(*op, v2, v3, v4, self.ctx).map_err(|_| {
+                    ExecutionError::Unsupported(format!("qop {:?}", op))
+                })
             }
 
             IRExpr::CCall { cee, retty, args } => {

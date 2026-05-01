@@ -575,6 +575,10 @@ pub enum IROp {
     FNeg(IRType),
     FAbs(IRType),
     FSqrt(IRType),
+    /// Fused multiply-add: a*b + c (with rounding mode)
+    FMAdd(IRType),
+    /// Fused multiply-sub: a*b - c (with rounding mode)
+    FMSub(IRType),
 
     // Float comparisons
     FCmpEQ(IRType),
@@ -762,7 +766,9 @@ impl IROp {
             | IROp::FDiv(t)
             | IROp::FNeg(t)
             | IROp::FAbs(t)
-            | IROp::FSqrt(t) => Some(*t),
+            | IROp::FSqrt(t)
+            | IROp::FMAdd(t)
+            | IROp::FMSub(t) => Some(*t),
 
             IROp::FCmpEQ(_) | IROp::FCmpLT(_) | IROp::FCmpLE(_) => Some(IRType::I1),
 

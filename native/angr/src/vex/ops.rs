@@ -420,6 +420,28 @@ impl VEXOps {
     }
 
     // =========================================================================
+    // Quaternary Operations
+    // =========================================================================
+
+    /// Execute a quaternary operation. Used for fused multiply-add/sub
+    /// where VEX delivers (rounding_mode, a, b, c) but the rm has already
+    /// been stripped by the caller (so this takes a, b, c).
+    #[inline]
+    pub fn qop(
+        op: IROp,
+        a: RustBV,
+        b: RustBV,
+        c: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        match op {
+            IROp::FMAdd(ty) => Self::float_madd(a, b, c, ty, ctx),
+            IROp::FMSub(ty) => Self::float_msub(a, b, c, ty, ctx),
+            _ => Err(OpError::NotQuaternary(op)),
+        }
+    }
+
+    // =========================================================================
     // Helper Functions
     // =========================================================================
 
@@ -1275,6 +1297,64 @@ impl VEXOps {
         Err(OpError::SymbolicFloatUnsupported)
     }
 
+    /// Fused multiply-add: a*b + c
+    fn float_madd(
+        a: RustBV,
+        b: RustBV,
+        c: RustBV,
+        ty: IRType,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        if let (Some(av), Some(bv), Some(cv)) = (a.as_u128(), b.as_u128(), c.as_u128()) {
+            let result = match ty {
+                IRType::F32 => {
+                    let af = f32::from_bits(av as u32);
+                    let bf = f32::from_bits(bv as u32);
+                    let cf = f32::from_bits(cv as u32);
+                    af.mul_add(bf, cf).to_bits() as u128
+                }
+                IRType::F64 => {
+                    let af = f64::from_bits(av as u64);
+                    let bf = f64::from_bits(bv as u64);
+                    let cf = f64::from_bits(cv as u64);
+                    af.mul_add(bf, cf).to_bits() as u128
+                }
+                _ => return Err(OpError::InvalidFloatType(ty)),
+            };
+            return Ok(RustBV::concrete(result, ty.bits()));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
+    /// Fused multiply-sub: a*b - c
+    fn float_msub(
+        a: RustBV,
+        b: RustBV,
+        c: RustBV,
+        ty: IRType,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        if let (Some(av), Some(bv), Some(cv)) = (a.as_u128(), b.as_u128(), c.as_u128()) {
+            let result = match ty {
+                IRType::F32 => {
+                    let af = f32::from_bits(av as u32);
+                    let bf = f32::from_bits(bv as u32);
+                    let cf = f32::from_bits(cv as u32);
+                    af.mul_add(bf, -cf).to_bits() as u128
+                }
+                IRType::F64 => {
+                    let af = f64::from_bits(av as u64);
+                    let bf = f64::from_bits(bv as u64);
+                    let cf = f64::from_bits(cv as u64);
+                    af.mul_add(bf, -cf).to_bits() as u128
+                }
+                _ => return Err(OpError::InvalidFloatType(ty)),
+            };
+            return Ok(RustBV::concrete(result, ty.bits()));
+        }
+        Err(OpError::SymbolicFloatUnsupported)
+    }
+
     /// Scalar float operation in vector (SSE scalar ops like ADDSS, DIVSS).
     /// Operates on element 0 only, passes through other elements from left operand.
     #[inline]
@@ -1826,6 +1906,8 @@ pub enum OpError {
     NotBinary(IROp),
     /// Operation is not a ternary operation.
     NotTernary(IROp),
+    /// Operation is not a quaternary operation.
+    NotQuaternary(IROp),
     /// Type mismatch.
     TypeMismatch { expected: IRType, got: IRType },
     /// Invalid float type.
@@ -1844,6 +1926,7 @@ impl std::fmt::Display for OpError {
             OpError::NotUnary(op) => write!(f, "operation {:?} is not unary", op),
             OpError::NotBinary(op) => write!(f, "operation {:?} is not binary", op),
             OpError::NotTernary(op) => write!(f, "operation {:?} is not ternary", op),
+            OpError::NotQuaternary(op) => write!(f, "operation {:?} is not quaternary", op),
             OpError::TypeMismatch { expected, got } => {
                 write!(f, "type mismatch: expected {:?}, got {:?}", expected, got)
             }
@@ -1926,6 +2009,48 @@ mod tests {
         let result = VEXOps::binop(IROp::FAdd(IRType::F32), a, b, &ctx).unwrap();
         let result_f = f32::from_bits(result.as_u64().unwrap() as u32);
         assert!((result_f - 4.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_qop_fmadd_concrete_f64() {
+        let ctx = SymContext::new_mock();
+
+        // 2.0 * 3.0 + 4.0 = 10.0
+        let a = RustBV::concrete(2.0f64.to_bits() as u128, 64);
+        let b = RustBV::concrete(3.0f64.to_bits() as u128, 64);
+        let c = RustBV::concrete(4.0f64.to_bits() as u128, 64);
+
+        let result = VEXOps::qop(IROp::FMAdd(IRType::F64), a, b, c, &ctx).unwrap();
+        let result_f = f64::from_bits(result.as_u64().unwrap());
+        assert!((result_f - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_qop_fmsub_concrete_f32() {
+        let ctx = SymContext::new_mock();
+
+        // 5.0 * 2.0 - 3.0 = 7.0
+        let a = RustBV::concrete(5.0f32.to_bits() as u128, 32);
+        let b = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+        let c = RustBV::concrete(3.0f32.to_bits() as u128, 32);
+
+        let result = VEXOps::qop(IROp::FMSub(IRType::F32), a, b, c, &ctx).unwrap();
+        let result_f = f32::from_bits(result.as_u64().unwrap() as u32);
+        assert!((result_f - 7.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_qop_rejects_non_quaternary() {
+        let ctx = SymContext::new_mock();
+        let a = RustBV::concrete(0, 64);
+        let b = RustBV::concrete(0, 64);
+        let c = RustBV::concrete(0, 64);
+
+        let err = VEXOps::qop(IROp::Add(IRType::I64), a, b, c, &ctx).unwrap_err();
+        match err {
+            OpError::NotQuaternary(_) => (),
+            other => panic!("expected NotQuaternary, got {:?}", other),
+        }
     }
 
     #[test]

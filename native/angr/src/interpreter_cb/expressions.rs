@@ -375,31 +375,41 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRExpr::Triop { op, arg1, arg2, arg3 } => {
-                // Triops are typically float operations with rounding mode.
-                // Return fresh symbolic if any operand is symbolic, so that
-                // branches depending on float results remain explorable.
-                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                // VEX Triops are float arithmetic with a rounding mode:
+                // (rm, a, b). The rm (arg1) is dropped because Z3 FP theory
+                // is not wired up; concrete float math via VEXOps::binop is
+                // still correct under the default IEEE-754 round-to-nearest.
+                let _rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
                 let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
                 let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+                let any_sym = v2.is_symbolic() || v3.is_symbolic();
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() {
-                    Ok(RustBV::symbolic(self.ctx, format!("triop_{:x}", self.pc), width))
-                } else {
-                    Ok(RustBV::concrete(0, width))
-                }
+                VEXOps::binop(*op, v2, v3, self.ctx).or_else(|_| {
+                    if any_sym {
+                        Ok(RustBV::symbolic(self.ctx, format!("triop_{:x}", self.pc), width))
+                    } else {
+                        Ok(RustBV::concrete(0, width))
+                    }
+                })
             }
 
             IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
-                let v1 = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                // VEX Qops are typically fused multiply-add/sub with a
+                // rounding mode: (rm, a, b, c). Drop rm for the same reason
+                // as Triop above.
+                let _rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
                 let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
                 let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
                 let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
+                let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                if v1.is_symbolic() || v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic() {
-                    Ok(RustBV::symbolic(self.ctx, format!("qop_{:x}", self.pc), width))
-                } else {
-                    Ok(RustBV::concrete(0, width))
-                }
+                VEXOps::qop(*op, v2, v3, v4, self.ctx).or_else(|_| {
+                    if any_sym {
+                        Ok(RustBV::symbolic(self.ctx, format!("qop_{:x}", self.pc), width))
+                    } else {
+                        Ok(RustBV::concrete(0, width))
+                    }
+                })
             }
 
             IRExpr::CCall { cee, retty, args } => {
