@@ -129,7 +129,10 @@ class RustStateSyncMixin:
                 elif not reg_val.symbolic:
                     bulk_regs[reg_name] = angr_state.solver.eval(reg_val)
                 else:
-                    # Import symbolic register via shared Z3 context
+                    # Import symbolic register via shared Z3 context.
+                    # If conversion fails, the register is missing on the Rust
+                    # side and any read will see an uninitialized BVS — wrong
+                    # value, not a crash. Log loudly.
                     try:
                         z3_obj = z3_backend.convert(reg_val)
                         ast_ptr = z3_obj.as_ast().value
@@ -137,10 +140,19 @@ class RustStateSyncMixin:
                             rust_state.set_register_symbolic(
                                 reg_name, ast_ptr, reg_val.length
                             )
-                    except Exception:
-                        pass  # Skip if Z3 conversion fails
-            except (AttributeError, KeyError, Exception):
-                pass
+                    except Exception as e:
+                        l.warning("Symbolic register %s not synced to Rust "
+                                  "(Z3 conversion failed: %s) — Rust will "
+                                  "see stale/uninit value", reg_name, e)
+            except AttributeError:
+                # Expected: arch defines register name but state doesn't
+                # expose it (rare, but harmless to skip).
+                if _DBG:
+                    l.debug("Register %s not on state, skipping", reg_name)
+            except Exception as e:
+                # Unexpected failure (e.g. solver.eval on concrete value
+                # raises) — register won't be synced, Rust may diverge.
+                l.warning("Failed to sync register %s to Rust: %s", reg_name, e)
         if bulk_regs:
             rust_state.set_registers_bulk(bulk_regs)
 

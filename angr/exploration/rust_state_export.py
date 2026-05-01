@@ -200,15 +200,22 @@ class RustStateExportMixin:
         """
         try:
             snapshot = self._rust_mgr.export_state(state_id)
-        except Exception:
+        except Exception as e:
+            # CRITICAL: registers in Python state are now stale. User code
+            # reading state.regs.* after exploration will see pre-exploration
+            # values, not the values Rust computed.
+            l.warning("export_state(%d) failed during register sync: %s — "
+                      "Python registers may be stale", state_id, e)
             return
 
         named_regs = snapshot.get_registers_named()
         for reg_name, (value, size_bits) in named_regs.items():
             try:
                 setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
-            except Exception:
-                pass  # Skip VEX internal registers that angr doesn't expose
+            except Exception as e:
+                # Expected: VEX internal registers (e.g. ip_at_syscall) that
+                # angr's register plugin doesn't expose. Log at debug only.
+                l.debug("Skipping register %s during sync: %s", reg_name, e)
 
     def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
         """Sync memory from Rust state to Python state.
@@ -222,10 +229,21 @@ class RustStateExportMixin:
             # Use flushed export to materialize any pending symbolic writes
             # before exporting memory pages to Python.
             snapshot = self._rust_mgr.export_state_flushed(state_id)
-        except Exception:
+        except Exception as e_flushed:
             try:
                 snapshot = self._rust_mgr.export_state(state_id)
-            except Exception:
+                # Flushed failed but unflushed worked — pending symbolic
+                # writes may not be visible in Python memory.
+                l.warning("export_state_flushed(%d) failed (%s); falling "
+                          "back to unflushed snapshot — pending symbolic "
+                          "stores may be missing", state_id, e_flushed)
+            except Exception as e_unflushed:
+                # CRITICAL: both export paths failed. Python state.memory
+                # will return zeros (or stale data) for any address Rust wrote.
+                l.warning("Both export_state_flushed and export_state failed "
+                          "for state %d (flushed: %s; unflushed: %s) — "
+                          "Python memory will be stale",
+                          state_id, e_flushed, e_unflushed)
                 return  # State may not be in Rust stashes anymore
 
         for i in range(snapshot.page_count()):
@@ -462,12 +480,17 @@ class RustStateExportMixin:
             try:
                 rust_ctx = _get_rust_ctx()
                 return rust_ctx.satisfiable()
-            except Exception:
-                pass
+            except Exception as e_rust:
+                l.debug("Rust satisfiable() failed, trying Python: %s", e_rust)
             try:
                 return original_satisfiable(**kwargs)
-            except Exception:
-                return False
+            except Exception as e_py:
+                # CRITICAL: Both solvers failed. Returning False here would
+                # mean "UNSAT" — a wrong answer that masks the underlying
+                # solver failure. Re-raise so the caller can react.
+                l.warning("Both Rust and Python satisfiable() failed for "
+                          "state — Python error: %s", e_py)
+                raise
 
         state.solver.eval = eval_with_fallback
         state.solver.eval_upto = eval_upto_with_fallback
