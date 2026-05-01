@@ -74,6 +74,15 @@ pub trait Arch: Send + Sync {
     /// Get the return value register offset.
     fn return_register(&self) -> u32;
 
+    /// Get the offset of the register holding the syscall number.
+    ///
+    /// The size always equals `bytes()` (pointer width), so callers
+    /// only need the offset. Returns `None` for archs without a
+    /// well-defined syscall convention here.
+    fn syscall_num_offset(&self) -> Option<u32> {
+        None
+    }
+
     /// Check if the architecture is little-endian.
     fn is_little_endian(&self) -> bool;
 }

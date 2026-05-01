@@ -396,6 +396,11 @@ impl Arch for ARM64 {
         offsets::X0
     }
 
+    fn syscall_num_offset(&self) -> Option<u32> {
+        // Linux AArch64 syscall convention puts the syscall number in X8
+        Some(offsets::X8)
+    }
+
     fn is_little_endian(&self) -> bool {
         true
     }

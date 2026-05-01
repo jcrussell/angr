@@ -203,23 +203,11 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Get the syscall number from the appropriate register.
     pub(super) fn get_syscall_num(&self) -> u64 {
-        // Syscall number register varies by architecture:
-        // - AMD64: RAX (offset 16, 8 bytes)
-        // - X86: EAX (offset 8, 4 bytes)
-        // - ARM: R7 (offset 36, 4 bytes) - EABI syscall convention
-        // - ARM64: X8 (offset 80, 8 bytes)
-        // - MIPS32: v0/$2 (offset 16, 4 bytes)
-        // - MIPS64: v0/$2 (offset 32, 8 bytes)
-        let (offset, size) = match self.arch {
-            VexArch::AMD64 => (16, 8),   // RAX
-            VexArch::X86 => (8, 4),      // EAX
-            VexArch::ARM => (36, 4),     // R7 (EABI)
-            VexArch::ARM64 => (80, 8),   // X8
-            VexArch::MIPS32 => (16, 4),  // v0/$2
-            VexArch::MIPS64 => (32, 8),  // v0/$2
-            _ => (0, 8),                 // Default fallback
+        let arch = self.registers.arch();
+        let Some(offset) = arch.syscall_num_offset() else {
+            return 0;
         };
-        let syscall_bv = self.registers.get(offset, size, self.ctx);
-        syscall_bv.as_u64().unwrap_or(0)
+        let size = arch.bytes();
+        self.registers.get(offset, size, self.ctx).as_u64().unwrap_or(0)
     }
 }

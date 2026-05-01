@@ -288,6 +288,11 @@ impl Arch for ARM {
         offsets::R0
     }
 
+    fn syscall_num_offset(&self) -> Option<u32> {
+        // EABI Linux syscall convention puts the syscall number in R7
+        Some(offsets::R7)
+    }
+
     fn is_little_endian(&self) -> bool {
         true // ARM can be big or little endian, but little is more common
     }

@@ -160,12 +160,9 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Get the current stack pointer value (architecture-aware).
     fn get_stack_pointer(&self) -> Option<u64> {
-        let (offset, size) = match self.arch {
-            VexArch::AMD64 => (48, 8),  // RSP
-            VexArch::X86 => (24, 4),    // ESP (offset 24 per arch/x86.rs)
-            VexArch::ARM | VexArch::ARM64 => (52, 8), // SP for ARM variants (approximate)
-            _ => return None,
-        };
+        let arch = self.registers.arch();
+        let offset = arch.sp_offset();
+        let size = arch.bytes();
         self.registers.get(offset, size, self.ctx).as_u64()
     }
 
