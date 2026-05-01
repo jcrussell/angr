@@ -35,6 +35,10 @@ static Z3_ASSUME_SYMBOLIC_COUNT: AtomicU64 = AtomicU64::new(0);
 static Z3_BRANCH_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of branch checks where condition was concrete.
 static Z3_BRANCH_CONCRETE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of branch checks where the cached parent model predicted one direction.
+static Z3_BRANCH_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of branch checks where no usable cached model was available.
+static Z3_BRANCH_MODEL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
 static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -91,6 +95,8 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     stats.insert("z3_assume_symbolic".into(), Z3_ASSUME_SYMBOLIC_COUNT.load(Ordering::Relaxed));
     stats.insert("z3_branch_check".into(), Z3_BRANCH_CHECK_COUNT.load(Ordering::Relaxed));
     stats.insert("z3_branch_concrete".into(), Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_branch_model_hit".into(), Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_branch_model_miss".into(), Z3_BRANCH_MODEL_MISS_COUNT.load(Ordering::Relaxed));
     stats.insert("z3_ast_build".into(), Z3_AST_BUILD_COUNT.load(Ordering::Relaxed));
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
@@ -114,6 +120,8 @@ pub fn reset_solver_stats() {
     Z3_ASSUME_SYMBOLIC_COUNT.store(0, Ordering::Relaxed);
     Z3_BRANCH_CHECK_COUNT.store(0, Ordering::Relaxed);
     Z3_BRANCH_CONCRETE_COUNT.store(0, Ordering::Relaxed);
+    Z3_BRANCH_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
+    Z3_BRANCH_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
     for i in 0..NUM_CHECK_SITES {
         Z3_CHECK_SITE_COUNT[i].store(0, Ordering::Relaxed);
@@ -425,7 +433,10 @@ impl SymContext {
         self.solver().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
-        *self.model_cache.borrow_mut() = None;
+        // Keep the cached model if it still satisfies the new constraint —
+        // otherwise it's invalidated. This lets check_branch_feasibility
+        // reuse the model across consecutive assume_true/assume_false calls.
+        self.invalidate_model_if_inconsistent(&constraint);
     }
 
     /// Add a constraint (fast path: no tracking overhead).
@@ -438,9 +449,10 @@ impl SymContext {
         // add_constraint_raw) cache before calling this to avoid double-cache.
         self.solver().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
-        // Invalidate caches - constraint set has changed
+        // Invalidate sat_cache - constraint set has changed.
         self.sat_cache.set(None);
-        *self.model_cache.borrow_mut() = None;
+        // Preserve model_cache when consistent with the new constraint.
+        self.invalidate_model_if_inconsistent(&constraint);
     }
 
     /// Add a constraint with tracking for unsat_core extraction.
@@ -459,7 +471,27 @@ impl SymContext {
         self.solver().assert_and_track(&constraint, &track_bool);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
-        *self.model_cache.borrow_mut() = None;
+        self.invalidate_model_if_inconsistent(&constraint);
+    }
+
+    /// If a cached model exists, drop it unless it still satisfies the new
+    /// constraint. Models that satisfy a superset of constraints stay valid;
+    /// this lets check_branch_feasibility reuse a model across consecutive
+    /// assume_true/assume_false calls in deferred-fork mode.
+    #[cfg(feature = "vex-engine-z3")]
+    fn invalidate_model_if_inconsistent(&self, constraint: &z3::ast::Bool) {
+        let mut cache = self.model_cache.borrow_mut();
+        if cache.is_none() {
+            return;
+        }
+        let still_valid = cache
+            .as_ref()
+            .and_then(|m| m.eval(constraint, true))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+        if !still_valid {
+            *cache = None;
+        }
     }
 
     /// Add a constraint that the bitvector equals a specific value.
@@ -542,8 +574,20 @@ impl SymContext {
             return cached;
         }
         // Perform actual SAT check
-        let result = matches!(timed_check(&self.solver(), CheckSite::Satisfiable), z3::SatResult::Sat);
+        let solver = self.solver();
+        let result = matches!(timed_check(&solver, CheckSite::Satisfiable), z3::SatResult::Sat);
         self.sat_cache.set(Some(result));
+        // Populate model_cache if SAT — get_model is essentially free after
+        // a successful check, and the model lets check_branch_feasibility
+        // skip one of two Z3 checks.
+        if result {
+            let mut cache = self.model_cache.borrow_mut();
+            if cache.is_none() {
+                if let Some(m) = solver.get_model() {
+                    *cache = Some(m);
+                }
+            }
+        }
         result
     }
 
@@ -591,6 +635,12 @@ impl SymContext {
     /// for both checks, reducing lock acquisitions from 8 to 2.
     /// When only one direction is feasible, skips the second Z3 check.
     ///
+    /// Optimization: if a parent model is cached (from a prior is_sat/eval
+    /// or carried across add_constraint calls), evaluate cond on it. The
+    /// model satisfies the parent constraints C, so M(cond)=true proves
+    /// can_be_true without Z3 (and symmetrically for false). Only the
+    /// other direction needs a Z3 check.
+    ///
     /// Note: In deferred fork mode, this is NOT called — the interpreter
     /// skips feasibility checks and assumes both branches are feasible.
     /// This method is only used in non-deferred mode and for explicit checks.
@@ -608,23 +658,58 @@ impl SymContext {
 
         let solver = self.solver();
 
-        // Check true branch
-        solver.push();
-        solver.assert(&bool_ast);
-        let can_true = matches!(timed_check(&solver, CheckSite::BranchTrue), z3::SatResult::Sat);
-        solver.pop(1);
+        // Try to predict one direction with the cached parent model.
+        let predicted: Option<bool> = self
+            .model_cache
+            .borrow()
+            .as_ref()
+            .and_then(|m| m.eval(&bool_ast, true))
+            .and_then(|b| b.as_bool());
 
-        if !can_true {
-            return (false, true); // Must be false-only
+        match predicted {
+            Some(true) => {
+                Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                // can_be_true=true is proven by the model. Check the other
+                // direction (¬cond) with Z3.
+                solver.push();
+                solver.assert(&bool_ast.not());
+                let can_false =
+                    matches!(timed_check(&solver, CheckSite::BranchFalse), z3::SatResult::Sat);
+                solver.pop(1);
+                (true, can_false)
+            }
+            Some(false) => {
+                Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                // can_be_false=true is proven by the model. Check cond.
+                solver.push();
+                solver.assert(&bool_ast);
+                let can_true =
+                    matches!(timed_check(&solver, CheckSite::BranchTrue), z3::SatResult::Sat);
+                solver.pop(1);
+                (can_true, true)
+            }
+            None => {
+                Z3_BRANCH_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+                // No cached model: do the original two-check flow.
+                solver.push();
+                solver.assert(&bool_ast);
+                let can_true =
+                    matches!(timed_check(&solver, CheckSite::BranchTrue), z3::SatResult::Sat);
+                solver.pop(1);
+
+                if !can_true {
+                    return (false, true); // Must be false-only
+                }
+
+                solver.push();
+                solver.assert(&bool_ast.not());
+                let can_false =
+                    matches!(timed_check(&solver, CheckSite::BranchFalse), z3::SatResult::Sat);
+                solver.pop(1);
+
+                (can_true, can_false)
+            }
         }
-
-        // Check false branch
-        solver.push();
-        solver.assert(&bool_ast.not());
-        let can_false = matches!(timed_check(&solver, CheckSite::BranchFalse), z3::SatResult::Sat);
-        solver.pop(1);
-
-        (can_true, can_false)
     }
 
     /// Evaluate a bitvector to a concrete value if possible.
