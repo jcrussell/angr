@@ -38,6 +38,48 @@ static Z3_BRANCH_CONCRETE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
 static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Per-site counters and timers for solver.check() calls.
+/// Indexed by `CheckSite as usize`.
+const NUM_CHECK_SITES: usize = 9;
+static Z3_CHECK_SITE_COUNT: [AtomicU64; NUM_CHECK_SITES] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+static Z3_CHECK_SITE_TIME_NS: [AtomicU64; NUM_CHECK_SITES] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+/// Distinguishes which call site invoked solver.check() for profiling.
+#[cfg(feature = "vex-engine-z3")]
+#[derive(Clone, Copy)]
+pub enum CheckSite {
+    Satisfiable = 0,
+    BranchTrue = 1,
+    BranchFalse = 2,
+    Eval = 3,
+    EvalUpto = 4,
+    MinInit = 5,
+    MinSearch = 6,
+    MaxInit = 7,
+    MaxSearch = 8,
+}
+
+#[cfg(feature = "vex-engine-z3")]
+const SITE_NAMES: [&str; NUM_CHECK_SITES] = [
+    "satisfiable",
+    "branch_true",
+    "branch_false",
+    "eval",
+    "eval_upto",
+    "min_init",
+    "min_search",
+    "max_init",
+    "max_search",
+];
+
 /// Get all solver profiling stats as a HashMap.
 pub fn get_solver_stats() -> HashMap<String, u64> {
     let mut stats = HashMap::new();
@@ -50,6 +92,15 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     stats.insert("z3_branch_check".into(), Z3_BRANCH_CHECK_COUNT.load(Ordering::Relaxed));
     stats.insert("z3_branch_concrete".into(), Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed));
     stats.insert("z3_ast_build".into(), Z3_AST_BUILD_COUNT.load(Ordering::Relaxed));
+    #[cfg(feature = "vex-engine-z3")]
+    for i in 0..NUM_CHECK_SITES {
+        let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
+        let time_ns = Z3_CHECK_SITE_TIME_NS[i].load(Ordering::Relaxed);
+        if count > 0 {
+            stats.insert(format!("z3_site_{}_count", SITE_NAMES[i]), count);
+            stats.insert(format!("z3_site_{}_time_ns", SITE_NAMES[i]), time_ns);
+        }
+    }
     stats
 }
 
@@ -64,6 +115,10 @@ pub fn reset_solver_stats() {
     Z3_BRANCH_CHECK_COUNT.store(0, Ordering::Relaxed);
     Z3_BRANCH_CONCRETE_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
+    for i in 0..NUM_CHECK_SITES {
+        Z3_CHECK_SITE_COUNT[i].store(0, Ordering::Relaxed);
+        Z3_CHECK_SITE_TIME_NS[i].store(0, Ordering::Relaxed);
+    }
 }
 
 /// Increment Z3 AST build counter (called from value.rs).
@@ -72,14 +127,18 @@ pub fn record_z3_ast_build() {
     Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Timed wrapper around solver.check() — records count and elapsed time.
+/// Timed wrapper around solver.check() — records count, total time, and per-site stats.
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
-fn timed_check(solver: &z3::Solver) -> z3::SatResult {
+fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
     let start = std::time::Instant::now();
     let result = solver.check();
+    let elapsed_ns = start.elapsed().as_nanos() as u64;
     Z3_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
-    Z3_CHECK_TIME_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    Z3_CHECK_TIME_NS.fetch_add(elapsed_ns, Ordering::Relaxed);
+    let idx = site as usize;
+    Z3_CHECK_SITE_COUNT[idx].fetch_add(1, Ordering::Relaxed);
+    Z3_CHECK_SITE_TIME_NS[idx].fetch_add(elapsed_ns, Ordering::Relaxed);
     result
 }
 
@@ -483,7 +542,7 @@ impl SymContext {
             return cached;
         }
         // Perform actual SAT check
-        let result = matches!(timed_check(&self.solver()), z3::SatResult::Sat);
+        let result = matches!(timed_check(&self.solver(), CheckSite::Satisfiable), z3::SatResult::Sat);
         self.sat_cache.set(Some(result));
         result
     }
@@ -552,7 +611,7 @@ impl SymContext {
         // Check true branch
         solver.push();
         solver.assert(&bool_ast);
-        let can_true = matches!(timed_check(&solver), z3::SatResult::Sat);
+        let can_true = matches!(timed_check(&solver, CheckSite::BranchTrue), z3::SatResult::Sat);
         solver.pop(1);
 
         if !can_true {
@@ -562,7 +621,7 @@ impl SymContext {
         // Check false branch
         solver.push();
         solver.assert(&bool_ast.not());
-        let can_false = matches!(timed_check(&solver), z3::SatResult::Sat);
+        let can_false = matches!(timed_check(&solver, CheckSite::BranchFalse), z3::SatResult::Sat);
         solver.pop(1);
 
         (can_true, can_false)
@@ -589,7 +648,7 @@ impl SymContext {
 
         // Need to get a fresh model - must call check() first for Z3
         let solver = self.solver();
-        match timed_check(&solver) {
+        match timed_check(&solver, CheckSite::Eval) {
             z3::SatResult::Sat => {
                 self.sat_cache.set(Some(true));
             }
@@ -635,7 +694,7 @@ impl SymContext {
 
         // Need to get a model from Z3
         let solver = self.solver();
-        match timed_check(&solver) {
+        match timed_check(&solver, CheckSite::Eval) {
             z3::SatResult::Sat => {}
             _ => return None,
         }
@@ -714,7 +773,7 @@ impl SymContext {
         solver.push();
 
         for _ in 0..n {
-            match timed_check(&solver) {
+            match timed_check(&solver, CheckSite::EvalUpto) {
                 z3::SatResult::Sat => {
                     if let Some(model) = solver.get_model() {
                         if let Some(result) = model.eval(&ast, true) {
@@ -781,7 +840,7 @@ impl SymContext {
         solver.push();
 
         for _ in 0..n {
-            match timed_check(&solver) {
+            match timed_check(&solver, CheckSite::EvalUpto) {
                 z3::SatResult::Sat => {
                     if let Some(model) = solver.get_model() {
                         if let Some(result) = model.eval(&ast, true) {
@@ -911,7 +970,7 @@ impl SymContext {
             solver.push();
             let zero = Self::make_bv_const(0, width);
             solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
-            let has_negative = matches!(timed_check(&solver), z3::SatResult::Sat);
+            let has_negative = matches!(timed_check(&solver, CheckSite::MinInit), z3::SatResult::Sat);
             solver.pop(1);
 
             if has_negative {
@@ -933,7 +992,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be <= mid (signed comparison)
                     solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
+                    let can_be_le_mid = matches!(timed_check(&solver, CheckSite::MinSearch), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_le_mid {
@@ -956,7 +1015,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be <= mid (signed comparison)
                     solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
+                    let can_be_le_mid = matches!(timed_check(&solver, CheckSite::MinSearch), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_le_mid {
@@ -975,7 +1034,7 @@ impl SymContext {
                 let mid_ast = Self::make_bv_const(mid, width);
                 // Check if bv can be <= mid (unsigned comparison)
                 solver.assert(&ast.bvule(&mid_ast));
-                let can_be_le_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
+                let can_be_le_mid = matches!(timed_check(&solver, CheckSite::MinSearch), z3::SatResult::Sat);
                 solver.pop(1);
 
                 if can_be_le_mid {
@@ -1021,7 +1080,7 @@ impl SymContext {
 
             solver.push();
             solver.assert(&ast.bvsge(&zero)); // bv >= 0 (signed)
-            let has_non_negative = matches!(timed_check(&solver), z3::SatResult::Sat);
+            let has_non_negative = matches!(timed_check(&solver, CheckSite::MaxInit), z3::SatResult::Sat);
             solver.pop(1);
 
             if has_non_negative {
@@ -1039,7 +1098,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be >= mid (signed comparison)
                     solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
+                    let can_be_ge_mid = matches!(timed_check(&solver, CheckSite::MaxSearch), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_ge_mid {
@@ -1068,7 +1127,7 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be >= mid (signed comparison)
                     solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
+                    let can_be_ge_mid = matches!(timed_check(&solver, CheckSite::MaxSearch), z3::SatResult::Sat);
                     solver.pop(1);
 
                     if can_be_ge_mid {
@@ -1096,7 +1155,7 @@ impl SymContext {
                 let mid_ast = Self::make_bv_const(mid, width);
                 // Check if bv can be >= mid (unsigned comparison)
                 solver.assert(&ast.bvuge(&mid_ast));
-                let can_be_ge_mid = matches!(timed_check(&solver), z3::SatResult::Sat);
+                let can_be_ge_mid = matches!(timed_check(&solver, CheckSite::MaxSearch), z3::SatResult::Sat);
                 solver.pop(1);
 
                 if can_be_ge_mid {
@@ -1153,7 +1212,7 @@ impl SymContext {
         let solver = self.solver();
         solver.push();
         solver.assert(&constraint);
-        let result = matches!(timed_check(&solver), z3::SatResult::Sat);
+        let result = matches!(timed_check(&solver, CheckSite::Satisfiable), z3::SatResult::Sat);
         solver.pop(1);
 
         result
