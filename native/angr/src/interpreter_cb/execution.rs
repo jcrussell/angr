@@ -260,7 +260,7 @@ impl<'a> CallbackInterpreter<'a> {
                     // instead of moving the state to the errored stash
                     let result = match &e {
                         CbExecutionError::Unsupported(_) | CbExecutionError::NeedPythonFallback(_) => {
-                            RunResult::NeedPythonVEX { addr: self.pc }
+                            RunResult::NeedPythonVEX { addr: self.pc, reason: e.to_string() }
                         }
                         _ => RunResult::Error {
                             message: e.to_string(),

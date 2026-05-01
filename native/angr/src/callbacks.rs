@@ -247,7 +247,7 @@ pub enum RunResult {
     /// Error during execution.
     Error { message: String, addr: u64 },
     /// Rust VEX interpreter hit an unsupported operation - need Python VEX engine fallback.
-    NeedPythonVEX { addr: u64 },
+    NeedPythonVEX { addr: u64, reason: String },
     /// Need to lift a block at the given address.
     NeedLift { addr: u64 },
     /// Reached max deferred forks limit - return to Python with accumulated forks.
@@ -1698,7 +1698,7 @@ impl LoopExecutionEvent {
                 unmodeled_call_return_addr: Some(return_addr),
                 unmodeled_call_symbol: symbol_name,
             },
-            RunResult::NeedPythonVEX { addr } => LoopExecutionEvent {
+            RunResult::NeedPythonVEX { addr, reason } => LoopExecutionEvent {
                 event_type: "python_vex_fallback".to_string(),
                 pc: Some(addr),
                 addr: Some(addr),
@@ -1706,7 +1706,7 @@ impl LoopExecutionEvent {
                 true_target: None,
                 false_target: None,
                 jumpkind: None,
-                error: None,
+                error: Some(reason),
                 blocks_executed,
                 deferred_forks,
                 push_level,

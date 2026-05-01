@@ -1800,9 +1800,10 @@ class RustCallbackDispatchMixin:
         """
         addr = event.callback_addr
         state_id = event.callback_state_id
+        reason = event.callback_name or "unknown"
 
         if _DBG:
-            l.debug(f"Python VEX fallback at 0x{addr:x} (state {state_id})")
+            l.debug(f"Python VEX fallback at 0x{addr:x}: {reason} (state {state_id})")
 
         try:
             # Create a full SimState from the Rust state

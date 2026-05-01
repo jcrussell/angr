@@ -73,7 +73,7 @@ pub enum CallbackReason {
         false_target: u64,
     },
     /// Need Python VEX engine to handle block with unsupported operations.
-    PythonVEXFallback { addr: u64 },
+    PythonVEXFallback { addr: u64, reason: String },
 }
 
 /// Event returned from exploration to Python.
@@ -211,13 +211,14 @@ impl ExplorationEvent {
     }
 
     pub(crate) fn need_python_vex(
-        state_id: u64, addr: u64,
+        state_id: u64, addr: u64, reason: &str,
         found_count: usize, active_count: usize, steps: u64,
     ) -> Self {
         ExplorationEvent {
             callback_state_id: Some(state_id),
             callback_reason: Some("python_vex_fallback".to_string()),
             callback_addr: Some(addr),
+            callback_name: Some(reason.to_string()),
             ..Self::base("need_callback", found_count, active_count, steps)
         }
     }
@@ -386,6 +387,9 @@ pub struct RustExplorationManager {
     pub(crate) calling_convention: Box<dyn CallingConvention>,
     /// Statistics for native procedure executions.
     pub(crate) native_proc_stats: NativeProcStats,
+    /// VEX fallback tracking: count and unique addresses.
+    pub(crate) vex_fallback_count: u64,
+    pub(crate) vex_fallback_addrs: HashMap<u64, String>,
     /// Stack of (address, expiry_step) for zero-length hook skip tracking.
     /// Each entry represents an address to skip, valid until the specified step.
     /// This prevents infinite loops when a hook with length=0 runs and
@@ -470,6 +474,8 @@ impl RustExplorationManager {
             native_procedures: NativeProcedureRegistry::new(),
             calling_convention: default_cc_for_arch(arch),
             native_proc_stats: NativeProcStats::default(),
+            vex_fallback_count: 0,
+            vex_fallback_addrs: HashMap::new(),
             skip_hook_stack: Vec::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
             lazy_solves: false,
@@ -1899,6 +1905,24 @@ impl RustExplorationManager {
         dict.set_item("deadended_count", self.sm.deadended_count)?;
         dict.set_item("drop_terminal_states", self.sm.drop_terminal_states())?;
         dict.set_item("state_roots_size", self.sm.roots().len())?;
+        dict.set_item("vex_fallback_count", self.vex_fallback_count)?;
+        dict.set_item("vex_fallback_unique_addrs", self.vex_fallback_addrs.len())?;
+        Ok(dict)
+    }
+
+    /// Get VEX fallback statistics: total count and per-address reasons.
+    ///
+    /// Returns a dict with:
+    ///   "count": total number of VEX fallbacks
+    ///   "addresses": dict mapping hex address string -> reason string
+    pub fn get_fallback_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("count", self.vex_fallback_count)?;
+        let addrs = PyDict::new(py);
+        for (&addr, reason) in &self.vex_fallback_addrs {
+            addrs.set_item(format!("0x{:x}", addr), reason)?;
+        }
+        dict.set_item("addresses", addrs)?;
         Ok(dict)
     }
 
@@ -2963,10 +2987,13 @@ impl RustExplorationManager {
                                 self.steps,
                             )
                         }
-                        CallbackReason::PythonVEXFallback { addr } => {
+                        CallbackReason::PythonVEXFallback { addr, reason } => {
+                            self.vex_fallback_count += 1;
+                            self.vex_fallback_addrs.entry(*addr).or_insert_with(|| reason.clone());
                             ExplorationEvent::need_python_vex(
                                 state_id,
                                 *addr,
+                                reason,
                                 self.found_count(),
                                 self.active_count(),
                                 self.steps,

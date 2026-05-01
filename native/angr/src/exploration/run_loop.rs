@@ -443,10 +443,13 @@
                                 self.steps,
                             )
                         }
-                        CallbackReason::PythonVEXFallback { addr } => {
+                        CallbackReason::PythonVEXFallback { addr, reason } => {
+                            self.vex_fallback_count += 1;
+                            self.vex_fallback_addrs.entry(*addr).or_insert_with(|| reason.clone());
                             ExplorationEvent::need_python_vex(
                                 state_id,
                                 *addr,
+                                reason,
                                 self.found_count(),
                                 self.active_count(),
                                 self.steps,
