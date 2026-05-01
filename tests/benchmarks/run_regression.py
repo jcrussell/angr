@@ -46,6 +46,7 @@ FAST_SUITE = [
     ("google2016_unbreakable_1", 30),
     ("strcpy_find", 30),
     ("flareon2015_2", 30),
+    ("defcamp_r100", 30, "dfs"),  # DFS variant: same example, different strategy
 ]
 
 # Medium tier: 10-60s, run with --full
@@ -80,13 +81,13 @@ def _normalize_output(output):
     return output
 
 
-def run_one(name, engine, timeout, mem_limit_mb):
+def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs"):
     """Run a single benchmark in a subprocess, return result dict."""
     ctx = multiprocessing.get_context("spawn")
     pool = ctx.Pool(1)
     try:
         async_result = pool.apply_async(
-            _run_in_child, (name, engine, EXAMPLES_DIR, mem_limit_mb)
+            _run_in_child, (name, engine, EXAMPLES_DIR, mem_limit_mb, strategy)
         )
         return async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
@@ -131,8 +132,13 @@ def main():
     if args.full:
         REGRESSION_SUITE = FAST_SUITE + MEDIUM_SUITE
 
+    # Normalize suite entries to (name, timeout, strategy)
+    REGRESSION_SUITE = [
+        (e[0], e[1], e[2] if len(e) > 2 else "bfs") for e in REGRESSION_SUITE
+    ]
+
     # Verify examples exist
-    missing = [name for name, _ in REGRESSION_SUITE
+    missing = [name for name, _, _ in REGRESSION_SUITE
                if not os.path.exists(os.path.join(EXAMPLES_DIR, name, "solve.py"))]
     if missing:
         print(f"ERROR: Missing examples: {', '.join(missing)}", file=sys.stderr)
@@ -144,8 +150,10 @@ def main():
     failures = []
     total_start = time.perf_counter()
 
-    for name, timeout in REGRESSION_SUITE:
-        print(f"\n--- {name} ---")
+    for name, timeout, strategy in REGRESSION_SUITE:
+        label = f"{name} (DFS)" if strategy == "dfs" else name
+        baseline_key = f"{name}__dfs" if strategy == "dfs" else name
+        print(f"\n--- {label} ---")
 
         # Run Python engine (for output comparison)
         if not args.rust_only:
@@ -162,7 +170,7 @@ def main():
             py_output = None
 
         # Run Rust engine
-        rust_result = run_one(name, "rust", timeout, args.mem_limit)
+        rust_result = run_one(name, "rust", timeout, args.mem_limit, strategy)
         if not rust_result.get("ok"):
             print(f"  Rust:   FAIL ({rust_result.get('error', '?')})")
             failures.append(f"{name}: Rust engine failed: {rust_result.get('error', '?')}")
@@ -198,8 +206,8 @@ def main():
         rust_peak_mem = rust_result.get("peak_memory_mb")
 
         # Check timing regression against baseline
-        if name in baseline and not args.update:
-            bl = baseline[name]["rust_time"]
+        if baseline_key in baseline and not args.update:
+            bl = baseline[baseline_key]["rust_time"]
             if rust_time > bl * (1 + args.threshold):
                 pct = ((rust_time / bl) - 1) * 100
                 print(f"  REGRESSION: {rust_time:.2f}s vs baseline {bl:.2f}s (+{pct:.0f}%)")
@@ -209,7 +217,7 @@ def main():
             if args.check_counts:
                 for stat_key, bl_key, threshold_pct in TRACKED_METRICS:
                     current_val = rust_stats.get(stat_key)
-                    baseline_val = baseline[name].get(bl_key)
+                    baseline_val = baseline[baseline_key].get(bl_key)
                     if current_val is not None and baseline_val is not None and baseline_val > 0:
                         if current_val > baseline_val * (1 + threshold_pct):
                             pct = ((current_val / baseline_val) - 1) * 100
@@ -238,7 +246,7 @@ def main():
                 entry[bl_key] = val
         if rust_peak_mem:
             entry["peak_memory_mb"] = round(rust_peak_mem, 1)
-        results[name] = entry
+        results[baseline_key] = entry
 
     total_elapsed = time.perf_counter() - total_start
     print(f"\n{'='*50}")

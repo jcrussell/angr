@@ -63,7 +63,7 @@ EXAMPLE_CATALOG = {
 }
 
 
-def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
+def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bfs"):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
     import io
     import importlib.util
@@ -113,6 +113,8 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
                 states = [thing]
             rust_mgr_instance = RustExplorationManager(factory_self.project, states)
             rust_mgr_instance.enable_profiling()
+            if strategy == 'dfs':
+                rust_mgr_instance.set_exploration_strategy('dfs')
             return rust_mgr_instance
 
         angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
@@ -183,7 +185,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb):
             angr.factory.AngrObjectFactory.simgr = original_simgr
 
 
-def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB):
+def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB, strategy="bfs"):
     """Run an example in an isolated subprocess and print results."""
     solve_script = os.path.join(EXAMPLES_DIR, example_name, "solve.py")
     if not os.path.exists(solve_script):
@@ -194,7 +196,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
     pool = ctx.Pool(1)
     try:
         async_result = pool.apply_async(
-            _run_in_child, (example_name, engine, EXAMPLES_DIR, mem_limit_mb)
+            _run_in_child, (example_name, engine, EXAMPLES_DIR, mem_limit_mb, strategy)
         )
         result = async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
@@ -293,6 +295,8 @@ def main():
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB,
                         help=f"Memory limit in MB (default: {DEFAULT_MEM_LIMIT_MB})")
     parser.add_argument("--list", action="store_true", help="List all cataloged examples")
+    parser.add_argument("--strategy", choices=["bfs", "dfs"], default="bfs",
+                        help="Exploration strategy (default: bfs)")
     parser.add_argument("--suite", choices=["fast", "medium", "all"],
                         help="Run a suite of examples (fast: <5s, medium: <30s, all: everything)")
     args = parser.parse_args()
@@ -311,9 +315,9 @@ def main():
         for name in selected:
             print(f"\n=== {name} ===")
             if args.both:
-                run_example(name, "python", args.timeout, args.mem_limit)
+                run_example(name, "python", args.timeout, args.mem_limit, args.strategy)
                 print()
-                run_example(name, "rust", args.timeout, args.mem_limit)
+                run_example(name, "rust", args.timeout, args.mem_limit, args.strategy)
             else:
                 run_example(name, args.engine, args.timeout, args.mem_limit)
         return
@@ -324,11 +328,11 @@ def main():
 
     if args.both:
         print(f"=== {args.example} ===")
-        run_example(args.example, "python", args.timeout, args.mem_limit)
+        run_example(args.example, "python", args.timeout, args.mem_limit, args.strategy)
         print()
-        run_example(args.example, "rust", args.timeout, args.mem_limit)
+        run_example(args.example, "rust", args.timeout, args.mem_limit, args.strategy)
     else:
-        run_example(args.example, args.engine, args.timeout, args.mem_limit)
+        run_example(args.example, args.engine, args.timeout, args.mem_limit, args.strategy)
 
 
 if __name__ == "__main__":
