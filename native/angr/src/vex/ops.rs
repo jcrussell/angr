@@ -428,7 +428,7 @@ impl VEXOps {
         dividend: RustBV,
         divisor: RustBV,
         signed: bool,
-        _ctx: &SymContext,
+        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(dividend.width(), 64);
         debug_assert_eq!(divisor.width(), 32);
@@ -462,9 +462,28 @@ impl VEXOps {
             return Ok(RustBV::concrete(result as u128, 64));
         }
 
-        // For symbolic values, we'd need to implement symbolic division
-        // For now, fall back to concrete evaluation if possible
-        Err(OpError::UnsupportedVectorOp("symbolic DivMod".to_string()))
+        // Symbolic case: extend divisor to 64 bits, do full-width div/mod,
+        // then pack the low 32 bits of each into the result. Z3 defines
+        // div/mod by zero (udiv→all-ones, urem→dividend, sdiv→±1, srem→dividend),
+        // matching claripy's behavior.
+        let divisor_64 = if signed {
+            divisor.sign_extend_into(64, ctx)
+        } else {
+            divisor.zero_extend_into(64, ctx)
+        };
+        let quotient_64 = if signed {
+            dividend.sdiv(&divisor_64, ctx)
+        } else {
+            dividend.udiv(&divisor_64, ctx)
+        };
+        let remainder_64 = if signed {
+            dividend.srem(&divisor_64, ctx)
+        } else {
+            dividend.urem(&divisor_64, ctx)
+        };
+        let quotient_32 = quotient_64.extract_into(31, 0, ctx);
+        let remainder_32 = remainder_64.extract_into(31, 0, ctx);
+        Ok(remainder_32.concat_into(quotient_32, ctx))
     }
 
     /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit result.
@@ -473,7 +492,7 @@ impl VEXOps {
         dividend: RustBV,
         divisor: RustBV,
         signed: bool,
-        _ctx: &SymContext,
+        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(dividend.width(), 128);
         debug_assert_eq!(divisor.width(), 64);
@@ -506,8 +525,25 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, 128));
         }
 
-        // Symbolic division not yet supported
-        Err(OpError::UnsupportedVectorOp("symbolic DivMod128to64".to_string()))
+        // Symbolic case: same recipe as 64→32, scaled to 128/64.
+        let divisor_128 = if signed {
+            divisor.sign_extend_into(128, ctx)
+        } else {
+            divisor.zero_extend_into(128, ctx)
+        };
+        let quotient_128 = if signed {
+            dividend.sdiv(&divisor_128, ctx)
+        } else {
+            dividend.udiv(&divisor_128, ctx)
+        };
+        let remainder_128 = if signed {
+            dividend.srem(&divisor_128, ctx)
+        } else {
+            dividend.urem(&divisor_128, ctx)
+        };
+        let quotient_64 = quotient_128.extract_into(63, 0, ctx);
+        let remainder_64 = remainder_128.extract_into(63, 0, ctx);
+        Ok(remainder_64.concat_into(quotient_64, ctx))
     }
 
     /// Vector element-wise binary operation.
@@ -1811,6 +1847,59 @@ mod tests {
 
         let eq = VEXOps::binop(IROp::CmpEQ(IRType::I32), a.clone(), b.clone(), &ctx).unwrap();
         assert_eq!(eq.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_divmod_u64_to_32_concrete() {
+        let ctx = SymContext::new_mock();
+        // 100 / 7 = 14 rem 2
+        let dvd = RustBV::concrete(100, 64);
+        let dvs = RustBV::concrete(7, 32);
+        let result = VEXOps::binop(IROp::DivModU64to32, dvd, dvs, &ctx).unwrap();
+        let v = result.as_u128().unwrap() as u64;
+        assert_eq!(v & 0xFFFF_FFFF, 14, "quotient");
+        assert_eq!((v >> 32) & 0xFFFF_FFFF, 2, "remainder");
+    }
+
+    #[test]
+    fn test_divmod_u64_to_32_symbolic_dividend() {
+        let ctx = SymContext::new_mock();
+        let dvd = RustBV::symbolic(&ctx, "dvd", 64);
+        let dvs = RustBV::concrete(7, 32);
+        let result = VEXOps::binop(IROp::DivModU64to32, dvd, dvs, &ctx).unwrap();
+        assert_eq!(result.width(), 64);
+        assert!(result.is_symbolic());
+    }
+
+    #[test]
+    fn test_divmod_s64_to_32_symbolic_divisor() {
+        let ctx = SymContext::new_mock();
+        let dvd = RustBV::concrete(0xFFFF_FFFF_FFFF_FF9C, 64); // -100 as i64
+        let dvs = RustBV::symbolic(&ctx, "dvs", 32);
+        let result = VEXOps::binop(IROp::DivModS64to32, dvd, dvs, &ctx).unwrap();
+        assert_eq!(result.width(), 64);
+        assert!(result.is_symbolic());
+    }
+
+    #[test]
+    fn test_divmod_u128_to_64_concrete() {
+        let ctx = SymContext::new_mock();
+        let dvd = RustBV::concrete(1000, 128);
+        let dvs = RustBV::concrete(13, 64);
+        let result = VEXOps::binop(IROp::DivModU128to64, dvd, dvs, &ctx).unwrap();
+        let v = result.as_u128().unwrap();
+        assert_eq!(v & 0xFFFF_FFFF_FFFF_FFFF, 76, "quotient = 1000/13");
+        assert_eq!((v >> 64) & 0xFFFF_FFFF_FFFF_FFFF, 12, "remainder = 1000%13");
+    }
+
+    #[test]
+    fn test_divmod_u128_to_64_symbolic() {
+        let ctx = SymContext::new_mock();
+        let dvd = RustBV::symbolic(&ctx, "dvd128", 128);
+        let dvs = RustBV::concrete(7, 64);
+        let result = VEXOps::binop(IROp::DivModU128to64, dvd, dvs, &ctx).unwrap();
+        assert_eq!(result.width(), 128);
+        assert!(result.is_symbolic());
     }
 
     #[test]
