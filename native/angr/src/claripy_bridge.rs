@@ -313,7 +313,23 @@ pub fn claripy_to_rustbv(
             cache.borrow_mut().get(&ast_hash).cloned()
         });
         if let Some(cached_bv) = cached {
-            return Ok(cached_bv);
+            // Defensive width check — claripy hashes are content-addressed and
+            // already include length, so collisions are exceedingly rare, but
+            // returning a wrong-width BV would silently corrupt downstream ops.
+            // Bool ASTs have length=None and we represent them as width-1 BVs.
+            let expected_width: u32 = ast
+                .getattr("length")
+                .ok()
+                .and_then(|l| l.extract::<u32>().ok())
+                .unwrap_or(1);
+            if cached_bv.width() == expected_width {
+                return Ok(cached_bv);
+            }
+            // Width mismatch: evict the stale entry and fall through to
+            // reconvert. The recomputed BV will be re-cached below.
+            AST_CACHE.with(|cache| {
+                cache.borrow_mut().pop(&ast_hash);
+            });
         }
     }
 
