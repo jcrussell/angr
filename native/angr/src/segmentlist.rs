@@ -111,8 +111,8 @@ impl SegmentList {
             })
     }
 
-    pub fn __iter__(self_: Py<Self>) -> SegmentListIter {
-        SegmentListIter::new(self_)
+    pub fn __iter__(slf: PyRef<'_, Self>) -> SegmentListIter {
+        SegmentListIter::snapshot(&slf)
     }
 
     #[getter]
@@ -231,33 +231,37 @@ impl SegmentList {
 
 #[pyclass]
 pub struct SegmentListIter {
-    segmentlist: Py<SegmentList>,
-    idx: u64,
+    segments: Vec<(u64, u64, Option<String>)>,
+    idx: usize,
+}
+
+impl SegmentListIter {
+    fn snapshot(list: &SegmentList) -> Self {
+        Self {
+            segments: list
+                .map
+                .iter()
+                .map(|(range, sort)| (range.start, range.end, sort.clone()))
+                .collect(),
+            idx: 0,
+        }
+    }
 }
 
 #[pymethods]
 impl SegmentListIter {
-    #[new]
-    fn new(segmentlist: Py<SegmentList>) -> Self {
-        Self {
-            segmentlist,
-            idx: 0,
-        }
-    }
-
     fn __iter__(self_: Bound<'_, Self>) -> Bound<'_, Self> {
         self_
     }
 
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Segment> {
-        let segmentlist_ref = self.segmentlist.bind(py).borrow();
-        // Iterate by index: get the (range, sort) pair at position idx
-        // FIXME: This is linear time, should be no more than O(log n)
-        if let Some((range, sort)) = segmentlist_ref.map.iter().nth(self.idx as usize) {
-            self.idx += 1;
-            Ok(Segment::new(range.start, range.end, sort.clone()))
-        } else {
-            Err(PyErr::new::<PyStopIteration, _>(""))
+    fn __next__(&mut self) -> PyResult<Segment> {
+        match self.segments.get(self.idx) {
+            Some((start, end, sort)) => {
+                let segment = Segment::new(*start, *end, sort.clone());
+                self.idx += 1;
+                Ok(segment)
+            }
+            None => Err(PyErr::new::<PyStopIteration, _>("")),
         }
     }
 }
@@ -272,7 +276,7 @@ pub fn segmentlist(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::SegmentList;
+    use super::{SegmentList, SegmentListIter};
 
     #[test]
     fn empty_list() {
@@ -307,6 +311,31 @@ mod tests {
         sl.occupy(0, 10, None);
         sl.occupy(5, 10, None);
         assert_eq!(sl.occupied_size(), 15);
+    }
+
+    #[test]
+    fn iter_snapshot_yields_in_order() {
+        let mut sl = SegmentList::new();
+        sl.occupy(20, 5, Some("B".to_string()));
+        sl.occupy(0, 10, Some("A".to_string()));
+        sl.occupy(40, 3, None);
+
+        let mut it = SegmentListIter::snapshot(&sl);
+        let collected: Vec<_> = std::iter::from_fn(|| {
+            it.segments.get(it.idx).cloned().map(|seg| {
+                it.idx += 1;
+                seg
+            })
+        })
+        .collect();
+        assert_eq!(
+            collected,
+            vec![
+                (0, 10, Some("A".to_string())),
+                (20, 25, Some("B".to_string())),
+                (40, 43, None),
+            ]
+        );
     }
 
     #[test]

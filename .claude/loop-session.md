@@ -1,41 +1,45 @@
-# Loop session notes (2026-05-02, fourteenth session)
+# Loop session notes (2026-05-02, sixteenth session)
 
-## Closed: angr-te1b
+## Closed: angr-7qll
 
-[bug] Z3 AST pointer extraction in solver.rs lacks null/validity check
-before unsafe use.
+[refactor] Fix SegmentList O(n) iterator (segmentlist.rs FIXME).
 
 ### Root cause
 
-`extract_z3_ast_ptr` (solver.rs:19-30) returned `Ok(ptr)` regardless of
-whether the extracted pointer was null. Three call sites guarded with
-`if z3_ptr != 0` before passing the value to
-`NonNull::new_unchecked`. A future caller forgetting that guard would
-invoke UB.
+`SegmentListIter::__next__` called `segmentlist_ref.map.iter().nth(self.idx)`.
+`RangeMap` wraps a `BTreeMap`, so `.iter().nth(k)` is O(k) — total iteration
+was O(n²). The FIXME at segmentlist.rs:255 explicitly called this out.
 
 ### Fix
 
-Move validation to the source. `extract_z3_ast_ptr` now returns Err on
-null. Removed the three redundant `!= 0` guards at call sites
-(`add_constraint_ast`, `eval`, `eval_upto`) and added a SAFETY comment
-referencing the invariant.
+Materialize the range list into a `Vec<(start, end, sort)>` once at iterator
+construction (`SegmentListIter::snapshot`). `__next__` becomes a `Vec::get`
+indexed lookup, giving O(n) total iteration with O(n) extra memory.
+
+Removed the `#[new]` constructor — `SegmentListIter` is only ever produced by
+`SegmentList::__iter__`, never directly from Python. `__iter__` now takes
+`PyRef<'_, SegmentList>` and constructs the snapshot directly.
 
 ### Verification
 
-- `cargo check --release` clean (no warnings).
-- `python -m pytest tests/engines/test_rust_exploration.py` →
-  208/208 passing.
-- `run_single.py fauxware --engine rust` → behaves identically.
+- `cargo check --release` clean, no new warnings.
+- `cargo test --release segmentlist` → 6/6 passing (added
+  `iter_snapshot_yields_in_order` covering ordered output).
+- `pytest tests/engines/test_rust_exploration.py` → 208/208 passing.
+- `run_single.py fauxware --engine rust` → `OK rust fauxware 0.38s` (unchanged).
 
 ### Memory saved
 
-`invariant-extract-z3-ast-ptr` — future work that touches the function
-must preserve the null-Err contract or reinstate guards at all 3
-unsafe call sites.
+`segmentlist-iter-snapshot` — the iterator now snapshots into Vec at
+construction; future readers should not look for cursor-style iteration.
 
-## Carryover from session 13
+## Carryover from prior sessions
 
-- Pre-existing baseline timing variance in `run_regression.py` (ais3 +75%,
-  re400 +62%, etc.). Need to either re-record or widen tolerances.
-- Ready P-tasks: angr-210j, angr-3tek, angr-mboi, angr-xidi.
-- P3 refactors: angr-w4os, angr-2fs0, angr-1f8s, angr-4knw.
+- Pre-existing baseline timing variance in `run_regression.py`
+  (ais3 +75%, re400 +62%). Re-record or widen tolerances.
+- Other ready P2 bugs: angr-3tek (read/write SimProcedures stale
+  cache — needs Rust→Python cached-state sync per memory
+  `avoid-enabling-native-read`), angr-mboi (mma_howtouse 0.7x perf),
+  angr-xidi (google2016_unbreakable_1 -93%).
+- P3 refactors: angr-w4os, angr-2fs0, angr-1f8s, angr-4knw, angr-cbko,
+  angr-t77r.
