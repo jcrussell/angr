@@ -15,6 +15,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use lru::LruCache;
+use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::types::PyDict;
@@ -700,6 +701,30 @@ impl RustExplorationManager {
     /// Clear callbacks.
     pub fn clear_callbacks(&mut self) {
         self.callbacks = None;
+    }
+
+    /// GC traversal: visit Python callback refs held inside the cloned
+    /// PythonCallbacks struct. The Python wrapper `mgr` owns
+    /// `mgr._rust_mgr` (this object), and via `set_callbacks` this object
+    /// holds a cloned PythonCallbacks whose Py<PyAny> bound methods point
+    /// back at `mgr` — a non-trivial cycle that cycle-GC can break only if
+    /// __traverse__/__clear__ are exposed.
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        if let Some(cbs) = &self.callbacks {
+            cbs.traverse_fields(&visit)?;
+        }
+        Ok(())
+    }
+
+    /// GC clear: drop the bound-method refs held inside the cloned
+    /// PythonCallbacks struct. After this returns, the engine can no
+    /// longer call back into Python — but cycle-GC only invokes __clear__
+    /// when the object is being collected, so further callbacks would not
+    /// be issued.
+    fn __clear__(&mut self) {
+        if let Some(cbs) = &mut self.callbacks {
+            cbs.clear_fields();
+        }
     }
 
     /// Add a hook address.

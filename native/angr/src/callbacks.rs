@@ -3,6 +3,7 @@
 //! This module provides the callback holder that allows Rust to call back into Python
 //! for operations like memory access, hook execution, and syscall handling.
 
+use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -619,6 +620,83 @@ impl PythonCallbacks {
         self.memory_load.is_some()
             && self.memory_store.is_some()
             && self.lift_block.is_some()
+    }
+
+    /// GC traversal: visit each held Python callback so the cycle
+    /// `mgr -> _callbacks -> bound method -> mgr` is GC-collectible.
+    /// Without this, the manager (and its _state_cache, ~4030 angr pages
+    /// per call in mma_howtouse) leaks permanently.
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        Self::traverse_fields(self, &visit)
+    }
+
+    /// GC clear: drop all Python callback refs. After clear, calls to any
+    /// callback method will fail with "callback not set", but by then the
+    /// containing object is being collected anyway.
+    fn __clear__(&mut self) {
+        self.clear_fields();
+    }
+}
+
+impl PythonCallbacks {
+    /// Visit every Py<PyAny> field. Used by __traverse__ on this type and
+    /// by RustExplorationManager.__traverse__ which holds a cloned copy of
+    /// PythonCallbacks (and so participates in the same cycle).
+    pub fn traverse_fields(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
+        for opt in [
+            &self.memory_load,
+            &self.memory_store,
+            &self.memory_store_batch,
+            &self.memory_load_batch,
+            &self.memory_load_symbolic,
+            &self.memory_store_symbolic,
+            &self.memory_load_ast,
+            &self.memory_store_ast,
+            &self.on_hook,
+            &self.on_syscall,
+            &self.lift_block,
+            &self.get_register,
+            &self.put_register,
+            &self.dirty_call,
+            &self.fetch_page,
+            &self.batch_fetch_pages,
+            &self.sync_constraints,
+            &self.memory_store_symbolic_value,
+            &self.memory_store_symbolic_full,
+            &self.memory_load_symbolic_full,
+            &self.resolve_function,
+        ] {
+            if let Some(obj) = opt {
+                visit.call(obj)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop every Py<PyAny> field. Used by __clear__ on this type and on
+    /// RustExplorationManager (which has a cloned copy in its `callbacks` field).
+    pub fn clear_fields(&mut self) {
+        self.memory_load = None;
+        self.memory_store = None;
+        self.memory_store_batch = None;
+        self.memory_load_batch = None;
+        self.memory_load_symbolic = None;
+        self.memory_store_symbolic = None;
+        self.memory_load_ast = None;
+        self.memory_store_ast = None;
+        self.on_hook = None;
+        self.on_syscall = None;
+        self.lift_block = None;
+        self.get_register = None;
+        self.put_register = None;
+        self.dirty_call = None;
+        self.fetch_page = None;
+        self.batch_fetch_pages = None;
+        self.sync_constraints = None;
+        self.memory_store_symbolic_value = None;
+        self.memory_store_symbolic_full = None;
+        self.memory_load_symbolic_full = None;
+        self.resolve_function = None;
     }
 }
 

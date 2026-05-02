@@ -514,6 +514,11 @@ class RustExplorationManager(
 
         Registers bound methods as callbacks with the Rust PythonCallbacks object.
         Each _cb_* method implements one callback type.
+
+        PythonCallbacks (PyO3 pyclass) implements __traverse__/__clear__ so the
+        cycle (mgr -> _callbacks -> bound method -> mgr) is GC-collectible.
+        Without that GC support, the manager and its _state_cache (4030 angr
+        pages per call in mma_howtouse) would leak permanently.
         """
         # Cache the stepping state ID accessor for _get_per_fork_state
         try:
