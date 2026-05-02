@@ -17,7 +17,9 @@ use crate::claripy_bridge::{claripy_to_rustbv, try_extract_bvv, BridgeError};
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
 /// Try to extract raw Z3_ast pointer from a claripy AST's z3 backend.
-/// Returns the pointer as usize, or an error if not available.
+/// Returns the pointer as a non-zero usize, or an error if unavailable
+/// or null. Guaranteeing non-null at the source means callers can pass
+/// the value directly to `NonNull::new_unchecked` without re-checking.
 /// This preserves claripy's original Z3 AST structure.
 #[cfg(feature = "vex-engine-z3")]
 fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -26,6 +28,9 @@ fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<usize>
     let z3_obj = z3_backend.call_method1("convert", (ast,))?;
     let ast_ref = z3_obj.call_method0("as_ast")?;
     let ptr: usize = ast_ref.getattr("value")?.extract()?;
+    if ptr == 0 {
+        return Err(PyRuntimeError::new_err("claripy z3 backend returned null Z3_ast pointer"));
+    }
     Ok(ptr)
 }
 
@@ -124,14 +129,13 @@ impl RustSolverContext {
         #[cfg(feature = "vex-engine-z3")]
         {
             if let Ok(z3_ast_ptr) = extract_z3_ast_ptr(py, ast) {
-                if z3_ast_ptr != 0 {
-                    unsafe { ctx.add_constraint_raw(z3_ast_ptr); }
-                    // Also track in RustBV for export (best-effort, non-critical)
-                    if let Ok(bv) = claripy_to_rustbv(py, ast, &*ctx) {
-                        ctx.assumed_constraints_push(bv, true);
-                    }
-                    return Ok(());
+                // SAFETY: extract_z3_ast_ptr guarantees non-null on Ok.
+                unsafe { ctx.add_constraint_raw(z3_ast_ptr); }
+                // Also track in RustBV for export (best-effort, non-critical)
+                if let Ok(bv) = claripy_to_rustbv(py, ast, &*ctx) {
+                    ctx.assumed_constraints_push(bv, true);
                 }
+                return Ok(());
             }
         }
 
@@ -219,9 +223,7 @@ impl RustSolverContext {
         #[cfg(feature = "vex-engine-z3")]
         {
             if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
-                if z3_ptr != 0 {
-                    return self.eval_z3_ast_ptr(py, z3_ptr, ast);
-                }
+                return self.eval_z3_ast_ptr(py, z3_ptr, ast);
             }
         }
         Ok(None)
@@ -305,17 +307,14 @@ impl RustSolverContext {
                 {
                     use z3::ast::Ast;
                     if let Ok(z3_ptr) = extract_z3_ast_ptr(py, ast) {
-                        if z3_ptr != 0 {
-                            let z3_bv = unsafe {
-                                let raw = std::ptr::NonNull::new_unchecked(z3_ptr as *mut _);
-                                let z3_ctx = z3::Context::thread_local();
-                                z3::ast::BV::wrap(&z3_ctx, raw)
-                            };
-                            RustBV::Symbolic {
-                                id: 0, ast: z3_bv, width, name: String::new(),
-                            }
-                        } else {
-                            return Ok(result_list.into());
+                        // SAFETY: extract_z3_ast_ptr guarantees non-null on Ok.
+                        let z3_bv = unsafe {
+                            let raw = std::ptr::NonNull::new_unchecked(z3_ptr as *mut _);
+                            let z3_ctx = z3::Context::thread_local();
+                            z3::ast::BV::wrap(&z3_ctx, raw)
+                        };
+                        RustBV::Symbolic {
+                            id: 0, ast: z3_bv, width, name: String::new(),
                         }
                     } else {
                         return Ok(result_list.into());
