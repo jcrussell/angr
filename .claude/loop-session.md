@@ -1,70 +1,63 @@
-# Loop session notes (2026-05-02, seventeenth session)
+# Loop session notes (2026-05-02, eighteenth session)
 
-## Task: angr-mboi (investigated, NOT closed)
+## Task: angr-mboi (CLOSED — fixed)
 [perf] Fix mma_howtouse regression: 0.7x vs Python, 1.3GB memory
 
-Did deep investigation, did NOT ship a fix. Task left open with
-detailed findings. Two new memories saved.
+## Outcome
+- mma_howtouse peak_mem: **1606MB → 285MB** (5.6x reduction)
+- Tests: 208/208 passing
+- Wall time unchanged (still ~6.5s vs Python ~4.2s)
+  → Remaining gap is AST cache lookup overhead, NOT memory leak.
+    See `mma-howtouse-cache-clear-speedup` memory.
+- Commit: 342df4a7f
 
-## Findings
+## Root cause (recorded in pyo3-pyclass-cycle-leak memory)
 
-Standalone reproduction:
-- Python engine: 4.18s, 207MB RSS, 21MB Python heap (FLAT — no growth across 45 calls)
-- Rust engine: 6.50s, 1606MB RSS, 1108MB Python heap
-  (linear growth +24MB Python + ~8MB Rust per callable() invocation)
+PyO3 `#[pyclass]` does NOT implement `__traverse__`/`__clear__` by
+default. If a pyclass holds `Py<PyAny>` refs that participate in a
+cycle through Python objects, the cycle is invisible to Python's
+cycle-GC and leaks permanently — `gc.collect()` does NOT help.
 
-Top tracemalloc growth points (Rust engine, since i=0):
-- `ultra_page.py:30,34` (bytearray(page_size)): +359MB each, 181368 pages
-  → ~4030 fresh angr memory pages allocated PER callable() invocation
-- `dirty_addrs_mixin.py:10` (set updates): +170MB (2.7M blocks)
-- `sortedcontainers/sorteddict.py:154` (page index): +29MB
+Cycle in this codebase:
+  `mgr -> _callbacks (PyO3 PythonCallbacks) -> bound method -> mgr`
+  AND
+  `mgr -> _rust_mgr (PyO3 RustExplorationManager).callbacks -> bound method -> mgr`
 
-Cause: each callable() creates fresh `factory.call_state` + fresh
-RustExplorationManager. The states aren't being freed across calls
-when Rust engine is in use. Python alone GC's them fine.
+Both held strong refs to bound methods (`mgr._cb_*`). Both pyclasses
+needed GC support for the cycle to be collectible.
 
-Suspected cycle (rust_state_export.py:52 `RustSolverFallback.attach`):
-- state -> solver.eval (bound method) -> wrapper -> state
-- Plus state.scratch.rust_mgr = self._rust_mgr
+## Fix
 
-Eliminated as causes:
-- Thread-local AST caches (size stays 0 — concrete benchmark)
-- Global SymbolicIdentityRegistry (size stays 0)
-- Callable.result_path_group / result_state retention (probe set them
-  to None explicitly; no change)
+Added `__traverse__` and `__clear__` to both `PythonCallbacks` (callbacks.rs)
+and `RustExplorationManager` (exploration/mod.rs). Factored the
+per-field traversal/clearing into helpers `traverse_fields` /
+`clear_fields` on `PythonCallbacks` so the manager's `__traverse__`
+can delegate for its embedded clone (set_callbacks moves a cloned
+copy into the manager).
 
-Side finding: clearing thread-local AST caches between calls saves
-~1.5s of wall time (6.6s → 5.1s, ~23%). Memory unaffected.
+## Failed approach (recorded in avoid-weakref-callbacks memory)
 
-## Next session pickup options
+Tried wrapping callbacks in weakref-based closures on the Python side.
+Worked for memory (same 285MB) but caused 19-72% perf regression across
+8 benchmarks due to per-callback overhead. Reverted in favor of the
+Rust-side GC fix which has zero per-call overhead.
 
-1. **Fix angr-mboi**: implement proper teardown of `RustSolverFallback.attach`
-   - Add a detach() method that restores `state.solver.eval` etc to the
-     originals and removes `state.scratch.rust_mgr`/`rust_found_state_id`.
-   - Call detach() on all cached states when RustExplorationManager is
-     dropped (e.g. via `__del__`).
-   - Verify with: `python tests/benchmarks/run_single.py mma_howtouse --both`
-     (Python should be flat, Rust currently grows ~32MB/call in RSS)
+## New memories saved
 
-2. **angr-xidi (likely false positive)**: standalone runs of
-   google2016_unbreakable_1 are 2.2-3.3s — well under the 6.18s
-   baseline. The "regression" was suite-induced variance. Could close
-   with notes (per `benchmark-update-variance` memory).
+- `pyo3-pyclass-cycle-leak`: root cause + fix pattern
+- `avoid-weakref-callbacks`: failed approach
+- `benchmark-mma-howtouse-leak-fix`: before/after numbers
 
-3. **AST cache clear on manager Drop**: 23% speedup on mma_howtouse.
-   Risk: clearing CLARIPY_AST_CACHE / EXPRESSION_CACHE may break AST
-   identity if user holds expressions across manager boundaries. Check
-   the test suite carefully.
-
-## Other ready tasks (unchanged from sixteenth session)
+## Other ready tasks (unchanged)
 
 - angr-3tek (P2): native read/write SimProcs blocked by stale-cache
-  issue — needs Rust→Python sync per `avoid-enabling-native-read`
-- angr-mboi (P2): ABOVE
-- angr-xidi (P2): see above
+- angr-xidi (P2): likely false positive (suite-induced variance)
 - angr-w4os, angr-2fs0, angr-1f8s, angr-cbko, angr-3ijo, angr-8em4 (P3)
 
-## Pre-existing concerns
+## Pre-existing concerns (unchanged)
 
 - Pre-existing baseline timing variance in `run_regression.py`
-  (per `benchmark-update-variance` memory).
+  (per `benchmark-update-variance` memory). Same 8 failures occur
+  WITH or WITHOUT this commit — verified by stashing and re-running.
+- mma_howtouse wall time still 0.65x. The 1.5s AST cache overhead
+  (per `mma-howtouse-cache-clear-speedup`) remains a separate fix.
