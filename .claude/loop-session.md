@@ -1,53 +1,70 @@
-# Loop session notes (2026-05-02, sixteenth session)
+# Loop session notes (2026-05-02, seventeenth session)
 
-Closed three tasks. All landed; tests 208/208 throughout.
+## Task: angr-mboi (investigated, NOT closed)
+[perf] Fix mma_howtouse regression: 0.7x vs Python, 1.3GB memory
 
-## Closed: angr-7qll (commit 7fec7db2d)
+Did deep investigation, did NOT ship a fix. Task left open with
+detailed findings. Two new memories saved.
 
-[perf] SegmentListIter snapshots into a Vec at construction. Was
-`.iter().nth(idx)` on a BTreeMap-backed RangeMap → O(n²) total
-iteration. Now O(n).
+## Findings
 
-Memory saved: `segmentlist-iter-snapshot`.
+Standalone reproduction:
+- Python engine: 4.18s, 207MB RSS, 21MB Python heap (FLAT — no growth across 45 calls)
+- Rust engine: 6.50s, 1606MB RSS, 1108MB Python heap
+  (linear growth +24MB Python + ~8MB Rust per callable() invocation)
 
-## Closed: angr-4knw (commit fb52689e3)
+Top tracemalloc growth points (Rust engine, since i=0):
+- `ultra_page.py:30,34` (bytearray(page_size)): +359MB each, 181368 pages
+  → ~4030 fresh angr memory pages allocated PER callable() invocation
+- `dirty_addrs_mixin.py:10` (set updates): +170MB (2.7M blocks)
+- `sortedcontainers/sorteddict.py:154` (page index): +29MB
 
-[fix] AST_CACHE in claripy_bridge.rs validates width on hit. claripy
-hashes are content-addressed but a hash collision between two ASTs of
-different widths could silently corrupt downstream VEX ops. On hit,
-fetch ast.length (None for Bool ASTs → width 1) and compare against
-the cached BV's width. Mismatch evicts and falls through.
+Cause: each callable() creates fresh `factory.call_state` + fresh
+RustExplorationManager. The states aren't being freed across calls
+when Rust engine is in use. Python alone GC's them fine.
 
-Memory saved: `invariant-ast-cache-width-check`.
+Suspected cycle (rust_state_export.py:52 `RustSolverFallback.attach`):
+- state -> solver.eval (bound method) -> wrapper -> state
+- Plus state.scratch.rust_mgr = self._rust_mgr
 
-## Closed: angr-t77r (commit bf2111b74)
+Eliminated as causes:
+- Thread-local AST caches (size stays 0 — concrete benchmark)
+- Global SymbolicIdentityRegistry (size stays 0)
+- Callable.result_path_group / result_state retention (probe set them
+  to None explicitly; no change)
 
-[feat] Symbolic DivMod in vex/ops.rs. The error path was actually
-unsound: `OpError::UnsupportedVectorOp` was caught by the binop
-fallback in `interpreter_cb/expressions.rs:329`, which mints a fresh
-symbolic `unsup_binop_<pc>` unrelated to the dividend or divisor.
+Side finding: clearing thread-local AST caches between calls saves
+~1.5s of wall time (6.6s → 5.1s, ~23%). Memory unaffected.
 
-Recipe: zero-extend divisor for unsigned (sign-extend for signed),
-do full-width udiv/sdiv + urem/srem, extract low N/2 of each, and
-`concat(remainder, quotient)` — concat puts self in high, other in
-low, matching the `(remainder<<N) | quotient` packing of the concrete
-case. Z3's div/mod by zero is total and matches claripy, so no
-explicit zero guard.
+## Next session pickup options
 
-5 new unit tests covering 64→32 and 128→64 in both concrete and
-symbolic modes.
+1. **Fix angr-mboi**: implement proper teardown of `RustSolverFallback.attach`
+   - Add a detach() method that restores `state.solver.eval` etc to the
+     originals and removes `state.scratch.rust_mgr`/`rust_found_state_id`.
+   - Call detach() on all cached states when RustExplorationManager is
+     dropped (e.g. via `__del__`).
+   - Verify with: `python tests/benchmarks/run_single.py mma_howtouse --both`
+     (Python should be flat, Rust currently grows ~32MB/call in RSS)
 
-Memories saved: `invariant-divmod-symbolic`,
-`avoid-fresh-symbolic-on-unsupported-binop`.
+2. **angr-xidi (likely false positive)**: standalone runs of
+   google2016_unbreakable_1 are 2.2-3.3s — well under the 6.18s
+   baseline. The "regression" was suite-induced variance. Could close
+   with notes (per `benchmark-update-variance` memory).
 
-## Carryover
+3. **AST cache clear on manager Drop**: 23% speedup on mma_howtouse.
+   Risk: clearing CLARIPY_AST_CACHE / EXPRESSION_CACHE may break AST
+   identity if user holds expressions across manager boundaries. Check
+   the test suite carefully.
+
+## Other ready tasks (unchanged from sixteenth session)
+
+- angr-3tek (P2): native read/write SimProcs blocked by stale-cache
+  issue — needs Rust→Python sync per `avoid-enabling-native-read`
+- angr-mboi (P2): ABOVE
+- angr-xidi (P2): see above
+- angr-w4os, angr-2fs0, angr-1f8s, angr-cbko, angr-3ijo, angr-8em4 (P3)
+
+## Pre-existing concerns
 
 - Pre-existing baseline timing variance in `run_regression.py`
-  (ais3 +75%, re400 +62%). Re-record or widen tolerances.
-- Other ready P2 bugs: angr-3tek (read/write SimProcedures stale
-  cache — needs Rust→Python cached-state sync per memory
-  `avoid-enabling-native-read`), angr-mboi (mma_howtouse 0.7x perf),
-  angr-xidi (google2016_unbreakable_1 -93%).
-- P3 refactors: angr-w4os, angr-2fs0, angr-1f8s, angr-cbko, angr-3ijo
-  (bincode spike — needs profiling first), angr-8em4 (panic audit,
-  too large for one session per its own description).
+  (per `benchmark-update-variance` memory).
