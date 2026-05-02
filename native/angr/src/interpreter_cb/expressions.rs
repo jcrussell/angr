@@ -441,7 +441,13 @@ impl<'a> CallbackInterpreter<'a> {
                     ));
                 }
 
-                Ok(RustBV::concrete(0, retty.bits()))
+                // Any other unsupported CCall must defer to Python's VEX engine.
+                // Returning concrete(0) would silently corrupt the result and let
+                // execution continue with bad data.
+                Err(CbExecutionError::NeedPythonFallback(format!(
+                    "unsupported CCall '{}' at 0x{:x}",
+                    cee.name, self.pc
+                )))
             }
 
             IRExpr::VECRET | IRExpr::GSPTR => {
