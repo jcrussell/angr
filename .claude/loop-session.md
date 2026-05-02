@@ -1,62 +1,41 @@
-# Loop session notes (2026-05-02, thirteenth session)
+# Loop session notes (2026-05-02, fourteenth session)
 
-## Closed: angr-y07x
+## Closed: angr-te1b
 
-[bug] Exit-only continuation cache race:
-`_exit_continuation_addrs` incorrectly deadended state-dependent
-SimProcedures (`rust_callback_dispatch.py:618-628`).
+[bug] Z3 AST pointer extraction in solver.rs lacks null/validity check
+before unsafe use.
 
 ### Root cause
 
-The cache was keyed on address only. When a SimProcedure callback
-produced ALL-Ijk_Exit successors on first observation, the address
-was cached and all future callbacks at that address were
-fast-deadended without recreating the SimState or running the
-procedure. But Ijk_Exit-on-all-successors is **state-dependent**: a
-generic SimProcedure could exit for one state and return normally for
-another. The cache would then incorrectly deadend the second state.
+`extract_z3_ast_ptr` (solver.rs:19-30) returned `Ok(ptr)` regardless of
+whether the extracted pointer was null. Three call sites guarded with
+`if z3_ptr != 0` before passing the value to
+`NonNull::new_unchecked`. A future caller forgetting that guard would
+invoke UB.
 
 ### Fix
 
-Single-line change: require `proc.NO_RET=True` before adding an
-address to `_exit_continuation_addrs`. Rationale: continuations
-inherit NO_RET from the canonical procedure (`make_continuation` does
-`copy.copy(self.canonical)`), so `__libc_start_main.after_main`
-(NO_RET=True) is still cached. State-dependent procedures default to
-NO_RET=False and are correctly NOT cached.
+Move validation to the source. `extract_z3_ast_ptr` now returns Err on
+null. Removed the three redundant `!= 0` guards at call sites
+(`add_constraint_ast`, `eval`, `eval_upto`) and added a SAFETY comment
+referencing the invariant.
 
 ### Verification
 
+- `cargo check --release` clean (no warnings).
 - `python -m pytest tests/engines/test_rust_exploration.py` →
   208/208 passing.
-- `run_single.py ais3_crackme --engine rust` → 47 callbacks
-  (matches the cached benchmark in
-  `bd memories exit-continuation-cache`).
-- `run_regression.py` shows pre-existing timing regressions vs
-  baseline that ALSO appear without my change (ran with `git stash`
-  to confirm). System load variance, not regression from my fix.
+- `run_single.py fauxware --engine rust` → behaves identically.
 
 ### Memory saved
 
-`invariant-exit-continuation-cache` — future work must respect that
-the cache ONLY accepts NO_RET=True procedures.
+`invariant-extract-z3-ast-ptr` — future work that touches the function
+must preserve the null-Err contract or reinstate guards at all 3
+unsafe call sites.
 
-## Observation: pre-existing baseline timing variance
+## Carryover from session 13
 
-`run_regression.py` flagged 8 timing regressions today (ais3 +75%,
-re400 +62%, etc.) that appear identically with and without my change.
-Either system load is heavier than when 12th session set the
-baselines, or the baselines need a re-record.
-
-NOT my fix's fault. May warrant a follow-up bead to either re-record
-or widen tolerances.
-
-## Ready P-tasks remaining
-
-- angr-te1b (P2 Z3 AST pointer extraction null check)
-- angr-210j (P2 CCall returns concrete(0) instead of Python fallback)
-- angr-3tek (P2 native read/write SimProcedures disabled)
-- angr-mboi (P2 mma_howtouse 0.7x regression)
-- angr-xidi (P2 google2016_unbreakable_1 3.2s→6.2s)
-- angr-w4os, angr-2fs0, angr-1f8s, angr-4knw (P3 refactors)
-- and the P-tasks tracked in 12th-session notes.
+- Pre-existing baseline timing variance in `run_regression.py` (ais3 +75%,
+  re400 +62%, etc.). Need to either re-record or widen tolerances.
+- Ready P-tasks: angr-210j, angr-3tek, angr-mboi, angr-xidi.
+- P3 refactors: angr-w4os, angr-2fs0, angr-1f8s, angr-4knw.
