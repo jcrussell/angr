@@ -616,13 +616,19 @@ class RustCallbackDispatchMixin:
                     return
 
                 # Detect exit-only continuations: if ALL successors have Ijk_Exit
-                # jumpkind, this address always results in deadend (e.g., __libc_start_main's
-                # after_main continuation). Cache this for fast-path on future callbacks.
+                # jumpkind AND the procedure declares NO_RET, this address always
+                # results in deadend (e.g., __libc_start_main's after_main
+                # continuation). Cache this for fast-path on future callbacks.
+                #
+                # The NO_RET requirement prevents incorrectly caching state-dependent
+                # procedures: a procedure with NO_RET=False might happen to all-exit
+                # for one state but produce normal returns for others. Caching by
+                # address alone would then fast-deadend states that should not exit.
                 _all_exit = all(
                     getattr(s.history, 'jumpkind', None) == 'Ijk_Exit'
                     for s in all_succs
                 )
-                if _all_exit and addr_int is not None:
+                if _all_exit and proc_no_ret and addr_int is not None:
                     if _DBG:
                         l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
                     self._exit_continuation_addrs.add(addr_int)
