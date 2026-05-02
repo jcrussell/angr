@@ -1,54 +1,62 @@
-# Loop session notes (2026-05-01, twelfth session)
+# Loop session notes (2026-05-02, thirteenth session)
 
-## Closed this session
+## Closed: angr-y07x
 
-### angr-dja4 — Expand benchmark baseline tracking
+[bug] Exit-only continuation cache race:
+`_exit_continuation_addrs` incorrectly deadended state-dependent
+SimProcedures (`rust_callback_dispatch.py:618-628`).
 
-Pre-fix: `tests/benchmarks/baseline_timings.json` had 16 entries, only
-7 with full algorithmic stats (callback_count, state_creations, steps,
-peak_memory_mb). The 9 entries with python_time/rust_time only were
-populated before the algorithmic-tracking commit (c6515f061) and never
-backfilled. Several entries (codegate_2017-angrybird, csgames2018,
-whitehatvn2015_re400) were also "orphaned" — listed in the baseline
-but not in any `FAST_SUITE`/`MEDIUM_SUITE` so they were not exercised
-by `run_regression.py`.
+### Root cause
 
-Fix: extended suite tuple format to support a per-entry `rust_only`
-flag `(name, timeout, [strategy, [rust_only]])` and re-populated the
-baseline:
+The cache was keyed on address only. When a SimProcedure callback
+produced ALL-Ijk_Exit successors on first observation, the address
+was cached and all future callbacks at that address were
+fast-deadended without recreating the SimState or running the
+procedure. But Ijk_Exit-on-all-successors is **state-dependent**: a
+generic SimProcedure could exit for one state and return normally for
+another. The cache would then incorrectly deadend the second state.
 
-- `rust_only=True` is set for entries where Python is unreliable under
-  the 4GB memory limit (OOM/timeout) OR where Z3 model nondeterminism
-  causes benign output divergence (multiple valid Z3 models for the
-  same find/avoid set). In both cases Rust timing + algorithmic
-  metrics are still tracked, just no Python comparison or output check.
-- Marked all FAST_SUITE entries that historically had `python_time:
-  null` as `rust_only=True` (fauxware, defcamp_r100, ais3_crackme,
-  google2016_unbreakable_0/1, strcpy_find, flareon2015_2,
-  defcamp_r100__dfs).
-- Added 7 new tracked entries: unmapped_analysis,
-  defcon2016quals_baby-re, csgames2018, whitehatvn2015_re400,
-  ekopartyctf2016_sokohashv2, mma_howtouse,
-  hackcon2016_angry-reverser; pulled codegate_2017-angrybird in from
-  the orphan pool.
+### Fix
 
-Result: 22 entries (was 16), all with full stats (was 7). Regression
-suite runs all 22 in ~120s and detects algorithmic regressions via
-`--check-counts`.
+Single-line change: require `proc.NO_RET=True` before adding an
+address to `_exit_continuation_addrs`. Rationale: continuations
+inherit NO_RET from the canonical procedure (`make_continuation` does
+`copy.copy(self.canonical)`), so `__libc_start_main.after_main`
+(NO_RET=True) is still cached. State-dependent procedures default to
+NO_RET=False and are correctly NOT cached.
 
-**Verification:**
-- `python tests/benchmarks/run_regression.py --update --full --check-counts`
-  → 22 passed, 0 failed
-- `python -m pytest tests/engines/test_rust_exploration.py` → 208/208
+### Verification
+
+- `python -m pytest tests/engines/test_rust_exploration.py` →
+  208/208 passing.
+- `run_single.py ais3_crackme --engine rust` → 47 callbacks
+  (matches the cached benchmark in
+  `bd memories exit-continuation-cache`).
+- `run_regression.py` shows pre-existing timing regressions vs
+  baseline that ALSO appear without my change (ran with `git stash`
+  to confirm). System load variance, not regression from my fix.
+
+### Memory saved
+
+`invariant-exit-continuation-cache` — future work must respect that
+the cache ONLY accepts NO_RET=True procedures.
+
+## Observation: pre-existing baseline timing variance
+
+`run_regression.py` flagged 8 timing regressions today (ais3 +75%,
+re400 +62%, etc.) that appear identically with and without my change.
+Either system load is heavier than when 12th session set the
+baselines, or the baselines need a re-record.
+
+NOT my fix's fault. May warrant a follow-up bead to either re-record
+or widen tolerances.
 
 ## Ready P-tasks remaining
 
-- angr-vt0t (P3 categorize remaining ~280 except blocks)
-- angr-8em4 (P3 panic audit — 543 sites, must split)
-- angr-3ijo (P3 bincode for IRSB serialization spike)
-- angr-bgv0 (P3 Z3 FP theory)
-- angr-awm3 (P3 CAS/LLSC statement handling)
-- angr-v4db (P3 extract god-methods)
-- angr-4dxi (P4 memory permission enforcement)
-- angr-borb (P4 StateId / Address newtypes)
-- angr-7x45 (P4 perf SLA enforcement in CI)
+- angr-te1b (P2 Z3 AST pointer extraction null check)
+- angr-210j (P2 CCall returns concrete(0) instead of Python fallback)
+- angr-3tek (P2 native read/write SimProcedures disabled)
+- angr-mboi (P2 mma_howtouse 0.7x regression)
+- angr-xidi (P2 google2016_unbreakable_1 3.2s→6.2s)
+- angr-w4os, angr-2fs0, angr-1f8s, angr-4knw (P3 refactors)
+- and the P-tasks tracked in 12th-session notes.
