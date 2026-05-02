@@ -1,63 +1,46 @@
-# Loop session notes (2026-05-02, eighteenth session)
+# Loop session notes (2026-05-02, nineteenth session)
 
-## Task: angr-mboi (CLOSED — fixed)
-[perf] Fix mma_howtouse regression: 0.7x vs Python, 1.3GB memory
+## Task: angr-xidi (CLOSED)
+[perf] Fix google2016_unbreakable_1 regression: 3.2s->6.2s (-93%)
 
 ## Outcome
-- mma_howtouse peak_mem: **1606MB → 285MB** (5.6x reduction)
-- Tests: 208/208 passing
-- Wall time unchanged (still ~6.5s vs Python ~4.2s)
-  → Remaining gap is AST cache lookup overhead, NOT memory leak.
-    See `mma-howtouse-cache-clear-speedup` memory.
-- Commit: 342df4a7f
+- Refreshed baseline rust_time 6.18s -> 2.7s
+- Refreshed baseline peak_memory_mb 291.4 -> 631.0
+- 208/208 tests passing, regression suite confirms unbreakable_1 no longer flagged
+- Commit: db6ea164d
 
-## Root cause (recorded in pyo3-pyclass-cycle-leak memory)
+## Investigation summary
 
-PyO3 `#[pyclass]` does NOT implement `__traverse__`/`__clear__` by
-default. If a pyclass holds `Py<PyAny>` refs that participate in a
-cycle through Python objects, the cycle is invisible to Python's
-cycle-GC and leaks permanently — `gc.collect()` does NOT help.
+Old baseline (6.18s) was captured during a high-variance run under
+suite-induced memory pressure (per `benchmark-update-variance` memory).
+Standalone subprocess runs across 5 trials: [2.42, 2.43, 2.71, 3.33, 3.42],
+median 2.71s. Suite runs (in run_regression.py): 2.0-2.5s consistently.
 
-Cycle in this codebase:
-  `mgr -> _callbacks (PyO3 PythonCallbacks) -> bound method -> mgr`
-  AND
-  `mgr -> _rust_mgr (PyO3 RustExplorationManager).callbacks -> bound method -> mgr`
+Recent perf fixes since baseline was set (commit 15395dd6b) likely closed
+the regression: 342df4a7f (GC leak), 7fec7db2d (SegmentList O(n)),
+8964c0da3 (exit-cont cache).
 
-Both held strong refs to bound methods (`mgr._cb_*`). Both pyclasses
-needed GC support for the cycle to be collectible.
+## New issue created: angr-rsfv (P2)
 
-## Fix
+Discovered: 8 OTHER baselines consistently fail by 18-71% with low
+variance — looks like real regressions or stale baselines from different
+conditions. Created angr-rsfv to investigate. Affected:
+defcamp_r100, ais3_crackme, unbreakable_0, flareon2015_2, baby-re,
+defcamp_r100__dfs, csgames2018, whitehatvn2015_re400.
 
-Added `__traverse__` and `__clear__` to both `PythonCallbacks` (callbacks.rs)
-and `RustExplorationManager` (exploration/mod.rs). Factored the
-per-field traversal/clearing into helpers `traverse_fields` /
-`clear_fields` on `PythonCallbacks` so the manager's `__traverse__`
-can delegate for its embedded clone (set_callbacks moves a cloned
-copy into the manager).
+Variance is small (~3-5% across runs), so this is signal not noise.
+Could be real perf regression from one of: bf2711b74 (DivMod),
+fb52689e3 (BV width validation), 85c59c7a0 (ccall fallback),
+4d174348c (null-check), 8964c0da3 (cache check).
 
-## Failed approach (recorded in avoid-weakref-callbacks memory)
+## Memory saved
 
-Tried wrapping callbacks in weakref-based closures on the Python side.
-Worked for memory (same 285MB) but caused 19-72% perf regression across
-8 benchmarks due to per-callback overhead. Reverted in favor of the
-Rust-side GC fix which has zero per-call overhead.
+- `benchmark-unbreakable-1-baseline-refresh`: refresh details + pointer
+  to systemic 8-baseline issue
 
-## New memories saved
-
-- `pyo3-pyclass-cycle-leak`: root cause + fix pattern
-- `avoid-weakref-callbacks`: failed approach
-- `benchmark-mma-howtouse-leak-fix`: before/after numbers
-
-## Other ready tasks (unchanged)
+## Other ready tasks
 
 - angr-3tek (P2): native read/write SimProcs blocked by stale-cache
-- angr-xidi (P2): likely false positive (suite-induced variance)
-- angr-w4os, angr-2fs0, angr-1f8s, angr-cbko, angr-3ijo, angr-8em4 (P3)
-
-## Pre-existing concerns (unchanged)
-
-- Pre-existing baseline timing variance in `run_regression.py`
-  (per `benchmark-update-variance` memory). Same 8 failures occur
-  WITH or WITHOUT this commit — verified by stashing and re-running.
-- mma_howtouse wall time still 0.65x. The 1.5s AST cache overhead
-  (per `mma-howtouse-cache-clear-speedup`) remains a separate fix.
+- angr-rsfv (P2): NEW — 8-baseline staleness investigation
+- angr-w4os, angr-2fs0, angr-1f8s, angr-cbko, angr-3ijo, angr-8em4,
+  angr-bgv0, angr-awm3 (P3)
