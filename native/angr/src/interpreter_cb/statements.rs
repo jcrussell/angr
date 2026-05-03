@@ -833,9 +833,145 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(StmtResult::Continue)
             }
 
-            IRStmt::CAS { .. } => Err(CbExecutionError::Unsupported("compare-and-swap".to_string())),
-            IRStmt::LLSC { .. } => {
-                Err(CbExecutionError::Unsupported("load-linked/store-conditional".to_string()))
+            IRStmt::CAS {
+                old_hi,
+                old_lo,
+                addr,
+                expdHi,
+                expdLo,
+                dataHi,
+                dataLo,
+                endness,
+            } => {
+                // Single CAS only — defer double-CAS to Python.
+                if old_hi.is_some() || expdHi.is_some() || dataHi.is_some() {
+                    return Err(CbExecutionError::Unsupported("double compare-and-swap".to_string()));
+                }
+
+                // Type comes from expdLo — must match what is being CAS'd.
+                let expd_ty = expdLo.get_type(&irsb.tyenv).ok_or_else(|| {
+                    CbExecutionError::InvalidIR("CAS expdLo has no type".to_string())
+                })?;
+
+                // Load current value at addr using existing Load handling.
+                let load_expr = IRExpr::Load {
+                    addr: addr.clone(),
+                    ty: expd_ty,
+                    endness: *endness,
+                };
+                let current = self.eval_expr_with_callbacks(py, callbacks, &load_expr, &irsb.tyenv)?;
+                let expd_val = self.eval_expr_with_callbacks(py, callbacks, expdLo, &irsb.tyenv)?;
+                let data_val = self.eval_expr_with_callbacks(py, callbacks, dataLo, &irsb.tyenv)?;
+
+                let cmp = current.eq(&expd_val, self.ctx);
+
+                // Decide what to write back into memory based on cmp.
+                // - cmp concrete true:  write data
+                // - cmp concrete false: skip store
+                // - cmp symbolic:       write ITE(cmp, data, current) (mirrors StoreG)
+                let do_store = match cmp.as_u64() {
+                    Some(0) => None,
+                    Some(_) => Some(data_val.clone()),
+                    None => Some(cmp.ite(&data_val, &current, self.ctx)),
+                };
+
+                if let Some(value_to_store) = do_store {
+                    // Synthesize a Store statement and reuse the existing
+                    // Store machinery (page fetch, ITE chain, callback paths).
+                    // The Store handler re-evaluates addr/data; for a Const
+                    // we'd want to bypass that, but CAS is rare so the extra
+                    // eval is acceptable. We pass the precomputed value via
+                    // a temporary by using a Const wrapper only when concrete;
+                    // otherwise we inline the store directly here.
+                    if value_to_store.is_symbolic() {
+                        // Symbolic data — perform store directly. Only support
+                        // concrete addresses; defer symbolic addr to Python.
+                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let data_size = ((value_to_store.width() + 7) / 8) as usize;
+                        if let Some(addr_concrete) = addr_val.as_u64() {
+                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                            if callbacks.has_memory_store_symbolic_value() {
+                                self.flush_stores(py, callbacks)?;
+                                callbacks
+                                    .call_memory_store_symbolic_value(py, addr_concrete, &value_to_store)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                self.pending_symbolic_stores.insert(addr_concrete, value_to_store.clone());
+                                let data_bytes = bv_to_bytes(&value_to_store);
+                                self.pending_stores.push(addr_concrete, data_bytes);
+                                if self.pending_stores.len() >= self.max_pending_stores {
+                                    self.flush_stores(py, callbacks)?;
+                                }
+                            }
+                        } else {
+                            return Err(CbExecutionError::Unsupported(
+                                "CAS with symbolic address".to_string(),
+                            ));
+                        }
+                    } else {
+                        // Concrete data — synthesize Store and reuse the full
+                        // Store path (handles use_rust_memory, prefetch cache,
+                        // etc.). We pass dataLo unchanged since cmp was true.
+                        let store_stmt = IRStmt::Store {
+                            addr: (**addr).clone(),
+                            data: (**dataLo).clone(),
+                            endness: *endness,
+                        };
+                        self.execute_stmt_with_callbacks(py, callbacks, &store_stmt, irsb)?;
+                    }
+                }
+
+                // Write the loaded current value to oldLo.
+                if (*old_lo as usize) < self.temps.len() {
+                    self.temps[*old_lo as usize] = Some(current);
+                } else {
+                    return Err(CbExecutionError::UnknownTemp(*old_lo));
+                }
+
+                Ok(StmtResult::Continue)
+            }
+
+            IRStmt::LLSC { storedata, result, addr, endness } => {
+                match storedata {
+                    None => {
+                        // Load-linked: load value at addr, write to result temp.
+                        let result_ty = irsb.tyenv.get(*result).ok_or_else(|| {
+                            CbExecutionError::InvalidIR(format!(
+                                "LLSC result temp {} not in tyenv",
+                                result
+                            ))
+                        })?;
+                        let load_expr = IRExpr::Load {
+                            addr: addr.clone(),
+                            ty: result_ty,
+                            endness: *endness,
+                        };
+                        let value = self.eval_expr_with_callbacks(
+                            py, callbacks, &load_expr, &irsb.tyenv,
+                        )?;
+                        if (*result as usize) < self.temps.len() {
+                            self.temps[*result as usize] = Some(value);
+                        } else {
+                            return Err(CbExecutionError::UnknownTemp(*result));
+                        }
+                    }
+                    Some(data_expr) => {
+                        // Store-conditional: store data, write 1 (success) to result temp.
+                        // Simplified non-atomic single-state model — store always succeeds.
+                        let store_stmt = IRStmt::Store {
+                            addr: (**addr).clone(),
+                            data: (**data_expr).clone(),
+                            endness: *endness,
+                        };
+                        self.execute_stmt_with_callbacks(py, callbacks, &store_stmt, irsb)?;
+                        if (*result as usize) < self.temps.len() {
+                            self.temps[*result as usize] = Some(RustBV::concrete(1, 1));
+                        } else {
+                            return Err(CbExecutionError::UnknownTemp(*result));
+                        }
+                    }
+                }
+                Ok(StmtResult::Continue)
             }
             IRStmt::Dirty(dirty) => {
                 // Check guard if present
