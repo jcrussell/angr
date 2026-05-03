@@ -1305,7 +1305,7 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         op: &str,
-        _ctx: &SymContext,
+        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
@@ -1352,14 +1352,21 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let kind = match op {
+            "add" => FloatOpKind::Add,
+            "sub" => FloatOpKind::Sub,
+            "mul" => FloatOpKind::Mul,
+            "div" => FloatOpKind::Div,
+            _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_scalar_{}", op))),
+        };
+        Self::vec_float_scalar_lane_binop(left, right, elem, kind, ctx)
     }
 
     /// Scalar sqrt in vector (SQRTSS/SQRTSD).
     fn vec_float_scalar_sqrt(
         arg: RustBV,
         elem: IRType,
-        _ctx: &SymContext,
+        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(arg.width(), 128);
 
@@ -1383,7 +1390,12 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let lane_bits = prec.bits();
+        let lo = arg.extract(lane_bits - 1, 0, ctx);
+        let upper = arg.extract(127, lane_bits, ctx);
+        let res_lane = build_float_expr(FloatOpKind::Sqrt, prec, vec![lo]);
+        Ok(upper.concat_into(res_lane, ctx))
     }
 
     /// Scalar max in vector (MAXSS/MAXSD).
@@ -1391,7 +1403,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         elem: IRType,
-        _ctx: &SymContext,
+        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
@@ -1416,7 +1428,7 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        Self::vec_float_scalar_lane_minmax(left, right, elem, /*is_max=*/ true, ctx)
     }
 
     /// Scalar min in vector (MINSS/MINSD).
@@ -1424,7 +1436,7 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         elem: IRType,
-        _ctx: &SymContext,
+        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
@@ -1449,7 +1461,53 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        Self::vec_float_scalar_lane_minmax(left, right, elem, /*is_max=*/ false, ctx)
+    }
+
+    /// Symbolic fallback for SSE scalar binary float ops (Add/Sub/Mul/Div).
+    /// Extracts lane 0, runs the op via Z3 FP, concats back with upper bits.
+    fn vec_float_scalar_lane_binop(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        kind: FloatOpKind,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let lane_bits = prec.bits();
+        let l_lo = left.extract(lane_bits - 1, 0, ctx);
+        let r_lo = right.extract(lane_bits - 1, 0, ctx);
+        let upper = left.extract(127, lane_bits, ctx);
+        let res_lane = build_float_expr(kind, prec, vec![l_lo, r_lo]);
+        Ok(upper.concat_into(res_lane, ctx))
+    }
+
+    /// Symbolic fallback for SSE scalar MAXSS/MINSS/MAXSD/MINSD on lane 0.
+    /// Encodes Rust's `>`/`<` semantics (NaN-returns-right) as
+    /// `ITE(cond, l, r)` with `cond = FCmpLt(r, l)` for max or
+    /// `cond = FCmpLt(l, r)` for min — matches the concrete branch above.
+    fn vec_float_scalar_lane_minmax(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        is_max: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let lane_bits = prec.bits();
+        let l_lo = left.extract(lane_bits - 1, 0, ctx);
+        let r_lo = right.extract(lane_bits - 1, 0, ctx);
+        let upper = left.extract(127, lane_bits, ctx);
+        // max(l, r) = if l > r then l else r ⟺ ITE(r < l, l, r)
+        // min(l, r) = if l < r then l else r ⟺ ITE(l < r, l, r)
+        let (cmp_left, cmp_right) = if is_max {
+            (r_lo.clone(), l_lo.clone())
+        } else {
+            (l_lo.clone(), r_lo.clone())
+        };
+        let cond = build_float_expr(FloatOpKind::CmpLt, prec, vec![cmp_left, cmp_right]);
+        let res_lane = cond.ite_into(l_lo, r_lo, ctx);
+        Ok(upper.concat_into(res_lane, ctx))
     }
 
     /// Set low 32 bits of V128.
@@ -2300,6 +2358,149 @@ mod tests {
             result_f > 1.0 && result_f < 2.0,
             "Expected 1.0 < x < 2.0, got {}",
             result_f
+        );
+    }
+
+    /// Symbolic VFAddS (ADDSS-style): `x_low + 2.0 == 5.0` should yield x_low == 3.0,
+    /// and the upper 96 bits of `xmm0` must pass through unchanged.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_float_scalar_add_symbolic() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let xmm0 = RustBV::symbolic(&ctx, "xmm0", 128);
+        // xmm1 = [2.0f, 0, 0, 0]
+        let xmm1 = RustBV::concrete(2.0f32.to_bits() as u128, 128);
+
+        let result = VEXOps::binop(
+            IROp::VFAddS { elem: IRType::F32 },
+            xmm0.clone(),
+            xmm1,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+
+        // Constrain low 32 bits of result to bits(5.0).
+        let res_lo = result.extract(31, 0, &ctx);
+        let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
+        let eq = res_lo.to_z3_ast()._eq(&five.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after VFAddS symbolic constraint");
+
+        let model_x = ctx.eval(&xmm0).expect("eval(xmm0) returned None");
+        let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
+        assert!(
+            (lane0 - 3.0).abs() < 1e-6,
+            "Expected lane0 == 3.0, got {}",
+            lane0
+        );
+
+        // Verify upper 96 bits of result equal upper 96 bits of xmm0 (passthrough).
+        let upper_in = xmm0.extract(127, 32, &ctx);
+        let upper_out = result.extract(127, 32, &ctx);
+        let eq_upper = upper_in.to_z3_ast()._eq(&upper_out.to_z3_ast());
+        ctx.add_constraint(eq_upper);
+        assert!(ctx.is_sat(), "expected upper-bits passthrough to hold");
+    }
+
+    /// Symbolic VFSqrtS (SQRTSS-style): sqrt(low32(xmm)) == 4.0 → low32 == 16.0.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_float_scalar_sqrt_symbolic() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let xmm = RustBV::symbolic(&ctx, "xmm_sqrt", 128);
+
+        let result = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F32 }, xmm.clone(), &ctx).unwrap();
+        assert_eq!(result.width(), 128);
+
+        let res_lo = result.extract(31, 0, &ctx);
+        let four = RustBV::concrete(4.0f32.to_bits() as u128, 32);
+        let eq = res_lo.to_z3_ast()._eq(&four.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after VFSqrtS symbolic constraint");
+
+        let model_x = ctx.eval(&xmm).expect("eval(xmm) returned None");
+        let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
+        assert!(
+            (lane0 - 16.0).abs() < 1e-4,
+            "Expected lane0 == 16.0, got {}",
+            lane0
+        );
+    }
+
+    /// Symbolic VFMaxS (MAXSS-style): with `xmm0` symbolic and `xmm1 = [3.0, ...]`,
+    /// constrain low32(result) == 5.0 — solver must pick xmm0.lane0 == 5.0 (since
+    /// max(5.0, 3.0) == 5.0). Also a model where xmm0.lane0 == 1.0 must NOT satisfy
+    /// the constraint (we don't test that here, but the ITE encoding guarantees it).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_float_scalar_max_symbolic() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let xmm0 = RustBV::symbolic(&ctx, "xmm_max", 128);
+        let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
+
+        let result = VEXOps::binop(
+            IROp::VFMaxS { elem: IRType::F32 },
+            xmm0.clone(),
+            xmm1,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+
+        let res_lo = result.extract(31, 0, &ctx);
+        let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
+        let eq = res_lo.to_z3_ast()._eq(&five.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after VFMaxS == 5.0");
+
+        let model_x = ctx.eval(&xmm0).expect("eval(xmm0) returned None");
+        let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
+        assert!(
+            (lane0 - 5.0).abs() < 1e-6,
+            "Expected lane0 == 5.0 (since max(lane0, 3.0) == 5.0), got {}",
+            lane0
+        );
+    }
+
+    /// Symbolic VFMinS (MINSS-style): with `xmm1 = [3.0, ...]` and target == 1.0,
+    /// solver must pick xmm0.lane0 == 1.0 (since min(1.0, 3.0) == 1.0).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_float_scalar_min_symbolic() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let xmm0 = RustBV::symbolic(&ctx, "xmm_min", 128);
+        let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
+
+        let result = VEXOps::binop(
+            IROp::VFMinS { elem: IRType::F32 },
+            xmm0.clone(),
+            xmm1,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+
+        let res_lo = result.extract(31, 0, &ctx);
+        let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let eq = res_lo.to_z3_ast()._eq(&one.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after VFMinS == 1.0");
+
+        let model_x = ctx.eval(&xmm0).expect("eval(xmm0) returned None");
+        let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
+        assert!(
+            (lane0 - 1.0).abs() < 1e-6,
+            "Expected lane0 == 1.0 (since min(lane0, 3.0) == 1.0), got {}",
+            lane0
         );
     }
 }
