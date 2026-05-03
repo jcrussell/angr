@@ -160,12 +160,15 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(strcpy::NativeStrcpy));
         registry.register(Arc::new(strcpy::NativeStrncpy));
         registry.register(Arc::new(strlen::NativeStrnlen));
-        // exit/abort: NOT registered — they cause exploration flow issues
-        // (infinite loops when states hit exit addresses, need Python callback
-        // to properly handle avoid/find address interaction)
-        // registry.register(Arc::new(exit::NativeExit));
-        // registry.register(Arc::new(exit::NativeUnderscoreExit));
-        // registry.register(Arc::new(exit::NativeAbort));
+        // exit/abort: terminal NO_RET procedures. The native dispatchers in
+        // both stepping.rs (interpreter exit) and mod.rs (top-of-loop hook
+        // check) recognize no_return and route the main state to STASH_DEADENDED
+        // instead of advancing PC to the call's return address. Without that
+        // check the state would re-execute past the call (which in fauxware
+        // overlaps main's prologue, causing an infinite re-entry loop).
+        registry.register(Arc::new(exit::NativeExit));
+        registry.register(Arc::new(exit::NativeUnderscoreExit));
+        registry.register(Arc::new(exit::NativeAbort));
         registry.register(Arc::new(rand::NativeRand));
         registry.register(Arc::new(rand::NativeSrand));
         // Heap procedures (bump allocator, matching SimHeapBrk)

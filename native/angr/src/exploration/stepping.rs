@@ -384,8 +384,11 @@ impl RustExplorationManager {
         let is_in_binary = self.binary_regions.iter().any(|(base, data)| {
             addr >= *base && addr < *base + data.len() as u64
         });
-        let native_succeeded = if !is_in_binary {
+        // Result of native execution: None = fall back to Python, Some(bool) =
+        // succeeded with no_return flag indicating whether to deadend the main state.
+        let native_no_return: Option<bool> = if !is_in_binary {
             if let Some(native_proc) = self.native_procedures.get(&name) {
+                let proc_no_return = native_proc.no_return();
                 let args = self.extract_procedure_args(&state, num_args);
                 match native_proc.call(&mut state, &args) {
                     Ok(ret_val) => {
@@ -394,31 +397,33 @@ impl RustExplorationManager {
                             .entry(name.clone())
                             .or_insert(0) += 1;
 
-                        if let Some(rv) = ret_val {
-                            let ret_reg = self.calling_convention.return_register();
-                            state.set_register_by_offset(ret_reg, rv);
-                        }
+                        if !proc_no_return {
+                            if let Some(rv) = ret_val {
+                                let ret_reg = self.calling_convention.return_register();
+                                state.set_register_by_offset(ret_reg, rv);
+                            }
 
-                        // Set PC to return address and pop stack
-                        state.set_pc(return_addr);
-                        let sp = state.get_sp().as_u64().unwrap_or(0);
-                        let ptr_size = state.arch().bytes() as u64;
-                        state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
-                        true
+                            // Set PC to return address and pop stack
+                            state.set_pc(return_addr);
+                            let sp = state.get_sp().as_u64().unwrap_or(0);
+                            let ptr_size = state.arch().bytes() as u64;
+                            state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
+                        }
+                        Some(proc_no_return)
                     }
                     Err(_) => {
                         self.native_proc_stats.python_fallbacks += 1;
-                        false
+                        None
                     }
                 }
             } else {
-                false
+                None
             }
         } else {
-            false
+            None
         };
 
-        if native_succeeded {
+        if let Some(no_return) = native_no_return {
             // Unified deferred-fork handling: identical semantics to
             // MaxBlocks/BlockEnd (snapshot-based forks restore solver
             // state from the branch point; UNSAT forks go to STASH_PRUNED).
@@ -429,6 +434,14 @@ impl RustExplorationManager {
                 &stored_conditions,
                 fork_snapshots,
             );
+            if no_return {
+                // For no-return procedures (exit/abort): the main state must
+                // not continue at the call's return address (which would re-enter
+                // the caller and loop). Deadend it. Deferred forks (already in
+                // successors[1..]) are kept so unexplored branches still run.
+                let main_state = successors.remove(0);
+                self.push_or_drop_terminal(STASH_DEADENDED, main_state);
+            }
             Ok(successors)
         } else {
             // Fall through to Python callback

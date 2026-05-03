@@ -2559,6 +2559,18 @@ impl RustExplorationManager {
                                     .entry(name.clone())
                                     .or_insert(0) += 1;
 
+                                // For no-return procedures (exit/abort), skip
+                                // the return-address dance and deadend directly.
+                                // Setting PC to a stack-derived return address
+                                // can produce a spurious successor (e.g. when
+                                // exit is called from rejected() in fauxware,
+                                // the post-call address happens to overlap
+                                // main's start, causing infinite re-entry).
+                                if no_return {
+                                    self.push_or_drop_terminal(STASH_DEADENDED, state);
+                                    continue;
+                                }
+
                                 // Set return value if present
                                 if let Some(rv) = ret_val {
                                     let ret_reg = self.calling_convention.return_register();
@@ -2596,12 +2608,7 @@ impl RustExplorationManager {
                                     }
                                 }
 
-                                // If no_return, put state in deadended
-                                if no_return {
-                                    self.push_or_drop_terminal(STASH_DEADENDED, state);
-                                } else {
-                                    self.push_to_active_or_drop(state);
-                                }
+                                self.push_to_active_or_drop(state);
                                 continue;
                             }
                             Err(_e) => {
