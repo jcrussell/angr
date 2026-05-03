@@ -97,6 +97,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "z3",
+ "z3-sys",
 ]
 
 [[package]]

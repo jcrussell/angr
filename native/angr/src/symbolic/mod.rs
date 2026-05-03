@@ -17,4 +17,4 @@ pub use context::{SymContext, ConstraintSyncError, get_solver_stats, reset_solve
 pub use handle::RustBVHandle;
 pub use registry::{SymbolicIdentityRegistry, SymbolInfo, global_registry, clear_global_registry};
 pub use table::RustSymbolTable;
-pub use value::{BitWidth, BVOp, RustBV, Signedness};
+pub use value::{BitWidth, BVOp, FloatOpKind, FloatPrec, RustBV, Signedness};

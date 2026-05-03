@@ -65,6 +65,81 @@ pub enum BVOp {
     Clz,
     Ctz,
     Popcount,
+
+    // Floating-point operations (Z3 FP theory).
+    // Operands are RustBVs holding the IEEE-754 bit pattern at the given
+    // precision; the op is applied via Z3 FP and the result is converted
+    // back to the IEEE bit-vector. Round-to-nearest-even is used for
+    // arith; conversions and comparison results follow IEEE-754.
+    Float { kind: FloatOpKind, prec: FloatPrec },
+}
+
+/// IEEE-754 precision for symbolic float operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatPrec {
+    /// 32-bit single precision (8 ebits, 24 sbits).
+    F32,
+    /// 64-bit double precision (11 ebits, 53 sbits).
+    F64,
+}
+
+impl FloatPrec {
+    /// Width of the IEEE bit-vector encoding for this precision.
+    #[inline]
+    pub fn bits(&self) -> u32 {
+        match self {
+            FloatPrec::F32 => 32,
+            FloatPrec::F64 => 64,
+        }
+    }
+}
+
+/// Kinds of symbolic float operations expressible via Z3 FP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatOpKind {
+    // Binary arithmetic (round to nearest, ties to even).
+    Add,
+    Sub,
+    Mul,
+    Div,
+    // Unary.
+    Sqrt,
+    Neg,
+    Abs,
+    // Ternary fused multiply-add / multiply-sub: a*b + c, a*b - c.
+    Fma,
+    Fms,
+    // Comparisons: produce 1-bit BV (1 = true).
+    CmpEq,
+    CmpLt,
+    CmpLe,
+}
+
+impl FloatOpKind {
+    /// Number of operands this op consumes.
+    #[inline]
+    pub fn arity(&self) -> usize {
+        match self {
+            FloatOpKind::Sqrt | FloatOpKind::Neg | FloatOpKind::Abs => 1,
+            FloatOpKind::Add
+            | FloatOpKind::Sub
+            | FloatOpKind::Mul
+            | FloatOpKind::Div
+            | FloatOpKind::CmpEq
+            | FloatOpKind::CmpLt
+            | FloatOpKind::CmpLe => 2,
+            FloatOpKind::Fma | FloatOpKind::Fms => 3,
+        }
+    }
+
+    /// Whether this op produces a 1-bit (boolean) result instead of a BV.
+    #[inline]
+    pub fn is_compare(&self) -> bool {
+        matches!(
+            self,
+            FloatOpKind::CmpEq | FloatOpKind::CmpLt | FloatOpKind::CmpLe
+        )
+    }
 }
 
 impl BVOp {
@@ -107,11 +182,18 @@ impl BVOp {
             BVOp::Clz => "clz",
             BVOp::Ctz => "ctz",
             BVOp::Popcount => "popcount",
+            // No clean claripy mapping — float ops returning to Python fall
+            // back to fresh symbolic in rustbv_to_claripy (constraint info
+            // stays in Z3 within the Rust engine).
+            BVOp::Float { .. } => "fpOp",
         }
     }
 
     /// Check if this is a unary operation.
     pub fn is_unary(&self) -> bool {
+        if let BVOp::Float { kind, .. } = self {
+            return kind.arity() == 1;
+        }
         matches!(
             self,
             BVOp::Neg
@@ -128,6 +210,9 @@ impl BVOp {
 
     /// Check if this is a binary operation.
     pub fn is_binary(&self) -> bool {
+        if let BVOp::Float { kind, .. } = self {
+            return kind.arity() == 2;
+        }
         matches!(
             self,
             BVOp::Add
@@ -158,8 +243,11 @@ impl BVOp {
         )
     }
 
-    /// Check if this is a ternary operation (ITE).
+    /// Check if this is a ternary operation (ITE or FP fused MAdd/MSub).
     pub fn is_ternary(&self) -> bool {
+        if let BVOp::Float { kind, .. } = self {
+            return kind.arity() == 3;
+        }
         matches!(self, BVOp::Ite)
     }
 }
@@ -1899,6 +1987,12 @@ impl RustBV {
             BVOp::Clz => z3::ast::BV::new_const("clz", _width),
             BVOp::Ctz => z3::ast::BV::new_const("ctz", _width),
             BVOp::Popcount => z3::ast::BV::new_const("popcount", _width),
+
+            // Floating-point — defer to the cached path for the actual work.
+            BVOp::Float { kind, prec } => {
+                let mut cache = std::collections::HashMap::new();
+                Self::build_fp_z3_ast_cached(*kind, *prec, operands, &mut cache)
+            }
         }
     }
 
@@ -2065,6 +2159,108 @@ impl RustBV {
             BVOp::Clz => z3::ast::BV::new_const("clz", _width),
             BVOp::Ctz => z3::ast::BV::new_const("ctz", _width),
             BVOp::Popcount => z3::ast::BV::new_const("popcount", _width),
+
+            // Floating-point operations via Z3 FP theory.
+            BVOp::Float { kind, prec } => {
+                Self::build_fp_z3_ast_cached(*kind, *prec, operands, cache)
+            }
+        }
+    }
+
+    /// Build a Z3 AST for a symbolic float operation, returning the result
+    /// encoded as an IEEE-754 bit-vector (or 1-bit BV for compares).
+    ///
+    /// Operands are RustBVs holding IEEE-754 bit patterns; we reinterpret
+    /// them as Z3 Float values (`Z3_mk_fpa_to_fp_bv`), apply the FP op,
+    /// and convert results back to IEEE bits via `to_ieee_bv`.
+    ///
+    /// Each intermediate Z3 ast is wrapped via `Ast::wrap` so its refcount
+    /// is properly tracked — passing raw `Z3_ast` pointers to multiple FFI
+    /// calls is unsafe because Z3's ref-counted contexts may GC the
+    /// intermediate ASTs between calls.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_fp_z3_ast_cached(
+        kind: FloatOpKind,
+        prec: FloatPrec,
+        operands: &[Arc<RustBV>],
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
+        use z3::ast::{Ast, Bool, Float, RoundingMode, BV};
+        use z3_sys::{
+            Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq, Z3_mk_fpa_fma,
+            Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul, Z3_mk_fpa_neg, Z3_mk_fpa_sqrt,
+            Z3_mk_fpa_sub, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
+        };
+
+        let z3_ctx = z3::Context::thread_local();
+        let raw_ctx = z3_ctx.get_z3_context();
+        let sort = match prec {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        };
+        let raw_sort = sort.get_z3_sort();
+
+        // Convert each BV operand to a Z3 Float wrapper. Holding the wrapper
+        // (not just the raw Z3_ast) ensures the intermediate AST has its
+        // refcount incremented and is not freed before we use it.
+        let fp_args: Vec<Float> = operands
+            .iter()
+            .map(|bv| {
+                let bv_ast = bv.to_z3_ast_cached(cache);
+                let raw = unsafe {
+                    Z3_mk_fpa_to_fp_bv(raw_ctx, bv_ast.get_z3_ast(), raw_sort)
+                        .expect("Z3_mk_fpa_to_fp_bv returned NULL")
+                };
+                unsafe { Float::wrap(&z3_ctx, raw) }
+            })
+            .collect();
+
+        // Round-to-nearest-ties-to-even (IEEE-754 default).
+        let rm = RoundingMode::round_nearest_ties_to_even();
+        let rm_raw = rm.get_z3_ast();
+
+        // Apply the operation. Wrap the result as Float (or Bool) so its
+        // refcount is held until we convert it.
+        let raw_a = fp_args[0].get_z3_ast();
+        // Helper to safely get raw_b / raw_c only when needed (some ops are unary).
+        let raw_b = || fp_args[1].get_z3_ast();
+        let raw_c = || fp_args[2].get_z3_ast();
+
+        let result_raw = unsafe {
+            match kind {
+                FloatOpKind::Add => Z3_mk_fpa_add(raw_ctx, rm_raw, raw_a, raw_b()),
+                FloatOpKind::Sub => Z3_mk_fpa_sub(raw_ctx, rm_raw, raw_a, raw_b()),
+                FloatOpKind::Mul => Z3_mk_fpa_mul(raw_ctx, rm_raw, raw_a, raw_b()),
+                FloatOpKind::Div => Z3_mk_fpa_div(raw_ctx, rm_raw, raw_a, raw_b()),
+                FloatOpKind::Sqrt => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
+                FloatOpKind::Neg => Z3_mk_fpa_neg(raw_ctx, raw_a),
+                FloatOpKind::Abs => Z3_mk_fpa_abs(raw_ctx, raw_a),
+                FloatOpKind::Fma => Z3_mk_fpa_fma(raw_ctx, rm_raw, raw_a, raw_b(), raw_c()),
+                FloatOpKind::Fms => {
+                    // a*b - c == a*b + (-c). Wrap neg_c in a Float so the
+                    // intermediate AST is held while we build the FMA.
+                    let neg_c_raw = Z3_mk_fpa_neg(raw_ctx, raw_c())
+                        .expect("Z3_mk_fpa_neg returned NULL");
+                    let neg_c = Float::wrap(&z3_ctx, neg_c_raw);
+                    Z3_mk_fpa_fma(raw_ctx, rm_raw, raw_a, raw_b(), neg_c.get_z3_ast())
+                }
+                FloatOpKind::CmpEq => Z3_mk_fpa_eq(raw_ctx, raw_a, raw_b()),
+                FloatOpKind::CmpLt => Z3_mk_fpa_lt(raw_ctx, raw_a, raw_b()),
+                FloatOpKind::CmpLe => Z3_mk_fpa_leq(raw_ctx, raw_a, raw_b()),
+            }
+            .expect("Z3 FPA op returned NULL")
+        };
+
+        if kind.is_compare() {
+            let cmp_bool = unsafe { Bool::wrap(&z3_ctx, result_raw) };
+            cmp_bool.ite(&BV::from_u64(1, 1), &BV::from_u64(0, 1))
+        } else {
+            let result_fp = unsafe { Float::wrap(&z3_ctx, result_raw) };
+            let ieee_bv_raw = unsafe {
+                Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
+                    .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
+            };
+            unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
         }
     }
 }

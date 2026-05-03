@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 # VEX engine with Z3 enabled by default; fuzzer is optional
 default = ["vex-engine", "vex-engine-z3", "automaton"]
 vex-engine = ["im", "lru", "thiserror"]
-vex-engine-z3 = ["vex-engine", "z3"]
+vex-engine-z3 = ["vex-engine", "z3", "z3-sys"]
 native-lift = ["vex-engine"]
 fuzzer = ["icicle-fuzzing", "icicle-vm", "libafl", "libafl_bolts", "pcode"]
 automaton = ["indexmap", "fixedbitset"]
@@ -34,6 +34,9 @@ target-lexicon = "0.12.16"
 
 # VEX Engine dependencies (optional, enabled by default)
 z3 = { version = "0.19", optional = true }
+# Direct z3-sys dep so we can call Z3 FP-theory FFI functions that are not
+# exposed via z3-rs high-level API (sqrt, fma, to_fp_bv).
+z3-sys = { version = "0.10", optional = true }
 im = { version = "15.1", optional = true }
 lru = { version = "0.12", optional = true }
 thiserror = { version = "1.0", optional = true }

@@ -4,9 +4,38 @@
 //! Instead of ~200 separate implementations (e.g., add8, add16, add32, add64),
 //! we have a single implementation per operation type that handles all widths.
 
-use crate::symbolic::{RustBV, SymContext};
+use std::sync::Arc;
+
+use crate::symbolic::{BVOp, FloatOpKind, FloatPrec, RustBV, SymContext};
 
 use super::ir::{IROp, IRType};
+
+/// Map a VEX float `IRType` to a Z3 FP precision.
+#[inline]
+fn float_prec_of(ty: IRType) -> Option<FloatPrec> {
+    match ty {
+        IRType::F32 => Some(FloatPrec::F32),
+        IRType::F64 => Some(FloatPrec::F64),
+        _ => None,
+    }
+}
+
+/// Build a symbolic float-op expression. Used by float_* helpers below
+/// when operands are not fully concrete; routes through Z3 FP theory in
+/// `build_fp_z3_ast_cached`.
+fn build_float_expr(
+    kind: FloatOpKind,
+    prec: FloatPrec,
+    operands: Vec<RustBV>,
+) -> RustBV {
+    let width = if kind.is_compare() { 1 } else { prec.bits() };
+    RustBV::Expression {
+        id: RustBV::EXPRESSION_ID,
+        width,
+        op: BVOp::Float { kind, prec },
+        operands: operands.into_iter().map(Arc::new).collect(),
+    }
+}
 
 /// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
 macro_rules! width_unop {
@@ -1099,9 +1128,9 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, ty.bits()));
         }
 
-        // For symbolic, we'd need Z3 float theory or leave unconstrained
-        // For now, create a fresh symbolic value (imprecise but sound)
-        Err(OpError::SymbolicFloatUnsupported)
+        // Symbolic: build a Z3 FP expression so constraints propagate.
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::Sqrt, prec, vec![arg]))
     }
 
     fn float_add(
@@ -1126,7 +1155,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, ty.bits()));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::Add, prec, vec![left, right]))
     }
 
     fn float_sub(
@@ -1151,7 +1181,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, ty.bits()));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::Sub, prec, vec![left, right]))
     }
 
     fn float_mul(
@@ -1176,7 +1207,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, ty.bits()));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::Mul, prec, vec![left, right]))
     }
 
     fn float_div(
@@ -1201,7 +1233,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, ty.bits()));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::Div, prec, vec![left, right]))
     }
 
     /// Fused multiply-add: a*b + c
@@ -1230,7 +1263,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, ty.bits()));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::Fma, prec, vec![a, b, c]))
     }
 
     /// Fused multiply-sub: a*b - c
@@ -1259,7 +1293,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, ty.bits()));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::Fms, prec, vec![a, b, c]))
     }
 
     /// Scalar float operation in vector (SSE scalar ops like ADDSS, DIVSS).
@@ -1479,7 +1514,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 1));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::CmpEq, prec, vec![left, right]))
     }
 
     fn float_cmp_lt(
@@ -1504,7 +1540,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 1));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::CmpLt, prec, vec![left, right]))
     }
 
     fn float_cmp_le(
@@ -1529,7 +1566,8 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 1));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(FloatOpKind::CmpLe, prec, vec![left, right]))
     }
 
     // Float conversions for concrete values.
@@ -2083,5 +2121,91 @@ mod tests {
         let result_f32 = f32::from_bits((result_val & 0xFFFFFFFF) as u32);
 
         assert!((result_f32 - 3.0).abs() < 0.0001, "Expected 3.0, got {}", result_f32);
+    }
+
+    /// Symbolic FAdd: solving `x + 2.0 == 5.0` should yield x == 3.0.
+    ///
+    /// This is the canonical "constraint propagation" check for the new Z3
+    /// FP-theory wiring: previously the symbolic branch returned a fresh
+    /// unconstrained symbol and the solver would accept any value of x.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_add_symbolic_constraint() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+
+        let sum = VEXOps::binop(IROp::FAdd(IRType::F32), x.clone(), two, &ctx).unwrap();
+
+        // Constrain: sum's IEEE bits == bits(5.0).
+        let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
+        let eq = sum.to_z3_ast()._eq(&five.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after FAdd symbolic constraint");
+
+        let model_x = ctx.eval(&x).expect("eval(x) returned None");
+        let result_f = f32::from_bits(model_x as u32);
+        assert!(
+            (result_f - 3.0).abs() < 1e-6,
+            "Expected x == 3.0, got {}",
+            result_f
+        );
+    }
+
+    /// Symbolic FSqrt: `sqrt(x) == 4.0` should give x == 16.0.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_sqrt_symbolic_constraint() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "sqrt_x", 64);
+
+        let sqrt_x = VEXOps::unop(IROp::FSqrt(IRType::F64), x.clone(), &ctx).unwrap();
+
+        let four = RustBV::concrete(4.0f64.to_bits() as u128, 64);
+        let eq = sqrt_x.to_z3_ast()._eq(&four.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after FSqrt symbolic constraint");
+
+        let model_x = ctx.eval(&x).expect("eval(x) returned None");
+        let result_f = f64::from_bits(model_x as u64);
+        assert!(
+            (result_f - 16.0).abs() < 1e-9,
+            "Expected x == 16.0, got {}",
+            result_f
+        );
+    }
+
+    /// Symbolic FCmpLT: bracket x with `1.0 < x < 2.0` via two symbolic
+    /// FCmpLT comparisons. Solver should accept and produce x in (1.0, 2.0).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_cmp_lt_symbolic_constraint() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "fcmp_x", 32);
+        let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+
+        // x < 2.0
+        let lt_x_two =
+            VEXOps::binop(IROp::FCmpLT(IRType::F32), x.clone(), two, &ctx).unwrap();
+        // 1.0 < x
+        let lt_one_x =
+            VEXOps::binop(IROp::FCmpLT(IRType::F32), one, x.clone(), &ctx).unwrap();
+
+        ctx.assume_true(&lt_x_two);
+        ctx.assume_true(&lt_one_x);
+        assert!(ctx.is_sat(), "expected SAT for 1.0 < x < 2.0");
+
+        let model_x = ctx.eval(&x).expect("eval(x) returned None");
+        let result_f = f32::from_bits(model_x as u32);
+        assert!(
+            result_f > 1.0 && result_f < 2.0,
+            "Expected 1.0 < x < 2.0, got {}",
+            result_f
+        );
     }
 }
