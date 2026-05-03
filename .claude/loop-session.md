@@ -1,47 +1,42 @@
-# Loop session notes (2026-05-03, thirty-second session)
+# Loop session notes (2026-05-03, thirty-third loop session)
 
-## Task: angr-cbko — CLOSED
-"Enable native exit/abort SimProcedures (needs find/avoid address sync with Python)"
+## Task: angr-x3iv — CLOSED
+"Add Z3 FP rounding-mode controls to float ops"
 
 ## Outcome
-Re-enabled NativeExit / NativeUnderscoreExit / NativeAbort. Commit 7cd3d7431.
+Symbolic `RoundF32toInt`/`RoundF64toInt` now route through Z3 FP theory
+instead of erroring. Commit d0377abb9.
 
-## Root Cause (was non-obvious)
-The VEX interpreter has TWO native SimProcedure dispatch paths:
-  1. `stepping.rs:handle_simprocedure` — called when a block ends with
-     `call extern_hook` and the interpreter dispatches the hook inline.
-  2. `mod.rs:run` top-of-loop check — when the next state's PC is at a
-     hook address before stepping.
+## Root insight
+RoundToInt is the first `FloatOpKind` whose operand[0] is NOT a float —
+it's a 32-bit rm BV. The existing `build_fp_z3_ast_cached` blindly calls
+`Z3_mk_fpa_to_fp_bv` on every operand and would mis-encode rm as an F32.
+Solution: early-branch in `build_fp_z3_ast_cached` to a separate helper
+(`build_fp_round_to_int_cached`) that converts only operand[1].
 
-Both paths advanced PC to `return_addr` and popped SP after the native call,
-ignoring `no_return`. For NativeExit, that "return address" in fauxware is
-0x40071d (after `call exit@plt` at 0x400718) — which by coincidence is the
-START of main() (rejected() and main are adjacent in this binary). So
-deadending the wrong way caused infinite re-entry into main.
+## Rounding mode dispatch
+- **Concrete rm** (`rm_bv.as_u128()` is `Some`): pick one of the 4 Z3
+  RoundingMode constants and call `Z3_mk_fpa_round_to_integral` once.
+- **Symbolic rm**: build all 4 results, ITE on `rm[1:0]` against 0/1/2.
+  Z3 simplifies away dead arms at solve time.
 
-## Fix
-Both dispatch sites now early-deadend when `no_return` is true:
-- Skip PC/SP/return-value update.
-- Run `process_deferred_forks_into` so unexplored branches still spawn.
-- Push the main state to STASH_DEADENDED instead of returning it as a
-  successor.
+## Z3-rs name gotcha
+z3-rs 0.19 uses `round_towards_*` (with the 's') for directional modes,
+not `round_toward_*` like the underlying Z3 C API. The
+`round_nearest_ties_to_even` family drops the prefix. Saved as
+`z3-rs-rounding-mode-names`.
 
 ## Files changed
-- native/angr/src/exploration/stepping.rs (handle_simprocedure)
-- native/angr/src/exploration/mod.rs (run loop top-of-loop hook)
-- native/angr/src/procedures/mod.rs (registration)
+- native/angr/src/symbolic/value.rs (FloatOpKind::RoundToInt + helper)
+- native/angr/src/vex/ops.rs (route symbolic round_*_with_mode)
 
 ## Verification
 - 208/208 RustExplorationManager tests pass.
-- The previously-hanging test `test_step_func_stops_when_no_active`
-  (fauxware step+step_func, n=100000) now finishes in 18 steps,
-  matching the no-native-exit baseline.
-- Regression test: 12/12 correct, 1 SLA WARN on flareon2015_2
-  (pre-existing variance — runs identically with/without my change).
+- 12/12 regression benchmarks pass.
+- fauxware spot check — finds `SOSNEAKY` correctly.
 
-## Memories saved
-- invariant-no-return-deadend (the rule)
-- avoid-fixing-only-one-native-dispatch-path (only fixing mod.rs misses
-  the interpreter-driven path in stepping.rs)
-- fauxware-exit-overlaps-main (the binary quirk that makes this bug visible)
-- no-native-exit-simprocs (updated — supersedes the old "AVOID" memory)
+## Memories saved/updated
+- `invariant-floatopkind-non-float-operand` — new
+- `z3-rs-rounding-mode-names` — new
+- `invariant-rust-float-ops-concrete-only` — updated to mark RoundToInt
+  as no longer concrete-only
