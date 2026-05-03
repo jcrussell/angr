@@ -923,6 +923,33 @@ class RustStateSyncMixin:
                 pass
         return snapshot
 
+    def _snapshot_registers_from_bundle(self, bundle_regs: dict, arch) -> dict:
+        """Build a register snapshot from a Rust callback bundle's registers.
+
+        Same output format as _snapshot_registers, but skips reading values
+        back from state — _create_state_for_callback just stored these same
+        values, so we can construct the snapshot directly from the bundle.
+
+        Args:
+            bundle_regs: Dict mapping reg_name -> int|None (None = symbolic).
+            arch: The state's architecture, used to look up offsets/sizes.
+
+        Returns:
+            Dict mapping reg_name -> (is_symbolic, concrete_value_or_None, offset, size).
+        """
+        reg_map = self._get_register_offset_map(arch)
+        snapshot = {}
+        for reg_name, val in bundle_regs.items():
+            offset_size = reg_map.get(reg_name)
+            if offset_size is None:
+                continue
+            offset, size = offset_size
+            if val is not None:
+                snapshot[reg_name] = (False, val, offset, size)
+            else:
+                snapshot[reg_name] = (True, None, offset, size)
+        return snapshot
+
     def _extract_register_changes(
         self,
         old_state,

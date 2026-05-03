@@ -323,6 +323,8 @@ class RustCallbackDispatchMixin:
         except Exception as e:
             l.debug("Failed to inject Rust stdin data into posix: %s", e)
 
+    _SIMPROC_NO_RET_TERMINAL = {'exit', '_exit', 'abort', '__stack_chk_fail'}
+
     def _handle_simprocedure_callback(self, event: "_ExplorationEvent"):
         """Handle SimProcedure callback from Rust.
 
@@ -342,11 +344,10 @@ class RustCallbackDispatchMixin:
         _sp_total_start = time.perf_counter_ns()
         addr = event.callback_addr
         name = event.callback_name
-        state_id = event.callback_state_id
         addr_int = int(addr) if addr is not None else None
 
         # Track current callback state ID for symbolic memory preservation
-        self._current_callback_state_id = state_id
+        self._current_callback_state_id = event.callback_state_id
 
         # Handle internal passthrough - this is internal binary code, just continue execution
         if name == "__internal_passthrough__":
@@ -358,61 +359,17 @@ class RustCallbackDispatchMixin:
             self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
 
-        # Find the SimProcedure - first by address, then by name
-        proc = self._project._sim_procedures.get(addr)
-        if proc is None and name:
-            # Address lookup failed (e.g., PLT address) - try to find by name
-            for proc_addr, candidate in self._project._sim_procedures.items():
-                proc_name = candidate.__class__.__name__ if hasattr(candidate, '__class__') else str(candidate)
-                if proc_name == name:
-                    proc = candidate
-                    if _DBG:
-                        l.debug(f"Found SimProcedure {name} at 0x{proc_addr:x} (callback was at 0x{addr:x})")
-                    break
+        # Find the SimProcedure
+        proc = self._find_simprocedure(addr, name)
         if proc is None:
-            l.warning(f"SimProcedure not found at 0x{addr:x} (name={name})")
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
             self._perf_stats['callback_simprocedure_count'] += 1
             self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
 
-        # Defensive type check
-        if isinstance(proc, (list, tuple)):
-            l.error(f"Invalid SimProcedure at 0x{addr:x}: got {type(proc).__name__}, expected callable")
-            self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
-            self._perf_stats['callback_simprocedure_count'] += 1
-            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
-            return
-
-        # Fast path for NO_RET termination procedures (exit, abort, etc.)
-        # Skip expensive state creation — just tell Rust to deadend the state
-        no_ret_names = {'exit', '_exit', 'abort', '__stack_chk_fail'}
-        proc_no_ret = getattr(proc, 'NO_RET', False)
-        if proc_no_ret and name in no_ret_names:
-            if _DBG:
-                l.debug(f"Fast path: no-return procedure {name} at 0x{addr:x} — deadending")
-            self._rust_mgr.deadend_pending_callback()
-            self._current_callback_state_id = None
-            _proc_name = name or proc.__class__.__name__
-            if _proc_name not in self._procedure_times:
-                self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
-            self._procedure_times[_proc_name]['count'] += 1
-            self._perf_stats['callback_simprocedure_count'] += 1
-            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
-            return
-
-        # Fast path for continuation addresses known to result in exit.
-        # After the first time a continuation produces only Ijk_Exit successors,
-        # subsequent callbacks at the same address skip state creation entirely.
-        if addr_int in self._exit_continuation_addrs:
-            if _DBG:
-                l.debug(f"Fast path: exit continuation at 0x{addr:x} — deadending")
-            self._rust_mgr.deadend_pending_callback()
-            self._current_callback_state_id = None
-            _proc_name = name or proc.__class__.__name__
-            if _proc_name not in self._procedure_times:
-                self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
-            self._procedure_times[_proc_name]['count'] += 1
+        # Fast paths for procedures that always deadend (NO_RET terminals,
+        # cached exit-only continuations) — skip state creation entirely.
+        if self._try_simproc_deadend_fast_path(proc, name, addr, addr_int):
             self._perf_stats['callback_simprocedure_count'] += 1
             self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
             return
@@ -437,38 +394,10 @@ class RustCallbackDispatchMixin:
             return
         self._perf_stats['callback_simprocedure_state_create_ns'] += time.perf_counter_ns() - _sp_state_create_start
 
-        # Save original state for extracting changes after SimProcedure execution.
-        # Full state.copy() is only needed when the SimProcedure writes memory,
-        # so changed_bytes() can detect modifications. For non-memory-writing
-        # extern SimProcedures (most common case for zero-length hooks like
-        # __libc_start_main, puts, malloc, etc.), a lightweight register
-        # snapshot is sufficient — we only need to detect register changes.
-        is_user_hook = (proc.__class__.__name__ == 'UserHook')
-        needs_full_copy = is_user_hook or name in self._MEMORY_WRITING_PROCS
+        # Snapshot original state (full copy / register snapshot / no copy)
+        # for change extraction after the SimProcedure runs.
         _sp_copy_start = time.perf_counter_ns()
-        if needs_full_copy:
-            orig_state = state.copy()
-        elif is_zero_length_hook:
-            # Use bundle register values directly as snapshot instead of reading
-            # them back from state. _create_state_for_callback just stored these
-            # values, so _snapshot_registers would read back the same thing.
-            bundle_regs = getattr(self, '_last_bundle_registers', None)
-            if bundle_regs is not None:
-                reg_map = self._get_register_offset_map(self._project.arch)
-                orig_state = {}
-                for reg_name, val in bundle_regs.items():
-                    offset_size = reg_map.get(reg_name)
-                    if offset_size is not None:
-                        offset, size = offset_size
-                        if val is not None:
-                            orig_state[reg_name] = (False, val, offset, size)
-                        else:
-                            orig_state[reg_name] = (True, None, offset, size)
-                self._last_bundle_registers = None
-            else:
-                orig_state = self._snapshot_registers(state)
-        else:
-            orig_state = state
+        orig_state = self._snapshot_orig_state(state, proc, name, is_zero_length_hook)
         self._perf_stats['callback_simprocedure_state_copy_ns'] += time.perf_counter_ns() - _sp_copy_start
 
         # Save original constraint COUNT before hook execution.
@@ -497,13 +426,11 @@ class RustCallbackDispatchMixin:
 
             # Execute the procedure with memory tracking
             with memory_tracker:
-                proc_instance = proc
                 if hasattr(proc, 'run'):
                     proc.execute(state, successors)
                 else:
                     # It's a class, instantiate it
-                    proc_instance = proc()
-                    proc_instance.execute(state, successors)
+                    proc().execute(state, successors)
             _sp_exec_elapsed = time.perf_counter_ns() - _sp_execute_start
             self._perf_stats['callback_simprocedure_execute_ns'] += _sp_exec_elapsed
             # Per-procedure timing
@@ -516,255 +443,36 @@ class RustCallbackDispatchMixin:
             # Get tracked memory writes from callback execution
             tracked_writes = memory_tracker.get_writes()
             tracked_symbolic_writes = memory_tracker.get_symbolic_writes()
-            if tracked_writes:
-                if _DBG:
+            if _DBG:
+                if tracked_writes:
                     l.debug(f"Tracked {len(tracked_writes)} memory writes during callback")
-            if tracked_symbolic_writes:
-                if _DBG:
+                if tracked_symbolic_writes:
                     l.debug(f"Tracked {len(tracked_symbolic_writes)} symbolic memory writes during callback")
 
             # Handle successors - this includes sync back to Rust
             _sp_sync_start = time.perf_counter_ns()
             all_succs = successors.all_successors
 
-            # Capture stdin BVS variables from SimProcedure callbacks.
-            # When fgets/read/etc. execute, they add packets to posix.stdin.content.
-            # Track these so found states forked purely in Rust can restore stdin.
-            for succ in all_succs:
-                try:
-                    posix = getattr(succ, 'posix', None)
-                    if posix is None:
-                        continue
-                    stdin = getattr(posix, 'stdin', None)
-                    if stdin is None or not hasattr(stdin, 'content'):
-                        continue
-                    if stdin.content and len(stdin.content) > len(self._stdin_content):
-                        self._stdin_content = list(stdin.content)
-                        if _DBG:
-                            l.debug(f"Captured {len(stdin.content)} stdin packets from {name}")
-                    break  # Only need one successor — they all share stdin
-                except Exception:
-                    pass
-
-            # Capture procedure_data from successors that use self.call().
-            # When a SimProcedure uses self.call() to invoke another function,
-            # it stores arguments and continuation info in procedure_data.
-            # We capture this here so we can restore it when the continuation runs.
-            for succ in all_succs:
-                try:
-                    cs = succ.callstack
-                    top = cs.top if cs else None
-                    if top is None:
-                        continue
-
-                    # When jumpkind is Ijk_Call, add_successor pushes a NEW callstack frame.
-                    # The procedure_data is on the PREVIOUS frame (the caller's frame).
-                    # Check both top and top.next for procedure_data.
-                    frames_to_check = [top]
-                    if hasattr(top, 'next') and top.next is not None:
-                        frames_to_check.append(top.next)
-
-                    for frame in frames_to_check:
-                        pdata = getattr(frame, 'procedure_data', None)
-                        if pdata is not None and len(pdata) >= 5:
-                            cont_addr = pdata[4]  # ideal_addr is continuation address
-                            # Convert to int for consistent key type
-                            if hasattr(cont_addr, 'concrete'):
-                                cont_addr_int = int(cont_addr)
-                            elif isinstance(cont_addr, int):
-                                cont_addr_int = cont_addr
-                            else:
-                                continue
-                            if cont_addr_int != addr:
-                                self._pending_procedure_data[cont_addr_int] = pdata
-                                if _DBG:
-                                    l.debug(f"Stored procedure_data for continuation at 0x{cont_addr_int:x}")
-
-                                # C1 Fix: Register continuation hook with Rust IMMEDIATELY
-                                # This prevents "Cannot execute external address" errors
-                                # when Rust tries to execute the continuation before the
-                                # normal hook sync happens via _sync_hooks_before_step()
-                                if cont_addr_int not in self._registered_hooks:
-                                    cont_proc = self._project._sim_procedures.get(cont_addr_int)
-                                    if cont_proc:
-                                        cont_name = cont_proc.__class__.__name__ if hasattr(cont_proc, '__class__') else str(cont_proc)
-                                        cont_num_args = getattr(cont_proc, 'num_args', 0) or 0
-                                        cont_no_return = getattr(cont_proc, 'NO_RET', False)
-                                        self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])
-                                        self._registered_hooks.add(cont_addr_int)
-                                        if _DBG:
-                                            l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}: {cont_name}")
-                except Exception as e:
-                    if _DBG:
-                        l.debug(f"Could not capture procedure_data: {e}")
+            self._capture_stdin_from_successors(all_succs, name)
+            self._capture_continuation_data(all_succs, addr)
 
             if all_succs:
-                # Check for no-return procedures (exit, abort, etc.)
-                # Only deadend if the procedure has NO continuations
-                # (__libc_start_main has NO_RET but uses self.call() for continuations)
-                proc_no_ret = getattr(proc, 'NO_RET', False) if proc else False
-                # Only deadend for explicit termination procedures.
-                # Exclude internal angr procedures that have NO_RET for other reasons.
-                no_ret_names = {'exit', '_exit', 'abort', '__stack_chk_fail'}
-                if proc_no_ret and name in no_ret_names:
-                    # Deadend the state by resuming at address 0
-                    if _DBG:
-                        l.debug(f"No-return procedure {name} with successors — deadending")
-                    self._rust_mgr.deadend_pending_callback()
-                    self._set_callback_state(None)
-                    self._current_callback_state_id = None
-                    return
-
-                # Detect exit-only continuations: if ALL successors have Ijk_Exit
-                # jumpkind AND the procedure declares NO_RET, this address always
-                # results in deadend (e.g., __libc_start_main's after_main
-                # continuation). Cache this for fast-path on future callbacks.
-                #
-                # The NO_RET requirement prevents incorrectly caching state-dependent
-                # procedures: a procedure with NO_RET=False might happen to all-exit
-                # for one state but produce normal returns for others. Caching by
-                # address alone would then fast-deadend states that should not exit.
-                _all_exit = all(
-                    getattr(s.history, 'jumpkind', None) == 'Ijk_Exit'
-                    for s in all_succs
+                handled_early = self._handle_callback_with_successors(
+                    all_succs, proc, name, addr, addr_int, event,
+                    state, orig_state, is_zero_length_hook,
+                    tracked_writes, tracked_symbolic_writes,
+                    orig_constraints, orig_constraint_count,
+                    _sp_total_start,
                 )
-                if _all_exit and proc_no_ret and addr_int is not None:
-                    if _DBG:
-                        l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
-                    self._exit_continuation_addrs.add(addr_int)
-                    self._rust_mgr.deadend_pending_callback()
-                    self._set_callback_state(None)
-                    self._current_callback_state_id = None
-                    self._perf_stats['callback_simprocedure_count'] += 1
-                    self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+                if handled_early:
                     return
-
-                # First successor continues in Rust
-                first_succ = all_succs[0]
-
-                # When a SimProcedure uses self.call() (Ijk_Call jumpkind),
-                # the continuation address is in the callstack but NOT on the
-                # stack memory. Push it so the Rust engine's `ret` instruction
-                # can find it when the called function returns.
-                if first_succ.history.jumpkind == 'Ijk_Call':
-                    try:
-                        # Get continuation address from the successor's callstack.
-                        # When self.call() is used, procedure_data is stored on the
-                        # caller's frame (top.next after Ijk_Call pushes a new frame).
-                        cont_addr = None
-                        try:
-                            cs = first_succ.callstack
-                            for frame in [cs.top, getattr(cs.top, 'next', None)]:
-                                if frame is None:
-                                    continue
-                                pdata = getattr(frame, 'procedure_data', None)
-                                if pdata is not None and len(pdata) >= 5:
-                                    ca = pdata[4]  # ideal_addr = continuation address
-                                    ca_int = int(ca) if hasattr(ca, 'concrete') else (ca if isinstance(ca, int) else None)
-                                    if ca_int is not None and ca_int != addr:
-                                        cont_addr = ca_int
-                                        break
-                        except Exception:
-                            pass
-
-                        # Fallback: search _pending_procedure_data if callstack didn't have it
-                        if cont_addr is None:
-                            for cont_a in self._pending_procedure_data:
-                                if cont_a != addr:
-                                    cont_addr = cont_a
-                                    break
-
-                        if cont_addr is not None:
-                            sp = first_succ.solver.eval(first_succ.regs._sp)
-                            ptr_size = first_succ.arch.bytes
-                            # Push continuation address: decrement SP and store
-                            new_sp = sp - ptr_size
-                            first_succ.regs._sp = new_sp
-                            first_succ.memory.store(new_sp,
-                                claripy.BVV(cont_addr, ptr_size * 8),
-                                endness='Iend_LE')
-                            if _DBG:
-                                l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
-                    except Exception as e:
-                        if _DBG:
-                            l.debug(f"Could not push continuation addr: {e}")
-
-                # For zero-length hooks, if successor has same address as hook,
-                # the hook just modifies state and we should continue execution
-                # at the same address WITHOUT re-triggering the hook
-                #
-                # Note: Check symbolic IP before accessing .addr to prevent
-                # SimValueError when IP has multiple possible values
-                succ_ip_symbolic = first_succ.regs._ip.symbolic
-                succ_addr_matches = (not succ_ip_symbolic and first_succ.addr == addr)
-                if is_zero_length_hook and succ_addr_matches:
-                    self._resume_with_state(first_succ, orig_state, event, skip_hook_addr=addr,
-                                           tracked_writes=tracked_writes,
-                                           tracked_symbolic_writes=tracked_symbolic_writes,
-                                           orig_constraints=orig_constraints,
-                                           orig_constraint_count=orig_constraint_count)
-                elif succ_ip_symbolic:
-                    self._resume_with_state(first_succ, orig_state, event,
-                                           tracked_writes=tracked_writes,
-                                           tracked_symbolic_writes=tracked_symbolic_writes,
-                                           orig_constraints=orig_constraints,
-                                           orig_constraint_count=orig_constraint_count)
-                else:
-                    self._resume_with_state(first_succ, orig_state, event,
-                                           tracked_writes=tracked_writes,
-                                           tracked_symbolic_writes=tracked_symbolic_writes,
-                                           orig_constraints=orig_constraints,
-                                           orig_constraint_count=orig_constraint_count)
-
-                # Additional successors are added as new active states
-                for succ in all_succs[1:]:
-                    self._add_forked_state(succ, event)
-
             else:
-                # No successors — check if this is a known terminal procedure.
-                # Only deadend for specific terminal names (not all NO_RET),
-                # because UserHook also has NO_RET=True but should continue
-                # execution at the same address for zero-length hooks.
-                # CallReturn is the terminal hook used by factory.callable().
-                no_ret_terminal = name in ('exit', '_exit', 'abort', '__stack_chk_fail', 'CallReturn')
-                if no_ret_terminal:
-                    if _DBG:
-                        l.debug(f"Terminal procedure {name} — deadending state at 0x{addr:x}")
-                    if is_zero_length_hook:
-                        # For zero-length terminal hooks (e.g., CallReturn at callable's
-                        # return address), skip the hook and resume at addr. The Rust
-                        # engine can't lift code there, so it deadends with PC=addr.
-                        # This preserves the PC for code that checks state.addr.
-                        try:
-                            self._rust_mgr.set_skip_hook_addr(addr)
-                        except Exception:
-                            pass
-                        self._rust_mgr.resume_after_simprocedure(addr, None, None)
-                    else:
-                        self._rust_mgr.deadend_pending_callback()
-                elif is_zero_length_hook:
-                    # Tell Rust to skip the hook and execute from addr.
-                    # Pass original constraints for constraint sync.
-                    # Pass tracked writes for memory sync.
-                    self._resume_with_skip_hook(addr, state, orig_state, event, orig_constraints,
-                                               tracked_writes=tracked_writes,
-                                               tracked_symbolic_writes=tracked_symbolic_writes,
-                                               orig_constraint_count=orig_constraint_count)
-                else:
-                    # Non-zero-length, non-terminal: check NO_RET as fallback
-                    proc_no_ret = getattr(proc, 'NO_RET', False)
-                    if proc_no_ret:
-                        if _DBG:
-                            l.debug(f"No-return procedure {name} — deadending state")
-                        self._rust_mgr.deadend_pending_callback()
-                    else:
-                        ret_addr = event.callback_return_addr or (addr + 1)
-                        for sym_addr, ast in (tracked_symbolic_writes or []):
-                            try:
-                                self._rust_mgr.import_symbolic_memory(sym_addr, ast)
-                            except Exception:
-                                pass
-                        self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
+                self._handle_callback_no_successors(
+                    proc, name, addr, event, state, orig_state,
+                    is_zero_length_hook,
+                    tracked_writes, tracked_symbolic_writes,
+                    orig_constraints, orig_constraint_count,
+                )
 
         except TypeError as e:
             # Continuation procedure missing local_vars (e.g., after_main without args).
@@ -808,6 +516,345 @@ class RustCallbackDispatchMixin:
         self._perf_stats['callback_simprocedure_sync_back_ns'] += time.perf_counter_ns() - _sp_sync_start
         self._perf_stats['callback_simprocedure_count'] += 1
         self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+
+    def _find_simprocedure(self, addr: int, name: Optional[str]):
+        """Locate a SimProcedure by address, then by class name as fallback.
+
+        PLT addresses can drift between Python and Rust; the name fallback
+        recovers from that case. Returns None on not-found or invalid type
+        (caller is expected to log a warning and resume past addr).
+        """
+        proc = self._project._sim_procedures.get(addr)
+        if proc is None and name:
+            for proc_addr, candidate in self._project._sim_procedures.items():
+                proc_name = candidate.__class__.__name__ if hasattr(candidate, '__class__') else str(candidate)
+                if proc_name == name:
+                    if _DBG:
+                        l.debug(f"Found SimProcedure {name} at 0x{proc_addr:x} (callback was at 0x{addr:x})")
+                    proc = candidate
+                    break
+        if proc is None:
+            l.warning(f"SimProcedure not found at 0x{addr:x} (name={name})")
+            return None
+        if isinstance(proc, (list, tuple)):
+            l.error(f"Invalid SimProcedure at 0x{addr:x}: got {type(proc).__name__}, expected callable")
+            return None
+        return proc
+
+    def _try_simproc_deadend_fast_path(self, proc, name: Optional[str], addr: int, addr_int: Optional[int]) -> bool:
+        """Skip state creation for procedures that always deadend.
+
+        Two cases:
+        - NO_RET terminal procedures (exit, abort, etc.) — known statically.
+        - Exit-continuation cache hits — observed dynamically when ALL
+          successors had Ijk_Exit on a NO_RET procedure (see
+          invariant-exit-continuation-cache memory).
+
+        Returns True if the callback was handled (caller should return).
+        """
+        proc_no_ret = getattr(proc, 'NO_RET', False)
+        is_terminal = proc_no_ret and name in self._SIMPROC_NO_RET_TERMINAL
+        is_cached_exit = addr_int in self._exit_continuation_addrs
+        if not (is_terminal or is_cached_exit):
+            return False
+        if _DBG:
+            reason = "no-return procedure" if is_terminal else "exit continuation"
+            l.debug(f"Fast path: {reason} {name} at 0x{addr:x} — deadending")
+        self._rust_mgr.deadend_pending_callback()
+        self._current_callback_state_id = None
+        _proc_name = name or proc.__class__.__name__
+        if _proc_name not in self._procedure_times:
+            self._procedure_times[_proc_name] = {'count': 0, 'execute_ns': 0}
+        self._procedure_times[_proc_name]['count'] += 1
+        return True
+
+    def _snapshot_orig_state(self, state, proc, name: Optional[str], is_zero_length_hook: bool):
+        """Snapshot the pre-callback state for later change extraction.
+
+        Returns one of three things:
+        - state.copy() for memory-writing procs and UserHooks (need full memory diff)
+        - register snapshot dict for non-memory-writing zero-length hooks
+          (built from bundle registers if available, else read from state)
+        - the state itself for the remaining case (no copy needed; the caller
+          will diff registers/memory directly against the post-execution state)
+        """
+        is_user_hook = (proc.__class__.__name__ == 'UserHook')
+        needs_full_copy = is_user_hook or name in self._MEMORY_WRITING_PROCS
+        if needs_full_copy:
+            return state.copy()
+        if is_zero_length_hook:
+            bundle_regs = getattr(self, '_last_bundle_registers', None)
+            if bundle_regs is not None:
+                snapshot = self._snapshot_registers_from_bundle(bundle_regs, self._project.arch)
+                self._last_bundle_registers = None
+                return snapshot
+            return self._snapshot_registers(state)
+        return state
+
+    def _capture_stdin_from_successors(self, all_succs, name: Optional[str]) -> None:
+        """Track stdin packets added by SimProcedures (fgets/read/etc.).
+
+        Found states forked purely in Rust later use this to restore stdin
+        when extracting concrete inputs.
+        """
+        for succ in all_succs:
+            try:
+                posix = getattr(succ, 'posix', None)
+                if posix is None:
+                    continue
+                stdin = getattr(posix, 'stdin', None)
+                if stdin is None or not hasattr(stdin, 'content'):
+                    continue
+                if stdin.content and len(stdin.content) > len(self._stdin_content):
+                    self._stdin_content = list(stdin.content)
+                    if _DBG:
+                        l.debug(f"Captured {len(stdin.content)} stdin packets from {name}")
+                # All successors share stdin — only need one
+                break
+            except Exception:
+                pass
+
+    def _capture_continuation_data(self, all_succs, addr: int) -> None:
+        """Stash procedure_data and pre-register continuation hooks.
+
+        When a SimProcedure uses self.call() to invoke another function, the
+        continuation address and saved locals are stored in callstack frame
+        procedure_data. We stash that here so the continuation callback can
+        restore it, and immediately register the hook with Rust to avoid
+        "Cannot execute external address" errors.
+        """
+        for succ in all_succs:
+            try:
+                cs = succ.callstack
+                top = cs.top if cs else None
+                if top is None:
+                    continue
+
+                # When jumpkind is Ijk_Call, add_successor pushes a NEW callstack frame.
+                # The procedure_data is on the PREVIOUS frame (the caller's frame).
+                # Check both top and top.next for procedure_data.
+                frames_to_check = [top]
+                if hasattr(top, 'next') and top.next is not None:
+                    frames_to_check.append(top.next)
+
+                for frame in frames_to_check:
+                    pdata = getattr(frame, 'procedure_data', None)
+                    if pdata is None or len(pdata) < 5:
+                        continue
+                    cont_addr = pdata[4]  # ideal_addr is continuation address
+                    if hasattr(cont_addr, 'concrete'):
+                        cont_addr_int = int(cont_addr)
+                    elif isinstance(cont_addr, int):
+                        cont_addr_int = cont_addr
+                    else:
+                        continue
+                    if cont_addr_int == addr:
+                        continue
+                    self._pending_procedure_data[cont_addr_int] = pdata
+                    if _DBG:
+                        l.debug(f"Stored procedure_data for continuation at 0x{cont_addr_int:x}")
+
+                    # C1 Fix: Register continuation hook with Rust IMMEDIATELY
+                    # so Rust doesn't error trying to execute the continuation
+                    # before the next _sync_hooks_before_step() pass.
+                    if cont_addr_int in self._registered_hooks:
+                        continue
+                    cont_proc = self._project._sim_procedures.get(cont_addr_int)
+                    if not cont_proc:
+                        continue
+                    cont_name = cont_proc.__class__.__name__ if hasattr(cont_proc, '__class__') else str(cont_proc)
+                    cont_num_args = getattr(cont_proc, 'num_args', 0) or 0
+                    cont_no_return = getattr(cont_proc, 'NO_RET', False)
+                    self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])
+                    self._registered_hooks.add(cont_addr_int)
+                    if _DBG:
+                        l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}: {cont_name}")
+            except Exception as e:
+                if _DBG:
+                    l.debug(f"Could not capture procedure_data: {e}")
+
+    def _handle_callback_with_successors(
+        self, all_succs, proc, name: Optional[str], addr: int,
+        addr_int: Optional[int], event: "_ExplorationEvent",
+        state, orig_state, is_zero_length_hook: bool,
+        tracked_writes, tracked_symbolic_writes,
+        orig_constraints, orig_constraint_count,
+        _sp_total_start: int,
+    ) -> bool:
+        """Handle the success path when the SimProcedure produced successors.
+
+        Returns True if the caller should return immediately (deadend was
+        signalled and counters were finalized); False if the caller should
+        continue with the normal sync_back timing/cleanup.
+        """
+        proc_no_ret = getattr(proc, 'NO_RET', False) if proc else False
+
+        # NO_RET termination procedure with successors — deadend.
+        # __libc_start_main has NO_RET but uses self.call() for continuations,
+        # so we restrict this to explicit termination names.
+        if proc_no_ret and name in self._SIMPROC_NO_RET_TERMINAL:
+            if _DBG:
+                l.debug(f"No-return procedure {name} with successors — deadending")
+            self._rust_mgr.deadend_pending_callback()
+            self._set_callback_state(None)
+            self._current_callback_state_id = None
+            return True
+
+        # Detect exit-only continuations: if ALL successors have Ijk_Exit
+        # AND the procedure declares NO_RET, this address always deadends
+        # (e.g., __libc_start_main's after_main continuation). Cache so
+        # future callbacks at this address skip state creation.
+        # NO_RET requirement prevents wrong-cache: a NO_RET=False procedure
+        # might happen to all-exit for one state but normal-return for others.
+        if proc_no_ret and addr_int is not None:
+            _all_exit = all(
+                getattr(s.history, 'jumpkind', None) == 'Ijk_Exit'
+                for s in all_succs
+            )
+            if _all_exit:
+                if _DBG:
+                    l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
+                self._exit_continuation_addrs.add(addr_int)
+                self._rust_mgr.deadend_pending_callback()
+                self._set_callback_state(None)
+                self._current_callback_state_id = None
+                self._perf_stats['callback_simprocedure_count'] += 1
+                self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+                return True
+
+        # First successor continues in Rust
+        first_succ = all_succs[0]
+
+        # When a SimProcedure uses self.call() (Ijk_Call), the continuation
+        # address is in the callstack but NOT on the stack memory. Push it
+        # so the Rust engine's `ret` instruction can find it.
+        if first_succ.history.jumpkind == 'Ijk_Call':
+            self._push_continuation_address(first_succ, addr)
+
+        # For zero-length hooks where the successor stays at the same
+        # address, the hook just modified state — continue at the same
+        # address WITHOUT re-triggering the hook.
+        # Check symbolic IP before .addr to prevent SimValueError.
+        succ_ip_symbolic = first_succ.regs._ip.symbolic
+        succ_addr_matches = (not succ_ip_symbolic and first_succ.addr == addr)
+        skip_hook_addr = addr if (is_zero_length_hook and succ_addr_matches) else None
+        self._resume_with_state(
+            first_succ, orig_state, event,
+            skip_hook_addr=skip_hook_addr,
+            tracked_writes=tracked_writes,
+            tracked_symbolic_writes=tracked_symbolic_writes,
+            orig_constraints=orig_constraints,
+            orig_constraint_count=orig_constraint_count,
+        )
+
+        # Additional successors are added as new active states
+        for succ in all_succs[1:]:
+            self._add_forked_state(succ, event)
+        return False
+
+    def _push_continuation_address(self, first_succ, callback_addr: int) -> None:
+        """Push the SimProcedure self.call() continuation address onto the stack.
+
+        Looks up the continuation in the successor's callstack (top, then
+        top.next), falling back to _pending_procedure_data. Failures are
+        logged at debug level — Rust will still try to ret to whatever the
+        stack already holds.
+        """
+        try:
+            cont_addr = None
+            try:
+                cs = first_succ.callstack
+                for frame in [cs.top, getattr(cs.top, 'next', None)]:
+                    if frame is None:
+                        continue
+                    pdata = getattr(frame, 'procedure_data', None)
+                    if pdata is not None and len(pdata) >= 5:
+                        ca = pdata[4]
+                        ca_int = int(ca) if hasattr(ca, 'concrete') else (ca if isinstance(ca, int) else None)
+                        if ca_int is not None and ca_int != callback_addr:
+                            cont_addr = ca_int
+                            break
+            except Exception:
+                pass
+
+            # Fallback: search _pending_procedure_data if callstack didn't have it
+            if cont_addr is None:
+                for cont_a in self._pending_procedure_data:
+                    if cont_a != callback_addr:
+                        cont_addr = cont_a
+                        break
+
+            if cont_addr is None:
+                return
+            sp = first_succ.solver.eval(first_succ.regs._sp)
+            ptr_size = first_succ.arch.bytes
+            new_sp = sp - ptr_size
+            first_succ.regs._sp = new_sp
+            first_succ.memory.store(new_sp,
+                claripy.BVV(cont_addr, ptr_size * 8),
+                endness='Iend_LE')
+            if _DBG:
+                l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
+        except Exception as e:
+            if _DBG:
+                l.debug(f"Could not push continuation addr: {e}")
+
+    def _handle_callback_no_successors(
+        self, proc, name: Optional[str], addr: int,
+        event: "_ExplorationEvent", state, orig_state,
+        is_zero_length_hook: bool,
+        tracked_writes, tracked_symbolic_writes,
+        orig_constraints, orig_constraint_count,
+    ) -> None:
+        """Handle the path where a SimProcedure produced no successors.
+
+        Three sub-cases:
+        - Terminal procedures (exit/abort/CallReturn) → deadend or skip-hook resume.
+        - Zero-length non-terminal hooks → resume past the hook with synced changes.
+        - Other procedures → deadend (NO_RET) or resume at return address.
+        """
+        # CallReturn is the terminal hook used by factory.callable().
+        no_ret_terminal = name in ('exit', '_exit', 'abort', '__stack_chk_fail', 'CallReturn')
+        if no_ret_terminal:
+            if _DBG:
+                l.debug(f"Terminal procedure {name} — deadending state at 0x{addr:x}")
+            if is_zero_length_hook:
+                # For zero-length terminal hooks (e.g., CallReturn at callable's
+                # return address), skip the hook and resume at addr. The Rust
+                # engine can't lift code there, so it deadends with PC=addr,
+                # preserving the PC for code that checks state.addr.
+                try:
+                    self._rust_mgr.set_skip_hook_addr(addr)
+                except Exception:
+                    pass
+                self._rust_mgr.resume_after_simprocedure(addr, None, None)
+            else:
+                self._rust_mgr.deadend_pending_callback()
+            return
+
+        if is_zero_length_hook:
+            self._resume_with_skip_hook(
+                addr, state, orig_state, event, orig_constraints,
+                tracked_writes=tracked_writes,
+                tracked_symbolic_writes=tracked_symbolic_writes,
+                orig_constraint_count=orig_constraint_count,
+            )
+            return
+
+        # Non-zero-length, non-terminal: check NO_RET as fallback
+        if getattr(proc, 'NO_RET', False):
+            if _DBG:
+                l.debug(f"No-return procedure {name} — deadending state")
+            self._rust_mgr.deadend_pending_callback()
+            return
+
+        ret_addr = event.callback_return_addr or (addr + 1)
+        for sym_addr, ast in (tracked_symbolic_writes or []):
+            try:
+                self._rust_mgr.import_symbolic_memory(sym_addr, ast)
+            except Exception:
+                pass
+        self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
 
     def _resume_with_state(
         self,
