@@ -2139,15 +2139,14 @@ impl RustSimState {
                 .map(|(&addr, &size)| (addr, size))
                 .collect(),
             heap_freed: self.heap_metadata.freed.clone(),
-            open_fds: self.fs.all_fds().iter().map(|&fd| {
-                let info = self.fs.fd_info(fd).unwrap();
-                (fd, info.0.to_string(), info.1, info.2, info.3, info.4)
+            open_fds: self.fs.all_fds().iter().filter_map(|&fd| {
+                let info = self.fs.fd_info(fd)?;
+                Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
             }).collect(),
             inspection_counts: self.inspection.event_counts().iter().enumerate()
                 .filter(|&(_, &count)| count > 0)
-                .map(|(i, &count)| {
-                    let event = InspectEvent::from_u8(i as u8).unwrap();
-                    (event.name().to_string(), count)
+                .filter_map(|(i, &count)| {
+                    InspectEvent::from_u8(i as u8).map(|e| (e.name().to_string(), count))
                 })
                 .collect(),
             inspection_enabled: self.inspection.enabled_mask(),

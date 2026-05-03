@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use backtrace::Backtrace;
 use libafl::monitors::Monitor;
 use libafl_bolts::current_time;
 use pyo3::{exceptions::PyTypeError, prelude::*};
@@ -110,7 +111,16 @@ impl Monitor for CallbackMonitor {
             if let Some(self_callback) = &self.callback {
                 self_callback
                     .call1(py, (stats, event_msg.to_string(), sender_id.0))
-                    .unwrap(); // FIXME: Remove unwrap
+                    .map_err(|e: PyErr| {
+                        let traceback = e
+                            .traceback(py)
+                            .and_then(|tb| tb.format().ok())
+                            .unwrap_or_default();
+                        libafl::Error::Unknown(
+                            format!("Python error in monitor callback: {e}\n{traceback}"),
+                            Backtrace::new(),
+                        )
+                    })?;
             }
             Ok(())
         })

@@ -39,7 +39,11 @@ pub fn subset_construction(nfa: &EpsilonNFA) -> DFA {
 
     while let Some(current_nfa_set) = worklist.pop() {
         let current_vec = current_nfa_set.to_vec();
-        let current_dfa_state = *state_mapping.get(&current_vec).unwrap();
+        // Invariant: every NFA set pushed onto the worklist was first inserted
+        // into state_mapping (at lines 29 and 62), so this lookup always succeeds.
+        let current_dfa_state = *state_mapping
+            .get(&current_vec)
+            .expect("worklist entry missing from state_mapping");
 
         // For each symbol in the alphabet
         for &symbol in nfa.alphabet() {
