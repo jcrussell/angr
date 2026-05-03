@@ -386,6 +386,29 @@ impl SymbolicMemory {
         self.enforce_permissions
     }
 
+    /// Check that the page containing `addr` carries execute permission.
+    /// No-op if `enforce_permissions` is false. If the page is unmapped we
+    /// return Ok so the caller can fall back to its existing lift paths
+    /// (native libpyvex region / Python lift_block callback) — only mapped
+    /// pages without the X bit produce a `Permission` error here.
+    pub fn check_executable(&self, addr: u64) -> Result<(), MemoryError> {
+        if !self.enforce_permissions {
+            return Ok(());
+        }
+        let page_num = addr >> 12;
+        if let Some(page) = self.pages.get(&page_num) {
+            let actual = page.permissions();
+            if !actual.allows(Permission::X) {
+                return Err(MemoryError::Permission {
+                    addr,
+                    required: Permission::X,
+                    actual,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Check that every mapped page in `start_page..=end_page` allows the
     /// required access. No-op if `enforce_permissions` is false. Pages that
     /// are unmapped are skipped here and surfaced as `Unmapped` /
@@ -2612,5 +2635,50 @@ mod tests {
             .store_concrete(0x1000, RustBV::concrete(0xDEAD, 16))
             .unwrap_err();
         assert!(matches!(err, MemoryError::Permission { .. }));
+    }
+
+    #[test]
+    fn test_check_executable_rejects_non_x_page() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RW);
+        mem.set_enforce_permissions(true);
+        let err = mem.check_executable(0x1234).unwrap_err();
+        match err {
+            MemoryError::Permission { addr, required, actual } => {
+                assert_eq!(addr, 0x1234);
+                assert_eq!(required, Permission::X);
+                assert_eq!(actual, Permission::RW);
+            }
+            _ => panic!("expected Permission error, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_check_executable_allows_x_page() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x2000, 0x1000, Permission::RX);
+        mem.set_enforce_permissions(true);
+        mem.check_executable(0x2010).unwrap();
+        // RWX also allows execute.
+        mem.map(0x3000, 0x1000, Permission::RWX);
+        mem.check_executable(0x3000).unwrap();
+    }
+
+    #[test]
+    fn test_check_executable_skips_unmapped() {
+        // Unmapped pages must NOT error here — callers (native lift /
+        // Python lift_block) handle resolution. Only mapped-without-X
+        // is a violation.
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.set_enforce_permissions(true);
+        mem.check_executable(0xdeadbeef).unwrap();
+    }
+
+    #[test]
+    fn test_check_executable_noop_when_disabled() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RW);
+        // enforce_permissions defaults to false: even RW page must pass.
+        mem.check_executable(0x1000).unwrap();
     }
 }

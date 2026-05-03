@@ -267,6 +267,40 @@ class TestRustExplorationPython:
         assert strict_ids, "expected an active state to be added"
         assert strict_mgr._rust_mgr.state_enforce_permissions(strict_ids[0]) is True
 
+    def test_strict_page_access_blocks_nx_block_fetch(self):
+        """Fetching a basic block from a mapped non-executable page must
+        surface as a permission error (state lands in `errored`) when
+        enforce_permissions is on. Lift callback must NOT be invoked at
+        the NX address — the check fires before lifting."""
+        from angr.rustylib.vex_engine import PythonCallbacks
+
+        mgr = _RustExplorationManager("amd64")
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda addr, size: (bytes(size), False, None))
+        callbacks.set_memory_store(lambda addr, data: None)
+        lift_addrs = []
+        def lift(addr):
+            lift_addrs.append(addr)
+            return '{}'
+        callbacks.set_lift_block(lift)
+        mgr.set_callbacks(callbacks)
+
+        state = RustSimState("amd64")
+        state.set_enforce_permissions(True)
+        state.map_memory(0x1000, 0x1000, 6)  # RW, no X
+        state.pc = 0x1000
+        mgr.add_state("active", state)
+
+        mgr.run(10)
+
+        counts = mgr.stash_counts()
+        assert counts.get("errored", 0) == 1, (
+            f"expected the NX block fetch to error the state, got stashes={counts}"
+        )
+        assert 0x1000 not in lift_addrs, (
+            "permission check must fire before lift_block is dispatched"
+        )
+
     def test_basic_explore(self, fauxware_project):
         """Test basic exploration with find address."""
         from angr.exploration import RustExplorationManager

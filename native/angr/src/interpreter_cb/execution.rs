@@ -295,6 +295,15 @@ impl<'a> CallbackInterpreter<'a> {
         callbacks: &PythonCallbacks,
         addr: u64,
     ) -> Result<Arc<IRSB>, CbExecutionError> {
+        // Enforce execute permission before any cache hit / lift work so a
+        // page whose X bit was stripped after the IRSB was first cached
+        // still rejects on re-entry. No-op when enforce_permissions is off
+        // or the page is unmapped (existing lift paths handle that).
+        if let Some(ref mem) = self.rust_memory {
+            mem.check_executable(addr)
+                .map_err(|e| CbExecutionError::Memory(e.to_string()))?;
+        }
+
         // Check cache first - Arc clone is O(1)
         if let Some(irsb) = self.block_cache.get(&addr) {
             if self.profiling_enabled {
