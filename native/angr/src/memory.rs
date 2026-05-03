@@ -96,6 +96,16 @@ impl Permission {
         write: true,
         execute: true,
     };
+    pub const W: Permission = Permission {
+        read: false,
+        write: true,
+        execute: false,
+    };
+    pub const X: Permission = Permission {
+        read: false,
+        write: false,
+        execute: true,
+    };
 
     pub fn from_bits(bits: u8) -> Self {
         Permission {
@@ -324,6 +334,11 @@ pub struct SymbolicMemory {
     /// an imported value (turning Symbolic→Expression), the address should be
     /// excluded from export since Python already has the correct original value.
     imported_addrs: HashSet<u64>,
+    /// If true, enforce per-page R/W permissions on load and store. Mirrors
+    /// angr's STRICT_PAGE_ACCESS option. Default is false to keep existing
+    /// callers (which often map all memory as RWX or rely on Python perms)
+    /// working unchanged.
+    enforce_permissions: bool,
 }
 
 impl PendingWrite {
@@ -354,7 +369,49 @@ impl SymbolicMemory {
             pending_writes: Vec::new(),
             zero_fill_unconstrained: false,
             imported_addrs: HashSet::new(),
+            enforce_permissions: false,
         }
+    }
+
+    /// Enable or disable strict per-page permission enforcement on load/store.
+    ///
+    /// When enabled, `load*` requires R on every touched page and `store*`
+    /// requires W. A violation returns `MemoryError::Permission`. Default off.
+    pub fn set_enforce_permissions(&mut self, enabled: bool) {
+        self.enforce_permissions = enabled;
+    }
+
+    /// Whether strict permission enforcement is enabled.
+    pub fn enforce_permissions(&self) -> bool {
+        self.enforce_permissions
+    }
+
+    /// Check that every mapped page in `start_page..=end_page` allows the
+    /// required access. No-op if `enforce_permissions` is false. Pages that
+    /// are unmapped are skipped here and surfaced as `Unmapped` /
+    /// `UnmappedPageInRegion` by callers' existing checks.
+    fn check_perms_range(
+        &self,
+        start_page: u64,
+        end_page: u64,
+        required: Permission,
+    ) -> Result<(), MemoryError> {
+        if !self.enforce_permissions {
+            return Ok(());
+        }
+        for page_num in start_page..=end_page {
+            if let Some(page) = self.pages.get(&page_num) {
+                let actual = page.permissions();
+                if !actual.allows(required) {
+                    return Err(MemoryError::Permission {
+                        addr: page_num << 12,
+                        required,
+                        actual,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Set whether to fill unconstrained memory with zeros.
@@ -494,6 +551,8 @@ impl SymbolicMemory {
 
         let start_page = addr >> 12;
         let end_page = (addr + size as u64 - 1) >> 12;
+
+        self.check_perms_range(start_page, end_page, Permission::R)?;
 
         let mut bytes;
         let mut has_symbolic = false;
@@ -664,6 +723,8 @@ impl SymbolicMemory {
                 }
             }
         }
+
+        self.check_perms_range(start_page, end_page, Permission::W)?;
 
         // If symbolic, store in symbolic_objects
         if value.is_symbolic() {
@@ -1434,6 +1495,7 @@ impl SymbolicMemory {
             pending_writes: self.pending_writes.clone(),
             zero_fill_unconstrained: self.zero_fill_unconstrained,
             imported_addrs: self.imported_addrs.clone(),
+            enforce_permissions: self.enforce_permissions,
         }
     }
 
@@ -1958,6 +2020,8 @@ impl SymbolicMemory {
         let start_page = addr >> 12;
         let end_page = (addr + size as u64 - 1) >> 12;
 
+        self.check_perms_range(start_page, end_page, Permission::R)?;
+
         let mut bytes;
         let mut has_symbolic = false;
 
@@ -2131,7 +2195,8 @@ impl SymbolicMemory {
             }
         }
 
-        // All pages mapped, proceed with store
+        // Permission checks live in store_concrete; this wrapper only adds
+        // lazy-region detection for unmapped pages.
         self.store_concrete(addr, value)
     }
 
@@ -2454,5 +2519,98 @@ mod tests {
 
         let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
         assert_eq!(loaded.as_u64(), Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn test_permission_enforcement_disabled_by_default() {
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        // Read-only page; without enforcement, stores should still succeed.
+        mem.map(0x1000, 0x1000, Permission::R);
+        assert!(!mem.enforce_permissions());
+
+        mem.store_concrete(0x1000, RustBV::concrete(0xCAFE, 16)).unwrap();
+        let loaded = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+        assert_eq!(loaded.as_u64(), Some(0xCAFE));
+    }
+
+    #[test]
+    fn test_permission_enforcement_blocks_write_to_readonly() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::R);
+        mem.set_enforce_permissions(true);
+
+        let err = mem
+            .store_concrete(0x1000, RustBV::concrete(0xCAFE, 16))
+            .unwrap_err();
+        match err {
+            MemoryError::Permission { addr, required, actual } => {
+                assert_eq!(addr, 0x1000);
+                assert!(required.write);
+                assert!(!actual.write);
+                assert!(actual.read);
+            }
+            other => panic!("expected Permission error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_permission_enforcement_blocks_read_from_writeonly() {
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        // Write-only page (unusual but exercises the R check independently).
+        mem.map(0x1000, 0x1000, Permission::W);
+        mem.set_enforce_permissions(true);
+
+        let err = mem.load_concrete(0x1000, 2, &ctx).unwrap_err();
+        match err {
+            MemoryError::Permission { addr, required, actual } => {
+                assert_eq!(addr, 0x1000);
+                assert!(required.read);
+                assert!(!actual.read);
+            }
+            other => panic!("expected Permission error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_permission_enforcement_allows_rwx() {
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+        mem.set_enforce_permissions(true);
+
+        mem.store_concrete(0x1000, RustBV::concrete(0xBEEF, 16)).unwrap();
+        let loaded = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+        assert_eq!(loaded.as_u64(), Some(0xBEEF));
+    }
+
+    #[test]
+    fn test_permission_enforcement_cross_page_write() {
+        // First page RW, second page R. A 4-byte store straddling the
+        // boundary at 0x1ffe should fail because the second page is R-only.
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RW);
+        mem.map(0x2000, 0x1000, Permission::R);
+        mem.set_enforce_permissions(true);
+
+        let err = mem
+            .store_concrete(0x1ffe, RustBV::concrete(0x11223344, 32))
+            .unwrap_err();
+        assert!(matches!(err, MemoryError::Permission { .. }));
+    }
+
+    #[test]
+    fn test_permission_enforcement_propagates_through_fork() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::R);
+        mem.set_enforce_permissions(true);
+
+        let mut forked = mem.fork();
+        assert!(forked.enforce_permissions());
+        let err = forked
+            .store_concrete(0x1000, RustBV::concrete(0xDEAD, 16))
+            .unwrap_err();
+        assert!(matches!(err, MemoryError::Permission { .. }));
     }
 }

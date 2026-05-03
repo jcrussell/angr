@@ -1151,6 +1151,17 @@ impl RustSimState {
         self.memory.map(addr, size, permissions);
     }
 
+    /// Enable or disable strict memory permission enforcement.
+    /// Mirrors angr's STRICT_PAGE_ACCESS option.
+    pub fn set_enforce_permissions(&mut self, enabled: bool) {
+        self.memory.set_enforce_permissions(enabled);
+    }
+
+    /// Whether strict memory permission enforcement is enabled.
+    pub fn enforce_permissions(&self) -> bool {
+        self.memory.enforce_permissions()
+    }
+
     /// Map memory with initial data.
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
         self.memory.map_data(addr, data, permissions);
@@ -1757,6 +1768,19 @@ impl PyRustSimState {
         for (addr, data, permissions) in pages {
             self.inner.map_memory_data(addr, &data, Permission::from_bits(permissions));
         }
+    }
+
+    /// Enable or disable strict memory permission enforcement on load/store.
+    /// Mirrors angr's STRICT_PAGE_ACCESS option. Default off.
+    #[pyo3(name = "set_enforce_permissions")]
+    pub fn py_set_enforce_permissions(&mut self, enabled: bool) {
+        self.inner.set_enforce_permissions(enabled);
+    }
+
+    /// Whether strict memory permission enforcement is enabled.
+    #[pyo3(name = "enforce_permissions")]
+    pub fn py_enforce_permissions(&self) -> bool {
+        self.inner.enforce_permissions()
     }
 
     /// Load from memory.
