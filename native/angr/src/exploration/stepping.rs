@@ -1,4 +1,8 @@
 use super::*;
+use crate::arch::RegisterFile;
+use crate::interpreter_cb::BranchSnapshot;
+use crate::memory::SymbolicMemory;
+use crate::state::{CallStackEntry, HistoryEntry};
 
 /// Error during state stepping.
 pub(crate) enum StepError {
@@ -10,6 +14,25 @@ pub(crate) enum StepError {
     Error(RustSimState, String),
     /// Unconstrained state - too many symbolic jump targets.
     Unconstrained(RustSimState),
+}
+
+/// Output of one interpreter run, packaged for the post-execution phase.
+///
+/// Replaces a 12-element tuple destructure that became unreadable as fields
+/// were added. All fields are owned (taken from the interpreter before drop).
+struct InterpreterStepResult {
+    result: RunResult,
+    deferred_forks: Vec<DeferredFork>,
+    last_condition: Option<RustBV>,
+    stored_conditions: HashMap<u64, RustBV>,
+    fork_snapshots: HashMap<u64, BranchSnapshot>,
+    new_registers: RegisterFile,
+    new_pc: u64,
+    new_call_stack: Vec<CallStackEntry>,
+    new_detailed_history: Vec<HistoryEntry>,
+    recovered_memory: Option<SymbolicMemory>,
+    step_stats: ExecutionStats,
+    updated_block_cache: LruCache<u64, Arc<IRSB>>,
 }
 
 impl RustExplorationManager {
@@ -28,131 +51,15 @@ impl RustExplorationManager {
         let setup_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
         let initial_pc = state.pc();
 
-        // Use the state's solver context for proper constraint handling
-        let solver_rc = state.solver().clone();
-
-        // Scope for interpreter execution with borrowed solver
-        let (result, deferred_forks, last_condition, stored_conditions, mut fork_snapshots, new_registers, new_pc, new_call_stack, new_detailed_history, recovered_memory, step_stats, updated_block_cache) = {
-            let solver_ref = solver_rc.borrow();
-
-            // Create interpreter with the state's solver
-            let mut interp = CallbackInterpreter::with_config(
-                self.vex_arch,
-                &*solver_ref,
-                self.exec_config.clone(),
-            );
-
-            // Propagate lazy_solves to skip Z3 feasibility checks
-            interp.lazy_solves = self.lazy_solves;
-            interp.set_profiling(self.profiling_enabled);
-            // Propagate concretization strategy config
-            interp.set_concretizer(self.concretizer_config.clone());
-            // Propagate VEX optimization level settings
-            interp.vex_opt_level = self.vex_opt_level;
-            interp.vex_opt_level_overrides = self.vex_opt_level_overrides.clone();
-
-            // Copy state registers to interpreter (including symbolic values)
-            interp.registers = state.registers().fork();
-            interp.set_pc(initial_pc);
-            // Transfer call stack and detailed history to interpreter
-            interp.call_stack = state.call_stack().to_vec();
-            interp.detailed_history = state.detailed_history().to_vec();
-
-            // Set up hooks, skipping the one we just processed (for zero-length hooks)
-            for &addr in &self.hooks {
-                if Some(addr) != skip_addr {
-                    interp.add_hook(addr);
-                }
-            }
-
-            // Register SimProcedures, also skipping the one we just processed
-            for (addr, (name, num_args, no_return)) in &self.simprocedures {
-                if Some(*addr) != skip_addr {
-                    interp.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
-                }
-            }
-
-            // Add find/avoid addresses as hooks so the interpreter stops there
-            for &addr in &self.find_addrs {
-                interp.add_hook(addr);
-            }
-            for &addr in &self.avoid_addrs {
-                interp.add_hook(addr);
-            }
-
-            // Copy binary regions for code lifting (O(1) Arc clone per region)
-            for (base, data) in &self.binary_regions {
-                interp.add_concrete_memory_shared(*base, Arc::clone(data));
-            }
-
-            // Transfer state's SymbolicMemory into the interpreter.
-            // This makes Rust the source of truth for all memory during
-            // VEX execution. Loads/stores go to SymbolicMemory directly
-            // instead of calling back to Python.
-            interp.set_rust_memory(state.take_memory());
-
-            // Share the exploration-level block cache with the interpreter
-            // so lifted blocks persist across steps (avoids re-lifting).
-            // Swap exploration's populated cache into interp, stash interp's empty one.
-            let interp_empty_cache = interp.swap_block_cache(
-                std::mem::replace(&mut self.block_cache, LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")))
-            );
-            // interp now has the exploration's cache; self.block_cache is a temporary empty placeholder
-            let _ = interp_empty_cache; // drop the empty cache
-
-            // Record setup time before execution
-            if let Some(start) = setup_start {
-                interp.stats_mut().step_setup_time_ns += start.elapsed().as_nanos() as u64;
-            }
-
-            // Run until event.
-            // When callable predicates are active (find_needs_python), limit to
-            // 1 block so the run loop can check the predicate at each PC.
-            // Otherwise the interpreter would execute many blocks, skipping past
-            // the target address without the predicate ever seeing it.
-            let steps_limit = if self.find_needs_python || self.avoid_needs_python {
-                1
-            } else {
-                self.max_steps_per_run as u32
-            };
-            let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, steps_limit);
-
-            // Get last branch condition before dropping interpreter
-            let last_condition = interp.take_last_branch_condition();
-
-            // Get stored conditions for deferred fork handling
-            let stored_conditions = interp.take_stored_conditions();
-            let fork_snapshots = interp.take_fork_snapshots();
-
-            // Extract register state (including symbolic values)
-            let new_registers = interp.registers.fork();
-            let new_pc = interp.get_pc();
-            // Extract call stack and detailed history from interpreter
-            let new_call_stack = std::mem::take(&mut interp.call_stack);
-            let new_detailed_history = std::mem::take(&mut interp.detailed_history);
-
-            // Flush any remaining pending stores to rust_memory
-            interp.flush_stores_to_rust_memory();
-
-            // Recover memory from interpreter back to state
-            let recovered_memory = interp.take_rust_memory();
-
-            // Return shared block cache to exploration before interpreter is dropped
-            let updated_cache = interp.swap_block_cache(LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")));
-
-            // Take profiling stats before interpreter is dropped
-            let step_stats = interp.take_stats();
-
-            (result, deferred_forks, last_condition, stored_conditions, fork_snapshots, new_registers, new_pc, new_call_stack, new_detailed_history, recovered_memory, step_stats, updated_cache)
-        };
-        // solver_ref dropped here, solver_rc borrow released
+        // Run the VEX interpreter to its next event.
+        let step = self.run_interpreter_step(py, callbacks, &mut state, initial_pc, skip_addr, setup_start);
 
         // Restore the shared block cache (now populated with any newly-lifted blocks)
-        self.block_cache = updated_block_cache;
+        self.block_cache = step.updated_block_cache;
 
         // Accumulate profiling stats
         if self.profiling_enabled {
-            let mut stats = step_stats;
+            let mut stats = step.step_stats;
             stats.step_count = 1;
             self.accumulated_stats.merge(&stats);
         }
@@ -160,23 +67,28 @@ impl RustExplorationManager {
         // Restore memory from interpreter back to state FIRST.
         // This must happen before any PendingCallback creation
         // because the state's memory was taken by set_rust_memory().
-        if let Some(mem) = recovered_memory {
+        if let Some(mem) = step.recovered_memory {
             state.replace_memory(mem);
         }
 
         // Update state from interpreter results
         // Restore registers (including symbolic values) from interpreter
-        state.set_registers(new_registers);
-        state.set_pc(new_pc);
+        state.set_registers(step.new_registers);
+        state.set_pc(step.new_pc);
         // Restore call stack and detailed history from interpreter
-        state.set_call_stack(new_call_stack);
-        state.set_detailed_history(new_detailed_history);
+        state.set_call_stack(step.new_call_stack);
+        state.set_detailed_history(step.new_detailed_history);
 
         // Add to history
         state.add_to_history(state.pc());
 
+        let deferred_forks = step.deferred_forks;
+        let last_condition = step.last_condition;
+        let stored_conditions = step.stored_conditions;
+        let mut fork_snapshots = step.fork_snapshots;
+
         // Process result
-        match result {
+        match step.result {
             RunResult::MaxBlocks { pc } |
             RunResult::MaxDeferredForks { pc } |
             RunResult::BlockEnd { next_addr: pc, .. } => {
@@ -720,6 +632,140 @@ impl RustExplorationManager {
                     Ok(successors)
                 }
             }
+        }
+    }
+
+    /// Run the VEX interpreter for one step and recover all owned state from it.
+    ///
+    /// This wraps the borrow scope around the state's solver: a `CallbackInterpreter`
+    /// is constructed against the borrowed solver, run until its next event, then
+    /// fully drained (registers, memory, history, block cache, profiling stats)
+    /// before being dropped at scope end.
+    fn run_interpreter_step(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        state: &mut RustSimState,
+        initial_pc: u64,
+        skip_addr: Option<u64>,
+        setup_start: Option<std::time::Instant>,
+    ) -> InterpreterStepResult {
+        let solver_rc = state.solver().clone();
+        let solver_ref = solver_rc.borrow();
+
+        // Create interpreter with the state's solver
+        let mut interp = CallbackInterpreter::with_config(
+            self.vex_arch,
+            &*solver_ref,
+            self.exec_config.clone(),
+        );
+
+        // Propagate lazy_solves to skip Z3 feasibility checks
+        interp.lazy_solves = self.lazy_solves;
+        interp.set_profiling(self.profiling_enabled);
+        // Propagate concretization strategy config
+        interp.set_concretizer(self.concretizer_config.clone());
+        // Propagate VEX optimization level settings
+        interp.vex_opt_level = self.vex_opt_level;
+        interp.vex_opt_level_overrides = self.vex_opt_level_overrides.clone();
+
+        // Copy state registers to interpreter (including symbolic values)
+        interp.registers = state.registers().fork();
+        interp.set_pc(initial_pc);
+        // Transfer call stack and detailed history to interpreter
+        interp.call_stack = state.call_stack().to_vec();
+        interp.detailed_history = state.detailed_history().to_vec();
+
+        // Set up hooks, skipping the one we just processed (for zero-length hooks)
+        for &addr in &self.hooks {
+            if Some(addr) != skip_addr {
+                interp.add_hook(addr);
+            }
+        }
+
+        // Register SimProcedures, also skipping the one we just processed
+        for (addr, (name, num_args, no_return)) in &self.simprocedures {
+            if Some(*addr) != skip_addr {
+                interp.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
+            }
+        }
+
+        // Add find/avoid addresses as hooks so the interpreter stops there
+        for &addr in &self.find_addrs {
+            interp.add_hook(addr);
+        }
+        for &addr in &self.avoid_addrs {
+            interp.add_hook(addr);
+        }
+
+        // Copy binary regions for code lifting (O(1) Arc clone per region)
+        for (base, data) in &self.binary_regions {
+            interp.add_concrete_memory_shared(*base, Arc::clone(data));
+        }
+
+        // Transfer state's SymbolicMemory into the interpreter.
+        // This makes Rust the source of truth for all memory during
+        // VEX execution. Loads/stores go to SymbolicMemory directly
+        // instead of calling back to Python.
+        interp.set_rust_memory(state.take_memory());
+
+        // Share the exploration-level block cache with the interpreter
+        // so lifted blocks persist across steps (avoids re-lifting).
+        // Swap exploration's populated cache into interp, stash interp's empty one.
+        let interp_empty_cache = interp.swap_block_cache(
+            std::mem::replace(&mut self.block_cache, LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")))
+        );
+        // interp now has the exploration's cache; self.block_cache is a temporary empty placeholder
+        let _ = interp_empty_cache; // drop the empty cache
+
+        // Record setup time before execution
+        if let Some(start) = setup_start {
+            interp.stats_mut().step_setup_time_ns += start.elapsed().as_nanos() as u64;
+        }
+
+        // Run until event.
+        // When callable predicates are active (find_needs_python), limit to
+        // 1 block so the run loop can check the predicate at each PC.
+        // Otherwise the interpreter would execute many blocks, skipping past
+        // the target address without the predicate ever seeing it.
+        let steps_limit = if self.find_needs_python || self.avoid_needs_python {
+            1
+        } else {
+            self.max_steps_per_run as u32
+        };
+        let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, steps_limit);
+
+        // Drain interpreter state into owned values before drop.
+        let last_condition = interp.take_last_branch_condition();
+        let stored_conditions = interp.take_stored_conditions();
+        let fork_snapshots = interp.take_fork_snapshots();
+        let new_registers = interp.registers.fork();
+        let new_pc = interp.get_pc();
+        let new_call_stack = std::mem::take(&mut interp.call_stack);
+        let new_detailed_history = std::mem::take(&mut interp.detailed_history);
+
+        // Flush any remaining pending stores to rust_memory before recovery.
+        interp.flush_stores_to_rust_memory();
+        let recovered_memory = interp.take_rust_memory();
+
+        // Return shared block cache to exploration before interpreter is dropped
+        let updated_block_cache = interp.swap_block_cache(LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")));
+
+        let step_stats = interp.take_stats();
+
+        InterpreterStepResult {
+            result,
+            deferred_forks,
+            last_condition,
+            stored_conditions,
+            fork_snapshots,
+            new_registers,
+            new_pc,
+            new_call_stack,
+            new_detailed_history,
+            recovered_memory,
+            step_stats,
+            updated_block_cache,
         }
     }
 
