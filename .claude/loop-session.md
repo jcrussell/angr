@@ -1,36 +1,36 @@
-# Loop session notes (2026-05-02, twentieth session)
+# Loop session notes (2026-05-03, twenty-first session)
 
-## Task: angr-rsfv (CLOSED)
-[bench] Investigate or refresh 8 baselines that consistently fail by 18-71%
+## Task: angr-t7jv (in progress)
+[code-quality] Fix condition ID TODO in SymbolicBranch (interpreter.rs:209 — returns dummy 0)
+
+## Plan
+- The `condition: u64` field in `ExecutionResult::SymbolicBranch` (interpreter.rs:23) is dead code
+- It is set to 0 with a TODO at interpreter.rs:209
+- The two consumers (interpreter.rs:702 test, engine.rs:64) both destructure with `..` ignoring it
+- `RustVEXEngine` (engine.rs) is registered to PyO3 but no Python code uses it — superseded by
+  `interpreter_cb::CallbackInterpreter` for production. Active engine is the callback path
+  in `interpreter_cb/`, which has its own SymbolicBranch with proper `condition_id`
+- Fix: remove the unused `condition` field entirely from `ExecutionResult::SymbolicBranch`
+  (interpreter.rs only — interpreter_cb is unaffected)
+
+## Files modified
+- native/angr/src/interpreter.rs
+
+## Status
+- DONE. Commit 91b13c62b. Closed angr-t7jv.
 
 ## Outcome
-- Verified non-regression: checked out baseline-set commit (15395dd6b),
-  rebuilt .so, ran ais3_crackme — reproduced HEAD timings (0.83-0.84s),
-  not the recorded 0.498s baseline. fauxware (not in regression list) ran
-  at 0.37-0.38s on both HEAD and 15395dd6b vs baseline 0.356s — confirms
-  no system-wide perf change.
-- Refreshed all 12 FAST_SUITE baselines via `run_regression.py --update
-  --rust-only`. 12/12 pass with --check-counts; 208/208 pytest passes.
-- Commit: d200d4901
-
-## Key insight
-- The original 0.498s baseline came from an abnormally fast
-  --update --full pass; the same exact source code does not reproduce
-  it on subsequent runs. This is the same family of issue noted in
-  benchmark-update-variance memory.
-- Memory baselines also moved: most went up (ais3_crackme 237→364 MB,
-  unbreakable_0 249→426 MB, etc.), unmapped_analysis dropped 876→474
-  MB (GC leak fix 342df4a7f finally credited in baseline).
+- Removed `condition: u64` from `ExecutionResult::SymbolicBranch` in interpreter.rs
+- Removed corresponding `condition: 0,` set site (the TODO line at 209)
+- 208/208 pytest passing; 5/5 interpreter cargo unit tests passing
+- Cargo check clean
 
 ## Memories saved
-- `benchmark-staleness-verification`: how to confirm a regression is
-  stale-baseline vs real-regression by rebuilding at baseline commit
-- `benchmark-peak-memory-2026-05-02`: peak memory values updated in
-  d200d4901 (mostly upward), so future peak regression alerts have a
-  prior
+- `legacy-engine-unused`: interpreter.rs + engine.rs RustVEXEngine are dead code paths,
+  not imported by any Python code — interpreter_cb is the production path
 
 ## Other ready tasks
-- angr-3tek (P2): native read/write SimProcs blocked by stale-cache
+- angr-3tek (P2, blocked): native read/write SimProcs blocked by stale-cache
 - angr-w4os (P3): Python bridge cleanup
 - angr-2fs0 (P3): decompose _handle_simprocedure_callback
 - angr-1f8s (P3): refactor stepping.rs InterpreterStepResult struct
@@ -39,3 +39,4 @@
 - angr-3ijo (P3): bincode for VEX IRSB serialization
 - angr-bgv0 (P3): Z3 floating point theory
 - angr-awm3 (P3): CAS/LLSC statement handling
+- angr-v4db (P3): extract god-methods in Python bridge layer
