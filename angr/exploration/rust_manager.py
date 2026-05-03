@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
 
 import claripy
 
+from angr.exploration.rust_irsb_serializer import serialize_irsb
+
 if TYPE_CHECKING:
     import angr
 
@@ -1379,195 +1381,188 @@ class RustExplorationManager(
         the C++ init sequence (constructors, .init_array, etc.) is too complex for
         the Rust engine. Run it in Python first, then return the state at main.
         """
-        # Check if the state starts at a non-binary address (loader/SimProcedure)
         main_obj = self._project.loader.main_object
         addr = state.addr
+        cache_key = getattr(main_obj, 'binary', None) or ''
+        disk_key = self._compute_disk_init_key(state, cache_key)
 
-        # If state is at the entry point, run init to reach main.
         if addr == self._project.entry:
-            # Check in-process cache first — avoids ~180ms of Python simulation
-            cache_key = getattr(main_obj, 'binary', None) or ''
-            if cache_key and cache_key in RustExplorationManager._init_cache:
-                cached = RustExplorationManager._init_cache[cache_key]
-                l.info(f"Init cache hit for {cache_key}, copying state at 0x{cached.addr:x}")
-                new_state = cached.copy()
-                for c in state.solver.constraints:
-                    new_state.solver.add(c)
-                # Preserve user-set globals from the original state
-                if 'globals' in state.plugins:
-                    for k, v in state.globals.items():
-                        new_state.globals[k] = v
-                # Preserve LAZY_SOLVES option if set on the original state
-                try:
-                    from angr import sim_options as o
-                    if o.LAZY_SOLVES in state.options:
-                        new_state.options.add(o.LAZY_SOLVES)
-                except (ImportError, Exception):
-                    pass
-                return new_state
-            # Check persistent disk cache (survives across processes).
-            # Only use when state has no user symbolic data — blank_state
-            # from cache can't preserve symbolic arguments (e.g., argv BVS).
-            has_user_symbolic = self._state_has_user_symbolic(state)
-            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_user_symbolic else ''
-            if disk_key:
-                disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
-                if disk_state is not None:
-                    for c in state.solver.constraints:
-                        disk_state.solver.add(c)
-                    # Preserve user-set globals from the original state
-                    if 'globals' in state.plugins:
-                        for k, v in state.globals.items():
-                            disk_state.globals[k] = v
-                    try:
-                        from angr import sim_options as o
-                        if o.LAZY_SOLVES in state.options:
-                            disk_state.options.add(o.LAZY_SOLVES)
-                    except (ImportError, Exception):
-                        pass
-                    self._extract_continuation_data(disk_state)
-                    self._mem_cache = mem_cache  # For fast _sync_memory_to_rust
-                    return disk_state
+            cached = self._try_in_memory_init_cache(state, cache_key)
+            if cached is not None:
+                return cached
+            cached = self._try_disk_init_cache(state, disk_key)
+            if cached is not None:
+                return cached
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
-            # Only trigger for states outside ALL loaded binary objects
             obj = self._project.loader.find_object_containing(addr)
             if obj is not None and obj.binary is not None and not obj.binary.startswith('cle##'):
                 return state  # In a real binary (not entry), no init needed
-
-            # Also check if it's a known SimProcedure (LinuxLoader, etc.)
-            is_init_proc = addr in self._project._sim_procedures
-            if not is_init_proc:
-                return state  # Not a SimProcedure, don't pre-run
-
+            if addr not in self._project._sim_procedures:
+                return state  # Not a SimProcedure (e.g., LinuxLoader), don't pre-run
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
-            cache_key = getattr(main_obj, 'binary', None) or ''
-            has_user_symbolic = self._state_has_user_symbolic(state)
-            disk_key = self._disk_cache_key(cache_key) if cache_key and not has_user_symbolic else ''
-            if disk_key:
-                disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
-                if disk_state is not None:
-                    for c in state.solver.constraints:
-                        disk_state.solver.add(c)
-                    # Preserve user-set globals from the original state
-                    if 'globals' in state.plugins:
-                        for k, v in state.globals.items():
-                            disk_state.globals[k] = v
-                    try:
-                        from angr import sim_options as o
-                        if o.LAZY_SOLVES in state.options:
-                            disk_state.options.add(o.LAZY_SOLVES)
-                    except (ImportError, Exception):
-                        pass
-                    self._extract_continuation_data(disk_state)
-                    self._mem_cache = mem_cache
-                    return disk_state
+            cached = self._try_disk_init_cache(state, disk_key)
+            if cached is not None:
+                return cached
 
         try:
-            # Find main function address for target
-            main_sym = self._project.loader.find_symbol('main')
-            main_addr = main_sym.rebased_addr if main_sym else None
-
-            # If no main symbol (stripped binary), extract from _start's
-            # __libc_start_main call: rdi = main address
-            if main_addr is None:
-                try:
-                    entry_block = self._project.factory.block(self._project.entry)
-                    vex = entry_block.vex
-                    # Look for PUT(rdi) = constant before the call exit
-                    rdi_offset = self._project.arch.registers.get('rdi', (None,))[0]
-                    if rdi_offset is None:
-                        rdi_offset = self._project.arch.registers.get('edi', (None,))[0]
-                    if rdi_offset is not None:
-                        for stmt in reversed(vex.statements):
-                            s = str(stmt)
-                            if f'PUT(offset={rdi_offset})' in s or 'PUT(rdi)' in s:
-                                # Extract the constant value
-                                import re
-                                m_const = re.search(r'0x([0-9a-fA-F]+)', s)
-                                if m_const:
-                                    candidate = int(m_const.group(1), 16)
-                                    main_obj = self._project.loader.main_object
-                                    if main_obj.min_addr <= candidate <= main_obj.max_addr:
-                                        main_addr = candidate
-                                        l.info(f"Extracted main=0x{main_addr:x} from _start's rdi")
-                                break
-                except Exception as e:
-                    l.debug(f"Could not extract main from _start: {e}")
-
-            # Known init addresses to skip past (not main)
-            entry = self._project.entry
-            init_addrs = {entry}
-            # Also skip PLT stubs and known init functions
-            for obj in self._project.loader.all_objects:
-                if hasattr(obj, 'entry') and obj.entry:
-                    init_addrs.add(obj.entry)
-
-            # Run in Python until we reach main.
-            # Use the REAL SimulationManager (not the monkey-patched factory)
-            # to avoid infinite recursion when the factory is patched.
-            from angr import SimulationManager
-            sm = SimulationManager(project=self._project, active_states=[state])
-            main_min = main_obj.min_addr
-            main_max = main_obj.max_addr
-
-            for step in range(500):
-                if not sm.active:
-                    break
-
-                # Check if any active state is at main specifically
-                if main_addr is not None:
-                    at_main = [s for s in sm.active if s.addr == main_addr]
-                    if at_main:
-                        l.info(f"Python init complete: state reached main at 0x{main_addr:x} "
-                               f"after {step} steps")
-                        result = at_main[0]
-                        self._extract_continuation_data(result)
-                        # Cache for future use (in-process + disk)
-                        if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
-                            RustExplorationManager._init_cache[cache_key] = result.copy()
-                        if disk_key:
-                            self._save_init_to_disk_cache(disk_key, result)
-                        return result
-
-                # If no main symbol, look for states that are:
-                # 1. In the main binary
-                # 2. NOT at _start or entry point
-                # 3. NOT at a SimProcedure address
-                # 4. Past the first few steps (skip _start prologue)
-                if main_addr is None and step > 10:
-                    in_main = [s for s in sm.active
-                               if main_min <= s.addr <= main_max
-                               and s.addr not in init_addrs
-                               and s.addr not in self._project._sim_procedures]
-                    if in_main:
-                        l.info(f"Python init complete: state at 0x{in_main[0].addr:x} "
-                               f"after {step} steps")
-                        result = in_main[0]
-                        self._extract_continuation_data(result)
-                        if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
-                            RustExplorationManager._init_cache[cache_key] = result.copy()
-                        if disk_key:
-                            self._save_init_to_disk_cache(disk_key, result)
-                        return result
-
-                sm.step()
-
-            # If we couldn't reach main, use whatever we have
-            if sm.active:
-                best = sm.active[0]
-                self._extract_continuation_data(best)
-                l.warning(f"Python init: didn't reach main after 500 steps, "
-                          f"using state at 0x{best.addr:x}")
-                return best
-            elif sm.deadended:
-                l.warning(f"Python init: all states deadended")
-                return state
-            else:
-                return state
+            main_addr = self._resolve_main_address()
+            return self._step_python_to_main(state, main_addr, cache_key, disk_key, main_obj)
         except Exception as e:
             l.warning(f"Python init failed: {e}, using original state")
             return state
+
+    def _apply_state_metadata(self, src_state: "angr.SimState",
+                              dst_state: "angr.SimState") -> None:
+        """Copy constraints, globals, and LAZY_SOLVES option from src to dst."""
+        for c in src_state.solver.constraints:
+            dst_state.solver.add(c)
+        if 'globals' in src_state.plugins:
+            for k, v in src_state.globals.items():
+                dst_state.globals[k] = v
+        try:
+            from angr import sim_options as o
+            if o.LAZY_SOLVES in src_state.options:
+                dst_state.options.add(o.LAZY_SOLVES)
+        except (ImportError, Exception):
+            pass
+
+    def _compute_disk_init_key(self, state: "angr.SimState", cache_key: str) -> str:
+        """Compute disk init cache key. Empty string means caching is disabled
+        (no binary path, or state has user symbolic data that blank_state can't
+        round-trip)."""
+        if not cache_key:
+            return ''
+        if self._state_has_user_symbolic(state):
+            return ''
+        return self._disk_cache_key(cache_key)
+
+    def _try_in_memory_init_cache(self, state: "angr.SimState",
+                                  cache_key: str) -> Optional["angr.SimState"]:
+        """Try the per-process init cache (~180ms savings). Returns ready state or None."""
+        if not cache_key or cache_key not in RustExplorationManager._init_cache:
+            return None
+        cached = RustExplorationManager._init_cache[cache_key]
+        l.info(f"Init cache hit for {cache_key}, copying state at 0x{cached.addr:x}")
+        new_state = cached.copy()
+        self._apply_state_metadata(state, new_state)
+        return new_state
+
+    def _try_disk_init_cache(self, state: "angr.SimState",
+                             disk_key: str) -> Optional["angr.SimState"]:
+        """Try the persistent disk init cache. Returns ready state or None.
+
+        Note: only safe when the source state has no user symbolic data —
+        blank_state from cache can't preserve symbolic arguments (e.g., argv BVS).
+        Caller must enforce that via _compute_disk_init_key.
+        """
+        if not disk_key:
+            return None
+        disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
+        if disk_state is None:
+            return None
+        self._apply_state_metadata(state, disk_state)
+        self._extract_continuation_data(disk_state)
+        self._mem_cache = mem_cache  # For fast _sync_memory_to_rust
+        return disk_state
+
+    def _resolve_main_address(self) -> Optional[int]:
+        """Find main function address; for stripped binaries, parse _start's PUT(rdi)."""
+        main_sym = self._project.loader.find_symbol('main')
+        if main_sym:
+            return main_sym.rebased_addr
+        try:
+            entry_block = self._project.factory.block(self._project.entry)
+            vex = entry_block.vex
+            rdi_offset = self._project.arch.registers.get('rdi', (None,))[0]
+            if rdi_offset is None:
+                rdi_offset = self._project.arch.registers.get('edi', (None,))[0]
+            if rdi_offset is None:
+                return None
+            for stmt in reversed(vex.statements):
+                s = str(stmt)
+                if f'PUT(offset={rdi_offset})' in s or 'PUT(rdi)' in s:
+                    import re
+                    m_const = re.search(r'0x([0-9a-fA-F]+)', s)
+                    if m_const:
+                        candidate = int(m_const.group(1), 16)
+                        main_obj = self._project.loader.main_object
+                        if main_obj.min_addr <= candidate <= main_obj.max_addr:
+                            l.info(f"Extracted main=0x{candidate:x} from _start's rdi")
+                            return candidate
+                    break
+        except Exception as e:
+            l.debug(f"Could not extract main from _start: {e}")
+        return None
+
+    def _save_init_state_to_caches(self, result: "angr.SimState",
+                                   cache_key: str, disk_key: str) -> None:
+        """Persist a freshly-built init state to in-memory and disk caches."""
+        if (cache_key and len(RustExplorationManager._init_cache)
+                < RustExplorationManager._init_cache_max):
+            RustExplorationManager._init_cache[cache_key] = result.copy()
+        if disk_key:
+            self._save_init_to_disk_cache(disk_key, result)
+
+    def _step_python_to_main(self, state: "angr.SimState",
+                             main_addr: Optional[int],
+                             cache_key: str, disk_key: str,
+                             main_obj) -> "angr.SimState":
+        """Run Python SimulationManager until reaching main, then cache+return."""
+        # Init-only addresses we never want to land on as "main"
+        init_addrs = {self._project.entry}
+        for obj in self._project.loader.all_objects:
+            if hasattr(obj, 'entry') and obj.entry:
+                init_addrs.add(obj.entry)
+
+        # Use the REAL SimulationManager (not the monkey-patched factory)
+        # to avoid infinite recursion when the factory is patched.
+        from angr import SimulationManager
+        sm = SimulationManager(project=self._project, active_states=[state])
+        main_min = main_obj.min_addr
+        main_max = main_obj.max_addr
+
+        for step in range(500):
+            if not sm.active:
+                break
+
+            if main_addr is not None:
+                at_main = [s for s in sm.active if s.addr == main_addr]
+                if at_main:
+                    l.info(f"Python init complete: state reached main at 0x{main_addr:x} "
+                           f"after {step} steps")
+                    result = at_main[0]
+                    self._extract_continuation_data(result)
+                    self._save_init_state_to_caches(result, cache_key, disk_key)
+                    return result
+
+            # No main symbol: pick the first state inside the main binary that
+            # isn't at _start, isn't at a SimProcedure, and is past the prologue.
+            if main_addr is None and step > 10:
+                in_main = [s for s in sm.active
+                           if main_min <= s.addr <= main_max
+                           and s.addr not in init_addrs
+                           and s.addr not in self._project._sim_procedures]
+                if in_main:
+                    l.info(f"Python init complete: state at 0x{in_main[0].addr:x} "
+                           f"after {step} steps")
+                    result = in_main[0]
+                    self._extract_continuation_data(result)
+                    self._save_init_state_to_caches(result, cache_key, disk_key)
+                    return result
+
+            sm.step()
+
+        # Couldn't reach main within budget — fall back to whatever we have.
+        if sm.active:
+            best = sm.active[0]
+            self._extract_continuation_data(best)
+            l.warning(f"Python init: didn't reach main after 500 steps, "
+                      f"using state at 0x{best.addr:x}")
+            return best
+        if sm.deadended:
+            l.warning(f"Python init: all states deadended")
+        return state
 
     def _add_rust_state(self, stash: str, angr_state: "angr.SimState"):
         """Add an angr state to a Rust stash.
@@ -1761,256 +1756,9 @@ class RustExplorationManager(
     #   'str'  — convert attribute to string via str()
     #   'expr' — serialize as VEX expression (recursive)
     #   'exprs'— serialize list of VEX expressions
-    _EXPR_FIELDS = {
-        # 'val' fields, 'str' fields, 'expr' fields
-        'RdTmp': (('tmp',), (), ()),
-        'Get':   (('offset',), ('ty',), ()),
-        'Load':  ((), ('ty', 'end'), ('addr',)),
-        'Unop':  None,  # special: singular 'arg' not 'args'
-        'Binop': None,  # special: has 'op' + 'args'
-        'Triop': None,  # same pattern
-        'Qop':   None,  # same pattern
-        'ITE':   ((), (), ('cond', 'iftrue', 'iffalse')),
-    }
-
-    _STMT_FIELDS = {
-        # (val_fields, str_fields, expr_fields)
-        'IMark':  (('addr', 'len', 'delta'), (), ()),
-        'WrTmp':  (('tmp',), (), ('data',)),
-        'Put':    (('offset',), (), ('data',)),
-        'Store':  ((), ('end',), ('addr', 'data')),
-        'StoreG': ((), ('end',), ('addr', 'data', 'guard')),
-        'AbiHint': (('len',), (), ('base', 'nia')),
-        'MBE':    ((), (), ()),
-        'NoOp':   ((), (), ()),
-    }
-
-    _CONST_TYPES = frozenset(('U1', 'U8', 'U16', 'U32', 'U64', 'U128',
-                               'F32', 'F32i', 'F64', 'F64i', 'V128', 'V256'))
-
     def _serialize_irsb(self, irsb) -> str:
-        """Serialize a pyvex IRSB to JSON."""
-        import json
-
-        _MASK64 = 0xFFFFFFFFFFFFFFFF
-
-        def serialize_const(con):
-            """Serialize a pyvex constant (Ico_ prefix)."""
-            name = type(con).__name__
-            if name == 'V128':
-                val = con.value if isinstance(con.value, int) else 0
-                return {'tag': 'Ico_V128', 'low': val & _MASK64, 'high': (val >> 64) & _MASK64}
-            if name == 'V256':
-                val = con.value if isinstance(con.value, int) else 0
-                return {'tag': 'Ico_V256', 'value': [
-                    val & _MASK64, (val >> 64) & _MASK64,
-                    (val >> 128) & _MASK64, (val >> 192) & _MASK64]}
-            return {'tag': f'Ico_{name}', 'value': con.value}
-
-        def serialize_descr(descr):
-            """Serialize a VEX array descriptor (GetI/PutI)."""
-            return {'base': descr.base, 'elemTy': str(descr.elemTy), 'nElems': descr.nElems}
-
-        def serialize_cee(cee):
-            """Serialize a callee descriptor (CCall/Dirty)."""
-            return {'name': cee.name if hasattr(cee, 'name') else str(cee),
-                    'addr': 0, 'mcx_mask': getattr(cee, 'mcx_mask', 0)}
-
-        def serialize_expr(expr):
-            if expr is None:
-                return None
-            if isinstance(expr, (int, float, str, bool)):
-                return expr
-
-            name = type(expr).__name__
-
-            # Direct constants (Ico_ prefix)
-            if hasattr(expr, 'value') and name in self._CONST_TYPES:
-                return serialize_const(expr)
-
-            result = {'tag': f'Iex_{name}'}
-
-            # Const expression — wraps a constant
-            if hasattr(expr, 'con'):
-                con = expr.con
-                con_result = serialize_const(con) if hasattr(con, 'value') else {
-                    'tag': f'Ico_{type(con).__name__}', 'value': 0}
-                result['con'] = con_result
-                return result
-
-            # Table-driven common expressions
-            fields = self._EXPR_FIELDS.get(name)
-            if fields is not None:
-                val_f, str_f, expr_f = fields
-                for f in val_f:
-                    if hasattr(expr, f):
-                        result[f] = getattr(expr, f)
-                for f in str_f:
-                    if hasattr(expr, f):
-                        result[f] = str(getattr(expr, f))
-                for f in expr_f:
-                    if hasattr(expr, f):
-                        result[f] = serialize_expr(getattr(expr, f))
-                return result
-
-            # Unop: singular 'arg' key
-            if name == 'Unop':
-                result['op'] = expr.op
-                if hasattr(expr, 'args') and expr.args:
-                    result['arg'] = serialize_expr(expr.args[0])
-                return result
-
-            # Binop/Triop/Qop: 'op' + 'args' list
-            if hasattr(expr, 'op'):
-                result['op'] = expr.op
-                if hasattr(expr, 'args'):
-                    result['args'] = [serialize_expr(a) for a in expr.args]
-                return result
-
-            # GetI: descr + ix + bias
-            if name == 'GetI':
-                if hasattr(expr, 'descr'):
-                    result['descr'] = serialize_descr(expr.descr)
-                if hasattr(expr, 'ix'):
-                    result['ix'] = serialize_expr(expr.ix)
-                if hasattr(expr, 'bias'):
-                    result['bias'] = expr.bias
-                return result
-
-            # CCall: callee + retty + args
-            if name == 'CCall':
-                if hasattr(expr, 'cee'):
-                    result['cee'] = serialize_cee(expr.cee)
-                if hasattr(expr, 'retty'):
-                    result['retty'] = str(expr.retty)
-                if hasattr(expr, 'args'):
-                    result['args'] = [serialize_expr(a) for a in expr.args]
-                return result
-
-            # Fallback
-            for f in ('offset', 'tmp'):
-                if hasattr(expr, f):
-                    result[f] = getattr(expr, f)
-            if hasattr(expr, 'ty'):
-                result['ty'] = str(expr.ty)
-            return result
-
-        def serialize_stmt(stmt):
-            name = type(stmt).__name__
-            result = {'tag': f'Ist_{name}'}
-
-            # Table-driven common statements
-            fields = self._STMT_FIELDS.get(name)
-            if fields is not None:
-                val_f, str_f, expr_f = fields
-                for f in val_f:
-                    if hasattr(stmt, f):
-                        result[f] = getattr(stmt, f)
-                for f in str_f:
-                    if hasattr(stmt, f):
-                        result[f] = str(getattr(stmt, f))
-                for f in expr_f:
-                    if hasattr(stmt, f):
-                        result[f] = serialize_expr(getattr(stmt, f))
-                return result
-
-            # PutI: descr + ix + bias + data
-            if name == 'PutI':
-                if hasattr(stmt, 'descr'):
-                    result['descr'] = serialize_descr(stmt.descr)
-                if hasattr(stmt, 'ix'):
-                    result['ix'] = serialize_expr(stmt.ix)
-                if hasattr(stmt, 'bias'):
-                    result['bias'] = stmt.bias
-                if hasattr(stmt, 'data'):
-                    result['data'] = serialize_expr(stmt.data)
-                return result
-
-            # LoadG: guarded load
-            if name == 'LoadG':
-                for f in ('dst',):
-                    if hasattr(stmt, f):
-                        result[f] = getattr(stmt, f)
-                for f in ('cvt', 'end'):
-                    if hasattr(stmt, f):
-                        result[f] = str(getattr(stmt, f))
-                for f in ('addr', 'alt', 'guard'):
-                    if hasattr(stmt, f):
-                        result[f] = serialize_expr(getattr(stmt, f))
-                return result
-
-            # Exit: guard + constant dst + jk + offsIP
-            if name == 'Exit':
-                if hasattr(stmt, 'guard'):
-                    result['guard'] = serialize_expr(stmt.guard)
-                if hasattr(stmt, 'dst'):
-                    result['dst'] = serialize_const(stmt.dst)
-                if hasattr(stmt, 'jk'):
-                    result['jk'] = str(stmt.jk)
-                if hasattr(stmt, 'offsIP'):
-                    result['offsIP'] = stmt.offsIP
-                return result
-
-            # CAS: compare-and-swap
-            if name == 'CAS':
-                result['end'] = str(stmt.end) if hasattr(stmt, 'end') else "Iend_LE"
-                result['oldLo'] = getattr(stmt, 'oldLo', 0)
-                result['oldHi'] = getattr(stmt, 'oldHi', None)
-                for f in ('addr', 'dataLo', 'dataHi', 'expdLo', 'expdHi'):
-                    if hasattr(stmt, f):
-                        result[f] = serialize_expr(getattr(stmt, f))
-                return result
-
-            # LLSC: load-linked/store-conditional
-            if name == 'LLSC':
-                result['end'] = str(stmt.end) if hasattr(stmt, 'end') else "Iend_LE"
-                if hasattr(stmt, 'addr'):
-                    result['addr'] = serialize_expr(stmt.addr)
-                if hasattr(stmt, 'storedata'):
-                    result['storedata'] = serialize_expr(stmt.storedata) if stmt.storedata else None
-                if hasattr(stmt, 'result'):
-                    result['result'] = stmt.result
-                return result
-
-            # Dirty: helper call with side effects
-            if name == 'Dirty':
-                if hasattr(stmt, 'cee'):
-                    result['cee'] = serialize_cee(stmt.cee)
-                result['guard'] = serialize_expr(stmt.guard) if hasattr(stmt, 'guard') and stmt.guard else None
-                if hasattr(stmt, 'args'):
-                    result['args'] = [serialize_expr(a) for a in stmt.args]
-                result['tmp'] = getattr(stmt, 'tmp', None)
-                result['mFx'] = str(stmt.mFx) if hasattr(stmt, 'mFx') and stmt.mFx else "Ifx_None"
-                result['mAddr'] = serialize_expr(stmt.mAddr) if hasattr(stmt, 'mAddr') and stmt.mAddr else None
-                result['mSize'] = getattr(stmt, 'mSize', 0)
-                result['nFxState'] = getattr(stmt, 'nFxState', 0)
-                return result
-
-            # Fallback for unknown statements
-            for f in ('tmp', 'offset', 'len', 'delta'):
-                if hasattr(stmt, f):
-                    result[f] = getattr(stmt, f)
-            if hasattr(stmt, 'addr'):
-                addr = stmt.addr
-                result['addr'] = addr if isinstance(addr, int) else serialize_expr(addr)
-            for f in ('data', 'guard', 'dst'):
-                if hasattr(stmt, f):
-                    result[f] = serialize_expr(getattr(stmt, f))
-            return result
-
-        data = {
-            'addr': irsb.addr,
-            'arch': irsb.arch.name if hasattr(irsb.arch, 'name') else str(irsb.arch),
-            'statements': [serialize_stmt(s) for s in irsb.statements],
-            'next': serialize_expr(irsb.next),
-            'jumpkind': str(irsb.jumpkind),
-            'offsIP': irsb.offsIP,
-            'tyenv': {
-                'types': [str(t) for t in irsb.tyenv.types] if irsb.tyenv else []
-            }
-        }
-
-        return json.dumps(data)
+        """Serialize a pyvex IRSB to JSON for the Rust VEX interpreter."""
+        return serialize_irsb(irsb)
 
     def _extract_addrs(self, condition) -> list:
         """Extract addresses from a find/avoid condition."""
