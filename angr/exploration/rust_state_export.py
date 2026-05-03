@@ -703,12 +703,19 @@ class RustStateExportMixin:
         Returns:
             An angr SimState.
         """
-        # Create a blank state with the correct address
         state = self._project.factory.blank_state(addr=snapshot.pc)
 
-        # Set register values from Rust's named register export.
-        # This uses Rust's architecture register tables directly,
-        # eliminating Python-side offset mapping.
+        self._load_snapshot_registers(state, snapshot)
+        self._load_snapshot_pages(state, snapshot, self._project.arch)
+
+        state.scratch.rust_state_id = snapshot.state_id
+        state.scratch.rust_parent_id = snapshot.parent_id
+
+        self._restore_plugins_to_state(state, snapshot.state_id)
+        return state
+
+    def _load_snapshot_registers(self, state: "angr.SimState", snapshot):
+        """Restore register values from snapshot using Rust's named register export."""
         named_regs = snapshot.get_registers_named()
         for reg_name, (value, size_bits) in named_regs.items():
             try:
@@ -716,129 +723,103 @@ class RustStateExportMixin:
             except Exception:
                 pass  # Skip VEX internal registers that angr doesn't expose
 
-        arch = self._project.arch
-
-        # Load memory pages
+    def _load_snapshot_pages(self, state: "angr.SimState", snapshot, arch):
+        """Load memory pages from snapshot, restoring symbolic regions with original ASTs."""
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
-            if page is not None:
-                page_addr, data, _perms, symbolic_offsets = page
-                try:
-                    # First store the entire page as concrete data
-                    state.memory.store(page_addr, claripy.BVV(data, len(data) * 8),
-                                       endness=arch.memory_endness,
-                                       inspect=False)
+            if page is None:
+                continue
+            page_addr, data, _perms, symbolic_offsets = page
+            try:
+                state.memory.store(page_addr, claripy.BVV(data, len(data) * 8),
+                                   endness=arch.memory_endness,
+                                   inspect=False)
+                if not symbolic_offsets:
+                    continue
+                regions = self._find_contiguous_regions(symbolic_offsets)
+                sym_to_constrain = self._restore_symbolic_regions(
+                    state, snapshot, page_addr, regions, arch,
+                )
+                self._apply_symbolic_constraints(state, snapshot.state_id, sym_to_constrain)
+            except Exception as e:
+                l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
 
-                    # Then overwrite symbolic regions with fresh symbolic variables
-                    if symbolic_offsets:
-                        # Find contiguous symbolic regions to create multi-byte symbols
-                        sorted_offsets = sorted(symbolic_offsets)
-                        regions = []
-                        start = sorted_offsets[0]
-                        end = start
-                        for offset in sorted_offsets[1:]:
-                            if offset == end + 1:
-                                end = offset
-                            else:
-                                regions.append((start, end - start + 1))
-                                start = offset
-                                end = offset
-                        regions.append((start, end - start + 1))
+    @staticmethod
+    def _find_contiguous_regions(symbolic_offsets) -> list:
+        """Group sorted byte offsets into contiguous (offset, size) regions."""
+        sorted_offsets = sorted(symbolic_offsets)
+        regions = []
+        start = sorted_offsets[0]
+        end = start
+        for offset in sorted_offsets[1:]:
+            if offset == end + 1:
+                end = offset
+            else:
+                regions.append((start, end - start + 1))
+                start = offset
+                end = offset
+        regions.append((start, end - start + 1))
+        return regions
 
-                        # Track symbolic values for constraint sync
-                        symbolic_values_to_constrain = []
+    def _restore_symbolic_regions(self, state, snapshot, page_addr, regions, arch) -> list:
+        """Overwrite symbolic regions on a page with recovered or fresh symbols.
 
-                        # Restore symbolic values - try to recover original ASTs first
-                        for offset, size in regions:
-                            sym_addr = page_addr + offset
-                            original_ast = None
+        Returns a list of (sym_addr, size, ast) for downstream constraint sync.
+        """
+        sym_to_constrain = []
+        for offset, size in regions:
+            sym_addr = page_addr + offset
+            ast = self._recover_symbolic_ast(snapshot, sym_addr, size)
+            if ast is None:
+                # Fallback for symbols created in Rust without a tracked AST
+                sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
+                ast = claripy.BVS(sym_name, size * 8)
+            state.memory.store(sym_addr, ast,
+                               endness=arch.memory_endness,
+                               inspect=False)
+            sym_to_constrain.append((sym_addr, size, ast))
+        return sym_to_constrain
 
-                            # Try to find original AST from address tracking
-                            state_addr_map = self._addr_to_ast.get(snapshot.state_id, {})
-                            if sym_addr in state_addr_map:
-                                tracked_ast, tracked_size = state_addr_map[sym_addr]
-                                if tracked_size == size:
-                                    original_ast = tracked_ast
-                                    l.debug(f"Recovered original AST at 0x{sym_addr:x} for state {snapshot.state_id}")
+    def _recover_symbolic_ast(self, snapshot, sym_addr: int, size: int):
+        """Look up the original claripy AST for a symbolic byte at sym_addr.
 
-                            # Also check parent and root states for inherited symbolic values
-                            if original_ast is None and snapshot.parent_id >= 0:
-                                parent_addr_map = self._addr_to_ast.get(snapshot.parent_id, {})
-                                if sym_addr in parent_addr_map:
-                                    tracked_ast, tracked_size = parent_addr_map[sym_addr]
-                                    if tracked_size == size:
-                                        original_ast = tracked_ast
-                                        l.debug(f"Recovered original AST from parent at 0x{sym_addr:x}")
+        Searches address-tracked AST maps for the snapshot's state, parent, and
+        root, then the hook-symbolic-memory map. Returns the first AST whose
+        tracked size matches; None if no match.
+        """
+        candidate_ids = [snapshot.state_id]
+        if snapshot.parent_id >= 0:
+            candidate_ids.append(snapshot.parent_id)
+        root_id = self._state_roots.get(snapshot.state_id)
+        if root_id is None:
+            try:
+                root_id = self._rust_mgr.get_state_root(snapshot.state_id)
+            except Exception:
+                root_id = None
+        if root_id is not None and root_id != snapshot.state_id:
+            candidate_ids.append(root_id)
 
-                            # Check root state (for deeply forked states)
-                            if original_ast is None:
-                                root_id = self._state_roots.get(snapshot.state_id)
-                                if root_id is None:
-                                    try:
-                                        root_id = self._rust_mgr.get_state_root(snapshot.state_id)
-                                    except Exception:
-                                        pass
-                                if root_id is not None and root_id != snapshot.state_id:
-                                    root_addr_map = self._addr_to_ast.get(root_id, {})
-                                    if sym_addr in root_addr_map:
-                                        tracked_ast, tracked_size = root_addr_map[sym_addr]
-                                        if tracked_size == size:
-                                            original_ast = tracked_ast
+        for sid in candidate_ids:
+            entry = self._addr_to_ast.get(sid, {}).get(sym_addr)
+            if entry is not None and entry[1] == size:
+                return entry[0]
 
-                            # Also check hook symbolic memory
-                            hook_mem = self._hook_symbolic_memory.get(snapshot.state_id, {})
-                            if original_ast is None and sym_addr in hook_mem:
-                                tracked_ast, tracked_size = hook_mem[sym_addr]
-                                if tracked_size == size:
-                                    original_ast = tracked_ast
-                                    l.debug(f"Recovered original AST from hook memory at 0x{sym_addr:x}")
+        hook_entry = self._hook_symbolic_memory.get(snapshot.state_id, {}).get(sym_addr)
+        if hook_entry is not None and hook_entry[1] == size:
+            return hook_entry[0]
+        return None
 
-                            # Use original AST if found, otherwise create fresh symbol
-                            if original_ast is not None:
-                                state.memory.store(sym_addr, original_ast,
-                                                   endness=arch.memory_endness,
-                                                   inspect=False)
-                                # Track for constraint sync
-                                symbolic_values_to_constrain.append((sym_addr, size, original_ast))
-                            else:
-                                # Fallback: create fresh symbolic (for Rust-created symbols)
-                                sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
-                                sym_val = claripy.BVS(sym_name, size * 8)
-                                state.memory.store(sym_addr, sym_val,
-                                                   endness=arch.memory_endness,
-                                                   inspect=False)
-                                # Also track fresh symbols for constraint sync
-                                symbolic_values_to_constrain.append((sym_addr, size, sym_val))
-
-                        # Add constraints for symbolic values based on Rust solver evaluation
-                        for sym_addr, size, ast in symbolic_values_to_constrain:
-                            try:
-                                # Evaluate the symbolic value using Rust's solver context
-                                concrete_bytes = self._rust_mgr.get_state_memory(
-                                    snapshot.state_id, sym_addr, size
-                                )
-                                if concrete_bytes is not None:
-                                    # Convert bytes to int (little endian)
-                                    concrete_val = int.from_bytes(concrete_bytes, 'little')
-                                    # Add constraint: original_ast == concrete_value
-                                    constraint = ast == claripy.BVV(concrete_val, size * 8)
-                                    state.solver.add(constraint)
-                                    l.debug(f"Added constraint at 0x{sym_addr:x}: "
-                                            f"{ast} == {concrete_val:#x}")
-                            except Exception as e:
-                                l.debug(f"Could not add constraint at 0x{sym_addr:x}: {e}")
-
-                except Exception as e:
-                    l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
-
-        # Store state ID as a scratch attribute for reference
-        state.scratch.rust_state_id = snapshot.state_id
-        state.scratch.rust_parent_id = snapshot.parent_id
-
-        # Restore state plugins from initial state template
-        self._restore_plugins_to_state(state, snapshot.state_id)
-
-        return state
+    def _apply_symbolic_constraints(self, state, state_id: int, sym_to_constrain: list):
+        """Pin recovered symbolic values to their concrete Rust evaluations."""
+        for sym_addr, size, ast in sym_to_constrain:
+            try:
+                concrete_bytes = self._rust_mgr.get_state_memory(state_id, sym_addr, size)
+                if concrete_bytes is None:
+                    continue
+                concrete_val = int.from_bytes(concrete_bytes, 'little')
+                state.solver.add(ast == claripy.BVV(concrete_val, size * 8))
+            except Exception as e:
+                l.debug(f"Could not add constraint at 0x{sym_addr:x}: {e}")
 
     def _restore_plugins_to_state(self, state: "angr.SimState", state_id: int):
         """Restore plugins to an exported state from the initial state template.
