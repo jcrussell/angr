@@ -1,50 +1,56 @@
-# Loop session notes (2026-05-03, thirty-fifth loop session)
+# Loop session notes (2026-05-03, thirty-sixth loop session)
 
-## Task: angr-pksl — CLOSED
-"Add Z3 FP support for vector scalar float ops"
-Continuation of FP-symex work from previous sessions.
+## Task: angr-4dxi — CLOSED
+"Add memory permission enforcement in Rust memory model"
 
 ## Outcome
-SSE scalar V128 float ops VFAddS/VFSubS/VFMulS/VFDivS/VFSqrtS/VFMaxS/VFMinS
-(ADDSS, DIVSS, SQRTSS, MAXSS, MINSS, ...) now route through Z3 FP for
-symbolic operands instead of returning SymbolicFloatUnsupported.
-Commit fcf33c14c.
+Per-page R/W permission enforcement now wired into Rust SymbolicMemory
+load/store paths. Off by default to mirror angr's STRICT_PAGE_ACCESS
+option semantics (opt-in, no behavior change for existing callers).
+Commit 3894f7060.
 
-## What changed (native/angr/src/vex/ops.rs)
-- `vec_float_scalar_op` (Add/Sub/Mul/Div): delegates to new
-  `vec_float_scalar_lane_binop` for symbolic case.
-- `vec_float_scalar_sqrt`: extracts lane 0 → Sqrt → concat with upper.
-- `vec_float_scalar_max` / `vec_float_scalar_min`: delegate to new
-  `vec_float_scalar_lane_minmax(is_max)`.
-- New helpers `vec_float_scalar_lane_binop` and
-  `vec_float_scalar_lane_minmax`: extract lane via prec.bits(),
-  upper bits via extract(127, lane_bits), concat result back.
-- Max/min as ITE(FCmpLt(...), l, r) — there is no FloatOpKind::Max/Min,
-  and Z3's fpa_max/fpa_min (IEEE 754) does NOT match Rust's `>`/`<`
-  on NaN. The ITE pattern matches the concrete branch's NaN-returns-r
-  semantics because FCmpLt returns false for NaN.
-
-## Key insight
-When an SSE scalar op's concrete fast-path uses `if l > r { l } else { r }`
-(Rust semantics, NaN-returns-right) you cannot symbolically use Z3's
-`fpa_max` (IEEE — picks the non-NaN). Instead express it via an ITE on
-FCmpLt, which matches Rust's comparison semantics by construction.
+## What changed
+- **native/angr/src/memory.rs**
+  - New `enforce_permissions: bool` field on SymbolicMemory (default false).
+  - New `set_enforce_permissions` / `enforce_permissions` accessors.
+  - New `check_perms_range(start, end, required) -> Result<(), MemoryError>`
+    helper. No-op when flag is off. Returns
+    `MemoryError::Permission { addr, required, actual }`.
+  - Permission checks injected into the 3 inner helpers:
+    `load_concrete`, `load_concrete_lazy_inner`, `store_concrete`.
+    All other load/store APIs route through one of these, so checks
+    pick up transitively across symbolic/lazy/automap variants.
+  - New `Permission::W` and `Permission::X` constants for single-bit
+    checks (store needs W only, not RW; matches Python angr behavior).
+  - Field copied through `fork()`.
+  - 6 new unit tests: default-off, R-write blocked, W-read blocked,
+    RWX allowed, cross-page violation, fork propagation.
+- **native/angr/src/state.rs**
+  - `set_enforce_permissions` / `enforce_permissions` on inner `State`.
+  - `py_set_enforce_permissions` / `py_enforce_permissions` exposed on
+    pyclass (`#[pyo3(name = "set_enforce_permissions")]`).
 
 ## Verification
-- 6/6 cargo unit tests pass (4 new symbolic + 2 existing concrete).
+- `cargo test --release --lib memory::` — 12/12 pass (6 new + 6 existing).
 - 208/208 RustExplorationManager tests pass.
-- 12/12 regression benchmarks pass.
+- fauxware single benchmark sanity-checked: still runs cleanly with the
+  default (off) flag.
 
-## Memories saved/updated
-- `vec-float-scalar-ssemax-ite` — new design pattern memory
-- `vec-scalar-lane-pattern` — new pattern memory for symbolic SSE scalar ops
-- `invariant-rust-float-ops-concrete-only` — updated to mark these as
-  no longer concrete-only
+## Memories saved
+- `invariant-mem-perm-default-off`
+- `invariant-mem-perm-check-points`
+- `memory-perm-rust-vs-python`
 
-## Remaining FP work
-- float_neg / float_abs (currently concrete-only via bitwise XOR/AND
-  on the sign bit). They use bitwise tricks rather than Z3 FP, but
-  since the bit-tricks are sound for symbolic BVs too, this may be
-  intentional and not require Z3 dispatch. Worth a separate inspection
-  if needed.
-- Packed multi-lane vector ops, if any exist (VFAddV style).
+## Potential follow-up (not done in this session)
+- Plumb a Python-side hook that flips the flag when STRICT_PAGE_ACCESS
+  is in `state.options`, so the Rust engine matches Python's behavior
+  automatically. Currently the flag must be flipped manually via the
+  exposed API.
+- Add execute-permission check on basic-block fetch (Rust interpreter
+  step path). Currently the X bit is stored but only checked if the
+  caller wraps `check_perms_range(.., Permission::X)` themselves. This
+  task explicitly listed NX violations as not detected; the fetch path
+  is in interpreter_cb/* and would need its own injection point.
+- Decide whether to default the flag ON for "real" angr Project flows
+  (per-state via the manager) once Python-side STRICT_PAGE_ACCESS
+  detection is wired up.
