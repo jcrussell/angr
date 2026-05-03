@@ -1,38 +1,47 @@
-# Loop session notes (2026-05-03, thirty-first session)
+# Loop session notes (2026-05-03, thirty-second session)
 
-## Task: angr-7x45 — CLOSED
-"Add performance SLA enforcement in CI"
+## Task: angr-cbko — CLOSED
+"Enable native exit/abort SimProcedures (needs find/avoid address sync with Python)"
 
 ## Outcome
-Added SLA enforcement to `tests/benchmarks/run_regression.py`:
-- `--sla-warn-threshold` (default 1.0x) — speedup below this prints SLA WARN
-- `--sla-fail-threshold` (default 0.5x) — speedup below this fails the run
-- `--no-sla` — disable SLA enforcement entirely
-- SLA falls back to baseline-cached `python_time` when this run skips Python
-  (e.g. rust_only entries) so the check still works for the bulk of FAST_SUITE.
+Re-enabled NativeExit / NativeUnderscoreExit / NativeAbort. Commit 7cd3d7431.
 
-Also fixed a latent bug: the prior `entry = { "python_time": ... or None }`
-clobbered baseline-cached python_time on every `--update`. Now preserved
-from the previous baseline when Python doesn't run this round.
+## Root Cause (was non-obvious)
+The VEX interpreter has TWO native SimProcedure dispatch paths:
+  1. `stepping.rs:handle_simprocedure` — called when a block ends with
+     `call extern_hook` and the interpreter dispatches the hook inline.
+  2. `mod.rs:run` top-of-loop check — when the next state's PC is at a
+     hook address before stepping.
+
+Both paths advanced PC to `return_addr` and popped SP after the native call,
+ignoring `no_return`. For NativeExit, that "return address" in fauxware is
+0x40071d (after `call exit@plt` at 0x400718) — which by coincidence is the
+START of main() (rejected() and main are adjacent in this binary). So
+deadending the wrong way caused infinite re-entry into main.
+
+## Fix
+Both dispatch sites now early-deadend when `no_return` is true:
+- Skip PC/SP/return-value update.
+- Run `process_deferred_forks_into` so unexplored branches still spawn.
+- Push the main state to STASH_DEADENDED instead of returning it as a
+  successor.
+
+## Files changed
+- native/angr/src/exploration/stepping.rs (handle_simprocedure)
+- native/angr/src/exploration/mod.rs (run loop top-of-loop hook)
+- native/angr/src/procedures/mod.rs (registration)
 
 ## Verification
-- `--help` shows the new flags.
-- Patched baseline (fauxware py_time=0.1, defcamp_r100 py_time=0.18) →
-    SLA FAIL fired on fauxware (0.27x < 0.50x) → exit 1.
-    SLA WARN fired on defcamp_r100 (0.81x < 1.00x) → no exit-code change.
-- `--no-sla` with same patched baseline → exit 0.
-- `--update` with patched fauxware py_time=0.5 preserves the value
-  (baseline still shows 0.5 after the run).
+- 208/208 RustExplorationManager tests pass.
+- The previously-hanging test `test_step_func_stops_when_no_active`
+  (fauxware step+step_func, n=100000) now finishes in 18 steps,
+  matching the no-native-exit baseline.
+- Regression test: 12/12 correct, 1 SLA WARN on flareon2015_2
+  (pre-existing variance — runs identically with/without my change).
 
-## Changes
-- tests/benchmarks/run_regression.py (+41/-7)
-
-## Status snapshot before commit
-- 5 open beads remaining (P3 cbko, P3 bgv0, P4 4dxi, P4 borb).
-- baseline_timings.json untouched.
-
-## Remaining big methods (still untracked, future refactor session)
-- rust_state_export.py:_get_stash_states (139)
-- rust_state_export.py:_sync_exported_constraints (98)
-- rust_state_sync.py:_extract_wide_symbolic_regions (111)
-- rust_manager.py:_cb_resolve_function (100)
+## Memories saved
+- invariant-no-return-deadend (the rule)
+- avoid-fixing-only-one-native-dispatch-path (only fixing mod.rs misses
+  the interpreter-driven path in stepping.rs)
+- fauxware-exit-overlaps-main (the binary quirk that makes this bug visible)
+- no-native-exit-simprocs (updated — supersedes the old "AVOID" memory)
