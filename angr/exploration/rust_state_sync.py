@@ -162,32 +162,72 @@ class RustStateSyncMixin:
         Strategy: map pages for each loaded segment (not the entire address
         space). Uses the Python state's memory for relocations/initialized data.
         """
-        # Fast path: use cached memory layout from disk cache
-        if self._mem_cache is not None:
-            mem = self._mem_cache
-            self._mem_cache = None  # Consume once
-            try:
-                if mem.get('batch_pages'):
-                    rust_state.map_memory_batch(mem['batch_pages'])
-                for addr, patch_bytes in mem.get('section_patches', []):
-                    rust_state.map_memory_data(addr, patch_bytes, 7)
-                if mem.get('stack_page'):
-                    sp_page, page_bytes = mem['stack_page']
-                    rust_state.map_memory_data(sp_page, page_bytes, 6)
-                for start, size in mem.get('lazy_regions', []):
-                    rust_state.add_lazy_region(start, size)
-                l.debug(f"Fast memory sync from cache: {len(mem.get('batch_pages', []))} pages")
-                return
-            except Exception as e:
-                l.debug(f"Fast memory sync failed, falling back: {e}")
+        if self._try_fast_memory_sync(rust_state):
+            return
 
         page_size = 0x1000
-        pages_mapped = 0
-        # Identify pages containing user-written symbolic data. These pages
-        # should NOT be pre-populated with concrete loader data, so that Rust
-        # falls back to the Python memory_load callback which returns the
-        # symbolic AST (enabling symbolic forking on comparisons).
-        symbolic_pages = set()
+        arch = self._project.arch
+
+        symbolic_pages = self._find_user_symbolic_pages(angr_state, page_size)
+        if symbolic_pages:
+            l.debug(f"Skipping {len(symbolic_pages)} pages with symbolic data during memory sync")
+
+        mapped_page_addrs, pages_mapped = self._map_loader_pages(
+            rust_state, symbolic_pages, page_size)
+        self._overlay_relocated_sections(angr_state, rust_state)
+        l.debug(f"Pre-populated {pages_mapped} pages from loaded objects")
+
+        self._overlay_python_state_pages(
+            angr_state, rust_state, mapped_page_addrs, symbolic_pages, page_size)
+        self._add_loader_lazy_regions(rust_state, page_size)
+
+        sp_page, stack_start, stack_base = self._setup_stack_region(
+            angr_state, rust_state, arch, page_size)
+
+        symbolic_regions: list = []  # (addr, claripy_ast) pairs to import
+        self._sync_stack_page(
+            angr_state, rust_state, sp_page, page_size, arch, symbolic_regions)
+        self._sync_extra_python_pages(
+            angr_state, rust_state, mapped_page_addrs, symbolic_pages,
+            sp_page, stack_start, stack_base, page_size)
+        self._scan_user_symbolic_pages(
+            angr_state, stack_start, stack_base, page_size, symbolic_regions)
+
+        if symbolic_regions:
+            self._pending_symbolic_imports = symbolic_regions
+            l.debug(f"Found {len(symbolic_regions)} symbolic regions for import")
+
+    def _try_fast_memory_sync(self, rust_state: "_RustSimState") -> bool:
+        """Apply cached memory layout from disk init cache. Returns True if used."""
+        if self._mem_cache is None:
+            return False
+        mem = self._mem_cache
+        self._mem_cache = None  # Consume once
+        try:
+            if mem.get('batch_pages'):
+                rust_state.map_memory_batch(mem['batch_pages'])
+            for addr, patch_bytes in mem.get('section_patches', []):
+                rust_state.map_memory_data(addr, patch_bytes, 7)
+            if mem.get('stack_page'):
+                sp_page, page_bytes = mem['stack_page']
+                rust_state.map_memory_data(sp_page, page_bytes, 6)
+            for start, size in mem.get('lazy_regions', []):
+                rust_state.add_lazy_region(start, size)
+            l.debug(f"Fast memory sync from cache: {len(mem.get('batch_pages', []))} pages")
+            return True
+        except Exception as e:
+            l.debug(f"Fast memory sync failed, falling back: {e}")
+            return False
+
+    def _find_user_symbolic_pages(self, angr_state: "angr.SimState",
+                                  page_size: int) -> set:
+        """Find pages that contain user-written symbolic data.
+
+        These pages are NOT pre-populated with concrete loader data, so Rust
+        falls back to the Python memory_load callback (which returns the
+        symbolic AST and enables symbolic forking on comparisons).
+        """
+        symbolic_pages: set = set()
         if hasattr(angr_state.memory, 'get_symbolic_addrs'):
             try:
                 for addr in angr_state.memory.get_symbolic_addrs():
@@ -195,7 +235,6 @@ class RustStateSyncMixin:
             except Exception:
                 pass
         if not symbolic_pages and hasattr(angr_state.memory, '_pages'):
-            # Fallback: scan pages for symbolic content
             mem_page_size = getattr(angr_state.memory, 'page_size', page_size)
             for page_num in list(angr_state.memory._pages.keys()):
                 page = angr_state.memory._pages.get(page_num)
@@ -203,17 +242,22 @@ class RustStateSyncMixin:
                     sb = page.symbolic_bitmap
                     if sb is not None and any(sb):
                         symbolic_pages.add(page_num * mem_page_size)
-        if symbolic_pages:
-            l.debug(f"Skipping {len(symbolic_pages)} pages with symbolic data during memory sync")
+        return symbolic_pages
 
-        # Map pages for each loaded object's segments (batch for fewer FFI calls).
-        # Use segment ranges for ELF objects to avoid iterating empty gaps
-        # (e.g., ais3 has 553 pages in full range but only 12 in segments).
+    def _map_loader_pages(self, rust_state: "_RustSimState",
+                          symbolic_pages: set, page_size: int):
+        """Map pages for each loaded object's segments via a single FFI batch.
+
+        Returns (mapped_page_addrs, pages_mapped). Skips pages already in
+        symbolic_pages so callbacks can serve them.
+        """
         batch_pages = []
-        mapped_page_addrs = set()
+        mapped_page_addrs: set = set()
+        pages_mapped = 0
         for obj in self._project.loader.all_objects:
             try:
-                # Prefer segments for ELF objects (avoids iterating gaps)
+                # Prefer segments for ELF objects (avoids iterating gaps:
+                # ais3 has 553 pages in full range but only 12 in segments).
                 if hasattr(obj, 'segments') and obj.segments:
                     ranges = []
                     for seg in obj.segments:
@@ -237,7 +281,6 @@ class RustStateSyncMixin:
                             pass
             except Exception:
                 pass
-        # Single FFI call for all pages
         if batch_pages:
             try:
                 rust_state.map_memory_batch(batch_pages)
@@ -245,9 +288,14 @@ class RustStateSyncMixin:
                 # Fallback for older Rust builds without batch API
                 for page_addr, data, perms in batch_pages:
                     rust_state.map_memory_data(page_addr, data, perms)
+        return mapped_page_addrs, pages_mapped
 
-        # Overlay relocated data from Python state (GOT entries, etc.)
-        # Only do small concrete sections to avoid expensive Z3 eval
+    def _overlay_relocated_sections(self, angr_state: "angr.SimState",
+                                    rust_state: "_RustSimState") -> None:
+        """Overlay GOT entries / relocated section data from the Python state.
+
+        Only writes small concrete sections (<64KB) to avoid expensive Z3 eval.
+        """
         for obj in self._project.loader.all_objects:
             if obj.binary is None or not hasattr(obj, 'sections'):
                 continue
@@ -264,39 +312,44 @@ class RustStateSyncMixin:
                     except Exception:
                         pass
 
-        l.debug(f"Pre-populated {pages_mapped} pages from loaded objects")
+    def _overlay_python_state_pages(self, angr_state: "angr.SimState",
+                                    rust_state: "_RustSimState",
+                                    mapped_page_addrs: set,
+                                    symbolic_pages: set,
+                                    page_size: int) -> None:
+        """Overlay Python state's concrete memory on top of loader pages.
 
-        # Overlay Python state's concrete memory on top of loader pages.
-        # Critical for multi-stage explore: when a found state from stage N
-        # is re-imported into a new RustExplorationManager for stage N+1,
-        # the loader's static data (e.g. zeros in .bss) overwrites runtime
-        # modifications (e.g. result buffer at 0x612040 in sakura). Fix:
-        # overlay the Python state's page data, which has the most recent
-        # values from _sync_rust_memory_to_state.
+        Critical for multi-stage explore: when a found state from stage N is
+        re-imported into a new RustExplorationManager for stage N+1, the
+        loader's static data (e.g. zeros in .bss) would otherwise overwrite
+        runtime modifications (e.g. result buffer at 0x612040 in sakura).
+        """
         state_overlay_count = 0
         mem_pages = getattr(angr_state.memory, '_pages', None)
-        if mem_pages is not None:
-            for page_no in list(mem_pages.keys()):
-                page_addr = page_no * page_size
-                if page_addr not in mapped_page_addrs:
-                    continue  # Non-loader pages handled separately below
-                if page_addr in symbolic_pages:
-                    continue  # Symbolic pages use callback path
-                page_obj = mem_pages.get(page_no)
-                if page_obj is None:
-                    continue
-                try:
-                    concrete = bytes(page_obj.concrete_load(0, page_size))
-                    if len(concrete) == page_size:
-                        rust_state.map_memory_data(page_addr, concrete, 7)
-                        state_overlay_count += 1
-                except Exception:
-                    pass
+        if mem_pages is None:
+            return
+        for page_no in list(mem_pages.keys()):
+            page_addr = page_no * page_size
+            if page_addr not in mapped_page_addrs:
+                continue  # Non-loader pages handled separately
+            if page_addr in symbolic_pages:
+                continue  # Symbolic pages use callback path
+            page_obj = mem_pages.get(page_no)
+            if page_obj is None:
+                continue
+            try:
+                concrete = bytes(page_obj.concrete_load(0, page_size))
+                if len(concrete) == page_size:
+                    rust_state.map_memory_data(page_addr, concrete, 7)
+                    state_overlay_count += 1
+            except Exception:
+                pass
         if state_overlay_count:
             l.debug(f"Overlaid {state_overlay_count} loader pages with Python state data")
 
-        # Add lazy regions for ALL loader objects + stack so the fetch_page
-        # callback can populate any unmapped page on demand.
+    def _add_loader_lazy_regions(self, rust_state: "_RustSimState",
+                                 page_size: int) -> None:
+        """Register every loaded object as a lazy region for fetch_page callbacks."""
         for obj in self._project.loader.all_objects:
             try:
                 region_start = obj.min_addr & ~(page_size - 1)
@@ -307,7 +360,13 @@ class RustStateSyncMixin:
             except Exception:
                 pass
 
-        arch = self._project.arch
+    def _setup_stack_region(self, angr_state: "angr.SimState",
+                            rust_state: "_RustSimState", arch,
+                            page_size: int):
+        """Compute the stack region and register it as lazy.
+
+        Returns (sp_page, stack_start, stack_base).
+        """
         try:
             sp = angr_state.solver.eval(angr_state.regs.sp)
         except Exception:
@@ -315,155 +374,154 @@ class RustStateSyncMixin:
         stack_base = (sp & ~(page_size - 1)) + page_size
         stack_start = stack_base - 0x11_0000
         rust_state.add_lazy_region(stack_start, 0x11_0000)
-
-        # Pre-populate stack page at SP from the Python state.
-        # Only load the page containing SP - this has the active stack frame
-        # with return addresses and saved registers. All other stack pages
-        # use lazy fetching via fetch_page callback when actually accessed.
-        # This avoids expensive solver.eval() on unconstrained fill pages.
         sp_page = sp & ~(page_size - 1)
-        pages_synced = 0
-        symbolic_regions = []  # (addr, claripy_ast) pairs to import
-        for page_addr in [sp_page]:
-            try:
-                # Fast path: use page.concrete_load() to avoid expensive
-                # solver.eval() on pages full of unconstrained fill.
-                # solver.eval() on a 4KB symbolic page takes 20-150ms;
-                # concrete_load() returns the raw bytes in <0.1ms.
-                page_no = page_addr // page_size
-                mem_pages = getattr(angr_state.memory, '_pages', None)
-                page_obj = mem_pages.get(page_no) if mem_pages is not None else None
-                used_fast_path = False
+        return sp_page, stack_start, stack_base
 
-                if page_obj is not None and hasattr(page_obj, 'concrete_load'):
-                    try:
-                        concrete = bytes(page_obj.concrete_load(0, page_size))
-                        if len(concrete) == page_size:
-                            rust_state.map_memory_data(page_addr, concrete, 6)
-                            pages_synced += 1
-                            used_fast_path = True
+    def _sync_stack_page(self, angr_state: "angr.SimState",
+                         rust_state: "_RustSimState",
+                         sp_page: int, page_size: int, arch,
+                         symbolic_regions: list) -> None:
+        """Pre-populate just the stack page at SP from the Python state.
 
-                            # Check for user symbolic data via symbolic_data dict
-                            # (O(1), no solver involved)
-                            sd = getattr(page_obj, 'symbolic_data', None)
-                            if sd and len(sd) > 0:
-                                # Fast symbolic extraction: use symbolic_data dict
-                                # to find which byte ranges are symbolic, then scan
-                                # only those ranges (not all 4096 bytes).
-                                # _extract_symbolic_regions scans 4096 bytes (~137ms);
-                                # targeted scan of just the symbolic ranges is ~1-5ms.
-                                scan_ranges = []
-                                for sd_offset, sd_ast in sd.items():
-                                    if not hasattr(sd_ast, 'variables'):
-                                        continue
-                                    leaf_names = list(sd_ast.variables)
-                                    is_user = any(
-                                        not n.startswith('mem_') and not n.startswith('reg_')
-                                        and not n.startswith('unconstrained')
-                                        for n in leaf_names
-                                    )
-                                    if is_user:
-                                        ast_size = sd_ast.size() // 8 if hasattr(sd_ast, 'size') else 1
-                                        scan_ranges.append((sd_offset, ast_size))
-                                if scan_ranges:
-                                    for start_offset, size in scan_ranges:
-                                        for byte_off in range(size):
-                                            addr = page_addr + start_offset + byte_off
-                                            if start_offset + byte_off >= page_size:
-                                                break
-                                            try:
-                                                val = angr_state.memory.load(
-                                                    addr, 1, endness='Iend_BE',
-                                                    inspect=False, disable_actions=True)
-                                                if val.symbolic:
-                                                    symbolic_regions.append((addr, val))
-                                            except Exception:
-                                                pass
-                    except Exception:
-                        pass  # Fall back to slow path
+        Other stack pages are served lazily via fetch_page when accessed,
+        avoiding expensive solver.eval() on unconstrained fill pages.
+        """
+        page_no = sp_page // page_size
+        mem_pages = getattr(angr_state.memory, '_pages', None)
+        page_obj = mem_pages.get(page_no) if mem_pages is not None else None
+        used_fast_path = False
+        try:
+            if page_obj is not None and hasattr(page_obj, 'concrete_load'):
+                try:
+                    concrete = bytes(page_obj.concrete_load(0, page_size))
+                    if len(concrete) == page_size:
+                        rust_state.map_memory_data(sp_page, concrete, 6)
+                        used_fast_path = True
+                        # Targeted scan of symbolic_data ranges only (~1-5ms)
+                        # vs full _extract_symbolic_regions scan (~137ms).
+                        sd = getattr(page_obj, 'symbolic_data', None)
+                        if sd:
+                            self._extract_stack_symbolic_from_sd(
+                                angr_state, sp_page, page_size, sd, symbolic_regions)
+                except Exception:
+                    pass  # Fall back to slow path
 
-                if not used_fast_path:
-                    # Slow path: load through memory mixin stack + solver.eval()
-                    page_data = angr_state.memory.load(
-                        page_addr, page_size, endness='Iend_BE',
-                        inspect=False, disable_actions=True
-                    )
-                    concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
-                    rust_state.map_memory_data(page_addr, concrete, 6)
-                    pages_synced += 1
+            if not used_fast_path:
+                # Slow path: load through memory mixin stack + solver.eval()
+                page_data = angr_state.memory.load(
+                    sp_page, page_size, endness='Iend_BE',
+                    inspect=False, disable_actions=True)
+                concrete = angr_state.solver.eval(page_data).to_bytes(page_size, 'big')
+                rust_state.map_memory_data(sp_page, concrete, 6)
+                if page_data.symbolic and self._has_user_symbolic_var(page_data):
+                    self._extract_symbolic_regions(
+                        angr_state, sp_page, page_size,
+                        arch.bytes, symbolic_regions)
+            l.debug(f"Pre-populated 1 stack page in Rust memory")
+        except Exception:
+            pass
 
-                    if page_data.symbolic:
-                        leaf_names = list(page_data.variables)
-                        has_user_sym = any(
-                            not n.startswith('mem_') and not n.startswith('reg_')
-                            and not n.startswith('unconstrained')
-                            for n in leaf_names
-                        )
-                        if has_user_sym:
-                            self._extract_symbolic_regions(
-                                angr_state, page_addr, page_size,
-                                arch.bytes, symbolic_regions)
-            except Exception:
-                pass
-        if pages_synced:
-            l.debug(f"Pre-populated {pages_synced} stack pages in Rust memory")
+    def _extract_stack_symbolic_from_sd(self, angr_state: "angr.SimState",
+                                        page_addr: int, page_size: int,
+                                        sd: dict, symbolic_regions: list) -> None:
+        """Targeted scan of a stack page's symbolic_data ranges.
 
-        # Sync non-loader, non-stack memory pages from the Python state.
-        # This is critical for multi-stage explore: when a found state from
-        # stage 1 is passed to a new RustExplorationManager for stage 2,
-        # pages written during stage 1 (ctype tables, heap data, extra stack
-        # frames from SimProcedures) must be synced or the Rust engine will
-        # read zeros and diverge.
+        Avoids the full 4096-byte byte-by-byte scan in _extract_symbolic_regions
+        — this only walks the explicitly-stored symbolic byte ranges.
+        """
+        scan_ranges = []
+        for sd_offset, sd_ast in sd.items():
+            if not hasattr(sd_ast, 'variables'):
+                continue
+            if self._has_user_symbolic_var(sd_ast):
+                ast_size = sd_ast.size() // 8 if hasattr(sd_ast, 'size') else 1
+                scan_ranges.append((sd_offset, ast_size))
+        for start_offset, size in scan_ranges:
+            for byte_off in range(size):
+                if start_offset + byte_off >= page_size:
+                    break
+                addr = page_addr + start_offset + byte_off
+                try:
+                    val = angr_state.memory.load(
+                        addr, 1, endness='Iend_BE',
+                        inspect=False, disable_actions=True)
+                    if val.symbolic:
+                        symbolic_regions.append((addr, val))
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _has_user_symbolic_var(ast) -> bool:
+        """True if the AST references at least one user-created symbolic variable
+        (not a synthetic mem_/reg_/unconstrained placeholder)."""
+        try:
+            return any(
+                not n.startswith('mem_') and not n.startswith('reg_')
+                and not n.startswith('unconstrained')
+                for n in ast.variables
+            )
+        except Exception:
+            return False
+
+    def _sync_extra_python_pages(self, angr_state: "angr.SimState",
+                                 rust_state: "_RustSimState",
+                                 mapped_page_addrs: set,
+                                 symbolic_pages: set,
+                                 sp_page: int,
+                                 stack_start: int, stack_base: int,
+                                 page_size: int) -> None:
+        """Sync non-loader, non-stack pages from the Python state.
+
+        Critical for multi-stage explore: pages written during stage 1 (ctype
+        tables, heap data, extra stack frames from SimProcedures) must be
+        synced or the Rust engine will read zeros and diverge.
+        """
         extra_pages_synced = 0
         try:
             mem_pages = getattr(angr_state.memory, '_pages', None)
-            if mem_pages is not None:
-                for page_no in list(mem_pages.keys()):
-                    page_addr = page_no * page_size
-                    # Skip pages already mapped from the loader
-                    if page_addr in mapped_page_addrs:
-                        continue
-                    # Skip the stack page we already synced
-                    if page_addr == sp_page:
-                        continue
-                    # Skip pages in symbolic_pages (handled later via symbolic import)
-                    if page_addr in symbolic_pages:
-                        continue
-                    page_obj = mem_pages.get(page_no)
-                    if page_obj is None:
-                        continue
-                    # Use fast concrete_load to extract page bytes
-                    try:
-                        concrete = bytes(page_obj.concrete_load(0, page_size))
-                        if len(concrete) == page_size and any(concrete):
-                            # Determine permissions: stack pages get RW, others get RWX
-                            perms = 6 if stack_start <= page_addr < stack_base else 7
-                            rust_state.map_memory_data(page_addr, concrete, perms)
-                            # Also add lazy region so fetch_page can handle neighbors
-                            rust_state.add_lazy_region(page_addr, page_size)
-                            extra_pages_synced += 1
-                    except Exception:
-                        pass
+            if mem_pages is None:
+                return
+            for page_no in list(mem_pages.keys()):
+                page_addr = page_no * page_size
+                if page_addr in mapped_page_addrs:
+                    continue  # Loader page — handled by overlay
+                if page_addr == sp_page:
+                    continue  # Stack page — already synced
+                if page_addr in symbolic_pages:
+                    continue  # Handled later via symbolic import
+                page_obj = mem_pages.get(page_no)
+                if page_obj is None:
+                    continue
+                try:
+                    concrete = bytes(page_obj.concrete_load(0, page_size))
+                    if len(concrete) == page_size and any(concrete):
+                        # Stack region gets RW, others RWX
+                        perms = 6 if stack_start <= page_addr < stack_base else 7
+                        rust_state.map_memory_data(page_addr, concrete, perms)
+                        rust_state.add_lazy_region(page_addr, page_size)
+                        extra_pages_synced += 1
+                except Exception:
+                    pass
         except Exception:
             pass
         if extra_pages_synced:
             l.debug(f"Synced {extra_pages_synced} extra pages from Python state (non-loader)")
 
-        # Scan non-stack memory pages for user-written symbolic data.
-        # Import WIDE symbolic objects (not byte-by-byte) to preserve identity.
-        # This ensures the Rust engine creates a single symbol that can be
-        # unified with the original user-created BVS during state export.
-        #
-        # OPTIMIZATION: Only scan pages with actual user symbolic data, NOT
-        # unconstrained fill pages. After Python init, thousands of pages get
-        # filled with mem_*/unconstrained symbols. Calling memory.load() on
-        # each is ~0.3ms/page = 600ms+ for 2000 pages. Instead:
-        # 1. get_symbolic_addrs() returns only user-written addresses (fast)
-        # 2. Fall back to page.symbolic_data dict (O(1) per page, non-empty
-        #    only for pages with explicit stores, not default fill)
+    def _scan_user_symbolic_pages(self, angr_state: "angr.SimState",
+                                  stack_start: int, stack_base: int,
+                                  page_size: int,
+                                  symbolic_regions: list) -> None:
+        """Scan non-stack pages for user symbolic data and import as wide regions.
+
+        Importing as a single wide object preserves symbolic identity across
+        the Rust/Python boundary (avoids creating rust_sym_XXX aliases).
+
+        Uses get_symbolic_addrs() (or page.symbolic_data fallback) to skip the
+        thousands of mem_*/unconstrained fill pages that show up after Python
+        init — scanning those is ~0.3ms/page.
+        """
         try:
             pages = getattr(angr_state.memory, '_pages', {})
-            # Build set of page numbers worth scanning
             user_sym_pages = set()
             if hasattr(angr_state.memory, 'get_symbolic_addrs'):
                 try:
@@ -472,42 +530,30 @@ class RustStateSyncMixin:
                 except Exception:
                     pass
             if not user_sym_pages:
-                # Cheap filter: check symbolic_data dict on each page object.
-                # symbolic_data is non-empty only for pages with explicit stores,
-                # not for unconstrained fill from the default filler mixin.
+                # Cheap filter: symbolic_data is non-empty only for pages with
+                # explicit stores (not unconstrained fill from the filler mixin).
                 for page_no in pages:
                     page = pages[page_no]
                     if hasattr(page, 'symbolic_data'):
                         sd = page.symbolic_data
-                        if sd and len(sd) > 0:
+                        if sd:
                             user_sym_pages.add(page_no)
 
             for page_no in sorted(user_sym_pages):
                 page_addr = page_no * page_size
                 if stack_start <= page_addr < stack_base:
-                    continue  # Skip stack pages
+                    continue  # Stack pages already handled
                 try:
                     page_data = angr_state.memory.load(
                         page_addr, page_size, endness='Iend_BE',
                         inspect=False, disable_actions=True)
-                    if page_data.symbolic:
-                        leaf_names = list(page_data.variables)
-                        has_user_sym = any(
-                            not n.startswith('mem_') and not n.startswith('reg_')
-                            and not n.startswith('unconstrained')
-                            for n in leaf_names
-                        )
-                        if has_user_sym:
-                            self._extract_wide_symbolic_regions(
-                                angr_state, page_addr, page_size, symbolic_regions)
+                    if page_data.symbolic and self._has_user_symbolic_var(page_data):
+                        self._extract_wide_symbolic_regions(
+                            angr_state, page_addr, page_size, symbolic_regions)
                 except Exception:
                     pass
         except Exception:
             pass
-
-        if symbolic_regions:
-            self._pending_symbolic_imports = symbolic_regions
-            l.debug(f"Found {len(symbolic_regions)} symbolic regions for import")
 
     def _extract_wide_symbolic_regions(self, angr_state, page_addr, page_size, out):
         """Extract WIDE symbolic regions from a page.
