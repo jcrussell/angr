@@ -117,6 +117,22 @@ pub enum FloatOpKind {
     /// operand[0] = rm BV (32-bit, VEX rounding mode 0..3),
     /// operand[1] = value BV (prec.bits()).
     RoundToInt,
+    /// Convert int (signed/unsigned 2's complement) BV to FP at `prec`.
+    /// operand[0] = src BV at src_bits. RNE rounding implicit.
+    ConvertItoF { src_bits: u8, signed: bool },
+    /// Convert FP at `prec` to int BV (signed/unsigned 2's complement).
+    /// operand[0] = src FP BV at prec.bits(). RNE rounding implicit.
+    ConvertFtoI { dst_bits: u8, signed: bool },
+    /// Convert FP at `prec` to int BV (signed/unsigned 2's complement)
+    /// with explicit rounding mode.
+    /// operand[0] = rm BV (32-bit), operand[1] = src FP BV at prec.bits().
+    ConvertFtoIRm { dst_bits: u8, signed: bool },
+    /// Convert FP at `src_prec` to FP at `prec`. RNE rounding implicit.
+    /// operand[0] = src FP BV at src_prec.bits().
+    ConvertFtoF { src_prec: FloatPrec },
+    /// Convert FP at `src_prec` to FP at `prec` with explicit rounding mode.
+    /// operand[0] = rm BV (32-bit), operand[1] = src FP BV at src_prec.bits().
+    ConvertFtoFRm { src_prec: FloatPrec },
 }
 
 impl FloatOpKind {
@@ -124,7 +140,12 @@ impl FloatOpKind {
     #[inline]
     pub fn arity(&self) -> usize {
         match self {
-            FloatOpKind::Sqrt | FloatOpKind::Neg | FloatOpKind::Abs => 1,
+            FloatOpKind::Sqrt
+            | FloatOpKind::Neg
+            | FloatOpKind::Abs
+            | FloatOpKind::ConvertItoF { .. }
+            | FloatOpKind::ConvertFtoI { .. }
+            | FloatOpKind::ConvertFtoF { .. } => 1,
             FloatOpKind::Add
             | FloatOpKind::Sub
             | FloatOpKind::Mul
@@ -132,7 +153,9 @@ impl FloatOpKind {
             | FloatOpKind::CmpEq
             | FloatOpKind::CmpLt
             | FloatOpKind::CmpLe
-            | FloatOpKind::RoundToInt => 2,
+            | FloatOpKind::RoundToInt
+            | FloatOpKind::ConvertFtoIRm { .. }
+            | FloatOpKind::ConvertFtoFRm { .. } => 2,
             FloatOpKind::Fma | FloatOpKind::Fms => 3,
         }
     }
@@ -144,6 +167,20 @@ impl FloatOpKind {
             self,
             FloatOpKind::CmpEq | FloatOpKind::CmpLt | FloatOpKind::CmpLe
         )
+    }
+
+    /// Width (in bits) of the BV result for this op, given the `prec` field
+    /// of the enclosing `BVOp::Float`. Compares are 1-bit; FtoI conversions
+    /// take their result width from `dst_bits`; everything else returns the
+    /// IEEE encoding width of `prec`.
+    #[inline]
+    pub fn result_bits(&self, prec: FloatPrec) -> u32 {
+        match self {
+            FloatOpKind::CmpEq | FloatOpKind::CmpLt | FloatOpKind::CmpLe => 1,
+            FloatOpKind::ConvertFtoI { dst_bits, .. }
+            | FloatOpKind::ConvertFtoIRm { dst_bits, .. } => *dst_bits as u32,
+            _ => prec.bits(),
+        }
     }
 }
 
@@ -2201,6 +2238,37 @@ impl RustBV {
         if let FloatOpKind::RoundToInt = kind {
             return Self::build_fp_round_to_int_cached(prec, operands, cache);
         }
+        // FP conversions (FtoI, ItoF, FtoF) have non-uniform operand types
+        // (BV vs FP, varying widths/sorts). Each routes to a dedicated helper
+        // per the split-helper invariant for FloatOpKind metadata operands.
+        match kind {
+            FloatOpKind::ConvertItoF { src_bits, signed } => {
+                return Self::build_fp_i_to_f_cached(
+                    prec, src_bits, signed, operands, cache,
+                );
+            }
+            FloatOpKind::ConvertFtoI { dst_bits, signed } => {
+                return Self::build_fp_f_to_i_cached(
+                    prec, dst_bits, signed, /*rm*/ None, operands, cache,
+                );
+            }
+            FloatOpKind::ConvertFtoIRm { dst_bits, signed } => {
+                return Self::build_fp_f_to_i_cached(
+                    prec, dst_bits, signed, Some(()), operands, cache,
+                );
+            }
+            FloatOpKind::ConvertFtoF { src_prec } => {
+                return Self::build_fp_f_to_f_cached(
+                    prec, src_prec, /*has_rm*/ false, operands, cache,
+                );
+            }
+            FloatOpKind::ConvertFtoFRm { src_prec } => {
+                return Self::build_fp_f_to_f_cached(
+                    prec, src_prec, /*has_rm*/ true, operands, cache,
+                );
+            }
+            _ => {}
+        }
 
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
@@ -2257,7 +2325,12 @@ impl RustBV {
                 FloatOpKind::CmpEq => Z3_mk_fpa_eq(raw_ctx, raw_a, raw_b()),
                 FloatOpKind::CmpLt => Z3_mk_fpa_lt(raw_ctx, raw_a, raw_b()),
                 FloatOpKind::CmpLe => Z3_mk_fpa_leq(raw_ctx, raw_a, raw_b()),
-                FloatOpKind::RoundToInt => unreachable!("handled above"),
+                FloatOpKind::RoundToInt
+                | FloatOpKind::ConvertItoF { .. }
+                | FloatOpKind::ConvertFtoI { .. }
+                | FloatOpKind::ConvertFtoIRm { .. }
+                | FloatOpKind::ConvertFtoF { .. }
+                | FloatOpKind::ConvertFtoFRm { .. } => unreachable!("handled above"),
             }
             .expect("Z3 FPA op returned NULL")
         };
@@ -2347,6 +2420,228 @@ impl RustBV {
             let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
             let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
             rm_low2.eq(&zero).ite(&r0, &pick123)
+        };
+
+        let ieee_bv_raw = unsafe {
+            Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
+                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
+        };
+        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+    }
+
+    /// Build the Z3 AST for `FloatOpKind::ConvertItoF`. operand[0] is a BV
+    /// of width `src_bits` interpreted as signed/unsigned per `signed`.
+    /// Result is the IEEE bits of the FP at `prec`. RNE rounding.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_fp_i_to_f_cached(
+        prec: FloatPrec,
+        src_bits: u8,
+        signed: bool,
+        operands: &[Arc<RustBV>],
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
+        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3_sys::{Z3_mk_fpa_to_fp_signed, Z3_mk_fpa_to_fp_unsigned, Z3_mk_fpa_to_ieee_bv};
+
+        debug_assert_eq!(operands.len(), 1);
+        let src_bv = &operands[0];
+        debug_assert_eq!(src_bv.width(), src_bits as u32);
+
+        let z3_ctx = z3::Context::thread_local();
+        let raw_ctx = z3_ctx.get_z3_context();
+        let sort = match prec {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        };
+        let raw_sort = sort.get_z3_sort();
+
+        let src_z3 = src_bv.to_z3_ast_cached(cache);
+        let rm = RoundingMode::round_nearest_ties_to_even();
+        let rm_raw = rm.get_z3_ast();
+
+        let fp_raw = unsafe {
+            if signed {
+                Z3_mk_fpa_to_fp_signed(raw_ctx, rm_raw, src_z3.get_z3_ast(), raw_sort)
+                    .expect("Z3_mk_fpa_to_fp_signed returned NULL")
+            } else {
+                Z3_mk_fpa_to_fp_unsigned(raw_ctx, rm_raw, src_z3.get_z3_ast(), raw_sort)
+                    .expect("Z3_mk_fpa_to_fp_unsigned returned NULL")
+            }
+        };
+        let fp_wrap = unsafe { Float::wrap(&z3_ctx, fp_raw) };
+        let ieee_bv_raw = unsafe {
+            Z3_mk_fpa_to_ieee_bv(raw_ctx, fp_wrap.get_z3_ast())
+                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
+        };
+        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+    }
+
+    /// Build the Z3 AST for `FloatOpKind::ConvertFtoI` (no rm operand,
+    /// implicit RNE) or `FloatOpKind::ConvertFtoIRm` (operand[0] = rm BV,
+    /// operand[1] = FP value). The result is a BV of width `dst_bits`,
+    /// signed or unsigned 2's complement per `signed`.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_fp_f_to_i_cached(
+        prec: FloatPrec,
+        dst_bits: u8,
+        signed: bool,
+        rm_marker: Option<()>,
+        operands: &[Arc<RustBV>],
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
+        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_sbv, Z3_mk_fpa_to_ubv};
+
+        let (rm_bv_opt, value_bv) = if rm_marker.is_some() {
+            debug_assert_eq!(operands.len(), 2);
+            (Some(&operands[0]), &operands[1])
+        } else {
+            debug_assert_eq!(operands.len(), 1);
+            (None, &operands[0])
+        };
+
+        let z3_ctx = z3::Context::thread_local();
+        let raw_ctx = z3_ctx.get_z3_context();
+        let sort = match prec {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        };
+        let raw_sort = sort.get_z3_sort();
+
+        // Convert the operand BV to a Z3 Float; keep the wrapper alive.
+        let value_z3 = value_bv.to_z3_ast_cached(cache);
+        let value_fp = unsafe {
+            let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), raw_sort)
+                .expect("Z3_mk_fpa_to_fp_bv returned NULL");
+            Float::wrap(&z3_ctx, raw)
+        };
+        let value_raw = value_fp.get_z3_ast();
+
+        // Helper: convert the value to BV using one concrete VEX rounding mode (0..3).
+        let convert_with = |vex_rm: u8| -> BV {
+            let rm = match vex_rm & 0x3 {
+                0 => RoundingMode::round_nearest_ties_to_even(),
+                1 => RoundingMode::round_towards_negative(),
+                2 => RoundingMode::round_towards_positive(),
+                3 => RoundingMode::round_towards_zero(),
+                _ => unreachable!(),
+            };
+            let raw = unsafe {
+                if signed {
+                    Z3_mk_fpa_to_sbv(raw_ctx, rm.get_z3_ast(), value_raw, dst_bits as u32)
+                        .expect("Z3_mk_fpa_to_sbv returned NULL")
+                } else {
+                    Z3_mk_fpa_to_ubv(raw_ctx, rm.get_z3_ast(), value_raw, dst_bits as u32)
+                        .expect("Z3_mk_fpa_to_ubv returned NULL")
+                }
+            };
+            unsafe { BV::wrap(&z3_ctx, raw) }
+        };
+
+        match rm_bv_opt {
+            // Implicit RNE.
+            None => convert_with(0),
+            // Explicit rm; if symbolic, ITE over the four cases.
+            Some(rm_bv) => {
+                if let Some(m) = rm_bv.as_u128() {
+                    convert_with((m & 0x3) as u8)
+                } else {
+                    let r0 = convert_with(0);
+                    let r1 = convert_with(1);
+                    let r2 = convert_with(2);
+                    let r3 = convert_with(3);
+                    let rm_z3 = rm_bv.to_z3_ast_cached(cache);
+                    let rm_low2 = rm_z3.extract(1, 0);
+                    let zero = BV::from_u64(0, 2);
+                    let one = BV::from_u64(1, 2);
+                    let two = BV::from_u64(2, 2);
+                    let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
+                    let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
+                    rm_low2.eq(&zero).ite(&r0, &pick123)
+                }
+            }
+        }
+    }
+
+    /// Build the Z3 AST for `FloatOpKind::ConvertFtoF` (no rm) or
+    /// `FloatOpKind::ConvertFtoFRm` (operand[0] = rm BV, operand[1] = FP).
+    /// Source FP is at `src_prec`, destination FP is at `prec`.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_fp_f_to_f_cached(
+        prec: FloatPrec,
+        src_prec: FloatPrec,
+        has_rm: bool,
+        operands: &[Arc<RustBV>],
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
+        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_fp_float, Z3_mk_fpa_to_ieee_bv};
+
+        let (rm_bv_opt, value_bv) = if has_rm {
+            debug_assert_eq!(operands.len(), 2);
+            (Some(&operands[0]), &operands[1])
+        } else {
+            debug_assert_eq!(operands.len(), 1);
+            (None, &operands[0])
+        };
+
+        let z3_ctx = z3::Context::thread_local();
+        let raw_ctx = z3_ctx.get_z3_context();
+        let src_sort = match src_prec {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        };
+        let dst_sort = match prec {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        };
+        let src_raw_sort = src_sort.get_z3_sort();
+        let dst_raw_sort = dst_sort.get_z3_sort();
+
+        // Convert the source operand BV to a Z3 Float at src_prec.
+        let value_z3 = value_bv.to_z3_ast_cached(cache);
+        let value_fp = unsafe {
+            let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), src_raw_sort)
+                .expect("Z3_mk_fpa_to_fp_bv returned NULL");
+            Float::wrap(&z3_ctx, raw)
+        };
+        let value_raw = value_fp.get_z3_ast();
+
+        let convert_with = |vex_rm: u8| -> Float {
+            let rm = match vex_rm & 0x3 {
+                0 => RoundingMode::round_nearest_ties_to_even(),
+                1 => RoundingMode::round_towards_negative(),
+                2 => RoundingMode::round_towards_positive(),
+                3 => RoundingMode::round_towards_zero(),
+                _ => unreachable!(),
+            };
+            let raw = unsafe {
+                Z3_mk_fpa_to_fp_float(raw_ctx, rm.get_z3_ast(), value_raw, dst_raw_sort)
+                    .expect("Z3_mk_fpa_to_fp_float returned NULL")
+            };
+            unsafe { Float::wrap(&z3_ctx, raw) }
+        };
+
+        let result_fp = match rm_bv_opt {
+            None => convert_with(0),
+            Some(rm_bv) => {
+                if let Some(m) = rm_bv.as_u128() {
+                    convert_with((m & 0x3) as u8)
+                } else {
+                    let r0 = convert_with(0);
+                    let r1 = convert_with(1);
+                    let r2 = convert_with(2);
+                    let r3 = convert_with(3);
+                    let rm_z3 = rm_bv.to_z3_ast_cached(cache);
+                    let rm_low2 = rm_z3.extract(1, 0);
+                    let zero = BV::from_u64(0, 2);
+                    let one = BV::from_u64(1, 2);
+                    let two = BV::from_u64(2, 2);
+                    let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
+                    let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
+                    rm_low2.eq(&zero).ite(&r0, &pick123)
+                }
+            }
         };
 
         let ieee_bv_raw = unsafe {

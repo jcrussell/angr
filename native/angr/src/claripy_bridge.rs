@@ -1316,11 +1316,12 @@ pub fn rustbv_to_claripy(
                 // and rounding mode; round-tripping a Z3 FP expression through
                 // claripy is fragile. The Rust engine keeps the Z3 FP
                 // constraint internally (via build_fp_z3_ast_cached) — for the
-                // Python side we expose a fresh symbolic BV at the IEEE width.
-                // Constraint info is lost when the value crosses back to
-                // claripy, but the in-engine solver still sees the FP terms.
+                // Python side we expose a fresh symbolic BV at the result
+                // width (varies for FtoI/CmpXxx). Constraint info is lost
+                // when the value crosses back to claripy, but the in-engine
+                // solver still sees the FP terms.
                 BVOp::Float { kind, prec } => {
-                    let width = prec.bits();
+                    let width = kind.result_bits(*prec);
                     let name = format!("fp_{:?}_{:?}_result", kind, prec);
                     claripy_mod
                         .call_method1("BVS", (name, width))
