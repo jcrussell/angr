@@ -113,6 +113,10 @@ pub enum FloatOpKind {
     CmpEq,
     CmpLt,
     CmpLe,
+    /// Round to integer with rounding mode.
+    /// operand[0] = rm BV (32-bit, VEX rounding mode 0..3),
+    /// operand[1] = value BV (prec.bits()).
+    RoundToInt,
 }
 
 impl FloatOpKind {
@@ -127,7 +131,8 @@ impl FloatOpKind {
             | FloatOpKind::Div
             | FloatOpKind::CmpEq
             | FloatOpKind::CmpLt
-            | FloatOpKind::CmpLe => 2,
+            | FloatOpKind::CmpLe
+            | FloatOpKind::RoundToInt => 2,
             FloatOpKind::Fma | FloatOpKind::Fms => 3,
         }
     }
@@ -2192,6 +2197,11 @@ impl RustBV {
             Z3_mk_fpa_sub, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
         };
 
+        // RoundToInt has a non-Float operand (the rm BV) and needs its own path.
+        if let FloatOpKind::RoundToInt = kind {
+            return Self::build_fp_round_to_int_cached(prec, operands, cache);
+        }
+
         let z3_ctx = z3::Context::thread_local();
         let raw_ctx = z3_ctx.get_z3_context();
         let sort = match prec {
@@ -2247,6 +2257,7 @@ impl RustBV {
                 FloatOpKind::CmpEq => Z3_mk_fpa_eq(raw_ctx, raw_a, raw_b()),
                 FloatOpKind::CmpLt => Z3_mk_fpa_lt(raw_ctx, raw_a, raw_b()),
                 FloatOpKind::CmpLe => Z3_mk_fpa_leq(raw_ctx, raw_a, raw_b()),
+                FloatOpKind::RoundToInt => unreachable!("handled above"),
             }
             .expect("Z3 FPA op returned NULL")
         };
@@ -2262,6 +2273,87 @@ impl RustBV {
             };
             unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
         }
+    }
+
+    /// Build the Z3 AST for a `FloatOpKind::RoundToInt` operation.
+    ///
+    /// VEX rounding modes (low 2 bits of operand[0]):
+    ///   0 = nearest (ties to even), 1 = -inf, 2 = +inf, 3 = zero (truncate).
+    ///
+    /// Concrete rm: pick the matching Z3 RoundingMode and call
+    /// `Z3_mk_fpa_round_to_integral` once. Symbolic rm: build all four
+    /// variants and ITE on the rm low-bits — Z3 simplifies away dead arms
+    /// at solve time.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_fp_round_to_int_cached(
+        prec: FloatPrec,
+        operands: &[Arc<RustBV>],
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
+        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3_sys::{Z3_mk_fpa_round_to_integral, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv};
+
+        debug_assert_eq!(operands.len(), 2);
+        let rm_bv = &operands[0];
+        let value_bv = &operands[1];
+
+        let z3_ctx = z3::Context::thread_local();
+        let raw_ctx = z3_ctx.get_z3_context();
+        let sort = match prec {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        };
+        let raw_sort = sort.get_z3_sort();
+
+        // Convert the value BV to a Z3 Float; keep the wrapper alive.
+        let value_z3 = value_bv.to_z3_ast_cached(cache);
+        let value_fp = unsafe {
+            let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), raw_sort)
+                .expect("Z3_mk_fpa_to_fp_bv returned NULL");
+            Float::wrap(&z3_ctx, raw)
+        };
+        let value_raw = value_fp.get_z3_ast();
+
+        // Helper: round value with one concrete VEX rounding mode (0..3).
+        let round_with = |vex_rm: u8| -> Float {
+            let rm = match vex_rm & 0x3 {
+                0 => RoundingMode::round_nearest_ties_to_even(),
+                1 => RoundingMode::round_towards_negative(),
+                2 => RoundingMode::round_towards_positive(),
+                3 => RoundingMode::round_towards_zero(),
+                _ => unreachable!(),
+            };
+            let raw = unsafe {
+                Z3_mk_fpa_round_to_integral(raw_ctx, rm.get_z3_ast(), value_raw)
+                    .expect("Z3_mk_fpa_round_to_integral returned NULL")
+            };
+            unsafe { Float::wrap(&z3_ctx, raw) }
+        };
+
+        let result_fp = if let Some(m) = rm_bv.as_u128() {
+            round_with((m & 0x3) as u8)
+        } else {
+            // Symbolic rm: build all 4 results and ITE on rm[1:0].
+            let r0 = round_with(0);
+            let r1 = round_with(1);
+            let r2 = round_with(2);
+            let r3 = round_with(3);
+            let rm_z3 = rm_bv.to_z3_ast_cached(cache);
+            let rm_low2 = rm_z3.extract(1, 0);
+            let zero = BV::from_u64(0, 2);
+            let one = BV::from_u64(1, 2);
+            let two = BV::from_u64(2, 2);
+            // Chain: rm==0 ? r0 : rm==1 ? r1 : rm==2 ? r2 : r3
+            let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
+            let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
+            rm_low2.eq(&zero).ite(&r0, &pick123)
+        };
+
+        let ieee_bv_raw = unsafe {
+            Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
+                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
+        };
+        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
     }
 }
 

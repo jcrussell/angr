@@ -1685,7 +1685,11 @@ impl VEXOps {
             let result = normalized.to_bits();
             return Ok(RustBV::concrete(result as u128, 32));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        Ok(build_float_expr(
+            FloatOpKind::RoundToInt,
+            FloatPrec::F32,
+            vec![mode, value],
+        ))
     }
 
     /// Round F64 to integer using specified rounding mode (binop version).
@@ -1709,7 +1713,11 @@ impl VEXOps {
             let result = normalized.to_bits();
             return Ok(RustBV::concrete(result as u128, 64));
         }
-        Err(OpError::SymbolicFloatUnsupported)
+        Ok(build_float_expr(
+            FloatOpKind::RoundToInt,
+            FloatPrec::F64,
+            vec![mode, value],
+        ))
     }
 
     // =========================================================================
