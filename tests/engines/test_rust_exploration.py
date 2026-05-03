@@ -245,6 +245,28 @@ class TestRustExplorationPython:
 
         assert mgr.stash_counts()["active"] == 1, "entry_state should produce exactly 1 active state"
 
+    def test_strict_page_access_propagates_to_rust(self, fauxware_project):
+        """A SimState with STRICT_PAGE_ACCESS option should flip the Rust
+        memory model's enforce_permissions flag automatically (mirrors angr)."""
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # No option → flag stays off (default behavior).
+        plain_state = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain_state])
+        plain_ids = plain_mgr._rust_mgr.get_state_ids("active")
+        assert plain_ids, "expected an active state to be added"
+        assert plain_mgr._rust_mgr.state_enforce_permissions(plain_ids[0]) is False
+
+        # Option present → flag flips on for the Rust state.
+        strict_state = fauxware_project.factory.entry_state(
+            add_options={o.STRICT_PAGE_ACCESS}
+        )
+        strict_mgr = RustExplorationManager(fauxware_project, [strict_state])
+        strict_ids = strict_mgr._rust_mgr.get_state_ids("active")
+        assert strict_ids, "expected an active state to be added"
+        assert strict_mgr._rust_mgr.state_enforce_permissions(strict_ids[0]) is True
+
     def test_basic_explore(self, fauxware_project):
         """Test basic exploration with find address."""
         from angr.exploration import RustExplorationManager

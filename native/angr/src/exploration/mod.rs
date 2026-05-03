@@ -2166,6 +2166,12 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.satisfiable()))
     }
 
+    /// Whether strict memory permission enforcement is enabled on a state.
+    /// Mirrors angr's STRICT_PAGE_ACCESS option.
+    pub fn state_enforce_permissions(&self, state_id: u64) -> PyResult<bool> {
+        self.with_state(state_id, |state| Ok(state.enforce_permissions()))
+    }
+
     /// Get a register value from a state.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self.with_state(state_id, |state| {

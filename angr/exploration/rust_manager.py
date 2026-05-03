@@ -1414,7 +1414,8 @@ class RustExplorationManager(
 
     def _apply_state_metadata(self, src_state: "angr.SimState",
                               dst_state: "angr.SimState") -> None:
-        """Copy constraints, globals, and LAZY_SOLVES option from src to dst."""
+        """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS
+        options from src to dst."""
         for c in src_state.solver.constraints:
             dst_state.solver.add(c)
         if 'globals' in src_state.plugins:
@@ -1424,6 +1425,8 @@ class RustExplorationManager(
             from angr import sim_options as o
             if o.LAZY_SOLVES in src_state.options:
                 dst_state.options.add(o.LAZY_SOLVES)
+            if o.STRICT_PAGE_ACCESS in src_state.options:
+                dst_state.options.add(o.STRICT_PAGE_ACCESS)
         except (ImportError, Exception):
             pass
 
@@ -1592,6 +1595,18 @@ class RustExplorationManager(
         _t_mem = time.perf_counter_ns()
         self._sync_memory_to_rust(angr_state, rust_state)
         self._perf_stats['init_memory_sync_ns'] += time.perf_counter_ns() - _t_mem
+
+        # Mirror angr's STRICT_PAGE_ACCESS: when set on the SimState, the Rust
+        # memory model rejects loads/stores that violate per-page R/W bits.
+        # add_state forks the state internally; the flag is preserved through
+        # forks (see SymbolicMemory::fork in native/angr/src/memory.rs).
+        if hasattr(angr_state, 'options'):
+            try:
+                from angr import sim_options as o
+                if o.STRICT_PAGE_ACCESS in angr_state.options:
+                    rust_state.set_enforce_permissions(True)
+            except Exception as e:
+                l.debug(f"STRICT_PAGE_ACCESS detection failed: {e}")
 
         # Get state IDs before adding (to find the new one)
         ids_before = set(self._rust_mgr.get_state_ids(stash))
