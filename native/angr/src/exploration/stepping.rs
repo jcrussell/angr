@@ -283,50 +283,16 @@ impl RustExplorationManager {
 
                 // Trace removed
                 if native_succeeded {
-                    // Handle deferred forks same as normal successors
-                    let original_state_id = state.state_id();
-                    let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+                    // Unified deferred-fork handling: identical semantics to
+                    // MaxBlocks/BlockEnd (snapshot-based forks restore solver
+                    // state from the branch point; UNSAT forks go to STASH_PRUNED).
                     let mut successors = vec![state];
-
-                    // Process deferred forks with fork_base from first successor
-                    if !deferred_forks.is_empty() {
-                        let fork_base = successors[0].fork();
-                        let mut snapshots = fork_snapshots;
-                        for fork in deferred_forks {
-                            let condition = stored_conditions.get(&fork.condition_id);
-                            if let Some(cond) = condition {
-                                // Add taken-path constraint to main state
-                                if fork.path_taken {
-                                    successors[0].solver().borrow().assume_true(cond);
-                                } else {
-                                    successors[0].solver().borrow().assume_false(cond);
-                                }
-                                let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
-                                    let mut f = fork_base.fork_from_snapshot(snapshot);
-                                    if fork.path_taken {
-                                        f.solver().borrow().assume_false(cond);
-                                    } else {
-                                        f.solver().borrow().assume_true(cond);
-                                    }
-                                    f.set_pc(fork.unexplored_target);
-                                    f
-                                } else if fork.path_taken {
-                                    let mut f = fork_base.fork_false(cond);
-                                    f.set_pc(fork.unexplored_target);
-                                    f
-                                } else {
-                                    let mut f = fork_base.fork_true(cond);
-                                    f.set_pc(fork.unexplored_target);
-                                    f
-                                };
-                                self.sm.set_root(forked.state_id(), root_state_id);
-                                if self.lazy_solves || forked.satisfiable() {
-                                    successors.push(forked);
-                                }
-                            }
-                        }
-                    }
-
+                    self.process_deferred_forks_into(
+                        &mut successors,
+                        deferred_forks,
+                        &stored_conditions,
+                        fork_snapshots,
+                    );
                     Ok(successors)
                 } else {
                     // Fall through to Python callback
