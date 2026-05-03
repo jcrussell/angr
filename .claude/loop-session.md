@@ -1,53 +1,52 @@
-# Loop session notes (2026-05-03, twenty-third session)
+# Loop session notes (2026-05-03, twenty-fourth session)
 
-## Task: angr-07tg
-Audit deferred fork base in SimProc-native success path (stepping.rs).
+## Task: angr-xl2f
+Decompose stepping.rs match arms into per-result methods.
 
 ## Status
-- DONE. Commit 184a61f76. Closed angr-07tg.
+- DONE. Commit dfa31afb4. Closed angr-xl2f.
 
 ## What landed
-- SimProc-native success path now calls `process_deferred_forks_into()`
-  instead of inlining its own ~40-line deferred-fork loop with a `fork_base`
-  clone. Same call signature as the existing P21 / SymbolicJumpTarget paths.
-- Net: -43 lines, +9 lines.
+Extracted four large RunResult arms in `step_state_with_skip` into helper
+methods on `RustExplorationManager`:
 
-## Audit conclusion (recorded in memory)
-1. **Primary path (always snapshot-based in practice)**: equivalent.
-   `fork_from_snapshot` REPLACES the solver/registers/memory entirely with
-   the snapshot's state. The parent state for the call (`successors[0]` vs
-   `fork_base`) only affects inherited fields (history, call_stack, etc.),
-   and those fields are identical at the cloning point in both code paths.
-2. **No-snapshot fallback (unreachable — every deferred fork creates a
-   snapshot at interpreter_cb/statements.rs:389)**:
-   - MaxBlocks/BlockEnd: would produce UNSAT (F_1..F_n + !F_n) → pruned.
-   - SimProc-native: would produce spurious state (only !F_n, missing prior).
-   Both wrong but unreachable.
-3. Therefore safe to unify on MaxBlocks/BlockEnd / process_deferred_forks_into.
+| Helper                          | Source arm(s)                                       | Approx LOC |
+|---------------------------------|-----------------------------------------------------|------------|
+| `handle_block_end`              | MaxBlocks / MaxDeferredForks / BlockEnd             | 115        |
+| `handle_simprocedure`           | SimProcedure (native + Python fallback)             | 89         |
+| `handle_symbolic_jump_target`   | SymbolicJumpTarget (single + multi-target)          | 77         |
+| `handle_unmodeled_call`         | UnmodeledCall (resolve_function)                    | 73         |
+| `unmodeled_call_generic_skip`   | shared P21 path (out of `handle_unmodeled_call`)    | 36         |
 
-## Bonuses from unification
-- SimProc-native gains UNSAT-pruning to STASH_PRUNED.
-- SimProc-native gains P15 conservative-fork for missing-condition path.
-- Eliminates `let fork_base = successors[0].fork()` clone.
+`step_state_with_skip` dropped from ~560 lines (full match block) to a
+196-line dispatcher. Smaller arms (Hook, Syscall, SymbolicBranch, Error,
+NeedPythonVEX, NeedLift, UnconstrainedJump) stay inline — they're 4-36
+lines each, extraction would add boilerplate without value.
+
+## Key decision
+**Did NOT unify `handle_block_end`'s inline deferred-fork loop with
+`process_deferred_forks_into`.** The MaxBlocks path carries extra
+profiling instrumentation (per-fork solver_fork_time/solver_sat_time
+timers, deferred_fork_total timer) and an explicit pruned_states Vec
+that the simpler helper deliberately omits. They're functionally
+equivalent — unifying without explicit decision would either drop
+profiling on MaxBlocks or add it everywhere (perf cost). Saved to
+memory `invariant-stepping-decomposition`.
 
 ## Tests
-- 208/208 passing in 6.79s.
-- fauxware --engine rust completes in 0.38s, finds SOSNEAKY (no regression).
+- 208/208 passing in 6.72s.
+- fauxware --engine rust: 0.38s, finds SOSNEAKY (no regression).
+- Net: +431 lines, −358 lines (file: 808 → 881 lines).
 
 ## Files modified
-- native/angr/src/exploration/stepping.rs (+9, −43)
+- native/angr/src/exploration/stepping.rs
 
 ## Memories saved
-- `invariant-deferred-fork-snapshot-primary`: fork_from_snapshot replaces
-  solver/registers/memory entirely; parent only affects inherited fields.
-- `invariant-symcontext-push-not-cache-aware`: SymContext::push/pop is
-  solver-only; the z3_assertions_local cache survives a pop. fork() reads
-  the cache, so snapshots inside a pushed frame capture the pushed
-  constraints (this is what makes the block-level snapshot model work).
+- `invariant-stepping-decomposition`: documents the two distinct
+  deferred-fork code paths and why they're kept separate.
 
 ## Other ready tasks (P3)
-- angr-xl2f: decompose stepping.rs 13-arm match into per-result methods
-- angr-w4os: Python bridge cleanup
+- angr-w4os: Python bridge cleanup (split sync/export/cache/init methods)
 - angr-2fs0: decompose _handle_simprocedure_callback (~478 lines)
 - angr-cbko: native exit/abort SimProcs
 - angr-8em4: replace panic patterns
