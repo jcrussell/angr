@@ -1,57 +1,60 @@
-# Loop session notes (2026-05-03, twenty-second session)
+# Loop session notes (2026-05-03, twenty-third session)
 
-## Task: angr-1f8s
-Refactor stepping.rs: InterpreterStepResult struct, deferred fork dedup (2 sites),
-decompose 703-line step function
+## Task: angr-07tg
+Audit deferred fork base in SimProc-native success path (stepping.rs).
 
 ## Status
-- DONE (partial). Commit 4e0d8847c. Closed angr-1f8s.
-- Split remaining sub-goals into follow-ups:
-  - angr-07tg (P2): audit deferred fork base mismatch in SimProc-native vs MaxBlocks/BlockEnd
-  - angr-xl2f (P3): decompose 13-arm match into per-result methods
+- DONE. Commit 184a61f76. Closed angr-07tg.
 
 ## What landed
-- New `InterpreterStepResult` struct in stepping.rs replaces the 12-element tuple
-  destructure that was unreadable. Fields: result, deferred_forks, last_condition,
-  stored_conditions, fork_snapshots, new_registers, new_pc, new_call_stack,
-  new_detailed_history, recovered_memory, step_stats, updated_block_cache.
-- New `run_interpreter_step()` helper method owns the borrow scope around the
-  state's solver, constructs the CallbackInterpreter, runs it to its next event,
-  and drains all owned state before drop.
-- step_state_with_skip is now ~85 lines shorter at the call site (the inline
-  setup+drain block is gone) and reads results by name.
-- Tests: 208/208 passing. Quick fauxware run ~0.39s (no regression).
+- SimProc-native success path now calls `process_deferred_forks_into()`
+  instead of inlining its own ~40-line deferred-fork loop with a `fork_base`
+  clone. Same call signature as the existing P21 / SymbolicJumpTarget paths.
+- Net: -43 lines, +9 lines.
 
-## Why I stopped at one sub-goal
-- Deferred fork dedup (sub-goal 2) — the MaxBlocks/BlockEnd path forks deferred
-  branches from `successors[0]` (which carries the prior taken-path constraints
-  accumulated this loop), while the SimProc-native success path forks from a
-  separately-saved `fork_base` clone (no prior constraints). These have
-  different semantics. MaxBlocks behavior is likely correct (deferred forks
-  share a common prefix of taken-path constraints since they all happened in
-  the same VEX block) but unifying them risks correctness. Saved as memory
-  `avoid-deferred-fork-base-mismatch`. Tracked as angr-07tg.
-- Match arm decomposition (sub-goal 3) — each arm has its own deferred-fork
-  handling that differs subtly. Pulling them out without a clean abstraction
-  would just move complexity around. Tracked as angr-xl2f.
+## Audit conclusion (recorded in memory)
+1. **Primary path (always snapshot-based in practice)**: equivalent.
+   `fork_from_snapshot` REPLACES the solver/registers/memory entirely with
+   the snapshot's state. The parent state for the call (`successors[0]` vs
+   `fork_base`) only affects inherited fields (history, call_stack, etc.),
+   and those fields are identical at the cloning point in both code paths.
+2. **No-snapshot fallback (unreachable — every deferred fork creates a
+   snapshot at interpreter_cb/statements.rs:389)**:
+   - MaxBlocks/BlockEnd: would produce UNSAT (F_1..F_n + !F_n) → pruned.
+   - SimProc-native: would produce spurious state (only !F_n, missing prior).
+   Both wrong but unreachable.
+3. Therefore safe to unify on MaxBlocks/BlockEnd / process_deferred_forks_into.
+
+## Bonuses from unification
+- SimProc-native gains UNSAT-pruning to STASH_PRUNED.
+- SimProc-native gains P15 conservative-fork for missing-condition path.
+- Eliminates `let fork_base = successors[0].fork()` clone.
+
+## Tests
+- 208/208 passing in 6.79s.
+- fauxware --engine rust completes in 0.38s, finds SOSNEAKY (no regression).
 
 ## Files modified
-- native/angr/src/exploration/stepping.rs (+172, −126)
+- native/angr/src/exploration/stepping.rs (+9, −43)
 
 ## Memories saved
-- `avoid-deferred-fork-base-mismatch`: SimProc-native vs MaxBlocks/BlockEnd
-  fork base difference; MaxBlocks behavior is likely the correct semantics,
-  needs audit before unification.
+- `invariant-deferred-fork-snapshot-primary`: fork_from_snapshot replaces
+  solver/registers/memory entirely; parent only affects inherited fields.
+- `invariant-symcontext-push-not-cache-aware`: SymContext::push/pop is
+  solver-only; the z3_assertions_local cache survives a pop. fork() reads
+  the cache, so snapshots inside a pushed frame capture the pushed
+  constraints (this is what makes the block-level snapshot model work).
 
-## Other ready tasks
-- angr-3tek (P2, blocked): native read/write SimProcs blocked by stale-cache
-- angr-07tg (P2): audit deferred fork base mismatch (NEW)
-- angr-w4os (P3): Python bridge cleanup
-- angr-2fs0 (P3): decompose _handle_simprocedure_callback
-- angr-cbko (P3): native exit/abort SimProcs
-- angr-8em4 (P3): replace panic patterns
-- angr-3ijo (P3): bincode for VEX IRSB serialization
-- angr-bgv0 (P3): Z3 floating point theory
-- angr-awm3 (P3): CAS/LLSC statement handling
-- angr-v4db (P3): extract god-methods in Python bridge layer
-- angr-xl2f (P3): decompose stepping.rs match arms (NEW)
+## Other ready tasks (P3)
+- angr-xl2f: decompose stepping.rs 13-arm match into per-result methods
+- angr-w4os: Python bridge cleanup
+- angr-2fs0: decompose _handle_simprocedure_callback (~478 lines)
+- angr-cbko: native exit/abort SimProcs
+- angr-8em4: replace panic patterns
+- angr-3ijo: bincode for VEX IRSB serialization
+- angr-bgv0: Z3 floating point theory
+- angr-awm3: CAS/LLSC statement handling
+- angr-v4db: extract god-methods in Python bridge layer
+
+## Other ready blocked
+- angr-3tek (P2): native read/write SimProcs blocked by stale-cache
