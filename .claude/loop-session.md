@@ -1,59 +1,59 @@
-# Loop session notes (2026-05-03, twenty-fourth session)
+# Loop session notes (2026-05-03, twenty-fifth session)
 
-## Task: angr-xl2f
-Decompose stepping.rs match arms into per-result methods.
+## Task: angr-2fs0
+Decompose _handle_simprocedure_callback (~478 lines) and deduplicate
+register/memory extraction.
 
 ## Status
-- DONE. Commit dfa31afb4. Closed angr-xl2f.
+- DONE. Commit 07a74c928. Closed angr-2fs0.
 
 ## What landed
-Extracted four large RunResult arms in `step_state_with_skip` into helper
-methods on `RustExplorationManager`:
+Decomposed the SimProcedure callback handler in rust_callback_dispatch.py
+into a 193-line dispatcher (down from 485) that calls 8 focused helpers:
 
-| Helper                          | Source arm(s)                                       | Approx LOC |
-|---------------------------------|-----------------------------------------------------|------------|
-| `handle_block_end`              | MaxBlocks / MaxDeferredForks / BlockEnd             | 115        |
-| `handle_simprocedure`           | SimProcedure (native + Python fallback)             | 89         |
-| `handle_symbolic_jump_target`   | SymbolicJumpTarget (single + multi-target)          | 77         |
-| `handle_unmodeled_call`         | UnmodeledCall (resolve_function)                    | 73         |
-| `unmodeled_call_generic_skip`   | shared P21 path (out of `handle_unmodeled_call`)    | 36         |
+| Helper                                | Purpose                                          |
+|---------------------------------------|--------------------------------------------------|
+| `_find_simprocedure`                  | Lookup by addr, name fallback, type check        |
+| `_try_simproc_deadend_fast_path`      | Skip state creation for NO_RET / cached exit     |
+| `_snapshot_orig_state`                | Full copy / register snapshot / no-copy logic    |
+| `_capture_stdin_from_successors`      | Track stdin packets added by fgets/read/etc.     |
+| `_capture_continuation_data`          | Stash procedure_data + register cont hooks       |
+| `_handle_callback_with_successors`    | Success path with successors (~120 lines)        |
+| `_push_continuation_address`          | Push self.call() cont addr to stack              |
+| `_handle_callback_no_successors`      | Terminal/zero-length/normal no-successor cases   |
 
-`step_state_with_skip` dropped from ~560 lines (full match block) to a
-196-line dispatcher. Smaller arms (Hook, Syscall, SymbolicBranch, Error,
-NeedPythonVEX, NeedLift, UnconstrainedJump) stay inline — they're 4-36
-lines each, extraction would add boilerplate without value.
+Plus deduplication helper in rust_state_sync.py:
+- `_snapshot_registers_from_bundle(bundle_regs, arch)` — produces the
+  same dict format as `_snapshot_registers` but skips reading from
+  state. Replaces inline 14-line bundle->snapshot construction.
 
-## Key decision
-**Did NOT unify `handle_block_end`'s inline deferred-fork loop with
-`process_deferred_forks_into`.** The MaxBlocks path carries extra
-profiling instrumentation (per-fork solver_fork_time/solver_sat_time
-timers, deferred_fork_total timer) and an explicit pruned_states Vec
-that the simpler helper deliberately omits. They're functionally
-equivalent — unifying without explicit decision would either drop
-profiling on MaxBlocks or add it everywhere (perf cost). Saved to
-memory `invariant-stepping-decomposition`.
+## Key invariant preserved
+Per-procedure timer increments and perf_stats counters: every early-
+return path increments _perf_stats counters EXCEPT the NO_RET-with-
+successors deadend (line ~614 in original) — that path was treated as
+"aborted before completion." Saved to memory
+`invariant-simproc-callback-perfstats`.
 
 ## Tests
-- 208/208 passing in 6.72s.
-- fauxware --engine rust: 0.38s, finds SOSNEAKY (no regression).
-- Net: +431 lines, −358 lines (file: 808 → 881 lines).
+- 208/208 passing in 6.76s.
+- fauxware --engine rust: finds SOSNEAKY.
+- ais3_crackme --engine rust: 0.85s, finds flag.
 
 ## Files modified
-- native/angr/src/exploration/stepping.rs
+- angr/exploration/rust_callback_dispatch.py (dispatcher + 8 helpers)
+- angr/exploration/rust_state_sync.py (1 deduplication helper)
 
 ## Memories saved
-- `invariant-stepping-decomposition`: documents the two distinct
-  deferred-fork code paths and why they're kept separate.
+- `invariant-simproc-callback-perfstats`: which early-return paths
+  must finalize perf_stats counters.
+- `callback-bundle-snapshot-helper`: documents the new
+  _snapshot_registers_from_bundle and when it's used.
 
-## Other ready tasks (P3)
+## Other ready P3 tasks
 - angr-w4os: Python bridge cleanup (split sync/export/cache/init methods)
-- angr-2fs0: decompose _handle_simprocedure_callback (~478 lines)
 - angr-cbko: native exit/abort SimProcs
 - angr-8em4: replace panic patterns
 - angr-3ijo: bincode for VEX IRSB serialization
 - angr-bgv0: Z3 floating point theory
 - angr-awm3: CAS/LLSC statement handling
 - angr-v4db: extract god-methods in Python bridge layer
-
-## Other ready blocked
-- angr-3tek (P2): native read/write SimProcs blocked by stale-cache
