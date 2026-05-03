@@ -20,7 +20,6 @@ pub enum ExecutionResult {
     },
     /// Encountered a symbolic branch condition.
     SymbolicBranch {
-        condition: u64, // Address of the condition symbolic
         true_target: u64,
         false_target: u64,
     },
@@ -206,7 +205,6 @@ impl<'a> VEXInterpreter<'a> {
                     false_target,
                 } => {
                     return Ok(ExecutionResult::SymbolicBranch {
-                        condition: 0, // TODO: return actual condition ID
                         true_target,
                         false_target,
                     });
