@@ -85,123 +85,14 @@ impl RustExplorationManager {
         let deferred_forks = step.deferred_forks;
         let last_condition = step.last_condition;
         let stored_conditions = step.stored_conditions;
-        let mut fork_snapshots = step.fork_snapshots;
+        let fork_snapshots = step.fork_snapshots;
 
         // Process result
         match step.result {
             RunResult::MaxBlocks { pc } |
             RunResult::MaxDeferredForks { pc } |
             RunResult::BlockEnd { next_addr: pc, .. } => {
-                state.set_pc(pc);
-
-                // Track root state ID for lineage
-                let original_state_id = state.state_id();
-                let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
-
-                // Process deferred forks with proper constraint handling
-                // P13: Track UNSAT states for pruning
-                let mut successors = vec![state];
-                let mut pruned_states = Vec::new();
-                let deferred_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
-                let deferred_fork_total = deferred_forks.len() as u64;
-
-                for fork in deferred_forks {
-                    // Look up the condition for this deferred fork
-                    if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-                        // Add the taken-path constraint to the main state.
-                        // This was NOT done during block execution to avoid
-                        // polluting subsequent feasibility checks within the
-                        // same IRSB.
-                        if fork.path_taken {
-                            successors[0].solver().borrow().assume_true(condition);
-                        } else {
-                            successors[0].solver().borrow().assume_false(condition);
-                        }
-
-                        // Create forked state for the unexplored path.
-                        // Use solver snapshot (from before branch constraint) if available
-                        // to avoid inheriting the taken-path constraint (which would make
-                        // the opposite constraint UNSAT).
-                        let fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
-                        let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
-                            let mut f = successors[0].fork_from_snapshot(snapshot);
-                            if fork.path_taken {
-                                f.solver().borrow().assume_false(condition);
-                            } else {
-                                f.solver().borrow().assume_true(condition);
-                            }
-                            f.set_pc(fork.unexplored_target);
-                            f
-                        } else if fork.path_taken {
-                            let mut f = successors[0].fork_false(condition);
-                            f.set_pc(fork.unexplored_target);
-                            f
-                        } else {
-                            let mut f = successors[0].fork_true(condition);
-                            f.set_pc(fork.unexplored_target);
-                            f
-                        };
-                        if let Some(start) = fork_start {
-                            self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
-                            self.accumulated_stats.solver_fork_count += 1;
-                        }
-                        // Track root state ID for this forked state
-                        self.sm.set_root(forked.state_id(), root_state_id);
-
-                        // P13: Check satisfiability before adding to successors
-                        let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
-                        if self.lazy_solves || forked.satisfiable() {
-                            if let Some(start) = sat_start {
-                                self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
-                                self.accumulated_stats.solver_sat_count += 1;
-                            }
-                            successors.push(forked);
-                        } else {
-                            if let Some(start) = sat_start {
-                                self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
-                                self.accumulated_stats.solver_sat_count += 1;
-                            }
-                            log::debug!(
-                                "P13: Deferred fork at 0x{:x} is UNSAT, will be pruned",
-                                fork.unexplored_target
-                            );
-                            pruned_states.push(forked);
-                        }
-                    } else {
-                        // P15: Create conservative fork to explore the path even without condition
-                        log::warn!(
-                            "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
-                             Creating conservative fork.",
-                            fork.branch_addr,
-                            fork.condition_id
-                        );
-                        let mut forked = successors[0].fork();
-                        forked.set_pc(fork.unexplored_target);
-                        self.sm.set_root(forked.state_id(), root_state_id);
-
-                        // P13: Still check satisfiability
-                        if self.lazy_solves || forked.satisfiable() {
-                            successors.push(forked);
-                        } else {
-                            log::debug!(
-                                "P13: Unconstrained fork at 0x{:x} is UNSAT, will be pruned",
-                                fork.unexplored_target
-                            );
-                            pruned_states.push(forked);
-                        }
-                    }
-                }
-                if let Some(start) = deferred_fork_start {
-                    self.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
-                    self.accumulated_stats.deferred_fork_count += deferred_fork_total;
-                }
-
-                // Add pruned states to pruned stash
-                for s in pruned_states {
-                    self.push_or_drop_terminal(STASH_PRUNED, s);
-                }
-
-                Ok(successors)
+                self.handle_block_end(state, pc, deferred_forks, stored_conditions, fork_snapshots)
             }
             RunResult::Hook { addr } => {
                 state.set_pc(addr);
@@ -241,88 +132,10 @@ impl RustExplorationManager {
                 )))
             }
             RunResult::SimProcedure { addr, name, num_args, return_addr } => {
-                // Try native procedure first — avoids Python callback overhead.
-                // Skip native for addresses inside the binary — these are user-placed
-                // hooks where the Python SimProcedure should always run (the user hooked
-                // a specific function for a reason, e.g., hooking strings_not_equal with strcmp).
-                let is_in_binary = self.binary_regions.iter().any(|(base, data)| {
-                    addr >= *base && addr < *base + data.len() as u64
-                });
-                let native_succeeded = if !is_in_binary {
-                    if let Some(native_proc) = self.native_procedures.get(&name) {
-                    let args = self.extract_procedure_args(&state, num_args);
-                    match native_proc.call(&mut state, &args) {
-                        Ok(ret_val) => {
-                            self.native_proc_stats.native_calls += 1;
-                            *self.native_proc_stats.call_counts
-                                .entry(name.clone())
-                                .or_insert(0) += 1;
-
-                            if let Some(rv) = ret_val {
-                                let ret_reg = self.calling_convention.return_register();
-                                state.set_register_by_offset(ret_reg, rv);
-                            }
-
-                            // Set PC to return address and pop stack
-                            state.set_pc(return_addr);
-                            let sp = state.get_sp().as_u64().unwrap_or(0);
-                            let ptr_size = state.arch().bytes() as u64;
-                            state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
-                            true
-                        }
-                        Err(_) => {
-                            self.native_proc_stats.python_fallbacks += 1;
-                            false
-                        }
-                    }
-                } else {
-                    false
-                }} else {
-                    false
-                };
-
-                // Trace removed
-                if native_succeeded {
-                    // Unified deferred-fork handling: identical semantics to
-                    // MaxBlocks/BlockEnd (snapshot-based forks restore solver
-                    // state from the branch point; UNSAT forks go to STASH_PRUNED).
-                    let mut successors = vec![state];
-                    self.process_deferred_forks_into(
-                        &mut successors,
-                        deferred_forks,
-                        &stored_conditions,
-                        fork_snapshots,
-                    );
-                    Ok(successors)
-                } else {
-                    // Fall through to Python callback
-                    state.set_pc(addr);
-                    state.add_to_history(addr);
-                    // Only snapshot if deferred forks need it
-                    let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                        Some(state.fork())
-                    } else {
-                        None
-                    };
-                    // Use shared solver (O(1) Rc clone) instead of fork
-                    let solver_ref = state.solver();
-                    let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
-                    Err(StepError::NeedCallback(PendingCallback::with_context(
-                        state,
-                        pre_callback_snapshot,
-                        CallbackReason::SimProcedure {
-                            addr,
-                            name,
-                            num_args,
-                            return_addr,
-                        },
-                        "Ijk_Call",
-                        Some(shared_ctx),
-                        deferred_forks,
-                        stored_conditions,
-                        fork_snapshots,
-                    )))
-                }
+                self.handle_simprocedure(
+                    state, addr, name, num_args, return_addr,
+                    deferred_forks, stored_conditions, fork_snapshots,
+                )
             }
             RunResult::Syscall { num, pc } => {
                 state.set_pc(pc);
@@ -407,198 +220,458 @@ impl RustExplorationManager {
                 Err(StepError::Error(state, format!("need lift at 0x{:x}", addr)))
             }
             RunResult::SymbolicJumpTarget { targets, condition_id, jumpkind: _ } => {
-                // Symbolic jump with multiple concrete targets - fork for each
-                // Look up the condition for constraint addition
-                let target_expr = stored_conditions.get(&condition_id).cloned();
-
-                if targets.is_empty() {
-                    // No targets - deadended
-                    return Err(StepError::Deadended(state));
-                }
-
-                if targets.len() == 1 {
-                    // Single target - just continue
-                    let addr = targets[0];
-                    if let Some(ref expr) = target_expr {
-                        // Add constraint: target_expr == addr
-                        let concrete = RustBV::concrete(addr as u128, expr.width());
-                        let constraint = expr.eq(&concrete, &*state.solver().borrow());
-                        state.add_constraint(constraint);
-                    }
-                    state.set_pc(addr);
-                    let mut successors = vec![state];
-                    self.process_deferred_forks_into(
-                        &mut successors,
-                        deferred_forks,
-                        &stored_conditions,
-                        fork_snapshots,
-                    );
-                    return Ok(successors);
-                }
-
-                // Multiple targets - fork for each from the UNCONSTRAINED original
-                // CRITICAL: Save unconstrained base state BEFORE adding any target constraints
-                // This ensures each fork only has its own target constraint, not all previous ones
-                let base_state = state.fork();  // Save unconstrained clone
-
-                // Track root state ID for lineage
-                let original_state_id = state.state_id();
-                let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
-
-                let mut successors = Vec::with_capacity(targets.len());
-
-                // Handle first target - use the original state (moved here)
-                let first_addr = targets[0];
-                let mut first_state = state;  // Move state into first_state
-                if let Some(ref expr) = target_expr {
-                    let concrete = RustBV::concrete(first_addr as u128, expr.width());
-                    let constraint = expr.eq(&concrete, &*first_state.solver().borrow());
-                    first_state.add_constraint(constraint);
-                }
-                first_state.set_pc(first_addr);
-                successors.push(first_state);
-
-                // Handle remaining targets - fork from unconstrained base
-                for &addr in targets.iter().skip(1) {
-                    let mut forked = base_state.fork();
-
-                    // Add constraint: target_expr == addr (only this target's constraint)
-                    if let Some(ref expr) = target_expr {
-                        let concrete = RustBV::concrete(addr as u128, expr.width());
-                        let constraint = expr.eq(&concrete, &*forked.solver().borrow());
-                        forked.add_constraint(constraint);
-                    }
-                    forked.set_pc(addr);
-                    // Track root state ID for this forked state
-                    self.sm.set_root(forked.state_id(), root_state_id);
-                    successors.push(forked);
-                }
-
-                // Process any deferred forks accumulated during execution
-                self.process_deferred_forks_into(
-                    &mut successors,
-                    deferred_forks,
-                    &stored_conditions,
-                    fork_snapshots,
-                );
-
-                Ok(successors)
+                self.handle_symbolic_jump_target(
+                    state, targets, condition_id,
+                    deferred_forks, stored_conditions, fork_snapshots,
+                )
             }
             RunResult::UnconstrainedJump { min_target: _, max_target: _, limit: _, jumpkind: _ } => {
                 // Too many symbolic jump targets - move to unconstrained stash
                 Err(StepError::Unconstrained(state))
             }
             RunResult::UnmodeledCall { addr, return_addr, symbol_name } => {
-                // Unhooked CALL target - try to resolve via Python callback
-                state.set_pc(addr);
-                // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
-                state.add_to_history(addr);
+                self.handle_unmodeled_call(
+                    py, callbacks, state, addr, return_addr, symbol_name,
+                    deferred_forks, stored_conditions, fork_snapshots,
+                )
+            }
+        }
+    }
 
-                // Try to resolve the function via callback
-                if callbacks.has_resolve_function() {
-                    match callbacks.call_resolve_function(py, addr, symbol_name.as_deref()) {
-                        Ok(Some((name, num_args, no_return))) => {
-                            // Function resolved! Register it and return to Python for execution
-                            log::debug!(
-                                "Resolved unmodeled call at 0x{:x} -> {} (args={}, no_return={})",
-                                addr, name, num_args, no_return
-                            );
+    /// Handle MaxBlocks / MaxDeferredForks / BlockEnd: continue at `pc` and
+    /// process accumulated deferred forks with constraint handling and UNSAT
+    /// pruning. Profiling instrumentation here is intentionally distinct from
+    /// `process_deferred_forks_into` (per-fork sat/fork timers, deferred-fork
+    /// total timer).
+    fn handle_block_end(
+        &mut self,
+        mut state: RustSimState,
+        pc: u64,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: HashMap<u64, RustBV>,
+        mut fork_snapshots: HashMap<u64, BranchSnapshot>,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        state.set_pc(pc);
 
-                            // Register the procedure so future calls are hooked
-                            self.hooks.insert(addr);
-                            self.simprocedures.insert(addr, (name.clone(), num_args, no_return));
+        // Track root state ID for lineage
+        let original_state_id = state.state_id();
+        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
 
-                            // Only snapshot if deferred forks need it
-                            let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                                Some(state.fork())
-                            } else {
-                                None
-                            };
-                            // Use shared solver (O(1) Rc clone) instead of fork
-                            let solver_ref = state.solver();
-                            let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+        // Process deferred forks with proper constraint handling
+        // P13: Track UNSAT states for pruning
+        let mut successors = vec![state];
+        let mut pruned_states = Vec::new();
+        let deferred_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+        let deferred_fork_total = deferred_forks.len() as u64;
 
-                            // Return to Python for SimProcedure execution
-                            Err(StepError::NeedCallback(PendingCallback::with_context(
-                                state,
-                                pre_callback_snapshot,
-                                CallbackReason::SimProcedure {
-                                    addr,
-                                    name,
-                                    num_args,
-                                    return_addr,
-                                },
-                                "Ijk_Call",
-                                Some(shared_ctx),
-                                deferred_forks,
-                                stored_conditions,
-                                fork_snapshots,
-                            )))
-                        }
-                        Ok(None) => {
-                            // P21: Function could not be resolved - use generic skip instead of deadending
-                            // This sets return register to 0 and continues at return address
-                            log::debug!(
-                                "P21: Unmodeled call at 0x{:x} could not be resolved. \
-                                 Using generic skip (ret=0) to return_addr=0x{:x}",
-                                addr, return_addr
-                            );
-
-                            // Set return register to 0 (symbolic unconstrained would be better but
-                            // concrete 0 is simpler and often sufficient)
-                            let ret_reg_offset = self.calling_convention.return_register();
-                            let ptr_size = self.calling_convention.pointer_size();
-                            let zero_val = RustBV::zero((ptr_size * 8) as u32);
-                            state.set_register_by_offset(ret_reg_offset, zero_val);
-
-                            // Continue at return address
-                            state.set_pc(return_addr);
-
-                            // Process any deferred forks from the interpreter step
-                            let mut successors = vec![state];
-                            self.process_deferred_forks_into(
-                                &mut successors,
-                                deferred_forks,
-                                &stored_conditions,
-                                fork_snapshots,
-                            );
-                            Ok(successors)
-                        }
-                        Err(e) => {
-                            // Callback error - treat as execution error
-                            log::warn!("resolve_function callback error at 0x{:x}: {}", addr, e);
-                            Err(StepError::Error(state, format!("resolve_function error: {}", e)))
-                        }
-                    }
+        for fork in deferred_forks {
+            // Look up the condition for this deferred fork
+            if let Some(condition) = stored_conditions.get(&fork.condition_id) {
+                // Add the taken-path constraint to the main state.
+                // This was NOT done during block execution to avoid
+                // polluting subsequent feasibility checks within the
+                // same IRSB.
+                if fork.path_taken {
+                    successors[0].solver().borrow().assume_true(condition);
                 } else {
-                    // P21: No resolve_function callback - use generic skip instead of deadending
+                    successors[0].solver().borrow().assume_false(condition);
+                }
+
+                // Create forked state for the unexplored path.
+                // Use solver snapshot (from before branch constraint) if available
+                // to avoid inheriting the taken-path constraint (which would make
+                // the opposite constraint UNSAT).
+                let fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
+                    let mut f = successors[0].fork_from_snapshot(snapshot);
+                    if fork.path_taken {
+                        f.solver().borrow().assume_false(condition);
+                    } else {
+                        f.solver().borrow().assume_true(condition);
+                    }
+                    f.set_pc(fork.unexplored_target);
+                    f
+                } else if fork.path_taken {
+                    let mut f = successors[0].fork_false(condition);
+                    f.set_pc(fork.unexplored_target);
+                    f
+                } else {
+                    let mut f = successors[0].fork_true(condition);
+                    f.set_pc(fork.unexplored_target);
+                    f
+                };
+                if let Some(start) = fork_start {
+                    self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                    self.accumulated_stats.solver_fork_count += 1;
+                }
+                // Track root state ID for this forked state
+                self.sm.set_root(forked.state_id(), root_state_id);
+
+                // P13: Check satisfiability before adding to successors
+                let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                if self.lazy_solves || forked.satisfiable() {
+                    if let Some(start) = sat_start {
+                        self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                        self.accumulated_stats.solver_sat_count += 1;
+                    }
+                    successors.push(forked);
+                } else {
+                    if let Some(start) = sat_start {
+                        self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                        self.accumulated_stats.solver_sat_count += 1;
+                    }
                     log::debug!(
-                        "P21: Unmodeled call at 0x{:x} - no resolve_function callback. \
-                         Using generic skip (ret=0) to return_addr=0x{:x}",
-                        addr, return_addr
+                        "P13: Deferred fork at 0x{:x} is UNSAT, will be pruned",
+                        fork.unexplored_target
                     );
+                    pruned_states.push(forked);
+                }
+            } else {
+                // P15: Create conservative fork to explore the path even without condition
+                log::warn!(
+                    "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
+                     Creating conservative fork.",
+                    fork.branch_addr,
+                    fork.condition_id
+                );
+                let mut forked = successors[0].fork();
+                forked.set_pc(fork.unexplored_target);
+                self.sm.set_root(forked.state_id(), root_state_id);
 
-                    // Set return register to 0
-                    let ret_reg_offset = self.calling_convention.return_register();
-                    let ptr_size = self.calling_convention.pointer_size();
-                    let zero_val = RustBV::zero((ptr_size * 8) as u32);
-                    state.set_register_by_offset(ret_reg_offset, zero_val);
-
-                    // Continue at return address
-                    state.set_pc(return_addr);
-
-                    // Process any deferred forks from the interpreter step
-                    let mut successors = vec![state];
-                    self.process_deferred_forks_into(
-                        &mut successors,
-                        deferred_forks,
-                        &stored_conditions,
-                        fork_snapshots,
+                // P13: Still check satisfiability
+                if self.lazy_solves || forked.satisfiable() {
+                    successors.push(forked);
+                } else {
+                    log::debug!(
+                        "P13: Unconstrained fork at 0x{:x} is UNSAT, will be pruned",
+                        fork.unexplored_target
                     );
-                    Ok(successors)
+                    pruned_states.push(forked);
                 }
             }
         }
+        if let Some(start) = deferred_fork_start {
+            self.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+            self.accumulated_stats.deferred_fork_count += deferred_fork_total;
+        }
+
+        // Add pruned states to pruned stash
+        for s in pruned_states {
+            self.push_or_drop_terminal(STASH_PRUNED, s);
+        }
+
+        Ok(successors)
+    }
+
+    /// Handle SimProcedure: try native first, fall back to Python callback.
+    /// Native success continues at the return address with deferred forks
+    /// processed via the unified path; Python fallback returns a NeedCallback.
+    fn handle_simprocedure(
+        &mut self,
+        mut state: RustSimState,
+        addr: u64,
+        name: String,
+        num_args: usize,
+        return_addr: u64,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: HashMap<u64, RustBV>,
+        fork_snapshots: HashMap<u64, BranchSnapshot>,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        // Try native procedure first — avoids Python callback overhead.
+        // Skip native for addresses inside the binary — these are user-placed
+        // hooks where the Python SimProcedure should always run (the user hooked
+        // a specific function for a reason, e.g., hooking strings_not_equal with strcmp).
+        let is_in_binary = self.binary_regions.iter().any(|(base, data)| {
+            addr >= *base && addr < *base + data.len() as u64
+        });
+        let native_succeeded = if !is_in_binary {
+            if let Some(native_proc) = self.native_procedures.get(&name) {
+                let args = self.extract_procedure_args(&state, num_args);
+                match native_proc.call(&mut state, &args) {
+                    Ok(ret_val) => {
+                        self.native_proc_stats.native_calls += 1;
+                        *self.native_proc_stats.call_counts
+                            .entry(name.clone())
+                            .or_insert(0) += 1;
+
+                        if let Some(rv) = ret_val {
+                            let ret_reg = self.calling_convention.return_register();
+                            state.set_register_by_offset(ret_reg, rv);
+                        }
+
+                        // Set PC to return address and pop stack
+                        state.set_pc(return_addr);
+                        let sp = state.get_sp().as_u64().unwrap_or(0);
+                        let ptr_size = state.arch().bytes() as u64;
+                        state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
+                        true
+                    }
+                    Err(_) => {
+                        self.native_proc_stats.python_fallbacks += 1;
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if native_succeeded {
+            // Unified deferred-fork handling: identical semantics to
+            // MaxBlocks/BlockEnd (snapshot-based forks restore solver
+            // state from the branch point; UNSAT forks go to STASH_PRUNED).
+            let mut successors = vec![state];
+            self.process_deferred_forks_into(
+                &mut successors,
+                deferred_forks,
+                &stored_conditions,
+                fork_snapshots,
+            );
+            Ok(successors)
+        } else {
+            // Fall through to Python callback
+            state.set_pc(addr);
+            state.add_to_history(addr);
+            // Only snapshot if deferred forks need it
+            let pre_callback_snapshot = if !deferred_forks.is_empty() {
+                Some(state.fork())
+            } else {
+                None
+            };
+            // Use shared solver (O(1) Rc clone) instead of fork
+            let solver_ref = state.solver();
+            let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+            Err(StepError::NeedCallback(PendingCallback::with_context(
+                state,
+                pre_callback_snapshot,
+                CallbackReason::SimProcedure {
+                    addr,
+                    name,
+                    num_args,
+                    return_addr,
+                },
+                "Ijk_Call",
+                Some(shared_ctx),
+                deferred_forks,
+                stored_conditions,
+                fork_snapshots,
+            )))
+        }
+    }
+
+    /// Handle SymbolicJumpTarget: a symbolic jump concretized to a bounded
+    /// set of addresses. Single target adds a constraint and continues; multiple
+    /// targets fork from an unconstrained base so each fork only carries its
+    /// own target constraint.
+    fn handle_symbolic_jump_target(
+        &mut self,
+        state: RustSimState,
+        targets: Vec<u64>,
+        condition_id: u64,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: HashMap<u64, RustBV>,
+        fork_snapshots: HashMap<u64, BranchSnapshot>,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        // Look up the condition for constraint addition
+        let target_expr = stored_conditions.get(&condition_id).cloned();
+
+        if targets.is_empty() {
+            // No targets - deadended
+            return Err(StepError::Deadended(state));
+        }
+
+        if targets.len() == 1 {
+            // Single target - just continue
+            let mut state = state;
+            let addr = targets[0];
+            if let Some(ref expr) = target_expr {
+                // Add constraint: target_expr == addr
+                let concrete = RustBV::concrete(addr as u128, expr.width());
+                let constraint = expr.eq(&concrete, &*state.solver().borrow());
+                state.add_constraint(constraint);
+            }
+            state.set_pc(addr);
+            let mut successors = vec![state];
+            self.process_deferred_forks_into(
+                &mut successors,
+                deferred_forks,
+                &stored_conditions,
+                fork_snapshots,
+            );
+            return Ok(successors);
+        }
+
+        // Multiple targets - fork for each from the UNCONSTRAINED original
+        // CRITICAL: Save unconstrained base state BEFORE adding any target constraints
+        // This ensures each fork only has its own target constraint, not all previous ones
+        let base_state = state.fork();  // Save unconstrained clone
+
+        // Track root state ID for lineage
+        let original_state_id = state.state_id();
+        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+
+        let mut successors = Vec::with_capacity(targets.len());
+
+        // Handle first target - use the original state (moved here)
+        let first_addr = targets[0];
+        let mut first_state = state;  // Move state into first_state
+        if let Some(ref expr) = target_expr {
+            let concrete = RustBV::concrete(first_addr as u128, expr.width());
+            let constraint = expr.eq(&concrete, &*first_state.solver().borrow());
+            first_state.add_constraint(constraint);
+        }
+        first_state.set_pc(first_addr);
+        successors.push(first_state);
+
+        // Handle remaining targets - fork from unconstrained base
+        for &addr in targets.iter().skip(1) {
+            let mut forked = base_state.fork();
+
+            // Add constraint: target_expr == addr (only this target's constraint)
+            if let Some(ref expr) = target_expr {
+                let concrete = RustBV::concrete(addr as u128, expr.width());
+                let constraint = expr.eq(&concrete, &*forked.solver().borrow());
+                forked.add_constraint(constraint);
+            }
+            forked.set_pc(addr);
+            // Track root state ID for this forked state
+            self.sm.set_root(forked.state_id(), root_state_id);
+            successors.push(forked);
+        }
+
+        // Process any deferred forks accumulated during execution
+        self.process_deferred_forks_into(
+            &mut successors,
+            deferred_forks,
+            &stored_conditions,
+            fork_snapshots,
+        );
+
+        Ok(successors)
+    }
+
+    /// Handle UnmodeledCall: try to resolve via Python callback. Resolved
+    /// functions are registered as SimProcedures and dispatched via callback;
+    /// unresolved calls use P21 generic skip (set return register to 0,
+    /// continue at return address) instead of deadending.
+    fn handle_unmodeled_call(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        mut state: RustSimState,
+        addr: u64,
+        return_addr: u64,
+        symbol_name: Option<String>,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: HashMap<u64, RustBV>,
+        fork_snapshots: HashMap<u64, BranchSnapshot>,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        // Unhooked CALL target - try to resolve via Python callback
+        state.set_pc(addr);
+        // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
+        state.add_to_history(addr);
+
+        // Try to resolve the function via callback
+        if callbacks.has_resolve_function() {
+            match callbacks.call_resolve_function(py, addr, symbol_name.as_deref()) {
+                Ok(Some((name, num_args, no_return))) => {
+                    // Function resolved! Register it and return to Python for execution
+                    log::debug!(
+                        "Resolved unmodeled call at 0x{:x} -> {} (args={}, no_return={})",
+                        addr, name, num_args, no_return
+                    );
+
+                    // Register the procedure so future calls are hooked
+                    self.hooks.insert(addr);
+                    self.simprocedures.insert(addr, (name.clone(), num_args, no_return));
+
+                    // Only snapshot if deferred forks need it
+                    let pre_callback_snapshot = if !deferred_forks.is_empty() {
+                        Some(state.fork())
+                    } else {
+                        None
+                    };
+                    // Use shared solver (O(1) Rc clone) instead of fork
+                    let solver_ref = state.solver();
+                    let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
+
+                    // Return to Python for SimProcedure execution
+                    Err(StepError::NeedCallback(PendingCallback::with_context(
+                        state,
+                        pre_callback_snapshot,
+                        CallbackReason::SimProcedure {
+                            addr,
+                            name,
+                            num_args,
+                            return_addr,
+                        },
+                        "Ijk_Call",
+                        Some(shared_ctx),
+                        deferred_forks,
+                        stored_conditions,
+                        fork_snapshots,
+                    )))
+                }
+                Ok(None) => {
+                    // P21: Function could not be resolved - use generic skip instead of deadending
+                    self.unmodeled_call_generic_skip(
+                        state, addr, return_addr,
+                        deferred_forks, stored_conditions, fork_snapshots,
+                    )
+                }
+                Err(e) => {
+                    // Callback error - treat as execution error
+                    log::warn!("resolve_function callback error at 0x{:x}: {}", addr, e);
+                    Err(StepError::Error(state, format!("resolve_function error: {}", e)))
+                }
+            }
+        } else {
+            // P21: No resolve_function callback - use generic skip instead of deadending
+            self.unmodeled_call_generic_skip(
+                state, addr, return_addr,
+                deferred_forks, stored_conditions, fork_snapshots,
+            )
+        }
+    }
+
+    /// P21 generic skip for unmodeled calls: set return register to 0,
+    /// continue at return_addr, and process any deferred forks. Used both
+    /// when resolve_function returns None and when no callback is registered.
+    fn unmodeled_call_generic_skip(
+        &mut self,
+        mut state: RustSimState,
+        addr: u64,
+        return_addr: u64,
+        deferred_forks: Vec<DeferredFork>,
+        stored_conditions: HashMap<u64, RustBV>,
+        fork_snapshots: HashMap<u64, BranchSnapshot>,
+    ) -> Result<Vec<RustSimState>, StepError> {
+        log::debug!(
+            "P21: Unmodeled call at 0x{:x} - generic skip (ret=0) to return_addr=0x{:x}",
+            addr, return_addr
+        );
+
+        // Set return register to 0 (symbolic unconstrained would be better but
+        // concrete 0 is simpler and often sufficient)
+        let ret_reg_offset = self.calling_convention.return_register();
+        let ptr_size = self.calling_convention.pointer_size();
+        let zero_val = RustBV::zero((ptr_size * 8) as u32);
+        state.set_register_by_offset(ret_reg_offset, zero_val);
+
+        // Continue at return address
+        state.set_pc(return_addr);
+
+        // Process any deferred forks from the interpreter step
+        let mut successors = vec![state];
+        self.process_deferred_forks_into(
+            &mut successors,
+            deferred_forks,
+            &stored_conditions,
+            fork_snapshots,
+        );
+        Ok(successors)
     }
 
     /// Run the VEX interpreter for one step and recover all owned state from it.
