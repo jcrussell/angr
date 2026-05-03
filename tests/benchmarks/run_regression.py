@@ -4,15 +4,20 @@
 Runs fast-tier benchmarks with both engines and checks:
 1. Rust engine produces correct output (matches Python)
 2. Rust engine is not slower than baseline threshold
+3. Rust engine meets the speedup SLA vs Python (fails below 0.5x by default,
+   warns below 1.0x). Uses cached python_time from baseline when this run
+   skipped Python (e.g. rust_only entries).
 
 Usage:
     python tests/benchmarks/run_regression.py              # Run all fast benchmarks
     python tests/benchmarks/run_regression.py --update      # Update baseline timings
     python tests/benchmarks/run_regression.py --threshold 0.2  # 20% regression threshold
+    python tests/benchmarks/run_regression.py --sla-fail-threshold 0.7  # Tighter SLA
+    python tests/benchmarks/run_regression.py --no-sla       # Disable SLA check
 
 Exit codes:
     0 = all benchmarks pass
-    1 = regression detected (wrong output or too slow)
+    1 = regression detected (wrong output, too slow, or SLA failure)
     2 = setup error
 """
 import argparse
@@ -139,6 +144,12 @@ def main():
                         help="Run full suite (fast + medium tier)")
     parser.add_argument("--check-counts", action="store_true",
                         help="Check algorithmic metrics (callback_count, state_creations, steps) for regressions")
+    parser.add_argument("--sla-warn-threshold", type=float, default=1.0,
+                        help="Speedup vs Python below this prints a SLA warning (default: 1.0x)")
+    parser.add_argument("--sla-fail-threshold", type=float, default=0.5,
+                        help="Speedup vs Python below this fails the run (default: 0.5x)")
+    parser.add_argument("--no-sla", action="store_true",
+                        help="Disable SLA enforcement (skip speedup check entirely)")
     args = parser.parse_args()
 
     global REGRESSION_SUITE
@@ -245,6 +256,25 @@ def main():
                             print(f"  METRIC REGRESSION: {bl_key} {current_val} vs baseline {baseline_val} (+{pct:.0f}%)")
                             failures.append(f"{name}: {bl_key} regression ({current_val} vs {baseline_val}, +{pct:.0f}%)")
 
+        # SLA check: enforce minimum speedup vs Python. Falls back to the
+        # python_time cached in baseline when this run skipped Python (e.g.
+        # rust_only entries). Quietly skipped when no python_time is known.
+        if not args.no_sla:
+            sla_py_time = py_time
+            if sla_py_time is None and baseline_key in baseline:
+                sla_py_time = baseline[baseline_key].get("python_time")
+            if sla_py_time is not None and sla_py_time > 0 and rust_time > 0:
+                sla_speedup = sla_py_time / rust_time
+                if sla_speedup < args.sla_fail_threshold:
+                    print(f"  SLA FAIL: {sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x "
+                          f"(Python {sla_py_time:.2f}s / Rust {rust_time:.2f}s)")
+                    failures.append(
+                        f"{name}: SLA fail ({sla_speedup:.2f}x < {args.sla_fail_threshold:.2f}x)"
+                    )
+                elif sla_speedup < args.sla_warn_threshold:
+                    print(f"  SLA WARN: {sla_speedup:.2f}x < {args.sla_warn_threshold:.2f}x "
+                          f"(Python {sla_py_time:.2f}s / Rust {rust_time:.2f}s)")
+
         # Print metric summary
         metric_parts = []
         for stat_key, bl_key, _ in TRACKED_METRICS:
@@ -258,8 +288,15 @@ def main():
 
         entry = {
             "rust_time": round(rust_time, 3),
-            "python_time": round(py_time, 3) if py_time is not None else None,
         }
+        if py_time is not None:
+            entry["python_time"] = round(py_time, 3)
+        else:
+            # Preserve cached python_time from prior runs so SLA checks
+            # remain useful for rust_only entries (Python skipped this run
+            # but we want to keep historical timing).
+            cached_py = baseline.get(baseline_key, {}).get("python_time")
+            entry["python_time"] = cached_py
         # Store algorithmic metrics in baseline
         for stat_key, bl_key, _ in TRACKED_METRICS:
             val = rust_stats.get(stat_key)
