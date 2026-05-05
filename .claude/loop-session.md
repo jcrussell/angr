@@ -1,48 +1,56 @@
-# Loop session notes (2026-05-05, forty-ninth loop session)
+# Loop session notes (2026-05-05, fiftieth loop session)
 
-## Task: angr-2aih (P0) — DONE
-Re-run 22-benchmark sweep, refresh baseline_timings.json, confirm
-214/214 RustExplorationManager tests + 391 Rust unit tests still pass.
+## Task: angr-8kht (P1) — DONE
+Smarter symbolic-address concretization: avoid double Z3 query in
+solutions+range path.
 
 ## What I did
-1. cargo check --release: clean
-2. pip install -e . --no-build-isolation --no-deps: rebuilt .so
-3. cargo test --release --lib: 391 passing
-4. pytest tests/engines/test_rust_exploration.py: 214 passing
-5. python tests/benchmarks/run_regression.py --full --update — 22/22 passed
-6. Diffed baseline_timings.json: see project_benchmark_status memory.
+1. Read concretize.rs:344-410 — the slow path is `ctx.range(addr)` after
+   fast_solutions hits its 17-solution limit. range() runs full-width
+   binary search on min and max (~64 SAT calls each for 64-bit addrs).
+2. Looked at z3-0.19.7 Optimize API. Decided NOT to use it — copying
+   constraints to a fresh Optimize solver per call would defeat the win.
+3. Added `SymContext::range_seeded(bv, smallest_known, largest_known)` in
+   native/angr/src/symbolic/context.rs (z3 + non-z3 variants). Uses
+   smallest_known as initial hi for min-bisection and largest_known as
+   initial lo for max-bisection.
+4. Modified concretize.rs to compute smallest/largest from fast_solutions
+   and call range_seeded instead of range.
+5. cargo check --release: clean
+6. pip install -e . --no-build-isolation --no-deps: rebuilt .so
+7. cargo test --release --lib: 391 passing
+8. pytest tests/engines/test_rust_exploration.py: 214 passing
+9. run_regression.py: 12/12 fast benchmarks pass
+10. Address-heavy benchmark validation:
+    - google2016_unbreakable_1: 3.523s baseline → 2.69-2.91s (~17-23%)
+    - csaw_wyvern: within noise
+    - flareon2015_5: within noise
+    - sym-write: within noise (rarely hits >16-solution path)
 
-## Result
-- All 22 benchmarks correct.
-- Only 1 SLA warning: mma_howtouse 0.63x (long-standing
-  Callable-heavy workload, expected).
-- All 9 prior regressors recovered or determined to be stale baselines:
-  - sym-write: TIMEOUT 60s → 0.42s ✓
-  - codegate_2017-angrybird: stable across commits; old baseline was stale
-  - securityfest_fairlight 16.05s → 12.83s (FP-theory remainder)
-  - ekopartyctf2016_rev250 2.25s → 2.03s ✓
-  - flareon2015_5 8.33s → 6.56s ✓
-  - mma_howtouse 7.32s → 6.74s ✓ (SLA WARN persists)
-  - whitehatvn2015_re400 1.52s → 1.26s ✓
-  - flareon2015_2 4.52s → 3.62s ✓
-  - unmapped_analysis 2.49s → 2.15s ✓
-- Bonus: hackcon2016_angry-reverser 35.0s → 12.0s (-66%, prior baseline stale)
+## Why min savings > max savings
+Bisection on unsigned [lo, hi]: iterations = log2(hi-lo).
+- min seeded: hi=smallest_known. log2(smallest_known) << 64 for typical
+  pointer addresses (e.g. log2(2^32)=32, half the calls).
+- max seeded: lo=largest_known, hi=2^64-1. log2(2^64 - largest_known)
+  is still ~64 since most of the upper range is above true_max.
+Net: ~25% fewer SAT calls on the range path overall.
 
 ## Files modified
-- tests/benchmarks/baseline_timings.json (refreshed via --update)
-- .claude/loop-session.md
-- memory/project_benchmark_status.md (rewritten to reflect post-fix state)
-- new memory: benchmark-2026-05-05-sweep
+- native/angr/src/symbolic/context.rs (+89 lines)
+- native/angr/src/concretize.rs (+15 lines)
+- .claude/loop-session.md (this file)
+
+## Memories saved
+- range-seeded-bisection-asymmetry
+- benchmark-unbreakable_1-2026-05-05
+- avoid-z3-optimize-for-min-max
 
 ## Beads
-- angr-2aih: claimed → close after commit.
+- angr-8kht: closed (commit d08242583)
 
-## Next-up
-- angr-fbxi (P1) — single-bench baseline refresh for unbreakable_1
-  and hackcon angry-reverser. Likely already covered by this sweep
-  refresh (both bumped during --update). Verify and close.
-- Optimization-side ready candidates (P1): angr-8kht (avoid double-Z3
-  in solutions+range), angr-nwbx (cache claripy↔Z3 conversion for
-  register sync), angr-6uhh (eliminate per-step clones).
-- Investigation candidates: angr-eygl (differential test harness),
-  angr-pufm (concretization fallback for intractable solution sets).
+## Next-up (still ready)
+- angr-eygl (P1) Differential test harness
+- angr-pufm (P1) Symbolic address concretization fallback when intractable
+- angr-0dgj (P1) Arc-wrap symbol_table and forkable interpreter state
+- angr-nwbx (P1) Cache claripy↔Z3 conversion for register sync
+- angr-6uhh (P1) Eliminate per-step clones on hot interpreter path
