@@ -1,56 +1,44 @@
-# Loop session notes (2026-05-05, fiftieth loop session)
+# Loop session notes (2026-05-05, fifty-first loop session)
 
-## Task: angr-8kht (P1) — DONE
-Smarter symbolic-address concretization: avoid double Z3 query in
-solutions+range path.
-
-## What I did
-1. Read concretize.rs:344-410 — the slow path is `ctx.range(addr)` after
-   fast_solutions hits its 17-solution limit. range() runs full-width
-   binary search on min and max (~64 SAT calls each for 64-bit addrs).
-2. Looked at z3-0.19.7 Optimize API. Decided NOT to use it — copying
-   constraints to a fresh Optimize solver per call would defeat the win.
-3. Added `SymContext::range_seeded(bv, smallest_known, largest_known)` in
-   native/angr/src/symbolic/context.rs (z3 + non-z3 variants). Uses
-   smallest_known as initial hi for min-bisection and largest_known as
-   initial lo for max-bisection.
-4. Modified concretize.rs to compute smallest/largest from fast_solutions
-   and call range_seeded instead of range.
-5. cargo check --release: clean
-6. pip install -e . --no-build-isolation --no-deps: rebuilt .so
-7. cargo test --release --lib: 391 passing
-8. pytest tests/engines/test_rust_exploration.py: 214 passing
-9. run_regression.py: 12/12 fast benchmarks pass
-10. Address-heavy benchmark validation:
-    - google2016_unbreakable_1: 3.523s baseline → 2.69-2.91s (~17-23%)
-    - csaw_wyvern: within noise
-    - flareon2015_5: within noise
-    - sym-write: within noise (rarely hits >16-solution path)
-
-## Why min savings > max savings
-Bisection on unsigned [lo, hi]: iterations = log2(hi-lo).
-- min seeded: hi=smallest_known. log2(smallest_known) << 64 for typical
-  pointer addresses (e.g. log2(2^32)=32, half the calls).
-- max seeded: lo=largest_known, hi=2^64-1. log2(2^64 - largest_known)
-  is still ~64 since most of the upper range is above true_max.
-Net: ~25% fewer SAT calls on the range path overall.
+## Task: angr-6uhh (P1) — DONE
+Eliminate per-step clones on the hot interpreter path:
+1. concretize_cache wrapped in Arc<ConcretizationResult>; cache hits and
+   inserts are now atomic refcount bumps. Avoids cloning Multiple(Vec<u64>).
+2. flush_stores drains pending_stores by move into all_flushed_stores
+   instead of iter+clone+clear. No more Vec<u8> deep clones per store.
+3. pending_symbolic_stores + rust_mem.import + all_flushed_symbolic_stores
+   merged into a single drain loop sharing one bv.clone() (instead of
+   iter+clone followed by drain).
 
 ## Files modified
-- native/angr/src/symbolic/context.rs (+89 lines)
-- native/angr/src/concretize.rs (+15 lines)
-- .claude/loop-session.md (this file)
+- native/angr/src/interpreter_cb/mod.rs (cache type, return types, flush_stores)
+- native/angr/src/interpreter_cb/expressions.rs (consumer match &*arc)
+- native/angr/src/interpreter_cb/statements.rs (consumer match &*arc, six sites)
+- native/angr/src/interpreter_cb/pending_store.rs (cfg(test) on unused clear)
 
 ## Memories saved
-- range-seeded-bisection-asymmetry
-- benchmark-unbreakable_1-2026-05-05
-- avoid-z3-optimize-for-min-max
+- arc-concretize-cache
+- invariant-flush-stores-drain
+- benchmark-arc-concretize-cache
+
+## Validation
+- cargo check --release: clean
+- pytest tests/engines/test_rust_exploration.py: 214/214
+- run_regression.py: 12/12
+- fauxware: 0.38s (baseline 0.387s)
+- sym-write: 0.42s (baseline 0.423s)
+- flareon2015_5: 6.27-6.43s (baseline 6.563s)
 
 ## Beads
-- angr-8kht: closed (commit d08242583)
+- angr-6uhh: closed (commits 2e1078960, 0ef51d554)
+- angr-k9hr: NEW P2 follow-up — Arc-wrap interpreter temps to make RdTmp
+  clones cheap. Deliberately deferred from this session because it
+  requires either changing eval_expr_with_callbacks return type to
+  Arc<RustBV> (broad API churn) or making RustBV::Symbolic.name use
+  Arc<str>.
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness
 - angr-pufm (P1) Symbolic address concretization fallback when intractable
 - angr-0dgj (P1) Arc-wrap symbol_table and forkable interpreter state
 - angr-nwbx (P1) Cache claripy↔Z3 conversion for register sync
-- angr-6uhh (P1) Eliminate per-step clones on hot interpreter path
