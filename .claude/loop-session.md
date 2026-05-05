@@ -1,43 +1,56 @@
-# Loop session notes (2026-05-05, forty-seventh loop session)
+# Loop session notes (2026-05-05, forty-eighth loop session)
 
-## Task: angr-v1q2 — DONE
-Fix wide-symbolic partial-load extract for LE memory; add LE counterpart
-to `test_big_endian_128bit_wide_symbolic_store`.
+## Task: angr-q2dk — DONE
+Profile securityfest_fairlight to confirm Z3 FP-theory dominates the
++62% post-FP-wiring overhead.
 
-## What I changed
-`native/angr/src/memory.rs`:
-- `load_concrete` exact-address partial path (~line 542): branch on
-  `self.endness`. BE: `(total_bits-1, total_bits-size*8)`. LE:
-  `(size*8-1, 0)`.
-- `load_concrete` symbolic_spans partial path (~line 560): branch on
-  `self.endness`. BE: `(total_bits-off-1, total_bits-off-size*8)`.
-  LE: `(off+size*8-1, off)` where `off = base_offset*8`.
-- Added `test_little_endian_128bit_wide_symbolic_store` mirroring the
-  BE counterpart. Pins a 128-bit BVS to a known u128, exercises
-  per-byte loads (LSB at addr+0), 4-byte load at offset 4 (bits
-  [63:32]), and 8-byte halves (low at offset 0, high at offset 8).
+## What I did
+Ran `python tests/benchmarks/run_single.py securityfest_fairlight
+--engine rust --timeout 60` three times for stability. Captured
+`rust profiling` and `z3 solver stats` blocks. Cross-checked with
+`objdump -d fairlight | grep -c xmm` to confirm FP density (616
+xmm-touching instructions).
 
 ## Result
-- 391/391 Rust unit tests pass (`cargo test --release --lib`).
-- 214/214 pytest passing in `tests/engines/test_rust_exploration.py`.
+- Total runtime: 12.9 / 14.0 / 12.9 s (peak_mem ~330MB).
+- **Z3 dominates ~95% of runtime.** z3_check umbrella 12.3-13.3s
+  across 35 calls.
+- Top 3 sites:
+  1. z3_site_branch_true: 9.1-10.6s / 13 calls (~700-820 ms/call)
+  2. z3_site_branch_false: 1.2-2.1s / 2 calls
+  3. z3_site_satisfiable: 1.0-1.3s / 16 calls
+- Non-Z3 work negligible: expr_eval 14ms (11109 calls), lift 51ms,
+  python_callback 46ms (109 calls), FFI crossings 3.
+- FP-theory inferred from binary (xmm-heavy) + cost shape (very
+  high per-call branch_true).
+- Headline insight: branch_true per-call cost is the lever; this is
+  about path-condition accumulation, not single-FP-op cost.
+
+## Files changed
+None — pure measurement. Bead notes + 2 memories updated.
 
 ## Beads / memory
-- angr-v1q2 claimed → closed.
-- `invariant-le-wide-symbolic-byte-layout` saved: LE byte layout
-  convention for wide symbolic objects in symbolic_objects map.
-- Created follow-up bead **angr-76mo** (P3): the multi-page
-  has_symbolic slow path in `load_concrete` (~lines 648-666) has
-  TWO additional partial-extract sub-paths that are LE-hardcoded:
-  per-byte concat and the wider-symbolic linear scan. Symmetric to
-  this fix; rarely hit; left for a separate task.
+- angr-q2dk claimed → closed with full report in notes.
+- `fairlight-bottleneck-2026-05` updated with 2026-05-05 numbers.
+- `fairlight-bottleneck` consolidated across measurements (5/01, 5/05).
 
-## Key insight (for future ports)
-Wide symbolic values are stored in `symbolic_objects` as-is at the
-base address. The endianness only affects which bits correspond to
-which byte offset. Don't forget that `store_symbolic` does NOT
-byte-reverse the BV — convention is encoded purely in the load-time
-extract.
+## Caution / inherited mess
+While searching for memories I accidentally ran `bd remember
+fairlight-bottleneck` and `bd remember fairlight-bottleneck-2026-05`
+without an insight argument — those overwrote the memory bodies with
+the keys themselves. Restored both with fresh content from this run.
+**Do NOT use `bd remember <key>` to read; use `bd memories <pattern>`.**
+The remember subcommand stores its first positional as the body.
 
-## Files modified
-- `native/angr/src/memory.rs` — fix in `load_concrete`, new LE test in
-  `mod tests {}`.
+## Next-up
+- **angr-2aih (P0)** is now UNBLOCKED. 22-benchmark sweep +
+  baseline_timings.json refresh. Long-running task — give it a full
+  session. Use `python tests/benchmarks/run_regression.py --full
+  --update` per `project_benchmark_status.md`. Confirm `cargo test
+  --release --lib` and pytest pass at the end.
+- **angr-fbxi (P1)** can also unblock now (single-bench baseline
+  refresh for unbreakable_1 and hackcon angry-reverser). Smaller
+  scope; could fold into 2aih or run separately.
+- Optimization-side ready candidates: angr-8kht (avoid double-Z3 in
+  solutions+range), angr-nwbx (cache claripy↔Z3 conversion for
+  register sync), angr-6uhh (eliminate per-step clones).
