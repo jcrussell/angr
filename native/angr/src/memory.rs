@@ -2681,4 +2681,82 @@ mod tests {
         // enforce_permissions defaults to false: even RW page must pass.
         mem.check_executable(0x1000).unwrap();
     }
+
+    /// angr-wyxb: when two symbolic stores partially overlap, the address
+    /// constraint on each store's address expression and any value
+    /// constraints must remain in the solver after the stores complete.
+    #[test]
+    fn test_symbolic_store_partial_overlap_constraint_propagation() {
+        let ctx = SymContext::new_mock();
+        let concretizer = AddressConcretizer::new();
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+
+        // Symbolic addresses, each pinned to a specific value via a
+        // constraint added to the solver up-front.
+        let addr1 = RustBV::symbolic(&ctx, "addr1".to_string(), 64);
+        let addr2 = RustBV::symbolic(&ctx, "addr2".to_string(), 64);
+        ctx.assume_true(&addr1.eq(&RustBV::concrete(0x1000, 64), &ctx));
+        ctx.assume_true(&addr2.eq(&RustBV::concrete(0x1004, 64), &ctx));
+
+        // Two 64-bit symbolic values; sym1 carries an additional constraint
+        // (a specific u128 value) so we can verify that this value-side
+        // constraint also survives the partial overlap.
+        let sym1 = RustBV::symbolic(&ctx, "sym1".to_string(), 64);
+        let sym2 = RustBV::symbolic(&ctx, "sym2".to_string(), 64);
+        let pinned_sym1: u128 = 0xDEAD_BEEF_F00D_BABE;
+        ctx.assume_true(&sym1.eq(&RustBV::concrete(pinned_sym1, 64), &ctx));
+
+        // Partial overlap: sym1 covers [0x1000, 0x1008); sym2 covers
+        // [0x1004, 0x100C). Bytes [0x1004, 0x1008) are written by both.
+        mem.store_symbolic(addr1.clone(), sym1.clone(), &ctx, &concretizer)
+            .expect("store_symbolic addr1 must succeed");
+        mem.store_symbolic(addr2.clone(), sym2.clone(), &ctx, &concretizer)
+            .expect("store_symbolic addr2 must succeed");
+
+        // The base context must remain satisfiable.
+        assert!(
+            ctx.is_sat(),
+            "context must stay SAT after partial-overlap stores"
+        );
+
+        // addr1's solution constraint (== 0x1000) must survive: probing
+        // an alternative value in a forked context must be UNSAT.
+        let probe_addr = ctx.fork();
+        probe_addr.assume_true(
+            &addr1.eq(&RustBV::concrete(0x2000, 64), &probe_addr),
+        );
+        assert!(
+            !probe_addr.is_sat(),
+            "addr1==0x1000 must survive partial-overlap stores; \
+             probing addr1==0x2000 was unexpectedly SAT"
+        );
+
+        // sym1's value constraint must survive: probing sym1 == 0 must
+        // be UNSAT (sym1 is pinned to 0xDEAD_BEEF_F00D_BABE).
+        let probe_sym1 = ctx.fork();
+        probe_sym1
+            .assume_true(&sym1.eq(&RustBV::concrete(0, 64), &probe_sym1));
+        assert!(
+            !probe_sym1.is_sat(),
+            "sym1's value constraint must survive partial-overlap stores; \
+             probing sym1==0 was unexpectedly SAT"
+        );
+
+        // Loading from 0x1000 must still produce a satisfiable expression
+        // and stay consistent with the surviving value-side constraints.
+        let loaded = mem
+            .load_concrete(0x1000, 4, &ctx)
+            .expect("load[0x1000:4] must succeed after partial-overlap stores");
+        assert!(
+            ctx.is_sat(),
+            "context must remain SAT after the post-store load"
+        );
+        // Eval should produce *some* concrete model — addr/value constraints
+        // narrow the model space but do not make it UNSAT.
+        assert!(
+            ctx.eval(&loaded).is_some(),
+            "loaded value must be evaluable under the preserved constraints"
+        );
+    }
 }
