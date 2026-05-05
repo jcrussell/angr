@@ -1,50 +1,51 @@
-# Loop session notes (2026-05-05, fifty-sixth loop session — DONE)
+# Loop session notes (2026-05-05, fifty-seventh loop session — DONE)
 
-## Status: COMPLETE — angr-eldx closed
+## Status: COMPLETE — angr-s27u closed
 
 ## What was done
-**angr-eldx** (P2): Test that contradictory constraints mark state UNSAT.
+**angr-s27u** (P2): Tests for constraint stability and weakening through ITE chains.
 
-Added two regression tests in `tests/engines/test_rust_exploration.py`:
+Added two regression tests in `tests/engines/test_rust_exploration.py` under
+`TestSolverOperations`:
 
-1. `test_contradictory_constraints_make_unsat` (TestSolverOperations)
-   — directly drives `RustSolverContext` with `x>100 AND x<50` and
-   asserts that `satisfiable()` returns False, and `eval`, `min`, `max`
-   all return None, and `eval_upto` returns `[]`. Locks the bead's
-   acceptance criteria.
+1. `test_constraint_weakening_through_ite`
+   — builds `If(x>5, x, 100)`, constrains `result > 50`, then uses
+   the fork-witness pattern to verify:
+     - x=51 is admissible (then-branch: x>5 ∧ x>50)
+     - x=3  is admissible (else-branch: 100>50 holds for any x≤5)
+     - x=30 is NOT admissible (then-branch=30, else-branch unreachable)
+   Catches regressions that flatten the ITE and over-constrain x.
 
-2. `test_unsat_state_pruned_during_step` (TestErrorRecovery)
-   — sets up a fresh shellcode-loaded SimState, adds the same
-   contradictory constraints via `state.solver.add(...)`, runs the
-   manager for 20 steps, and asserts the state is no longer in `active`.
+2. `test_model_stability_constraint_order`
+   — adds {x≥100, x≤200, x≠150} in two different orders to two
+   `RustSolverContext` instances, asserts `eval(x)` is identical.
+   Locks down Z3 determinism through the claripy bridge.
 
-Tests: 216/216 pass (was 214; +2). Commit: c17328ae1.
+Tests: 218/218 pass (was 216, +2). Commit: ef53bd0d2.
 
 ## Key empirical findings
-- `RustSolverContext` UNSAT behaviour is clean: all eval/min/max/eval_upto
-  return None or empty rather than bogus concrete values.
-- Engine does NOT precheck parent-state satisfiability — UNSAT detection
-  happens at fork points (`stepping.rs:312/342/876/886`). So an UNSAT
-  state with linear successors still executes one block and ends up in
-  `deadended` (no successors), not `pruned`.
+- ITE constraint weakening works correctly: `If(c, a, b) > k` admits any x
+  where the chosen branch satisfies `>k`, not just one branch.
+- Z3 model selection through `claripy_to_rustbv` is ORDER-INDEPENDENT —
+  verified empirically. Normalisation doesn't introduce order sensitivity.
+- The fork-witness pattern (fork → add test constraint → check satisfiable)
+  is the clean way to prove individual values are admissible/ruled out
+  without disturbing the original solver context.
 
 ## Memories saved
-- `invariant-unsat-state-stepping` — only fork-time satisfiability checks;
-  test assertions about state eviction should target `active==0` rather
-  than naming `pruned`/`errored`.
-- `rust-solver-unsat-semantics` — eval/min/max return None, eval_upto
-  returns [] on UNSAT, matching the satisfiable-wrong-answer invariant.
+- `solver-test-pattern-fork-witness` — fork+constrain+sat-check pattern
+  for proving admissibility of specific test points.
+- `invariant-z3-model-stability` — claripy bridge is order-independent;
+  flag any future failure of `test_model_stability_constraint_order` as
+  a constraint-hashing/dedup regression.
 
 ## Build env reminder
 Pure-Python (test-only) change — no `pip install -e .` rebuild needed.
 
-## Next-up (still ready, P1)
-- angr-eygl Differential test harness — test infra (highest-ROI per audit, BIG)
-- angr-pufm Symbolic address concretization fallback — large feature
-
-## Next-up smaller (P2)
-- angr-2i4n Tests: error path coverage (unmapped, OOM, Z3 timeout, permission)
-- angr-s27u Tests: constraint stability and weakening through ITE chains
-- angr-24e7 Tests: state fork isolation for symbolic_spans, imported_addrs
-- angr-xok8 Tests: unaligned wide access crossing 3 pages
-- angr-io1t Tests: VEX FP edge cases (NaN, infinity, conversion overflow)
+## Next-up (still ready)
+- angr-eygl (P1) Differential test harness — BIG, multi-session
+- angr-pufm (P1) Symbolic address concretization fallback — large feature
+- angr-2i4n (P2) Tests: error path coverage (unmapped, OOM, Z3 timeout)
+- angr-24e7 (P2) Tests: state fork isolation for symbolic_spans
+- angr-xok8 (P2) Tests: unaligned wide access crossing 3 pages
+- angr-io1t (P2) Tests: VEX FP edge cases (NaN, infinity, conversion)
