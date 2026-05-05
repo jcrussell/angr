@@ -581,7 +581,7 @@ pub struct CallbackInterpreter<'a> {
     /// Per-block concretization cache.
     /// Maps BV id to cached ConcretizationResult.
     /// Cleared at the start of each block since constraints don't change within a block.
-    concretize_cache: HashMap<u64, ConcretizationResult>,
+    concretize_cache: HashMap<u64, Arc<ConcretizationResult>>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Transferred to/from RustSimState before/after interpreter runs.
     pub call_stack: Vec<crate::state::CallStackEntry>,
@@ -668,9 +668,12 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Concretize for read with per-block caching.
     /// Uses read_range_limit and falls back to Any (single solution) if range is too large.
-    fn concretize_cached_read(&mut self, addr: &RustBV) -> ConcretizationResult {
+    ///
+    /// Returns an `Arc<ConcretizationResult>` so cache hits / inserts only pay an
+    /// atomic refcount bump rather than cloning a `Vec<u64>` for the Multiple variant.
+    fn concretize_cached_read(&mut self, addr: &RustBV) -> Arc<ConcretizationResult> {
         if let Some(concrete_addr) = addr.as_u64() {
-            return ConcretizationResult::Single(concrete_addr);
+            return Arc::new(ConcretizationResult::Single(concrete_addr));
         }
 
         let cache_key = Self::bv_cache_key(addr);
@@ -678,12 +681,12 @@ impl<'a> CallbackInterpreter<'a> {
         // but within a block they're typically used consistently for a given address.
         // Cache the raw result and apply fallback after cache lookup.
         if let Some(cached) = self.concretize_cache.get(&cache_key) {
-            let result = cached.clone();
+            let result = Arc::clone(cached);
             // Apply read fallback to cached result
-            return match result {
+            return match &*result {
                 ConcretizationResult::TooLarge { .. } if self.concretizer.read_fallback_any => {
                     if let Some(val) = self.ctx.eval(addr) {
-                        ConcretizationResult::Single(val as u64)
+                        Arc::new(ConcretizationResult::Single(val as u64))
                     } else {
                         result
                     }
@@ -693,33 +696,35 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         let conc_start = std::time::Instant::now();
-        let result = self.concretizer.concretize_read(addr, self.ctx);
+        let result = Arc::new(self.concretizer.concretize_read(addr, self.ctx));
         let conc_elapsed = conc_start.elapsed();
         if self.profiling_enabled {
             self.stats.concretize_count += 1;
             self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
         }
-        self.concretize_cache.insert(cache_key, result.clone());
+        self.concretize_cache.insert(cache_key, Arc::clone(&result));
         result
     }
 
     /// Concretize for write with per-block caching.
     /// Uses write_range_limit and falls back to Max solution if range is too large.
-    fn concretize_cached_write(&mut self, addr: &RustBV) -> ConcretizationResult {
+    ///
+    /// Returns an `Arc<ConcretizationResult>` (see `concretize_cached_read`).
+    fn concretize_cached_write(&mut self, addr: &RustBV) -> Arc<ConcretizationResult> {
         if let Some(concrete_addr) = addr.as_u64() {
-            return ConcretizationResult::Single(concrete_addr);
+            return Arc::new(ConcretizationResult::Single(concrete_addr));
         }
 
         let cache_key = Self::bv_cache_key(addr);
         if let Some(cached) = self.concretize_cache.get(&cache_key) {
-            let result = cached.clone();
+            let result = Arc::clone(cached);
             // Apply write fallback to cached result
-            return match result {
+            return match &*result {
                 ConcretizationResult::TooLarge { .. } if self.concretizer.write_fallback_max => {
                     if let Some((_min, max)) = self.ctx.range(addr) {
-                        ConcretizationResult::Single(max as u64)
+                        Arc::new(ConcretizationResult::Single(max as u64))
                     } else if let Some(val) = self.ctx.eval(addr) {
-                        ConcretizationResult::Single(val as u64)
+                        Arc::new(ConcretizationResult::Single(val as u64))
                     } else {
                         result
                     }
@@ -729,13 +734,13 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         let conc_start = std::time::Instant::now();
-        let result = self.concretizer.concretize_write(addr, self.ctx);
+        let result = Arc::new(self.concretizer.concretize_write(addr, self.ctx));
         let conc_elapsed = conc_start.elapsed();
         if self.profiling_enabled {
             self.stats.concretize_count += 1;
             self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
         }
-        self.concretize_cache.insert(cache_key, result.clone());
+        self.concretize_cache.insert(cache_key, Arc::clone(&result));
         result
     }
 
@@ -1012,19 +1017,22 @@ impl<'a> CallbackInterpreter<'a> {
                 // Also flush symbolic stores to rust_memory so that subsequent
                 // loads via load_concrete_lazy_inner find the symbolic values
                 // instead of returning concrete zeros from the page fill.
-                for (addr, bv) in &self.pending_symbolic_stores {
-                    rust_mem.import_symbolic_value(*addr, bv.clone(), None);
+                //
+                // Drain in this loop and insert into all_flushed_symbolic_stores too,
+                // sharing one clone instead of doing iter+clone followed by drain.
+                for (addr, bv) in self.pending_symbolic_stores.drain() {
+                    rust_mem.import_symbolic_value(addr, bv.clone(), None);
+                    self.all_flushed_symbolic_stores.insert(addr, bv);
+                }
+            } else {
+                for (addr, bv) in self.pending_symbolic_stores.drain() {
+                    self.all_flushed_symbolic_stores.insert(addr, bv);
                 }
             }
-            // Still accumulate for cross-block load forwarding
-            for (addr, data) in self.pending_stores.iter() {
-                self.all_flushed_stores.insert(*addr, data.clone());
+            // Drain pending_stores by move into all_flushed_stores (no Vec<u8> clone).
+            for (addr, data) in self.pending_stores.drain() {
+                self.all_flushed_stores.insert(addr, data);
             }
-            // Preserve symbolic values across block boundaries
-            for (addr, bv) in self.pending_symbolic_stores.drain() {
-                self.all_flushed_symbolic_stores.insert(addr, bv);
-            }
-            self.pending_stores.clear();
             return Ok(());
         }
 
@@ -1033,15 +1041,14 @@ impl<'a> CallbackInterpreter<'a> {
             .call_memory_store_batch(py, self.pending_stores.as_slice())
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
-        // Accumulate flushed stores for cross-block load forwarding.
-        for (addr, data) in self.pending_stores.iter() {
-            self.all_flushed_stores.insert(*addr, data.clone());
+        // Drain pending_stores into all_flushed_stores by move (no Vec<u8> clone).
+        for (addr, data) in self.pending_stores.drain() {
+            self.all_flushed_stores.insert(addr, data);
         }
         // Preserve symbolic values across block boundaries
         for (addr, bv) in self.pending_symbolic_stores.drain() {
             self.all_flushed_symbolic_stores.insert(addr, bv);
         }
-        self.pending_stores.clear();
         Ok(())
     }
 

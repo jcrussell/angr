@@ -65,7 +65,7 @@ impl<'a> CallbackInterpreter<'a> {
 
                     // Attempt store using pre-computed concretization
                     let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
-                        Some(rust_mem.store_with_concretization(&addr_val, data_val.clone(), &conc_result, self.ctx))
+                        Some(rust_mem.store_with_concretization(&addr_val, data_val.clone(), &*conc_result, self.ctx))
                     } else {
                         None
                     };
@@ -74,7 +74,7 @@ impl<'a> CallbackInterpreter<'a> {
                         match result {
                             Ok(()) => {
                                 // Update prefetch cache and track constraints
-                                match &conc_result {
+                                match &*conc_result {
                                     ConcretizationResult::Single(addr_concrete) => {
                                         self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
                                         self.track_concretization_constraint(&addr_val, *addr_concrete);
@@ -98,9 +98,9 @@ impl<'a> CallbackInterpreter<'a> {
                                 if page_fetched {
                                     // Page was fetched - retry store using cached concretization
                                     if let Some(ref mut rust_mem) = self.rust_memory {
-                                        match rust_mem.store_with_concretization(&addr_val, data_val.clone(), &conc_result, self.ctx) {
+                                        match rust_mem.store_with_concretization(&addr_val, data_val.clone(), &*conc_result, self.ctx) {
                                             Ok(()) => {
-                                                match &conc_result {
+                                                match &*conc_result {
                                                     ConcretizationResult::Single(addr_concrete) => {
                                                         self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
                                                         self.track_concretization_constraint(&addr_val, *addr_concrete);
@@ -206,8 +206,9 @@ impl<'a> CallbackInterpreter<'a> {
                     self.flush_stores(py, callbacks)?;
                     // Symbolic address - use cached write concretization
                     let concret_result = self.concretize_cached_write(&addr_val);
-                    match concret_result {
+                    match &*concret_result {
                         ConcretizationResult::Single(addr_concrete) => {
+                            let addr_concrete = *addr_concrete;
                             // Track concretization constraint for Python sync
                             self.track_concretization_constraint(&addr_val, addr_concrete);
                             // Use symbolic store for symbolic values to preserve expression trees
@@ -226,16 +227,16 @@ impl<'a> CallbackInterpreter<'a> {
                             self.sync_before_callback(py, callbacks)?;
                             // Build ITE chain in Rust for ≤16 addresses
                             if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
-                                self.build_ite_store_from_callbacks(py, callbacks, &addrs, &addr_val, &data_val)?;
+                                self.build_ite_store_from_callbacks(py, callbacks, addrs, &addr_val, &data_val)?;
                             } else {
                                 callbacks
-                                    .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
+                                    .call_memory_store_symbolic(py, addrs, &data_val, &addr_val)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             }
                         }
                         ConcretizationResult::Strided { base, stride, count } => {
                             self.sync_before_callback(py, callbacks)?;
-                            let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                            let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
                             if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
                                 self.build_ite_store_from_callbacks(py, callbacks, &addrs, &addr_val, &data_val)?;
                             } else {
@@ -245,6 +246,7 @@ impl<'a> CallbackInterpreter<'a> {
                             }
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
+                            let (min, max) = (*min, *max);
                             // Address range too large - delegate to Python's memory model
                             // which has access to angr's address concretization strategies
 
@@ -550,8 +552,9 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                     } else {
                         // Symbolic address with symbolic guard - concretize for write
-                        match self.concretize_cached_write(&addr_val) {
+                        match &*self.concretize_cached_write(&addr_val) {
                             ConcretizationResult::Single(addr_concrete) => {
+                                let addr_concrete = *addr_concrete;
                                 // Track concretization constraint for Python sync
                                 self.track_concretization_constraint(&addr_val, addr_concrete);
                                 // Load current value and use ITE
@@ -625,8 +628,9 @@ impl<'a> CallbackInterpreter<'a> {
                             if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                                 // Concretize address for write (with cache)
                                 let concret_result = self.concretize_cached_write(&addr_val);
-                                match concret_result {
+                                match &*concret_result {
                                     ConcretizationResult::Single(addr_concrete) => {
+                                        let addr_concrete = *addr_concrete;
                                         self.track_concretization_constraint(&addr_val, addr_concrete);
                                         callbacks
                                             .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
@@ -711,13 +715,14 @@ impl<'a> CallbackInterpreter<'a> {
                             Some(a) => a,
                             None => {
                                 // Symbolic address - concretize for read
-                                match self.concretize_cached_read(&addr_val) {
+                                match &*self.concretize_cached_read(&addr_val) {
                                     ConcretizationResult::Single(a) => {
+                                        let a = *a;
                                         // Track concretization constraint for Python sync
                                         self.track_concretization_constraint(&addr_val, a);
                                         a
                                     }
-                                    ConcretizationResult::Multiple(ref addrs) => {
+                                    ConcretizationResult::Multiple(addrs) => {
                                         *addrs.first().ok_or_else(|| {
                                             CbExecutionError::Unsupported("LoadG with empty address set".to_string())
                                         })?
@@ -755,13 +760,14 @@ impl<'a> CallbackInterpreter<'a> {
                     let addr_concrete = match addr_val.as_u64() {
                         Some(a) => a,
                         None => {
-                            match self.concretize_cached_read(&addr_val) {
+                            match &*self.concretize_cached_read(&addr_val) {
                                 ConcretizationResult::Single(a) => {
+                                    let a = *a;
                                     // Track concretization constraint for Python sync
                                     self.track_concretization_constraint(&addr_val, a);
                                     a
                                 }
-                                ConcretizationResult::Multiple(ref addrs) => {
+                                ConcretizationResult::Multiple(addrs) => {
                                     *addrs.first().ok_or_else(|| {
                                         CbExecutionError::Unsupported("LoadG with empty address set".to_string())
                                     })?
@@ -797,13 +803,14 @@ impl<'a> CallbackInterpreter<'a> {
                         let addr_concrete = match addr_val.as_u64() {
                             Some(a) => a,
                             None => {
-                                match self.concretize_cached_read(&addr_val) {
+                                match &*self.concretize_cached_read(&addr_val) {
                                     ConcretizationResult::Single(a) => {
+                                        let a = *a;
                                         // Track concretization constraint for Python sync
                                         self.track_concretization_constraint(&addr_val, a);
                                         a
                                     }
-                                    ConcretizationResult::Multiple(ref addrs) => {
+                                    ConcretizationResult::Multiple(addrs) => {
                                         *addrs.first().ok_or_else(|| {
                                             CbExecutionError::Unsupported("LoadG with empty address set".to_string())
                                         })?

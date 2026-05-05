@@ -162,8 +162,9 @@ impl<'a> CallbackInterpreter<'a> {
                     self.load_from_callback(py, callbacks, addr_concrete, size)
                 } else {
                     // Symbolic address - try to concretize for read
-                    match self.concretize_cached_read(&addr_val) {
+                    match &*self.concretize_cached_read(&addr_val) {
                         ConcretizationResult::Single(addr_concrete) => {
+                            let addr_concrete = *addr_concrete;
                             if self.arch.pointer_size() == 32 && addr_concrete >= 0x400000 && addr_concrete < 0x420000 {
                             }
                             self.track_concretization_constraint(&addr_val, addr_concrete);
@@ -177,16 +178,17 @@ impl<'a> CallbackInterpreter<'a> {
                             self.sync_before_callback(py, callbacks)?;
                             // Build ITE chain in Rust instead of delegating to Python
                             // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
-                            self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
+                            self.build_ite_load_from_callbacks(py, callbacks, addrs, &addr_val, size)
                         }
                         ConcretizationResult::Strided { base, stride, count } => {
                             // Sync constraints before batch load
                             self.sync_before_callback(py, callbacks)?;
                             // Strided access pattern - generate addresses and build ITE chain in Rust
-                            let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                            let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
                             self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
+                            let (min, max) = (*min, *max);
                             // Address range too large - delegate to Python's memory model
                             // which has access to angr's address concretization strategies
 
