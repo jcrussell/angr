@@ -1,57 +1,33 @@
-# Loop session notes (2026-05-03, thirty-eighth loop session)
+# Loop session notes (2026-05-05, fortieth loop session)
 
-## Task: angr-7l12 — CLOSED
-"Enforce NX (execute) permission on basic block fetch in Rust interpreter"
-
-Plus: deferred angr-borb (StateId/Address newtype refactor) — bead
-description references deleted pyapi.rs and full scope is 283 sites
-across 25 files; too large/stale for a single session.
+## Task: angr-nnoh — CLOSED
+Fix sym-write regression by implementing `x86g_use_seg_selector` ccall in Rust.
 
 ## Outcome
-With STRICT_PAGE_ACCESS / `enforce_permissions=true`, basic-block
-fetch now rejects mapped non-executable pages. Combined with the
-existing R/W enforcement on load/store, the Rust engine now mirrors
-angr's STRICT_PAGE_ACCESS semantics for all three access types.
-
-Test count: 210 pass (was 209, added 1 Python integration test +
-4 Rust unit tests).
-
-## What changed
-- **native/angr/src/memory.rs**
-  - Added `pub fn check_executable(&self, addr: u64) -> Result<(), MemoryError>`.
-    No-op when `enforce_permissions` is false or page is unmapped.
-    Errors only on mapped-without-X.
-  - 4 new Rust unit tests covering: rejection, success, unmapped
-    pass-through, no-op when disabled.
-- **native/angr/src/interpreter_cb/execution.rs**
-  - In `get_or_lift_block`, call `mem.check_executable(addr)` before
-    the cache lookup so even cached IRSBs get rejected after a page's
-    X bit is stripped. Failure mapped to `CbExecutionError::Memory`.
-- **tests/engines/test_rust_exploration.py**
-  - New `test_strict_page_access_blocks_nx_block_fetch`: builds a
-    `_RustExplorationManager` with no-op callbacks, maps a page perm=6
-    (RW, no X), points PC at it, runs, asserts the state lands in
-    `errored` and `lift_block` was never invoked at the NX address.
+- **Implemented x86g_use_seg_selector concrete fast path** in `native/angr/src/vex/ccall.rs::handle_ccall_with_ctx` (commit aaaa25779).
+- Handles the LDT=0/GDT=0 flat-addressing case (Linux glibc TLS canary reads like `mov %gs:0x14, %eax`).
+- For all-concrete args, returns `((seg_selector & 0xFFFF) << 16) + (virtual_addr & 0xFFFFFFFF)` at ret_bits=64 when the descriptor table selected by tiBit (bit 2 of seg_selector) is zero.
+- Bad selectors (high bits set) return 1<<32 (libVEX bad() value).
+- Symbolic args or non-empty tables fall through to Python (still triggers the multi-successor drop bug — tracked separately as angr-v8iz).
 
 ## Verification
-- `cargo check --release` clean.
-- `cargo test --release --lib check_executable` 4/4 pass.
-- 210/210 RustExplorationManager tests pass.
-- fauxware single-engine benchmark still finds SOSNEAKY in ~0.37s.
+- **sym-write**: 30s+ timeout → 0.42s (matches the 4d174348c baseline).
+- **210/210** RustExplorationManager tests pass.
+- Sanity benchmarks: fauxware 0.38s, ais3_crackme 0.86s, defcamp_r100 0.22s — all healthy.
+
+## Files modified
+- `native/angr/src/vex/ccall.rs` — added 28-line block between eflags_all and ARM ccall blocks.
+
+## Beads
+- angr-nnoh: CLOSED with fix details.
+- angr-v8iz: NEW (P2 bug). Fix the underlying multi-successor drop in `_handle_python_vex_fallback`. Two options: lower num_inst to 1, or properly fork Rust state on N>1 successors. Independent of the angr-nnoh fix.
 
 ## Memories saved
-- `invariant-nx-block-fetch` — where the X check fires + why unmapped pages pass through
-- `invariant-rust-perm-mapping-coarse` — current Python-side perm mapping is hardcoded RWX/RW; what the NX check actually catches today
-- `strict-page-access-wiring` — updated to include the new NX check
-- `avoid-deferred-borb-newtypes` — rationale for deferring angr-borb
+- `x86g_use_seg_selector-impl` — full implementation details and limitations.
+- `benchmark-symwrite-fixed-2026-05-05` — before/after timing.
 
-## Potential follow-up
-- Improve `angr/exploration/rust_state_sync.py` to use loader's
-  per-page permissions instead of hardcoded `7`/`6`. Would let the
-  NX check (and the load/store R/W check) catch real per-section
-  violations (e.g., `.text` write attempts), not just stack-X /
-  unmapped-X. Bigger change — needs to touch 4-5 map_memory_data
-  call sites and verify no regressions across all benchmarks.
-- Consider auto-enabling STRICT_PAGE_ACCESS by default for real
-  Project flows once the perm mapping is granular enough that it
-  doesn't break legit code. Currently still opt-in.
+## Suggested next session
+Pick from `bd ready`:
+- **angr-v8iz** (P2, just-created): close out the underlying VEX-fallback multi-successor drop bug. Smaller fix (option 1: lower num_inst to 1) is the safer first step.
+- **angr-2aih** (P0, blocked-but-unblocked-now): re-run the 22-benchmark sweep to refresh `baseline_timings.json`. Note: angrybird and others are tracked by memory `angrybird-baseline-stale` — current numbers don't match the locked baseline due to hardware variance, not code regressions.
+- **angr-eygl** (P1): Differential test harness (Python vs Rust step diffing) — would have caught angr-nnoh's regression earlier.
