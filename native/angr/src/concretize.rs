@@ -380,8 +380,20 @@ impl AddressConcretizer {
         }
 
         // More than FAST_ENUM_LIMIT solutions — fall back to range-based approach.
-        // Use range() to check if the address space is manageable.
-        let (min, max) = match ctx.range(addr) {
+        // Use range_seeded() with the solutions we already enumerated to tighten
+        // the binary-search bounds (saves ~half the SAT calls for `min` when the
+        // smallest known solution is well below 2^width).
+        let mut smallest_known = u128::MAX;
+        let mut largest_known: u128 = 0;
+        for &s in &fast_solutions {
+            if s < smallest_known {
+                smallest_known = s;
+            }
+            if s > largest_known {
+                largest_known = s;
+            }
+        }
+        let (min, max) = match ctx.range_seeded(addr, smallest_known, largest_known) {
             Some((min, max)) => (min as u64, max as u64),
             None => {
                 // Range failed but we have solutions from fast enum — use them

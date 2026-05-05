@@ -1267,6 +1267,90 @@ impl SymContext {
         Some((min, max))
     }
 
+    /// Get the unsigned range [min, max] of a bitvector, using known valid
+    /// solutions to seed the binary search.
+    ///
+    /// `smallest_known` and `largest_known` must be values that satisfy the
+    /// current constraints (e.g., from `solutions()`). They are used as
+    /// initial bounds: `min` is searched in `[0, smallest_known]` and `max`
+    /// is searched in `[largest_known, 2^width - 1]`. This roughly halves the
+    /// SAT calls when `smallest_known` is well below `2^width`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn range_seeded(
+        &self,
+        bv: &RustBV,
+        smallest_known: u128,
+        largest_known: u128,
+    ) -> Option<(u128, u128)> {
+        if let Some(v) = bv.as_u128() {
+            return Some((v, v));
+        }
+        if !self.is_sat() {
+            return None;
+        }
+
+        let ast = bv.to_z3_ast();
+        let width = bv.width();
+        let max_val: u128 = if width >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
+
+        // Clamp seeds to the bitvector range. Seeds must already be valid
+        // solutions, so smallest_known ≤ true_max and largest_known ≥ true_min.
+        let hi_seed = smallest_known.min(max_val);
+        let lo_seed = largest_known.min(max_val);
+
+        let solver = self.solver();
+        solver.push();
+
+        // Binary search for min in [0, hi_seed].
+        let mut lo: u128 = 0;
+        let mut hi: u128 = hi_seed;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            solver.push();
+            let mid_ast = Self::make_bv_const(mid, width);
+            solver.assert(&ast.bvule(&mid_ast));
+            let can_be_le_mid = matches!(
+                timed_check(&solver, CheckSite::MinSearch),
+                z3::SatResult::Sat
+            );
+            solver.pop(1);
+            if can_be_le_mid {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let min_val = lo;
+
+        // Binary search for max in [lo_seed, max_val].
+        let mut lo: u128 = lo_seed;
+        let mut hi: u128 = max_val;
+        while lo < hi {
+            let mid = lo + (hi - lo + 1) / 2;
+            solver.push();
+            let mid_ast = Self::make_bv_const(mid, width);
+            solver.assert(&ast.bvuge(&mid_ast));
+            let can_be_ge_mid = matches!(
+                timed_check(&solver, CheckSite::MaxSearch),
+                z3::SatResult::Sat
+            );
+            solver.pop(1);
+            if can_be_ge_mid {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let max_val = lo;
+
+        solver.pop(1);
+        Some((min_val, max_val))
+    }
+
     /// Get up to n concrete solutions for a bitvector.
     ///
     /// This is a convenience wrapper around eval_upto.
@@ -1585,6 +1669,17 @@ impl SymContext {
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn range(&self, bv: &RustBV) -> Option<(u128, u128)> {
         // Without Z3, can only return range for concrete values
+        bv.as_u128().map(|v| (v, v))
+    }
+
+    /// Seeded range — without Z3, equivalent to range().
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn range_seeded(
+        &self,
+        bv: &RustBV,
+        _smallest_known: u128,
+        _largest_known: u128,
+    ) -> Option<(u128, u128)> {
         bv.as_u128().map(|v| (v, v))
     }
 
