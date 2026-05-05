@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
@@ -1731,7 +1732,7 @@ impl PyRustSimState {
             id: 0,
             ast: z3_bv,
             width,
-            name: name.to_string(),
+            name: Arc::from(name),
         };
         if self.inner.set_register(name, bv) {
             Ok(())

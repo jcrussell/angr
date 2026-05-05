@@ -369,8 +369,9 @@ pub enum RustBV {
         id: u64,
         /// Width in bits.
         width: u32,
-        /// Name (for debugging).
-        name: String,
+        /// Name (for debugging). `Arc<str>` so cloning a Symbolic is alloc-free —
+        /// hot on the RdTmp path where a temp slot is read multiple times per block.
+        name: Arc<str>,
         /// Z3 AST when z3 feature is enabled.
         #[cfg(feature = "vex-engine-z3")]
         ast: z3::ast::BV,
@@ -397,8 +398,10 @@ pub enum RustBV {
         width: u32,
         /// The operation that created this expression.
         op: BVOp,
-        /// The operands to this operation. Uses Arc for subtree sharing.
-        operands: Vec<Arc<RustBV>>,
+        /// The operands to this operation. Uses Arc for subtree sharing,
+        /// and `Arc<[...]>` so cloning the outer Expression is alloc-free
+        /// (matters on the RdTmp path).
+        operands: Arc<[Arc<RustBV>]>,
     },
 }
 
@@ -457,15 +460,15 @@ impl RustBV {
 
     /// Create a symbolic bitvector variable.
     ///
-    /// Accepts both `&str` (allocates once) and `String` (consumed without
-    /// realloc). Hot paths that build the name with `format!()` should pass
-    /// the `String` directly to avoid a redundant clone.
-    pub fn symbolic(ctx: &SymContext, name: impl Into<String>, width: u32) -> Self {
+    /// Accepts anything String-like via `AsRef<str>`. The internal name is
+    /// stored as `Arc<str>` so cloning a Symbolic is alloc-free, which matters
+    /// on the RdTmp path where a temp slot is read multiple times per block.
+    pub fn symbolic(ctx: &SymContext, name: impl AsRef<str>, width: u32) -> Self {
         let id = ctx.next_id();
-        let name = name.into();
+        let name: Arc<str> = Arc::from(name.as_ref());
         #[cfg(feature = "vex-engine-z3")]
         {
-            let ast = z3::ast::BV::new_const(name.as_str(), width);
+            let ast = z3::ast::BV::new_const(&*name, width);
             RustBV::Symbolic {
                 id,
                 width,
@@ -488,11 +491,11 @@ impl RustBV {
     /// This is used for identity preservation when the same symbol
     /// was previously imported from Python. By reusing the same ID,
     /// we ensure that constraints on the original symbol apply correctly.
-    pub fn symbolic_with_id(id: u64, name: impl Into<String>, width: u32) -> Self {
-        let name = name.into();
+    pub fn symbolic_with_id(id: u64, name: impl AsRef<str>, width: u32) -> Self {
+        let name: Arc<str> = Arc::from(name.as_ref());
         #[cfg(feature = "vex-engine-z3")]
         {
-            let ast = z3::ast::BV::new_const(name.as_str(), width);
+            let ast = z3::ast::BV::new_const(&*name, width);
             RustBV::Symbolic {
                 id,
                 width,
@@ -626,7 +629,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Add,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -652,7 +655,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Sub,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -682,7 +685,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Mul,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -712,7 +715,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::UDiv,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -744,7 +747,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::SDiv,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -774,7 +777,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::URem,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -806,7 +809,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::SRem,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -833,7 +836,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Neg,
-                    operands: vec![Arc::new(self)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
                 }
             }
         }
@@ -867,7 +870,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::And,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -898,7 +901,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Or,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -925,7 +928,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Xor,
-                    operands: vec![Arc::new(self), Arc::new(other)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
                 }
             }
         }
@@ -952,7 +955,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Not,
-                    operands: vec![Arc::new(self)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
                 }
             }
         }
@@ -991,7 +994,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width: w,
                     op: BVOp::Reverse,
-                    operands: vec![Arc::new(self)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
                 }
             }
         }
@@ -1026,7 +1029,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Shl,
-                    operands: vec![Arc::new(self), Arc::new(amount)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(amount)]),
                 }
             }
         }
@@ -1057,7 +1060,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Lshr,
-                    operands: vec![Arc::new(self), Arc::new(amount)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(amount)]),
                 }
             }
         }
@@ -1087,7 +1090,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Ashr,
-                    operands: vec![Arc::new(self), Arc::new(amount)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(amount)]),
                 }
             }
         }
@@ -1116,7 +1119,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::RotL,
-                    operands: vec![Arc::new(self), Arc::new(amount)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(amount)]),
                 }
             }
         }
@@ -1145,7 +1148,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::RotR,
-                    operands: vec![Arc::new(self), Arc::new(amount)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(amount)]),
                 }
             }
         }
@@ -1174,7 +1177,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Eq,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1195,7 +1198,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ne,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1216,7 +1219,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ult,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1237,7 +1240,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ule,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1258,7 +1261,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Ugt,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1279,7 +1282,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Uge,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1304,7 +1307,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Slt,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1329,7 +1332,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Sle,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1354,7 +1357,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Sgt,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1379,7 +1382,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: 1,
                 op: BVOp::Sge,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1408,7 +1411,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
                 op: BVOp::ZeroExt(extend_bits),
-                operands: vec![Arc::new(self)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
             },
         }
     }
@@ -1437,7 +1440,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
                 op: BVOp::SignExt(extend_bits),
-                operands: vec![Arc::new(self)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
             },
         }
     }
@@ -1458,7 +1461,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: to_width,
                 op: BVOp::Extract(to_width - 1, 0),
-                operands: vec![Arc::new(self)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
             },
         }
     }
@@ -1549,7 +1552,7 @@ impl RustBV {
             id: Self::EXPRESSION_ID,
             width: result_width,
             op: BVOp::Extract(high, low),
-            operands: vec![Arc::new(self)],
+            operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
         }
     }
 
@@ -1572,7 +1575,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: result_width,
                 op: BVOp::Concat,
-                operands: vec![Arc::new(self), Arc::new(other)],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self), Arc::new(other)]),
             },
         }
     }
@@ -1597,7 +1600,7 @@ impl RustBV {
             id: Self::EXPRESSION_ID,
             width: result_width,
             op: BVOp::Extract(high, low),
-            operands: vec![Arc::new(self.clone())],
+            operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self.clone())]),
         }
     }
 
@@ -1614,7 +1617,7 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: result_width,
                 op: BVOp::Concat,
-                operands: vec![Arc::new(self.clone()), Arc::new(other.clone())],
+                operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self.clone()), Arc::new(other.clone())]),
             },
         }
     }
@@ -1645,11 +1648,11 @@ impl RustBV {
                 id: Self::EXPRESSION_ID,
                 width: then_val.width(),
                 op: BVOp::Ite,
-                operands: vec![
+                operands: Arc::<[Arc<RustBV>]>::from(vec![
                     Arc::new(self),
                     Arc::new(then_val),
                     Arc::new(else_val),
-                ],
+                ]),
             },
         }
     }
@@ -1678,7 +1681,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Clz,
-                    operands: vec![Arc::new(self)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
                 }
             }
         }
@@ -1708,7 +1711,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Ctz,
-                    operands: vec![Arc::new(self)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
                 }
             }
         }
@@ -1731,7 +1734,7 @@ impl RustBV {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Popcount,
-                    operands: vec![Arc::new(self)],
+                    operands: Arc::<[Arc<RustBV>]>::from(vec![Arc::new(self)]),
                 }
             }
         }

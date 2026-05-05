@@ -33,7 +33,7 @@ fn build_float_expr(
         id: RustBV::EXPRESSION_ID,
         width,
         op: BVOp::Float { kind, prec },
-        operands: operands.into_iter().map(Arc::new).collect(),
+        operands: operands.into_iter().map(Arc::new).collect::<Vec<_>>().into(),
     }
 }
 

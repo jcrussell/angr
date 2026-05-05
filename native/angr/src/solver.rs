@@ -12,6 +12,7 @@ use pyo3::types::PyList;
 
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::claripy_bridge::{claripy_to_rustbv, try_extract_bvv, BridgeError};
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
@@ -256,7 +257,7 @@ impl RustSolverContext {
             id: 0,
             ast: z3_bv,
             width,
-            name: String::new(),
+            name: Arc::from(""),
         };
 
         if width <= 128 {
@@ -314,7 +315,7 @@ impl RustSolverContext {
                             z3::ast::BV::wrap(&z3_ctx, raw)
                         };
                         RustBV::Symbolic {
-                            id: 0, ast: z3_bv, width, name: String::new(),
+                            id: 0, ast: z3_bv, width, name: Arc::from(""),
                         }
                     } else {
                         return Ok(result_list.into());

@@ -945,7 +945,7 @@ pub fn rustbv_to_claripy(
             // Cache was already checked above, so this is a symbol created purely in Rust
             // Create new claripy.BVS(name, width)
             claripy_mod
-                .call_method1("BVS", (name.as_str(), *width))
+                .call_method1("BVS", (&**name, *width))
                 .map(|obj| obj.into())
         }
         RustBV::Constrained { value, width, .. } => {
