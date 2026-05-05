@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import datetime
+import glob
 import json
 import logging
 import os
@@ -44,6 +45,12 @@ DEFAULT_TIMEOUT_SECS = 3600  # 60 minutes
 DEFAULT_MAX_ITERATIONS = 30
 RATE_LIMIT_BASE_BACKOFF = 300  # 5 minutes
 MAX_BACKOFF = 4800  # 80 minutes
+DEAD_SESSION_DURATION_SECS = 10  # exit_code != 0 + duration < this counts as dead
+DEAD_SESSION_STREAK_THRESHOLD = 3  # consecutive dead sessions before long backoff
+FAILED_OUTPUT_RETENTION = 20  # keep stdout/stderr for last N failed sessions
+
+# Sentinel returned by calculate_backoff to signal "exit the loop, don't sleep"
+BACKOFF_EXIT = -1
 
 CLAUDE_MODEL = "opus"
 DIRTY_REVERT_THRESHOLD = 3  # Auto-revert after this many consecutive dirty iterations
@@ -250,28 +257,59 @@ def build_prompt(git_state: dict) -> str:
     return opening + PROMPT_FOOTER
 
 
-def detect_rate_limit(stdout: str, stderr: str) -> tuple[bool, Optional[float]]:
-    """Detect rate limit and return (is_limited, seconds_until_reset_or_None)."""
-    combined = stdout + stderr
-    if "hit your limit" not in combined.lower() and "rate limit" not in combined.lower():
-        return False, None
+def _parse_reset_seconds(text: str) -> Optional[float]:
+    """Parse 'resets 4am (UTC)' style text into seconds-until-reset."""
+    match = re.search(r"resets\s+(\d{1,2})\s*(am|pm)\s*\(UTC\)", text, re.IGNORECASE)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    if match.group(2).lower() == "pm" and hour != 12:
+        hour += 12
+    elif match.group(2).lower() == "am" and hour == 12:
+        hour = 0
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    reset = now_utc.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if reset <= now_utc:
+        reset += datetime.timedelta(days=1)
+    return (reset - now_utc).total_seconds() + 60  # 60s buffer
 
-    # Try to parse reset time: "resets 4am (UTC)" or "resets 8am (UTC)"
-    match = re.search(r"resets\s+(\d{1,2})\s*(am|pm)\s*\(UTC\)", combined, re.IGNORECASE)
-    if match:
-        hour = int(match.group(1))
-        if match.group(2).lower() == "pm" and hour != 12:
-            hour += 12
-        elif match.group(2).lower() == "am" and hour == 12:
-            hour = 0
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        reset = now_utc.replace(hour=hour, minute=0, second=0, microsecond=0)
-        if reset <= now_utc:
-            reset += datetime.timedelta(days=1)
-        secs = (reset - now_utc).total_seconds() + 60  # 60s buffer
-        return True, secs
 
-    return True, None
+def detect_failure_mode(claude_json: Optional[dict],
+                        exit_code: int) -> tuple[str, Optional[float]]:
+    """Classify a session outcome from the structured JSON envelope.
+
+    Returns (mode, reset_secs_or_None) where mode is one of:
+        ok, rate_limit, budget_exhausted, auth_error, model_overloaded,
+        unknown_error
+    """
+    if not isinstance(claude_json, dict):
+        # JSON parse failed (CLI crashed before emitting result, or non-JSON output)
+        if exit_code == 0:
+            return "ok", None
+        return "unknown_error", None
+
+    is_error = bool(claude_json.get("is_error"))
+    subtype = str(claude_json.get("subtype") or "").lower()
+
+    if not is_error:
+        return "ok", None
+
+    # Build a haystack from subtype + errors[] for substring matching
+    errors_list = claude_json.get("errors") or []
+    errors_text = " ".join(str(e) for e in errors_list).lower()
+    haystack = f"{subtype} {errors_text}"
+
+    if "rate" in haystack or ("limit" in haystack and "budget" not in subtype):
+        return "rate_limit", _parse_reset_seconds(errors_text)
+    if subtype == "error_max_budget_usd" or "budget" in subtype:
+        return "budget_exhausted", None
+    if "auth" in haystack or "credential" in haystack:
+        return "auth_error", None
+    if "overload" in haystack:
+        return "model_overloaded", None
+    if subtype.startswith("error_") or is_error:
+        return "unknown_error", None
+    return "ok", None
 
 
 def detect_oom(exit_code: int, stderr: str, scope_unit: Optional[str]) -> bool:
@@ -298,19 +336,26 @@ def detect_oom(exit_code: int, stderr: str, scope_unit: Optional[str]) -> bool:
     return False
 
 
-def calculate_backoff(rate_limited: bool, rate_limit_reset_secs: Optional[float],
+def calculate_backoff(mode: str, rate_limit_reset_secs: Optional[float],
                       killed_by_oom: bool, killed_by_timeout: bool,
-                      exit_code: int, consecutive_failures: int) -> int:
-    """Calculate backoff seconds."""
-    if rate_limited:
+                      exit_code: int, consecutive_failures: int,
+                      short_dead_streak: int) -> int:
+    """Calculate backoff seconds. Returns BACKOFF_EXIT to signal terminal failure."""
+    if mode in ("budget_exhausted", "auth_error"):
+        return BACKOFF_EXIT
+    if mode == "rate_limit":
         if rate_limit_reset_secs is not None:
             return min(int(rate_limit_reset_secs), MAX_BACKOFF)
-        # Exponential backoff: 5m, 10m, 20m, 40m, 80m
         return min(RATE_LIMIT_BASE_BACKOFF * (2 ** min(consecutive_failures, 4)), MAX_BACKOFF)
+    if mode == "model_overloaded":
+        return RATE_LIMIT_BASE_BACKOFF
     if killed_by_oom:
         return 30
     if killed_by_timeout:
         return 60
+    if mode == "unknown_error" and short_dead_streak >= DEAD_SESSION_STREAK_THRESHOLD:
+        # Safety net: structured detection missed something; treat like rate limit
+        return min(RATE_LIMIT_BASE_BACKOFF * (2 ** min(short_dead_streak - DEAD_SESSION_STREAK_THRESHOLD, 4)), MAX_BACKOFF)
     if exit_code != 0:
         return 60
     return 10  # Clean exit
@@ -335,6 +380,7 @@ def run_claude_session(prompt: str, iteration: int, timeout: int,
         "-p", "MemorySwapMax=0",
         "--",
         "claude", "-p", prompt,
+        "--output-format=json",
         "--dangerously-skip-permissions",
         "--model", CLAUDE_MODEL,
     ]
@@ -386,7 +432,6 @@ def run_claude_session(prompt: str, iteration: int, timeout: int,
     stderr_str = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
 
     exit_code = proc.returncode
-    rate_limited, rate_reset = detect_rate_limit(stdout_str, stderr_str)
     killed_by_oom = detect_oom(exit_code, stderr_str, scope_unit)
 
     # Reset the finished scope so it doesn't linger as "failed" in systemd
@@ -398,33 +443,70 @@ def run_claude_session(prompt: str, iteration: int, timeout: int,
     except Exception:
         pass
 
-    # Try to parse JSON output from claude
+    # Parse the structured JSON envelope (--output-format=json). On crash before
+    # emission, claude_json stays None and detect_failure_mode falls through to
+    # unknown_error, which the dead-session heuristic in calculate_backoff catches.
     claude_json = None
     try:
         claude_json = json.loads(stdout_str)
     except (json.JSONDecodeError, TypeError):
         pass
 
+    mode, rate_reset = detect_failure_mode(claude_json, exit_code)
+
     result = {
         "exit_code": exit_code,
         "duration_secs": round(duration, 1),
         "killed_by_timeout": killed_by_timeout,
         "killed_by_oom": killed_by_oom,
-        "rate_limited": rate_limited,
+        "mode": mode,
+        "rate_limited": (mode == "rate_limit"),  # derived alias for backwards compat
         "rate_limit_reset_secs": rate_reset,
         "scope_unit": scope_unit,
         "stdout_tail": stdout_str[-2000:] if len(stdout_str) > 2000 else stdout_str,
         "stderr_tail": stderr_str[-1000:] if len(stderr_str) > 1000 else stderr_str,
+        "_stdout_full": stdout_str,
+        "_stderr_full": stderr_str,
     }
 
     # Extract cost info from claude JSON output if available
     if claude_json and isinstance(claude_json, dict):
-        result["claude_cost_usd"] = claude_json.get("cost_usd")
-        result["claude_input_tokens"] = claude_json.get("input_tokens")
-        result["claude_output_tokens"] = claude_json.get("output_tokens")
+        # The new envelope uses total_cost_usd; older builds used cost_usd
+        result["claude_cost_usd"] = claude_json.get("total_cost_usd") or claude_json.get("cost_usd")
+        usage = claude_json.get("usage") or {}
+        result["claude_input_tokens"] = usage.get("input_tokens") or claude_json.get("input_tokens")
+        result["claude_output_tokens"] = usage.get("output_tokens") or claude_json.get("output_tokens")
         result["claude_num_turns"] = claude_json.get("num_turns")
+        result["claude_subtype"] = claude_json.get("subtype")
 
     return result
+
+
+def persist_failed_session_output(iteration: int, session: dict) -> None:
+    """Write stdout/stderr of a failed session to disk for later debugging.
+
+    Caps retention at FAILED_OUTPUT_RETENTION sessions to bound disk usage.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    stdout_path = LOG_DIR / f"iter-{iteration:04d}-{ts}-stdout.txt"
+    stderr_path = LOG_DIR / f"iter-{iteration:04d}-{ts}-stderr.txt"
+
+    try:
+        stdout_path.write_text(session.get("_stdout_full", ""))
+        stderr_path.write_text(session.get("_stderr_full", ""))
+    except OSError as e:
+        log.warning(f"Failed to persist session output: {e}")
+        return
+
+    # Retain only the most recent FAILED_OUTPUT_RETENTION pairs
+    for pattern in ("iter-*-stdout.txt", "iter-*-stderr.txt"):
+        files = sorted(glob.glob(str(LOG_DIR / pattern)))
+        for old in files[:-FAILED_OUTPUT_RETENTION]:
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
 
 
 def run_benchmark_gate(memory_limit: str) -> dict:
@@ -516,7 +598,9 @@ def log_iteration(iteration: int, git_before: dict, git_after: dict,
             "exit_code": session["exit_code"],
             "killed_by_oom": session["killed_by_oom"],
             "killed_by_timeout": session["killed_by_timeout"],
-            "rate_limited": session["rate_limited"],
+            "mode": session.get("mode", "unknown_error"),
+            "rate_limited": session["rate_limited"],  # derived alias, kept for one cycle
+            "subtype": session.get("claude_subtype"),
             "cost_usd": session.get("claude_cost_usd"),
             "num_turns": session.get("claude_num_turns"),
         },
@@ -717,7 +801,9 @@ def main():
 
     consecutive_failures = 0
     consecutive_dirty = 0
+    short_dead_streak = 0
     iteration = 0
+    terminal_failure: Optional[str] = None  # set when calculate_backoff returns BACKOFF_EXIT
 
     for iteration in range(1, args.max_iterations + 1):
         rss = monitor_memory()
@@ -777,7 +863,7 @@ def main():
         session = run_claude_session(prompt, iteration, args.timeout, args.memory_limit)
         log.info(f"Session done: exit={session['exit_code']}, duration={session['duration_secs']}s, "
                  f"oom={session['killed_by_oom']}, timeout={session['killed_by_timeout']}, "
-                 f"rate_limited={session['rate_limited']}")
+                 f"mode={session['mode']}")
 
         # Detect git state after
         git_after = detect_git_state()
@@ -794,14 +880,31 @@ def main():
             else:
                 log.info(f"Benchmark gate passed: {benchmark['passed']} benchmarks OK in {benchmark['duration_secs']}s")
 
+        # Update dead-session streak: short failed sessions with no commits indicate
+        # the CLI is bouncing without actually running. Reset on success or any
+        # session that ran long enough to have done real work.
+        is_dead = (
+            session["exit_code"] != 0
+            and session["duration_secs"] < DEAD_SESSION_DURATION_SECS
+            and not commits_made
+        )
+        if is_dead:
+            short_dead_streak += 1
+        else:
+            short_dead_streak = 0
+
+        # Persist stdout/stderr for any non-ok session
+        if session["mode"] != "ok":
+            persist_failed_session_output(iteration, session)
+
         # Classify outcome and backoff
         backoff = calculate_backoff(
-            session["rate_limited"], session.get("rate_limit_reset_secs"),
+            session["mode"], session.get("rate_limit_reset_secs"),
             session["killed_by_oom"], session["killed_by_timeout"],
-            session["exit_code"], consecutive_failures,
+            session["exit_code"], consecutive_failures, short_dead_streak,
         )
 
-        if session["exit_code"] == 0 and not session["rate_limited"]:
+        if session["mode"] == "ok":
             consecutive_failures = 0
         else:
             consecutive_failures += 1
@@ -809,9 +912,16 @@ def main():
         # Log structured JSON
         try:
             log_iteration(iteration, git_before, git_after, session, prompt_type,
-                          tasks, benchmark, backoff, rss)
+                          tasks, benchmark, max(backoff, 0), rss)
         except OSError as e:
             log.warning(f"Failed to write iteration log: {e}")
+
+        # Terminal failure: log and exit the loop
+        if backoff == BACKOFF_EXIT:
+            terminal_failure = session["mode"]
+            log.error(f"Terminal failure ({terminal_failure}); stopping loop. "
+                      f"See {LOG_DIR} for captured stdout/stderr.")
+            break
 
         # Backoff
         if backoff > 10:
@@ -821,6 +931,8 @@ def main():
     log.info(f"Loop complete after {iteration} iterations.")
     log.info(f"Review logs: cat {LOG_DIR / 'summary.jsonl'} | python -m json.tool --no-ensure-ascii")
     _release_pidfile()
+    if terminal_failure is not None:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
