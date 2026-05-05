@@ -1,69 +1,41 @@
-# Loop session notes (2026-05-05, fifty-second loop session — BLOCKED)
+# Loop session notes (2026-05-05, fifty-third loop session — DONE)
 
-## Status: ENV BROKEN, NO WORK DONE
+## Status: COMPLETE — angr-k9hr closed
 
-## What I found
-- `.venv/bin/` contained only `__pycache__/` (no `python`, no `pip`, no `activate`).
-- `.venv/lib/python3.12/site-packages/` contained ~80 directories, but most
-  (claripy, cle, archinfo, pyvex) had only `__pycache__/` subdirs — no actual
-  `.py` source files. Every angr-dep was a hollow shell.
-- The pre-built `angr/rustylib.cpython-312-x86_64-linux-gnu.so` is still present
-  on disk, but unusable until python deps come back.
+## What was done
+1. **venv recovery**: previous session left .venv with no .py source files,
+   only .pyc in `__pycache__/`. Recovered by promoting each
+   `__pycache__/X.cpython-312.pyc` to `../X.pyc`. Python's
+   SourcelessFileLoader picks them up. 4318 files moved. All 214 Python
+   tests pass after recovery. Memory saved: `venv-recovery-pyc-trick`.
 
-## What I tried (all failed for one reason)
-1. `python3 -m venv .venv-new` + copy `lib/python3.12/site-packages/*` over →
-   the source dirs were already empty so nothing to copy.
-2. `pip install setuptools setuptools-rust protobuf` → succeeded, but downstream
-   imports (`from cle import SymbolType`) still fail because cle's source files
-   don't exist locally.
-3. `pip install -e . --no-build-isolation --no-deps` → fails at z3-sys build
-   (looks for `.venv/lib/python3.12/site-packages/z3/include/z3.h` which the
-   broken venv never had — z3 dir only contained `lib/`).
-4. `pip install claripy==9.2.210.dev0` → not on PyPI. 9.2.210 itself doesn't
-   exist (versions jump 9.2.209 → 9.2.211). The `pyproject.toml` pin is to
-   an unreleased dev build.
-5. Memory `avoid-pip-install-deps` explicitly forbids installing released
-   claripy/pyvex/cle/archinfo because they break the z3 shared context
-   (segfault) and cascade incompatible deps.
-
-## Why the loop can't unblock itself
-- Recovery would need to install released ~9.2.213 angr-deps (forbidden by
-  memory) **or** locate dev0 wheels (none exist on PyPI or in pip cache;
-  cache has 9.2.196 / 9.2.209 / 9.2.213 only).
-- No sibling angr-deps repos are checked out under /home/ubuntu/repos/.
-- Z3 headers for the Rust build can be redirected to /usr/include/z3.h
-  (Z3_SYS_Z3_HEADER), but it doesn't matter while python imports fail.
+2. **angr-k9hr** (P2): RustBV clone alloc-free for Symbolic + Expression.
+   - `RustBV::Symbolic.name`: `String` → `Arc<str>`
+   - `RustBV::Expression.operands`: `Vec<Arc<RustBV>>` → `Arc<[Arc<RustBV>]>`
+   - Constructor: `impl Into<String>` → `impl AsRef<str>` so `&String`
+     callers continue to compile.
+   - 39 construction sites in `value.rs` + 1 in `vex/ops.rs` rewritten to
+     use `Arc::<[Arc<RustBV>]>::from(vec![...])` (moves Vec, no extra copy).
+   - Tests: 214/214 Python + 391/391 Rust unit tests.
+   - Bench: fauxware 0.37–0.38s vs 0.387 baseline (unchanged); flareon2015_5
+     6.30s vs 6.56s baseline (~4% win, within noise); ais3_crackme 0.82s vs
+     0.845 baseline.
+   - Commit: bc8a600a5
 
 ## Memories saved
-- `env-venv-fully-wiped-2026-05-05` (the full incident report)
+- `venv-recovery-pyc-trick` — pyc promotion recipe
+- `invariant-rustbv-clone-cheap` — keep these field types or RdTmp regresses
+- `avoid-impl-into-arc-str` — use AsRef<str>, not Into<Arc<str>>, for &String compat
 
-## What a human needs to do
-Pick one:
-- **Option A (fast):** Relax `pyproject.toml` pins from `==9.2.210.dev0` to
-  `>=9.2.213` for archinfo/claripy/cle/pyvex, then `pip install -e .` — accept
-  the documented z3 context incompatibility risk and validate via tests.
-- **Option B (safer):** Restore .venv from another machine snapshot or
-  rebuild claripy/cle/archinfo/pyvex from upstream master at the commit
-  matching the prior dev0 build.
-- **Option C (radical):** Accept that the dev0 pins reference a transient
-  build artifact that no longer exists and re-pin to the most recent stable
-  release; treat any z3-context regression as a follow-up.
+## Build env note
+Z3 headers from .venv/lib/python3.12/site-packages/z3/include/ never came
+back during recovery (the recovery only handled .py source, not C headers).
+Use `Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo check ...` and the same env
+var when running `pip install -e .`. This is sticky across sessions until
+a fresh pip-install of z3 wheels restores the .venv z3/include/ tree.
 
-After whichever option, the next loop session should run:
-```
-export PATH="$HOME/.cargo/bin:$PATH"
-source .venv/bin/activate
-pip install -e . --no-build-isolation --no-deps
-python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
-```
-to confirm the world is sane before claiming any task.
-
-## Beads
-None claimed/closed. `bd list --status=in_progress` returned empty.
-
-## Next-up (still ready, from prior session)
+## Next-up (still ready)
 - angr-eygl (P1) Differential test harness
-- angr-pufm (P1) Symbolic address concretization fallback when intractable
+- angr-pufm (P1) Symbolic address concretization fallback
 - angr-0dgj (P1) Arc-wrap symbol_table and forkable interpreter state
 - angr-nwbx (P1) Cache claripy↔Z3 conversion for register sync
-- angr-k9hr (P2) Arc-wrap interpreter temps to make RdTmp clones cheap
