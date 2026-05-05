@@ -1,45 +1,43 @@
-# Loop session notes (2026-05-05, forty-fourth loop session)
+# Loop session notes (2026-05-05, forty-fifth loop session)
 
-## Task: angr-syf4 — DONE
-Add `test_big_endian_128bit_wide_symbolic_store` covering 128-bit symbolic
-stores into BE memory and verifying byte order.
+## Task: angr-ho6i — DONE
+Add test that pins a symbolic load address to an unmapped value
+(0xDEADBEEF) and asserts the state does NOT remain in `active`.
 
-## Test added (memory.rs:2764-2855)
-- `Endness::Big` memory mapped at 0x1000.
-- Symbolic 128-bit BVS pinned via `assume_true` to
-  `0x10111213_14151617_18191A1B_1C1D1E1F`.
-- `store_symbolic` at concrete `addr=0x1000`.
-- Asserts:
-  - context still SAT
-  - exact 16-byte `load_concrete` round-trips the pinned u128
-  - per-byte loads at offsets 0..15 match `(pinned >> ((15-i)*8)) & 0xff`
-    (BE: byte at addr+0 = MSB, byte at addr+15 = LSB)
-  - 4-byte load at offset 4 = bits [95:64] = 0x14151617
-  - 8-byte loads at offsets 0/8 give the high/low qwords
+## What I added
+`tests/engines/test_rust_exploration.py` —
+`TestErrorRecovery::test_symbolic_load_to_unmapped_address_does_not_stay_active`.
 
-## Result documented
-The BE 128-bit symbolic-store path is correct under current code:
-- exact-width path (`sym.width() == size*8`) returns the symbolic object as-is.
-- partial-extract path uses `hi = total_bits - 1; lo = total_bits - size*8`
-  for an exact-base hit, and `hi = total_bits - base_offset*8 - 1; lo = hi
-  + 1 - size*8` for symbolic_spans hits — both BE-correct.
+- Build a 4-byte shellcode (`mov rax, [rdi]; ret`) with
+  `angr.load_shellcode(... arch="AMD64", load_address=0x1000)`.
+  Only [0x1000, 0x2000) is mapped (the shellcode page).
+- Create blank_state with `STRICT_PAGE_ACCESS` and pin
+  `state.regs.rdi == 0xDEADBEEF` via `state.solver.add(...)`.
+- Run with `RustExplorationManager`.
+- Assert `stash_counts["active"] == 0`.
 
-Note (not part of this task): the same BE-style extraction is applied
-unconditionally regardless of `self.endness`, so partial reads from a
-wide symbolic object stored to LE memory may return MSB-side bytes when
-LSB-side bytes are expected. The current test covers BE only.
+## Result
+Test PASSES. Current behaviour: state lands in `deadended` (not
+`errored`). It does NOT silently stay in `active`, so the worst
+divergence flagged in the bead description (fall back to addr 0 / fresh
+symbol) is not present today.
+
+Path under the hood (saved as `unsat-load-fallback-stash` memory):
+Rust concretization Failed → `CbExecutionError::Unsupported` →
+`RunResult::NeedPythonVEX` → Python VEX fallback fills unconstrained
+bytes at the unmapped page (default_filler_mixin) and continues; a
+later stack/control-flow load (`0x7fffffff0000`) fails, lift at 0x0
+fails, and the state deadends. Python angr would raise
+`SimMemoryAddressError` under STRICT_PAGE_ACCESS, so we still diverge,
+but not via `active`.
 
 ## Verification
-- `cargo check --release` clean.
-- `cargo test --release test_big_endian_128bit_wide_symbolic_store`
-  passes (1/1).
-- `pip install -e . --no-build-isolation --no-deps` succeeded.
-- `pytest tests/engines/test_rust_exploration.py` — 213/213 passing.
+- 214/214 pytest passing in `tests/engines/test_rust_exploration.py`.
 
 ## Files modified
-- `native/angr/src/memory.rs` — new unit test in `mod tests`.
+- `tests/engines/test_rust_exploration.py` — added one new test.
 
 ## Beads / memory
-- angr-syf4 claimed → closed.
-- (potential follow-up) Filed observation about LE-side partial-extract
-  asymmetry as a memory entry to consider during a future audit.
+- angr-ho6i claimed → closed.
+- Memory `unsat-load-fallback-stash` saved (deadended-not-errored
+  divergence vs. Python angr's SimMemoryAddressError).
