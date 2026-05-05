@@ -805,6 +805,28 @@ class TestSolverOperations:
         ctx.add_constraint_ast(x == 10)
         assert not ctx.satisfiable()
 
+    def test_contradictory_constraints_make_unsat(self):
+        """Inequality contradictions (x>100 AND x<50) make solver UNSAT and
+        leave eval/min/max returning None instead of bogus concrete values.
+
+        Locks down behaviour for angr-eldx — see also
+        memory `satisfiable-wrong-answer`: False from satisfiable() must
+        mean a definitive UNSAT, never a swallowed exception.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x > 100)
+        ctx.add_constraint_ast(x < 50)
+
+        assert ctx.satisfiable() is False
+        assert ctx.eval(x) is None
+        assert ctx.min(x, signed=False) is None
+        assert ctx.max(x, signed=False) is None
+        assert ctx.eval_upto(x, 5) == []
+
     def test_solver_fork_independence(self):
         """Forked solver contexts are independent."""
         from angr.rustylib.vex_engine import RustSolverContext
@@ -1608,6 +1630,43 @@ class TestErrorRecovery:
             f"State remained in active despite load from unmapped 0xDEADBEEF "
             f"under STRICT_PAGE_ACCESS; stashes={counts} — engine silently "
             f"continued instead of erroring or dead-ending."
+        )
+
+    def test_unsat_state_pruned_during_step(self):
+        """State with pre-existing contradictory constraints (x>100 AND x<50)
+        must NOT remain in `active` after stepping. Locks down behaviour for
+        angr-eldx — engine eagerly checks fork satisfiability and prunes
+        UNSAT children, so an UNSAT parent is evicted via the prune path
+        rather than silently advancing.
+        """
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # mov rax, 1     -> 48 c7 c0 01 00 00 00
+        # cmp rax, 0     -> 48 83 f8 00
+        # jne +1         -> 75 01
+        # nop            -> 90
+        # ret            -> c3
+        shellcode = bytes.fromhex("48c7c0010000004883f8007501 90c3".replace(" ", ""))
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        x = claripy.BVS("contradiction", 32)
+        state.solver.add(x > 100)
+        state.solver.add(x < 50)
+        assert not state.solver.satisfiable(), (
+            "Sanity: Python solver also sees the contradiction."
+        )
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=20)
+
+        counts = mgr.stash_counts()
+        assert counts.get("active", 0) == 0, (
+            f"State with contradictory constraints (x>100 AND x<50) "
+            f"remained in active after step; stashes={counts} — engine "
+            f"failed to detect UNSAT and continued executing."
         )
 
     def test_register_invalid_name(self):
