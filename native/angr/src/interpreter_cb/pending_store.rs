@@ -64,6 +64,7 @@ impl PendingStoreBuffer {
         self.stores.drain(..)
     }
 
+    #[cfg(test)]
     pub(crate) fn clear(&mut self) {
         self.stores.clear();
         self.byte_index.clear();
