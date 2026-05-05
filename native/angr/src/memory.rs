@@ -3223,4 +3223,92 @@ mod tests {
             "parent leaked child's pending write into its own list"
         );
     }
+
+    /// angr-xok8: unaligned 32-byte store starting at 0x1FF0 crosses pages
+    /// 0x1000 (RW) and 0x2000 (R-only). The multi-page slow path in
+    /// store_concrete must defer to check_perms_range, which must reject
+    /// the W check on the middle page.
+    ///
+    /// (The bead originally said "32 bytes ... 3 pages", but a 32-byte
+    /// access can span at most 2 pages. See companion test
+    /// test_permission_enforcement_wide_store_three_pages_middle_readonly
+    /// for the true 3-page case.)
+    #[test]
+    fn test_permission_enforcement_unaligned_store_two_pages_middle_readonly() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RW);
+        mem.map(0x2000, 0x1000, Permission::R);
+        mem.map(0x3000, 0x1000, Permission::RW);
+        mem.set_enforce_permissions(true);
+
+        let value = RustBV::concrete(0xDEADBEEFCAFEBABE, 32 * 8);
+        let err = mem.store_concrete(0x1FF0, value).unwrap_err();
+        match err {
+            MemoryError::Permission { addr, required, actual } => {
+                assert_eq!(
+                    addr, 0x2000,
+                    "Permission error should point at R-only middle page"
+                );
+                assert_eq!(required, Permission::W);
+                assert_eq!(actual, Permission::R);
+            }
+            other => panic!("expected Permission error, got {:?}", other),
+        }
+    }
+
+    /// angr-xok8: a >4096-byte store at 0x1FF0 truly spans 3 pages
+    /// (0x1000, 0x2000, 0x3000). With middle R-only, check_perms_range
+    /// must visit page 0x2000 and reject the W check.
+    #[test]
+    fn test_permission_enforcement_wide_store_three_pages_middle_readonly() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RW);
+        mem.map(0x2000, 0x1000, Permission::R);
+        mem.map(0x3000, 0x1000, Permission::RW);
+        mem.set_enforce_permissions(true);
+
+        // 8208 bytes from 0x1FF0 → last byte at 0x3FFF (page 0x3),
+        // touching pages 0x1, 0x2, 0x3. Width must be width_bytes * 8.
+        let width_bits = 8208u32 * 8;
+        let value = RustBV::concrete(0xCAFEBABE, width_bits);
+        let err = mem.store_concrete(0x1FF0, value).unwrap_err();
+        match err {
+            MemoryError::Permission { addr, required, actual } => {
+                assert_eq!(
+                    addr, 0x2000,
+                    "Permission error should point at R-only middle page \
+                     when iterating 3-page range"
+                );
+                assert_eq!(required, Permission::W);
+                assert_eq!(actual, Permission::R);
+            }
+            other => panic!("expected Permission error, got {:?}", other),
+        }
+    }
+
+    /// angr-xok8: dual of the wide-store test for loads. With a W-only
+    /// middle page, a 3-page load must surface a Permission error on
+    /// the middle page (R required, W actual).
+    #[test]
+    fn test_permission_enforcement_wide_load_three_pages_middle_writeonly() {
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::R);
+        mem.map(0x2000, 0x1000, Permission::W);
+        mem.map(0x3000, 0x1000, Permission::R);
+        mem.set_enforce_permissions(true);
+
+        let err = mem.load_concrete(0x1FF0, 8208, &ctx).unwrap_err();
+        match err {
+            MemoryError::Permission { addr, required, actual } => {
+                assert_eq!(
+                    addr, 0x2000,
+                    "Permission error should point at W-only middle page"
+                );
+                assert_eq!(required, Permission::R);
+                assert_eq!(actual, Permission::W);
+            }
+            other => panic!("expected Permission error, got {:?}", other),
+        }
+    }
 }
