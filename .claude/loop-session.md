@@ -1,57 +1,43 @@
-# Loop session notes (2026-05-05, forty-sixth loop session)
+# Loop session notes (2026-05-05, forty-seventh loop session)
 
-## Task: angr-jdz9 — DONE
-Add test that wide symbolic load whose two pinned address solutions
-each straddle a 4 KiB page boundary returns the correct LE
-concatenation under each pinned addr.
+## Task: angr-v1q2 — DONE
+Fix wide-symbolic partial-load extract for LE memory; add LE counterpart
+to `test_big_endian_128bit_wide_symbolic_store`.
 
-## What I added
-`native/angr/src/memory.rs` (mod tests) —
-`test_symbolic_load_cross_page_multiple_solutions`.
-
-Map pages 0x1000/0x2000/0x3000 RWX, store distinct concrete dwords at
-each boundary (offsets 0xFFC and 0x000). Build a symbolic 64-bit `addr`
-with `(addr == 0x1FFC) | (addr == 0x2FFC)` asserted on the SymContext.
-`load_symbolic_unified(addr, 8, ctx, concretizer)` is called; the
-result is then evaluated under forked contexts pinning addr to each
-solution. Each pinned eval must reproduce the LE concatenation of the
-4 bytes from the lower page + 4 bytes from the higher page; eval_upto
-is also asserted to enumerate both possible 8-byte values.
+## What I changed
+`native/angr/src/memory.rs`:
+- `load_concrete` exact-address partial path (~line 542): branch on
+  `self.endness`. BE: `(total_bits-1, total_bits-size*8)`. LE:
+  `(size*8-1, 0)`.
+- `load_concrete` symbolic_spans partial path (~line 560): branch on
+  `self.endness`. BE: `(total_bits-off-1, total_bits-off-size*8)`.
+  LE: `(off+size*8-1, off)` where `off = base_offset*8`.
+- Added `test_little_endian_128bit_wide_symbolic_store` mirroring the
+  BE counterpart. Pins a 128-bit BVS to a known u128, exercises
+  per-byte loads (LSB at addr+0), 4-byte load at offset 4 (bits
+  [63:32]), and 8-byte halves (low at offset 0, high at offset 8).
 
 ## Result
-Test PASSES. Locks in current correct behaviour. The bead acceptance
-criterion was "passes (locks in correct behaviour) or fails (drives a
-fix bead)" — first branch.
-
-Path under the hood: two solutions with stride 0x1000 trip the Strided
-concretization branch (NOT Multiple) in
-`load_symbolic_unified` → `load_strided_balanced` →
-`build_strided_ite_tree` → per-leaf `load_concrete_lazy`, which
-handles cross-page concrete loads correctly.
-
-## Verification
 - 391/391 Rust unit tests pass (`cargo test --release --lib`).
 - 214/214 pytest passing in `tests/engines/test_rust_exploration.py`.
 
-## Files modified
-- `native/angr/src/memory.rs` — added one new test in mod tests {}.
-
 ## Beads / memory
-- angr-jdz9 claimed → closed.
-- `avoid-rust-mgr-extra-pages-symbolic-skip` saved: the Python-level
-  `RustExplorationManager` integration path skips user-stored pages
-  whose symbolic_bitmap still has untouched bits, so Rust unit-test
-  against SymbolicMemory directly is the right level for this kind of
-  test.
-- `invariant-two-solution-stride-strided-branch` saved: two pinned
-  address solutions with stride == page size go through the Strided
-  ITE branch, not Multiple.
+- angr-v1q2 claimed → closed.
+- `invariant-le-wide-symbolic-byte-layout` saved: LE byte layout
+  convention for wide symbolic objects in symbolic_objects map.
+- Created follow-up bead **angr-76mo** (P3): the multi-page
+  has_symbolic slow path in `load_concrete` (~lines 648-666) has
+  TWO additional partial-extract sub-paths that are LE-hardcoded:
+  per-byte concat and the wider-symbolic linear scan. Symmetric to
+  this fix; rarely hit; left for a separate task.
 
-## False starts (kept here for context, not in bd)
-- First wrote a Python integration test through RustExplorationManager
-  with `mov rax, [rdi]; ret`; rax came back 0 because pages 0x2000 and
-  0x3000 (manually populated via state.memory.store) were detected as
-  "symbolic pages" by `_find_user_symbolic_pages` (symbolic_bitmap
-  stays True for untouched bytes) and skipped during sync. Switched to
-  a Rust unit test, which hits the right code paths and is much
-  faster.
+## Key insight (for future ports)
+Wide symbolic values are stored in `symbolic_objects` as-is at the
+base address. The endianness only affects which bits correspond to
+which byte offset. Don't forget that `store_symbolic` does NOT
+byte-reverse the BV — convention is encoded purely in the load-time
+extract.
+
+## Files modified
+- `native/angr/src/memory.rs` — fix in `load_concrete`, new LE test in
+  `mod tests {}`.
