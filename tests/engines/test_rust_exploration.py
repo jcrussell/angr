@@ -1014,6 +1014,139 @@ class TestExplorationIntegration:
         mgr.explore(find=0x4006ed, max_steps=50000)
         # Should terminate quickly due to timeout (not find the solution)
 
+    def test_hook_fp_constraint_uses_z3_ptr_fallback(self, fauxware_project):
+        """Constraints with ops that claripy_to_rustbv can't translate (e.g. FP)
+        must still reach the Rust solver via the Z3 ptr fallback in
+        sync_constraints_from_python (added for angr-1epf).
+
+        Without the fallback, FP constraints raise UnsupportedOp inside
+        claripy_to_rustbv and get dropped silently. We compare the Rust-side
+        Z3 assertion count against an unhooked baseline run; the hooked run
+        must produce strictly more assertions per state.
+        """
+        from angr.exploration import RustExplorationManager
+        import claripy
+
+        proj = fauxware_project
+
+        # Baseline run (no hook).
+        baseline_state = proj.factory.entry_state()
+        baseline_mgr = RustExplorationManager(proj, [baseline_state])
+        baseline_mgr.run(max_steps=300)
+        baseline_counts = sorted(
+            len(baseline_mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+            for stash in ("active", "found", "deadended")
+            for sid in baseline_mgr._rust_mgr.get_state_ids(stash)
+        )
+        assert baseline_counts, "baseline run produced no states"
+
+        # Hooked run: FP constraint goes through the Z3 ptr fallback.
+        main_sym = proj.loader.find_symbol("main")
+        hook_addr = main_sym.rebased_addr
+        hook_fired = []
+
+        def hook(state):
+            fp = claripy.FPS("hook_fp_var", claripy.FSORT_DOUBLE)
+            state.solver.add(fp == claripy.FPV(1.5, claripy.FSORT_DOUBLE))
+            hook_fired.append(True)
+
+        proj.hook(hook_addr, hook=hook, length=0)
+        try:
+            hooked_state = proj.factory.entry_state()
+            hooked_mgr = RustExplorationManager(proj, [hooked_state])
+            hooked_mgr.run(max_steps=300)
+        finally:
+            proj.unhook(hook_addr)
+
+        assert hook_fired, "hook never fired"
+        hooked_counts = sorted(
+            len(hooked_mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+            for stash in ("active", "found", "deadended")
+            for sid in hooked_mgr._rust_mgr.get_state_ids(stash)
+        )
+        assert hooked_counts, "hooked run produced no states"
+        assert len(hooked_counts) == len(baseline_counts), (
+            f"hooked vs baseline state counts differ: hooked={len(hooked_counts)}, "
+            f"baseline={len(baseline_counts)}"
+        )
+        # Every paired state should have strictly more Z3 assertions in the
+        # hooked run. If claripy_to_rustbv silently drops the FP constraint
+        # (the bug this fix targets), the counts would match exactly.
+        for h, b in zip(hooked_counts, baseline_counts):
+            assert h > b, (
+                f"Rust solver gained no extra constraints with FP hook "
+                f"(hooked={hooked_counts}, baseline={baseline_counts}); "
+                "the Z3 ptr fallback is not engaging."
+            )
+
+    def test_hook_constraint_propagates_to_rust_solver(self, fauxware_project):
+        """A constraint added inside a Python hook callback must reach the Rust solver.
+
+        Regression for angr-1epf: post-callback the dispatch passes new claripy
+        constraints back via resume_after_simprocedure. If that round-trip drops
+        the constraint, the Rust state's solver itself will be missing it.
+        """
+        from angr.exploration import RustExplorationManager
+        import claripy
+
+        proj = fauxware_project
+        main_sym = proj.loader.find_symbol("main")
+        assert main_sym is not None, "fauxware should have a main symbol"
+        hook_addr = main_sym.rebased_addr
+
+        captured = {}
+
+        def hook(state):
+            x = claripy.BVS("hook_constraint_var", 32)
+            state.solver.add(x == 0xCAFEBABE)
+            captured.setdefault("var", x)
+
+        proj.hook(hook_addr, hook=hook, length=0)
+        try:
+            state = proj.factory.entry_state()
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=300)
+
+            assert "var" in captured, "hook never fired"
+
+            # Inspect every live Rust state's exported constraint ASTs and
+            # confirm at least one references our `hook_constraint_var` BVS
+            # — the AST must have actually crossed the Python→Rust boundary,
+            # not just lived in the Python solver.
+            def constraint_mentions_hook_var(ast):
+                # claripy assigns BVS a uniqueness suffix (e.g. "_1_32"), so
+                # match by prefix rather than exact name.
+                try:
+                    leaves = list(ast.leaf_asts())
+                except Exception:
+                    return False
+                for leaf in leaves:
+                    args = getattr(leaf, "args", ())
+                    if args and isinstance(args[0], str) and args[0].startswith("hook_constraint_var"):
+                        return True
+                return False
+
+            saw = False
+            for stash in ("active", "found", "deadended"):
+                for sid in mgr._rust_mgr.get_state_ids(stash):
+                    try:
+                        rust_constraints = mgr._rust_mgr.export_state_constraints(sid)
+                    except Exception:
+                        continue
+                    if any(constraint_mentions_hook_var(c) for c in rust_constraints):
+                        saw = True
+                        break
+                if saw:
+                    break
+
+            assert saw, (
+                "Rust solver does not contain any constraint that references "
+                "`hook_constraint_var`. The hook's constraint appears to have "
+                "been dropped on the Python→Rust round-trip."
+            )
+        finally:
+            proj.unhook(hook_addr)
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestAdversarial:
