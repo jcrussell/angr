@@ -547,10 +547,13 @@ impl SymbolicMemory {
             // e.g., reading 1 byte from a 128-byte BVS
             if sym.width() > size * 8 {
                 let total_bits = sym.width();
-                // Big-endian extraction: byte 0 is the MSB (highest bits)
-                // This matches angr's Python convention for memory.store with Iend_BE
-                let hi = total_bits - 1;
-                let lo = total_bits - size * 8;
+                // Endianness determines which bits correspond to byte 0.
+                // BE: byte 0 = MSB → hi = total_bits-1, lo = total_bits-size*8.
+                // LE: byte 0 = LSB → hi = size*8-1, lo = 0.
+                let (hi, lo) = match self.endness {
+                    Endness::Big => (total_bits - 1, total_bits - size * 8),
+                    Endness::Little => (size * 8 - 1, 0),
+                };
                 return Ok(sym.extract(hi, lo, ctx));
             }
         }
@@ -565,8 +568,18 @@ impl SymbolicMemory {
                     && base_offset + size as u64 <= sym_bytes as u64
                 {
                     let total_bits = sym.width();
-                    let hi = total_bits - (base_offset as u32 * 8) - 1;
-                    let lo = hi + 1 - size * 8;
+                    let off_bits = base_offset as u32 * 8;
+                    // BE: bytes [off, off+size) of the wide BV occupy bits
+                    //     [total-1-off_bits : total-off_bits-size*8].
+                    // LE: same byte range occupies bits
+                    //     [off_bits+size*8-1 : off_bits].
+                    let (hi, lo) = match self.endness {
+                        Endness::Big => (
+                            total_bits - off_bits - 1,
+                            total_bits - off_bits - size * 8,
+                        ),
+                        Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                    };
                     return Ok(sym.extract(hi, lo, ctx));
                 }
             }
@@ -2843,6 +2856,95 @@ mod tests {
             Some(expected_qlo),
             "BE low qword expected 0x{:016x}",
             expected_qlo
+        );
+    }
+
+    /// angr-v1q2: 128-bit symbolic store to little-endian memory must lay
+    /// out bytes LSB-first (byte at addr+0 = LSB, byte at addr+15 = MSB)
+    /// and sub-word loads must extract the corresponding lanes.
+    ///
+    /// Counterpart to `test_big_endian_128bit_wide_symbolic_store`. Hits
+    /// both partial-extract paths in `load_concrete`: the exact-address
+    /// path (load at 0x1000) and the symbolic_spans path (load at offsets
+    /// > 0). Before the fix, the LE branch returned MSB-side bytes from
+    /// the wide BV instead of LSB-side bytes, so single-byte and 4-byte
+    /// loads at non-zero offsets gave wrong values.
+    #[test]
+    fn test_little_endian_128bit_wide_symbolic_store() {
+        let ctx = SymContext::new_mock();
+        let concretizer = AddressConcretizer::new();
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+
+        // 128-bit symbolic value pinned to a known constant. For LE, the
+        // byte at addr+0 is the LSB (0x1F here) and addr+15 is the MSB.
+        let pinned: u128 = 0x10111213_14151617_18191A1B_1C1D1E1F;
+        let sym = RustBV::symbolic(&ctx, "wide128_le".to_string(), 128);
+        ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
+
+        let addr = RustBV::concrete(0x1000, 64);
+        mem.store_symbolic(addr, sym.clone(), &ctx, &concretizer)
+            .expect("store_symbolic must succeed");
+        assert!(ctx.is_sat(), "context must remain SAT after store");
+
+        // Exact 16-byte load returns the full symbolic value.
+        let full = mem
+            .load_concrete(0x1000, 16, &ctx)
+            .expect("16-byte load must succeed");
+        assert_eq!(
+            ctx.eval(&full),
+            Some(pinned),
+            "exact-width load must round-trip the pinned u128"
+        );
+
+        // Per-byte LE layout: byte at addr+i is bits [(i+1)*8-1 : i*8].
+        for i in 0u64..16 {
+            let byte_bv = mem
+                .load_concrete(0x1000 + i, 1, &ctx)
+                .expect("single-byte load must succeed");
+            let expected: u128 = (pinned >> (i * 8)) & 0xff;
+            assert_eq!(
+                ctx.eval(&byte_bv),
+                Some(expected),
+                "LE byte at offset {} expected 0x{:02x}",
+                i, expected
+            );
+        }
+
+        // 4-byte load at offset 4 should return bits [63:32] of the
+        // pinned u128 = 0x17161514.
+        let word = mem
+            .load_concrete(0x1004, 4, &ctx)
+            .expect("4-byte load must succeed");
+        let expected_word: u128 = (pinned >> 32) & 0xFFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&word),
+            Some(expected_word),
+            "LE 4-byte load at offset 4 expected 0x{:08x}",
+            expected_word
+        );
+
+        // 8-byte halves: low half at offset 0, high half at offset 8.
+        let qlo = mem
+            .load_concrete(0x1000, 8, &ctx)
+            .expect("lo qword load must succeed");
+        let expected_qlo: u128 = pinned & 0xFFFF_FFFF_FFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&qlo),
+            Some(expected_qlo),
+            "LE low qword expected 0x{:016x}",
+            expected_qlo
+        );
+
+        let qhi = mem
+            .load_concrete(0x1008, 8, &ctx)
+            .expect("hi qword load must succeed");
+        let expected_qhi: u128 = (pinned >> 64) & 0xFFFF_FFFF_FFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&qhi),
+            Some(expected_qhi),
+            "LE high qword expected 0x{:016x}",
+            expected_qhi
         );
     }
 
