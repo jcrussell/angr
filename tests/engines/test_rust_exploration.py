@@ -1147,6 +1147,91 @@ class TestExplorationIntegration:
         finally:
             proj.unhook(hook_addr)
 
+    def test_vex_fallback_forks_multi_successors(self, fauxware_project):
+        """Multi-successor Python VEX fallback must fork extras instead of dropping them.
+
+        Regression for angr-v8iz: factory.successors(num_inst=99) inside
+        _handle_python_vex_fallback can return N>1 successors when the
+        fallback block contains a symbolic branch. Previously only
+        all_succs[0] was synced back to Rust and the rest were silently
+        dropped (warning only) — if the convergent path was the dropped
+        one, exploration would spin forever. The handler must call
+        _add_forked_state for every extra successor.
+        """
+        from angr.exploration import RustExplorationManager
+        from types import SimpleNamespace
+
+        proj = fauxware_project
+        seed_state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [seed_state])
+
+        # Build two distinct successor states off the seed state to play
+        # the role of a symbolic-branch fork inside the fallback block.
+        succ_a = seed_state.copy()
+        succ_a.regs.rax = 0x1111
+        succ_b = seed_state.copy()
+        succ_b.regs.rax = 0x2222
+        all_succs = [succ_a, succ_b]
+        succs_obj = SimpleNamespace(all_successors=all_succs)
+
+        event = SimpleNamespace(
+            callback_addr=seed_state.addr,
+            callback_state_id=None,
+            callback_name="test_unsupported_vex_op",
+            callback_return_addr=None,
+        )
+
+        # Stub helpers so the test exercises only the multi-successor
+        # handling logic. _create_state_for_callback returns a fresh
+        # SimState; factory.successors returns our pre-built successors.
+        mgr._create_state_for_callback = lambda evt: seed_state.copy()  # type: ignore[assignment]
+        orig_factory_successors = proj.factory.successors
+        proj.factory.successors = lambda *a, **kw: succs_obj  # type: ignore[assignment]
+
+        # Capture resume_after_simprocedure (first successor) and
+        # _add_forked_state (every extra successor) calls. The rust_mgr
+        # PyO3 object's methods are read-only, so swap the whole handle
+        # for a SimpleNamespace recorder. We only need to satisfy the
+        # subset of calls _handle_python_vex_fallback issues on the
+        # success path.
+        resumed_calls = []
+
+        def _record_resume(*args, **kwargs):
+            resumed_calls.append((args, kwargs))
+
+        original_rust_mgr = mgr._rust_mgr
+        mgr._rust_mgr = SimpleNamespace(
+            resume_after_simprocedure=_record_resume,
+            resume_after_error=lambda *a, **k: None,
+            deadend_pending_callback=lambda *a, **k: None,
+        )
+
+        forked_calls = []
+
+        def _record_fork(succ, evt):
+            forked_calls.append(succ)
+
+        mgr._add_forked_state = _record_fork  # type: ignore[assignment]
+
+        try:
+            mgr._handle_python_vex_fallback(event)
+        finally:
+            proj.factory.successors = orig_factory_successors  # type: ignore[assignment]
+            mgr._rust_mgr = original_rust_mgr
+
+        assert len(resumed_calls) == 1, (
+            f"Expected resume_after_simprocedure to fire exactly once for the "
+            f"first successor, got {len(resumed_calls)}"
+        )
+        assert len(forked_calls) == len(all_succs) - 1, (
+            f"Expected {len(all_succs) - 1} forked successors, got "
+            f"{len(forked_calls)} — extras were dropped (the bug)"
+        )
+        assert forked_calls[0] is succ_b, (
+            "The forked successor identity does not match all_succs[1]; "
+            "wrong state was passed to _add_forked_state."
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestAdversarial:

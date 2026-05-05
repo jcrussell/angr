@@ -1902,9 +1902,15 @@ class RustCallbackDispatchMixin:
                 new_pc, reg_changes, mem_changes or None, new_constraints or None
             )
 
-            if len(all_succs) > 1:
-                l.warning(f"VEX fallback at 0x{addr:x} produced {len(all_succs)} successors, "
-                          f"only first successor synced back to Rust")
+            # Additional successors (symbolic branches in the fallback block)
+            # are forked into new Rust active states so the convergent path
+            # isn't silently dropped.
+            for extra_succ in all_succs[1:]:
+                try:
+                    self._add_forked_state(extra_succ, event)
+                except Exception as fork_err:
+                    l.warning(f"VEX fallback at 0x{addr:x}: failed to fork "
+                              f"successor at 0x{extra_succ.addr:x}: {fork_err}")
 
             self._perf_stats['callback_simprocedure_count'] += 1
 
