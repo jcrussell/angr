@@ -1565,6 +1565,51 @@ class TestErrorRecovery:
         data = state.memory_load(0x1000, 4)
         assert len(data) == 4
 
+    def test_symbolic_load_to_unmapped_address_does_not_stay_active(self):
+        """Symbolic load address pinned to a single unmapped value must NOT
+        keep the state in `active`. It should land in `errored` (or at minimum
+        `deadended`) — silently falling back to address 0 / a fresh symbol
+        would diverge from Python angr (which raises SimUnsatError /
+        SimMemoryAddressError under STRICT_PAGE_ACCESS).
+
+        Locks down current behaviour for angr-ho6i: if the engine ever silently
+        keeps the state in `active`, this test fails and a real bug is filed.
+        """
+        import angr
+        import claripy
+        from angr import sim_options as o
+        from angr.exploration import RustExplorationManager
+
+        # mov rax, [rdi]   -> 48 8b 07
+        # ret              -> c3
+        # rdi will be constrained to 0xDEADBEEF, which is OUTSIDE the only
+        # mapped region [0x1000, 0x2000) (the loaded shellcode page).
+        shellcode = bytes.fromhex("488b07c3")
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={o.STRICT_PAGE_ACCESS},
+        )
+
+        rdi_sym = claripy.BVS("rdi_addr", 64)
+        state.regs.rdi = rdi_sym
+        state.solver.add(rdi_sym == 0xDEADBEEF)
+        assert state.solver.satisfiable(), (
+            "Sanity: rdi==0xDEADBEEF is satisfiable on its own; the *load* "
+            "from that address is what should fail, not the constraint set."
+        )
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=10)
+
+        counts = mgr.stash_counts()
+        assert counts.get("active", 0) == 0, (
+            f"State remained in active despite load from unmapped 0xDEADBEEF "
+            f"under STRICT_PAGE_ACCESS; stashes={counts} — engine silently "
+            f"continued instead of erroring or dead-ending."
+        )
+
     def test_register_invalid_name(self):
         """Getting a nonexistent register should raise, not crash."""
         state = RustSimState("amd64")
