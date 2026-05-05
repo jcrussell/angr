@@ -1,51 +1,51 @@
-# Loop session notes (2026-05-05, fifty-seventh loop session — DONE)
+# Loop session notes (2026-05-05, fifty-eighth loop session — DONE)
 
-## Status: COMPLETE — angr-s27u closed
+## Status: COMPLETE — angr-24e7 closed
+
+## Task: angr-24e7 (P2)
+Tests: state fork isolation for symbolic_spans, imported_addrs, perm flags, pending_writes.
 
 ## What was done
-**angr-s27u** (P2): Tests for constraint stability and weakening through ITE chains.
+Added four Rust unit tests under `memory::tests` in `native/angr/src/memory.rs`:
 
-Added two regression tests in `tests/engines/test_rust_exploration.py` under
-`TestSolverOperations`:
+1. `test_fork_symbolic_spans_isolation` — parent imports a 64-bit wide
+   symbolic at 0x1000 (populates spans 0x1001..0x1008). Child imports a
+   different wide symbolic at 0x2000. Asserts parent's `symbolic_spans`
+   length is unchanged AND child has 0x2001..0x2008 spans, parent does not.
+2. `test_fork_imported_addrs_isolation` — same shape; checks
+   `is_imported_addr(0x2000)` is true on child, false on parent.
+3. `test_fork_perm_flag_isolation` — flips `enforce_permissions` in child
+   in both directions (off→on then on→off after fork) and verifies parent's
+   flag is unchanged. Complements the existing `propagates_through_fork`
+   test which only covers the initial copy.
+4. `test_fork_pending_writes_isolation` — parent records one
+   `PendingWrite`; child inherits it and adds another. Asserts
+   parent.pending_writes_count() stays at 1 while child is at 2.
 
-1. `test_constraint_weakening_through_ite`
-   — builds `If(x>5, x, 100)`, constrains `result > 50`, then uses
-   the fork-witness pattern to verify:
-     - x=51 is admissible (then-branch: x>5 ∧ x>50)
-     - x=3  is admissible (else-branch: 100>50 holds for any x≤5)
-     - x=30 is NOT admissible (then-branch=30, else-branch unreachable)
-   Catches regressions that flatten the ITE and over-constrain x.
-
-2. `test_model_stability_constraint_order`
-   — adds {x≥100, x≤200, x≠150} in two different orders to two
-   `RustSolverContext` instances, asserts `eval(x)` is identical.
-   Locks down Z3 determinism through the claripy bridge.
-
-Tests: 218/218 pass (was 216, +2). Commit: ef53bd0d2.
+Tests: all 4 new pass; 24/24 memory tests pass (was 20). Commit: abcc6da12.
 
 ## Key empirical findings
-- ITE constraint weakening works correctly: `If(c, a, b) > k` admits any x
-  where the chosen branch satisfies `>k`, not just one branch.
-- Z3 model selection through `claripy_to_rustbv` is ORDER-INDEPENDENT —
-  verified empirically. Normalisation doesn't introduce order sensitivity.
-- The fork-witness pattern (fork → add test constraint → check satisfiable)
-  is the clean way to prove individual values are admissible/ruled out
-  without disturbing the original solver context.
+- `#[cfg(test)] mod tests { use super::*; }` has access to private struct
+  fields, so testing `symbolic_spans` directly was possible without adding
+  test-only accessors.
+- The venv had no z3-solver package; build.rs panicked on missing
+  `.venv/.../z3/include/z3.h`. Workaround: `export Z3_SYS_Z3_HEADER=/usr/include/z3.h`
+  to use the system libz3-dev install. The build.rs skips Python discovery
+  when the env var is already set.
 
 ## Memories saved
-- `solver-test-pattern-fork-witness` — fork+constrain+sat-check pattern
-  for proving admissibility of specific test points.
-- `invariant-z3-model-stability` — claripy bridge is order-independent;
-  flag any future failure of `test_model_stability_constraint_order` as
-  a constraint-hashing/dedup regression.
+- `z3-header-fallback-system-include` — workaround when venv lacks z3-solver.
+- `invariant-symbolic-memory-fork-fields` — full list of fields fork() must
+  clone, plus the test pattern future maintainers should add when extending
+  SymbolicMemory.
 
 ## Build env reminder
-Pure-Python (test-only) change — no `pip install -e .` rebuild needed.
+- Cargo build/test: required `Z3_SYS_Z3_HEADER=/usr/include/z3.h` workaround.
+- Pure cargo test change — no `pip install -e .` rebuild needed.
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — BIG, multi-session
 - angr-pufm (P1) Symbolic address concretization fallback — large feature
 - angr-2i4n (P2) Tests: error path coverage (unmapped, OOM, Z3 timeout)
-- angr-24e7 (P2) Tests: state fork isolation for symbolic_spans
 - angr-xok8 (P2) Tests: unaligned wide access crossing 3 pages
 - angr-io1t (P2) Tests: VEX FP edge cases (NaN, infinity, conversion)
