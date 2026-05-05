@@ -67,6 +67,30 @@ class RustStateSyncMixin:
             if _DBG:
                 l.debug(f"Synced {len(procs)} dynamically created hooks")
 
+    def _cached_z3_ast_ptr(self, expr, z3_backend):
+        """Return the Z3 AST pointer for a symbolic claripy expression.
+
+        Caches `(hash(expr), expr.length) -> (z3_obj, ast_ptr)` so repeated
+        register sync of the same symbolic AST skips both `z3_backend.convert`
+        and the `.as_ast().value` attribute walk. Holds a strong ref to the
+        Z3 wrapper to keep the AST pointer valid (Z3 ASTs are refcounted in
+        the shared context; without our ref, claripy may be the only holder
+        and could drop it under memory pressure).
+        """
+        cache = self._z3_ptr_cache
+        key = (hash(expr), expr.length)
+        cached = cache.get(key)
+        if cached is not None:
+            self._z3_ptr_cache_hits += 1
+            return cached[1]
+        z3_obj = z3_backend.convert(expr)
+        ast_ptr = z3_obj.as_ast().value
+        if len(cache) >= self._z3_ptr_cache_max:
+            cache.clear()
+        cache[key] = (z3_obj, ast_ptr)
+        self._z3_ptr_cache_misses += 1
+        return ast_ptr
+
     @staticmethod
     def _supported_register_names(arch) -> list:
         """Registers that the Rust engine models for `arch`.
@@ -134,8 +158,7 @@ class RustStateSyncMixin:
                     # side and any read will see an uninitialized BVS — wrong
                     # value, not a crash. Log loudly.
                     try:
-                        z3_obj = z3_backend.convert(reg_val)
-                        ast_ptr = z3_obj.as_ast().value
+                        ast_ptr = self._cached_z3_ast_ptr(reg_val, z3_backend)
                         if ast_ptr:
                             rust_state.set_register_symbolic(
                                 reg_name, ast_ptr, reg_val.length

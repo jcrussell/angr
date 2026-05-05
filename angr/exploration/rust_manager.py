@@ -279,6 +279,17 @@ class RustExplorationManager(
         # Maps handle_id -> claripy AST
         self._ast_handle_cache: Dict[int, object] = {}
 
+        # Cache claripy AST -> Z3 AST pointer for register sync.
+        # Skips redundant z3_backend.convert(reg_val) + .as_ast().value lookups
+        # when the same symbolic register is re-imported across SimProcedure
+        # callbacks. Holds a strong ref to the z3 object so the AST pointer
+        # stays valid (Z3 ASTs are refcounted; the shared context outlives the
+        # manager). Bounded size with simple drop-and-rebuild eviction.
+        self._z3_ptr_cache: Dict[tuple, tuple] = {}
+        self._z3_ptr_cache_max = 1024
+        self._z3_ptr_cache_hits = 0
+        self._z3_ptr_cache_misses = 0
+
         # Track current callback state for memory access during callbacks
         # This allows memory_load callback to access the correct symbolic state
         self._callback_state: Optional["angr.SimState"] = None
@@ -2367,6 +2378,8 @@ class RustExplorationManager(
         result['hook_sync_calls'] = self._stats_hook_sync_calls
         result['hook_sync_skips'] = self._stats_hook_sync_skips
         result['time_in_callbacks'] = self._stats_time_in_callbacks_ns / 1e9  # seconds
+        result['z3_ptr_cache_hits'] = self._z3_ptr_cache_hits
+        result['z3_ptr_cache_misses'] = self._z3_ptr_cache_misses
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, '_time_in_rust_run_ns'):
             result['time_in_rust_run'] = self._time_in_rust_run_ns / 1e9

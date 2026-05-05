@@ -236,6 +236,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
             "callback_count", "ffi_crossings", "state_creations",
             "cache_hits", "cache_misses", "technique_filter_calls",
             "hook_sync_calls", "time_in_callbacks",
+            "z3_ptr_cache_hits", "z3_ptr_cache_misses",
             "time_in_rust_run", "time_in_predicate_eval", "time_in_active_check",
             "time_in_explore",
         ]:
