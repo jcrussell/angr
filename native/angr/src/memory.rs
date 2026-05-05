@@ -2759,4 +2759,90 @@ mod tests {
             "loaded value must be evaluable under the preserved constraints"
         );
     }
+
+    /// angr-syf4: 128-bit symbolic store to big-endian memory must lay out
+    /// bytes MSB-first (byte at addr+0 = MSB, byte at addr+15 = LSB) and
+    /// sub-word loads must extract the corresponding lanes.
+    ///
+    /// Regression for the wide-symbolic-object byte-reversal class of bugs
+    /// described in project_endianness_bug.
+    #[test]
+    fn test_big_endian_128bit_wide_symbolic_store() {
+        let ctx = SymContext::new_mock();
+        let concretizer = AddressConcretizer::new();
+        let mut mem = SymbolicMemory::new(Endness::Big);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+
+        // 128-bit symbolic value pinned to a known constant so we can
+        // predict every byte. MSB byte = 0x10, LSB byte = 0x1F.
+        let pinned: u128 = 0x10111213_14151617_18191A1B_1C1D1E1F;
+        let sym = RustBV::symbolic(&ctx, "wide128".to_string(), 128);
+        ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
+
+        let addr = RustBV::concrete(0x1000, 64);
+        mem.store_symbolic(addr, sym.clone(), &ctx, &concretizer)
+            .expect("store_symbolic must succeed");
+        assert!(ctx.is_sat(), "context must remain SAT after store");
+
+        // Exact 16-byte load returns the full symbolic value.
+        let full = mem
+            .load_concrete(0x1000, 16, &ctx)
+            .expect("16-byte load must succeed");
+        assert_eq!(
+            ctx.eval(&full),
+            Some(pinned),
+            "exact-width load must round-trip the pinned u128"
+        );
+
+        // Per-byte BE layout: byte at addr+i corresponds to byte position
+        // (15 - i) when the value is interpreted MSB-first.
+        for i in 0u64..16 {
+            let byte_bv = mem
+                .load_concrete(0x1000 + i, 1, &ctx)
+                .expect("single-byte load must succeed");
+            let expected: u128 = (pinned >> ((15 - i) * 8)) & 0xff;
+            assert_eq!(
+                ctx.eval(&byte_bv),
+                Some(expected),
+                "BE byte at offset {} expected 0x{:02x}",
+                i, expected
+            );
+        }
+
+        // 4-byte load at offset 4 should return bytes [4..8) of the BE
+        // layout (bits [95:64] of the original u128 = 0x14151617).
+        let word = mem
+            .load_concrete(0x1004, 4, &ctx)
+            .expect("4-byte load must succeed");
+        let expected_word: u128 = (pinned >> 64) & 0xFFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&word),
+            Some(expected_word),
+            "BE 4-byte load at offset 4 expected 0x{:08x}",
+            expected_word
+        );
+
+        // 8-byte halves: high half at offset 0, low half at offset 8.
+        let qhi = mem
+            .load_concrete(0x1000, 8, &ctx)
+            .expect("hi qword load must succeed");
+        let expected_qhi: u128 = (pinned >> 64) & 0xFFFF_FFFF_FFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&qhi),
+            Some(expected_qhi),
+            "BE high qword expected 0x{:016x}",
+            expected_qhi
+        );
+
+        let qlo = mem
+            .load_concrete(0x1008, 8, &ctx)
+            .expect("lo qword load must succeed");
+        let expected_qlo: u128 = pinned & 0xFFFF_FFFF_FFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&qlo),
+            Some(expected_qlo),
+            "BE low qword expected 0x{:016x}",
+            expected_qlo
+        );
+    }
 }
