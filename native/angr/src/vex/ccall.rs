@@ -1489,6 +1489,34 @@ pub fn handle_ccall_with_ctx(
         return None;
     }
 
+    // x86g_use_seg_selector: linearize a segmented address.
+    // Args: [ldt, gdt, seg_selector, virtual_addr]
+    // Returns 64-bit value: lower 32 bits = linear address, upper 32 bits = error flag.
+    // Fast path: when the relevant descriptor table (LDT or GDT, chosen by tiBit) is concretely
+    // zero, treat as flat addressing — this is the common Linux-glibc-TLS case
+    // (e.g. mov %gs:0x14, %eax for stack canary reads).
+    if name == "x86g_use_seg_selector" {
+        if args.len() < 4 {
+            return None;
+        }
+        if let (Some(ldt_val), Some(gdt_val), Some(ss_val), Some(va_val)) = (
+            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+        ) {
+            // Bad selector: high bits set above 16. Match Python's bad() return.
+            if ss_val & !0xFFFFu64 != 0 {
+                return Some(RustBV::concrete(1u128 << 32, ret_bits));
+            }
+            // Pick the descriptor table (tiBit = bit 2 of seg_selector).
+            let ti_bit = (ss_val >> 2) & 1;
+            let table_empty = if ti_bit == 0 { gdt_val == 0 } else { ldt_val == 0 };
+            if table_empty {
+                let linear = ((ss_val & 0xFFFF) << 16).wrapping_add(va_val & 0xFFFFFFFF);
+                return Some(RustBV::concrete(linear as u128, ret_bits));
+            }
+        }
+        return None;
+    }
+
     // ARM: armg_calculate_condition
     // Args: cond_n_op, cc_dep1, cc_dep2, cc_ndep (cc_dep3 in Python naming)
     if name == "armg_calculate_condition" {
