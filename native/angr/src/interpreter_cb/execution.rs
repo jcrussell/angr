@@ -324,7 +324,7 @@ impl<'a> CallbackInterpreter<'a> {
             if crate::vex::libpyvex_ffi::is_vex_initialized() {
                 // Try to get bytes from concrete memory for native lifting
                 // Look for a region containing this address with enough bytes
-                for region in &self.concrete_memory {
+                for region in self.concrete_memory.iter() {
                     if addr >= region.base && addr < region.base + region.size {
                         let offset = (addr - region.base) as usize;
                         let available = region.size as usize - offset;
@@ -332,7 +332,7 @@ impl<'a> CallbackInterpreter<'a> {
                         // Without this, blocks can span past these addresses,
                         // and the hook check at block boundaries misses them.
                         let mut max_bytes = available.min(4096);
-                        for &hook_addr in &self.hook_addrs {
+                        for &hook_addr in self.hook_addrs.iter() {
                             if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
                                 let limit = (hook_addr - addr) as usize;
                                 if limit > 0 && limit < max_bytes {

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 
 use super::RustBV;
@@ -200,7 +200,10 @@ pub struct SymContext {
     /// Number of constraints added (for tracking).
     constraint_count: AtomicUsize,
     /// Named symbolic variables for debugging.
-    symbol_table: RwLock<HashMap<String, u64>>,
+    /// Arc-shared on fork (O(1) clone). Only mutated when constructing
+    /// a fresh merged context — Arc::make_mut works because the merged
+    /// SymContext is freshly created with a unique Arc.
+    symbol_table: Arc<HashMap<String, u64>>,
     /// Current push level for transaction tracking.
     push_level: AtomicUsize,
     /// Constraint count at each push level (for rollback).
@@ -252,7 +255,7 @@ impl SymContext {
         SymContext {
             next_id: AtomicU64::new(0),
             constraint_count: AtomicUsize::new(0),
-            symbol_table: RwLock::new(HashMap::new()),
+            symbol_table: Arc::new(HashMap::new()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
             push_assumed_local_lengths: Mutex::new(PushStack::new()),
@@ -297,7 +300,7 @@ impl SymContext {
             push_local_cache_lengths: Mutex::new(PushStack::new()),
             push_assumed_local_lengths: Mutex::new(PushStack::new()),
             constraint_count: AtomicUsize::new(0),
-            symbol_table: RwLock::new(HashMap::new()),
+            symbol_table: Arc::new(HashMap::new()),
             assumed_constraints_shared: Arc::new(Vec::new()),
             assumed_constraints_local: Mutex::new(Vec::new()),
             z3_assertions_shared: Arc::new(Vec::new()),
@@ -1814,7 +1817,7 @@ impl SymContext {
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(assumed_total_len),
-            symbol_table: RwLock::new(self.symbol_table.read().clone()),
+            symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
             push_local_cache_lengths: Mutex::new(PushStack::new()),
@@ -1847,7 +1850,7 @@ impl SymContext {
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(0),
-            symbol_table: RwLock::new(self.symbol_table.read().clone()),
+            symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
             push_assumed_local_lengths: Mutex::new(PushStack::new()),
@@ -1904,16 +1907,15 @@ impl SymContext {
         );
 
         // Start with a fresh context
-        let merged = Self::with_timeout(self.timeout_ms.load(Ordering::SeqCst));
+        let mut merged = Self::with_timeout(self.timeout_ms.load(Ordering::SeqCst));
 
-        // Merge symbol tables
+        // Merge symbol tables — merged is freshly constructed (Arc count == 1),
+        // so Arc::make_mut returns a unique mutable reference without cloning.
         {
-            let mut merged_table = merged.symbol_table.write();
-            let self_table = self.symbol_table.read();
-            merged_table.extend(self_table.iter().map(|(k, v)| (k.clone(), *v)));
+            let merged_table = Arc::make_mut(&mut merged.symbol_table);
+            merged_table.extend(self.symbol_table.iter().map(|(k, v)| (k.clone(), *v)));
             for other in others {
-                let other_table = other.symbol_table.read();
-                for (k, v) in other_table.iter() {
+                for (k, v) in other.symbol_table.iter() {
                     merged_table.entry(k.clone()).or_insert(*v);
                 }
             }
@@ -1970,16 +1972,15 @@ impl SymContext {
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn merge(&self, others: &[&SymContext], merge_conditions: &[RustBV]) -> Self {
         let _ = merge_conditions;
-        let merged = Self::new();
+        let mut merged = Self::new();
 
-        // Merge symbol tables
+        // Merge symbol tables — see Z3 path comment about Arc::make_mut on
+        // a freshly constructed Arc (refcount 1 → uniquely owned).
         {
-            let mut merged_table = merged.symbol_table.write();
-            let self_table = self.symbol_table.read();
-            merged_table.extend(self_table.iter().map(|(k, v)| (k.clone(), *v)));
+            let merged_table = Arc::make_mut(&mut merged.symbol_table);
+            merged_table.extend(self.symbol_table.iter().map(|(k, v)| (k.clone(), *v)));
             for other in others {
-                let other_table = other.symbol_table.read();
-                for (k, v) in other_table.iter() {
+                for (k, v) in other.symbol_table.iter() {
                     merged_table.entry(k.clone()).or_insert(*v);
                 }
             }

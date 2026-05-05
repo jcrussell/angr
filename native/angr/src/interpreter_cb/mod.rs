@@ -475,7 +475,8 @@ pub struct CallbackInterpreter<'a> {
     /// Current instruction length (from IMark).
     current_insn_len: u32,
     /// Hook addresses (return to Python when hit).
-    hook_addrs: HashSet<u64>,
+    /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
+    hook_addrs: Arc<HashSet<u64>>,
     /// VEX architecture.
     arch: VexArch,
     /// Block cache (shared across runs) using Arc for O(1) cloning.
@@ -506,7 +507,8 @@ pub struct CallbackInterpreter<'a> {
     push_level: u32,
     /// Concrete memory regions cached locally for fast access.
     /// These are read-only regions (e.g., binary .text/.rodata sections).
-    concrete_memory: Vec<ConcreteMemoryRegion>,
+    /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
+    concrete_memory: Arc<Vec<ConcreteMemoryRegion>>,
     /// Address concretizer for handling symbolic addresses.
     concretizer: AddressConcretizer,
     /// Bitset tracking which register offsets have been modified.
@@ -553,7 +555,8 @@ pub struct CallbackInterpreter<'a> {
     dirty_dispatch: DirtyHelperDispatch,
     /// Registry mapping hook addresses to SimProcedure info.
     /// When a hook is hit, we can extract arguments using this info.
-    simprocedure_registry: HashMap<u64, SimProcedureInfo>,
+    /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
+    simprocedure_registry: Arc<HashMap<u64, SimProcedureInfo>>,
     /// Calling convention for argument extraction.
     calling_convention: Box<dyn CallingConvention>,
     /// Last branch condition encountered (for symbolic branch handling).
@@ -590,7 +593,8 @@ pub struct CallbackInterpreter<'a> {
     /// VEX optimization level (None = pyvex default).
     pub vex_opt_level: Option<i32>,
     /// Per-address VEX optimization level overrides.
-    pub vex_opt_level_overrides: HashMap<u64, i32>,
+    /// Arc-shared on fork (O(1) clone). Setters replace the Arc wholesale.
+    pub vex_opt_level_overrides: Arc<HashMap<u64, i32>>,
 }
 impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
@@ -612,7 +616,7 @@ impl<'a> CallbackInterpreter<'a> {
             pc: 0,
             current_insn_addr: 0,
             current_insn_len: 0,
-            hook_addrs: HashSet::new(),
+            hook_addrs: Arc::new(HashSet::new()),
             arch,
             block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
             use_memory_callbacks: true,
@@ -624,7 +628,7 @@ impl<'a> CallbackInterpreter<'a> {
             branch_counter: 0,
             next_condition_id: 0,
             push_level: 0,
-            concrete_memory: Vec::new(),
+            concrete_memory: Arc::new(Vec::new()),
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
             pending_stores: PendingStoreBuffer::with_capacity(256),
@@ -639,7 +643,7 @@ impl<'a> CallbackInterpreter<'a> {
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
-            simprocedure_registry: HashMap::new(),
+            simprocedure_registry: Arc::new(HashMap::new()),
             calling_convention: cc,
             last_branch_condition: None,
             pending_python_constraints: Vec::new(),
@@ -652,7 +656,7 @@ impl<'a> CallbackInterpreter<'a> {
             call_stack: Vec::new(),
             detailed_history: Vec::new(),
             vex_opt_level: None,
-            vex_opt_level_overrides: HashMap::new(),
+            vex_opt_level_overrides: Arc::new(HashMap::new()),
         }
     }
 
@@ -788,28 +792,30 @@ impl<'a> CallbackInterpreter<'a> {
     /// without going through Python callbacks, significantly improving performance.
     pub fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
         let size = data.len() as u64;
-        self.concrete_memory.push(ConcreteMemoryRegion { base, size, data: Arc::new(data) });
+        Arc::make_mut(&mut self.concrete_memory)
+            .push(ConcreteMemoryRegion { base, size, data: Arc::new(data) });
         self.concrete_memory_sorted = false;
     }
 
     /// Add a concrete memory region using pre-shared Arc data (O(1) clone).
     pub fn add_concrete_memory_shared(&mut self, base: u64, data: Arc<Vec<u8>>) {
         let size = data.len() as u64;
-        self.concrete_memory.push(ConcreteMemoryRegion { base, size, data });
+        Arc::make_mut(&mut self.concrete_memory)
+            .push(ConcreteMemoryRegion { base, size, data });
         self.concrete_memory_sorted = false;
     }
 
     /// Sort concrete memory regions by base address for binary search.
     fn sort_concrete_memory(&mut self) {
         if !self.concrete_memory_sorted && self.concrete_memory.len() > 1 {
-            self.concrete_memory.sort_by_key(|r| r.base);
+            Arc::make_mut(&mut self.concrete_memory).sort_by_key(|r| r.base);
             self.concrete_memory_sorted = true;
         }
     }
 
     /// Clear all concrete memory regions.
     pub fn clear_concrete_memory(&mut self) {
-        self.concrete_memory.clear();
+        Arc::make_mut(&mut self.concrete_memory).clear();
         self.concrete_memory_sorted = false;
     }
 
@@ -836,7 +842,7 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         // Linear scan for small number of regions
-        for region in &self.concrete_memory {
+        for region in self.concrete_memory.iter() {
             if let Some(data) = region.read(addr, size) {
                 return Some(data);
             }
@@ -1100,24 +1106,25 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Add a hook address.
     pub fn add_hook(&mut self, addr: u64) {
-        self.hook_addrs.insert(addr);
+        Arc::make_mut(&mut self.hook_addrs).insert(addr);
     }
 
     /// Remove a hook address.
     pub fn remove_hook(&mut self, addr: u64) {
-        self.hook_addrs.remove(&addr);
+        Arc::make_mut(&mut self.hook_addrs).remove(&addr);
     }
 
     /// Add multiple hooks at once.
     pub fn add_hooks(&mut self, addrs: &[u64]) {
+        let hooks = Arc::make_mut(&mut self.hook_addrs);
         for &addr in addrs {
-            self.hook_addrs.insert(addr);
+            hooks.insert(addr);
         }
     }
 
     /// Clear all hooks.
     pub fn clear_hooks(&mut self) {
-        self.hook_addrs.clear();
+        Arc::make_mut(&mut self.hook_addrs).clear();
     }
 
     /// Check if an address is hooked.
@@ -1138,8 +1145,8 @@ impl<'a> CallbackInterpreter<'a> {
     /// This allows the interpreter to pre-extract arguments when the hook is hit,
     /// reducing Python callback overhead.
     pub fn register_simprocedure(&mut self, addr: u64, name: String, num_args: usize, no_return: bool) {
-        self.hook_addrs.insert(addr);
-        self.simprocedure_registry.insert(addr, SimProcedureInfo {
+        Arc::make_mut(&mut self.hook_addrs).insert(addr);
+        Arc::make_mut(&mut self.simprocedure_registry).insert(addr, SimProcedureInfo {
             name,
             num_args,
             no_return,
@@ -1150,8 +1157,17 @@ impl<'a> CallbackInterpreter<'a> {
     ///
     /// Each tuple is (address, name, num_args, no_return).
     pub fn register_simprocedures(&mut self, procs: &[(u64, String, usize, bool)]) {
+        let hooks = Arc::make_mut(&mut self.hook_addrs);
+        for (addr, _, _, _) in procs {
+            hooks.insert(*addr);
+        }
+        let registry = Arc::make_mut(&mut self.simprocedure_registry);
         for (addr, name, num_args, no_return) in procs {
-            self.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
+            registry.insert(*addr, SimProcedureInfo {
+                name: name.clone(),
+                num_args: *num_args,
+                no_return: *no_return,
+            });
         }
     }
 
@@ -1162,7 +1178,7 @@ impl<'a> CallbackInterpreter<'a> {
 
     /// Clear all SimProcedure registrations.
     pub fn clear_simprocedures(&mut self) {
-        self.simprocedure_registry.clear();
+        Arc::make_mut(&mut self.simprocedure_registry).clear();
     }
 
     /// Extract arguments for a SimProcedure call.
@@ -1286,7 +1302,7 @@ impl<'a> CallbackInterpreter<'a> {
             pc: self.pc,
             current_insn_addr: self.current_insn_addr,
             current_insn_len: self.current_insn_len,
-            hook_addrs: self.hook_addrs.clone(),
+            hook_addrs: Arc::clone(&self.hook_addrs),
             arch: self.arch,
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
             use_memory_callbacks: self.use_memory_callbacks,
@@ -1298,7 +1314,7 @@ impl<'a> CallbackInterpreter<'a> {
             branch_counter: self.branch_counter,
             next_condition_id: self.next_condition_id,
             push_level: self.push_level, // Inherit push level for forked interpreter
-            concrete_memory: self.concrete_memory.clone(), // Share concrete memory (read-only)
+            concrete_memory: Arc::clone(&self.concrete_memory), // Share concrete memory (read-only)
             concretizer: self.concretizer.clone(), // Share concretizer settings
             dirty_registers: 0, // Fresh dirty tracking for fork
             pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
@@ -1314,7 +1330,7 @@ impl<'a> CallbackInterpreter<'a> {
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
             dirty_dispatch: DirtyHelperDispatch::new(), // Fresh dispatch (stateless)
-            simprocedure_registry: self.simprocedure_registry.clone(), // Share SimProcedure registry
+            simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
             calling_convention: cc,
             last_branch_condition: None, // Fresh for fork
             pending_python_constraints: Vec::new(), // Fresh constraints for fork
@@ -1327,7 +1343,7 @@ impl<'a> CallbackInterpreter<'a> {
             call_stack: self.call_stack.clone(), // Clone call stack for fork
             detailed_history: self.detailed_history.clone(), // Clone history for fork
             vex_opt_level: self.vex_opt_level, // Inherit VEX opt level
-            vex_opt_level_overrides: self.vex_opt_level_overrides.clone(), // Inherit overrides
+            vex_opt_level_overrides: Arc::clone(&self.vex_opt_level_overrides), // Inherit overrides
         }
     }
 

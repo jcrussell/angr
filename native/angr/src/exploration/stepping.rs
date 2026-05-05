@@ -719,7 +719,9 @@ impl RustExplorationManager {
         interp.set_concretizer(self.concretizer_config.clone());
         // Propagate VEX optimization level settings
         interp.vex_opt_level = self.vex_opt_level;
-        interp.vex_opt_level_overrides = self.vex_opt_level_overrides.clone();
+        // Take a fresh Arc snapshot of the manager's overrides; interp will
+        // share until a setter mutates (none do during step execution).
+        interp.vex_opt_level_overrides = Arc::new(self.vex_opt_level_overrides.clone());
 
         // Copy state registers to interpreter (including symbolic values)
         interp.registers = state.registers().fork();
