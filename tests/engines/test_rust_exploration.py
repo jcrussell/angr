@@ -900,6 +900,80 @@ class TestSolverOperations:
         assert len(results) == 5, "should find exactly 5 solutions for [1..5]"
         assert len(set(results)) == 5, "all solutions should be distinct"
 
+    def test_constraint_weakening_through_ite(self):
+        """Constraints on an ITE result must weaken correctly to its branches.
+
+        Build `result = If(x > 5, x, 100)` and constrain `result > 50`. This
+        is satisfiable in two disjoint ways:
+          - x > 5  AND  x > 50  → x in (50, 2^32)
+          - x <= 5 AND  100 > 50 → any x in [0, 5] (else-branch always > 50)
+
+        So x is NOT pinned to any single value; the solver must admit
+        solutions like x = 51 (and also x in [0, 5]). A regression that
+        loses ITE structure could over-constrain and force x to one branch.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        result = claripy.If(x > 5, x, claripy.BVV(100, 32))
+        ctx.add_constraint_ast(result > 50)
+
+        assert ctx.satisfiable()
+
+        # Witness 1: x = 51 must be admissible (then-branch satisfies > 50).
+        ctx_then = ctx.fork()
+        ctx_then.add_constraint_ast(x == 51)
+        assert ctx_then.satisfiable(), "x=51 should be a valid model"
+
+        # Witness 2: x = 3 must also be admissible (else-branch=100 > 50).
+        ctx_else = ctx.fork()
+        ctx_else.add_constraint_ast(x == 3)
+        assert ctx_else.satisfiable(), "x=3 should be a valid model"
+
+        # Counter-witness: x = 30 must NOT be admissible
+        # (then-branch=30, else-branch unreachable since x>5).
+        ctx_bad = ctx.fork()
+        ctx_bad.add_constraint_ast(x == 30)
+        assert not ctx_bad.satisfiable(), "x=30 must be ruled out"
+
+    def test_model_stability_constraint_order(self):
+        """Adding the same constraints in two orders yields the same eval(x).
+
+        Z3 is deterministic given the same constraint set; if our bridge
+        re-orders or de-duplicates inconsistently across solver instances,
+        eval(x) may diverge. Lock down stability to catch any future change
+        that introduces order-dependent behaviour.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        x = claripy.BVS("x", 32)
+        c1 = x >= 100
+        c2 = x <= 200
+        c3 = x != 150
+
+        ctx_a = RustSolverContext()
+        ctx_a.add_constraint_ast(c1)
+        ctx_a.add_constraint_ast(c2)
+        ctx_a.add_constraint_ast(c3)
+
+        ctx_b = RustSolverContext()
+        ctx_b.add_constraint_ast(c3)
+        ctx_b.add_constraint_ast(c2)
+        ctx_b.add_constraint_ast(c1)
+
+        v_a = ctx_a.eval(x)
+        v_b = ctx_b.eval(x)
+
+        assert v_a is not None and v_b is not None
+        assert 100 <= v_a <= 200 and v_a != 150
+        assert 100 <= v_b <= 200 and v_b != 150
+        assert v_a == v_b, (
+            f"eval(x) should be order-stable; got {v_a} vs {v_b}"
+        )
+
     def test_solver_contradictory_find_avoid(self):
         """Same address in find and avoid should avoid (avoid takes priority)."""
         mgr = _RustExplorationManager("amd64")
