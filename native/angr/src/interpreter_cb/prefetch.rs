@@ -250,17 +250,15 @@ impl<'a> CallbackInterpreter<'a> {
     ///
     /// This collects (address, size) pairs for loads that can be prefetched.
     /// Only loads with concrete addresses (computed from temps/constants) are collected.
-    fn scan_loads_in_irsb(&self, irsb: &IRSB) -> Vec<(u64, usize)> {
-        let mut loads = Vec::new();
-
+    /// Writes into `loads` without clearing — the caller is responsible for clearing
+    /// when reusing a scratch buffer.
+    fn scan_loads_in_irsb(&self, irsb: &IRSB, loads: &mut Vec<(u64, usize)>) {
         for stmt in &irsb.statements {
-            self.scan_loads_in_stmt(stmt, irsb, &mut loads);
+            self.scan_loads_in_stmt(stmt, irsb, loads);
         }
 
         // Also scan the next expression
-        self.scan_loads_in_expr(&irsb.next, irsb, &mut loads);
-
-        loads
+        self.scan_loads_in_expr(&irsb.next, irsb, loads);
     }
 
     /// Scan a statement for Load expressions.
@@ -364,31 +362,38 @@ impl<'a> CallbackInterpreter<'a> {
         // Clear previous prefetch cache
         self.load_prefetch_cache.clear();
 
-        // Scan for loads
-        let loads = self.scan_loads_in_irsb(irsb);
+        // Reuse scratch buffers across blocks to avoid per-block allocator churn.
+        // Take buffers out of `self` so the borrow checker permits `&self` calls
+        // (scan_loads_in_irsb / try_eval_expr_concrete) while we're writing.
+        let mut loads = std::mem::take(&mut self.prefetch_loads_scratch);
+        loads.clear();
+        self.scan_loads_in_irsb(irsb, &mut loads);
 
         if loads.is_empty() {
+            self.prefetch_loads_scratch = loads;
             return Ok(());
         }
 
-        // Deduplicate loads (same address+size only needs to be fetched once)
-        let mut unique_loads: Vec<(u64, usize)> = Vec::with_capacity(loads.len());
-        let mut seen: HashSet<(u64, usize)> = HashSet::new();
-        for load in loads {
+        // Deduplicate loads (same address+size only needs to be fetched once).
+        let unique_loads = &mut self.prefetch_unique_scratch;
+        let seen = &mut self.prefetch_dedup_scratch;
+        unique_loads.clear();
+        seen.clear();
+        for &load in &loads {
             if seen.insert(load) {
                 unique_loads.push(load);
             }
         }
+        self.prefetch_loads_scratch = loads;
 
-        // Convert to callback format: (addr, size as u32)
-        let callback_loads: Vec<(u64, u32)> = unique_loads
-            .iter()
-            .map(|&(addr, size)| (addr, size as u32))
-            .collect();
+        // Convert to callback format: (addr, size as u32).
+        let callback_loads = &mut self.prefetch_callback_scratch;
+        callback_loads.clear();
+        callback_loads.extend(unique_loads.iter().map(|&(addr, size)| (addr, size as u32)));
 
         // Call batch callback
         let results = callbacks
-            .call_memory_load_batch(py, &callback_loads)
+            .call_memory_load_batch(py, callback_loads)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         // Populate prefetch cache

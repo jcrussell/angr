@@ -585,6 +585,12 @@ pub struct CallbackInterpreter<'a> {
     /// Maps BV id to cached ConcretizationResult.
     /// Cleared at the start of each block since constraints don't change within a block.
     concretize_cache: HashMap<u64, Arc<ConcretizationResult>>,
+    /// Scratch buffers reused across `prefetch_loads_for_block` calls to avoid
+    /// per-block allocator churn. Each is cleared (not reallocated) at block start.
+    prefetch_loads_scratch: Vec<(u64, usize)>,
+    prefetch_unique_scratch: Vec<(u64, usize)>,
+    prefetch_dedup_scratch: HashSet<(u64, usize)>,
+    prefetch_callback_scratch: Vec<(u64, u32)>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Transferred to/from RustSimState before/after interpreter runs.
     pub call_stack: Vec<crate::state::CallStackEntry>,
@@ -653,6 +659,10 @@ impl<'a> CallbackInterpreter<'a> {
             profiling_enabled: false,
             concrete_memory_sorted: false,
             concretize_cache: HashMap::new(),
+            prefetch_loads_scratch: Vec::new(),
+            prefetch_unique_scratch: Vec::new(),
+            prefetch_dedup_scratch: HashSet::new(),
+            prefetch_callback_scratch: Vec::new(),
             call_stack: Vec::new(),
             detailed_history: Vec::new(),
             vex_opt_level: None,
@@ -1340,6 +1350,10 @@ impl<'a> CallbackInterpreter<'a> {
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
             concretize_cache: HashMap::new(), // Fresh cache for fork
+            prefetch_loads_scratch: Vec::new(),
+            prefetch_unique_scratch: Vec::new(),
+            prefetch_dedup_scratch: HashSet::new(),
+            prefetch_callback_scratch: Vec::new(),
             call_stack: self.call_stack.clone(), // Clone call stack for fork
             detailed_history: self.detailed_history.clone(), // Clone history for fork
             vex_opt_level: self.vex_opt_level, // Inherit VEX opt level
