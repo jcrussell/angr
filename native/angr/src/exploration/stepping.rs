@@ -141,6 +141,52 @@ impl RustExplorationManager {
                 state.set_pc(pc);
                 // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
                 state.add_to_history(pc);
+
+                // Try native syscall dispatch first. On success we skip the
+                // Python `_handle_syscall_callback` round-trip entirely.
+                let arch_name = state.arch().name();
+                if let Some(handler) = self.native_syscalls.get(arch_name, num) {
+                    let n_args = handler.num_args();
+                    let args = if n_args == 0 {
+                        Vec::new()
+                    } else {
+                        self.extract_procedure_args(&state, n_args)
+                    };
+                    match handler.call(&mut state, &args) {
+                        Ok(SyscallOutcome::Continue { ret }) => {
+                            let ret_reg = self.calling_convention.return_register();
+                            let bits = state.arch().bits();
+                            state.set_register_by_offset(
+                                ret_reg,
+                                RustBV::concrete(ret as u128, bits),
+                            );
+                            let mut successors = vec![state];
+                            self.process_deferred_forks_into(
+                                &mut successors,
+                                deferred_forks,
+                                &stored_conditions,
+                                fork_snapshots,
+                            );
+                            return Ok(successors);
+                        }
+                        Ok(SyscallOutcome::Exit) => {
+                            let mut successors = vec![state];
+                            self.process_deferred_forks_into(
+                                &mut successors,
+                                deferred_forks,
+                                &stored_conditions,
+                                fork_snapshots,
+                            );
+                            let main_state = successors.remove(0);
+                            self.push_or_drop_terminal(STASH_DEADENDED, main_state);
+                            return Ok(successors);
+                        }
+                        Err(_) => {
+                            // Fall through to Python callback path below.
+                        }
+                    }
+                }
+
                 // Only snapshot if deferred forks need it
                 let pre_callback_snapshot = if !deferred_forks.is_empty() {
                     Some(state.fork())

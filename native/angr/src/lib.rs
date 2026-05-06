@@ -37,6 +37,8 @@ pub mod state;
 pub mod stash;
 pub mod symbolic;
 #[cfg(feature = "vex-engine")]
+pub mod syscalls;
+#[cfg(feature = "vex-engine")]
 pub mod vex;
 
 use pyo3::prelude::*;

@@ -26,6 +26,7 @@ use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter_cb::{CallbackInterpreter, ExecutionStats};
 use crate::memory::Permission;
 use crate::procedures::NativeProcedureRegistry;
+use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
 use crate::symbolic::{RustBV, SymContext};
@@ -380,6 +381,8 @@ pub struct RustExplorationManager {
     pub(crate) max_steps_per_run: u32,
     /// Native procedure registry.
     pub(crate) native_procedures: NativeProcedureRegistry,
+    /// Native syscall registry (skip Python `_handle_syscall_callback` round-trip).
+    pub(crate) native_syscalls: NativeSyscallRegistry,
     /// Calling convention for argument extraction.
     pub(crate) calling_convention: Box<dyn CallingConvention>,
     /// Statistics for native procedure executions.
@@ -469,6 +472,7 @@ impl RustExplorationManager {
             num_find: 1,
             max_steps_per_run: 5000,
             native_procedures: NativeProcedureRegistry::new(),
+            native_syscalls: NativeSyscallRegistry::new(),
             calling_convention: default_cc_for_arch(arch),
             native_proc_stats: NativeProcStats::default(),
             vex_fallback_count: 0,
