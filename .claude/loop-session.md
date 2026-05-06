@@ -1,79 +1,64 @@
 # Loop session notes (2026-05-06, eighty-fourth loop session — DONE)
 
-## Status: COMPLETE — angr-qlh7 (strchr/memchr/strcmp/memcmp/strlen symbolic-arg)
+## Status: COMPLETE — angr-qlh7 closed (commit f378ad9a0)
 
-Skipped angr-pufm (P1) because it's a multi-session architectural change
-(lazy symbolic memory) that conflicts with the established
-`lazy-memory-load-overlay-fails` lesson. qlh7 was a focused follow-up to
-last session's ctype work, with a known pattern.
+Skipped angr-pufm (P1, lazy symbolic memory) because it conflicts with the
+existing `lazy-memory-load-overlay-fails` lesson and is multi-session in
+scope. Took the next-available focused follow-up.
 
 ## What landed
 
-Five SimProcedures now support symbolic byte arguments (target chars and
-memory bytes). All keep the existing concrete fast path; they only switch to
-ITE-chain construction when a symbolic input is encountered mid-scan.
+- `native/angr/src/procedures/strchr.rs`: scan_for_byte handles strchr/memchr
+  with shared ITE-chain construction; symbolic target byte and/or symbolic
+  memory bytes both supported. 6 new symbolic tests.
+- `native/angr/src/procedures/strcmp.rs`: pub(super) compare_bytes shared
+  by strcmp/strncmp/strcasecmp/memcmp; 32-bit ITE diff chain; case-fold
+  helper for strcasecmp. 4 new symbolic tests.
+- `native/angr/src/procedures/memcmp.rs`: thin wrapper around compare_bytes.
+  3 new symbolic tests.
+- `native/angr/src/procedures/strlen.rs`: scan_for_null helper; ITE chain
+  saturating at MAX_STRLEN/maxlen as documented approximation. 4 new
+  symbolic tests.
 
-- `native/angr/src/procedures/strchr.rs`
-  - `scan_for_byte` shared helper handles strchr (stop_at_null=true) and
-    memchr (stop_at_null=false). Builds chain right-to-left:
-    `result = ITE(byte_i == target, addr+i,
-                  ITE(byte_i == 0, NULL, result_next))` (strchr)
-    `result = ITE(byte_i == target, addr+i, result_next)`         (memchr)
-  - 6 new symbolic tests (target const-constrained to b/0/z to verify all
-    three branches of the ITE).
-
-- `native/angr/src/procedures/strcmp.rs`
-  - `compare_bytes` shared helper used by strcmp, strncmp, strcasecmp,
-    memcmp. Builds 32-bit diff chain:
-    `result = ITE(c1 != c2, zext(c1,32) - zext(c2,32),
-                  ITE(c1 == 0, 0, result_next))`  (strcmp/strncmp/strcasecmp)
-    `result = ITE(c1 != c2, zext(c1,32) - zext(c2,32), result_next)` (memcmp)
-  - case_fold_byte folds A-Z to a-z for strcasecmp.
-  - 4 new symbolic tests.
-  - Now `pub(super)` so memcmp.rs can reuse.
-
-- `native/angr/src/procedures/memcmp.rs`
-  - Reduced to a thin wrapper over `compare_bytes` (stop_at_null=false).
-  - 3 new symbolic tests.
-
-- `native/angr/src/procedures/strlen.rs`
-  - `scan_for_null` helper builds:
-    `result = ITE(byte_i == 0, i, result_next)`
-    Initial right-most value is the upper bound (MAX_STRLEN for strlen,
-    maxlen for strnlen). This is an explicit approximation, documented in
-    the module-level doc-comment.
-  - 4 new symbolic tests.
+All preserve the prior concrete fast path (byte-by-byte with short-circuit).
+ITE chain only kicks in once a symbolic byte/target is encountered;
+prior all-concrete-equal positions are skipped.
 
 ## Verification
 
-- `cargo test --release --lib procedures::*`: 167/167 pass (was 154; +13
-  new symbolic tests).
-- `python -m pytest tests/engines/test_rust_exploration.py`: 243/243 pass.
-- Sample benchmarks ok: fauxware, ais3_crackme, defcamp_r100 all complete.
+- cargo test --release --lib procedures::*: 167/167 pass (was 154, +13).
+- pytest tests/engines/test_rust_exploration.py: 243/243 pass.
+- Sample benchmarks unchanged: fauxware, ais3_crackme, defcamp_r100.
+
+## Memories saved
+
+- invariant-symbolic-procedures-pattern: shared ITE helpers, right-to-left,
+  switch-to-symbolic-mode-on-first-symbolic-byte, stop-scanning-on-concrete-null.
+- avoid-test-helper-page-remap: do NOT remap a page in a test helper that
+  just wants to overwrite a single byte; the page-remap zeros prior content.
+- invariant-procedures-shared-helper-vis: use `pub(super)` for cross-sibling
+  helpers in `procedures/`.
+
+## Follow-up bead
+
+- **angr-8sjy** (P2): Native atoi/strtol symbolic-digit support. Originally
+  in qlh7 scope but deferred because per-digit accumulation needs more
+  design than the byte-loop ITE pattern.
 
 ## Build hiccups
 
-Same as prior session: venv pip is broken, so used:
+Same as prior session: venv pip is broken. Workflow:
 ```
 Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --release
 cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so
-PYTHONPATH=/home/ubuntu/repos/angr python ...
+PYTHONPATH=/home/ubuntu/repos/angr python -m pytest ...
 ```
 
-Initial test failures were caused by a buggy test helper that re-mapped the
-page (overwriting prior bytes); fixed by changing
-`map_symbolic_byte` (page-remap) → `place_symbolic_byte` (overwrite single
-byte only). The page must already be mapped before the helper is called.
-
-## Known gaps for later beads
-
-- atoi / strtol with symbolic digit chars — bead description's last item,
-  deferred since it touches per-digit accumulation logic that's more
-  intricate than the byte-loop pattern. Could be a follow-up bead.
-- strstr with symbolic needle/haystack — also out of scope here.
-- memcmp with symbolic n.
+Initial test failures were a buggy `map_symbolic_byte` helper that
+re-mapped the page (zeroing prior bytes); fixed by changing to
+`place_symbolic_byte` (overwrite single byte only, page must be pre-mapped).
 
 ## Commit
 
-(next) feat(procedures): symbolic-arg support for
+f378ad9a0 - feat(procedures): symbolic-arg support for
 strchr/memchr/strcmp/memcmp/strlen (angr-qlh7)
