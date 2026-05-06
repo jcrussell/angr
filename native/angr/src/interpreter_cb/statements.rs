@@ -1177,14 +1177,11 @@ impl<'a> CallbackInterpreter<'a> {
                                 min, max, e
                             )))?;
                     } else {
-                        // Fallback to byte-based store (loses symbolic info)
-                        let data_bytes = bv_to_bytes(&data_val);
-                        callbacks
-                            .call_memory_store_symbolic_ast(py, &data_bytes, data_bytes.len() as u32)
-                            .map_err(|e| CbExecutionError::Callback(format!(
-                                "symbolic store AST callback failed at 0x{:x}-0x{:x}: {}",
-                                min, max, e
-                            )))?;
+                        return Err(CbExecutionError::Unsupported(format!(
+                            "symbolic store with too-large address range 0x{:x}-0x{:x}: \
+                             no memory_store_symbolic_full callback",
+                            min, max
+                        )));
                     }
                 }
                 ConcretizationResult::Failed(reason) => {

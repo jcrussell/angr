@@ -191,55 +191,11 @@ impl<'a> CallbackInterpreter<'a> {
                                 ));
                             }
 
-                            // LEGACY: Fall back to size-only callback if full callback not set
-                            let (data, is_symbolic, symbolic_ast) = callbacks
-                                .call_memory_load_symbolic_ast(py, size as u32)
-                                .map_err(|e| CbExecutionError::Callback(format!(
-                                    "symbolic load AST callback failed at 0x{:x}-0x{:x}: {}",
-                                    min, max, e
-                                )))?;
-
-                            if is_symbolic {
-                                // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
-                                if let Some(ast_obj) = symbolic_ast {
-                                    let ast = ast_obj.bind(py);
-
-                                    // Fast path: check for RustBVHandle first
-                                    if let Some(ref table) = self.symbol_table {
-                                        if let Some(bv) = try_handle_to_rustbv(&ast, table) {
-                                            return Ok(bv);
-                                        }
-                                    }
-
-                                    // Slow path: claripy AST conversion
-                                    if is_claripy_ast(&ast) {
-                                        match claripy_to_rustbv(py, &ast, self.ctx) {
-                                            Ok(bv) => return Ok(bv),
-                                            Err(e) => {
-                                                // Log warning about conversion failure
-                                                log::warn!(
-                                                    "Symbolic load at 0x{:x} (size={}): legacy AST conversion failed: {}. \
-                                                     Creating fresh symbol - constraints may diverge!",
-                                                    min, size, e
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                // Fallback: create a fresh symbolic value with marker name
-                                log::debug!(
-                                    "Creating fresh symbolic value sym_pyref_{:x}_{} for legacy symbolic load",
-                                    min, size
-                                );
-                                Ok(RustBV::symbolic(
-                                    self.ctx,
-                                    format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
-                                    (size * 8) as u32,
-                                ))
-                            } else {
-                                // Concrete result from Python
-                                Ok(bytes_to_bv(&data, (size * 8) as u32))
-                            }
+                            Err(CbExecutionError::Unsupported(format!(
+                                "symbolic load with too-large address range 0x{:x}-0x{:x}: \
+                                 no memory_load_symbolic_full callback",
+                                min, max
+                            )))
                         }
                         ConcretizationResult::Failed(reason) => {
                             Err(CbExecutionError::Unsupported(format!(
