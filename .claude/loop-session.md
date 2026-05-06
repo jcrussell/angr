@@ -1,47 +1,52 @@
-# Loop session notes (2026-05-06, sixty-second loop session — DONE)
+# Loop session notes (2026-05-06, sixty-third loop session — DONE)
 
-## Status: COMPLETE — angr-33gq closed (commit 08d9d9b81)
+## Status: COMPLETE — angr-hqxl closed (commit cf673a5db)
 
-## Task: angr-33gq (P2)
-Symbolic vector shift amounts for VShlN / VShrN / VSarN.
+## Task: angr-hqxl (P2)
+Vector ops: implement div / min / max / abs / sqrt for packed SIMD.
 
 ## What was done
-Replaced the early `Err(UnsupportedVectorOp("symbolic shift amount"))`
-in `vec_shl_n` / `vec_shr_n` / `vec_sar_n` with a fallback that:
+Added new IROp variants for packed-SIMD ops that previously fell back to Python:
 
-1. Resizes the symbolic shift count to `elem_width` via a new shared
-   helper `resize_vec_shift_amount` (zero-extends an I8 count to the
-   lane width; rejects shifts wider than the lane).
-2. Per-lane: `vec.extract(...).shl_into(resized_shift, ctx)` (and
-   `lshr_into` / `ashr_into` for the other two).
+  Packed integer:
+    VMin / VMax (signed+unsigned, 8/16/32/64-bit lanes) — PMINSB/PMINUB/PMINSW/...
+    VAbs (per-lane abs; INT_MIN stays INT_MIN, matches PABS* hardware) — PABSB/W/D
 
-Z3's bvshl/bvlshr return 0 when the shift count is >= the operand
-width, and bvashr replicates the sign bit, so the symbolic path
-matches the existing concrete "if shift >= elem_width" semantics
-without any extra ITE bounding.
+  Packed FP (whole-vector — siblings to existing scalar-lane VF*S ops):
+    VFAdd / VFSub / VFMul / VFDiv  — ADDPS/PD, SUBPS/PD, MULPS/PD, DIVPS/PD
+    VFSqrt / VFAbs                 — SQRTPS/PD, Iop_AbsXFxN
+    VFMin / VFMax                  — MINPS/PD, MAXPS/PD
 
-The existing concrete fast paths (both args concrete; concrete shift
-+ concrete vec u128) are preserved unchanged.
+Each has a u128 concrete fast path + per-lane symbolic fallback that
+builds Z3 BV (integer) or Z3 FP (FP) expressions and re-concats via
+the shared `concat_le_elements` helper. FP min/max uses
+ITE(FCmpLt(...), l, r) — same encoding as the existing scalar
+vec_float_scalar_lane_minmax — Z3 has no fpa_min/max ops.
 
-## Tests added (all pass)
-- `test_vec_shl_n_symbolic_shift` — 8 lanes × i16, sym 8-bit count
-  constrained to 4, model gives `lane << 4`.
-- `test_vec_shr_n_symbolic_shift` — 4 lanes × i32, sym count == 8.
-- `test_vec_sar_n_symbolic_shift` — 8 lanes × i16 with negatives,
-  sym count == 4, sign-extending shift verified.
-- `test_vec_shl_n_unbounded_shift` — fully unconstrained count;
-  asserts no error and width(64) preserved (documents Z3 handles
-  the unbounded case natively).
+opcode_map.rs gained ~99 lines covering all common SSE+AVX Iop_ names
+(8/16/32/64-bit element sizes, 64/128/256-bit total widths).
 
-vex::ops::tests: 39 → 43. Python: 221/221 still green.
+## Tests added (all 11 pass)
+- test_vec_int_min_signed_concrete (PMINSW)
+- test_vec_int_max_unsigned_concrete (PMAXUB)
+- test_vec_int_abs_concrete (PABSW with INT_MIN)
+- test_vec_int_max_symbolic_signed (Z3 BV path)
+- test_vec_float_add_concrete_f32x4 (ADDPS)
+- test_vec_float_div_concrete_f64x2 (DIVPD)
+- test_vec_float_sqrt_concrete_f32x4 (SQRTPS)
+- test_vec_float_abs_concrete_f32x4 (Iop_Abs32Fx4)
+- test_vec_float_max_concrete_f32x4 (MAXPS)
+- test_vec_float_min_concrete_f64x2 (MINPD)
+- test_vec_float_add_symbolic_f32x4 (Z3 FP path)
+
+vex::ops::tests: 43 → 54. Python: 221/221 still green.
 
 ## Memories saved
-- `invariant-z3-bv-shift-semantics` — Z3 bvshl/bvlshr return 0 for
-  shift>=width; bvashr replicates sign — no ITE needed.
-- `invariant-vex-shln-i8-count` — VEX ShlN/ShrN/SarN always take I8
-  count regardless of lane width.
-- `invariant-rustbv-shift-width-match` — shl_into/lshr_into/ashr_into
-  require both args to have matching widths.
+- `invariant-pabs-int-min-passthrough` — PABS* preserves INT_MIN under
+  two's complement; don't add an extra ITE.
+- `invariant-vex-packed-fp-naming` — Iop_<Op>{32Fx4,64Fx2} for whole-vector
+  vs Iop_<Op>{32F0x4,64F0x2} for scalar-lane (note the '0').
+- `fp-minmax-no-z3-fpa-min` — Z3 has no fpa_min/max; use ITE(FCmpLt, l, r).
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — BIG, multi-session
@@ -52,4 +57,4 @@ vex::ops::tests: 39 → 43. Python: 221/221 still green.
 - angr-4j5u (P2) Decompose RustExplorationManager god-struct
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
-- angr-hqxl (P2) Vector ops div/min/max/abs/sqrt for packed SIMD
+- angr-zrq1 (P2) Dirty-call coverage missing-handler stub
