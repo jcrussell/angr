@@ -18,7 +18,9 @@ import weakref
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
 
 import claripy
+from claripy.errors import ClaripyError
 
+from angr.errors import SimError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
 
 if TYPE_CHECKING:
@@ -631,7 +633,7 @@ class RustExplorationManager(
                 else:
                     concrete = state.solver.eval(val).to_bytes(size, 'little')
                     return (concrete, False, None)
-            except Exception as e:
+            except (SimError, ClaripyError) as e:
                 l.warning(f"Memory load error at 0x{addr:x}: {e}")
                 return (bytes(size), False, None)
         finally:
@@ -645,7 +647,7 @@ class RustExplorationManager(
         try:
             val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
             state.memory.store(addr, val, endness=state.arch.memory_endness)
-        except Exception as e:
+        except (SimError, ClaripyError) as e:
             l.warning(f"Memory store error at 0x{addr:x}: {e}")
 
     def _cb_lift_block(self, addr: int, opt_level: int = None) -> str:

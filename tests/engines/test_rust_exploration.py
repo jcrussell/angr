@@ -1899,6 +1899,79 @@ class TestErrorRecovery:
         # Sanity: a write entirely within the RW page still succeeds.
         state.memory_store(0x1000, b"\x55\x66\x77\x88")
 
+    # angr-8e81: narrow exception types in _cb_memory_load / _cb_memory_store.
+    # The callbacks used to swallow `except Exception`, masking unrelated bugs
+    # (e.g. AttributeError, RuntimeError) by returning a zero buffer. These
+    # tests pin down the new contract: only Sim*/Claripy errors are caught;
+    # everything else propagates.
+
+    def _build_load_store_manager(self):
+        import angr
+        from angr.exploration import RustExplorationManager
+        shellcode = bytes.fromhex("c3")  # ret
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        mgr = RustExplorationManager(proj, [state])
+        return mgr, state
+
+    def test_cb_memory_load_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.load() is the expected failure mode
+        and must keep being swallowed (zero buffer fallback)."""
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped read")
+        state.memory.load = boom
+
+        mgr._set_callback_state(state)
+
+        result = mgr._cb_memory_load(0x1000, 4)
+        assert result == (bytes(4), False, None)
+
+    def test_cb_memory_load_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions (e.g. RuntimeError from a real bug)
+        must propagate out of _cb_memory_load instead of being silently
+        masked as a zero buffer."""
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected bug")
+        state.memory.load = boom
+
+        mgr._set_callback_state(state)
+
+        with pytest.raises(RuntimeError, match="unexpected bug"):
+            mgr._cb_memory_load(0x1000, 4)
+
+    def test_cb_memory_store_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.store() is the expected failure
+        mode and must keep being swallowed."""
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped write")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        # Should not raise.
+        mgr._cb_memory_store(0x1000, b"\x41\x42\x43\x44")
+
+    def test_cb_memory_store_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate out of _cb_memory_store."""
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected bug")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        with pytest.raises(RuntimeError, match="unexpected bug"):
+            mgr._cb_memory_store(0x1000, b"\x41\x42\x43\x44")
+
     def test_z3_solver_timeout_does_not_hang(self):
         """A tight Z3 timeout must bound `satisfiable()` wall-clock — even
         on a constraint set Z3 would otherwise grind on forever (factoring a
