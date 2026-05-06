@@ -1,46 +1,44 @@
-# Loop session notes (2026-05-06, eightieth loop session — DONE)
+# Loop session notes (2026-05-06, eighty-first loop session — DONE)
 
-## Status: COMPLETE — angr-uzla closed
+## Status: COMPLETE — angr-lrdr closed
 
-## Task: angr-uzla (P3) — Native amd64 mprotect syscall handler
+## Task: angr-lrdr (P3) — Native amd64 brk syscall handler
 
 ### What landed
-- `native/angr/src/syscalls/mprotect.rs` — `NativeMprotectSyscall`
-  mirrors Python `procedures/linux_kernel/mprotect.py`:
-  - 3 concrete args (addr, length, prot); symbolic falls back to Python.
-  - addr & 0xFFF != 0 → return -1 (misaligned).
-  - any unmapped page in [addr, page_end) → return -1.
-  - else apply `prot & 7` to every covered page → return 0.
-  - zero length → return 0 no-op.
-- `native/angr/src/memory.rs` — added `page_permissions(page_num)` and
-  `set_page_permissions(page_num, perm)` helpers on `SymbolicMemory`
-  (page_num is `addr >> 12`).
+- `native/angr/src/syscalls/brk.rs` — `NativeBrkSyscall` mirroring
+  `procedures/linux_kernel/brk.py` (state.posix.set_brk semantics).
+- `native/angr/src/state.rs`:
+  - new `posix_brk: u64` field (default 0x1B00000), distinct from
+    `heap_brk` (the malloc bump allocator at 0xC0000000).
+  - threaded through all 6 RustSimState struct literals
+    (3 ctors + fork + fork_true + fork_false + fork_from_snapshot + merge).
+  - `posix_brk()` getter and `set_posix_brk(addr)` setter.
 - `native/angr/src/syscalls/mod.rs`:
-  - registered amd64 syscall 10 → mprotect.
-  - `SyscallOutcome` now derives `Debug` so `expect_err` works in tests.
-  - default-registry test asserts mprotect (10) is present.
+  - registered amd64 syscall 12 → brk.
+  - default-registry test asserts brk (12) is present.
 
-### Encoding gotcha (saved as memory)
-Linux PROT bits (READ=0x1, WRITE=0x2, EXEC=0x4) and Rust
-`Permission::from_bits` (read=0x4, write=0x2, execute=0x1) are
-REVERSED on bits 0x1/0x4. mprotect explicitly translates rather
-than going through `from_bits`.
+### Handler semantics
+- Symbolic new_brk → Err(SymbolicArgument) → Python fallback.
+- new_brk < current → Continue { ret: current } (no-op; covers brk(0)).
+- Otherwise: set posix_brk = new_brk; if growing across page boundary,
+  map new pages with `Permission::RWX`; return new_brk.
+- Collision (any to-be-mapped page already mapped) → Err so Python's
+  SimMemoryError-driven alternate-brk fixup runs (Rust's `map` is
+  idempotent and can't surface that signal).
 
 ### Verification
-- cargo test (lib, syscalls): 13/13 (8 new mprotect tests)
-- pytest tests/engines/test_rust_exploration.py: 243/243 (8.29s)
-- Baselines unchanged: fauxware 0.38s, defcamp_r100 0.23s,
-  ais3_crackme 0.87s.
+- cargo test (lib, syscalls): 23/23 (10 new brk tests added).
+- pytest tests/engines/test_rust_exploration.py: 243/243 (8.21s).
+- fauxware smoke (rust engine): no regression in callback timings.
 
 ### Commit
-- 63cad7f93 feat(syscalls): native amd64 mprotect dispatch (angr-uzla)
+- fad1b14d2 feat(syscalls): native amd64 brk dispatch (angr-lrdr)
 
 ### Memories saved/updated
-- `invariant-linux-prot-vs-rust-permission` (NEW) — bit-encoding mismatch.
-- `invariant-symbolic-memory-page-helpers` (NEW) — page_permissions /
-  set_page_permissions accessors.
-- `invariant-native-syscall-dispatch` (UPDATED) — now lists mprotect (10)
-  and notes SyscallOutcome derives Debug.
+- `invariant-posix-brk-vs-heap-brk` (NEW) — two distinct brk fields.
+- `invariant-syscall-fallback-on-collision` (NEW) — pattern for Err
+  return when Rust semantics can't reproduce Python's error paths.
+- `invariant-native-syscall-dispatch` (UPDATED) — now lists brk (12).
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — substantial infra
@@ -52,7 +50,6 @@ than going through `from_bits`.
 - angr-nnov (P2) Fill out RustStateProxy
 - angr-4j5u (P2) Decompose Rust-side RustExplorationManager
 - angr-m2hf (P2) Unified error trait + single PyO3 conversion site
-- angr-lrdr (P3) Native amd64 brk syscall handler
 - angr-vybt (P4) Native amd64 mmap/munmap syscall handlers
 - angr-0z34 (P4) Native amd64 read/write syscall handlers
 
