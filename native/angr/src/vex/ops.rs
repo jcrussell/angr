@@ -911,44 +911,62 @@ impl VEXOps {
 
         debug_assert_eq!(vec.width(), total_width);
 
-        // Get the shift amount (usually 8-bit immediate)
-        let shift = match shift_amt.as_u128() {
-            Some(s) => s as u32,
-            None => return Err(OpError::UnsupportedVectorOp("symbolic shift amount".to_string())),
-        };
+        // Concrete shift amount: keep the existing fast paths.
+        if let Some(s) = shift_amt.as_u128() {
+            let shift = s as u32;
 
-        // If shift >= element width, result is all zeros
-        if shift >= elem_width {
-            return Ok(RustBV::concrete(0, total_width));
-        }
-
-        if let Some(v) = vec.as_u128() {
-            let mut result: u128 = 0;
-            let elem_mask = (1u128 << elem_width) - 1;
-
-            for i in 0..count {
-                let lo = (i as u32) * elem_width;
-                let elem_val = (v >> lo) & elem_mask;
-                let shifted = (elem_val << shift) & elem_mask;
-                result |= shifted << lo;
+            if shift >= elem_width {
+                return Ok(RustBV::concrete(0, total_width));
             }
 
-            return Ok(RustBV::concrete(result, total_width));
+            if let Some(v) = vec.as_u128() {
+                let mut result: u128 = 0;
+                let elem_mask = (1u128 << elem_width) - 1;
+
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let elem_val = (v >> lo) & elem_mask;
+                    let shifted = (elem_val << shift) & elem_mask;
+                    result |= shifted << lo;
+                }
+
+                return Ok(RustBV::concrete(result, total_width));
+            }
         }
 
-        // Symbolic case - do element-wise
+        // Symbolic shift amount (or symbolic vector with concrete shift):
+        // resize the count to the lane width and apply per-lane.  Z3 bvshl
+        // returns 0 when the shift count is >= the operand width, matching
+        // the concrete semantics above.
+        let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width, ctx)?;
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        let shift_bv = RustBV::concrete(shift as u128, elem_width);
-
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.shl_into(shift_bv.clone(), ctx);
+            let shifted = elem_val.shl_into(resized_shift.clone(), ctx);
             elements.push(shifted);
         }
-
         Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Resize a vector shift amount to the lane width.
+    ///
+    /// VEX `ShlN` / `ShrN` / `SarN` take an I8 count. When the lane is wider,
+    /// zero-extend so Z3's shift ops see matching widths. A wider count would
+    /// require an ITE on the high bits — not seen in real VEX, so reject.
+    fn resize_vec_shift_amount(
+        shift_amt: RustBV,
+        elem_width: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        match shift_amt.width().cmp(&elem_width) {
+            std::cmp::Ordering::Equal => Ok(shift_amt),
+            std::cmp::Ordering::Less => Ok(shift_amt.zero_extend_into(elem_width, ctx)),
+            std::cmp::Ordering::Greater => Err(OpError::UnsupportedVectorOp(
+                "vector shift amount wider than lane".to_string(),
+            )),
+        }
     }
 
     /// Vector shift right logical by immediate.
@@ -964,42 +982,37 @@ impl VEXOps {
 
         debug_assert_eq!(vec.width(), total_width);
 
-        let shift = match shift_amt.as_u128() {
-            Some(s) => s as u32,
-            None => return Err(OpError::UnsupportedVectorOp("symbolic shift amount".to_string())),
-        };
+        if let Some(s) = shift_amt.as_u128() {
+            let shift = s as u32;
 
-        // If shift >= element width, result is all zeros
-        if shift >= elem_width {
-            return Ok(RustBV::concrete(0, total_width));
-        }
-
-        if let Some(v) = vec.as_u128() {
-            let mut result: u128 = 0;
-            let elem_mask = (1u128 << elem_width) - 1;
-
-            for i in 0..count {
-                let lo = (i as u32) * elem_width;
-                let elem_val = (v >> lo) & elem_mask;
-                let shifted = elem_val >> shift;
-                result |= shifted << lo;
+            if shift >= elem_width {
+                return Ok(RustBV::concrete(0, total_width));
             }
 
-            return Ok(RustBV::concrete(result, total_width));
+            if let Some(v) = vec.as_u128() {
+                let mut result: u128 = 0;
+                let elem_mask = (1u128 << elem_width) - 1;
+
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let elem_val = (v >> lo) & elem_mask;
+                    let shifted = elem_val >> shift;
+                    result |= shifted << lo;
+                }
+
+                return Ok(RustBV::concrete(result, total_width));
+            }
         }
 
-        // Symbolic case
+        let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width, ctx)?;
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        let shift_bv = RustBV::concrete(shift as u128, elem_width);
-
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.lshr_into(shift_bv.clone(), ctx);
+            let shifted = elem_val.lshr_into(resized_shift.clone(), ctx);
             elements.push(shifted);
         }
-
         Ok(Self::concat_le_elements(elements, ctx))
     }
 
@@ -1016,59 +1029,58 @@ impl VEXOps {
 
         debug_assert_eq!(vec.width(), total_width);
 
-        let shift = match shift_amt.as_u128() {
-            Some(s) => s as u32,
-            None => return Err(OpError::UnsupportedVectorOp("symbolic shift amount".to_string())),
-        };
+        if let Some(s) = shift_amt.as_u128() {
+            let shift = s as u32;
 
-        if let Some(v) = vec.as_u128() {
-            let mut result: u128 = 0;
-            let elem_mask = (1u128 << elem_width) - 1;
-            let sign_bit = 1u128 << (elem_width - 1);
+            if let Some(v) = vec.as_u128() {
+                let mut result: u128 = 0;
+                let elem_mask = (1u128 << elem_width) - 1;
+                let sign_bit = 1u128 << (elem_width - 1);
 
-            for i in 0..count {
-                let lo = (i as u32) * elem_width;
-                let elem_val = (v >> lo) & elem_mask;
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let elem_val = (v >> lo) & elem_mask;
 
-                // Arithmetic shift - preserve sign
-                let shifted = if shift >= elem_width {
-                    // Shift >= width: result is all sign bits
-                    if elem_val & sign_bit != 0 {
-                        elem_mask  // All 1s
+                    // Arithmetic shift - preserve sign
+                    let shifted = if shift >= elem_width {
+                        // Shift >= width: result is all sign bits
+                        if elem_val & sign_bit != 0 {
+                            elem_mask  // All 1s
+                        } else {
+                            0  // All 0s
+                        }
                     } else {
-                        0  // All 0s
-                    }
-                } else {
-                    // Check if negative (sign bit set)
-                    if elem_val & sign_bit != 0 {
-                        // Negative: shift and fill with 1s
-                        let shifted_val = elem_val >> shift;
-                        let fill_mask = (elem_mask << (elem_width - shift)) & elem_mask;
-                        (shifted_val | fill_mask) & elem_mask
-                    } else {
-                        // Positive: simple logical shift
-                        elem_val >> shift
-                    }
-                };
+                        // Check if negative (sign bit set)
+                        if elem_val & sign_bit != 0 {
+                            // Negative: shift and fill with 1s
+                            let shifted_val = elem_val >> shift;
+                            let fill_mask = (elem_mask << (elem_width - shift)) & elem_mask;
+                            (shifted_val | fill_mask) & elem_mask
+                        } else {
+                            // Positive: simple logical shift
+                            elem_val >> shift
+                        }
+                    };
 
-                result |= shifted << lo;
+                    result |= shifted << lo;
+                }
+
+                return Ok(RustBV::concrete(result, total_width));
             }
-
-            return Ok(RustBV::concrete(result, total_width));
         }
 
-        // Symbolic case
+        // Symbolic shift amount (or symbolic vector with concrete shift):
+        // Z3 bvashr replicates the sign bit when the shift count is >= the
+        // operand width, matching the concrete sign-fill semantics above.
+        let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width, ctx)?;
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        let shift_bv = RustBV::concrete(shift as u128, elem_width);
-
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.ashr_into(shift_bv.clone(), ctx);
+            let shifted = elem_val.ashr_into(resized_shift.clone(), ctx);
             elements.push(shifted);
         }
-
         Ok(Self::concat_le_elements(elements, ctx))
     }
 
@@ -2722,5 +2734,145 @@ mod tests {
             "MAXSS(NaN, 3.0) returns the right operand, got {}",
             lane0
         );
+    }
+
+    /// Symbolic ShlN16x8: shift count is symbolic; constrain to 4 and verify
+    /// each lane is `lane << 4`. Exercises the symbolic-shift fallback that
+    /// builds Z3 `bvshl` expressions per lane.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_shl_n_symbolic_shift() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+
+        // Vector: [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008]
+        let mut v: u128 = 0;
+        for i in 0..8u32 {
+            v |= ((i + 1) as u128) << (i * 16);
+        }
+        let vec = RustBV::concrete(v, 128);
+        let shift = RustBV::symbolic(&ctx, "shl_amt", 8);
+
+        let result = VEXOps::binop(
+            IROp::VShlN { elem: IRType::I16, count: 8 },
+            vec,
+            shift.clone(),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+
+        // Constrain shift == 4.
+        let four = RustBV::concrete(4, 8);
+        let eq = shift.to_z3_ast()._eq(&four.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
+
+        let model = ctx.eval(&result).expect("eval(result) returned None");
+        for i in 0..8u32 {
+            let lane = (model >> (i * 16)) & 0xFFFF;
+            let expected = ((i as u128 + 1) << 4) & 0xFFFF;
+            assert_eq!(lane, expected, "lane {} expected {:#x}, got {:#x}", i, expected, lane);
+        }
+    }
+
+    /// Symbolic ShrN32x4: shift count is symbolic; constrain to 8 and verify
+    /// each lane is `lane >> 8`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_shr_n_symbolic_shift() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+
+        // Vector: [0xAABBCCDD, 0x11223344, 0xDEADBEEF, 0xCAFEBABE]
+        let lanes: [u32; 4] = [0xAABBCCDD, 0x11223344, 0xDEADBEEF, 0xCAFEBABE];
+        let mut v: u128 = 0;
+        for (i, lane) in lanes.iter().enumerate() {
+            v |= (*lane as u128) << (i * 32);
+        }
+        let vec = RustBV::concrete(v, 128);
+        let shift = RustBV::symbolic(&ctx, "shr_amt", 8);
+
+        let result = VEXOps::binop(
+            IROp::VShrN { elem: IRType::I32, count: 4 },
+            vec,
+            shift.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        let eight = RustBV::concrete(8, 8);
+        let eq = shift.to_z3_ast()._eq(&eight.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after constraining shift == 8");
+
+        let model = ctx.eval(&result).expect("eval(result) returned None");
+        for (i, lane) in lanes.iter().enumerate() {
+            let got = ((model >> (i * 32)) & 0xFFFF_FFFF) as u32;
+            let expected = lane >> 8;
+            assert_eq!(got, expected, "lane {} expected {:#x}, got {:#x}", i, expected, got);
+        }
+    }
+
+    /// Symbolic SarN16x8 with negative lanes: shift count is symbolic; constrain
+    /// to 4 and verify sign-extending shift (negative values stay negative).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_sar_n_symbolic_shift() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+
+        // Lanes: mix of positive and negative i16 values.
+        let lanes: [i16; 8] = [-1, -32768, -16, 0, 1, 0x4000, -2, 256];
+        let mut v: u128 = 0;
+        for (i, lane) in lanes.iter().enumerate() {
+            v |= ((*lane as u16) as u128) << (i * 16);
+        }
+        let vec = RustBV::concrete(v, 128);
+        let shift = RustBV::symbolic(&ctx, "sar_amt", 8);
+
+        let result = VEXOps::binop(
+            IROp::VSarN { elem: IRType::I16, count: 8 },
+            vec,
+            shift.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        let four = RustBV::concrete(4, 8);
+        let eq = shift.to_z3_ast()._eq(&four.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
+
+        let model = ctx.eval(&result).expect("eval(result) returned None");
+        for (i, lane) in lanes.iter().enumerate() {
+            let got = ((model >> (i * 16)) & 0xFFFF) as u16 as i16;
+            let expected = lane >> 4;  // arithmetic shift in Rust on i16
+            assert_eq!(got, expected, "lane {} expected {}, got {}", i, expected, got);
+        }
+    }
+
+    /// Symbolic ShlN with unbounded shift: just verify a Z3 expression is
+    /// produced rather than an UnsupportedVectorOp error. Documents the
+    /// "fully unconstrained" path stays inside the solver.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_shl_n_unbounded_shift() {
+        let ctx = SymContext::new_mock();
+
+        let vec = RustBV::concrete(0x1111_2222_3333_4444u128, 64);
+        let shift = RustBV::symbolic(&ctx, "shl_amt_free", 8);
+
+        let result = VEXOps::binop(
+            IROp::VShlN { elem: IRType::I16, count: 4 },
+            vec,
+            shift,
+            &ctx,
+        )
+        .expect("unbounded symbolic shift must not error");
+        assert_eq!(result.width(), 64);
     }
 }
