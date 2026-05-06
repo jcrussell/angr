@@ -1455,6 +1455,47 @@ class TestAdversarial:
         ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x42)
         assert ctx.satisfiable()
 
+    # --- PyO3 boundary: None / empty / very-wide RustBV (angr-my1w) ---
+
+    def test_eval_handle_invalid_id_returns_none(self):
+        """eval_handle for an unknown handle id maps Option::None → Python None."""
+        from angr.rustylib.vex_engine import RustSolverContext
+        ctx = RustSolverContext()
+        # Pick an id that no handle was ever issued for.
+        assert ctx.eval_handle(99999) is None
+
+    def test_create_concrete_zero_width_round_trip(self):
+        """Width-0 RustBV survives the PyO3 round-trip via create_concrete.
+
+        The concrete-value mask collapses to 0 for width=0, so the value
+        is normalized to 0; the handle still reports width=0 and is_concrete.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        ctx = RustSolverContext()
+        h = ctx.create_concrete(0, 0)
+        assert h.length == 0
+        assert h.is_concrete is True
+        assert h.symbolic is False
+        assert h.concrete() == 0
+
+    def test_solver_very_wide_bitvector_round_trip(self):
+        """1024-bit BV survives add_constraint + eval round-trip across PyO3.
+
+        Wide values (>128 bits) take the eval_wide path that returns a
+        Python int reconstructed from big-endian bytes. The low byte
+        constraint must be reflected in the evaluated value.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+        ctx = RustSolverContext()
+        x = claripy.BVS("wide1k", 1024)
+        ctx.add_constraint_ast(claripy.Extract(7, 0, x) == 0x42)
+        assert ctx.satisfiable()
+        v = ctx.eval(x)
+        assert v is not None
+        assert v.bit_length() <= 1024
+        assert (v & 0xFF) == 0x42
+
     # --- Exploration manager with states ---
 
     def test_many_states_in_stash(self):
