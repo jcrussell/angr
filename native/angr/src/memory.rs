@@ -38,6 +38,14 @@ pub const PAGE_SIZE: u64 = 4096;
 /// Page mask for address calculation.
 pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
 
+/// Number of u64 words in the per-page symbolic bitmap.
+/// One bit per byte: PAGE_SIZE bytes / 64 bits per u64 = PAGE_SIZE / 64 words.
+pub const BITMAP_WORDS: usize = (PAGE_SIZE / 64) as usize;
+const _: () = assert!(BITMAP_WORDS * 64 == PAGE_SIZE as usize, "bitmap must cover one bit per page byte");
+
+/// Bits per bitmap word (u64).
+const BITMAP_BITS_PER_WORD: u16 = 64;
+
 /// Errors from memory operations.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum MemoryError {
@@ -146,9 +154,9 @@ pub struct MemoryPage {
     /// Base address of the page.
     base_addr: u64,
     /// Bitmap tracking symbolic bytes: bit i set means byte i is symbolic.
-    /// 64 u64s = 4096 bits = one bit per byte in a 4KB page.
+    /// BITMAP_WORDS u64s = PAGE_SIZE bits = one bit per byte in a page.
     /// Boxed to keep MemoryPage small when not needed (None = fully concrete).
-    symbolic_bitmap: Option<Box<[u64; 64]>>,
+    symbolic_bitmap: Option<Box<[u64; BITMAP_WORDS]>>,
 }
 
 impl MemoryPage {
@@ -206,7 +214,7 @@ impl MemoryPage {
         let mut offsets = Vec::new();
         for (word_idx, &word) in bitmap.iter().enumerate() {
             if word == 0 { continue; }
-            let base = (word_idx as u16) * 64;
+            let base = (word_idx as u16) * BITMAP_BITS_PER_WORD;
             let mut bits = word;
             while bits != 0 {
                 let bit = bits.trailing_zeros() as u16;
@@ -241,8 +249,8 @@ impl MemoryPage {
         if let Some(ref mut bitmap) = self.symbolic_bitmap {
             let loop_end = (offset as usize + bytes.len()).min(PAGE_SIZE as usize) as u16;
             for i in offset..loop_end {
-                let word_idx = (i / 64) as usize;
-                let bit_idx = i % 64;
+                let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
+                let bit_idx = i % BITMAP_BITS_PER_WORD;
                 bitmap[word_idx] &= !(1u64 << bit_idx);
             }
             // If bitmap is now empty, drop it
@@ -259,11 +267,11 @@ impl MemoryPage {
             "mark_symbolic: offset {} + size {} exceeds PAGE_SIZE {}",
             offset, size, PAGE_SIZE
         );
-        let bitmap = self.symbolic_bitmap.get_or_insert_with(|| Box::new([0u64; 64]));
+        let bitmap = self.symbolic_bitmap.get_or_insert_with(|| Box::new([0u64; BITMAP_WORDS]));
         let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
         for i in offset..loop_end {
-            let word_idx = (i / 64) as usize;
-            let bit_idx = i % 64;
+            let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
+            let bit_idx = i % BITMAP_BITS_PER_WORD;
             bitmap[word_idx] |= 1u64 << bit_idx;
         }
     }
@@ -274,8 +282,8 @@ impl MemoryPage {
         match &self.symbolic_bitmap {
             None => false,
             Some(bitmap) => {
-                let word_idx = (offset / 64) as usize;
-                let bit_idx = offset % 64;
+                let word_idx = (offset / BITMAP_BITS_PER_WORD) as usize;
+                let bit_idx = offset % BITMAP_BITS_PER_WORD;
                 bitmap[word_idx] & (1u64 << bit_idx) != 0
             }
         }

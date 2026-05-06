@@ -1541,6 +1541,10 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "vex-engine-z3")]
     m.add_function(pyo3::wrap_pyfunction!(reset_shared_z3_context, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
+    // Memory layout constants (single source of truth; Python imports these
+    // rather than redeclaring 0x1000 etc.).
+    m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;
+    m.add("PAGE_MASK", crate::memory::PAGE_MASK)?;
     Ok(())
 }
 

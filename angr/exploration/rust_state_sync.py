@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Optional
 
 import claripy
 
+from ._constants import PAGE_SIZE, PAGE_MASK, STACK_SIZE, MAX_OVERLAY_SECTION_SIZE
+
 if TYPE_CHECKING:
     import angr
 
@@ -188,7 +190,7 @@ class RustStateSyncMixin:
         if self._try_fast_memory_sync(rust_state):
             return
 
-        page_size = 0x1000
+        page_size = PAGE_SIZE
         arch = self._project.arch
 
         symbolic_pages = self._find_user_symbolic_pages(angr_state, page_size)
@@ -323,7 +325,7 @@ class RustStateSyncMixin:
             if obj.binary is None or not hasattr(obj, 'sections'):
                 continue
             for section in obj.sections:
-                if section.memsize > 0 and section.memsize < 0x10000:
+                if section.memsize > 0 and section.memsize < MAX_OVERLAY_SECTION_SIZE:
                     try:
                         val = angr_state.memory.load(
                             section.min_addr, section.memsize,
@@ -395,8 +397,8 @@ class RustStateSyncMixin:
         except Exception:
             sp = 0x7fff_fff0_0000 if arch.bits == 64 else 0x7fff_0000
         stack_base = (sp & ~(page_size - 1)) + page_size
-        stack_start = stack_base - 0x11_0000
-        rust_state.add_lazy_region(stack_start, 0x11_0000)
+        stack_start = stack_base - STACK_SIZE
+        rust_state.add_lazy_region(stack_start, STACK_SIZE)
         sp_page = sp & ~(page_size - 1)
         return sp_page, stack_start, stack_base
 
@@ -1408,14 +1410,14 @@ class RustStateSyncMixin:
             ptr_size = state.arch.bytes
 
             # Load the full page containing SP in ONE FFI call
-            sp_page = sp & ~0xFFF
+            sp_page = sp & ~PAGE_MASK
             sp_offset = sp - sp_page
             try:
                 page_data = self._rust_mgr.pending_memory_load_page(sp_page)
-                if page_data and len(page_data) == 0x1000:
+                if page_data and len(page_data) == PAGE_SIZE:
                     # Write non-zero pointer-sized values from SP upward
                     # Covers 64 slots (~512 bytes on x64) for args + locals
-                    end_offset = min(sp_offset + 64 * ptr_size, 0x1000)
+                    end_offset = min(sp_offset + 64 * ptr_size, PAGE_SIZE)
                     for off in range(sp_offset, end_offset, ptr_size):
                         chunk = page_data[off:off + ptr_size]
                         if len(chunk) == ptr_size:

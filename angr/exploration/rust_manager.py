@@ -23,6 +23,7 @@ from pyvex.errors import PyVEXError
 
 from angr.errors import SimEngineError, SimError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
+from angr.exploration._constants import PAGE_SIZE, PAGE_MASK, STACK_SIZE, MAX_OVERLAY_SECTION_SIZE
 
 if TYPE_CHECKING:
     import angr
@@ -1071,9 +1072,9 @@ class RustExplorationManager(
         _user_prefixes = ('mem_', 'reg_', 'unconstrained')
         try:
             sp = state.solver.eval(state.regs.sp)
-            sp_page = sp & ~0xfff
+            sp_page = sp & ~PAGE_MASK
             page_data = state.memory.load(
-                sp_page, 0x1000, endness='Iend_BE',
+                sp_page, PAGE_SIZE, endness='Iend_BE',
                 inspect=False, disable_actions=True)
             if page_data.symbolic:
                 for name in page_data.variables:
@@ -1133,7 +1134,7 @@ class RustExplorationManager(
             os.makedirs(cache_dir, exist_ok=True)
 
             arch = self._project.arch
-            page_size = 0x1000
+            page_size = PAGE_SIZE
             data = {'addr': state.addr, 'registers': {}, 'stack_page': None,
                     'continuation_addrs': [], 'batch_pages': [], 'lazy_regions': []}
 
@@ -1157,8 +1158,8 @@ class RustExplorationManager(
                 data['stack_page'] = (sp_page, concrete)
                 # Store stack lazy region
                 stack_base = (sp & ~(page_size - 1)) + page_size
-                stack_start = stack_base - 0x11_0000
-                data['lazy_regions'].append((stack_start, 0x11_0000))
+                stack_start = stack_base - STACK_SIZE
+                data['lazy_regions'].append((stack_start, STACK_SIZE))
             except (AttributeError, TypeError, ValueError):
                 pass
 
@@ -1198,7 +1199,7 @@ class RustExplorationManager(
                 if obj.binary is None or not hasattr(obj, 'sections'):
                     continue
                 for section in obj.sections:
-                    if 0 < section.memsize < 0x10000:
+                    if 0 < section.memsize < MAX_OVERLAY_SECTION_SIZE:
                         try:
                             val = state.memory.load(
                                 section.min_addr, section.memsize,
