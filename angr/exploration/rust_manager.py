@@ -98,6 +98,163 @@ from angr.exploration.rust_state_sync import RustStateSyncMixin
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 
 
+def _extract_register_snapshot(state, arch) -> Dict[str, int]:
+    """Extract concrete register values from a SimState.
+
+    Skips symbolic registers and any access errors. Returns a dict
+    mapping register name → concrete int value.
+    """
+    registers: Dict[str, int] = {}
+    for reg_name in arch.register_names.values():
+        try:
+            val = getattr(state.regs, reg_name)
+            if not val.symbolic:
+                registers[reg_name] = state.solver.eval(val)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+    return registers
+
+
+def _extract_stack_page(state, page_size: int):
+    """Extract the stack page at SP and the lazy stack region descriptor.
+
+    Returns (stack_page, lazy_region) where stack_page is
+    ``(page_addr, bytes)`` and lazy_region is ``(start_addr, length)``.
+    Both are None if extraction fails.
+    """
+    try:
+        sp = state.solver.eval(state.regs.sp)
+        sp_page = sp & ~(page_size - 1)
+        page_val = state.memory.load(
+            sp_page, page_size, endness='Iend_BE',
+            inspect=False, disable_actions=True)
+        concrete = state.solver.eval(page_val).to_bytes(page_size, 'big')
+        stack_base = (sp & ~(page_size - 1)) + page_size
+        stack_start = stack_base - STACK_SIZE
+        return (sp_page, concrete), (stack_start, STACK_SIZE)
+    except (AttributeError, TypeError, ValueError):
+        return None, None
+
+
+def _extract_loader_pages(loader, page_size: int):
+    """Extract concrete loader memory pages and per-object lazy regions.
+
+    Returns (batch_pages, lazy_regions, mapped_page_addrs):
+    - batch_pages: list of (page_addr, bytes, perms) tuples
+    - lazy_regions: list of (start_addr, length) tuples (one per loader object)
+    - mapped_page_addrs: set of page_addr ints already captured
+    """
+    batch_pages = []
+    lazy_regions = []
+    mapped_page_addrs = set()
+    for obj in loader.all_objects:
+        try:
+            if hasattr(obj, 'segments') and obj.segments:
+                ranges = [(s.min_addr & ~(page_size - 1),
+                           (s.max_addr + page_size) & ~(page_size - 1))
+                          for s in obj.segments if s.memsize > 0]
+            else:
+                ranges = [(obj.min_addr & ~(page_size - 1),
+                           (obj.max_addr + page_size) & ~(page_size - 1))]
+            for start_page, end_page in ranges:
+                for page_addr in range(start_page, end_page, page_size):
+                    if page_addr in mapped_page_addrs:
+                        continue
+                    try:
+                        page_data = loader.memory.load(page_addr, page_size)
+                        if page_data and len(page_data) == page_size:
+                            batch_pages.append((page_addr, bytes(page_data), 7))
+                            mapped_page_addrs.add(page_addr)
+                    except (KeyError, TypeError, ValueError):
+                        pass
+            region_start = obj.min_addr & ~(page_size - 1)
+            region_end = (obj.max_addr + page_size) & ~(page_size - 1)
+            if region_end - region_start > 0:
+                lazy_regions.append((region_start, region_end - region_start))
+        except (AttributeError, KeyError, TypeError):
+            pass
+    return batch_pages, lazy_regions, mapped_page_addrs
+
+
+def _extract_section_patches(state, loader) -> list:
+    """Extract concrete post-init section bytes (e.g., GOT fixups).
+
+    Returns a list of (min_addr, bytes) tuples for sections smaller
+    than MAX_OVERLAY_SECTION_SIZE whose memory loads as concrete.
+    """
+    section_patches = []
+    for obj in loader.all_objects:
+        if obj.binary is None or not hasattr(obj, 'sections'):
+            continue
+        for section in obj.sections:
+            if 0 < section.memsize < MAX_OVERLAY_SECTION_SIZE:
+                try:
+                    val = state.memory.load(
+                        section.min_addr, section.memsize,
+                        endness='Iend_BE', inspect=False, disable_actions=True)
+                    if not val.symbolic:
+                        section_patches.append(
+                            (section.min_addr,
+                             state.solver.eval(val).to_bytes(section.memsize, 'big')))
+                except (AttributeError, TypeError, ValueError):
+                    pass
+    return section_patches
+
+
+def _extract_extra_pages(state, page_size: int, mapped_page_addrs: set,
+                         stack_page_addr: Optional[int]) -> list:
+    """Extract non-loader pages created during init (e.g., ctype tables).
+
+    Skips pages already captured as loader pages or as the stack page.
+    Returns a list of (page_addr, bytes) tuples.
+    """
+    extra_pages = []
+    if hasattr(state.memory, '_pages'):
+        mem_page_size = getattr(state.memory, 'page_size', page_size)
+        for page_num in state.memory._pages:
+            page_addr = page_num * mem_page_size
+            if page_addr in mapped_page_addrs:
+                continue
+            if stack_page_addr is not None and page_addr == stack_page_addr:
+                continue
+            page = state.memory._pages[page_num]
+            if page is None:
+                continue
+            try:
+                page_data = page.concrete_load(0, mem_page_size)
+                if any(page_data):
+                    extra_pages.append((page_addr, bytes(page_data)))
+            except (AttributeError, TypeError, ValueError):
+                pass
+    return extra_pages
+
+
+def _extract_callstack_snapshot(state):
+    """Walk the SimState callstack and collect frames + continuation addrs.
+
+    Returns (callstack_frames, continuation_addrs).
+    """
+    callstack_frames = []
+    continuation_addrs = []
+    frame = state.callstack.top if hasattr(state, 'callstack') else None
+    while frame is not None:
+        pdata = getattr(frame, 'procedure_data', None)
+        frame_data = {
+            'call_site_addr': frame.call_site_addr,
+            'func_addr': frame.func_addr,
+            'ret_addr': frame.ret_addr,
+            'stack_ptr': frame.stack_ptr,
+        }
+        if pdata is not None and len(pdata) >= 5:
+            try:
+                continuation_addrs.append(int(pdata[4]))
+            except (TypeError, ValueError):
+                pass
+        callstack_frames.append(frame_data)
+        frame = getattr(frame, 'next', None)
+    return callstack_frames, continuation_addrs
+
+
 class RustErrorRecord:
     """Container for an errored state, matching angr's ErrorRecord interface.
 
@@ -1133,135 +1290,40 @@ class RustExplorationManager(
             cache_dir = self._disk_cache_dir()
             os.makedirs(cache_dir, exist_ok=True)
 
-            arch = self._project.arch
             page_size = PAGE_SIZE
-            data = {'addr': state.addr, 'registers': {}, 'stack_page': None,
-                    'continuation_addrs': [], 'batch_pages': [], 'lazy_regions': []}
+            loader = self._project.loader
 
-            # Extract concrete register values
-            for reg_name in arch.register_names.values():
-                try:
-                    val = getattr(state.regs, reg_name)
-                    if not val.symbolic:
-                        data['registers'][reg_name] = state.solver.eval(val)
-                except (AttributeError, KeyError, TypeError, ValueError):
-                    pass
+            stack_page, stack_lazy_region = _extract_stack_page(state, page_size)
+            batch_pages, loader_lazy_regions, mapped_page_addrs = _extract_loader_pages(
+                loader, page_size)
 
-            # Extract stack page at SP (always concretize, even if symbolic)
-            try:
-                sp = state.solver.eval(state.regs.sp)
-                sp_page = sp & ~(page_size - 1)
-                page_val = state.memory.load(
-                    sp_page, page_size, endness='Iend_BE',
-                    inspect=False, disable_actions=True)
-                concrete = state.solver.eval(page_val).to_bytes(page_size, 'big')
-                data['stack_page'] = (sp_page, concrete)
-                # Store stack lazy region
-                stack_base = (sp & ~(page_size - 1)) + page_size
-                stack_start = stack_base - STACK_SIZE
-                data['lazy_regions'].append((stack_start, STACK_SIZE))
-            except (AttributeError, TypeError, ValueError):
-                pass
+            lazy_regions = []
+            if stack_lazy_region is not None:
+                lazy_regions.append(stack_lazy_region)
+            lazy_regions.extend(loader_lazy_regions)
 
-            # Extract loader pages (same logic as _sync_memory_to_rust)
-            mapped_page_addrs = set()
-            for obj in self._project.loader.all_objects:
-                try:
-                    if hasattr(obj, 'segments') and obj.segments:
-                        ranges = [(s.min_addr & ~(page_size - 1),
-                                   (s.max_addr + page_size) & ~(page_size - 1))
-                                  for s in obj.segments if s.memsize > 0]
-                    else:
-                        ranges = [(obj.min_addr & ~(page_size - 1),
-                                   (obj.max_addr + page_size) & ~(page_size - 1))]
-                    for start_page, end_page in ranges:
-                        for page_addr in range(start_page, end_page, page_size):
-                            if page_addr in mapped_page_addrs:
-                                continue
-                            try:
-                                page_data = self._project.loader.memory.load(page_addr, page_size)
-                                if page_data and len(page_data) == page_size:
-                                    data['batch_pages'].append((page_addr, bytes(page_data), 7))
-                                    mapped_page_addrs.add(page_addr)
-                            except (KeyError, TypeError, ValueError):
-                                pass
-                    # Lazy region for this object
-                    region_start = obj.min_addr & ~(page_size - 1)
-                    region_end = (obj.max_addr + page_size) & ~(page_size - 1)
-                    if region_end - region_start > 0:
-                        data['lazy_regions'].append((region_start, region_end - region_start))
-                except (AttributeError, KeyError, TypeError):
-                    pass
+            callstack_frames, continuation_addrs = _extract_callstack_snapshot(state)
 
-            # Section overlay: capture post-init section data (GOT fixups etc.)
-            section_patches = []
-            for obj in self._project.loader.all_objects:
-                if obj.binary is None or not hasattr(obj, 'sections'):
-                    continue
-                for section in obj.sections:
-                    if 0 < section.memsize < MAX_OVERLAY_SECTION_SIZE:
-                        try:
-                            val = state.memory.load(
-                                section.min_addr, section.memsize,
-                                endness='Iend_BE', inspect=False, disable_actions=True)
-                            if not val.symbolic:
-                                section_patches.append(
-                                    (section.min_addr,
-                                     state.solver.eval(val).to_bytes(section.memsize, 'big')))
-                        except (AttributeError, TypeError, ValueError):
-                            pass
-            data['section_patches'] = section_patches
-
-            # Extract non-loader memory pages created during init
-            # (e.g., ctype tables written by SimProcedures at addresses like 0xc0000000).
-            # These pages are not in any loader segment but are needed for correct
-            # exploration when the found state is passed to a new RustExplorationManager.
-            extra_pages = []
-            if hasattr(state.memory, '_pages'):
-                mem_page_size = getattr(state.memory, 'page_size', page_size)
-                for page_num in state.memory._pages:
-                    page_addr = page_num * mem_page_size
-                    if page_addr in mapped_page_addrs:
-                        continue  # Already in loader pages
-                    if data.get('stack_page') and page_addr == data['stack_page'][0]:
-                        continue  # Already saved as stack page
-                    page = state.memory._pages[page_num]
-                    if page is None:
-                        continue
-                    try:
-                        page_data = page.concrete_load(0, mem_page_size)
-                        if any(page_data):  # Skip all-zero pages
-                            extra_pages.append((page_addr, bytes(page_data)))
-                    except (AttributeError, TypeError, ValueError):
-                        pass
-            data['extra_pages'] = extra_pages
-
-            # Extract callstack frames for restoration
-            callstack_frames = []
-            frame = state.callstack.top if hasattr(state, 'callstack') else None
-            while frame is not None:
-                pdata = getattr(frame, 'procedure_data', None)
-                frame_data = {
-                    'call_site_addr': frame.call_site_addr,
-                    'func_addr': frame.func_addr,
-                    'ret_addr': frame.ret_addr,
-                    'stack_ptr': frame.stack_ptr,
-                }
-                if pdata is not None and len(pdata) >= 5:
-                    try:
-                        data.setdefault('continuation_addrs', []).append(int(pdata[4]))
-                    except (TypeError, ValueError):
-                        pass
-                callstack_frames.append(frame_data)
-                frame = getattr(frame, 'next', None)
-            data['callstack_frames'] = callstack_frames
+            data = {
+                'addr': state.addr,
+                'registers': _extract_register_snapshot(state, self._project.arch),
+                'stack_page': stack_page,
+                'continuation_addrs': continuation_addrs,
+                'batch_pages': batch_pages,
+                'lazy_regions': lazy_regions,
+                'section_patches': _extract_section_patches(state, loader),
+                'extra_pages': _extract_extra_pages(
+                    state, page_size, mapped_page_addrs,
+                    stack_page[0] if stack_page is not None else None),
+                'callstack_frames': callstack_frames,
+            }
 
             cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
             with open(cache_path, 'wb') as f:
                 pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
             l.debug(f"Saved init cache to {cache_path} "
                     f"({os.path.getsize(cache_path)} bytes, "
-                    f"{len(data['batch_pages'])} pages)")
+                    f"{len(batch_pages)} pages)")
         except Exception as e:
             l.debug(f"Failed to save disk cache: {e}")
 
