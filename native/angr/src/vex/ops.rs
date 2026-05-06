@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::symbolic::{BVOp, FloatOpKind, FloatPrec, RustBV, SymContext};
 
-use super::ir::{IROp, IRType};
+use super::ir::{FCmpKind, IROp, IRType};
 
 /// Map a VEX float `IRType` to a Z3 FP precision.
 #[inline]
@@ -236,6 +236,11 @@ impl VEXOps {
             IROp::FCmpEQ(ty) => Self::float_cmp_eq(left, right, ty, ctx),
             IROp::FCmpLT(ty) => Self::float_cmp_lt(left, right, ty, ctx),
             IROp::FCmpLE(ty) => Self::float_cmp_le(left, right, ty, ctx),
+
+            IROp::FCmpScalarLane { kind, ty } => {
+                Self::vec_float_scalar_lane_cmp(left, right, kind, ty, ctx)
+            }
+            IROp::FComCC(ty) => Self::float_com_cc(left, right, ty, ctx),
 
             // Float rounding with mode (left = rounding mode, right = value)
             IROp::RoundF32toInt => Self::round_f32_to_int_with_mode(left, right, ctx),
@@ -2045,6 +2050,134 @@ impl VEXOps {
         }
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
         Ok(build_float_expr(FloatOpKind::CmpLe, prec, vec![left, right]))
+    }
+
+    /// SSE scalar-lane FP compare (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}).
+    /// Operates on lane 0 only; result is V128 with lane 0 set to all-1s on
+    /// true and 0 on false. Upper lanes pass through from `left`.
+    fn vec_float_scalar_lane_cmp(
+        left: RustBV,
+        right: RustBV,
+        kind: FCmpKind,
+        ty: IRType,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        let lane_bits = prec.bits();
+        debug_assert_eq!(left.width(), 128);
+        debug_assert_eq!(right.width(), 128);
+        let l_lo = left.extract(lane_bits - 1, 0, ctx);
+        let r_lo = right.extract(lane_bits - 1, 0, ctx);
+        let upper = left.extract(127, lane_bits, ctx);
+
+        let lane_mask: u128 = if lane_bits == 32 {
+            0xFFFF_FFFF
+        } else {
+            0xFFFF_FFFF_FFFF_FFFF
+        };
+
+        // Concrete fast path
+        if let (Some(l), Some(r)) = (l_lo.as_u128(), r_lo.as_u128()) {
+            let truth = match (ty, kind) {
+                (IRType::F32, FCmpKind::Eq) => f32::from_bits(l as u32) == f32::from_bits(r as u32),
+                (IRType::F32, FCmpKind::Lt) => f32::from_bits(l as u32) <  f32::from_bits(r as u32),
+                (IRType::F32, FCmpKind::Le) => f32::from_bits(l as u32) <= f32::from_bits(r as u32),
+                (IRType::F32, FCmpKind::Un) => {
+                    f32::from_bits(l as u32).is_nan() || f32::from_bits(r as u32).is_nan()
+                }
+                (IRType::F64, FCmpKind::Eq) => f64::from_bits(l as u64) == f64::from_bits(r as u64),
+                (IRType::F64, FCmpKind::Lt) => f64::from_bits(l as u64) <  f64::from_bits(r as u64),
+                (IRType::F64, FCmpKind::Le) => f64::from_bits(l as u64) <= f64::from_bits(r as u64),
+                (IRType::F64, FCmpKind::Un) => {
+                    f64::from_bits(l as u64).is_nan() || f64::from_bits(r as u64).is_nan()
+                }
+                _ => return Err(OpError::InvalidFloatType(ty)),
+            };
+            let lane_val = if truth { lane_mask } else { 0 };
+            let lane = RustBV::concrete(lane_val, lane_bits);
+            return Ok(upper.concat_into(lane, ctx));
+        }
+
+        // Symbolic path: build 1-bit compare, then sign-extend to lane_bits
+        // (sign-extend turns 1 → all-1s, 0 → all-0s).
+        let cmp_1bit = match kind {
+            FCmpKind::Eq => build_float_expr(FloatOpKind::CmpEq, prec, vec![l_lo, r_lo]),
+            FCmpKind::Lt => build_float_expr(FloatOpKind::CmpLt, prec, vec![l_lo, r_lo]),
+            FCmpKind::Le => build_float_expr(FloatOpKind::CmpLe, prec, vec![l_lo, r_lo]),
+            FCmpKind::Un => {
+                // IEEE 754: NaN != NaN. So `(x == x)` is false iff x is NaN.
+                // un = NOT(l_eq_l) OR NOT(r_eq_r)
+                let l_eq_l = build_float_expr(
+                    FloatOpKind::CmpEq, prec, vec![l_lo.clone(), l_lo],
+                );
+                let r_eq_r = build_float_expr(
+                    FloatOpKind::CmpEq, prec, vec![r_lo.clone(), r_lo],
+                );
+                l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx)
+            }
+        };
+        let lane = cmp_1bit.sign_extend_into(lane_bits, ctx);
+        Ok(upper.concat_into(lane, ctx))
+    }
+
+    /// x87 FCOM-style compare (Iop_CmpF32, Iop_CmpF64). Returns I32 with the
+    /// VEX-defined encoding:
+    ///   0x40 = EQ, 0x01 = LT, 0x00 = GT, 0x45 = UN (either operand is NaN).
+    fn float_com_cc(
+        left: RustBV,
+        right: RustBV,
+        ty: IRType,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        // Concrete fast path
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let result: u128 = match ty {
+                IRType::F32 => {
+                    let lf = f32::from_bits(l as u32);
+                    let rf = f32::from_bits(r as u32);
+                    if lf.is_nan() || rf.is_nan() { 0x45 }
+                    else if lf <  rf { 0x01 }
+                    else if lf == rf { 0x40 }
+                    else { 0x00 }
+                }
+                IRType::F64 => {
+                    let lf = f64::from_bits(l as u64);
+                    let rf = f64::from_bits(r as u64);
+                    if lf.is_nan() || rf.is_nan() { 0x45 }
+                    else if lf <  rf { 0x01 }
+                    else if lf == rf { 0x40 }
+                    else { 0x00 }
+                }
+                _ => return Err(OpError::InvalidFloatType(ty)),
+            };
+            return Ok(RustBV::concrete(result, 32));
+        }
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+
+        // Symbolic: compose un/lt/eq predicates, then nest ITEs.
+        // un  = NOT(l == l) OR NOT(r == r)   [IEEE 754 NaN check]
+        // lt  = l < r                         [false if either is NaN]
+        // eq  = l == r                        [false if either is NaN]
+        let l_eq_l = build_float_expr(
+            FloatOpKind::CmpEq, prec, vec![left.clone(), left.clone()],
+        );
+        let r_eq_r = build_float_expr(
+            FloatOpKind::CmpEq, prec, vec![right.clone(), right.clone()],
+        );
+        let un = l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx);
+        let lt = build_float_expr(
+            FloatOpKind::CmpLt, prec, vec![left.clone(), right.clone()],
+        );
+        let eq = build_float_expr(FloatOpKind::CmpEq, prec, vec![left, right]);
+
+        let v_un = RustBV::concrete(0x45, 32);
+        let v_lt = RustBV::concrete(0x01, 32);
+        let v_eq = RustBV::concrete(0x40, 32);
+        let v_gt = RustBV::concrete(0x00, 32);
+        // un ? 0x45 : (lt ? 0x01 : (eq ? 0x40 : 0x00))
+        let inner = eq.ite_into(v_eq, v_gt, ctx);
+        let middle = lt.ite_into(v_lt, inner, ctx);
+        Ok(un.ite_into(v_un, middle, ctx))
     }
 
     // Float conversions for concrete values.
@@ -3895,5 +4028,183 @@ mod tests {
                 lane
             );
         }
+    }
+
+    // ---- FCmpScalarLane (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}) ----
+
+    fn make_v128_lane0(lane0: u128, upper96: u128) -> u128 {
+        debug_assert!(lane0 <= 0xFFFF_FFFF);
+        (upper96 << 32) | lane0
+    }
+    fn make_v128_lane0_64(lane0: u128, upper64: u128) -> u128 {
+        debug_assert!(lane0 <= 0xFFFF_FFFF_FFFF_FFFF);
+        (upper64 << 64) | lane0
+    }
+
+    #[test]
+    fn test_fcmp_scalar_lane_eq_f32_concrete_true() {
+        // CMPEQSS: lane0(left)==lane0(right) → 0xFFFFFFFF in lane0; upper from left.
+        let ctx = SymContext::new_mock();
+        let upper = 0xDEAD_BEEF_DEAD_BEEF_DEAD_BEEFu128;
+        let l = RustBV::concrete(
+            make_v128_lane0(2.0f32.to_bits() as u128, upper), 128);
+        let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
+        let res = VEXOps::binop(
+            IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 },
+            l, r, &ctx,
+        ).unwrap();
+        assert_eq!(res.width(), 128);
+        let v = res.as_u128().expect("concrete result");
+        assert_eq!(v & 0xFFFF_FFFF, 0xFFFF_FFFF, "lane0 should be all-1s");
+        assert_eq!(v >> 32, upper, "upper96 must passthrough from left");
+    }
+
+    #[test]
+    fn test_fcmp_scalar_lane_eq_f32_concrete_false() {
+        let ctx = SymContext::new_mock();
+        let l = RustBV::concrete(1.0f32.to_bits() as u128, 128);
+        let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
+        let res = VEXOps::binop(
+            IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 },
+            l, r, &ctx,
+        ).unwrap();
+        let v = res.as_u128().unwrap();
+        assert_eq!(v & 0xFFFF_FFFF, 0, "lane0 should be 0 on false");
+    }
+
+    #[test]
+    fn test_fcmp_scalar_lane_lt_f32_concrete() {
+        let ctx = SymContext::new_mock();
+        let l = RustBV::concrete(1.0f32.to_bits() as u128, 128);
+        let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
+        let res = VEXOps::binop(
+            IROp::FCmpScalarLane { kind: FCmpKind::Lt, ty: IRType::F32 },
+            l, r, &ctx,
+        ).unwrap();
+        assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF, 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn test_fcmp_scalar_lane_le_f64_concrete_eq() {
+        let ctx = SymContext::new_mock();
+        let upper = 0x123456789ABCDEF0u128;
+        let l = RustBV::concrete(
+            make_v128_lane0_64(2.5f64.to_bits() as u128, upper), 128);
+        let r = RustBV::concrete(2.5f64.to_bits() as u128, 128);
+        let res = VEXOps::binop(
+            IROp::FCmpScalarLane { kind: FCmpKind::Le, ty: IRType::F64 },
+            l, r, &ctx,
+        ).unwrap();
+        let v = res.as_u128().unwrap();
+        assert_eq!(v & 0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF);
+        assert_eq!(v >> 64, upper, "upper64 passthrough from left");
+    }
+
+    #[test]
+    fn test_fcmp_scalar_lane_un_f32_concrete_nan() {
+        // CMPUNORD: returns true if either operand is NaN.
+        let ctx = SymContext::new_mock();
+        let nan = f32::NAN.to_bits() as u128;
+        let l = RustBV::concrete(nan, 128);
+        let r = RustBV::concrete(1.0f32.to_bits() as u128, 128);
+        let res = VEXOps::binop(
+            IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F32 },
+            l, r, &ctx,
+        ).unwrap();
+        assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF, 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn test_fcmp_scalar_lane_un_f64_concrete_ordered() {
+        // Both ordered → CMPUNORD returns 0.
+        let ctx = SymContext::new_mock();
+        let l = RustBV::concrete(1.0f64.to_bits() as u128, 128);
+        let r = RustBV::concrete(2.0f64.to_bits() as u128, 128);
+        let res = VEXOps::binop(
+            IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F64 },
+            l, r, &ctx,
+        ).unwrap();
+        assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF_FFFF_FFFF, 0);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fcmp_scalar_lane_eq_f32_symbolic() {
+        // Symbolic: constrain low32(result)==0xFFFFFFFF given right=2.0 and
+        // some symbolic left → solver must pick left.lane0 == 2.0.
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let l = RustBV::symbolic(&ctx, "fcmp_lane_l", 128);
+        let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
+        let res = VEXOps::binop(
+            IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 },
+            l.clone(), r, &ctx,
+        ).unwrap();
+        assert_eq!(res.width(), 128);
+        let lo32 = res.extract(31, 0, &ctx);
+        let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
+        ctx.add_constraint(lo32.to_z3_ast()._eq(&true_mask.to_z3_ast()));
+        assert!(ctx.is_sat(), "expected SAT after FCmpScalarLane Eq mask=all1s");
+
+        let model = ctx.eval(&l).expect("eval(l) returned None");
+        let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
+        assert!((lane0 - 2.0).abs() < 1e-6, "expected lane0==2.0, got {}", lane0);
+    }
+
+    // ---- FComCC (Iop_CmpF32, Iop_CmpF64, x87 FCOM) ----
+
+    #[test]
+    fn test_fcom_cc_f32_concrete_eq() {
+        let ctx = SymContext::new_mock();
+        let l = RustBV::concrete(2.5f32.to_bits() as u128, 32);
+        let r = RustBV::concrete(2.5f32.to_bits() as u128, 32);
+        let res = VEXOps::binop(IROp::FComCC(IRType::F32), l, r, &ctx).unwrap();
+        assert_eq!(res.width(), 32);
+        assert_eq!(res.as_u128().unwrap(), 0x40);
+    }
+
+    #[test]
+    fn test_fcom_cc_f32_concrete_lt() {
+        let ctx = SymContext::new_mock();
+        let l = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let r = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+        let res = VEXOps::binop(IROp::FComCC(IRType::F32), l, r, &ctx).unwrap();
+        assert_eq!(res.as_u128().unwrap(), 0x01);
+    }
+
+    #[test]
+    fn test_fcom_cc_f64_concrete_gt() {
+        let ctx = SymContext::new_mock();
+        let l = RustBV::concrete(3.0f64.to_bits() as u128, 64);
+        let r = RustBV::concrete(2.0f64.to_bits() as u128, 64);
+        let res = VEXOps::binop(IROp::FComCC(IRType::F64), l, r, &ctx).unwrap();
+        assert_eq!(res.as_u128().unwrap(), 0x00);
+    }
+
+    #[test]
+    fn test_fcom_cc_f64_concrete_unordered() {
+        let ctx = SymContext::new_mock();
+        let l = RustBV::concrete(f64::NAN.to_bits() as u128, 64);
+        let r = RustBV::concrete(1.0f64.to_bits() as u128, 64);
+        let res = VEXOps::binop(IROp::FComCC(IRType::F64), l, r, &ctx).unwrap();
+        assert_eq!(res.as_u128().unwrap(), 0x45);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fcom_cc_symbolic_lt() {
+        // Symbolic: constrain FComCC(x, 5.0) == 0x01 → x must be < 5.0 (and not NaN).
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "fcom_x", 64);
+        let five = RustBV::concrete(5.0f64.to_bits() as u128, 64);
+        let res = VEXOps::binop(IROp::FComCC(IRType::F64), x.clone(), five, &ctx).unwrap();
+        assert_eq!(res.width(), 32);
+        let want = RustBV::concrete(0x01, 32);
+        ctx.add_constraint(res.to_z3_ast()._eq(&want.to_z3_ast()));
+        assert!(ctx.is_sat(), "expected SAT for FComCC(x, 5.0) == LT");
+        let model_x = ctx.eval(&x).expect("eval(x) None");
+        let xf = f64::from_bits(model_x as u64);
+        assert!(!xf.is_nan() && xf < 5.0, "expected x < 5.0 and not NaN, got {}", xf);
     }
 }

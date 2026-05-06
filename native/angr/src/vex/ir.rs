@@ -495,6 +495,15 @@ impl IRType {
     }
 }
 
+/// Kind of SSE scalar-lane FP compare. `Un` detects NaN (unordered).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FCmpKind {
+    Eq,
+    Lt,
+    Le,
+    Un,
+}
+
 /// IR operations.
 ///
 /// Unlike libVEX which has ~200 separate opcodes (e.g., Iop_Add8, Iop_Add16, ...),
@@ -584,6 +593,17 @@ pub enum IROp {
     FCmpEQ(IRType),
     FCmpLT(IRType),
     FCmpLE(IRType),
+
+    /// SSE scalar-lane FP compare (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}).
+    /// Operates on lane 0 only; result is V128 with lane 0 set to all-1s
+    /// (e.g. 0xFFFFFFFF for F32, 0xFFFFFFFFFFFFFFFF for F64) on true and 0
+    /// on false. Upper lanes are passed through from the left operand.
+    /// `Un` is the unordered (NaN-detect) compare.
+    FCmpScalarLane { kind: FCmpKind, ty: IRType },
+
+    /// x87 FCOM-style compare (Iop_CmpF32/F64/F128).
+    /// Returns I32 encoded as 0x00 = GT, 0x01 = LT, 0x40 = EQ, 0x45 = UN.
+    FComCC(IRType),
 
     // Float conversions
     F32toF64,
@@ -801,6 +821,13 @@ impl IROp {
             | IROp::FMSub(t) => Some(*t),
 
             IROp::FCmpEQ(_) | IROp::FCmpLT(_) | IROp::FCmpLE(_) => Some(IRType::I1),
+
+            // Scalar-lane SSE compares write into a V128 register (lane 0 mask
+            // + upper lanes from `left`).
+            IROp::FCmpScalarLane { .. } => Some(IRType::V128),
+
+            // x87 FCOM-style compare encodes the result as a 32-bit value.
+            IROp::FComCC(_) => Some(IRType::I32),
 
             // Scalar-in-vector float ops return V128
             IROp::VFAddS { elem: _elem } | IROp::VFSubS { elem: _elem } | IROp::VFMulS { elem: _elem } | IROp::VFDivS { elem: _elem }

@@ -3,7 +3,7 @@
 //! pyvex uses string opcodes like "Iop_Add32" while Rust uses parameterized
 //! operations like `IROp::Add(IRType::I32)`. This module provides the translation.
 
-use super::ir::{IROp, IRType};
+use super::ir::{FCmpKind, IROp, IRType};
 
 /// Convert a pyvex operation string to Rust IROp.
 ///
@@ -507,13 +507,20 @@ fn parse_float(op_str: &str) -> Option<IROp> {
         "Iop_SetV128lo32" => Some(IROp::SetV128lo32),
         "Iop_SetV128lo64" => Some(IROp::SetV128lo64),
 
-        // FP comparisons
-        "Iop_CmpEQ32F0x4" | "Iop_CmpF32" => Some(IROp::FCmpEQ(IRType::F32)),
-        "Iop_CmpEQ64F0x2" | "Iop_CmpF64" => Some(IROp::FCmpEQ(IRType::F64)),
-        "Iop_CmpLT32F0x4" => Some(IROp::FCmpLT(IRType::F32)),
-        "Iop_CmpLT64F0x2" => Some(IROp::FCmpLT(IRType::F64)),
-        "Iop_CmpLE32F0x4" => Some(IROp::FCmpLE(IRType::F32)),
-        "Iop_CmpLE64F0x2" => Some(IROp::FCmpLE(IRType::F64)),
+        // FP comparisons (scalar I1 result — used internally and for ccall lifts)
+        "Iop_CmpF32" => Some(IROp::FComCC(IRType::F32)),
+        "Iop_CmpF64" => Some(IROp::FComCC(IRType::F64)),
+
+        // SSE scalar-lane compares: lane 0 → all-1s/0 mask, upper lanes pass-through.
+        // Result type is V128 — distinct from the I1-returning FCmpEQ/LT/LE.
+        "Iop_CmpEQ32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 }),
+        "Iop_CmpEQ64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F64 }),
+        "Iop_CmpLT32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Lt, ty: IRType::F32 }),
+        "Iop_CmpLT64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Lt, ty: IRType::F64 }),
+        "Iop_CmpLE32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Le, ty: IRType::F32 }),
+        "Iop_CmpLE64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Le, ty: IRType::F64 }),
+        "Iop_CmpUN32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F32 }),
+        "Iop_CmpUN64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F64 }),
 
         // FP conversions
         "Iop_F32toF64" => Some(IROp::F32toF64),
