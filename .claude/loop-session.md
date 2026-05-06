@@ -1,47 +1,44 @@
-# Loop session notes (2026-05-06, eighty-ninth loop session — DONE)
+# Loop session notes (2026-05-06, ninetieth loop session — DONE for step 1)
 
-## Status: COMPLETE — angr-hnd4 closed
+## Task: angr-0lre — Split memory.rs into focused modules (in progress)
 
-Task: Audit/remove unused memory_store_ast callback hook.
+This session: extracted `MemoryPage` + `Permission` + page constants
+to `native/angr/src/memory/page.rs`. First of several incremental
+splits the bead calls for. The bead remains open; future sessions can
+extract `symbolic_objects.rs`, `ite_builder.rs`, `concretize_glue.rs`.
 
 ## Outcome
 
-Removed `memory_load_ast` and `memory_store_ast` from PythonCallbacks.
-Both hooks were dead — setters never called from any Python file, so
-the fields were always `None`. Their callsites silently no-op'd
-(store) or returned zeros (load) when unset — strictly worse than
-failing loud.
+- `native/angr/src/memory.rs` (3479 lines) → `native/angr/src/memory/mod.rs` (3237 lines)
+- New `native/angr/src/memory/page.rs` (251 lines) holds `Permission`,
+  `MemoryPage`, `PAGE_SIZE`, `PAGE_MASK`, `BITMAP_WORDS`, `BITMAP_BITS_PER_WORD`.
+- `mod.rs` does `pub use page::{...}` so all 27 dependent files
+  (`crate::memory::Permission`, `crate::memory::PAGE_SIZE`, etc.) still resolve.
+- `BITMAP_BITS_PER_WORD` stays private to `page.rs` (only used inside MemoryPage).
+- Removed unused `use std::sync::Arc` from mod.rs (Arc only appeared in a comment after move).
 
-## Files changed
+## Tests / build
 
-- `native/angr/src/callbacks.rs`: removed both fields, both setters,
-  both call methods (-101 lines), updated traverse_fields/clear_fields
-  field lists.
-- `native/angr/src/interpreter_cb/statements.rs:1179-1188`: replaced
-  legacy fallback with `Err(CbExecutionError::Unsupported(...))`.
-- `native/angr/src/interpreter_cb/expressions.rs:194-243`: removed
-  legacy fallback (50 lines), replaced with explicit Unsupported error
-  when `memory_load_symbolic_full` is not set.
+- `cargo check --release` clean
+- `cargo build --release` clean
+- 243/243 tests pass (`pytest tests/engines/test_rust_exploration.py`)
+- fauxware benchmark: 0.35s, finds SOSNEAKY (matches baseline)
 
-Net diff: -158 +10. Tests: 243/243 passing.
+## Build env note (still applies)
 
-## Bonus finding (saved as memories)
-
-While auditing, found that BOTH `memory_store_symbolic_full` and
-`memory_load_symbolic_full` are ALSO never set from Python code —
-only `memory_store_symbolic_value` is wired (rust_manager.py:711).
-This means any TooLarge ConcretizationResult on store/load now hits
-the new Unsupported error. Saved as
-`invariant-symbolic-full-callbacks-unset` for angr-pufm future work.
-
-Also saved `avoid-silent-no-op-callback-fallbacks` as an anti-pattern
-memory.
-
-## Build env note
-
-`pip install -e .` is broken (pip 24.0 ImportError on pip._vendor.resolvelib).
-Used the documented direct-cargo-build workaround:
+`pip install -e .` is broken on this venv. Workaround used:
 `Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --release` then
 `cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
 
-Commit: f4c931eff
+## Files
+
+- `native/angr/src/memory/mod.rs` (renamed from memory.rs, -245 lines)
+- `native/angr/src/memory/page.rs` (new, +251 lines)
+
+## Bead state
+
+`angr-0lre` remains open — this is one of multiple planned extractions.
+Next slice candidates per bead description:
+- `memory/symbolic_objects.rs` — symbolic_objects, symbolic_spans, span merge
+- `memory/ite_builder.rs` — build_ite_tree_inner, build_balanced_ite_load_after_prep
+- `memory/concretize_glue.rs` — prepare_addresses_for_ite, prepare_strided_region
