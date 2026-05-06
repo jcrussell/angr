@@ -486,58 +486,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(dividend.width(), 64);
         debug_assert_eq!(divisor.width(), 32);
-
-        // For concrete values, compute directly
-        if let (Some(dvd), Some(dvs)) = (dividend.as_u128(), divisor.as_u128()) {
-            let dvd = dvd as u64;
-            let dvs = dvs as u32;
-
-            if dvs == 0 {
-                // Division by zero - return 0 (caller should have checked)
-                return Ok(RustBV::concrete(0, 64));
-            }
-
-            let (quotient, remainder) = if signed {
-                // Signed division
-                let dvd_signed = dvd as i64;
-                let dvs_signed = dvs as i32 as i64;
-                let q = (dvd_signed / dvs_signed) as u32;
-                let r = (dvd_signed % dvs_signed) as u32;
-                (q, r)
-            } else {
-                // Unsigned division
-                let q = (dvd / dvs as u64) as u32;
-                let r = (dvd % dvs as u64) as u32;
-                (q, r)
-            };
-
-            // Pack: low 32 bits = quotient, high 32 bits = remainder
-            let result = (quotient as u64) | ((remainder as u64) << 32);
-            return Ok(RustBV::concrete(result as u128, 64));
-        }
-
-        // Symbolic case: extend divisor to 64 bits, do full-width div/mod,
-        // then pack the low 32 bits of each into the result. Z3 defines
-        // div/mod by zero (udiv→all-ones, urem→dividend, sdiv→±1, srem→dividend),
-        // matching claripy's behavior.
-        let divisor_64 = if signed {
-            divisor.sign_extend_into(64, ctx)
-        } else {
-            divisor.zero_extend_into(64, ctx)
-        };
-        let quotient_64 = if signed {
-            dividend.sdiv(&divisor_64, ctx)
-        } else {
-            dividend.udiv(&divisor_64, ctx)
-        };
-        let remainder_64 = if signed {
-            dividend.srem(&divisor_64, ctx)
-        } else {
-            dividend.urem(&divisor_64, ctx)
-        };
-        let quotient_32 = quotient_64.extract_into(31, 0, ctx);
-        let remainder_32 = remainder_64.extract_into(31, 0, ctx);
-        Ok(remainder_32.concat_into(quotient_32, ctx))
+        Self::divmod_double_to_single(dividend, divisor, signed, ctx)
     }
 
     /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit result.
@@ -550,54 +499,109 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(dividend.width(), 128);
         debug_assert_eq!(divisor.width(), 64);
+        Self::divmod_double_to_single(dividend, divisor, signed, ctx)
+    }
 
-        // For concrete values, compute directly
+    /// Generic DivMod: dividend (width = `2 * divisor.width()`) divided by
+    /// divisor; returns a value of the dividend's width packed as
+    /// `low half = quotient, high half = remainder`. Both halves are the
+    /// divisor's width.
+    ///
+    /// Z3 defines div/mod by zero totally (udiv→all-ones, urem→dividend,
+    /// sdiv→±1, srem→dividend), matching claripy, so the symbolic path
+    /// needs no explicit zero guard. The concrete path returns 0 on a
+    /// zero divisor — callers are expected to have checked.
+    fn divmod_double_to_single(
+        dividend: RustBV,
+        divisor: RustBV,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let dividend_w = dividend.width();
+        let divisor_w = divisor.width();
+        debug_assert_eq!(dividend_w, divisor_w * 2);
+
         if let (Some(dvd), Some(dvs)) = (dividend.as_u128(), divisor.as_u128()) {
-            let dvs = dvs as u64;
+            let dvd = dvd & Self::low_bit_mask_u128(dividend_w);
+            let dvs = dvs & Self::low_bit_mask_u128(divisor_w);
 
             if dvs == 0 {
-                // Division by zero - return 0 (caller should have checked)
-                return Ok(RustBV::concrete(0, 128));
+                return Ok(RustBV::concrete(0, dividend_w));
             }
 
+            let half_mask = Self::low_bit_mask_u128(divisor_w);
             let (quotient, remainder) = if signed {
-                // Signed division: treat as i128 / i64
-                let dvd_signed = dvd as i128;
-                let dvs_signed = dvs as i64 as i128;
-                let q = (dvd_signed / dvs_signed) as u64;
-                let r = (dvd_signed % dvs_signed) as u64;
+                let dvd_i = Self::sign_extend_low_to_i128(dvd, dividend_w);
+                let dvs_i = Self::sign_extend_low_to_i128(dvs, divisor_w);
+                let q = (dvd_i / dvs_i) as u128 & half_mask;
+                let r = (dvd_i % dvs_i) as u128 & half_mask;
                 (q, r)
             } else {
-                // Unsigned division: u128 / u64
-                let q = (dvd / dvs as u128) as u64;
-                let r = (dvd % dvs as u128) as u64;
-                (q, r)
+                (dvd / dvs, dvd % dvs)
             };
 
-            // Pack: low 64 bits = quotient, high 64 bits = remainder
-            let result = (quotient as u128) | ((remainder as u128) << 64);
-            return Ok(RustBV::concrete(result, 128));
+            let result = quotient | (remainder << divisor_w);
+            return Ok(RustBV::concrete(result, dividend_w));
         }
 
-        // Symbolic case: same recipe as 64→32, scaled to 128/64.
-        let divisor_128 = if signed {
-            divisor.sign_extend_into(128, ctx)
+        let divisor_full = if signed {
+            divisor.sign_extend_into(dividend_w, ctx)
         } else {
-            divisor.zero_extend_into(128, ctx)
+            divisor.zero_extend_into(dividend_w, ctx)
         };
-        let quotient_128 = if signed {
-            dividend.sdiv(&divisor_128, ctx)
+        let quotient_full = if signed {
+            dividend.sdiv(&divisor_full, ctx)
         } else {
-            dividend.udiv(&divisor_128, ctx)
+            dividend.udiv(&divisor_full, ctx)
         };
-        let remainder_128 = if signed {
-            dividend.srem(&divisor_128, ctx)
+        let remainder_full = if signed {
+            dividend.srem(&divisor_full, ctx)
         } else {
-            dividend.urem(&divisor_128, ctx)
+            dividend.urem(&divisor_full, ctx)
         };
-        let quotient_64 = quotient_128.extract_into(63, 0, ctx);
-        let remainder_64 = remainder_128.extract_into(63, 0, ctx);
-        Ok(remainder_64.concat_into(quotient_64, ctx))
+        let quotient_half = quotient_full.extract_into(divisor_w - 1, 0, ctx);
+        let remainder_half = remainder_full.extract_into(divisor_w - 1, 0, ctx);
+        Ok(remainder_half.concat_into(quotient_half, ctx))
+    }
+
+    /// Mask covering the low `width` bits of a u128.
+    #[inline]
+    fn low_bit_mask_u128(width: u32) -> u128 {
+        if width >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        }
+    }
+
+    /// Sign-extend the low `width` bits of `value` to a 128-bit signed value.
+    #[inline]
+    fn sign_extend_low_to_i128(value: u128, width: u32) -> i128 {
+        if width == 0 || width >= 128 {
+            return value as i128;
+        }
+        let shift = 128 - width;
+        ((value as i128) << shift) >> shift
+    }
+
+    /// Sign-extend the low `width` bits of `value` to 64 bits, returning the
+    /// resulting bit pattern as `u64`. Used by concrete-fast-path vector ops
+    /// that perform signed multiplication via `wrapping_mul` at u64 — only the
+    /// low `2 * width` bits of the product are kept by the caller, so any
+    /// higher-bit representation works.
+    #[inline]
+    fn sign_extend_low_to_u64(value: u128, width: u32) -> u64 {
+        if width == 0 || width >= 64 {
+            return value as u64;
+        }
+        let mask = (1u64 << width) - 1;
+        let masked = (value as u64) & mask;
+        let sign_bit = 1u64 << (width - 1);
+        if masked & sign_bit != 0 {
+            masked | !mask
+        } else {
+            masked
+        }
     }
 
     /// Vector element-wise binary operation.
@@ -689,26 +693,12 @@ impl VEXOps {
                 let l_elem = (l >> lo) & mask;
                 let r_elem = (r >> lo) & mask;
 
-                // Sign-extend to perform signed multiply
-                let l_signed = if elem_width == 32 {
-                    (l_elem as u32 as i32 as i64) as u64
-                } else if elem_width == 16 {
-                    (l_elem as u16 as i16 as i32) as u32 as u64
-                } else if elem_width == 8 {
-                    (l_elem as u8 as i8 as i16) as u16 as u64
-                } else {
-                    l_elem as u64
-                };
-
-                let r_signed = if elem_width == 32 {
-                    (r_elem as u32 as i32 as i64) as u64
-                } else if elem_width == 16 {
-                    (r_elem as u16 as i16 as i32) as u32 as u64
-                } else if elem_width == 8 {
-                    (r_elem as u8 as i8 as i16) as u16 as u64
-                } else {
-                    r_elem as u64
-                };
+                // Sign-extend each lane to 64 bits, then multiply at u64 and
+                // mask to the lane width — high bits beyond `2 * elem_width`
+                // are discarded by the mask, so any 64-bit representation
+                // matching the lane's signed value in the low bits suffices.
+                let l_signed = Self::sign_extend_low_to_u64(l_elem, elem_width);
+                let r_signed = Self::sign_extend_low_to_u64(r_elem, elem_width);
 
                 // Multiply and keep low bits
                 let product = l_signed.wrapping_mul(r_signed);
