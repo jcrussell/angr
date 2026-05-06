@@ -31,9 +31,19 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug calls
 
-# Disk cache version — increment when Rust engine changes affect init state data.
-# This ensures stale cache entries are invalidated after engine updates.
-_DISK_CACHE_VERSION = 2
+# Disk cache versioning is split across two axes so each side can invalidate
+# without forcing a full cache rebuild on the other:
+#   _RUST_CACHE_VERSION:      bump when Rust engine changes affect serialized
+#                             init state (memory page format, register values,
+#                             callstack frame layout produced by Rust).
+#   _PYTHON_METADATA_VERSION: bump when Python-side SimState attributes that
+#                             we read or restore change shape (e.g., new
+#                             callstack frame field, new register imports).
+# Both are mixed into the cache key together with the arch name, so a key
+# from a different (rust, python, arch) tuple lands at a different file and
+# is treated as a miss — never deserialized into a current-format slot.
+_RUST_CACHE_VERSION = 2
+_PYTHON_METADATA_VERSION = 1
 
 # Try to import the Rust exploration manager
 try:
@@ -308,8 +318,9 @@ class RustExplorationManager(
     _init_cache_max = 10
 
     # Class-level cache for disk cache keys (MD5 of binary content).
+    # Keyed by (binary_path, arch_name) so cross-arch lookups don't collide.
     # Avoids re-hashing the same file on every RustExplorationManager construction.
-    _disk_key_cache: Dict[str, str] = {}
+    _disk_key_cache: Dict[Tuple[str, str], str] = {}
 
     # Class-level cache for blank_state objects keyed by (binary_path, addr).
     # blank_state() is expensive (~1ms); caching + copy() is <0.1ms.
@@ -1258,24 +1269,32 @@ class RustExplorationManager(
         return False
 
     @classmethod
-    def _disk_cache_key(cls, binary_path: str) -> str:
-        """Compute a cache key from binary file content hash + engine version.
+    def _disk_cache_key(cls, binary_path: str, arch_name: str = "") -> str:
+        """Compute a cache key from binary content hash, version axes, and arch.
 
-        Results are cached per binary path to avoid re-hashing the same file
-        on every RustExplorationManager construction (~0.5ms for 100KB binary).
+        Combines (binary_hash, _RUST_CACHE_VERSION, _PYTHON_METADATA_VERSION,
+        arch_name) so a change on any axis lands at a different filename and
+        treats stale entries as misses. Results are memoized per
+        (binary_path, arch_name) to avoid re-hashing the same file on every
+        RustExplorationManager construction (~0.5ms for 100KB binary).
         """
-        cached = cls._disk_key_cache.get(binary_path)
+        memo_key = (binary_path, arch_name)
+        cached = cls._disk_key_cache.get(memo_key)
         if cached is not None:
             return cached
         try:
             h = hashlib.md5()
-            # Include cache version so engine updates invalidate stale entries
-            h.update(f"v{_DISK_CACHE_VERSION}:".encode())
+            # Mix all version dimensions into the hash so any one bumping
+            # produces a fresh key without colliding with old cache files.
+            h.update(
+                f"r{_RUST_CACHE_VERSION}:p{_PYTHON_METADATA_VERSION}:"
+                f"a{arch_name}:".encode()
+            )
             with open(binary_path, 'rb') as f:
                 for chunk in iter(lambda: f.read(65536), b''):
                     h.update(chunk)
             result = h.hexdigest()
-            cls._disk_key_cache[binary_path] = result
+            cls._disk_key_cache[memo_key] = result
             return result
         except OSError:
             return ""
@@ -1524,7 +1543,8 @@ class RustExplorationManager(
             return ''
         if self._state_has_user_symbolic(state):
             return ''
-        return self._disk_cache_key(cache_key)
+        arch_name = getattr(self._project.arch, 'name', '') or ''
+        return self._disk_cache_key(cache_key, arch_name)
 
     def _try_in_memory_init_cache(self, state: "angr.SimState",
                                   cache_key: str) -> Optional["angr.SimState"]:
