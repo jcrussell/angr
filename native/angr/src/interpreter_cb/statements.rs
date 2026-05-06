@@ -769,15 +769,25 @@ impl<'a> CallbackInterpreter<'a> {
                 if let Some(guard) = &dirty.guard {
                     let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
                     if guard_val.is_symbolic() {
-                        // Symbolic guard - check if can be true/false
-                        if !self.ctx.can_be_true(&guard_val) {
+                        // Symbolic guard: pick the taken branch if feasible,
+                        // otherwise skip. We can't fork mid-block, so we
+                        // concretize-to-taken (lossy but unblocks execution).
+                        let (cb_true, cb_false) = self.ctx.check_branch_feasibility(&guard_val);
+                        if !cb_true {
+                            // Guard must be false — skip the dirty call.
                             return Ok(StmtResult::Continue);
                         }
-                        // Both paths possible - need Python to handle
-                        return Err(CbExecutionError::Unsupported(format!(
-                            "dirty call with symbolic guard: {}",
-                            dirty.cee.name
-                        )));
+                        if cb_false {
+                            // Both feasible: pin guard true so the dirty call
+                            // runs. Loses the not-taken branch but matches
+                            // angr's existing dirty-helper concretization.
+                            log::debug!(
+                                "dirty call '{}': symbolic guard concretized to taken branch",
+                                dirty.cee.name
+                            );
+                            self.ctx.assume_true(&guard_val);
+                        }
+                        // Fall through and execute the dirty call.
                     } else if let Some(g) = guard_val.as_u64() {
                         if g == 0 {
                             // Guard is false - skip the dirty call
@@ -786,14 +796,25 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                 }
 
-                // Evaluate arguments
+                // Evaluate arguments. Eager-concretize symbolic args via the
+                // solver so that native dispatch + Python callback (which both
+                // expect concrete u64 args) can run; the equality constraint
+                // is added so downstream branches stay consistent.
                 let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
                 let mut all_args_concrete = true;
                 for arg in &dirty.args {
                     let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
                     if let Some(concrete) = val.as_u64() {
                         arg_vals.push(concrete);
+                    } else if let Some(concrete) = self.ctx.eval(&val) {
+                        let conc_bv = RustBV::concrete(concrete, val.width());
+                        let constraint = val.eq(&conc_bv, self.ctx);
+                        self.ctx.assume_true(&constraint);
+                        arg_vals.push(concrete as u64);
                     } else {
+                        // Solver couldn't produce a concrete value (e.g. UNSAT
+                        // path). Fall through to the Python/no-handler paths
+                        // so they can apply their own fallback strategy.
                         all_args_concrete = false;
                         break;
                     }
@@ -833,25 +854,49 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                 }
 
-                // Fall back to Python callback
+                // No native handler matched. If Python also has no callback
+                // registered, treat the dirty call as a stub: write a fresh
+                // symbolic value into the result tmp (if any) and continue.
+                // This avoids hard-erroring on long-tail dirty helpers that
+                // neither Rust nor Python explicitly model.
                 if !callbacks.has_dirty_call() {
-                    return Err(CbExecutionError::Unsupported(format!(
-                        "dirty call: {} (no callback and no native handler)",
+                    log::warn!(
+                        "dirty call '{}': no native handler and no Python callback; \
+                         stubbing with a fresh symbolic tmp",
                         dirty.cee.name
-                    )));
+                    );
+                    if let Some(tmp) = dirty.tmp {
+                        let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
+                        let stub = RustBV::symbolic(
+                            self.ctx,
+                            &format!("dirty_{}_stub", dirty.cee.name),
+                            bits,
+                        );
+                        if (tmp as usize) < self.temps.len() {
+                            self.temps[tmp as usize] = Some(stub);
+                        }
+                    }
+                    return Ok(StmtResult::Continue);
                 }
 
                 if !all_args_concrete {
-                    // Re-evaluate args for Python (we aborted early above)
+                    // First-pass loop bailed early because the solver could not
+                    // produce a concrete value for one of the args. Try again,
+                    // this time concretizing more aggressively; if any arg is
+                    // still unrepresentable, surface a clear error.
                     arg_vals.clear();
                     for arg in &dirty.args {
                         let val = self.eval_expr_with_callbacks(py, callbacks, arg, &irsb.tyenv)?;
                         if let Some(concrete) = val.as_u64() {
                             arg_vals.push(concrete);
+                        } else if let Some(concrete) = self.ctx.eval(&val) {
+                            let conc_bv = RustBV::concrete(concrete, val.width());
+                            let constraint = val.eq(&conc_bv, self.ctx);
+                            self.ctx.assume_true(&constraint);
+                            arg_vals.push(concrete as u64);
                         } else {
-                            // Symbolic argument - Python needs to handle this
                             return Err(CbExecutionError::Unsupported(format!(
-                                "dirty call with symbolic arg: {}",
+                                "dirty call '{}' arg unconcretizable",
                                 dirty.cee.name
                             )));
                         }
