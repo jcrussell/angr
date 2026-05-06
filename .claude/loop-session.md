@@ -1,52 +1,48 @@
-# Loop session notes (2026-05-06, sixty-third loop session — DONE)
+# Loop session notes (2026-05-06, sixty-fourth loop session — DONE)
 
-## Status: COMPLETE — angr-hqxl closed (commit cf673a5db)
+## Status: COMPLETE — angr-8e81 closed (commit ca72e2934)
 
-## Task: angr-hqxl (P2)
-Vector ops: implement div / min / max / abs / sqrt for packed SIMD.
+## Task: angr-8e81 (P2)
+Narrow exception types in _cb_memory_load (catch specific, not bare Exception)
 
 ## What was done
-Added new IROp variants for packed-SIMD ops that previously fell back to Python:
+Replaced bare `except Exception` in `_cb_memory_load` and `_cb_memory_store`
+in `angr/exploration/rust_manager.py` with:
 
-  Packed integer:
-    VMin / VMax (signed+unsigned, 8/16/32/64-bit lanes) — PMINSB/PMINUB/PMINSW/...
-    VAbs (per-lane abs; INT_MIN stays INT_MIN, matches PABS* hardware) — PABSB/W/D
+    except (SimError, ClaripyError) as e:
 
-  Packed FP (whole-vector — siblings to existing scalar-lane VF*S ops):
-    VFAdd / VFSub / VFMul / VFDiv  — ADDPS/PD, SUBPS/PD, MULPS/PD, DIVPS/PD
-    VFSqrt / VFAbs                 — SQRTPS/PD, Iop_AbsXFxN
-    VFMin / VFMax                  — MINPS/PD, MAXPS/PD
+- `SimError` is the common ancestor of `SimMemoryError` (raised by
+  `state.memory.load/store`) and `SimSolverError` (raised by
+  `state.solver.eval`).
+- `ClaripyError` covers `claripy.Extract`, `claripy.BVV`, etc.
+- The inner thunk `except Exception` was left in place — user thunks
+  can raise anything.
 
-Each has a u128 concrete fast path + per-lane symbolic fallback that
-builds Z3 BV (integer) or Z3 FP (FP) expressions and re-concats via
-the shared `concat_le_elements` helper. FP min/max uses
-ITE(FCmpLt(...), l, r) — same encoding as the existing scalar
-vec_float_scalar_lane_minmax — Z3 has no fpa_min/max ops.
+## Tests added (4, all pass)
+In `tests/engines/test_rust_exploration.py::TestErrorRecovery`:
+- `test_cb_memory_load_swallows_sim_memory_error` — SimMemoryError still
+  silently falls back to zero buffer.
+- `test_cb_memory_load_propagates_unrelated_exceptions` — RuntimeError
+  now propagates instead of being swallowed.
+- `test_cb_memory_store_swallows_sim_memory_error` — same for store.
+- `test_cb_memory_store_propagates_unrelated_exceptions` — same for store.
 
-opcode_map.rs gained ~99 lines covering all common SSE+AVX Iop_ names
-(8/16/32/64-bit element sizes, 64/128/256-bit total widths).
+Verified the propagation tests fail without the source change (held the
+test file in place and reverted only `rust_manager.py` — both new tests
+DID NOT RAISE).
 
-## Tests added (all 11 pass)
-- test_vec_int_min_signed_concrete (PMINSW)
-- test_vec_int_max_unsigned_concrete (PMAXUB)
-- test_vec_int_abs_concrete (PABSW with INT_MIN)
-- test_vec_int_max_symbolic_signed (Z3 BV path)
-- test_vec_float_add_concrete_f32x4 (ADDPS)
-- test_vec_float_div_concrete_f64x2 (DIVPD)
-- test_vec_float_sqrt_concrete_f32x4 (SQRTPS)
-- test_vec_float_abs_concrete_f32x4 (Iop_Abs32Fx4)
-- test_vec_float_max_concrete_f32x4 (MAXPS)
-- test_vec_float_min_concrete_f64x2 (MINPD)
-- test_vec_float_add_symbolic_f32x4 (Z3 FP path)
+Tests: 221 → 225 passing.
 
-vex::ops::tests: 43 → 54. Python: 221/221 still green.
+## Memory saved
+- `invariant-rust-callback-narrow-except` — fallback contract for Python
+  callbacks in RustExplorationManager: catch only (SimError,
+  ClaripyError); anything else is a bug and must propagate.
 
-## Memories saved
-- `invariant-pabs-int-min-passthrough` — PABS* preserves INT_MIN under
-  two's complement; don't add an extra ITE.
-- `invariant-vex-packed-fp-naming` — Iop_<Op>{32Fx4,64Fx2} for whole-vector
-  vs Iop_<Op>{32F0x4,64F0x2} for scalar-lane (note the '0').
-- `fp-minmax-no-z3-fpa-min` — Z3 has no fpa_min/max; use ITE(FCmpLt, l, r).
+## Follow-up bead filed
+- `angr-2f7o` (P3) — same anti-pattern exists in _cb_lift_block,
+  _cb_fetch_page, _cb_memory_store_batch, _cb_memory_load_batch,
+  _cb_batch_fetch_pages, _cb_memory_store_symbolic_value,
+  _cb_sync_constraints.
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — BIG, multi-session
@@ -58,3 +54,4 @@ vex::ops::tests: 43 → 54. Python: 221/221 still green.
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
 - angr-zrq1 (P2) Dirty-call coverage missing-handler stub
+- angr-2f7o (P3) Narrow exceptions in remaining rust_manager callbacks
