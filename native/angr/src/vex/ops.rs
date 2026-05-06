@@ -242,10 +242,10 @@ impl VEXOps {
             IROp::RoundF64toInt => Self::round_f64_to_int_with_mode(left, right, ctx),
 
             // Scalar-in-vector float operations (SSE scalar ops)
-            IROp::VFAddS { elem } => Self::vec_float_scalar_op(left, right, elem, "add", ctx),
-            IROp::VFSubS { elem } => Self::vec_float_scalar_op(left, right, elem, "sub", ctx),
-            IROp::VFMulS { elem } => Self::vec_float_scalar_op(left, right, elem, "mul", ctx),
-            IROp::VFDivS { elem } => Self::vec_float_scalar_op(left, right, elem, "div", ctx),
+            IROp::VFAddS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Add, ctx),
+            IROp::VFSubS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Sub, ctx),
+            IROp::VFMulS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Mul, ctx),
+            IROp::VFDivS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Div, ctx),
 
             // Vector bitwise
             IROp::VAnd(ty) => width_binop!(left, right, ty, and_into, ctx),
@@ -1326,52 +1326,48 @@ impl VEXOps {
 
     /// Scalar float operation in vector (SSE scalar ops like ADDSS, DIVSS).
     /// Operates on element 0 only, passes through other elements from left operand.
+    /// Only Add/Sub/Mul/Div are accepted; other kinds are a programmer error.
     #[inline]
     fn vec_float_scalar_op(
         left: RustBV,
         right: RustBV,
         elem: IRType,
-        op: &str,
+        kind: FloatOpKind,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
+        debug_assert!(
+            matches!(kind, FloatOpKind::Add | FloatOpKind::Sub | FloatOpKind::Mul | FloatOpKind::Div),
+            "vec_float_scalar_op only supports Add/Sub/Mul/Div, got {:?}",
+            kind,
+        );
 
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match elem {
                 IRType::F32 => {
-                    // Extract element 0 (lowest 32 bits)
                     let l0 = f32::from_bits(l as u32);
                     let r0 = f32::from_bits(r as u32);
-
-                    // Perform operation on element 0
-                    let res0 = match op {
-                        "add" => l0 + r0,
-                        "sub" => l0 - r0,
-                        "mul" => l0 * r0,
-                        "div" => l0 / r0,
-                        _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_scalar_{}", op))),
+                    let res0 = match kind {
+                        FloatOpKind::Add => l0 + r0,
+                        FloatOpKind::Sub => l0 - r0,
+                        FloatOpKind::Mul => l0 * r0,
+                        FloatOpKind::Div => l0 / r0,
+                        _ => unreachable!(),
                     };
-
-                    // Keep upper 96 bits from left, replace lower 32 bits with result
                     let upper = l & !0xFFFFFFFFu128;
                     upper | (res0.to_bits() as u128)
                 }
                 IRType::F64 => {
-                    // Extract element 0 (lowest 64 bits)
                     let l0 = f64::from_bits(l as u64);
                     let r0 = f64::from_bits(r as u64);
-
-                    // Perform operation on element 0
-                    let res0 = match op {
-                        "add" => l0 + r0,
-                        "sub" => l0 - r0,
-                        "mul" => l0 * r0,
-                        "div" => l0 / r0,
-                        _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_scalar_{}", op))),
+                    let res0 = match kind {
+                        FloatOpKind::Add => l0 + r0,
+                        FloatOpKind::Sub => l0 - r0,
+                        FloatOpKind::Mul => l0 * r0,
+                        FloatOpKind::Div => l0 / r0,
+                        _ => unreachable!(),
                     };
-
-                    // Keep upper 64 bits from left, replace lower 64 bits with result
                     let upper = l & !0xFFFFFFFFFFFFFFFFu128;
                     upper | (res0.to_bits() as u128)
                 }
@@ -1379,13 +1375,6 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        let kind = match op {
-            "add" => FloatOpKind::Add,
-            "sub" => FloatOpKind::Sub,
-            "mul" => FloatOpKind::Mul,
-            "div" => FloatOpKind::Div,
-            _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_scalar_{}", op))),
-        };
         Self::vec_float_scalar_lane_binop(left, right, elem, kind, ctx)
     }
 
@@ -3060,6 +3049,64 @@ mod tests {
         let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
         assert!((lane0 - 10.0).abs() < 1e-6, "4.0 * 2.5 == 10.0, got {}", lane0);
         assert_eq!(rv & !0xFFFF_FFFFu128, upper_pattern, "upper 96 bits must pass through");
+    }
+
+    /// Concrete coverage for every scalar-in-vector FP IROp at F64 precision.
+    /// The {add,sub,mul,div,sqrt,max,min} S-suffixed variants all write to
+    /// lane 0 (low 64 bits) and pass the upper 64 bits of `xmm0` through.
+    #[test]
+    fn test_vec_float_scalar_all_variants_f64() {
+        let ctx = SymContext::new_mock();
+        let upper_pattern: u128 = 0xCAFE_BABE_DEAD_BEEFu128 << 64;
+
+        let xmm0 = |lane0: f64| {
+            RustBV::concrete(upper_pattern | (lane0.to_bits() as u128), 128)
+        };
+        let xmm1 = |lane0: f64| RustBV::concrete(lane0.to_bits() as u128, 128);
+
+        let cases: Vec<(IROp, f64, f64, f64)> = vec![
+            (IROp::VFAddS { elem: IRType::F64 }, 4.0, 1.5, 5.5),
+            (IROp::VFSubS { elem: IRType::F64 }, 5.0, 1.25, 3.75),
+            (IROp::VFMulS { elem: IRType::F64 }, 3.0, 2.5, 7.5),
+            (IROp::VFDivS { elem: IRType::F64 }, 9.0, 4.0, 2.25),
+            (IROp::VFMaxS { elem: IRType::F64 }, 1.5, 2.5, 2.5),
+            (IROp::VFMinS { elem: IRType::F64 }, 1.5, 2.5, 1.5),
+        ];
+
+        for (op, l, r, expected) in cases {
+            let result = VEXOps::binop(op.clone(), xmm0(l), xmm1(r), &ctx).unwrap();
+            let rv = result.as_u128().unwrap();
+            let lane0 = f64::from_bits((rv & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
+            assert!(
+                (lane0 - expected).abs() < 1e-9,
+                "{:?}: lane0={} expected={}",
+                op,
+                lane0,
+                expected,
+            );
+            assert_eq!(
+                rv & !0xFFFF_FFFF_FFFF_FFFFu128,
+                upper_pattern,
+                "{:?}: upper 64 bits must pass through",
+                op,
+            );
+        }
+
+        // Unary VFSqrtS{F64}: sqrt(16.0) = 4.0, upper 64 bits pass through.
+        let arg = xmm0(16.0);
+        let sqrt_res = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F64 }, arg, &ctx).unwrap();
+        let sv = sqrt_res.as_u128().unwrap();
+        let sqrt_lane0 = f64::from_bits((sv & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
+        assert!(
+            (sqrt_lane0 - 4.0).abs() < 1e-9,
+            "VFSqrtS{{F64}}: lane0={} expected=4.0",
+            sqrt_lane0,
+        );
+        assert_eq!(
+            sv & !0xFFFF_FFFF_FFFF_FFFFu128,
+            upper_pattern,
+            "VFSqrtS{{F64}}: upper 64 bits must pass through",
+        );
     }
 
     /// VFMaxS concrete with lane0=NaN: Rust `>` returns false for NaN, so
