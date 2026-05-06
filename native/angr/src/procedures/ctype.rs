@@ -4,86 +4,208 @@
 //! tolower, toupper.
 //!
 //! Each takes a single int argument and returns 0 or non-zero.
-//! Symbolic arguments fall back to Python.
+//! Symbolic arguments are handled by emitting a constraint-shaped result that
+//! mirrors the concrete predicate on bits[7:0] of the argument; the operand
+//! pattern matches the underlying `as u8` truncation in the concrete path.
 
 use crate::state::RustSimState;
-use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
+use crate::symbolic::{RustBV, SymContext};
+use super::{NativeSimProcedure, ProcedureError};
 
-fn get_concrete_arg(args: &[RustBV]) -> Result<u8, ProcedureError> {
-    Ok(extract_concrete_arg(&args[0], "c")? as u8)
+/// Truncate an argument to its low 8 bits, matching the concrete `as u8` path.
+fn arg_byte(args: &[RustBV], ctx: &SymContext) -> RustBV {
+    args[0].extract(7, 0, ctx)
 }
 
-fn bool_result(state: &RustSimState, v: bool) -> Result<Option<RustBV>, ProcedureError> {
+/// Build `byte >= lo && byte <= hi` as a 1-bit BV.
+fn byte_in_range(byte: &RustBV, lo: u8, hi: u8, ctx: &SymContext) -> RustBV {
+    let lo_bv = RustBV::concrete(lo as u128, 8);
+    let hi_bv = RustBV::concrete(hi as u128, 8);
+    byte.uge(&lo_bv, ctx).and(&byte.ule(&hi_bv, ctx), ctx)
+}
+
+/// Zero-extend a 1-bit predicate to arch.bits() and return it.
+fn lift_predicate(state: &RustSimState, pred: RustBV, ctx: &SymContext) -> RustBV {
     let bits = state.arch().bits();
-    Ok(Some(RustBV::concrete(if v { 1 } else { 0 }, bits)))
+    pred.zero_extend(bits, ctx)
 }
 
-macro_rules! ctype_proc {
-    ($name:ident, $func_name:expr, $check:expr) => {
-        pub struct $name;
-
-        impl NativeSimProcedure for $name {
-            fn name(&self) -> &'static str { $func_name }
-            fn num_args(&self) -> usize { 1 }
-
-            fn call(
-                &self,
-                state: &mut RustSimState,
-                args: &[RustBV],
-            ) -> Result<Option<RustBV>, ProcedureError> {
-                let c = get_concrete_arg(args)?;
-                let result: fn(u8) -> bool = $check;
-                bool_result(state, result(c))
-            }
-        }
-    };
+/// tolower/toupper share the same pattern: if byte is in [lo, hi], shift by `delta`.
+fn case_shift(
+    state: &mut RustSimState,
+    args: &[RustBV],
+    lo: u8,
+    hi: u8,
+    delta: i8,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let bits = state.arch().bits();
+    if let Some(c) = args[0].as_u64() {
+        let b = c as u8;
+        let result = if b >= lo && b <= hi {
+            ((b as i16) + delta as i16) as u8
+        } else {
+            b
+        };
+        return Ok(Some(RustBV::concrete(result as u128, bits)));
+    }
+    let ctx = state.solver().borrow();
+    let byte = arg_byte(args, &ctx);
+    let in_range = byte_in_range(&byte, lo, hi, &ctx);
+    let delta_bv = RustBV::concrete(delta as u8 as u128, 8);
+    let shifted = byte.add(&delta_bv, &ctx);
+    let new_byte = in_range.ite(&shifted, &byte, &ctx);
+    Ok(Some(new_byte.zero_extend(bits, &ctx)))
 }
 
-ctype_proc!(NativeIsDigit, "isdigit", |c: u8| c.is_ascii_digit());
-ctype_proc!(NativeIsAlpha, "isalpha", |c: u8| c.is_ascii_alphabetic());
-ctype_proc!(NativeIsSpace, "isspace", |c: u8| c.is_ascii_whitespace());
-ctype_proc!(NativeIsAlnum, "isalnum", |c: u8| c.is_ascii_alphanumeric());
-ctype_proc!(NativeIsUpper, "isupper", |c: u8| c.is_ascii_uppercase());
-ctype_proc!(NativeIsLower, "islower", |c: u8| c.is_ascii_lowercase());
-ctype_proc!(NativeIsXdigit, "isxdigit", |c: u8| c.is_ascii_hexdigit());
-ctype_proc!(NativeIsPrint, "isprint", |c: u8| (0x20..=0x7e).contains(&c));
+/// Build a symbolic ctype predicate from a list of inclusive ranges.
+fn ranges_predicate(
+    state: &mut RustSimState,
+    args: &[RustBV],
+    ranges: &[(u8, u8)],
+    concrete_check: fn(u8) -> bool,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let bits = state.arch().bits();
+    if let Some(c) = args[0].as_u64() {
+        return Ok(Some(RustBV::concrete(
+            if concrete_check(c as u8) { 1 } else { 0 },
+            bits,
+        )));
+    }
+    let ctx = state.solver().borrow();
+    let byte = arg_byte(args, &ctx);
+    let mut pred: Option<RustBV> = None;
+    for &(lo, hi) in ranges {
+        let r = byte_in_range(&byte, lo, hi, &ctx);
+        pred = Some(match pred {
+            None => r,
+            Some(prev) => prev.or(&r, &ctx),
+        });
+    }
+    let pred = pred.expect("ranges must be non-empty");
+    Ok(Some(lift_predicate(state, pred, &ctx)))
+}
+
+/// Build a symbolic ctype predicate from an explicit set of bytes.
+fn set_predicate(
+    state: &mut RustSimState,
+    args: &[RustBV],
+    members: &[u8],
+    concrete_check: fn(u8) -> bool,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let bits = state.arch().bits();
+    if let Some(c) = args[0].as_u64() {
+        return Ok(Some(RustBV::concrete(
+            if concrete_check(c as u8) { 1 } else { 0 },
+            bits,
+        )));
+    }
+    let ctx = state.solver().borrow();
+    let byte = arg_byte(args, &ctx);
+    let mut pred: Option<RustBV> = None;
+    for &m in members {
+        let m_bv = RustBV::concrete(m as u128, 8);
+        let eq = byte.eq(&m_bv, &ctx);
+        pred = Some(match pred {
+            None => eq,
+            Some(prev) => prev.or(&eq, &ctx),
+        });
+    }
+    let pred = pred.expect("set must be non-empty");
+    Ok(Some(lift_predicate(state, pred, &ctx)))
+}
+
+pub struct NativeIsDigit;
+impl NativeSimProcedure for NativeIsDigit {
+    fn name(&self) -> &'static str { "isdigit" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        ranges_predicate(state, args, &[(b'0', b'9')], |c| c.is_ascii_digit())
+    }
+}
+
+pub struct NativeIsAlpha;
+impl NativeSimProcedure for NativeIsAlpha {
+    fn name(&self) -> &'static str { "isalpha" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        ranges_predicate(state, args, &[(b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphabetic())
+    }
+}
+
+pub struct NativeIsSpace;
+impl NativeSimProcedure for NativeIsSpace {
+    fn name(&self) -> &'static str { "isspace" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        // ASCII whitespace per is_ascii_whitespace: ' ', '\t', '\n', '\x0c', '\r'.
+        // Note: matches Rust's definition (no '\x0b'); kept consistent with the
+        // pre-existing concrete path so symbolic and concrete agree.
+        set_predicate(state, args, &[b' ', b'\t', b'\n', 0x0c, b'\r'], |c| c.is_ascii_whitespace())
+    }
+}
+
+pub struct NativeIsAlnum;
+impl NativeSimProcedure for NativeIsAlnum {
+    fn name(&self) -> &'static str { "isalnum" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        ranges_predicate(state, args, &[(b'0', b'9'), (b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphanumeric())
+    }
+}
+
+pub struct NativeIsUpper;
+impl NativeSimProcedure for NativeIsUpper {
+    fn name(&self) -> &'static str { "isupper" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        ranges_predicate(state, args, &[(b'A', b'Z')], |c| c.is_ascii_uppercase())
+    }
+}
+
+pub struct NativeIsLower;
+impl NativeSimProcedure for NativeIsLower {
+    fn name(&self) -> &'static str { "islower" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        ranges_predicate(state, args, &[(b'a', b'z')], |c| c.is_ascii_lowercase())
+    }
+}
+
+pub struct NativeIsXdigit;
+impl NativeSimProcedure for NativeIsXdigit {
+    fn name(&self) -> &'static str { "isxdigit" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        ranges_predicate(state, args, &[(b'0', b'9'), (b'A', b'F'), (b'a', b'f')], |c| c.is_ascii_hexdigit())
+    }
+}
+
+pub struct NativeIsPrint;
+impl NativeSimProcedure for NativeIsPrint {
+    fn name(&self) -> &'static str { "isprint" }
+    fn num_args(&self) -> usize { 1 }
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        ranges_predicate(state, args, &[(0x20, 0x7e)], |c| (0x20..=0x7e).contains(&c))
+    }
+}
 
 /// tolower: convert uppercase to lowercase.
 pub struct NativeToLower;
-
 impl NativeSimProcedure for NativeToLower {
     fn name(&self) -> &'static str { "tolower" }
     fn num_args(&self) -> usize { 1 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let c = get_concrete_arg(args)?;
-        let result = if c.is_ascii_uppercase() { c + 32 } else { c };
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(result as u128, bits)))
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        case_shift(state, args, b'A', b'Z', 32)
     }
 }
 
 /// toupper: convert lowercase to uppercase.
 pub struct NativeToUpper;
-
 impl NativeSimProcedure for NativeToUpper {
     fn name(&self) -> &'static str { "toupper" }
     fn num_args(&self) -> usize { 1 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let c = get_concrete_arg(args)?;
-        let result = if c.is_ascii_lowercase() { c - 32 } else { c };
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(result as u128, bits)))
+    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
+        case_shift(state, args, b'a', b'z', -32)
     }
 }
 
@@ -147,12 +269,52 @@ mod tests {
     }
 
     #[test]
-    fn test_symbolic_arg_fallback() {
+    fn test_symbolic_isdigit_returns_constrained_bv() {
+        // Symbolic input should now produce a symbolic result, not a fallback error.
         let mut s = make_state();
         let ctx = s.solver().borrow();
         let sym = RustBV::symbolic(&ctx, "c", 64);
         drop(ctx);
         let p = NativeIsDigit;
-        assert!(matches!(p.call(&mut s, &[sym]), Err(ProcedureError::SymbolicArgument(_))));
+        let result = p.call(&mut s, &[sym.clone()]).unwrap().unwrap();
+        // Result should be a 64-bit BV (arch.bits()) and *not* concrete.
+        assert_eq!(result.width(), 64);
+        assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
+    }
+
+    #[test]
+    fn test_symbolic_isdigit_solver_evaluation() {
+        // Constrain the symbolic byte to '5' and check the result solves to 1.
+        let mut s = make_state();
+        let ctx = s.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "c", 64);
+        let target = RustBV::concrete(b'5' as u128, 64);
+        let eq = sym.eq(&target, &ctx);
+        drop(ctx);
+        let p = NativeIsDigit;
+        let result = p.call(&mut s, &[sym.clone()]).unwrap().unwrap();
+        s.add_constraint(eq);
+        let ctx = s.solver().borrow();
+        assert_eq!(ctx.min(&result, false), Some(1));
+        assert_eq!(ctx.max(&result, false), Some(1));
+    }
+
+    #[test]
+    fn test_symbolic_tolower_returns_symbolic() {
+        let mut s = make_state();
+        let ctx = s.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "c", 64);
+        let target = RustBV::concrete(b'A' as u128, 64);
+        let eq = sym.eq(&target, &ctx);
+        drop(ctx);
+        let p = NativeToLower;
+        let result = p.call(&mut s, &[sym.clone()]).unwrap().unwrap();
+        assert_eq!(result.width(), 64);
+        assert!(result.as_u64().is_none());
+
+        s.add_constraint(eq);
+        let ctx = s.solver().borrow();
+        assert_eq!(ctx.min(&result, false), Some(b'a' as u128));
+        assert_eq!(ctx.max(&result, false), Some(b'a' as u128));
     }
 }
