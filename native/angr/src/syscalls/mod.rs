@@ -17,6 +17,7 @@
 //!   matches for the first 3 args, which covers exit/exit_group.
 
 pub mod exit;
+pub mod mprotect;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ pub enum SyscallError {
 }
 
 /// What the dispatcher should do after a syscall handler runs.
+#[derive(Debug)]
 pub enum SyscallOutcome {
     /// State should continue at PC. `ret` is written to the return
     /// register (rax on amd64).
@@ -76,6 +78,8 @@ impl NativeSyscallRegistry {
         // amd64: exit (60), exit_group (231) -> deadend.
         r.register("AMD64", 60, Arc::new(exit::NativeExitSyscall { name: "exit" }));
         r.register("AMD64", 231, Arc::new(exit::NativeExitSyscall { name: "exit_group" }));
+        // amd64: mprotect (10) — set page perms; -1 on misalign / unmapped.
+        r.register("AMD64", 10, Arc::new(mprotect::NativeMprotectSyscall));
         r
     }
 
@@ -133,6 +137,7 @@ mod tests {
         let r = NativeSyscallRegistry::new();
         assert!(r.get("AMD64", 60).is_some(), "exit (60) should be registered");
         assert!(r.get("AMD64", 231).is_some(), "exit_group (231) should be registered");
+        assert!(r.get("AMD64", 10).is_some(), "mprotect (10) should be registered");
         assert!(r.get("AMD64", 0).is_none(), "read (0) is intentionally unregistered");
         assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");
     }

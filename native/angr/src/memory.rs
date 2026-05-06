@@ -1708,6 +1708,24 @@ impl SymbolicMemory {
         &self.pages
     }
 
+    /// Get the permissions for the page containing `page_num` (`addr >> 12`).
+    /// Returns `None` if the page is unmapped.
+    pub fn page_permissions(&self, page_num: u64) -> Option<Permission> {
+        self.pages.get(&page_num).map(|p| p.permissions())
+    }
+
+    /// Set the permissions on the page at `page_num` (`addr >> 12`).
+    /// Returns `false` if the page is unmapped (no change made).
+    pub fn set_page_permissions(&mut self, page_num: u64, perm: Permission) -> bool {
+        match self.pages.get_mut(&page_num) {
+            Some(page) => {
+                page.set_permissions(perm);
+                true
+            }
+            None => false,
+        }
+    }
+
     // =========================================================================
     // Symbolic Memory Preservation
     // =========================================================================
