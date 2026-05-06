@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
 
 import claripy
 from claripy.errors import ClaripyError
+from pyvex.errors import PyVEXError
 
-from angr.errors import SimError
+from angr.errors import SimEngineError, SimError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
 
 if TYPE_CHECKING:
@@ -660,7 +661,7 @@ class RustExplorationManager(
                 block = self._project.factory.block(addr, **kwargs)
                 irsb = block.vex
                 return self._serialize_irsb(irsb)
-            except Exception as e:
+            except (SimEngineError, ClaripyError, PyVEXError) as e:
                 l.warning(f"Lift error at 0x{addr:x}: {e}")
                 return '{}'
         finally:
@@ -682,7 +683,7 @@ class RustExplorationManager(
                     return (bytes(4096), 0, False)
                 concrete = state.solver.eval(data).to_bytes(4096, 'little')
                 return (concrete, 7, True)
-            except Exception:
+            except (SimError, ClaripyError):
                 l.debug("fetch_page 0x%x: failed to load/eval, returning empty", page_addr, exc_info=True)
                 return (bytes(4096), 0, False)
         finally:
@@ -755,7 +756,7 @@ class RustExplorationManager(
                     l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
                     sync_failed = True
 
-            except Exception as e:
+            except (SimError, ClaripyError) as e:
                 l.warning(f"Error syncing constraint '{desc}': {e}")
                 sync_failed = True
 
@@ -765,7 +766,7 @@ class RustExplorationManager(
                     l.warning(f"Constraint sync made solver UNSAT, rolling back {len(added_constraints)} constraints")
                     state.solver._stored_solver = None
                     sync_failed = True
-            except Exception as e:
+            except (SimError, ClaripyError) as e:
                 l.warning(f"Error validating constraint sync: {e}")
                 sync_failed = True
 
@@ -950,7 +951,7 @@ class RustExplorationManager(
                 else:
                     val = claripy.BVV(data, 64)
                 state.memory.store(addr, val, endness='Iend_LE')
-            except Exception as e:
+            except (SimError, ClaripyError) as e:
                 l.debug(f"Batch memory store failed at 0x{addr:x}: {e}")
 
     def _cb_memory_load_batch(self, loads: list) -> list:
@@ -969,7 +970,7 @@ class RustExplorationManager(
                     results.append((concrete, True, val))
                 else:
                     results.append((concrete, False, None))
-            except Exception as e:
+            except (SimError, ClaripyError) as e:
                 l.debug(f"Batch memory load failed at 0x{addr:x}: {e}")
                 results.append((bytes(size), False, None))
         return results
@@ -989,7 +990,7 @@ class RustExplorationManager(
                 else:
                     concrete = state.solver.eval(data).to_bytes(4096, 'little')
                     results.append((concrete, 7, True))
-            except Exception as e:
+            except (SimError, ClaripyError) as e:
                 l.debug(f"Batch page fetch failed at 0x{page_addr:x}: {e}")
                 results.append((bytes(4096), 0, True))
         return results
@@ -1005,7 +1006,7 @@ class RustExplorationManager(
                 state.memory.store(addr, ast, endness=state.arch.memory_endness,
                                    inspect=False, disable_actions=True)
                 self._register_handle(id(ast), ast, addr=addr, size=size)
-        except Exception as e:
+        except (SimError, ClaripyError) as e:
             l.debug(f"Symbolic store at 0x{addr:x} failed: {e}")
 
     def _load_binary_regions(self):

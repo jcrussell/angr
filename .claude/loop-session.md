@@ -1,50 +1,54 @@
-# Loop session notes (2026-05-06, sixty-fourth loop session — DONE)
+# Loop session notes (2026-05-06, sixty-fifth loop session — DONE)
 
-## Status: COMPLETE — angr-8e81 closed (commit ca72e2934)
+## Status: COMPLETE — angr-2f7o ready to close
 
-## Task: angr-8e81 (P2)
-Narrow exception types in _cb_memory_load (catch specific, not bare Exception)
+## Task: angr-2f7o (P3) — Narrow exceptions in remaining rust_manager callbacks
 
-## What was done
-Replaced bare `except Exception` in `_cb_memory_load` and `_cb_memory_store`
-in `angr/exploration/rust_manager.py` with:
+Direct follow-up to angr-8e81. Applied the same `(SimError, ClaripyError)`
+contract — and `(SimEngineError, ClaripyError, PyVEXError)` for
+`_cb_lift_block` — to seven remaining callbacks in
+`angr/exploration/rust_manager.py`:
 
-    except (SimError, ClaripyError) as e:
+- `_cb_lift_block` (line 663) → '{}'
+- `_cb_fetch_page` (line 685) → empty page
+- `_cb_sync_constraints` (lines 758, 768) → sync_failed
+- `_cb_memory_store_batch` (line 953) → per-store skip
+- `_cb_memory_load_batch` (line 972) → per-entry zero buffer
+- `_cb_batch_fetch_pages` (line 992) → per-entry empty page
+- `_cb_memory_store_symbolic_value` (line 1008) → noop
 
-- `SimError` is the common ancestor of `SimMemoryError` (raised by
-  `state.memory.load/store`) and `SimSolverError` (raised by
-  `state.solver.eval`).
-- `ClaripyError` covers `claripy.Extract`, `claripy.BVV`, etc.
-- The inner thunk `except Exception` was left in place — user thunks
-  can raise anything.
+Imports added: `pyvex.errors.PyVEXError`, `angr.errors.SimEngineError`.
 
-## Tests added (4, all pass)
+## Tests added (14, all pass)
 In `tests/engines/test_rust_exploration.py::TestErrorRecovery`:
-- `test_cb_memory_load_swallows_sim_memory_error` — SimMemoryError still
-  silently falls back to zero buffer.
-- `test_cb_memory_load_propagates_unrelated_exceptions` — RuntimeError
-  now propagates instead of being swallowed.
-- `test_cb_memory_store_swallows_sim_memory_error` — same for store.
-- `test_cb_memory_store_propagates_unrelated_exceptions` — same for store.
+- 3 lift_block tests (PyVEXError swallow, SimEngineError swallow, RuntimeError propagate)
+- 2 fetch_page tests (swallow / propagate)
+- 2 sync_constraints tests (SimSolverError → sync_failed=False; RuntimeError propagate)
+- 2 memory_store_batch tests
+- 2 memory_load_batch tests
+- 2 batch_fetch_pages tests
+- 2 memory_store_symbolic_value tests
 
-Verified the propagation tests fail without the source change (held the
-test file in place and reverted only `rust_manager.py` — both new tests
-DID NOT RAISE).
+Helper: `_put_state_in_default_cache(mgr, state)` — injects state into
+`mgr._state_cache` for callbacks that read through `_get_default_state()`
+(fetch_page, sync_constraints, batch_fetch_pages).
 
-Tests: 221 → 225 passing.
+Verified the 7 propagation tests fail without the source change (held the
+test file in place and reverted only `rust_manager.py` — all 7 propagate
+tests DID NOT RAISE).
 
-## Memory saved
-- `invariant-rust-callback-narrow-except` — fallback contract for Python
-  callbacks in RustExplorationManager: catch only (SimError,
-  ClaripyError); anything else is a bug and must propagate.
+Tests: 225 → 240 passing.
 
-## Follow-up bead filed
-- `angr-2f7o` (P3) — same anti-pattern exists in _cb_lift_block,
-  _cb_fetch_page, _cb_memory_store_batch, _cb_memory_load_batch,
-  _cb_batch_fetch_pages, _cb_memory_store_symbolic_value,
-  _cb_sync_constraints.
+## Files modified
+- angr/exploration/rust_manager.py (imports + 8 except sites)
+- tests/engines/test_rust_exploration.py (14 new tests + helper)
 
-## Next-up (still ready)
+## Memory situation
+The existing `invariant-rust-callback-narrow-except` memory already
+documents the contract. No new memory needed — angr-2f7o just extends
+the same invariant to more callsites.
+
+## Next-up (still ready, P1/P2)
 - angr-eygl (P1) Differential test harness — BIG, multi-session
 - angr-pufm (P1) Symbolic address concretization fallback — large
 - angr-prem (P2) Introduce a MemoryLayer trait
@@ -54,4 +58,4 @@ Tests: 221 → 225 passing.
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
 - angr-zrq1 (P2) Dirty-call coverage missing-handler stub
-- angr-2f7o (P3) Narrow exceptions in remaining rust_manager callbacks
+- angr-3zs6 (P2) FallbackStrategy enum in interpreter

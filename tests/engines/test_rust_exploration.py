@@ -1972,6 +1972,229 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected bug"):
             mgr._cb_memory_store(0x1000, b"\x41\x42\x43\x44")
 
+    # angr-2f7o: extend the angr-8e81 contract to the remaining callbacks.
+    # Each callback must:
+    #   1. swallow Sim*/Claripy/PyVEX errors (legitimate symbolic-engine failures)
+    #   2. propagate RuntimeError (or any other unrelated exception) so real
+    #      bugs surface instead of being masked as zero buffers / empty pages.
+
+    def _put_state_in_default_cache(self, mgr, state):
+        """Inject `state` so _get_default_state() returns it. Several
+        callbacks (fetch_page, sync_constraints, batch_fetch_pages) read
+        through _state_cache rather than _callback_state."""
+        mgr._state_cache[id(state)] = state
+
+    def test_cb_lift_block_swallows_pyvex_error(self):
+        """PyVEXError from the lifter must keep falling back to '{}'."""
+        from pyvex.errors import PyVEXError
+        mgr, _ = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise PyVEXError("simulated lift failure")
+        mgr._project.factory.block = boom
+
+        result = mgr._cb_lift_block(0x1000)
+        assert result == '{}'
+
+    def test_cb_lift_block_swallows_sim_engine_error(self):
+        """SimEngineError from block construction must keep falling back."""
+        from angr.errors import SimEngineError
+        mgr, _ = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimEngineError("simulated engine failure")
+        mgr._project.factory.block = boom
+
+        result = mgr._cb_lift_block(0x1000)
+        assert result == '{}'
+
+    def test_cb_lift_block_propagates_unrelated_exceptions(self):
+        """Non-(SimEngine/Claripy/PyVEX) exceptions must propagate."""
+        mgr, _ = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected lift bug")
+        mgr._project.factory.block = boom
+
+        with pytest.raises(RuntimeError, match="unexpected lift bug"):
+            mgr._cb_lift_block(0x1000)
+
+    def test_cb_fetch_page_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.load() must keep returning empty page."""
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped page")
+        state.memory.load = boom
+        self._put_state_in_default_cache(mgr, state)
+
+        result = mgr._cb_fetch_page(0x1000)
+        assert result == (bytes(4096), 0, False)
+
+    def test_cb_fetch_page_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate out of _cb_fetch_page."""
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected fetch bug")
+        state.memory.load = boom
+        self._put_state_in_default_cache(mgr, state)
+
+        with pytest.raises(RuntimeError, match="unexpected fetch bug"):
+            mgr._cb_fetch_page(0x1000)
+
+    def test_cb_sync_constraints_swallows_sim_solver_error(self):
+        """SimSolverError from state.solver.add() must mark sync as failed
+        rather than propagating — preserves the existing best-effort
+        constraint-replay behavior."""
+        import claripy
+        from angr.errors import SimSolverError
+        mgr, state = self._build_load_store_manager()
+
+        x = claripy.BVS("x_sync", 32)
+        handle_id = id(x)
+        mgr._register_handle(handle_id, x)
+
+        def boom(*args, **kwargs):
+            raise SimSolverError("simulated solver failure")
+        state.solver.add = boom
+        self._put_state_in_default_cache(mgr, state)
+
+        ok = mgr._cb_sync_constraints([("test_constraint", 32, 42, handle_id)])
+        assert ok is False
+
+    def test_cb_sync_constraints_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate out of _cb_sync_constraints."""
+        import claripy
+        mgr, state = self._build_load_store_manager()
+
+        x = claripy.BVS("x_sync", 32)
+        handle_id = id(x)
+        mgr._register_handle(handle_id, x)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected sync bug")
+        state.solver.add = boom
+        self._put_state_in_default_cache(mgr, state)
+
+        with pytest.raises(RuntimeError, match="unexpected sync bug"):
+            mgr._cb_sync_constraints([("test_constraint", 32, 42, handle_id)])
+
+    def test_cb_memory_store_batch_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.store() must keep being swallowed
+        per-store in the batch loop (other stores still attempted)."""
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped batch store")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        # Should not raise.
+        mgr._cb_memory_store_batch([(0x1000, b"\x41\x42\x43\x44")])
+
+    def test_cb_memory_store_batch_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate out of _cb_memory_store_batch."""
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected batch store bug")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        with pytest.raises(RuntimeError, match="unexpected batch store bug"):
+            mgr._cb_memory_store_batch([(0x1000, b"\x41\x42\x43\x44")])
+
+    def test_cb_memory_load_batch_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.load() must keep returning a
+        per-entry zero buffer in the batch loop."""
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped batch load")
+        state.memory.load = boom
+
+        mgr._set_callback_state(state)
+
+        result = mgr._cb_memory_load_batch([(0x1000, 4)])
+        assert result == [(bytes(4), False, None)]
+
+    def test_cb_memory_load_batch_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate out of _cb_memory_load_batch."""
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected batch load bug")
+        state.memory.load = boom
+
+        mgr._set_callback_state(state)
+
+        with pytest.raises(RuntimeError, match="unexpected batch load bug"):
+            mgr._cb_memory_load_batch([(0x1000, 4)])
+
+    def test_cb_batch_fetch_pages_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.load() must keep returning empty
+        pages per-entry in the batch loop."""
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped batch page")
+        state.memory.load = boom
+        self._put_state_in_default_cache(mgr, state)
+
+        result = mgr._cb_batch_fetch_pages([0x1000])
+        assert result == [(bytes(4096), 0, True)]
+
+    def test_cb_batch_fetch_pages_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate out of _cb_batch_fetch_pages."""
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected batch page bug")
+        state.memory.load = boom
+        self._put_state_in_default_cache(mgr, state)
+
+        with pytest.raises(RuntimeError, match="unexpected batch page bug"):
+            mgr._cb_batch_fetch_pages([0x1000])
+
+    def test_cb_memory_store_symbolic_value_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.store() must keep being swallowed."""
+        import claripy
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped symbolic store")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        # Should not raise.
+        ast = claripy.BVS("sym_store", 32)
+        mgr._cb_memory_store_symbolic_value(0x1000, ast)
+
+    def test_cb_memory_store_symbolic_value_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate out of
+        _cb_memory_store_symbolic_value."""
+        import claripy
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected symbolic store bug")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        ast = claripy.BVS("sym_store", 32)
+        with pytest.raises(RuntimeError, match="unexpected symbolic store bug"):
+            mgr._cb_memory_store_symbolic_value(0x1000, ast)
+
     def test_z3_solver_timeout_does_not_hang(self):
         """A tight Z3 timeout must bound `satisfiable()` wall-clock — even
         on a constraint set Z3 would otherwise grind on forever (factoring a
