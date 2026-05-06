@@ -2503,4 +2503,224 @@ mod tests {
             lane0
         );
     }
+
+    // =========================================================================
+    // FP edge cases (angr-io1t)
+    // =========================================================================
+
+    /// RoundF32toInt with symbolic rm: value=-2.5f32, target=-3.0f32 forces
+    /// rm low-2-bits == 1 (round toward -inf). Exercises the 4-way ITE built
+    /// by build_fp_round_to_int_cached.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_round_f32_to_int_symbolic_rm() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let rm = RustBV::symbolic(&ctx, "rm_f32", 32);
+        let value = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
+
+        let result =
+            VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
+        let target = RustBV::concrete((-3.0f32).to_bits() as u128, 32);
+        let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT for round(-2.5)==-3.0");
+
+        let model_rm = ctx.eval(&rm).expect("eval(rm) returned None");
+        assert_eq!(
+            (model_rm as u32) & 0x3,
+            1,
+            "expected rm low2 bits == 1 (round toward -inf), got {}",
+            model_rm & 0x3
+        );
+    }
+
+    /// RoundF64toInt with symbolic rm: value=2.5f64, target=3.0f64 forces
+    /// rm low-2-bits == 2 (round toward +inf). RNE on 2.5 ties to even (2).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_round_f64_to_int_symbolic_rm() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let rm = RustBV::symbolic(&ctx, "rm_f64", 32);
+        let value = RustBV::concrete(2.5f64.to_bits() as u128, 64);
+
+        let result =
+            VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();
+        let target = RustBV::concrete(3.0f64.to_bits() as u128, 64);
+        let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT for round(2.5)==3.0");
+
+        let model_rm = ctx.eval(&rm).expect("eval(rm) returned None");
+        assert_eq!(
+            (model_rm as u32) & 0x3,
+            2,
+            "expected rm low2 bits == 2 (round toward +inf), got {}",
+            model_rm & 0x3
+        );
+    }
+
+    /// F32→I32S with NaN: Rust `as` cast collapses NaN to 0.
+    #[test]
+    fn test_f32_to_i32s_nan() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(f32::NAN.to_bits() as u128, 32);
+        let result = VEXOps::unop(IROp::F32toI32S, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 32);
+        assert_eq!(result.as_u64(), Some(0), "NaN as i32 must be 0");
+    }
+
+    /// F32→I32S with +inf: saturates to i32::MAX.
+    #[test]
+    fn test_f32_to_i32s_pos_infinity() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(f32::INFINITY.to_bits() as u128, 32);
+        let result = VEXOps::unop(IROp::F32toI32S, arg, &ctx).unwrap();
+        assert_eq!(
+            result.as_u64(),
+            Some(i32::MAX as u32 as u64),
+            "+inf as i32 must saturate to i32::MAX"
+        );
+    }
+
+    /// F32→I32S with -inf: saturates to i32::MIN.
+    #[test]
+    fn test_f32_to_i32s_neg_infinity() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(f32::NEG_INFINITY.to_bits() as u128, 32);
+        let result = VEXOps::unop(IROp::F32toI32S, arg, &ctx).unwrap();
+        assert_eq!(
+            result.as_u64(),
+            Some(i32::MIN as u32 as u64),
+            "-inf as i32 must saturate to i32::MIN"
+        );
+    }
+
+    /// F32→I32S with very large magnitude: also saturates.
+    #[test]
+    fn test_f32_to_i32s_overflow() {
+        let ctx = SymContext::new_mock();
+        let big = RustBV::concrete(1e30f32.to_bits() as u128, 32);
+        let result = VEXOps::unop(IROp::F32toI32S, big, &ctx).unwrap();
+        assert_eq!(
+            result.as_u64(),
+            Some(i32::MAX as u32 as u64),
+            "1e30 must saturate to i32::MAX"
+        );
+
+        let neg_big = RustBV::concrete((-1e30f32).to_bits() as u128, 32);
+        let neg_result = VEXOps::unop(IROp::F32toI32S, neg_big, &ctx).unwrap();
+        assert_eq!(
+            neg_result.as_u64(),
+            Some(i32::MIN as u32 as u64),
+            "-1e30 must saturate to i32::MIN"
+        );
+    }
+
+    /// I32S→F32 of INT32_MIN: -2^31 is exactly representable in F32.
+    #[test]
+    fn test_i32s_to_f32_int_min() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(i32::MIN as u32 as u128, 32);
+        let result = VEXOps::unop(IROp::I32StoF32, arg, &ctx).unwrap();
+        let f = f32::from_bits(result.as_u64().unwrap() as u32);
+        assert_eq!(f, -2147483648.0f32, "I32_MIN must round-trip to -2^31 as f32");
+    }
+
+    /// F64→F32 (no-rm unop) precision overflow: 1e300 exceeds f32::MAX.
+    /// Rust `as f32` saturates toward +inf, matching IEEE-754 behavior under RNE.
+    #[test]
+    fn test_f64_to_f32_overflow() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(1e300f64.to_bits() as u128, 64);
+        let result = VEXOps::unop(IROp::F64toF32, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 32);
+        let f = f32::from_bits(result.as_u64().unwrap() as u32);
+        assert!(f.is_infinite() && f.is_sign_positive(), "1e300 → +inf, got {}", f);
+    }
+
+    /// F64→F32 of NaN: result is still NaN. Just check is_nan; the exact
+    /// payload bits aren't part of the contract.
+    #[test]
+    fn test_f64_to_f32_nan() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(f64::NAN.to_bits() as u128, 64);
+        let result = VEXOps::unop(IROp::F64toF32, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 32);
+        let f = f32::from_bits(result.as_u64().unwrap() as u32);
+        assert!(f.is_nan(), "NaN must remain NaN after F64→F32");
+    }
+
+    /// F64→F32 of -infinity: preserved as -infinity.
+    #[test]
+    fn test_f64_to_f32_neg_infinity() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(f64::NEG_INFINITY.to_bits() as u128, 64);
+        let result = VEXOps::unop(IROp::F64toF32, arg, &ctx).unwrap();
+        let f = f32::from_bits(result.as_u64().unwrap() as u32);
+        assert!(f.is_infinite() && f.is_sign_negative(), "-inf preserved");
+    }
+
+    /// VFSubS concrete lane isolation: SUBSS xmm0, xmm1 — only lane 0 changes,
+    /// upper 96 bits of xmm0 pass through unchanged.
+    #[test]
+    fn test_vec_float_scalar_sub_concrete_lane_isolation() {
+        let ctx = SymContext::new_mock();
+
+        // xmm0: lane0=10.0, upper bits = 0xDEAD_BEEF_CAFE_BABE_1234_5678 (96 bits)
+        let upper_pattern: u128 = 0xDEAD_BEEF_CAFE_BABE_1234_5678u128 << 32;
+        let xmm0_bits = upper_pattern | (10.0f32.to_bits() as u128);
+        let xmm0 = RustBV::concrete(xmm0_bits, 128);
+        let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
+
+        let result =
+            VEXOps::binop(IROp::VFSubS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let rv = result.as_u128().unwrap();
+        let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
+        assert!((lane0 - 7.0).abs() < 1e-6, "10.0 - 3.0 == 7.0, got {}", lane0);
+        assert_eq!(rv & !0xFFFF_FFFFu128, upper_pattern, "upper 96 bits must pass through");
+    }
+
+    /// VFMulS concrete lane isolation: MULSS xmm0, xmm1.
+    #[test]
+    fn test_vec_float_scalar_mul_concrete_lane_isolation() {
+        let ctx = SymContext::new_mock();
+
+        let upper_pattern: u128 = 0xFEED_FACE_BAAD_F00D_8BAD_F00Du128 << 32;
+        let xmm0_bits = upper_pattern | (4.0f32.to_bits() as u128);
+        let xmm0 = RustBV::concrete(xmm0_bits, 128);
+        let xmm1 = RustBV::concrete(2.5f32.to_bits() as u128, 128);
+
+        let result =
+            VEXOps::binop(IROp::VFMulS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let rv = result.as_u128().unwrap();
+        let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
+        assert!((lane0 - 10.0).abs() < 1e-6, "4.0 * 2.5 == 10.0, got {}", lane0);
+        assert_eq!(rv & !0xFFFF_FFFFu128, upper_pattern, "upper 96 bits must pass through");
+    }
+
+    /// VFMaxS concrete with lane0=NaN: Rust `>` returns false for NaN, so
+    /// max picks the right operand. Documents the SSE max-is-not-IEEE-max
+    /// semantics encoded by the ITE in vec_float_scalar_lane_minmax.
+    #[test]
+    fn test_vec_float_scalar_max_nan_concrete() {
+        let ctx = SymContext::new_mock();
+
+        let xmm0 = RustBV::concrete(f32::NAN.to_bits() as u128, 128);
+        let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
+
+        let result =
+            VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let rv = result.as_u128().unwrap();
+        let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
+        // NaN > 3.0 is false, so max picks 3.0 (the right operand).
+        assert!(
+            (lane0 - 3.0).abs() < 1e-6,
+            "MAXSS(NaN, 3.0) returns the right operand, got {}",
+            lane0
+        );
+    }
 }
