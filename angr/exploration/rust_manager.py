@@ -1430,7 +1430,15 @@ class RustExplorationManager(
     def _apply_state_metadata(self, src_state: "angr.SimState",
                               dst_state: "angr.SimState") -> None:
         """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS
-        options from src to dst."""
+        options from src to dst.
+
+        Both options are mirrored — added when src has them, removed when src
+        doesn't. The remove half matters for the in-memory init cache: a
+        cached state populated from a prior STRICT_PAGE_ACCESS run on the
+        same binary would otherwise leak that option to a subsequent caller
+        that didn't request it (and downstream `set_enforce_permissions(True)`
+        would then surface spurious permission errors).
+        """
         for c in src_state.solver.constraints:
             dst_state.solver.add(c)
         if 'globals' in src_state.plugins:
@@ -1438,10 +1446,11 @@ class RustExplorationManager(
                 dst_state.globals[k] = v
         try:
             from angr import sim_options as o
-            if o.LAZY_SOLVES in src_state.options:
-                dst_state.options.add(o.LAZY_SOLVES)
-            if o.STRICT_PAGE_ACCESS in src_state.options:
-                dst_state.options.add(o.STRICT_PAGE_ACCESS)
+            for opt in (o.LAZY_SOLVES, o.STRICT_PAGE_ACCESS):
+                if opt in src_state.options:
+                    dst_state.options.add(opt)
+                else:
+                    dst_state.options.discard(opt)
         except (ImportError, Exception):
             pass
 
