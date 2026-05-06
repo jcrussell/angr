@@ -4,15 +4,16 @@
 //!
 //! # Behavior
 //!
-//! - If addresses or n are symbolic, falls back to Python
-//! - If any compared byte is symbolic, falls back to Python
+//! - Concrete addresses are required (symbolic addresses fall back to Python).
+//! - Concrete `n` is required (symbolic n falls back).
+//! - Concrete bytes scan with short-circuit on first mismatch (matches libc).
+//! - Symbolic bytes produce a 32-bit ITE chain via `compare_bytes` shared
+//!   with strcmp/strncmp (with stop_at_null=false).
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
+use super::strcmp::{compare_bytes, MAX_STRCMP_LEN};
 use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
-
-/// Maximum comparison length before falling back to Python.
-const MAX_MEMCMP_LEN: usize = 4096;
 
 /// Native memcmp implementation.
 ///
@@ -27,13 +28,8 @@ const MAX_MEMCMP_LEN: usize = 4096;
 pub struct NativeMemcmp;
 
 impl NativeSimProcedure for NativeMemcmp {
-    fn name(&self) -> &'static str {
-        "memcmp"
-    }
-
-    fn num_args(&self) -> usize {
-        3
-    }
+    fn name(&self) -> &'static str { "memcmp" }
+    fn num_args(&self) -> usize { 3 }
 
     fn call(
         &self,
@@ -42,35 +38,16 @@ impl NativeSimProcedure for NativeMemcmp {
     ) -> Result<Option<RustBV>, ProcedureError> {
         let s1_addr = extract_concrete_arg(&args[0], "s1")?;
         let s2_addr = extract_concrete_arg(&args[1], "s2")?;
-        let n = extract_concrete_arg(&args[2], "n")? as usize;
+        let n = extract_concrete_arg(&args[2], "n")?;
 
         if n == 0 {
             return Ok(Some(RustBV::zero(32)));
         }
-
-        if n > MAX_MEMCMP_LEN {
-            return Err(ProcedureError::MaxIterations(MAX_MEMCMP_LEN));
+        if n > MAX_STRCMP_LEN as u64 {
+            return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
         }
-
-        for i in 0..n {
-            let c1_addr = s1_addr.wrapping_add(i as u64);
-            let c2_addr = s2_addr.wrapping_add(i as u64);
-
-            let c1_val = state.memory_load(c1_addr, 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let c2_val = state.memory_load(c2_addr, 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-
-            let c1 = extract_concrete_arg(&c1_val, &format!("s1[{}]", i))? as u8;
-            let c2 = extract_concrete_arg(&c2_val, &format!("s2[{}]", i))? as u8;
-
-            if c1 != c2 {
-                let diff = (c1 as i32) - (c2 as i32);
-                return Ok(Some(RustBV::concrete(diff as u128, 32)));
-            }
-        }
-
-        Ok(Some(RustBV::zero(32)))
+        compare_bytes(state, s1_addr, s2_addr, n,
+                      /*stop_at_null=*/false, /*case_insensitive=*/false)
     }
 }
 
@@ -174,5 +151,91 @@ mod tests {
         ).unwrap();
         let val = result.unwrap().as_u128().unwrap() as i32;
         assert!(val < 0); // 'd' < 'e'
+    }
+
+    /// Insert a fully-symbolic byte at `addr`. The page must already be
+    /// mapped; this overwrites the byte without disturbing the rest.
+    fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, name, 8);
+        drop(ctx);
+        state.memory_store(addr, sym.clone()).unwrap();
+        sym
+    }
+
+    #[test]
+    fn test_memcmp_symbolic_byte_returns_symbolic() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x2000, b"\x01\x02\x03", Permission::RWX);
+        state.map_memory_data(0x1000, b"\x01\x00\x03", Permission::RWX);
+        let _sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
+
+        let proc = NativeMemcmp;
+        let result = proc.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(3, 64),
+            ],
+        ).unwrap().unwrap();
+        assert_eq!(result.width(), 32);
+        assert!(result.as_u64().is_none());
+    }
+
+    #[test]
+    fn test_memcmp_symbolic_byte_solver_evaluation() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x2000, b"\x01\x02\x03", Permission::RWX);
+        state.map_memory_data(0x1000, b"\x01\x00\x03", Permission::RWX);
+        let sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
+
+        // Constrain sym == 4 -> 4 - 2 = 2.
+        let ctx = state.solver().borrow();
+        let target = RustBV::concrete(4u128, 8);
+        let eq = sym.eq(&target, &ctx);
+        drop(ctx);
+
+        let proc = NativeMemcmp;
+        let result = proc.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(3, 64),
+            ],
+        ).unwrap().unwrap();
+        state.add_constraint(eq);
+        let ctx = state.solver().borrow();
+        assert_eq!(ctx.min(&result, false), Some(2));
+        assert_eq!(ctx.max(&result, false), Some(2));
+    }
+
+    #[test]
+    fn test_memcmp_symbolic_byte_equal_solution() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x2000, b"\x01\x02\x03", Permission::RWX);
+        state.map_memory_data(0x1000, b"\x01\x00\x03", Permission::RWX);
+        let sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
+
+        // Constrain sym == 2 -> result == 0.
+        let ctx = state.solver().borrow();
+        let target = RustBV::concrete(2u128, 8);
+        let eq = sym.eq(&target, &ctx);
+        drop(ctx);
+
+        let proc = NativeMemcmp;
+        let result = proc.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(3, 64),
+            ],
+        ).unwrap().unwrap();
+        state.add_constraint(eq);
+        let ctx = state.solver().borrow();
+        assert_eq!(ctx.min(&result, false), Some(0));
+        assert_eq!(ctx.max(&result, false), Some(0));
     }
 }
