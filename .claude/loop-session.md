@@ -1,62 +1,66 @@
-# Loop session notes (2026-05-06, seventy-fourth loop session — DONE)
+# Loop session notes (2026-05-06, seventy-fifth loop session — DONE)
 
-## Status: COMPLETE — angr-tfjl closed
+## Status: COMPLETE — angr-yhrh closed
 
-## Task: angr-tfjl (P3) — FP rounding modes: RZ/RU/RD beyond default RNE
+## Task: angr-yhrh (P3) — Wire Iop_SqrtF{32,64} Binop rm through unop_with_rm
 
-### What changed
-The Triop dispatch in `interpreter_cb/expressions.rs` was dropping the rm
-operand of `Iop_AddF*/SubF*/MulF*/DivF*`, silently using RNE for every
-rounding mode.
+Direct follow-up to last session (angr-tfjl). The infrastructure
+(`VEXOps::unop_with_rm`) already existed; FSqrt just needed wiring.
 
-Added 5 new `FloatOpKind` variants — `AddRm/SubRm/MulRm/DivRm/SqrtRm` —
-with rm at operand[0]. They route through a new
-`build_fp_arith_rm_cached` helper modeled on
-`build_fp_round_to_int_cached`: concrete rm picks one Z3 `RoundingMode`,
-symbolic rm builds a 4-way ITE on rm[1:0] so Z3 can fold dead arms.
+### Root cause
+VEX emits Iop_SqrtF32/64 as a Binop (arg1=rm, arg2=value). Our
+opcode_map turns both into `IROp::FSqrt(_)`, which previously had no
+Binop arm. `VEXOps::binop` returned `NotBinary`, the interpreter's
+`.or_else` fell back to a fresh unconstrained symbolic, silently
+dropping rm AND value.
 
-`VEXOps::binop_with_rm` / `unop_with_rm` preserve the existing native
-f{32,64} fast path when rm is concretely RNE (most code uses RNE; routing
-through Z3 there would regress FP-heavy benchmarks).
+### Fix (single file, +35 lines)
+Added an `IROp::FSqrt(_)` arm to `VEXOps::binop` in
+`native/angr/src/vex/ops.rs` that delegates to
+`unop_with_rm(op, left, right, ctx)`. Centralized routing in vex/ops.rs
+rather than dispatching at the interpreter level — keeps the
+special-case in one file and makes it unit-testable via
+`VEXOps::binop(IROp::FSqrt, rm, value)`.
 
-### Files touched
-- native/angr/src/symbolic/value.rs (FloatOpKind variants + helper)
-- native/angr/src/vex/ops.rs (binop_with_rm/unop_with_rm + 8 tests)
-- native/angr/src/interpreter_cb/expressions.rs (Triop now passes rm)
+### Tests added (2)
+- `test_float_sqrt_via_binop_with_rm_ru_f32`: sqrt(2.0f32) under RU via
+  the Binop entry point must round up by one ulp (0x3FB504F4).
+- `test_float_sqrt_via_binop_rne_fastpath_f64`: RNE concrete keeps the
+  native f64 fast path (no Z3, sqrt(16.0)=4.0).
 
 ### Verification
-- cargo test --release --features vex-engine-z3: 439/439 pass
-- pytest tests/engines/test_rust_exploration.py: 243/243 pass (8.18s)
-- run_single.py fauxware --engine rust: completes successfully
+- cargo test --release --features vex-engine-z3: 441/441 pass (+2 new)
+- pytest tests/engines/test_rust_exploration.py: 243/243 pass (8.27s)
+- run_single.py fauxware --engine rust: completes (SOSNEAKY)
 
 ### Commits
-- 6d87e0887 feat(vex/fp): honor VEX rounding mode on FAdd/FSub/FMul/FDiv/FSqrt (angr-tfjl)
+- ca6f2de3a fix(vex/fp): wire Iop_SqrtF{32,64} Binop rm through
+  unop_with_rm (angr-yhrh)
 
-### Memories saved
-- invariant-fsqrt-binop-arg1-rm — FSqrt is a VEX Binop with rm but
-  currently dispatches as unop with no rm; falls back to fresh symbolic.
-- invariant-fp-rm-variants — encoding of new FloatOpKind variants.
+### Memories saved/updated
+- invariant-fsqrt-binop-arg1-rm — UPDATED. Now describes the post-fix
+  state: VEXOps::binop has the FSqrt(_) arm; no special-case needed in
+  the interpreter dispatch.
+- fsqrt-binop-routing-pattern — NEW. The routing pattern (binop arm
+  delegating to unop_with_rm) generalizes to any future Binop-rm-but-
+  modeled-as-unop opcodes.
 
-### Follow-up bead
-- angr-yhrh (P3) — wire Iop_SqrtF{32,64} Binop rm through unop_with_rm.
-  The new VEXOps::unop_with_rm helper exists but isn't reachable from
-  the Binop dispatch yet; FSqrt currently falls back to a fresh symbolic.
-
-### Build environment notes
-- Z3 header path: `Z3_SYS_Z3_HEADER=/usr/include/z3.h` (the venv has
-  pyc-only z3 with no `include/`).
+### Build environment notes (carry-over)
+- `Z3_SYS_Z3_HEADER=/usr/include/z3.h` (.venv has pyc-only z3)
 - `cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
-  to stage the .so for Python tests.
-- pytest needs `PYTHONPATH=.` (no editable .pth installed).
+- `pip install -e .` is broken (RequirementInformation ImportError);
+  build via cargo + manual cp instead.
+- pytest needs `PYTHONPATH=.`
 
 ## Next-up (still ready)
-- angr-eygl (P1) Differential test harness
-- angr-pufm (P1) Symbolic address concretization fallback
+- angr-eygl (P1) Differential test harness — substantial infra, fits
+  multiple sessions.
+- angr-pufm (P1) Symbolic address concretization fallback — touches
+  Rust memory model.
 - angr-prem (P2) MemoryLayer trait
 - angr-fk0m (P2) Unify rust_state_sync / cache / export mixins
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
 - angr-zrq1 (P2) Dirty-call coverage stubs
 - angr-3zs6 (P2) FallbackStrategy enum
-- angr-yhrh (P3) Wire FSqrt Binop rm (follow-up to this session)
 - angr-sowx (P3) FP comparison: ordered/unordered + multi-bit variants
