@@ -48,64 +48,12 @@ impl<'a> CallbackInterpreter<'a> {
                 let size = ty.bytes() as usize;
                 if self.profiling_enabled { self.stats.load_stmt_count += 1; }
 
-                // Try Rust-native memory first if enabled - use unified method
+                // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
                 if self.use_rust_memory {
-                    // First attempt - may need page fetch
-                    let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
-                        Some(rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer))
-                    } else {
-                        None
-                    };
-
-                    if let Some(result) = first_result {
-                        match result {
-                            Ok(ref value) => {
-                                if let Some(start) = load_start {
-                                    self.stats.load_stmt_time_ns += start.elapsed().as_nanos() as u64;
-                                }
-                                return Ok(value.clone());
-                            }
-                            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
-                                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
-                                let prefetch_count = self.page_prefetch_count;
-                                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
-
-                                // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
-                                // Python may have actual data for this page from backers (file contents,
-                                // initialized data). Speculatively creating zero pages causes state
-                                // divergence between Rust and Python. Instead, we fall through to
-                                // the Python callback which handles memory correctly.
-
-                                if page_fetched {
-                                    // Page was fetched - retry with unified load
-                                    if let Some(ref mut rust_mem) = self.rust_memory {
-                                        match rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
-                                            Ok(value) => return Ok(value),
-                                            Err(_e) => {
-                                                // Still failed - fall through to Python callback
-                                            }
-                                        }
-                                    }
-                                }
-                                // If page not fetched, fall through to Python callback
-                            }
-                            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
-                                // Totally unmapped (not in lazy region) - fall through to Python
-                                log::debug!(
-                                    "Unmapped memory load at 0x{:x} (size={}), falling back to Python",
-                                    addr, unmapped_size
-                                );
-                            }
-                            Err(MemoryError::SymbolicAddress { .. }) => {
-                                // Symbolic bytes not fully tracked - fall through to Python
-                                // This happens when symbolic values were imported per-byte
-                                // but the load is multi-byte, or when the symbolic import
-                                // didn't cover all bytes at this address.
-                            }
-                            Err(e) => {
-                                return Err(CbExecutionError::Memory(e.to_string()));
-                            }
-                        }
+                    if let Some(value) = self.try_rust_memory_load(
+                        py, callbacks, &addr_val, size, load_start,
+                    )? {
+                        return Ok(value);
                     }
                 }
 
@@ -702,6 +650,66 @@ impl<'a> CallbackInterpreter<'a> {
                 IRLoadGOp::WidenS => value.sign_extend(target_bits, self.ctx),
                 IRLoadGOp::WidenZ => value.zero_extend(target_bits, self.ctx),
             }
+        }
+    }
+
+    /// Attempt to load via Rust-native memory. Returns `Ok(Some(bv))` if Rust
+    /// handled the load, `Ok(None)` if the caller should fall back to the
+    /// Python path, or `Err` for unrecoverable errors.
+    fn try_rust_memory_load(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        size: usize,
+        load_start: Option<Instant>,
+    ) -> Result<Option<RustBV>, CbExecutionError> {
+        let first_result = match self.rust_memory.as_mut() {
+            Some(rust_mem) => rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer),
+            None => return Ok(None),
+        };
+
+        match first_result {
+            Ok(value) => {
+                if let Some(start) = load_start {
+                    self.stats.load_stmt_time_ns += start.elapsed().as_nanos() as u64;
+                }
+                Ok(Some(value))
+            }
+            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
+                let prefetch_count = self.page_prefetch_count;
+                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+
+                // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
+                // Python may have actual data for this page from backers (file contents,
+                // initialized data). Speculatively creating zero pages causes state
+                // divergence between Rust and Python. Instead, we fall through to
+                // the Python callback which handles memory correctly.
+
+                if page_fetched {
+                    if let Some(ref mut rust_mem) = self.rust_memory {
+                        if let Ok(value) = rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                            return Ok(Some(value));
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
+                log::debug!(
+                    "Unmapped memory load at 0x{:x} (size={}), falling back to Python",
+                    addr, unmapped_size
+                );
+                Ok(None)
+            }
+            Err(MemoryError::SymbolicAddress { .. }) => {
+                // Symbolic bytes not fully tracked - fall through to Python.
+                // Happens when per-byte symbolic imports don't cover the full
+                // multi-byte load, or imports didn't cover all bytes at the addr.
+                Ok(None)
+            }
+            Err(e) => Err(CbExecutionError::Memory(e.to_string())),
         }
     }
 
