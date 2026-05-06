@@ -1,60 +1,58 @@
-# Loop session notes (2026-05-06, sixty-seventh loop session — DONE)
+# Loop session notes (2026-05-06, sixty-eighth loop session — DONE)
 
-## Status: COMPLETE — angr-76mo closed
+## Status: COMPLETE — angr-6ls8 closed
 
-## Task: angr-76mo (P3) [bug] — Slow-path symbolic reconstruction in
-load_concrete is LE-only
+## Task: angr-6ls8 (P2) [task] — Extract IRStmt::Store match arm
 
-### Bug
-Two LE-hardcoded sub-paths in the has_symbolic fallback of `load_concrete`
-(native/angr/src/memory.rs ~lines 661-712), counterparts of the fast-path
-angr-v1q2 fix at lines 553-556 / 576-582:
+### What changed
+native/angr/src/interpreter_cb/statements.rs: Store match arm went from
+~232 lines (5+ levels of nesting) to 16 lines. Three new helpers:
 
-1. **Per-byte concat** built `parts[N-1] :: ... :: parts[0]`
-   unconditionally, putting byte 0 at the LSB regardless of endness.
-2. **Wider-symbolic linear scan** used LE bit-extract:
-   `high=(offset+size)*8-1, low=offset*8` for any endness.
+- `try_rust_memory_store(addr_val, data_val, data_size, store_start)
+  -> Result<bool>` — Rust-native fast path including page-fetch retry.
+  Returns Ok(true) when handled, Ok(false) to fall through to Python.
+- `update_prefetch_on_store(addr_val, conc_result, data_size)` — dedups
+  the load_prefetch_cache invalidation + concretization-constraint
+  tracking that ran twice in the original (initial + retry).
+- `fallback_to_python_store(addr_val, data_val, data_size) -> Result<()>`
+  — Python callback dispatch for concrete & symbolic addresses, all
+  four ConcretizationResult shapes (Single / Multiple / Strided / TooLarge
+  / Failed).
 
-### Fix
-Both paths now `match self.endness`:
-- LE path keeps existing layout.
-- BE path concatenates parts in ascending order (`parts[0] :: ... ::
-  parts[N-1]`); linear scan uses
-  `hi = total - off_bits - 1, lo = total - off_bits - size*8`.
+### Subtle finding
+clippy::collapsible_if is suppressed by source comments BETWEEN the outer
+and inner if. The original `if page_fetched { /* comment */ if let Some(...)
+{ ... } }` had a comment that was silently keeping the warning quiet.
+Moving the comment INSIDE the inner if (during refactor) re-introduced the
+warning. Saved as memory `clippy-collapsible-if-comments`.
 
-### Tests added (in same `mod tests`)
-- `test_per_byte_symbolic_concat_little_endian`
-- `test_per_byte_symbolic_concat_big_endian`
-- `test_wide_linear_scan_little_endian`
-- `test_wide_linear_scan_big_endian`
-
-Reachability note: per-byte concat is hit by per-byte 8-bit stores
-(symbolic_spans never populates for base / 1-byte writes). Linear-scan
-is essentially dead code in current architecture (symbolic_spans
-short-circuits everything that would reach it), so the test bypasses
-public APIs and inserts directly into `symbolic_objects` — verifies the
-correctness of the path even though it's mostly unreachable.
+### Behavior preserved exactly
+- store_stmt_time_ns timing is recorded only on the first-try Ok(())
+  success path (NOT on retry-after-page-fetch, NOT on Python fallback).
+  Saved as memory `store-stmt-timing-divergence` so future work decides
+  deliberately whether to extend it.
+- The empty `if pointer_size == 32 && data_val.is_symbolic() && data_size <= 4 {}`
+  dead-code block at original line 147 is preserved as-is.
 
 ### Results
-- Rust unit tests: 31/31 memory module tests pass (4 new).
-- Python tests: 243/243 pass.
-- Build: clean cargo check + pip install -e.
+- Tests: 243/243 passing in test_rust_exploration.py
+- Build: clean cargo check + pip install -e
+- Clippy: warning count on statements.rs unchanged (18 → 18 after fixes)
+- Sanity bench: fauxware passes in 0.37s (finds SOSNEAKY)
 
 ### Files modified
-- native/angr/src/memory.rs (+150 / -11)
-  - Lines ~661-695: per-byte concat now endness-aware.
-  - Lines ~696-712: wider linear-scan now endness-aware.
-  - Tests added at end of mod tests.
+- native/angr/src/interpreter_cb/statements.rs (+244 / -221)
+
+### Commits
+- c680fce61 refactor(interpreter_cb): extract IRStmt::Store helpers (angr-6ls8)
 
 ### Memories saved
-- `invariant-load-concrete-slow-path-endness` — four endness-sensitive
-  reconstruction paths in load_concrete; all must agree.
-- `invariant-symbolic-spans-not-base` — symbolic_spans only covers
-  offsets 1..sym_bytes; sub-byte/8-bit stores never populate it; net
-  effect is that per-byte symbolic stores must reach the slow-path
-  reconstruction fallback.
+- `clippy-collapsible-if-comments` — comments between nested ifs suppress
+  clippy::collapsible_if; preserve them when refactoring.
+- `store-stmt-timing-divergence` — store_stmt_time_ns only fires on first-try
+  success path.
 
-## Next-up (still ready, P1/P2/P3)
+## Next-up (still ready, P1/P2)
 - angr-eygl (P1) Differential test harness — multi-session
 - angr-pufm (P1) Symbolic address concretization fallback
 - angr-prem (P2) MemoryLayer trait
@@ -63,4 +61,5 @@ correctness of the path even though it's mostly unreachable.
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
 - angr-zrq1 (P2) Dirty-call coverage stubs
+- angr-62z3 (P2) Generic divmod helper
 - (many P3 — see `bd ready -n 50`)
