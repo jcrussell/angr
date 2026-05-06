@@ -1,50 +1,38 @@
-# Loop session notes (2026-05-06, sixty-ninth loop session — DONE)
+# Loop session notes (2026-05-06, seventieth loop session — DONE)
 
-## Status: COMPLETE — angr-62z3 closed
+## Status: COMPLETE — angr-775n closed
 
-## Task: angr-62z3 (P2) — Extract a generic divmod helper
+## Task: angr-775n (P2) — Reduce hook-sync per-step overhead
 
-### What changed (native/angr/src/vex/ops.rs, +91 / -101)
+### What changed (angr/exploration/rust_state_sync.py, +18 / -18)
 
-- New `divmod_double_to_single(dividend, divisor, signed, ctx)` handles
-  any dividend_w = 2 * divisor_w (covers DivMod{U,S}{64to32,128to64}).
-  divmod_64_to_32 and divmod_128_to_64 are now thin wrappers asserting
-  the expected widths and forwarding.
-- Concrete branch operates uniformly in u128 / i128. Two helpers
-  introduced:
-  - `low_bit_mask_u128(width)` — low-bit mask for any width up to 128.
-  - `sign_extend_low_to_i128(value, width)` — sign-extends low `width`
-    bits of a u128 into a properly signed i128 (CRITICAL — necessary
-    so the dividend's bit 63 is treated as a sign bit when
-    dividend_w=64).
-- Symbolic branch is unchanged in spirit (extend divisor to dividend_w
-  using sign or zero ext, sdiv/srem or udiv/urem, extract divisor_w
-  low bits of each, concat(remainder, quotient)).
-- vec_mul_lo concrete fast path: per-elem-width
-  `(l_elem as uW as iW as iDbl) as u64` chains for left and right
-  operands collapse to two calls of new
-  `sign_extend_low_to_u64(value, width)`. Bit-equivalent because the
-  caller masks the product back to elem_width — only low elem_width
-  bits matter, and a u64 wrapping_mul preserves them regardless of
-  high-bit representation.
+`_sync_hooks_before_step` previously did, on the slow path:
+  1. `set(self._project._sim_procedures.keys())` — O(n) set construction
+  2. `current_hooks - self._registered_hooks` — set difference
+  3. iterate `new_hooks` and look up each `proc` in the dict again
+  4. add to `self._registered_hooks`
+
+That has been replaced with a single direct iteration over the
+sim-procedures dict items: for each `(addr, proc)`, skip if
+`addr in registered`, otherwise build the (addr, name, num_args,
+no_return) tuple and add the addr to `registered` in-place. This
+avoids both the set copy and the set-difference pass on the miss
+path. The fast path (`len == len`) is unchanged.
+
+Local refs `sim_procedures = self._project._sim_procedures` and
+`registered = self._registered_hooks` save attribute lookups on
+the miss path.
 
 ### Verification
-- cargo check --release: clean
-- cargo clippy: warning count on ops.rs unchanged
 - pytest tests/engines/test_rust_exploration.py: 243/243 passing
-- Sanity bench: fauxware finds SOSNEAKY in 0.38s
+- Sanity bench (rust): fauxware 0.38s OK, sym-write 0.42s OK,
+  hook_sync_calls=23 (sym-write hooks libc init).
 
 ### Commits
-- 3ffb96692 refactor(vex/ops): unify divmod 64→32 and 128→64 paths (angr-62z3)
+- (pending — see git log)
 
 ### Memories saved
-- `vec-mul-lo-sign-extend-equiv` — original chain sign-extends to
-  2*elem_width then zero-extends; full u64 sign-extension is
-  bit-equivalent for the masked-product result.
-- `invariant-divmod-generic-helper` — generic helper invariants:
-  must sign-extend dividend AND divisor from their declared widths
-  to i128, not just `as i128`. Result packing
-  (q | (r << divisor_w)) at dividend_w.
+- (none — change is mechanical and well-described in the issue)
 
 ## Next-up (still ready, P1/P2)
 - angr-eygl (P1) Differential test harness — multi-session
@@ -55,4 +43,6 @@
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
 - angr-zrq1 (P2) Dirty-call coverage stubs
+- angr-8s4b (P2) Invalidate concretize cache on store / reuse prefetch on writes
+- angr-dtiy (P2) Pre-allocate / reuse working buffers in prefetch and batch
 - (many P3 — see `bd ready -n 50`)
