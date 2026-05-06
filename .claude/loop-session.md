@@ -1,56 +1,65 @@
-# Loop session notes (2026-05-06, seventy-first loop session — DONE)
+# Loop session notes (2026-05-06, seventy-second loop session — DONE)
 
-## Status: COMPLETE — angr-qu5o closed
+## Status: COMPLETE — angr-mjc0 closed
 
-## Task: angr-qu5o (P2) — Unify Rust+Python load fallback control flow
+## Task: angr-mjc0 (P3) — Encapsulate _perf_stats behind explicit accessors
 
-### What changed (native/angr/src/interpreter_cb/expressions.rs, +65 / -57)
+### What changed
+New module `angr/exploration/rust_perf_tracker.py` (PerformanceTracker class).
+Wraps the previously-bare ``self._perf_stats`` dict. Writers now use named
+methods; reads still work via ``__getitem__`` / ``.get()`` so reporters and
+debug scripts didn't need touching.
 
-Extracted `try_rust_memory_load(py, callbacks, addr_val, size, load_start)
--> Result<Option<RustBV>, _>` mirroring the existing `try_rust_memory_store`
-helper (statements.rs:902).
+API:
+  - ``set_init_phase(phase, ns)`` / ``add_init_phase(phase, ns)``
+  - ``record_simprocedure_call(total_ns)`` (count++ + total_ns)
+  - ``increment_simprocedure_count()`` (orphan VEX-fallback site)
+  - ``add_simprocedure_phase(phase, ns)`` for sub-phases
+    (state_create / execute / sync_back / state_copy)
+  - ``record_memory_load(ns)`` / ``record_fetch_page(ns)`` / ``record_lift_block(ns)``
+  - ``__getitem__`` / ``get`` / ``as_dict`` for read-side compat
 
-The IRExpr::Load arm in `eval_expr_with_callbacks_inner` was a 60-line
-inline block that did:
-  1. take rust_memory borrow, call `load_symbolic_unified`
-  2. on Ok: update load stats, return value
-  3. on UnmappedPageInRegion: drop borrow, fetch_page_with_prefetch, retry
-  4. on Unmapped/SymbolicAddress: log and fall through
-  5. on other Err: propagate
+Files touched:
+  - angr/exploration/rust_perf_tracker.py  (new, ~100 lines)
+  - angr/exploration/rust_manager.py       (-24 init dict + 9 writer sites)
+  - angr/exploration/rust_callback_dispatch.py  (13 writer sites)
 
-That logic now lives in a dedicated method. The Load arm shrank to:
-  if self.use_rust_memory {
-      if let Some(value) = self.try_rust_memory_load(...)? { return Ok(value); }
-  }
-
-Behavior preserved exactly:
-- Stats only update on first-attempt success (retry does not, matching old code)
-- Same fall-through conditions
-- Same error mapping (Memory(e.to_string()) for unrecognized variants)
+### Scope decision
+Bead title mentions `_perf_stats / _state_cache / _rust_mgr`. Scoped to ONLY
+`_perf_stats` because:
+  - bead body and AC mention only PerformanceTracker
+  - `_state_cache` (71 refs) and `_rust_mgr` (222 refs) are larger refactors
+  - AC is "No direct dict access to _perf_stats outside its owning class"
+  - Future bead can pick up the others if desired
 
 ### Verification
-- pytest tests/engines/test_rust_exploration.py: 243/243 passing
-- Sanity bench (rust): fauxware 0.38s OK, sym-write 0.43s OK — matches prior session
+- pytest tests/engines/test_rust_exploration.py: 243/243 passing (8.20s)
+- run_single.py fauxware --engine rust: perf_report renders correctly with all
+  phases reporting non-zero where expected (Init=15.1ms, SimProcedures=6, etc)
 
 ### Build note
-`.venv/bin/` was missing this session. Used Z3_SYS_Z3_HEADER=/usr/include/z3.h
-override (already documented in memory `z3-header-fallback-system-include`)
-plus PYTHONPATH-based pytest invocation.
+Recovered .venv at session start. The venv was missing bin/ scripts and many
+.py files. Site-packages had only __pycache__/*.cpython-312.pyc files. Wrote
+/tmp/recover_pycache.sh to copy ``__pycache__/foo.cpython-312.pyc`` to
+``foo.pyc`` at the parent level (Python 3.x can find them there via PEP 488),
+recovered 549 files. Recreated minimal activate script. No pip available.
+Worked around missing editable-install .pth via PYTHONPATH=. for run_single.py.
 
 ### Commits
-- 6b8712f95 refactor(interpreter): extract try_rust_memory_load helper (angr-qu5o)
+- (pending) refactor(rust_manager): encapsulate _perf_stats behind PerformanceTracker (angr-mjc0)
 
 ### Memories saved
-- (none — refactor was mechanical, both relevant infra issues already memorized)
+- venv-recovery-pattern (how to recover py-stripped venv)
 
-## Next-up (still ready, P1/P2)
+## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — multi-session
-- angr-pufm (P1) Symbolic address concretization fallback
+- angr-pufm (P1) Symbolic address concretization fallback — multi-session
 - angr-prem (P2) MemoryLayer trait
 - angr-fk0m (P2) Unify rust_state_sync / cache / export mixins
 - angr-3zs6 (P2) FallbackStrategy enum
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
 - angr-zrq1 (P2) Dirty-call coverage stubs
-- angr-4j5u (P2) Decompose RustExplorationManager (95-field god struct)
+- angr-4j5u (P2) Decompose RustExplorationManager
+- angr-3vrj (P3) StateMetadata dataclass
 - (many P3 — see `bd ready -n 50`)
