@@ -614,6 +614,10 @@ pub struct RustSimState {
     /// Heap brk pointer — simple bump allocator for malloc/calloc.
     /// Default: 0xC0000000 (matching angr's DEFAULT_HEAP_LOCATION).
     heap_brk: u64,
+    /// POSIX brk pointer — separately tracks `state.posix.brk` from Python
+    /// for the brk(2) syscall. Default 0x1B00000 (matches Python default).
+    /// Distinct from `heap_brk`, which is the malloc bump allocator.
+    posix_brk: u64,
     /// Symbolic variable names read from stdin (for posix.dumps(0) export).
     /// Each entry is (name, bit_width) for a symbolic BVS created by native
     /// fgets/fgetc/getchar. On export, Python recreates matching claripy BVS
@@ -677,6 +681,7 @@ impl RustSimState {
             arch,
             fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
+            posix_brk: 0x1B0_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -712,6 +717,7 @@ impl RustSimState {
             arch,
             fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
+            posix_brk: 0x1B0_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -757,6 +763,7 @@ impl RustSimState {
             arch,
             fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
+            posix_brk: 0x1B0_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -873,6 +880,17 @@ impl RustSimState {
     /// Get the current heap brk pointer.
     pub fn heap_brk(&self) -> u64 {
         self.heap_brk
+    }
+
+    /// Get the POSIX brk pointer (mirrors `state.posix.brk` for the brk(2)
+    /// syscall). Distinct from `heap_brk`, which is the malloc bump allocator.
+    pub fn posix_brk(&self) -> u64 {
+        self.posix_brk
+    }
+
+    /// Set the POSIX brk pointer.
+    pub fn set_posix_brk(&mut self, addr: u64) {
+        self.posix_brk = addr;
     }
 
     /// Bump-allocate from the heap. Returns the address of the allocation.
@@ -1307,6 +1325,7 @@ impl RustSimState {
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
+            posix_brk: self.posix_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1337,6 +1356,7 @@ impl RustSimState {
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
+            posix_brk: self.posix_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1367,6 +1387,7 @@ impl RustSimState {
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
+            posix_brk: self.posix_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1405,6 +1426,7 @@ impl RustSimState {
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
+            posix_brk: self.posix_brk,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1488,6 +1510,7 @@ impl RustSimState {
             track_history: self.track_history,
             fs: best_fs,
             heap_brk: self.heap_brk,
+            posix_brk: self.posix_brk,
             stdin_symbols: merged_stdin,
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),

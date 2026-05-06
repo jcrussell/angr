@@ -16,6 +16,7 @@
 //! * `extract_procedure_args` (SystemV ABI: rdi, rsi, rdx, rcx, r8, r9)
 //!   matches for the first 3 args, which covers exit/exit_group.
 
+pub mod brk;
 pub mod exit;
 pub mod mprotect;
 
@@ -80,6 +81,8 @@ impl NativeSyscallRegistry {
         r.register("AMD64", 231, Arc::new(exit::NativeExitSyscall { name: "exit_group" }));
         // amd64: mprotect (10) — set page perms; -1 on misalign / unmapped.
         r.register("AMD64", 10, Arc::new(mprotect::NativeMprotectSyscall));
+        // amd64: brk (12) — grow/query the program break.
+        r.register("AMD64", 12, Arc::new(brk::NativeBrkSyscall));
         r
     }
 
@@ -138,6 +141,7 @@ mod tests {
         assert!(r.get("AMD64", 60).is_some(), "exit (60) should be registered");
         assert!(r.get("AMD64", 231).is_some(), "exit_group (231) should be registered");
         assert!(r.get("AMD64", 10).is_some(), "mprotect (10) should be registered");
+        assert!(r.get("AMD64", 12).is_some(), "brk (12) should be registered");
         assert!(r.get("AMD64", 0).is_none(), "read (0) is intentionally unregistered");
         assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");
     }
