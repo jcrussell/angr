@@ -1,62 +1,56 @@
-# Loop session notes (2026-05-06, sixtieth loop session — DONE)
+# Loop session notes (2026-05-06, sixty-first loop session — DONE)
 
-## Status: COMPLETE — angr-2i4n closed
+## Status: COMPLETE — angr-io1t closed (commit a2a33686f)
 
-## Task: angr-2i4n (P2)
-Tests: error path coverage (unmapped, OOM, Z3 timeout, permission)
+## Task: angr-io1t (P2)
+Tests: VEX FP edge cases (NaN, infinity, conversion overflow, symbolic rounding)
 
 ## What was done
-Added three Python tests to TestErrorRecovery in
-`tests/engines/test_rust_exploration.py` (commit 3159ccfcd):
+Added 11 unit tests to `vex::ops::tests` in `native/angr/src/vex/ops.rs`:
 
-1. `test_unmapped_concrete_store_returns_error` — mirror of the
-   existing unmapped-load test; ensures `RustSimState.memory_store`
-   to an unmapped concrete address raises ValueError("unmapped"),
-   not silently auto-maps.
+1. `test_round_f32_to_int_symbolic_rm` — value=-2.5f32, target=-3.0f32 forces
+   rm low2 bits == 1 (floor). Exercises 4-way ITE in
+   `build_fp_round_to_int_cached`.
+2. `test_round_f64_to_int_symbolic_rm` — value=2.5f64, target=3.0f64 forces
+   rm low2 bits == 2 (ceil).
+3. `test_f32_to_i32s_nan` — NaN → 0 (Rust `as` cast).
+4. `test_f32_to_i32s_pos_infinity` — +inf → i32::MAX.
+5. `test_f32_to_i32s_neg_infinity` — -inf → i32::MIN.
+6. `test_f32_to_i32s_overflow` — 1e30 → i32::MAX, -1e30 → i32::MIN.
+7. `test_i32s_to_f32_int_min` — -2^31 round-trips exactly.
+8. `test_f64_to_f32_overflow` — 1e300 → +inf as f32.
+9. `test_f64_to_f32_nan` — NaN preserved.
+10. `test_f64_to_f32_neg_infinity` — -inf preserved.
+11. `test_vec_float_scalar_sub_concrete_lane_isolation` —
+    `test_vec_float_scalar_mul_concrete_lane_isolation` — upper 96 bits of
+    xmm0 must pass through unchanged. (Counts as 11 with the next.)
+12. `test_vec_float_scalar_max_nan_concrete` — MAXSS(NaN, 3.0) = 3.0,
+    documents Rust `>`-style max semantics over IEEE fpa_max.
 
-2. `test_cross_page_permission_write_returns_error` — exercises the
-   cross-page permission check from the Python boundary: maps page 0
-   RW and page 1 R-only, enables enforcement, asserts a 4-byte write
-   straddling the boundary raises ValueError("permission"). Sanity
-   check confirms a write entirely within the RW page still succeeds.
-
-3. `test_z3_solver_timeout_does_not_hang` — configures a 50ms Z3
-   timeout via RustSolverContext.set_timeout, builds a 128-bit
-   semiprime factoring constraint with both factors > 2^60, asserts
-   `satisfiable()` returns wall-clock < 5s. Doesn't assert on the
-   bool result (Unknown collapses to false in SymContext::is_sat).
-
-Python tests: 218 → 221 passing. No Rust changes — pure Python test addition.
-
-## Key empirical findings
-- The bead's reference to "interpreter_cb/execution.rs:600-700" is
-  stale; the file is only 511 lines now. Tests live at the Python
-  RustSimState/RustSolverContext boundary instead — that's where the
-  user-facing error contract lives.
-- SymContext::is_sat returns bool: SatResult::{Sat→true, Unknown→false,
-  Unsat→false}. From Python you can't differentiate Unknown from Unsat,
-  so Z3-timeout tests have to assert wall-clock bound, not result.
-- Permission enforcement is OFF by default in RustSimState; test must
-  call `set_enforce_permissions(True)` before exercising violations.
-- Permission bit encoding for `map_memory(perm_bits)`: 0x4=R, 0x2=W,
-  0x1=X (NOT mprotect; bit 0x1 is execute, not read).
+vex::ops::tests: 28 → 39 passing. Python: 221/221 still green.
 
 ## Memories saved
-- `z3-timeout-test-pattern` — how to write hang-protection tests
-  given the Unknown→false collapse.
-- `invariant-rust-perm-bit-encoding` — perm bits for map_memory.
+- `fp-symbolic-rm-test-pattern` — how to write symbolic-rm 4-way ITE
+  tests (pick value that differs across all 4 modes, constrain target,
+  assert eval(rm) & 0x3).
+- `invariant-rust-as-cast-saturating` — Rust 1.45+ saturation semantics
+  for f32/f64 → integer conversions; tests rely on this.
 
-## Build env reminder
-- Pure-test change. No `cargo build` or `pip install -e .` needed.
-- Tests run in 7.6s for the full file.
+## Build env note
+- venv was missing z3-solver Python package. Per memory
+  `z3-header-fallback-system-include` the better fix is to set
+  `Z3_SYS_Z3_HEADER=/usr/include/z3.h` (no venv mutation). I instead
+  ran `pip install z3-solver==4.13.0` which also worked since 4.13
+  matches the libz3.so version. Future sessions should prefer the env
+  var to avoid mutating the venv.
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — BIG, multi-session
 - angr-pufm (P1) Symbolic address concretization fallback — large feature
-- angr-io1t (P2) Tests: VEX FP edge cases (NaN, infinity, conversion)
 - angr-prem (P2) Introduce a MemoryLayer trait
 - angr-fk0m (P2) Unify rust_state_sync / rust_state_cache / rust_state_export mixins
 - angr-nnov (P2) Fill out RustStateProxy
 - angr-4j5u (P2) Decompose RustExplorationManager god-struct
 - angr-imy1 (P2) Native syscall coverage
 - angr-fbl0 (P2) Native SimProcedure coverage
+- angr-33gq (P2) Symbolic vector shift amounts (3 variants)
