@@ -48,165 +48,128 @@ pub struct BranchSnapshot {
     pub memory: Option<SymbolicMemory>,
 }
 
-/// Execution statistics for profiling.
-///
-/// Tracks timing and counts for various operations during VEX execution.
-/// Times are in nanoseconds for precision.
-#[derive(Debug, Clone, Default)]
-pub struct ExecutionStats {
-    /// Number of load statements executed.
-    pub load_stmt_count: u64,
-    /// Time spent in load statements (nanoseconds).
-    pub load_stmt_time_ns: u64,
-    /// Number of store statements executed.
-    pub store_stmt_count: u64,
-    /// Time spent in store statements (nanoseconds).
-    pub store_stmt_time_ns: u64,
-    /// Number of exit statements executed.
-    pub exit_stmt_count: u64,
-    /// Time spent in exit statements (nanoseconds).
-    pub exit_stmt_time_ns: u64,
-    /// Number of Python callback invocations.
-    pub python_callback_count: u64,
-    /// Time spent in Python callbacks (nanoseconds).
-    pub python_callback_time_ns: u64,
-    /// Number of address concretizations performed.
-    pub concretize_count: u64,
-    /// Time spent in address concretization (nanoseconds).
-    pub concretize_time_ns: u64,
-    /// Number of IRSB cache hits.
-    pub cache_hit_count: u64,
-    /// Number of IRSB cache misses (lifts needed).
-    pub cache_miss_count: u64,
-    /// Time spent lifting blocks (nanoseconds).
-    pub lift_time_ns: u64,
-    /// Number of Rust memory loads (vs callback fallback).
-    pub rust_memory_load_count: u64,
-    /// Number of Python fallback memory loads.
-    pub fallback_memory_load_count: u64,
-    /// Number of Rust memory stores.
-    pub rust_memory_store_count: u64,
-    /// Number of Python fallback memory stores.
-    pub fallback_memory_store_count: u64,
-    /// Number of expression evaluations.
-    pub expr_eval_count: u64,
-    /// Time spent evaluating expressions (nanoseconds).
-    pub expr_eval_time_ns: u64,
-    /// Number of blocks executed.
-    pub blocks_executed: u64,
-    /// Total execution time (nanoseconds).
-    pub total_time_ns: u64,
-    /// Time spent setting up interpreter per step (nanoseconds).
-    pub step_setup_time_ns: u64,
-    /// Number of exploration steps executed.
-    pub step_count: u64,
-    /// Number of solver satisfiability checks.
-    pub solver_sat_count: u64,
-    /// Time spent in solver satisfiability checks (nanoseconds).
-    pub solver_sat_time_ns: u64,
-    /// Time spent executing blocks (nanoseconds) — the inner VEX execution.
-    pub block_exec_time_ns: u64,
-    /// Time spent in prefetch loads per block (nanoseconds).
-    pub prefetch_time_ns: u64,
-    /// Number of statements executed.
-    pub stmt_count: u64,
-    /// Number of deferred forks processed in exploration loop.
-    pub deferred_fork_count: u64,
-    /// Time spent processing deferred forks (nanoseconds).
-    pub deferred_fork_time_ns: u64,
-    /// Time spent in solver fork/clone operations (nanoseconds).
-    pub solver_fork_time_ns: u64,
-    /// Number of solver fork operations.
-    pub solver_fork_count: u64,
-    /// Number of active states at end of run.
-    pub active_states_count: u64,
-    /// Time spent in the main run() loop overhead (nanoseconds).
-    pub run_loop_time_ns: u64,
+/// Generates `ExecutionStats` plus its `to_hashmap` / `merge` impls from a
+/// single field list. `: sum` accumulates on merge; `: snapshot` overwrites.
+/// Adding a stat means editing only the invocation below.
+macro_rules! define_execution_stats {
+    (
+        $(
+            $(#[$attr:meta])*
+            $field:ident: $mode:ident,
+        )*
+    ) => {
+        /// Execution statistics for profiling.
+        ///
+        /// Tracks timing and counts for various operations during VEX execution.
+        /// Times are in nanoseconds for precision.
+        #[derive(Debug, Clone, Default)]
+        pub struct ExecutionStats {
+            $(
+                $(#[$attr])*
+                pub $field: u64,
+            )*
+        }
+
+        impl ExecutionStats {
+            /// Convert stats to a HashMap for Python exposure.
+            pub fn to_hashmap(&self) -> HashMap<String, u64> {
+                let mut map = HashMap::new();
+                $(
+                    map.insert(stringify!($field).to_string(), self.$field);
+                )*
+                map
+            }
+
+            /// Reset all statistics to zero.
+            pub fn reset(&mut self) {
+                *self = Self::default();
+            }
+
+            /// Merge another stats instance into this one.
+            pub fn merge(&mut self, other: &ExecutionStats) {
+                $(
+                    define_execution_stats!(@merge_field self.$field, other.$field, $mode);
+                )*
+            }
+        }
+    };
+    (@merge_field $self_field:expr, $other_field:expr, sum) => {
+        $self_field += $other_field;
+    };
+    (@merge_field $self_field:expr, $other_field:expr, snapshot) => {
+        $self_field = $other_field;
+    };
 }
 
-impl ExecutionStats {
-    /// Convert stats to a HashMap for Python exposure.
-    pub fn to_hashmap(&self) -> HashMap<String, u64> {
-        let mut map = HashMap::new();
-        map.insert("load_stmt_count".to_string(), self.load_stmt_count);
-        map.insert("load_stmt_time_ns".to_string(), self.load_stmt_time_ns);
-        map.insert("store_stmt_count".to_string(), self.store_stmt_count);
-        map.insert("store_stmt_time_ns".to_string(), self.store_stmt_time_ns);
-        map.insert("exit_stmt_count".to_string(), self.exit_stmt_count);
-        map.insert("exit_stmt_time_ns".to_string(), self.exit_stmt_time_ns);
-        map.insert("python_callback_count".to_string(), self.python_callback_count);
-        map.insert("python_callback_time_ns".to_string(), self.python_callback_time_ns);
-        map.insert("concretize_count".to_string(), self.concretize_count);
-        map.insert("concretize_time_ns".to_string(), self.concretize_time_ns);
-        map.insert("cache_hit_count".to_string(), self.cache_hit_count);
-        map.insert("cache_miss_count".to_string(), self.cache_miss_count);
-        map.insert("lift_time_ns".to_string(), self.lift_time_ns);
-        map.insert("rust_memory_load_count".to_string(), self.rust_memory_load_count);
-        map.insert("fallback_memory_load_count".to_string(), self.fallback_memory_load_count);
-        map.insert("rust_memory_store_count".to_string(), self.rust_memory_store_count);
-        map.insert("fallback_memory_store_count".to_string(), self.fallback_memory_store_count);
-        map.insert("expr_eval_count".to_string(), self.expr_eval_count);
-        map.insert("expr_eval_time_ns".to_string(), self.expr_eval_time_ns);
-        map.insert("blocks_executed".to_string(), self.blocks_executed);
-        map.insert("total_time_ns".to_string(), self.total_time_ns);
-        map.insert("step_setup_time_ns".to_string(), self.step_setup_time_ns);
-        map.insert("step_count".to_string(), self.step_count);
-        map.insert("solver_sat_count".to_string(), self.solver_sat_count);
-        map.insert("solver_sat_time_ns".to_string(), self.solver_sat_time_ns);
-        map.insert("block_exec_time_ns".to_string(), self.block_exec_time_ns);
-        map.insert("prefetch_time_ns".to_string(), self.prefetch_time_ns);
-        map.insert("stmt_count".to_string(), self.stmt_count);
-        map.insert("deferred_fork_count".to_string(), self.deferred_fork_count);
-        map.insert("deferred_fork_time_ns".to_string(), self.deferred_fork_time_ns);
-        map.insert("solver_fork_time_ns".to_string(), self.solver_fork_time_ns);
-        map.insert("solver_fork_count".to_string(), self.solver_fork_count);
-        map.insert("active_states_count".to_string(), self.active_states_count);
-        map.insert("run_loop_time_ns".to_string(), self.run_loop_time_ns);
-        map
-    }
-
-    /// Reset all statistics to zero.
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Merge another stats instance into this one.
-    pub fn merge(&mut self, other: &ExecutionStats) {
-        self.load_stmt_count += other.load_stmt_count;
-        self.load_stmt_time_ns += other.load_stmt_time_ns;
-        self.store_stmt_count += other.store_stmt_count;
-        self.store_stmt_time_ns += other.store_stmt_time_ns;
-        self.exit_stmt_count += other.exit_stmt_count;
-        self.exit_stmt_time_ns += other.exit_stmt_time_ns;
-        self.python_callback_count += other.python_callback_count;
-        self.python_callback_time_ns += other.python_callback_time_ns;
-        self.concretize_count += other.concretize_count;
-        self.concretize_time_ns += other.concretize_time_ns;
-        self.cache_hit_count += other.cache_hit_count;
-        self.cache_miss_count += other.cache_miss_count;
-        self.lift_time_ns += other.lift_time_ns;
-        self.rust_memory_load_count += other.rust_memory_load_count;
-        self.fallback_memory_load_count += other.fallback_memory_load_count;
-        self.rust_memory_store_count += other.rust_memory_store_count;
-        self.fallback_memory_store_count += other.fallback_memory_store_count;
-        self.expr_eval_count += other.expr_eval_count;
-        self.expr_eval_time_ns += other.expr_eval_time_ns;
-        self.blocks_executed += other.blocks_executed;
-        self.total_time_ns += other.total_time_ns;
-        self.step_setup_time_ns += other.step_setup_time_ns;
-        self.step_count += other.step_count;
-        self.solver_sat_count += other.solver_sat_count;
-        self.solver_sat_time_ns += other.solver_sat_time_ns;
-        self.block_exec_time_ns += other.block_exec_time_ns;
-        self.prefetch_time_ns += other.prefetch_time_ns;
-        self.stmt_count += other.stmt_count;
-        self.deferred_fork_count += other.deferred_fork_count;
-        self.deferred_fork_time_ns += other.deferred_fork_time_ns;
-        self.solver_fork_time_ns += other.solver_fork_time_ns;
-        self.solver_fork_count += other.solver_fork_count;
-        self.active_states_count = other.active_states_count; // snapshot, not sum
-        self.run_loop_time_ns += other.run_loop_time_ns;
-    }
+define_execution_stats! {
+    /// Number of load statements executed.
+    load_stmt_count: sum,
+    /// Time spent in load statements (nanoseconds).
+    load_stmt_time_ns: sum,
+    /// Number of store statements executed.
+    store_stmt_count: sum,
+    /// Time spent in store statements (nanoseconds).
+    store_stmt_time_ns: sum,
+    /// Number of exit statements executed.
+    exit_stmt_count: sum,
+    /// Time spent in exit statements (nanoseconds).
+    exit_stmt_time_ns: sum,
+    /// Number of Python callback invocations.
+    python_callback_count: sum,
+    /// Time spent in Python callbacks (nanoseconds).
+    python_callback_time_ns: sum,
+    /// Number of address concretizations performed.
+    concretize_count: sum,
+    /// Time spent in address concretization (nanoseconds).
+    concretize_time_ns: sum,
+    /// Number of IRSB cache hits.
+    cache_hit_count: sum,
+    /// Number of IRSB cache misses (lifts needed).
+    cache_miss_count: sum,
+    /// Time spent lifting blocks (nanoseconds).
+    lift_time_ns: sum,
+    /// Number of Rust memory loads (vs callback fallback).
+    rust_memory_load_count: sum,
+    /// Number of Python fallback memory loads.
+    fallback_memory_load_count: sum,
+    /// Number of Rust memory stores.
+    rust_memory_store_count: sum,
+    /// Number of Python fallback memory stores.
+    fallback_memory_store_count: sum,
+    /// Number of expression evaluations.
+    expr_eval_count: sum,
+    /// Time spent evaluating expressions (nanoseconds).
+    expr_eval_time_ns: sum,
+    /// Number of blocks executed.
+    blocks_executed: sum,
+    /// Total execution time (nanoseconds).
+    total_time_ns: sum,
+    /// Time spent setting up interpreter per step (nanoseconds).
+    step_setup_time_ns: sum,
+    /// Number of exploration steps executed.
+    step_count: sum,
+    /// Number of solver satisfiability checks.
+    solver_sat_count: sum,
+    /// Time spent in solver satisfiability checks (nanoseconds).
+    solver_sat_time_ns: sum,
+    /// Time spent executing blocks (nanoseconds) — the inner VEX execution.
+    block_exec_time_ns: sum,
+    /// Time spent in prefetch loads per block (nanoseconds).
+    prefetch_time_ns: sum,
+    /// Number of statements executed.
+    stmt_count: sum,
+    /// Number of deferred forks processed in exploration loop.
+    deferred_fork_count: sum,
+    /// Time spent processing deferred forks (nanoseconds).
+    deferred_fork_time_ns: sum,
+    /// Time spent in solver fork/clone operations (nanoseconds).
+    solver_fork_time_ns: sum,
+    /// Number of solver fork operations.
+    solver_fork_count: sum,
+    /// Number of active states at end of run.
+    active_states_count: snapshot,
+    /// Time spent in the main run() loop overhead (nanoseconds).
+    run_loop_time_ns: sum,
 }
 
 /// Errors during callback-based VEX execution.
