@@ -1,59 +1,71 @@
-# Loop session notes (2026-05-06, seventy-eighth loop session — DONE)
+# Loop session notes (2026-05-06, seventy-ninth loop session — DONE)
 
-## Status: COMPLETE — angr-zrq1 closed
+## Status: COMPLETE — angr-imy1 closed
 
-## Task: angr-zrq1 (P2) — Dirty-call coverage: symbolic guard, symbolic args, missing-handler stubs
+## Task: angr-imy1 (P2) — Native syscall coverage (partial)
 
-Closed the carry-over hard-error paths in
-`native/angr/src/interpreter_cb/statements.rs::IRStmt::Dirty`:
+Delivered the dispatch infrastructure plus exit/exit_group on amd64.
+Remaining syscalls (read, write, brk, mmap, mprotect) split into
+follow-up beads (each warrants its own; they interact with broader
+state).
 
-1. **Symbolic guard** (was Err): now `check_branch_feasibility` →
-   - `!cb_true` → skip (provably false guard)
-   - `cb_false` → `assume_true(guard)` (concretize-to-taken; lossy but
-     unblocks; matches angr Python's existing pattern, which doesn't
-     even check the guard).
-   - `!cb_false` → guard is provably true; just fall through.
-2. **Symbolic args** (was Err): eager-concretize via `ctx.eval` +
-   `assume_true(arg.eq(concrete))`. Native dispatch and Python
-   callback both see concrete u64 args afterward.
-3. **Missing handler + no Python callback** (was Err): warn-log,
-   write a fresh symbolic tmp (when `dirty.tmp` exists) at the
-   correct width, continue. Mirrors Python `_cb_dirty_call` stub
-   at rust_manager.py:958 which returns zero-bytes + False.
+### What landed
+
+New module `native/angr/src/syscalls/` with:
+- `mod.rs`: `NativeSyscallRegistry` (HashMap keyed by `(arch, num)`),
+  `NativeSyscall` trait, `SyscallOutcome::{Continue { ret }, Exit}`.
+- `exit.rs`: `NativeExitSyscall` — returns `Exit`, dispatcher routes to
+  `STASH_DEADENDED`. Mirrors libc.exit (NO_RET) semantics; doesn't
+  bother extracting the exit code, matching angr Python.
+
+Wiring:
+- `lib.rs`: `pub mod syscalls`.
+- `exploration/mod.rs`: `native_syscalls: NativeSyscallRegistry` field
+  on `RustExplorationManager`, initialized via `NativeSyscallRegistry::new()`.
+- `exploration/stepping.rs`: `RunResult::Syscall` arm tries native
+  dispatch before creating `PendingCallback`. Continue → set return
+  register + process deferred forks; Exit → push to deadended +
+  process deferred forks.
 
 ### Verification
-- pytest tests/engines/test_rust_exploration.py: 243/243 pass (8.24s)
-- cargo test --lib --release --features vex-engine-z3: 463/463 pass
-- Quick benchmarks: fauxware 0.10s, defcamp_r100 0.22s,
-  securityfest_fairlight 14.81s (all within baseline variance).
+- pytest: 243/243 pass (8.46s)
+- cargo test: 467/467 pass (was 463; +4 syscall unit tests)
+- Benchmarks: fauxware 0.38s, defcamp_r100 0.23s, ais3_crackme 0.87s
+  (all within baseline)
 
 ### Commit
-- 1e901a407 fix(vex/dirty): graceful fallback for symbolic guard/args/missing handler
+- eb4f5f8f3 feat(syscalls): native exit/exit_group dispatch (angr-imy1)
 
 ### Memories saved
-- `invariant-vex-dirty-symbolic-guard` — semantics of symbolic guard
-  on dirty calls; concretize-to-taken is at least as careful as angr
-  Python which ignores the guard outright.
-- `invariant-eager-concretize-pattern` — the standard ctx.eval +
-  assume_true(eq) recipe for symbolic-must-be-concrete sites.
-- `invariant-rust-python-dirty-callback-symmetry` — _cb_dirty_call
-  is registered unconditionally; stub-on-no-handler is defense-only
-  but mirrors Python-side behavior on unknown handler names.
+- `invariant-native-syscall-dispatch` — registry/dispatch shape
+- `invariant-amd64-syscall-abi` — r10 vs rcx for 4th arg; existing
+  extract_procedure_args is ≤3-arg-safe only
+- `invariant-native-syscall-pc-contract` — PC already advanced by the
+  time Syscall arm fires; handlers only set the return register
+
+### Follow-up beads created
+- angr-lrdr (P3) Native amd64 brk syscall handler
+- angr-uzla (P3) Native amd64 mprotect syscall handler
+- angr-vybt (P4) Native amd64 mmap/munmap syscall handlers
+- angr-0z34 (P4) Native amd64 read/write syscall handlers
 
 ### Build environment notes (carry-over)
-- `Z3_SYS_Z3_HEADER=/usr/include/z3.h` (.venv has pyc-only z3)
-- `cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
+- `Z3_SYS_Z3_HEADER=/usr/include/z3.h` for cargo
+- `cp -f target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
 - pytest needs `PYTHONPATH=.`
-- pip install in this venv currently broken (resolvelib import error);
-  use the cargo-build + cp .so path instead.
+- run_single.py needs `PYTHONPATH=/home/ubuntu/repos/angr` (subprocess)
+- pip install path is broken (resolvelib import error); use cargo +
+  cp .so path
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — substantial infra
 - angr-pufm (P1) Symbolic address concretization fallback — architectural
 - angr-prem (P2) MemoryLayer trait
 - angr-fk0m (P2) Unify rust_state_sync / cache / export mixins
-- angr-imy1 (P2) Native syscall coverage (exit, write, read, mmap, brk, mprotect)
 - angr-fbl0 (P2) Native SimProcedure coverage gaps (audit needed)
-- angr-3zs6 (P2) FallbackStrategy enum
+- angr-3zs6 (P2) FallbackStrategy enum (depends on angr-m2hf)
 - angr-nnov (P2) Fill out RustStateProxy
 - angr-4j5u (P2) Decompose Rust-side RustExplorationManager
+- angr-m2hf (P2) Unified error trait + single PyO3 conversion site
+- angr-lrdr (P3) Native amd64 brk syscall handler [new]
+- angr-uzla (P3) Native amd64 mprotect syscall handler [new]
