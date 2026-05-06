@@ -58,229 +58,13 @@ impl<'a> CallbackInterpreter<'a> {
                 let data_size = ((data_val.width() + 7) / 8) as usize;
                 if self.profiling_enabled { self.stats.store_stmt_count += 1; }
 
-                // Try Rust-native memory first if enabled
-                if self.use_rust_memory {
-                    // Concretize for write with per-block cache (avoids redundant Z3 calls)
-                    let conc_result = self.concretize_cached_write(&addr_val);
-
-                    // Attempt store using pre-computed concretization
-                    let first_result = if let Some(ref mut rust_mem) = self.rust_memory {
-                        Some(rust_mem.store_with_concretization(&addr_val, data_val.clone(), &*conc_result, self.ctx))
-                    } else {
-                        None
-                    };
-
-                    if let Some(result) = first_result {
-                        match result {
-                            Ok(()) => {
-                                // Update prefetch cache and track constraints
-                                match &*conc_result {
-                                    ConcretizationResult::Single(addr_concrete) => {
-                                        self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
-                                        self.track_concretization_constraint(&addr_val, *addr_concrete);
-                                    }
-                                    _ => {
-                                        self.load_prefetch_cache.clear();
-                                    }
-                                }
-
-                                // Rust owns memory — no need to sync stores to Python.
-                                if let Some(start) = store_start {
-                                    self.stats.store_stmt_time_ns += start.elapsed().as_nanos() as u64;
-                                }
-                                return Ok(StmtResult::Continue);
-                            }
-                            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
-                                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
-                                let prefetch_count = self.page_prefetch_count;
-                                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
-
-                                if page_fetched {
-                                    // Page was fetched - retry store using cached concretization
-                                    if let Some(ref mut rust_mem) = self.rust_memory {
-                                        match rust_mem.store_with_concretization(&addr_val, data_val.clone(), &*conc_result, self.ctx) {
-                                            Ok(()) => {
-                                                match &*conc_result {
-                                                    ConcretizationResult::Single(addr_concrete) => {
-                                                        self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
-                                                        self.track_concretization_constraint(&addr_val, *addr_concrete);
-                                                    }
-                                                    _ => {
-                                                        self.load_prefetch_cache.clear();
-                                                    }
-                                                }
-
-                                                return Ok(StmtResult::Continue);
-                                            }
-                                            Err(_e) => {
-                                                // Still failed - fall through to Python callback
-                                            }
-                                        }
-                                    }
-                                }
-                                // If page not fetched, fall through to Python callback
-                            }
-                            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
-                                // Totally unmapped (not in lazy region) - fall through to Python
-                                log::debug!(
-                                    "Unmapped memory store at 0x{:x} (size={}), falling back to Python",
-                                    addr, unmapped_size
-                                );
-                            }
-                            Err(MemoryError::SymbolicAddress { description }) => {
-                                // Address range too large or symbolic - fall through to Python
-                                // Python's memory model handles large ranges natively
-                                log::debug!(
-                                    "Symbolic address store: {}, falling back to Python",
-                                    description
-                                );
-                            }
-                            Err(e) => {
-                                return Err(CbExecutionError::Memory(e.to_string()));
-                            }
-                        }
-                    }
+                if self.use_rust_memory
+                    && self.try_rust_memory_store(py, callbacks, &addr_val, &data_val, data_size, store_start)?
+                {
+                    return Ok(StmtResult::Continue);
                 }
 
-                // Store via callback - handle symbolic addresses
-                if let Some(addr_concrete) = addr_val.as_u64() {
-                    if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {
-                    }
-                    self.load_prefetch_cache.remove(&(addr_concrete, data_size));
-
-                    // Check if data is symbolic - use symbolic store callback.
-                    // Only for 32-bit architectures where it's needed (e.g., flareon2015_5).
-                    // 64-bit: skip entirely (too many false positives from extern addresses).
-                    let use_sym_store = if self.arch.pointer_size() == 32 {
-                        let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
-                            // Non-wrapping distance check
-                            let dist = if addr_concrete >= sp_val {
-                                addr_concrete - sp_val
-                            } else {
-                                sp_val - addr_concrete
-                            };
-                            dist <= 0x10000
-                        });
-                        !is_stack
-                    } else {
-                        false  // Skip for 64-bit — too expensive
-                    };
-                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
-                        // Try symbolic store callback (preserves expression tree)
-                        let sym_ok = (|| -> Result<(), CbExecutionError> {
-                            self.flush_stores(py, callbacks)?;
-                            callbacks.call_memory_store_symbolic_value(py, addr_concrete, &data_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))
-                        })();
-                        if let Err(_e) = sym_ok {
-                            // Symbolic store callback failed — evaluate to concrete using
-                            // solver and store directly via Python callback (not pending_stores).
-                            // Using pending_stores would pollute all_flushed_stores with zeros
-                            // since bv_to_bytes returns zeros for symbolic expressions.
-                            let concrete_val = self.ctx.eval(&data_val).unwrap_or(0);
-                            let size_bytes = (data_val.width() / 8) as usize;
-                            let mut data_bytes = vec![0u8; size_bytes];
-                            for i in 0..size_bytes {
-                                data_bytes[i] = (concrete_val >> (i * 8)) as u8;
-                            }
-                            let _ = callbacks.call_memory_store(py, addr_concrete, &data_bytes);
-                        }
-                    } else {
-                        // Fast path: buffer for batch processing
-                        let data_bytes = bv_to_bytes(&data_val);
-                        // Track symbolic values for load forwarding
-                        if data_val.is_symbolic() {
-                            self.pending_symbolic_stores.insert(addr_concrete, data_val);
-                        }
-                        self.pending_stores.push(addr_concrete, data_bytes);
-
-                        // Auto-flush if buffer is full
-                        if self.pending_stores.len() >= self.max_pending_stores {
-                            self.flush_stores(py, callbacks)?;
-                        }
-                    }
-                } else {
-                    // Symbolic address - clear entire prefetch cache
-                    self.load_prefetch_cache.clear();
-                    // Symbolic address - flush buffer first, then handle specially
-                    self.flush_stores(py, callbacks)?;
-                    // Symbolic address - use cached write concretization
-                    let concret_result = self.concretize_cached_write(&addr_val);
-                    match &*concret_result {
-                        ConcretizationResult::Single(addr_concrete) => {
-                            let addr_concrete = *addr_concrete;
-                            // Track concretization constraint for Python sync
-                            self.track_concretization_constraint(&addr_val, addr_concrete);
-                            // Use symbolic store for symbolic values to preserve expression trees
-                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                                callbacks
-                                    .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                let data_bytes = bv_to_bytes(&data_val);
-                                callbacks
-                                    .call_memory_store(py, addr_concrete, &data_bytes)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            }
-                        }
-                        ConcretizationResult::Multiple(addrs) => {
-                            self.sync_before_callback(py, callbacks)?;
-                            // Build ITE chain in Rust for ≤16 addresses
-                            if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
-                                self.build_ite_store_from_callbacks(py, callbacks, addrs, &addr_val, &data_val)?;
-                            } else {
-                                callbacks
-                                    .call_memory_store_symbolic(py, addrs, &data_val, &addr_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            }
-                        }
-                        ConcretizationResult::Strided { base, stride, count } => {
-                            self.sync_before_callback(py, callbacks)?;
-                            let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
-                            if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
-                                self.build_ite_store_from_callbacks(py, callbacks, &addrs, &addr_val, &data_val)?;
-                            } else {
-                                callbacks
-                                    .call_memory_store_symbolic(py, &addrs, &data_val, &addr_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            }
-                        }
-                        ConcretizationResult::TooLarge { min, max, .. } => {
-                            let (min, max) = (*min, *max);
-                            // Address range too large - delegate to Python's memory model
-                            // which has access to angr's address concretization strategies
-
-                            // Sync any pending constraints to Python before fallback
-                            self.sync_before_callback(py, callbacks)?;
-
-                            // Use full symbolic callback to preserve expression trees
-                            if callbacks.has_memory_store_symbolic_full() {
-                                                                callbacks
-                                    .call_memory_store_symbolic_full(py, &addr_val, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(format!(
-                                        "symbolic store full callback failed at 0x{:x}-0x{:x}: {}",
-                                        min, max, e
-                                    )))?;
-                            } else {
-                                // Fallback to byte-based store (loses symbolic info)
-                                let data_bytes = bv_to_bytes(&data_val);
-                                callbacks
-                                    .call_memory_store_symbolic_ast(py, &data_bytes, data_bytes.len() as u32)
-                                    .map_err(|e| CbExecutionError::Callback(format!(
-                                        "symbolic store AST callback failed at 0x{:x}-0x{:x}: {}",
-                                        min, max, e
-                                    )))?;
-                            }
-                        }
-                        ConcretizationResult::Failed(reason) => {
-                            return Err(CbExecutionError::Unsupported(format!(
-                                "symbolic store address: {}",
-                                reason
-                            )));
-                        }
-                    }
-                }
-
+                self.fallback_to_python_store(py, callbacks, &addr_val, data_val, data_size)?;
                 Ok(StmtResult::Continue)
             }
 
@@ -1111,5 +895,244 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(StmtResult::Continue)
             }
         }
+    }
+
+    /// Attempt to store via Rust-native memory. Returns Ok(true) if the store
+    /// was handled, Ok(false) if the caller should fall back to the Python path.
+    fn try_rust_memory_store(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        data_val: &RustBV,
+        data_size: usize,
+        store_start: Option<Instant>,
+    ) -> Result<bool, CbExecutionError> {
+        // Concretize for write with per-block cache (avoids redundant Z3 calls)
+        let conc_result = self.concretize_cached_write(addr_val);
+
+        // Attempt store using pre-computed concretization
+        let first_result = match self.rust_memory.as_mut() {
+            Some(rust_mem) => rust_mem.store_with_concretization(addr_val, data_val.clone(), &*conc_result, self.ctx),
+            None => return Ok(false),
+        };
+
+        match first_result {
+            Ok(()) => {
+                self.update_prefetch_on_store(addr_val, &conc_result, data_size);
+                // Rust owns memory — no need to sync stores to Python.
+                if let Some(start) = store_start {
+                    self.stats.store_stmt_time_ns += start.elapsed().as_nanos() as u64;
+                }
+                Ok(true)
+            }
+            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
+                let prefetch_count = self.page_prefetch_count;
+                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+
+                if page_fetched {
+                    // Page was fetched - retry store using cached concretization
+                    if let Some(ref mut rust_mem) = self.rust_memory {
+                        match rust_mem.store_with_concretization(addr_val, data_val.clone(), &*conc_result, self.ctx) {
+                            Ok(()) => {
+                                self.update_prefetch_on_store(addr_val, &conc_result, data_size);
+                                return Ok(true);
+                            }
+                            Err(_e) => {
+                                // Still failed - fall through to Python callback
+                            }
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
+                log::debug!(
+                    "Unmapped memory store at 0x{:x} (size={}), falling back to Python",
+                    addr, unmapped_size
+                );
+                Ok(false)
+            }
+            Err(MemoryError::SymbolicAddress { description }) => {
+                // Address range too large or symbolic — Python's memory model handles natively
+                log::debug!(
+                    "Symbolic address store: {}, falling back to Python",
+                    description
+                );
+                Ok(false)
+            }
+            Err(e) => Err(CbExecutionError::Memory(e.to_string())),
+        }
+    }
+
+    /// Update load-prefetch cache and concretization-constraint tracking after
+    /// a successful Rust-native store. Single-address writes invalidate that
+    /// (addr, size) entry; otherwise the entire prefetch cache is dropped.
+    fn update_prefetch_on_store(
+        &mut self,
+        addr_val: &RustBV,
+        conc_result: &ConcretizationResult,
+        data_size: usize,
+    ) {
+        match conc_result {
+            ConcretizationResult::Single(addr_concrete) => {
+                self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
+                self.track_concretization_constraint(addr_val, *addr_concrete);
+            }
+            _ => {
+                self.load_prefetch_cache.clear();
+            }
+        }
+    }
+
+    /// Fall back to the Python callback path for a store. Handles concrete and
+    /// symbolic addresses, plus all four ConcretizationResult shapes.
+    fn fallback_to_python_store(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        data_val: RustBV,
+        data_size: usize,
+    ) -> Result<(), CbExecutionError> {
+        if let Some(addr_concrete) = addr_val.as_u64() {
+            if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {
+            }
+            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+
+            // Check if data is symbolic - use symbolic store callback.
+            // Only for 32-bit architectures where it's needed (e.g., flareon2015_5).
+            // 64-bit: skip entirely (too many false positives from extern addresses).
+            let use_sym_store = if self.arch.pointer_size() == 32 {
+                let is_stack = self.registers.get_sp_value().map_or(false, |sp_val| {
+                    // Non-wrapping distance check
+                    let dist = if addr_concrete >= sp_val {
+                        addr_concrete - sp_val
+                    } else {
+                        sp_val - addr_concrete
+                    };
+                    dist <= 0x10000
+                });
+                !is_stack
+            } else {
+                false  // Skip for 64-bit — too expensive
+            };
+            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
+                // Try symbolic store callback (preserves expression tree)
+                let sym_ok = (|| -> Result<(), CbExecutionError> {
+                    self.flush_stores(py, callbacks)?;
+                    callbacks.call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                        .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                })();
+                if let Err(_e) = sym_ok {
+                    // Symbolic store callback failed — evaluate to concrete using
+                    // solver and store directly via Python callback (not pending_stores).
+                    // Using pending_stores would pollute all_flushed_stores with zeros
+                    // since bv_to_bytes returns zeros for symbolic expressions.
+                    let concrete_val = self.ctx.eval(&data_val).unwrap_or(0);
+                    let size_bytes = (data_val.width() / 8) as usize;
+                    let mut data_bytes = vec![0u8; size_bytes];
+                    for i in 0..size_bytes {
+                        data_bytes[i] = (concrete_val >> (i * 8)) as u8;
+                    }
+                    let _ = callbacks.call_memory_store(py, addr_concrete, &data_bytes);
+                }
+            } else {
+                // Fast path: buffer for batch processing
+                let data_bytes = bv_to_bytes(&data_val);
+                // Track symbolic values for load forwarding
+                if data_val.is_symbolic() {
+                    self.pending_symbolic_stores.insert(addr_concrete, data_val);
+                }
+                self.pending_stores.push(addr_concrete, data_bytes);
+
+                // Auto-flush if buffer is full
+                if self.pending_stores.len() >= self.max_pending_stores {
+                    self.flush_stores(py, callbacks)?;
+                }
+            }
+        } else {
+            // Symbolic address - clear entire prefetch cache
+            self.load_prefetch_cache.clear();
+            // Symbolic address - flush buffer first, then handle specially
+            self.flush_stores(py, callbacks)?;
+            // Symbolic address - use cached write concretization
+            let concret_result = self.concretize_cached_write(addr_val);
+            match &*concret_result {
+                ConcretizationResult::Single(addr_concrete) => {
+                    let addr_concrete = *addr_concrete;
+                    // Track concretization constraint for Python sync
+                    self.track_concretization_constraint(addr_val, addr_concrete);
+                    // Use symbolic store for symbolic values to preserve expression trees
+                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                        callbacks
+                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    } else {
+                        let data_bytes = bv_to_bytes(&data_val);
+                        callbacks
+                            .call_memory_store(py, addr_concrete, &data_bytes)
+                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    }
+                }
+                ConcretizationResult::Multiple(addrs) => {
+                    self.sync_before_callback(py, callbacks)?;
+                    // Build ITE chain in Rust for ≤16 addresses
+                    if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
+                        self.build_ite_store_from_callbacks(py, callbacks, addrs, addr_val, &data_val)?;
+                    } else {
+                        callbacks
+                            .call_memory_store_symbolic(py, addrs, &data_val, addr_val)
+                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    }
+                }
+                ConcretizationResult::Strided { base, stride, count } => {
+                    self.sync_before_callback(py, callbacks)?;
+                    let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
+                    if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
+                        self.build_ite_store_from_callbacks(py, callbacks, &addrs, addr_val, &data_val)?;
+                    } else {
+                        callbacks
+                            .call_memory_store_symbolic(py, &addrs, &data_val, addr_val)
+                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    }
+                }
+                ConcretizationResult::TooLarge { min, max, .. } => {
+                    let (min, max) = (*min, *max);
+                    // Address range too large - delegate to Python's memory model
+                    // which has access to angr's address concretization strategies
+
+                    // Sync any pending constraints to Python before fallback
+                    self.sync_before_callback(py, callbacks)?;
+
+                    // Use full symbolic callback to preserve expression trees
+                    if callbacks.has_memory_store_symbolic_full() {
+                        callbacks
+                            .call_memory_store_symbolic_full(py, addr_val, &data_val)
+                            .map_err(|e| CbExecutionError::Callback(format!(
+                                "symbolic store full callback failed at 0x{:x}-0x{:x}: {}",
+                                min, max, e
+                            )))?;
+                    } else {
+                        // Fallback to byte-based store (loses symbolic info)
+                        let data_bytes = bv_to_bytes(&data_val);
+                        callbacks
+                            .call_memory_store_symbolic_ast(py, &data_bytes, data_bytes.len() as u32)
+                            .map_err(|e| CbExecutionError::Callback(format!(
+                                "symbolic store AST callback failed at 0x{:x}-0x{:x}: {}",
+                                min, max, e
+                            )))?;
+                    }
+                }
+                ConcretizationResult::Failed(reason) => {
+                    return Err(CbExecutionError::Unsupported(format!(
+                        "symbolic store address: {}",
+                        reason
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 }
