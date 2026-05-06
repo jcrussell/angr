@@ -1935,8 +1935,11 @@ impl SymContext {
         let mut all_z3_conditions = Vec::new();
 
         for (ctx, cond) in all_contexts.iter().zip(merge_conditions.iter()) {
+            // Compute NOT(cond) up front so cond_bool can be moved into
+            // all_z3_conditions without cloning the Z3 AST.
             let cond_bool = cond.to_z3_bool();
-            all_z3_conditions.push(cond_bool.clone());
+            let not_cond = cond_bool.not();
+            all_z3_conditions.push(cond_bool);
 
             // Collect all Z3 assertions from this context
             let shared = &ctx.z3_assertions_shared;
@@ -1945,7 +1948,6 @@ impl SymContext {
             // For each constraint c_j in context i:
             //   assert (NOT merge_cond_i OR c_j)
             // This means: if this merge path is active, all its constraints hold
-            let not_cond = cond_bool.not();
             for assertion in shared.iter().chain(local.iter()) {
                 let guarded = z3::ast::Bool::or(&[&not_cond, assertion]);
                 merged.z3_assertions_local.lock().push(guarded.clone());
