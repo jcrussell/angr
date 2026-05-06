@@ -358,23 +358,22 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
                             }
                             _ => {
-                                // P20: Multiple addresses with symbolic guard - delegate to Python
-                                // instead of returning UNSUPPORTED error which deadends the state
-                                log::debug!(
-                                    "P20: Symbolic guarded store with multiple addresses - delegating to Python"
-                                );
+                                // Symbolic guard + non-Single address solutions
+                                // (Multiple/Strided/TooLarge/Failed). Combining the
+                                // guard-ITE with per-address ITEs requires a per-
+                                // address load and is brittle, so delegate to Python's
+                                // full symbolic store callback which has access to
+                                // angr's address concretization strategies.
                                 self.flush_stores(py, callbacks)?;
                                 if callbacks.has_memory_store_symbolic_full() {
-                                    // Use full symbolic store callback which handles complex cases
                                     callbacks
                                         .call_memory_store_symbolic_full(py, &addr_val, &data_val)
                                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                                 } else {
-                                    // No symbolic store callback - log warning but don't fail
-                                    log::warn!(
-                                        "P20: No symbolic_store_full callback for guarded store with symbolic address. \
-                                         Store may be lost, but continuing execution."
-                                    );
+                                    return Err(CbExecutionError::Unsupported(
+                                        "guarded store with symbolic address: \
+                                         no memory_store_symbolic_full callback".to_string()
+                                    ));
                                 }
                             }
                         }
@@ -421,16 +420,23 @@ impl<'a> CallbackInterpreter<'a> {
                                             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                                     }
                                     ConcretizationResult::Multiple(addrs) => {
-                                        // Delegate to Python for conditional stores with symbolic data
+                                        // Symbolic data + multiple address solutions: prefer the full
+                                        // symbolic store callback. Otherwise build an ITE chain in Rust
+                                        // (mirrors fallback_to_python_store::Multiple) so all candidate
+                                        // addresses are updated, not just the first one.
                                         if callbacks.has_memory_store_symbolic_full() {
                                             callbacks
                                                 .call_memory_store_symbolic_full(py, &addr_val, &data_val)
                                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        } else if callbacks.has_memory_store_symbolic_value() && addrs.len() <= 16 {
+                                            self.build_ite_store_from_callbacks(
+                                                py, callbacks, addrs, &addr_val, &data_val,
+                                            )?;
                                         } else {
-                                            // Fallback: store to first address
-                                            callbacks
-                                                .call_memory_store_symbolic_value(py, addrs[0], &data_val)
-                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                            return Err(CbExecutionError::Unsupported(
+                                                "symbolic store with multiple address solutions: \
+                                                 no memory_store_symbolic_full callback and ITE chain unavailable".to_string()
+                                            ));
                                         }
                                     }
                                     _ => {
@@ -695,9 +701,20 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
                             }
                         } else {
-                            return Err(CbExecutionError::Unsupported(
-                                "CAS with symbolic address".to_string(),
-                            ));
+                            // Symbolic address + symbolic data CAS: delegate to Python's
+                            // full symbolic store callback when available so the address
+                            // can be resolved by angr's concretization strategies.
+                            self.flush_stores(py, callbacks)?;
+                            if callbacks.has_memory_store_symbolic_full() {
+                                callbacks
+                                    .call_memory_store_symbolic_full(py, &addr_val, &value_to_store)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                return Err(CbExecutionError::Unsupported(
+                                    "CAS with symbolic address: \
+                                     no memory_store_symbolic_full callback".to_string(),
+                                ));
+                            }
                         }
                     } else {
                         // Concrete data — synthesize Store and reuse the full
