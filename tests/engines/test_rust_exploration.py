@@ -1859,6 +1859,90 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="callbacks not set"):
             mgr.run(100)
 
+    # angr-2i4n: error path coverage — make the strict, user-facing failure
+    # modes explicit so we notice if the engine ever starts silently
+    # papering over them (phantom symbolic zero, unbounded Z3 hang, etc.).
+
+    def test_unmapped_concrete_store_returns_error(self):
+        """Storing to unmapped memory must raise — not silently succeed.
+
+        Mirror of test_unmapped_memory_load_returns_error for the write
+        side: the store path has its own start_page/end_page check
+        (memory.rs ~750) and we want a regression that catches a future
+        change that would auto-map on demand without permissions.
+        """
+        state = RustSimState("amd64")
+        with pytest.raises(ValueError, match="unmapped"):
+            state.memory_store(0xDEAD0000, b"\x41\x42\x43\x44")
+
+    def test_cross_page_permission_write_returns_error(self):
+        """Cross-page write where the second page is R-only must surface a
+        permission violation, not silently overwrite the read-only page.
+
+        The Rust unit tests in memory.rs already cover this via
+        SymbolicMemory directly (test_permission_enforcement_cross_page_write
+        and test_permission_enforcement_unaligned_store_two_pages_*); this
+        test locks the same invariant down at the Python/RustSimState
+        boundary so that a regression in the FFI wiring (e.g. forgetting
+        to forward set_enforce_permissions) does not go unnoticed.
+        """
+        state = RustSimState("amd64")
+        # Page 0 RW, page 1 R-only.
+        state.map_memory(0x1000, 0x1000, 0x6)  # R|W
+        state.map_memory(0x2000, 0x1000, 0x4)  # R only
+        state.set_enforce_permissions(True)
+
+        # 4-byte write straddling 0x1FFE..0x2002 hits the R-only page.
+        with pytest.raises(ValueError, match="permission"):
+            state.memory_store(0x1FFE, b"\x11\x22\x33\x44")
+
+        # Sanity: a write entirely within the RW page still succeeds.
+        state.memory_store(0x1000, b"\x55\x66\x77\x88")
+
+    def test_z3_solver_timeout_does_not_hang(self):
+        """A tight Z3 timeout must bound `satisfiable()` wall-clock — even
+        on a constraint set Z3 would otherwise grind on forever (factoring a
+        128-bit semiprime). Locks down that set_timeout() actually flows
+        into the Z3 solver params and that the result path handles
+        SatResult::Unknown by returning (rather than panicking or looping).
+
+        The wall-clock bound is intentionally generous (5s) to avoid CI
+        flakes on slow runners; the *contract* under test is "does not
+        hang", not "respects timeout to the millisecond".
+        """
+        import time
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        ctx.set_timeout(50)  # 50ms — far smaller than the 5s assertion bound
+
+        # Force Z3 to factor a 128-bit semiprime where both factors are
+        # constrained > 2^60. Practically intractable for Z3's BV theory
+        # under a 50ms budget.
+        x = claripy.BVS("x_factor", 128)
+        y = claripy.BVS("y_factor", 128)
+        # An arbitrary 128-bit composite whose factorization is non-obvious
+        # to Z3 within 50ms.
+        n = 0xC0DEBABE_DEADBEEF_FEEDFACE_CAFEF00D
+        ctx.add_constraint_ast(x * y == n)
+        ctx.add_constraint_ast(x > (1 << 60))
+        ctx.add_constraint_ast(y > (1 << 60))
+        ctx.add_constraint_ast(x < (1 << 100))
+        ctx.add_constraint_ast(y < (1 << 100))
+
+        start = time.monotonic()
+        # We do NOT assert on the boolean result: under a tight timeout
+        # Z3 may return Unknown, which the engine collapses to false. We
+        # only require that the call returns at all and within bound.
+        _ = ctx.satisfiable()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, (
+            f"satisfiable() took {elapsed:.2f}s with a 50ms Z3 timeout — "
+            f"timeout config is not being honoured (expected < 5s)."
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverOutputCorrectness:
