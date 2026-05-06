@@ -63,7 +63,8 @@ EXAMPLE_CATALOG = {
 }
 
 
-def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bfs"):
+def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bfs",
+                  diff_state=False, diff_interval=1, diff_max_snapshots=200):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
     import io
     import importlib.util
@@ -88,8 +89,17 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
 
     # Track the RustExplorationManager instance for stats
     rust_mgr_instance = None
+    snapshots: list = []
     original_sm = None
     original_simgr = None
+
+    # Import shared utility from the benchmarks directory (early so diff_state is available)
+    _bench_dir = os.path.dirname(os.path.abspath(__file__))
+    if _bench_dir not in sys.path:
+        sys.path.insert(0, _bench_dir)
+    from test_utils import BufferedStringIO
+    if diff_state:
+        from diff_state import install_snapshotter
 
     if engine == "rust":
         from angr.exploration import RustExplorationManager
@@ -115,16 +125,34 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             rust_mgr_instance.enable_profiling()
             if strategy == 'dfs':
                 rust_mgr_instance.set_exploration_strategy('dfs')
+            if diff_state:
+                install_snapshotter(rust_mgr_instance, snapshots,
+                                    interval=diff_interval,
+                                    max_snapshots=diff_max_snapshots)
             return rust_mgr_instance
 
         angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
         angr.factory.AngrObjectFactory.simgr = patched_simulation_manager
+    elif diff_state:
+        # For the python engine we still need to install the snapshotter on
+        # the SimulationManager that solve.py builds.
+        original_sm = angr.factory.AngrObjectFactory.simulation_manager
+        original_simgr = angr.factory.AngrObjectFactory.simgr
 
-    # Import shared utility from the benchmarks directory
-    _bench_dir = os.path.dirname(os.path.abspath(__file__))
-    if _bench_dir not in sys.path:
-        sys.path.insert(0, _bench_dir)
-    from test_utils import BufferedStringIO
+        def patched_python_simulation_manager(factory_self, thing=None, **kwargs):
+            mgr = original_sm(factory_self, thing, **kwargs)
+            import traceback
+            caller_frames = traceback.extract_stack()
+            for frame in caller_frames[:-1]:
+                if '/angr/analyses/' in frame.filename or '/angr/exploration_techniques/' in frame.filename:
+                    return mgr
+            install_snapshotter(mgr, snapshots,
+                                interval=diff_interval,
+                                max_snapshots=diff_max_snapshots)
+            return mgr
+
+        angr.factory.AngrObjectFactory.simulation_manager = patched_python_simulation_manager
+        angr.factory.AngrObjectFactory.simgr = patched_python_simulation_manager
 
     try:
         os.chdir(example_dir)
@@ -177,6 +205,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             "stats": stats,
             "perf_report": perf_report,
             "peak_memory_mb": round(peak_memory_mb, 1),
+            "snapshots": snapshots if diff_state else None,
         }
 
     finally:
@@ -185,35 +214,38 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             angr.factory.AngrObjectFactory.simgr = original_simgr
 
 
-def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB, strategy="bfs"):
+def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB, strategy="bfs",
+                diff_state=False, diff_interval=1, diff_max_snapshots=200):
     """Run an example in an isolated subprocess and print results."""
     solve_script = os.path.join(EXAMPLES_DIR, example_name, "solve.py")
     if not os.path.exists(solve_script):
         print(f"ERROR: solve.py not found: {solve_script}")
-        return
+        return None
 
     ctx = multiprocessing.get_context("spawn")
     pool = ctx.Pool(1)
     try:
         async_result = pool.apply_async(
-            _run_in_child, (example_name, engine, EXAMPLES_DIR, mem_limit_mb, strategy)
+            _run_in_child,
+            (example_name, engine, EXAMPLES_DIR, mem_limit_mb, strategy,
+             diff_state, diff_interval, diff_max_snapshots),
         )
         result = async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
         pool.terminate()
         print(f"TIMEOUT {engine} {example_name} after {timeout}s")
-        return
+        return None
     except Exception as e:
         pool.terminate()
         print(f"FAIL {engine} {example_name}: subprocess crashed: {e}")
-        return
+        return None
     finally:
         pool.terminate()
         pool.join()
 
     if not result.get("ok"):
         print(f"FAIL {engine} {example_name}: {result.get('error', 'unknown error')}")
-        return
+        return result
 
     elapsed = result["elapsed"]
     output = result.get("output", "")
@@ -286,6 +318,8 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
     if engine == "rust" and perf_report:
         print(f"  {perf_report}")
 
+    return result
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run a single angr-example benchmark")
@@ -300,6 +334,13 @@ def main():
                         help="Exploration strategy (default: bfs)")
     parser.add_argument("--suite", choices=["fast", "medium", "all"],
                         help="Run a suite of examples (fast: <5s, medium: <30s, all: everything)")
+    parser.add_argument("--diff-state", action="store_true",
+                        help="Run both engines and diff per-step state snapshots (regs, "
+                             "constraint count, satisfiability, history depth). Implies --both.")
+    parser.add_argument("--diff-interval", type=int, default=1,
+                        help="Snapshot every N step() calls when --diff-state is used (default: 1)")
+    parser.add_argument("--diff-max-snapshots", type=int, default=200,
+                        help="Cap snapshots per engine to bound memory/time (default: 200)")
     args = parser.parse_args()
 
     if args.list:
@@ -309,6 +350,9 @@ def main():
             rust_ok = {True: "yes", False: "NO", None: "?"}[info["rust_ok"]]
             print(f"{name:<35} {info['tier']:<10} {rust_ok:<10} {info['notes']}")
         return
+
+    if args.diff_state:
+        sys.exit(_run_diff_state(args))
 
     if args.suite:
         tiers = {"fast": ["fast"], "medium": ["fast", "medium"], "all": ["fast", "medium", "slow"]}
@@ -334,6 +378,63 @@ def main():
         run_example(args.example, "rust", args.timeout, args.mem_limit, args.strategy)
     else:
         run_example(args.example, args.engine, args.timeout, args.mem_limit, args.strategy)
+
+
+def _run_diff_state(args) -> int:
+    """Run --diff-state for one or more examples and report divergences.
+
+    Returns process exit code: 0 if every example matches, 1 otherwise.
+    """
+    _bench_dir = os.path.dirname(os.path.abspath(__file__))
+    if _bench_dir not in sys.path:
+        sys.path.insert(0, _bench_dir)
+    from diff_state import compare_snapshots
+
+    if args.suite:
+        tiers = {"fast": ["fast"], "medium": ["fast", "medium"], "all": ["fast", "medium", "slow"]}
+        names = [n for n, i in EXAMPLE_CATALOG.items() if i["tier"] in tiers[args.suite]]
+    elif args.example:
+        names = [args.example]
+    else:
+        print("ERROR: --diff-state requires either an example name or --suite")
+        return 2
+
+    overall_ok = True
+    for name in names:
+        print(f"\n=== diff-state: {name} ===")
+        py_res = run_example(name, "python", args.timeout, args.mem_limit, args.strategy,
+                             diff_state=True, diff_interval=args.diff_interval,
+                             diff_max_snapshots=args.diff_max_snapshots)
+        rs_res = run_example(name, "rust", args.timeout, args.mem_limit, args.strategy,
+                             diff_state=True, diff_interval=args.diff_interval,
+                             diff_max_snapshots=args.diff_max_snapshots)
+        if not py_res or not py_res.get("ok"):
+            print(f"DIFF SKIP {name}: python run failed")
+            overall_ok = False
+            continue
+        if not rs_res or not rs_res.get("ok"):
+            print(f"DIFF SKIP {name}: rust run failed")
+            overall_ok = False
+            continue
+
+        py_snaps = py_res.get("snapshots") or []
+        rs_snaps = rs_res.get("snapshots") or []
+        if not py_snaps or not rs_snaps:
+            print(f"DIFF SKIP {name}: missing snapshots (py={len(py_snaps)} rust={len(rs_snaps)})")
+            overall_ok = False
+            continue
+
+        result = compare_snapshots(py_snaps, rs_snaps)
+        if result["ok"]:
+            print(f"DIFF OK {name}: {result['step_count'][0]} steps match")
+        else:
+            overall_ok = False
+            print(f"DIFF FAIL {name}: first divergence at step {result['first_divergent_step']} "
+                  f"(diverged_steps={result['diverged_steps']})")
+            for line in result["summary"]:
+                print(line)
+
+    return 0 if overall_ok else 1
 
 
 if __name__ == "__main__":
