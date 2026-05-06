@@ -668,6 +668,36 @@ pub enum IROp {
     VPerm { elem: IRType },
 
     // =========================================================================
+    // Packed integer min/max/abs
+    // =========================================================================
+    /// Packed integer min (PMINSB/PMINSW/PMINSD/PMINUB/PMINUW/PMINUD)
+    VMin { elem: IRType, count: u8, signed: bool },
+    /// Packed integer max (PMAXSB/PMAXSW/PMAXSD/PMAXUB/PMAXUW/PMAXUD)
+    VMax { elem: IRType, count: u8, signed: bool },
+    /// Packed integer absolute value (PABSB/PABSW/PABSD/PABSQ)
+    VAbs { elem: IRType, count: u8 },
+
+    // =========================================================================
+    // Packed FP arithmetic (whole-vector — *not* the scalar-lane VF*S variants)
+    // =========================================================================
+    /// Packed float add (ADDPS/ADDPD)
+    VFAdd { elem: IRType, count: u8 },
+    /// Packed float sub (SUBPS/SUBPD)
+    VFSub { elem: IRType, count: u8 },
+    /// Packed float mul (MULPS/MULPD)
+    VFMul { elem: IRType, count: u8 },
+    /// Packed float div (DIVPS/DIVPD)
+    VFDiv { elem: IRType, count: u8 },
+    /// Packed float sqrt (SQRTPS/SQRTPD)
+    VFSqrt { elem: IRType, count: u8 },
+    /// Packed float abs (Iop_Abs32Fx4/Iop_Abs64Fx2)
+    VFAbs { elem: IRType, count: u8 },
+    /// Packed float min (MINPS/MINPD)
+    VFMin { elem: IRType, count: u8 },
+    /// Packed float max (MAXPS/MAXPD)
+    VFMax { elem: IRType, count: u8 },
+
+    // =========================================================================
     // Special operations
     // =========================================================================
     /// Reinterpret bits as different type.
@@ -813,6 +843,20 @@ impl IROp {
             IROp::VInterleaveLO { .. }
             | IROp::VInterleaveHI { .. }
             | IROp::VPerm { .. } => Some(IRType::V128),
+
+            // Packed integer min/max/abs and packed FP arith all return V128 (or V256
+            // for AVX variants — we pick V128 to match the rest of the family for now)
+            IROp::VMin { .. }
+            | IROp::VMax { .. }
+            | IROp::VAbs { .. }
+            | IROp::VFAdd { .. }
+            | IROp::VFSub { .. }
+            | IROp::VFMul { .. }
+            | IROp::VFDiv { .. }
+            | IROp::VFSqrt { .. }
+            | IROp::VFAbs { .. }
+            | IROp::VFMin { .. }
+            | IROp::VFMax { .. } => Some(IRType::V128),
 
             IROp::Reinterpret { to, .. } => Some(*to),
             IROp::MulHi { ty, .. } => Some(*ty),

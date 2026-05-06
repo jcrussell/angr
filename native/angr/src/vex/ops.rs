@@ -146,6 +146,13 @@ impl VEXOps {
             // Scalar-in-vector sqrt (SQRTSS/SQRTSD)
             IROp::VFSqrtS { elem } => Self::vec_float_scalar_sqrt(arg, elem, ctx),
 
+            // Packed integer absolute value
+            IROp::VAbs { elem, count } => Self::vec_int_abs(arg, elem, count, ctx),
+
+            // Packed float sqrt / abs (whole vector)
+            IROp::VFSqrt { elem, count } => Self::vec_float_unop(arg, elem, count, FloatOpKind::Sqrt, ctx),
+            IROp::VFAbs { elem, count } => Self::vec_float_unop(arg, elem, count, FloatOpKind::Abs, ctx),
+
             _ => Err(OpError::NotUnary(op)),
         }
     }
@@ -270,6 +277,24 @@ impl VEXOps {
             IROp::VShlN { elem, count } => Self::vec_shl_n(left, right, elem, count, ctx),
             IROp::VShrN { elem, count } => Self::vec_shr_n(left, right, elem, count, ctx),
             IROp::VSarN { elem, count } => Self::vec_sar_n(left, right, elem, count, ctx),
+
+            // Packed integer min/max
+            IROp::VMin { elem, count, signed } => {
+                Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ false, ctx)
+            }
+            IROp::VMax { elem, count, signed } => {
+                Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ true, ctx)
+            }
+
+            // Packed FP arithmetic
+            IROp::VFAdd { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Add, ctx),
+            IROp::VFSub { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Sub, ctx),
+            IROp::VFMul { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Mul, ctx),
+            IROp::VFDiv { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Div, ctx),
+
+            // Packed FP min/max
+            IROp::VFMin { elem, count } => Self::vec_float_minmax(left, right, elem, count, /*is_max=*/ false, ctx),
+            IROp::VFMax { elem, count } => Self::vec_float_minmax(left, right, elem, count, /*is_max=*/ true, ctx),
 
             // Raw opcode
             IROp::Raw(code) => Err(OpError::RawOpcode(code)),
@@ -1520,6 +1545,339 @@ impl VEXOps {
         let cond = build_float_expr(FloatOpKind::CmpLt, prec, vec![cmp_left, cmp_right]);
         let res_lane = cond.ite_into(l_lo, r_lo, ctx);
         Ok(upper.concat_into(res_lane, ctx))
+    }
+
+    // =========================================================================
+    // Packed integer min/max/abs
+    // =========================================================================
+
+    /// Packed integer per-lane min or max. Handles signed/unsigned via the
+    /// `signed` flag and min/max via `is_max`.
+    fn vec_int_minmax(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        is_max: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+
+        // Concrete fast path (only when total fits in u128).
+        if total_width <= 128 {
+            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+                let sign_bit: u128 = 1u128 << (elem_width - 1);
+
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let l_elem = (l >> lo) & elem_mask;
+                    let r_elem = (r >> lo) & elem_mask;
+
+                    let pick_left = if signed {
+                        // Sign-extend each lane to i128 for comparison.
+                        let l_signed = if l_elem & sign_bit != 0 {
+                            (l_elem | !elem_mask) as i128
+                        } else {
+                            l_elem as i128
+                        };
+                        let r_signed = if r_elem & sign_bit != 0 {
+                            (r_elem | !elem_mask) as i128
+                        } else {
+                            r_elem as i128
+                        };
+                        if is_max { l_signed >= r_signed } else { l_signed <= r_signed }
+                    } else {
+                        if is_max { l_elem >= r_elem } else { l_elem <= r_elem }
+                    };
+
+                    let chosen = if pick_left { l_elem } else { r_elem };
+                    result |= (chosen & elem_mask) << lo;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let l_elem = left.extract(hi, lo, ctx);
+            let r_elem = right.extract(hi, lo, ctx);
+
+            // For max: ITE(l >= r, l, r); for min: ITE(l <= r, l, r).
+            let cond = match (signed, is_max) {
+                (true, true) => l_elem.clone().sge_into(r_elem.clone(), ctx),
+                (true, false) => l_elem.clone().sle_into(r_elem.clone(), ctx),
+                (false, true) => l_elem.clone().uge_into(r_elem.clone(), ctx),
+                (false, false) => l_elem.clone().ule_into(r_elem.clone(), ctx),
+            };
+            elements.push(cond.ite_into(l_elem, r_elem, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Packed integer per-lane absolute value. Returns the unsigned
+    /// representation of `|signed_lane|`. INT_MIN stays INT_MIN (matches the
+    /// PABS* hardware behavior).
+    fn vec_int_abs(
+        arg: RustBV,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(arg.width(), total_width);
+
+        // Concrete fast path.
+        if total_width <= 128 {
+            if let Some(v) = arg.as_u128() {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+                let sign_bit: u128 = 1u128 << (elem_width - 1);
+
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let elem_val = (v >> lo) & elem_mask;
+                    // |x| = (x ^ -1) + 1 when x is negative (two's complement),
+                    // otherwise x. Simulated within elem_width bits.
+                    let abs_val = if elem_val & sign_bit != 0 {
+                        // -x in elem_width bits = (~x + 1) & mask
+                        ((!elem_val).wrapping_add(1)) & elem_mask
+                    } else {
+                        elem_val
+                    };
+                    result |= abs_val << lo;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback: ITE(elem < 0, -elem, elem).
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        let zero = RustBV::concrete(0, elem_width);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let elem_val = arg.extract(hi, lo, ctx);
+            let neg = elem_val.clone().neg_into(ctx);
+            let is_neg = elem_val.clone().slt_into(zero.clone(), ctx);
+            elements.push(is_neg.ite_into(neg, elem_val, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    // =========================================================================
+    // Packed FP arithmetic / unary / min-max
+    // =========================================================================
+
+    /// Apply a binary FP `kind` (Add/Sub/Mul/Div) to each lane of `left`/`right`.
+    fn vec_float_op(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        kind: FloatOpKind,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+
+        // Concrete fast path: extract each lane, run the Rust f32/f64 op, repack.
+        if total_width <= 128 {
+            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = (1u128 << elem_width) - 1;
+                for i in 0..count {
+                    let shift = (i as u32) * elem_width;
+                    let l_bits = (l >> shift) & elem_mask;
+                    let r_bits = (r >> shift) & elem_mask;
+                    let lane_bits = match elem {
+                        IRType::F32 => {
+                            let lf = f32::from_bits(l_bits as u32);
+                            let rf = f32::from_bits(r_bits as u32);
+                            let res = match kind {
+                                FloatOpKind::Add => lf + rf,
+                                FloatOpKind::Sub => lf - rf,
+                                FloatOpKind::Mul => lf * rf,
+                                FloatOpKind::Div => lf / rf,
+                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_op:{:?}", kind))),
+                            };
+                            res.to_bits() as u128
+                        }
+                        IRType::F64 => {
+                            let lf = f64::from_bits(l_bits as u64);
+                            let rf = f64::from_bits(r_bits as u64);
+                            let res = match kind {
+                                FloatOpKind::Add => lf + rf,
+                                FloatOpKind::Sub => lf - rf,
+                                FloatOpKind::Mul => lf * rf,
+                                FloatOpKind::Div => lf / rf,
+                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_op:{:?}", kind))),
+                            };
+                            res.to_bits() as u128
+                        }
+                        _ => return Err(OpError::InvalidFloatType(elem)),
+                    };
+                    result |= lane_bits << shift;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback: build an FP expression for each lane.
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let l_lane = left.extract(hi, lo, ctx);
+            let r_lane = right.extract(hi, lo, ctx);
+            elements.push(build_float_expr(kind, prec, vec![l_lane, r_lane]));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Apply a unary FP `kind` (Sqrt/Abs) to each lane of `arg`.
+    fn vec_float_unop(
+        arg: RustBV,
+        elem: IRType,
+        count: u8,
+        kind: FloatOpKind,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(arg.width(), total_width);
+
+        // Concrete fast path.
+        if total_width <= 128 {
+            if let Some(v) = arg.as_u128() {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = (1u128 << elem_width) - 1;
+                for i in 0..count {
+                    let shift = (i as u32) * elem_width;
+                    let lane_in = (v >> shift) & elem_mask;
+                    let lane_bits = match elem {
+                        IRType::F32 => {
+                            let f = f32::from_bits(lane_in as u32);
+                            let res = match kind {
+                                FloatOpKind::Sqrt => f.sqrt(),
+                                FloatOpKind::Abs => f.abs(),
+                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_unop:{:?}", kind))),
+                            };
+                            res.to_bits() as u128
+                        }
+                        IRType::F64 => {
+                            let f = f64::from_bits(lane_in as u64);
+                            let res = match kind {
+                                FloatOpKind::Sqrt => f.sqrt(),
+                                FloatOpKind::Abs => f.abs(),
+                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_unop:{:?}", kind))),
+                            };
+                            res.to_bits() as u128
+                        }
+                        _ => return Err(OpError::InvalidFloatType(elem)),
+                    };
+                    result |= lane_bits << shift;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback.
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let lane = arg.extract(hi, lo, ctx);
+            elements.push(build_float_expr(kind, prec, vec![lane]));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Per-lane FP min or max. Matches the Rust `>`/`<` semantics used by
+    /// the SSE scalar variants (NaN passes through right operand) so the
+    /// symbolic fallback stays consistent with the concrete branch.
+    fn vec_float_minmax(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        is_max: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+
+        // Concrete fast path.
+        if total_width <= 128 {
+            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = (1u128 << elem_width) - 1;
+                for i in 0..count {
+                    let shift = (i as u32) * elem_width;
+                    let l_bits = (l >> shift) & elem_mask;
+                    let r_bits = (r >> shift) & elem_mask;
+                    let lane_bits = match elem {
+                        IRType::F32 => {
+                            let lf = f32::from_bits(l_bits as u32);
+                            let rf = f32::from_bits(r_bits as u32);
+                            let chosen = if is_max {
+                                if lf > rf { lf } else { rf }
+                            } else {
+                                if lf < rf { lf } else { rf }
+                            };
+                            chosen.to_bits() as u128
+                        }
+                        IRType::F64 => {
+                            let lf = f64::from_bits(l_bits as u64);
+                            let rf = f64::from_bits(r_bits as u64);
+                            let chosen = if is_max {
+                                if lf > rf { lf } else { rf }
+                            } else {
+                                if lf < rf { lf } else { rf }
+                            };
+                            chosen.to_bits() as u128
+                        }
+                        _ => return Err(OpError::InvalidFloatType(elem)),
+                    };
+                    result |= lane_bits << shift;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback: ITE(FCmpLt(...), l, r).
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let l_lane = left.extract(hi, lo, ctx);
+            let r_lane = right.extract(hi, lo, ctx);
+            // max: ITE(r < l, l, r); min: ITE(l < r, l, r)
+            let (cmp_l, cmp_r) = if is_max {
+                (r_lane.clone(), l_lane.clone())
+            } else {
+                (l_lane.clone(), r_lane.clone())
+            };
+            let cond = build_float_expr(FloatOpKind::CmpLt, prec, vec![cmp_l, cmp_r]);
+            elements.push(cond.ite_into(l_lane, r_lane, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// Set low 32 bits of V128.
@@ -2874,5 +3232,387 @@ mod tests {
         )
         .expect("unbounded symbolic shift must not error");
         assert_eq!(result.width(), 64);
+    }
+
+    // =========================================================================
+    // Packed integer min/max/abs tests
+    // =========================================================================
+
+    /// PMINSW-style: signed min over 8x i16 lanes, mix of positive and negative.
+    #[test]
+    fn test_vec_int_min_signed_concrete() {
+        let ctx = SymContext::new_mock();
+
+        let l: [i16; 8] = [-5, 100,    0, -32768,  1,    -1, 32767, -2];
+        let r: [i16; 8] = [-3, 200, -100, -32767, -1,     0, 32766,  3];
+        let exp: [i16; 8] = [
+            -5, 100, -100, -32768, -1, -1, 32766, -2,
+        ];
+
+        let mut lv: u128 = 0;
+        let mut rv: u128 = 0;
+        for i in 0..8 {
+            lv |= ((l[i] as u16) as u128) << (i as u32 * 16);
+            rv |= ((r[i] as u16) as u128) << (i as u32 * 16);
+        }
+        let result = VEXOps::binop(
+            IROp::VMin { elem: IRType::I16, count: 8, signed: true },
+            RustBV::concrete(lv, 128),
+            RustBV::concrete(rv, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..8 {
+            let lane = ((got >> (i as u32 * 16)) & 0xFFFF) as u16 as i16;
+            assert_eq!(lane, exp[i], "lane {} expected {}, got {}", i, exp[i], lane);
+        }
+    }
+
+    /// PMAXUB-style: unsigned max over 16x u8 lanes.
+    #[test]
+    fn test_vec_int_max_unsigned_concrete() {
+        let ctx = SymContext::new_mock();
+
+        let l: [u8; 16] = [0xFF, 0x00, 0x80, 0x7F,  1,  2,  3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let r: [u8; 16] = [0x00, 0xFF, 0x7F, 0x80,  9,  8,  7, 6, 5, 4, 3, 2, 1,  0,  0,  0];
+        let mut exp = [0u8; 16];
+        for i in 0..16 {
+            exp[i] = if l[i] > r[i] { l[i] } else { r[i] };
+        }
+
+        let mut lv: u128 = 0;
+        let mut rv: u128 = 0;
+        for i in 0..16 {
+            lv |= (l[i] as u128) << (i as u32 * 8);
+            rv |= (r[i] as u128) << (i as u32 * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VMax { elem: IRType::I8, count: 16, signed: false },
+            RustBV::concrete(lv, 128),
+            RustBV::concrete(rv, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..16 {
+            let lane = ((got >> (i as u32 * 8)) & 0xFF) as u8;
+            assert_eq!(lane, exp[i], "lane {} expected {:#x}, got {:#x}", i, exp[i], lane);
+        }
+    }
+
+    /// PABSW-style: per-lane absolute value over 8x i16 lanes (incl. INT_MIN
+    /// which stays INT_MIN under two's-complement |x|).
+    #[test]
+    fn test_vec_int_abs_concrete() {
+        let ctx = SymContext::new_mock();
+
+        let v: [i16; 8] = [-5, 100, 0, -32768, 1, -1, 32767, -200];
+        let exp: [u16; 8] = [5, 100, 0, 0x8000 /* INT_MIN stays */, 1, 1, 32767, 200];
+
+        let mut bits: u128 = 0;
+        for i in 0..8 {
+            bits |= ((v[i] as u16) as u128) << (i as u32 * 16);
+        }
+        let result = VEXOps::unop(
+            IROp::VAbs { elem: IRType::I16, count: 8 },
+            RustBV::concrete(bits, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..8 {
+            let lane = ((got >> (i as u32 * 16)) & 0xFFFF) as u16;
+            assert_eq!(lane, exp[i], "lane {} expected {:#x}, got {:#x}", i, exp[i], lane);
+        }
+    }
+
+    /// Symbolic VMax (signed): constrain right == 7, derive left from a free
+    /// 4x i32 vector, and verify that asserting result == [7, 7, 7, 7] forces
+    /// every lane of left to be <= 7.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_int_max_symbolic_signed() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+
+        // r = [7, 7, 7, 7] as i32x4
+        let mut rv: u128 = 0;
+        for i in 0..4u32 {
+            rv |= (7u128) << (i * 32);
+        }
+        let r = RustBV::concrete(rv, 128);
+        let l = RustBV::symbolic(&ctx, "vmax_l", 128);
+
+        let result = VEXOps::binop(
+            IROp::VMax { elem: IRType::I32, count: 4, signed: true },
+            l.clone(),
+            r,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+
+        // Constrain result == [7, 7, 7, 7]; this only requires l <= 7 per lane,
+        // so the constraint must remain SAT.
+        let exp = RustBV::concrete(rv, 128);
+        ctx.add_constraint(result.to_z3_ast()._eq(&exp.to_z3_ast()));
+        assert!(ctx.is_sat(), "expected SAT after constraining max == 7");
+    }
+
+    // =========================================================================
+    // Packed FP add/sub/mul/div/sqrt/abs/min/max tests
+    // =========================================================================
+
+    /// ADDPS-style: 4x f32 add, concrete.
+    #[test]
+    fn test_vec_float_add_concrete_f32x4() {
+        let ctx = SymContext::new_mock();
+
+        let l = [1.0f32, 2.5, -3.0, 0.5];
+        let r = [10.0f32, -2.5, 3.0, 8.0];
+        let exp: [f32; 4] = [11.0, 0.0, 0.0, 8.5];
+
+        let mut lv: u128 = 0;
+        let mut rv: u128 = 0;
+        for i in 0..4u32 {
+            lv |= (l[i as usize].to_bits() as u128) << (i * 32);
+            rv |= (r[i as usize].to_bits() as u128) << (i * 32);
+        }
+        let result = VEXOps::binop(
+            IROp::VFAdd { elem: IRType::F32, count: 4 },
+            RustBV::concrete(lv, 128),
+            RustBV::concrete(rv, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..4 {
+            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
+            assert!(
+                (lane - exp[i]).abs() < 1e-6,
+                "lane {} expected {}, got {}",
+                i,
+                exp[i],
+                lane
+            );
+        }
+    }
+
+    /// DIVPD-style: 2x f64 div, concrete.
+    #[test]
+    fn test_vec_float_div_concrete_f64x2() {
+        let ctx = SymContext::new_mock();
+
+        let l = [10.0f64, -8.0];
+        let r = [4.0f64, 2.0];
+        let exp = [2.5f64, -4.0];
+
+        let mut lv: u128 = 0;
+        let mut rv: u128 = 0;
+        for i in 0..2u32 {
+            lv |= (l[i as usize].to_bits() as u128) << (i * 64);
+            rv |= (r[i as usize].to_bits() as u128) << (i * 64);
+        }
+        let result = VEXOps::binop(
+            IROp::VFDiv { elem: IRType::F64, count: 2 },
+            RustBV::concrete(lv, 128),
+            RustBV::concrete(rv, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..2 {
+            let lane = f64::from_bits(((got >> (i as u32 * 64)) & 0xFFFFFFFFFFFFFFFFu128) as u64);
+            assert!(
+                (lane - exp[i]).abs() < 1e-12,
+                "lane {} expected {}, got {}",
+                i,
+                exp[i],
+                lane
+            );
+        }
+    }
+
+    /// SQRTPS-style: 4x f32 sqrt, concrete.
+    #[test]
+    fn test_vec_float_sqrt_concrete_f32x4() {
+        let ctx = SymContext::new_mock();
+
+        let v = [4.0f32, 9.0, 16.0, 25.0];
+        let exp = [2.0f32, 3.0, 4.0, 5.0];
+
+        let mut bits: u128 = 0;
+        for i in 0..4u32 {
+            bits |= (v[i as usize].to_bits() as u128) << (i * 32);
+        }
+        let result = VEXOps::unop(
+            IROp::VFSqrt { elem: IRType::F32, count: 4 },
+            RustBV::concrete(bits, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..4 {
+            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
+            assert!(
+                (lane - exp[i]).abs() < 1e-6,
+                "lane {} expected {}, got {}",
+                i,
+                exp[i],
+                lane
+            );
+        }
+    }
+
+    /// Iop_Abs32Fx4-style: per-lane fabs (clears sign bit).
+    #[test]
+    fn test_vec_float_abs_concrete_f32x4() {
+        let ctx = SymContext::new_mock();
+
+        let v = [-1.5f32, 2.5, -0.0, f32::NEG_INFINITY];
+        let exp = [1.5f32, 2.5, 0.0, f32::INFINITY];
+
+        let mut bits: u128 = 0;
+        for i in 0..4u32 {
+            bits |= (v[i as usize].to_bits() as u128) << (i * 32);
+        }
+        let result = VEXOps::unop(
+            IROp::VFAbs { elem: IRType::F32, count: 4 },
+            RustBV::concrete(bits, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..4 {
+            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
+            assert_eq!(
+                lane.to_bits(),
+                exp[i].to_bits(),
+                "lane {} expected {}, got {}",
+                i,
+                exp[i],
+                lane
+            );
+        }
+    }
+
+    /// MAXPS-style: per-lane max of two f32x4 vectors.
+    #[test]
+    fn test_vec_float_max_concrete_f32x4() {
+        let ctx = SymContext::new_mock();
+
+        let l = [1.0f32, -2.0, 3.0, 0.5];
+        let r = [4.0f32, -3.0, 2.0, 0.6];
+        let exp = [4.0f32, -2.0, 3.0, 0.6];
+
+        let mut lv: u128 = 0;
+        let mut rv: u128 = 0;
+        for i in 0..4u32 {
+            lv |= (l[i as usize].to_bits() as u128) << (i * 32);
+            rv |= (r[i as usize].to_bits() as u128) << (i * 32);
+        }
+        let result = VEXOps::binop(
+            IROp::VFMax { elem: IRType::F32, count: 4 },
+            RustBV::concrete(lv, 128),
+            RustBV::concrete(rv, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..4 {
+            let lane = f32::from_bits(((got >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
+            assert!(
+                (lane - exp[i]).abs() < 1e-6,
+                "lane {} expected {}, got {}",
+                i,
+                exp[i],
+                lane
+            );
+        }
+    }
+
+    /// MINPD-style: per-lane min of two f64x2 vectors.
+    #[test]
+    fn test_vec_float_min_concrete_f64x2() {
+        let ctx = SymContext::new_mock();
+
+        let l = [1.5f64, -2.5];
+        let r = [-1.5f64, 0.5];
+        let exp = [-1.5f64, -2.5];
+
+        let mut lv: u128 = 0;
+        let mut rv: u128 = 0;
+        for i in 0..2u32 {
+            lv |= (l[i as usize].to_bits() as u128) << (i * 64);
+            rv |= (r[i as usize].to_bits() as u128) << (i * 64);
+        }
+        let result = VEXOps::binop(
+            IROp::VFMin { elem: IRType::F64, count: 2 },
+            RustBV::concrete(lv, 128),
+            RustBV::concrete(rv, 128),
+            &ctx,
+        )
+        .unwrap();
+        let got = result.as_u128().unwrap();
+        for i in 0..2 {
+            let lane = f64::from_bits(((got >> (i as u32 * 64)) & 0xFFFFFFFFFFFFFFFFu128) as u64);
+            assert!(
+                (lane - exp[i]).abs() < 1e-12,
+                "lane {} expected {}, got {}",
+                i,
+                exp[i],
+                lane
+            );
+        }
+    }
+
+    /// Symbolic VFAdd: build a free f32x4 left vector, constrain it so each
+    /// lane equals 1.0, add a concrete [2.0, 3.0, 4.0, 5.0], and verify the
+    /// model agrees with [3.0, 4.0, 5.0, 6.0] per lane.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_float_add_symbolic_f32x4() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+
+        let mut rv: u128 = 0;
+        let consts = [2.0f32, 3.0, 4.0, 5.0];
+        for i in 0..4u32 {
+            rv |= (consts[i as usize].to_bits() as u128) << (i * 32);
+        }
+        let r = RustBV::concrete(rv, 128);
+
+        let mut lv_target: u128 = 0;
+        for i in 0..4u32 {
+            lv_target |= (1.0f32.to_bits() as u128) << (i * 32);
+        }
+        let l = RustBV::symbolic(&ctx, "vfadd_l", 128);
+        ctx.add_constraint(l.to_z3_ast()._eq(&RustBV::concrete(lv_target, 128).to_z3_ast()));
+
+        let result = VEXOps::binop(
+            IROp::VFAdd { elem: IRType::F32, count: 4 },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert!(ctx.is_sat(), "expected SAT");
+
+        let model = ctx.eval(&result).expect("eval(result) returned None");
+        let exp = [3.0f32, 4.0, 5.0, 6.0];
+        for i in 0..4 {
+            let lane = f32::from_bits(((model >> (i as u32 * 32)) & 0xFFFFFFFF) as u32);
+            assert!(
+                (lane - exp[i]).abs() < 1e-6,
+                "lane {} expected {}, got {}",
+                i,
+                exp[i],
+                lane
+            );
+        }
     }
 }
