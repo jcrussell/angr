@@ -526,6 +526,16 @@ def run_benchmark_gate(memory_limit: str) -> dict:
     env = os.environ.copy()
     env["PATH"] = f"{CARGO_BIN}:{REPO_DIR / '.venv' / 'bin'}:{env['PATH']}"
     env["VIRTUAL_ENV"] = str(REPO_DIR / ".venv")
+    # Ensure the editable angr install is importable from spawn-multiprocessing
+    # children regardless of cwd or sys.path[0]. systemd-run --scope preserves
+    # cwd, but `python tests/benchmarks/run_regression.py ...` sets sys.path[0]
+    # to that script's directory, and spawn workers inherit it — leaving REPO_DIR
+    # off sys.path. PYTHONPATH lands in front of every interpreter started in
+    # the scope, including spawn workers.
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{REPO_DIR}{os.pathsep}{existing_pp}" if existing_pp else str(REPO_DIR)
+    )
 
     try:
         proc = subprocess.run(
@@ -570,6 +580,21 @@ def run_benchmark_gate(memory_limit: str) -> dict:
         if "REGRESSION:" in line:
             regressions.append(line.strip())
 
+    # Detect "gate broken" pattern: every failure is an import / harness error
+    # rather than a real benchmark regression. When the gate itself can't run
+    # (e.g. angr import fails), we'd otherwise silently treat 12 fake failures
+    # as 12 real regressions. Treat this as a distinct, infrastructural failure.
+    gate_broken = False
+    if failed > 0 and regressions:
+        broken_markers = (
+            "No module named",
+            "ImportError",
+            "ModuleNotFoundError",
+            "subprocess crashed",
+        )
+        if all(any(m in r for m in broken_markers) for r in regressions):
+            gate_broken = True
+
     return {
         "ran": True,
         "exit_code": exit_code,
@@ -578,6 +603,7 @@ def run_benchmark_gate(memory_limit: str) -> dict:
         "regressions": regressions,
         "duration_secs": duration,
         "output": stdout[-2000:],
+        "gate_broken": gate_broken,
     }
 
 
@@ -875,7 +901,14 @@ def main():
         benchmark = None
         if commits_made and not args.skip_benchmarks:
             benchmark = run_benchmark_gate(args.memory_limit)
-            if benchmark["failed"] > 0:
+            if benchmark.get("gate_broken"):
+                log.error(
+                    "BENCHMARK GATE BROKEN: every failure is an import/harness "
+                    f"error, not a regression. failed={benchmark['failed']} "
+                    f"regressions[0]={benchmark['regressions'][0] if benchmark['regressions'] else '?'} "
+                    "— gate is not validating commits"
+                )
+            elif benchmark["failed"] > 0:
                 log.warning(f"BENCHMARK REGRESSIONS ({benchmark['failed']}): {benchmark['regressions']}")
             else:
                 log.info(f"Benchmark gate passed: {benchmark['passed']} benchmarks OK in {benchmark['duration_secs']}s")
