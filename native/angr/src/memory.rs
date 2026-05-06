@@ -659,23 +659,46 @@ impl SymbolicMemory {
                 }
             }
             if all_found && !parts.is_empty() {
-                // Concatenate bytes: first byte is at lowest address
-                // For little-endian: byte 0 is LSB, byte N is MSB
-                // Concat: MSB .. LSB  →  parts[N-1] .. parts[0]
-                let mut result = parts[parts.len() - 1].clone();
-                for i in (0..parts.len() - 1).rev() {
-                    result = result.concat(&parts[i], ctx);
-                }
+                // Concatenate bytes: first byte is at lowest address.
+                // LE: byte 0 = LSB → low bits of result → parts[N-1] :: ... :: parts[0]
+                // BE: byte 0 = MSB → high bits of result → parts[0] :: ... :: parts[N-1]
+                let result = match self.endness {
+                    Endness::Little => {
+                        let mut acc = parts[parts.len() - 1].clone();
+                        for i in (0..parts.len() - 1).rev() {
+                            acc = acc.concat(&parts[i], ctx);
+                        }
+                        acc
+                    }
+                    Endness::Big => {
+                        let mut acc = parts[0].clone();
+                        for part in parts.iter().skip(1) {
+                            acc = acc.concat(part, ctx);
+                        }
+                        acc
+                    }
+                };
                 return Ok(result);
             }
             // Check for wider symbolic objects that contain our range
             for (&sym_addr, sym_val) in &self.symbolic_objects {
                 let sym_size = sym_val.width() / 8;
                 if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
-                    let offset = (addr - sym_addr) as u32;
-                    let high = (offset + size) * 8 - 1;
-                    let low = offset * 8;
-                    return Ok(sym_val.extract(high, low, ctx));
+                    let total_bits = sym_val.width();
+                    let off_bits = (addr - sym_addr) as u32 * 8;
+                    // Mirror of fast-path angr-v1q2 fix: the wide BV's byte
+                    // layout depends on memory endianness.
+                    // BE: bytes [off, off+size) occupy bits
+                    //     [total-1-off_bits : total-off_bits-size*8].
+                    // LE: same byte range occupies bits [off_bits+size*8-1 : off_bits].
+                    let (hi, lo) = match self.endness {
+                        Endness::Big => (
+                            total_bits - off_bits - 1,
+                            total_bits - off_bits - size * 8,
+                        ),
+                        Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                    };
+                    return Ok(sym_val.extract(hi, lo, ctx));
                 }
             }
             // Cannot reconstruct - return error for Python fallback
@@ -2945,6 +2968,122 @@ mod tests {
             Some(expected_qhi),
             "LE high qword expected 0x{:016x}",
             expected_qhi
+        );
+    }
+
+    /// angr-76mo: per-byte symbolic concat path in load_concrete must
+    /// honour memory endianness.
+    ///
+    /// Stores four independent 8-bit symbolic BVs at consecutive byte
+    /// addresses, then loads 4 bytes back. This bypasses both the
+    /// exact-address fast path (no width-32 entry at base) and the
+    /// symbolic_spans path (8-bit stores have no span entries), forcing
+    /// the per-byte concat fallback (~lines 642-680 of memory.rs).
+    ///
+    /// Before the fix, the LE concat order was hardcoded for both
+    /// endiannesses: parts[N-1] :: ... :: parts[0]. For BE that put byte 0
+    /// at the LSB instead of the MSB.
+    fn per_byte_symbolic_setup(endness: Endness) -> (SymContext, SymbolicMemory, [u128; 4]) {
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(endness);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+        let pinned: [u128; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        for (i, &val) in pinned.iter().enumerate() {
+            let sym = RustBV::symbolic(&ctx, format!("byte{}", i), 8);
+            ctx.assume_true(&sym.eq(&RustBV::concrete(val, 8), &ctx));
+            mem.store_concrete(0x1000 + i as u64, sym).unwrap();
+        }
+        assert!(ctx.is_sat(), "context must remain SAT after per-byte stores");
+        (ctx, mem, pinned)
+    }
+
+    #[test]
+    fn test_per_byte_symbolic_concat_little_endian() {
+        let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Little);
+        let word = mem
+            .load_concrete(0x1000, 4, &ctx)
+            .expect("4-byte load must succeed");
+        // LE: byte at addr+i is at bits [(i+1)*8-1 : i*8]
+        let expected: u128 = (pinned[3] << 24) | (pinned[2] << 16) | (pinned[1] << 8) | pinned[0];
+        assert_eq!(
+            ctx.eval(&word),
+            Some(expected),
+            "LE per-byte concat expected 0x{:08x}",
+            expected
+        );
+    }
+
+    #[test]
+    fn test_per_byte_symbolic_concat_big_endian() {
+        let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Big);
+        let word = mem
+            .load_concrete(0x1000, 4, &ctx)
+            .expect("4-byte load must succeed");
+        // BE: byte at addr+i is at bits [(N-i)*8-1 : (N-i-1)*8]
+        let expected: u128 = (pinned[0] << 24) | (pinned[1] << 16) | (pinned[2] << 8) | pinned[3];
+        assert_eq!(
+            ctx.eval(&word),
+            Some(expected),
+            "BE per-byte concat expected 0x{:08x}",
+            expected
+        );
+    }
+
+    /// angr-76mo: wider-symbolic linear-scan fallback in load_concrete
+    /// must honour memory endianness when extracting a sub-range.
+    ///
+    /// The linear scan at lines 672-680 is reached when no per-byte
+    /// reconstruction succeeds but a containing wider BV exists. Direct
+    /// manipulation of `symbolic_objects` (without populating
+    /// `symbolic_spans`) is the surest way to force this path: the
+    /// exact-address branch needs sym.width() == size*8 (skipped), the
+    /// symbolic_spans branch finds nothing, per-byte concat finds
+    /// nothing, then the linear scan triggers.
+    fn wide_linear_scan_setup(endness: Endness) -> (SymContext, SymbolicMemory, u128) {
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(endness);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+        let pinned: u128 = 0x1011_1213_1415_1617_1819_1A1B_1C1D_1E1F;
+        let sym = RustBV::symbolic(&ctx, "wide128_lin".to_string(), 128);
+        ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
+        // Insert directly into symbolic_objects without populating
+        // symbolic_spans, then mark each byte as symbolic on the page so
+        // has_symbolic flips during the byte scan.
+        mem.symbolic_objects.insert(0x1000, sym);
+        let page = mem.pages.get_mut(&(0x1000 >> 12)).expect("page mapped");
+        page.mark_symbolic(0, 16);
+        (ctx, mem, pinned)
+    }
+
+    #[test]
+    fn test_wide_linear_scan_little_endian() {
+        let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Little);
+        // 4-byte load at offset 4 → LE bytes [4..8) = bits [63:32].
+        let word = mem
+            .load_concrete(0x1004, 4, &ctx)
+            .expect("4-byte load must succeed");
+        let expected: u128 = (pinned >> 32) & 0xFFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&word),
+            Some(expected),
+            "LE linear scan expected 0x{:08x}",
+            expected
+        );
+    }
+
+    #[test]
+    fn test_wide_linear_scan_big_endian() {
+        let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Big);
+        // 4-byte load at offset 4 → BE bytes [4..8) = bits [95:64].
+        let word = mem
+            .load_concrete(0x1004, 4, &ctx)
+            .expect("4-byte load must succeed");
+        let expected: u128 = (pinned >> 64) & 0xFFFF_FFFF;
+        assert_eq!(
+            ctx.eval(&word),
+            Some(expected),
+            "BE linear scan expected 0x{:08x}",
+            expected
         );
     }
 
