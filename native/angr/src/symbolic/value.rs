@@ -133,6 +133,16 @@ pub enum FloatOpKind {
     /// Convert FP at `src_prec` to FP at `prec` with explicit rounding mode.
     /// operand[0] = rm BV (32-bit), operand[1] = src FP BV at src_prec.bits().
     ConvertFtoFRm { src_prec: FloatPrec },
+    /// Binary FP arithmetic with explicit rounding mode.
+    /// operand[0] = rm BV (32-bit, VEX rm low-2-bits 0..3),
+    /// operand[1] = a BV at prec.bits(), operand[2] = b BV at prec.bits().
+    AddRm,
+    SubRm,
+    MulRm,
+    DivRm,
+    /// Unary FP sqrt with explicit rounding mode.
+    /// operand[0] = rm BV (32-bit), operand[1] = a BV at prec.bits().
+    SqrtRm,
 }
 
 impl FloatOpKind {
@@ -155,8 +165,14 @@ impl FloatOpKind {
             | FloatOpKind::CmpLe
             | FloatOpKind::RoundToInt
             | FloatOpKind::ConvertFtoIRm { .. }
-            | FloatOpKind::ConvertFtoFRm { .. } => 2,
-            FloatOpKind::Fma | FloatOpKind::Fms => 3,
+            | FloatOpKind::ConvertFtoFRm { .. }
+            | FloatOpKind::SqrtRm => 2,
+            FloatOpKind::Fma
+            | FloatOpKind::Fms
+            | FloatOpKind::AddRm
+            | FloatOpKind::SubRm
+            | FloatOpKind::MulRm
+            | FloatOpKind::DivRm => 3,
         }
     }
 
@@ -2270,6 +2286,13 @@ impl RustBV {
                     prec, src_prec, /*has_rm*/ true, operands, cache,
                 );
             }
+            FloatOpKind::AddRm
+            | FloatOpKind::SubRm
+            | FloatOpKind::MulRm
+            | FloatOpKind::DivRm
+            | FloatOpKind::SqrtRm => {
+                return Self::build_fp_arith_rm_cached(kind, prec, operands, cache);
+            }
             _ => {}
         }
 
@@ -2333,7 +2356,12 @@ impl RustBV {
                 | FloatOpKind::ConvertFtoI { .. }
                 | FloatOpKind::ConvertFtoIRm { .. }
                 | FloatOpKind::ConvertFtoF { .. }
-                | FloatOpKind::ConvertFtoFRm { .. } => unreachable!("handled above"),
+                | FloatOpKind::ConvertFtoFRm { .. }
+                | FloatOpKind::AddRm
+                | FloatOpKind::SubRm
+                | FloatOpKind::MulRm
+                | FloatOpKind::DivRm
+                | FloatOpKind::SqrtRm => unreachable!("handled above"),
             }
             .expect("Z3 FPA op returned NULL")
         };
@@ -2420,6 +2448,122 @@ impl RustBV {
             let one = BV::from_u64(1, 2);
             let two = BV::from_u64(2, 2);
             // Chain: rm==0 ? r0 : rm==1 ? r1 : rm==2 ? r2 : r3
+            let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
+            let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
+            rm_low2.eq(&zero).ite(&r0, &pick123)
+        };
+
+        let ieee_bv_raw = unsafe {
+            Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
+                .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
+        };
+        unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
+    }
+
+    /// Build the Z3 AST for an FP arithmetic op with explicit rounding mode
+    /// (`AddRm`/`SubRm`/`MulRm`/`DivRm`/`SqrtRm`). operand[0] is the rm BV;
+    /// remaining operands are the FP operands. Concrete rm picks one Z3
+    /// `RoundingMode`; symbolic rm builds all four variants and ITEs on the
+    /// rm low-2-bits — Z3 simplifies away dead arms at solve time. Mirrors
+    /// the pattern in `build_fp_round_to_int_cached`.
+    #[cfg(feature = "vex-engine-z3")]
+    fn build_fp_arith_rm_cached(
+        kind: FloatOpKind,
+        prec: FloatPrec,
+        operands: &[Arc<RustBV>],
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
+        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3_sys::{
+            Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_mul, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
+            Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
+        };
+
+        let is_unary = matches!(kind, FloatOpKind::SqrtRm);
+        debug_assert_eq!(operands.len(), if is_unary { 2 } else { 3 });
+        let rm_bv = &operands[0];
+
+        let z3_ctx = z3::Context::thread_local();
+        let raw_ctx = z3_ctx.get_z3_context();
+        let sort = match prec {
+            FloatPrec::F32 => z3::Sort::float32(),
+            FloatPrec::F64 => z3::Sort::double(),
+        };
+        let raw_sort = sort.get_z3_sort();
+
+        // Convert FP operand BVs to Z3 Float wrappers; keep them alive across
+        // the helper closure since intermediate ASTs may be GC'd otherwise.
+        let to_fp = |bv: &Arc<RustBV>,
+                     cache: &mut std::collections::HashMap<usize, z3::ast::BV>|
+         -> Float {
+            let z3 = bv.to_z3_ast_cached(cache);
+            let raw = unsafe {
+                Z3_mk_fpa_to_fp_bv(raw_ctx, z3.get_z3_ast(), raw_sort)
+                    .expect("Z3_mk_fpa_to_fp_bv returned NULL")
+            };
+            unsafe { Float::wrap(&z3_ctx, raw) }
+        };
+        let a_fp = to_fp(&operands[1], cache);
+        let b_fp = if is_unary { None } else { Some(to_fp(&operands[2], cache)) };
+
+        let apply = |vex_rm: u8| -> Float {
+            let rm = match vex_rm & 0x3 {
+                0 => RoundingMode::round_nearest_ties_to_even(),
+                1 => RoundingMode::round_towards_negative(),
+                2 => RoundingMode::round_towards_positive(),
+                3 => RoundingMode::round_towards_zero(),
+                _ => unreachable!(),
+            };
+            let rm_raw = rm.get_z3_ast();
+            let raw_a = a_fp.get_z3_ast();
+            let raw = unsafe {
+                match kind {
+                    FloatOpKind::AddRm => Z3_mk_fpa_add(
+                        raw_ctx,
+                        rm_raw,
+                        raw_a,
+                        b_fp.as_ref().unwrap().get_z3_ast(),
+                    ),
+                    FloatOpKind::SubRm => Z3_mk_fpa_sub(
+                        raw_ctx,
+                        rm_raw,
+                        raw_a,
+                        b_fp.as_ref().unwrap().get_z3_ast(),
+                    ),
+                    FloatOpKind::MulRm => Z3_mk_fpa_mul(
+                        raw_ctx,
+                        rm_raw,
+                        raw_a,
+                        b_fp.as_ref().unwrap().get_z3_ast(),
+                    ),
+                    FloatOpKind::DivRm => Z3_mk_fpa_div(
+                        raw_ctx,
+                        rm_raw,
+                        raw_a,
+                        b_fp.as_ref().unwrap().get_z3_ast(),
+                    ),
+                    FloatOpKind::SqrtRm => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
+                    _ => unreachable!("non-Rm FP arith kind in build_fp_arith_rm_cached"),
+                }
+                .expect("Z3 FPA arith op returned NULL")
+            };
+            unsafe { Float::wrap(&z3_ctx, raw) }
+        };
+
+        let result_fp = if let Some(m) = rm_bv.as_u128() {
+            apply((m & 0x3) as u8)
+        } else {
+            // Symbolic rm: build all 4 results and ITE on rm[1:0]. Z3 folds
+            // dead arms during simplification.
+            let r0 = apply(0);
+            let r1 = apply(1);
+            let r2 = apply(2);
+            let r3 = apply(3);
+            let rm_z3 = rm_bv.to_z3_ast_cached(cache);
+            let rm_low2 = rm_z3.extract(1, 0);
+            let zero = BV::from_u64(0, 2);
+            let one = BV::from_u64(1, 2);
+            let two = BV::from_u64(2, 2);
             let pick23 = rm_low2.eq(&two).ite(&r2, &r3);
             let pick123 = rm_low2.eq(&one).ite(&r1, &pick23);
             rm_low2.eq(&zero).ite(&r0, &pick123)

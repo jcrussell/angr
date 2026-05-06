@@ -326,15 +326,16 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRExpr::Triop { op, arg1, arg2, arg3 } => {
                 // VEX Triops are float arithmetic with a rounding mode:
-                // (rm, a, b). The rm (arg1) is dropped because Z3 FP theory
-                // is not wired up; concrete float math via VEXOps::binop is
-                // still correct under the default IEEE-754 round-to-nearest.
-                let _rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+                // (rm, a, b). For FAdd/FSub/FMul/FDiv we route through
+                // `binop_with_rm` which honors the VEX rm bits when non-RNE;
+                // RNE keeps the native-f{32,64} fast path. Other Triops
+                // ignore rm and fall through to `binop`.
+                let rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
                 let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
                 let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
-                let any_sym = v2.is_symbolic() || v3.is_symbolic();
+                let any_sym = v2.is_symbolic() || v3.is_symbolic() || rm.is_symbolic();
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                VEXOps::binop(*op, v2, v3, self.ctx).or_else(|_| {
+                VEXOps::binop_with_rm(*op, rm, v2, v3, self.ctx).or_else(|_| {
                     if any_sym {
                         Ok(RustBV::symbolic(self.ctx, format!("triop_{:x}", self.pc), width))
                     } else {

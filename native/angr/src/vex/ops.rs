@@ -400,6 +400,70 @@ impl VEXOps {
     }
 
     // =========================================================================
+    // Rounding-mode aware float arithmetic
+    // =========================================================================
+
+    /// Binary FP arithmetic with explicit VEX rounding mode. Used by the
+    /// Triop dispatch to honor the rm operand on `Iop_AddF{32,64}`,
+    /// `Iop_SubF*`, `Iop_MulF*`, `Iop_DivF*`. Concrete RNE (rm low-2-bits == 0)
+    /// keeps the existing native-f32/f64 fast path; non-RNE concrete or
+    /// symbolic rm builds a Z3 FP expression with the explicit rm so the
+    /// rm-aware fold in `build_fp_arith_rm_cached` produces the right value.
+    #[inline]
+    pub fn binop_with_rm(
+        op: IROp,
+        rm: RustBV,
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let (kind_rm, ty) = match op {
+            IROp::FAdd(t) => (FloatOpKind::AddRm, t),
+            IROp::FSub(t) => (FloatOpKind::SubRm, t),
+            IROp::FMul(t) => (FloatOpKind::MulRm, t),
+            IROp::FDiv(t) => (FloatOpKind::DivRm, t),
+            _ => return Self::binop(op, left, right, ctx),
+        };
+
+        // RNE concrete: keep the native-f{32,64} fast path. Most code uses
+        // RNE; routing through Z3 here would be a measurable regression on
+        // FP-heavy benchmarks.
+        if let Some(m) = rm.as_u128() {
+            if m & 0x3 == 0 {
+                return Self::binop(op, left, right, ctx);
+            }
+        }
+
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(kind_rm, prec, vec![rm, left, right]))
+    }
+
+    /// Unary FP op (Sqrt) with explicit VEX rounding mode. RNE concrete keeps
+    /// the existing native-f{32,64} fast path; non-RNE/symbolic rm routes
+    /// through `FloatOpKind::SqrtRm`.
+    #[inline]
+    pub fn unop_with_rm(
+        op: IROp,
+        rm: RustBV,
+        arg: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let (kind_rm, ty) = match op {
+            IROp::FSqrt(t) => (FloatOpKind::SqrtRm, t),
+            _ => return Self::unop(op, arg, ctx),
+        };
+
+        if let Some(m) = rm.as_u128() {
+            if m & 0x3 == 0 {
+                return Self::unop(op, arg, ctx);
+            }
+        }
+
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(kind_rm, prec, vec![rm, arg]))
+    }
+
+    // =========================================================================
     // Helper Functions
     // =========================================================================
 
@@ -2910,6 +2974,151 @@ mod tests {
             "expected rm low2 bits == 2 (round toward +inf), got {}",
             model_rm & 0x3
         );
+    }
+
+    /// FDiv with concrete RNE rm goes through the native-f32 fast path.
+    /// 1.0/10.0 under RNE is 0x3DCCCCCD (correctly rounded up).
+    #[test]
+    fn test_float_div_with_rm_rne_fastpath_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_rne = RustBV::concrete(0, 32);
+        let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
+
+        let result =
+            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rne, one, ten, &ctx).unwrap();
+        // RNE keeps the native-f32 fast path; result is fully concrete (not
+        // a Z3 expression).
+        assert!(!result.is_symbolic());
+        assert_eq!(result.as_u64(), Some(0x3DCCCCCD));
+    }
+
+    /// FDiv with concrete RZ (toward zero) rm: 1.0/10.0 truncates the last
+    /// mantissa bit → 0x3DCCCCCC (one ULP below RNE).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_div_with_rm_rz_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_rz = RustBV::concrete(3, 32);
+        let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
+
+        let result =
+            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rz, one, ten, &ctx).unwrap();
+        let bits = ctx.eval(&result).expect("eval failed") as u32;
+        assert_eq!(bits, 0x3DCCCCCC, "1/10 with RZ rounds toward zero");
+    }
+
+    /// FDiv with concrete RU (toward +inf) rm: 1.0/10.0 = 0x3DCCCCCD (same
+    /// as RNE because the discarded bits push up).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_div_with_rm_ru_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_ru = RustBV::concrete(2, 32);
+        let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
+
+        let result =
+            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_ru, one, ten, &ctx).unwrap();
+        let bits = ctx.eval(&result).expect("eval failed") as u32;
+        assert_eq!(bits, 0x3DCCCCCD);
+    }
+
+    /// FDiv with concrete RD (toward -inf) rm on a positive result equals RZ:
+    /// 1.0/10.0 → 0x3DCCCCCC.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_div_with_rm_rd_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_rd = RustBV::concrete(1, 32);
+        let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
+
+        let result =
+            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rd, one, ten, &ctx).unwrap();
+        let bits = ctx.eval(&result).expect("eval failed") as u32;
+        assert_eq!(bits, 0x3DCCCCCC);
+    }
+
+    /// FDiv with symbolic rm: constraining result == 0x3DCCCCCC forces rm
+    /// low-2-bits ∈ {1, 3} (RD or RZ); 0x3DCCCCCD forces rm low-2-bits ∈
+    /// {0, 2}. Exercises the 4-way ITE built by `build_fp_arith_rm_cached`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_div_with_symbolic_rm_f32() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let rm = RustBV::symbolic(&ctx, "rm_div_f32", 32);
+        let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+        let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
+
+        let result = VEXOps::binop_with_rm(
+            IROp::FDiv(IRType::F32),
+            rm.clone(),
+            one,
+            ten,
+            &ctx,
+        )
+        .unwrap();
+        let target = RustBV::concrete(0x3DCCCCCC, 32);
+        let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
+        ctx.add_constraint(eq);
+        assert!(ctx.is_sat(), "expected SAT for div(1,10) == 0x3DCCCCCC");
+
+        let model_rm = ctx.eval(&rm).expect("eval(rm) returned None") as u32;
+        let low2 = model_rm & 0x3;
+        assert!(
+            low2 == 1 || low2 == 3,
+            "expected rm low2 ∈ {{1, 3}} (RD/RZ), got {}",
+            low2
+        );
+    }
+
+    /// FAdd with concrete RZ on inexact-sum operands. 0x3F800001 + 0x3F800002
+    /// = 2.0 + 1.5ulp (exact). RNE rounds-to-even → 2.0 + 2ulp = 0x40000002;
+    /// RZ truncates → 2.0 + 1ulp = 0x40000001.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_add_with_rm_rz_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_rz = RustBV::concrete(3, 32);
+        let a = RustBV::concrete(0x3F800001, 32);
+        let b = RustBV::concrete(0x3F800002, 32);
+
+        let result =
+            VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a, b, &ctx).unwrap();
+        let bits = ctx.eval(&result).expect("eval failed") as u32;
+        assert_eq!(bits, 0x40000001, "RZ truncates 1.5ulp tie down");
+    }
+
+    /// SqrtRm: sqrt(2.0f32) under RU (toward +inf). True value is between
+    /// 0x3FB504F3 (RNE) and 0x3FB504F4; RU pushes up by one ulp.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_sqrt_with_rm_ru_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_ru = RustBV::concrete(2, 32);
+        let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+
+        let result =
+            VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
+        let bits = ctx.eval(&result).expect("eval failed") as u32;
+        assert_eq!(bits, 0x3FB504F4, "sqrt(2) under RU rounds up one ulp");
+    }
+
+    /// SqrtRm: sqrt(2.0f32) RNE keeps the native fast path (no Z3).
+    #[test]
+    fn test_float_sqrt_with_rm_rne_fastpath_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_rne = RustBV::concrete(0, 32);
+        let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+
+        let result =
+            VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_rne, two, &ctx).unwrap();
+        assert!(!result.is_symbolic());
+        assert_eq!(result.as_u64(), Some(0x3FB504F3));
     }
 
     /// F32→I32S with NaN: Rust `as` cast collapses NaN to 0.
