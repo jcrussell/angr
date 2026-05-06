@@ -1,55 +1,52 @@
-# Loop session notes (2026-05-06, seventy-second loop session — DONE)
+# Loop session notes (2026-05-06, seventy-third loop session — DONE)
 
-## Status: COMPLETE — angr-mjc0 closed
+## Status: COMPLETE — angr-f5y0 closed
 
-## Task: angr-mjc0 (P3) — Encapsulate _perf_stats behind explicit accessors
+## Task: angr-f5y0 (P3) — Audit and complete vec_float_scalar_* op coverage
+
+### Audit conclusion
+All 7 scalar-in-vector FP IROps are fully dispatched:
+  unop  : VFSqrtS                 (ops.rs:147)
+  binop : VFAddS / VFSubS / VFMulS / VFDivS  (ops.rs:245-248)
+          VFMaxS / VFMinS         (ops.rs:336-337)
+opcode_map.rs:457-470 maps every Iop_<Op>{32F0x4,64F0x2}; no unmapped
+scalar SSE op exists. The bead's "panic branches not in dispatch table"
+were false alarms — they were dead code in vec_float_scalar_op caused
+by passing the op as `&str` even though all callers used hardcoded
+literals.
 
 ### What changed
-New module `angr/exploration/rust_perf_tracker.py` (PerformanceTracker class).
-Wraps the previously-bare ``self._perf_stats`` dict. Writers now use named
-methods; reads still work via ``__getitem__`` / ``.get()`` so reporters and
-debug scripts didn't need touching.
+Replaced `op: &str` parameter on `vec_float_scalar_op` with the existing
+`FloatOpKind` enum. Three `UnsupportedVectorOp(format!(...))` arms
+became unreachable and were removed. A `debug_assert!` documents the
+supported subset (Add/Sub/Mul/Div).
 
-API:
-  - ``set_init_phase(phase, ns)`` / ``add_init_phase(phase, ns)``
-  - ``record_simprocedure_call(total_ns)`` (count++ + total_ns)
-  - ``increment_simprocedure_count()`` (orphan VEX-fallback site)
-  - ``add_simprocedure_phase(phase, ns)`` for sub-phases
-    (state_create / execute / sync_back / state_copy)
-  - ``record_memory_load(ns)`` / ``record_fetch_page(ns)`` / ``record_lift_block(ns)``
-  - ``__getitem__`` / ``get`` / ``as_dict`` for read-side compat
+Added `test_vec_float_scalar_all_variants_f64` — concrete F64 coverage
+for all seven scalar variants in one parametrised test, asserts upper-bit
+passthrough.
 
-Files touched:
-  - angr/exploration/rust_perf_tracker.py  (new, ~100 lines)
-  - angr/exploration/rust_manager.py       (-24 init dict + 9 writer sites)
-  - angr/exploration/rust_callback_dispatch.py  (13 writer sites)
-
-### Scope decision
-Bead title mentions `_perf_stats / _state_cache / _rust_mgr`. Scoped to ONLY
-`_perf_stats` because:
-  - bead body and AC mention only PerformanceTracker
-  - `_state_cache` (71 refs) and `_rust_mgr` (222 refs) are larger refactors
-  - AC is "No direct dict access to _perf_stats outside its owning class"
-  - Future bead can pick up the others if desired
+### Files touched
+- native/angr/src/vex/ops.rs (refactor + new test)
 
 ### Verification
-- pytest tests/engines/test_rust_exploration.py: 243/243 passing (8.20s)
-- run_single.py fauxware --engine rust: perf_report renders correctly with all
-  phases reporting non-zero where expected (Init=15.1ms, SimProcedures=6, etc)
+- cargo unit tests: 10 vec_float_scalar tests pass (test_vec_float_scalar_*)
+- python pytest tests/engines/test_rust_exploration.py: 243/243 passing (8.25s)
+- run_single.py fauxware --engine rust: completes successfully
 
-### Build note
-Recovered .venv at session start. The venv was missing bin/ scripts and many
-.py files. Site-packages had only __pycache__/*.cpython-312.pyc files. Wrote
-/tmp/recover_pycache.sh to copy ``__pycache__/foo.cpython-312.pyc`` to
-``foo.pyc`` at the parent level (Python 3.x can find them there via PEP 488),
-recovered 549 files. Recreated minimal activate script. No pip available.
-Worked around missing editable-install .pth via PYTHONPATH=. for run_single.py.
-
-### Commits
-- (pending) refactor(rust_manager): encapsulate _perf_stats behind PerformanceTracker (angr-mjc0)
+### Build environment notes
+- Venv still in py-stripped state (only .pyc files in site-packages).
+- pip install -e . blocked by PEP 668 (system-pip refuses).
+- Used `cargo build --manifest-path native/angr/Cargo.toml --release`
+  + `cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
+- Required env: Z3_SYS_Z3_HEADER=/usr/include/z3.h
+- run_single.py needs PYTHONPATH=. (no editable .pth installed)
 
 ### Memories saved
-- venv-recovery-pattern (how to recover py-stripped venv)
+- invariant-vex-scalar-fp-coverage-complete (so future sessions don't
+  re-audit scalar FP ops)
+
+### Commits
+- 4e19a929a refactor(vex/ops): type-safe dispatch for vec_float_scalar_op (angr-f5y0)
 
 ## Next-up (still ready)
 - angr-eygl (P1) Differential test harness — multi-session
@@ -61,5 +58,3 @@ Worked around missing editable-install .pth via PYTHONPATH=. for run_single.py.
 - angr-fbl0 (P2) Native SimProcedure coverage
 - angr-zrq1 (P2) Dirty-call coverage stubs
 - angr-4j5u (P2) Decompose RustExplorationManager
-- angr-3vrj (P3) StateMetadata dataclass
-- (many P3 — see `bd ready -n 50`)
