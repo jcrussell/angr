@@ -355,23 +355,20 @@ class RustCallbackDispatchMixin:
                 l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
             # Resume execution at this address, no SimProcedure to run
             self._rust_mgr.resume_after_simprocedure(addr, None, None)
-            self._perf_stats['callback_simprocedure_count'] += 1
-            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+            self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 
         # Find the SimProcedure
         proc = self._find_simprocedure(addr, name)
         if proc is None:
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
-            self._perf_stats['callback_simprocedure_count'] += 1
-            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+            self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 
         # Fast paths for procedures that always deadend (NO_RET terminals,
         # cached exit-only continuations) — skip state creation entirely.
         if self._try_simproc_deadend_fast_path(proc, name, addr, addr_int):
-            self._perf_stats['callback_simprocedure_count'] += 1
-            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+            self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 
         # Get hook length - this determines if the hook replaces code
@@ -388,17 +385,16 @@ class RustCallbackDispatchMixin:
             self._rust_mgr.resume_after_simprocedure(addr + 1, None, None)
             self._set_callback_state(None)
             self._current_callback_state_id = None
-            self._perf_stats['callback_simprocedure_state_create_ns'] += time.perf_counter_ns() - _sp_state_create_start
-            self._perf_stats['callback_simprocedure_count'] += 1
-            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+            self._perf_stats.add_simprocedure_phase('state_create', time.perf_counter_ns() - _sp_state_create_start)
+            self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
-        self._perf_stats['callback_simprocedure_state_create_ns'] += time.perf_counter_ns() - _sp_state_create_start
+        self._perf_stats.add_simprocedure_phase('state_create', time.perf_counter_ns() - _sp_state_create_start)
 
         # Snapshot original state (full copy / register snapshot / no copy)
         # for change extraction after the SimProcedure runs.
         _sp_copy_start = time.perf_counter_ns()
         orig_state = self._snapshot_orig_state(state, proc, name, is_zero_length_hook)
-        self._perf_stats['callback_simprocedure_state_copy_ns'] += time.perf_counter_ns() - _sp_copy_start
+        self._perf_stats.add_simprocedure_phase('state_copy', time.perf_counter_ns() - _sp_copy_start)
 
         # Save original constraint COUNT before hook execution.
         # Building set(constraints) is expensive (~6ms per call with many constraints).
@@ -432,7 +428,7 @@ class RustCallbackDispatchMixin:
                     # It's a class, instantiate it
                     proc().execute(state, successors)
             _sp_exec_elapsed = time.perf_counter_ns() - _sp_execute_start
-            self._perf_stats['callback_simprocedure_execute_ns'] += _sp_exec_elapsed
+            self._perf_stats.add_simprocedure_phase('execute', _sp_exec_elapsed)
             # Per-procedure timing
             _proc_name = name or proc.__class__.__name__
             if _proc_name not in self._procedure_times:
@@ -489,8 +485,7 @@ class RustCallbackDispatchMixin:
                         pass
                 self._set_callback_state(None)
                 self._current_callback_state_id = None
-                self._perf_stats['callback_simprocedure_count'] += 1
-                self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+                self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
                 return
             # Other TypeErrors fall through to generic handler
             raise
@@ -507,15 +502,13 @@ class RustCallbackDispatchMixin:
             # Clear callback state since we've handled the error
             self._set_callback_state(None)
             self._current_callback_state_id = None
-            self._perf_stats['callback_simprocedure_count'] += 1
-            self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+            self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
         # Only clear callback state on success, not in finally.
         self._set_callback_state(None)
         self._current_callback_state_id = None
-        self._perf_stats['callback_simprocedure_sync_back_ns'] += time.perf_counter_ns() - _sp_sync_start
-        self._perf_stats['callback_simprocedure_count'] += 1
-        self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+        self._perf_stats.add_simprocedure_phase('sync_back', time.perf_counter_ns() - _sp_sync_start)
+        self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
 
     def _find_simprocedure(self, addr: int, name: Optional[str]):
         """Locate a SimProcedure by address, then by class name as fallback.
@@ -718,8 +711,7 @@ class RustCallbackDispatchMixin:
                 self._rust_mgr.deadend_pending_callback()
                 self._set_callback_state(None)
                 self._current_callback_state_id = None
-                self._perf_stats['callback_simprocedure_count'] += 1
-                self._perf_stats['callback_simprocedure_total_ns'] += time.perf_counter_ns() - _sp_total_start
+                self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
                 return True
 
         # First successor continues in Rust
@@ -1912,7 +1904,7 @@ class RustCallbackDispatchMixin:
                     l.warning(f"VEX fallback at 0x{addr:x}: failed to fork "
                               f"successor at 0x{extra_succ.addr:x}: {fork_err}")
 
-            self._perf_stats['callback_simprocedure_count'] += 1
+            self._perf_stats.increment_simprocedure_count()
 
         except Exception as e:
             l.warning(f"Python VEX fallback error at 0x{addr:x}: {e}")

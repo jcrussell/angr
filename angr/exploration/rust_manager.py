@@ -23,6 +23,7 @@ from pyvex.errors import PyVEXError
 
 from angr.errors import SimEngineError, SimError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
+from angr.exploration.rust_perf_tracker import PerformanceTracker
 from angr.exploration._constants import PAGE_SIZE, PAGE_MASK, STACK_SIZE, MAX_OVERLAY_SECTION_SIZE
 
 if TYPE_CHECKING:
@@ -377,29 +378,7 @@ class RustExplorationManager(
             self._rust_mgr.set_max_active_states(max_active_states)
 
         # Performance profiling counters
-        self._perf_stats = {
-            'init_total_ns': 0,
-            'init_setup_callbacks_ns': 0,
-            'init_load_binary_ns': 0,
-            'init_register_simprocedures_ns': 0,
-            'init_python_run_ns': 0,
-            'init_add_rust_state_ns': 0,
-            'init_memory_sync_ns': 0,
-            'init_register_sync_ns': 0,
-            'init_hook_register_ns': 0,
-            'callback_simprocedure_count': 0,
-            'callback_simprocedure_total_ns': 0,
-            'callback_simprocedure_state_create_ns': 0,
-            'callback_simprocedure_execute_ns': 0,
-            'callback_simprocedure_sync_back_ns': 0,
-            'callback_memory_load_count': 0,
-            'callback_memory_load_total_ns': 0,
-            'callback_fetch_page_count': 0,
-            'callback_fetch_page_total_ns': 0,
-            'callback_lift_block_count': 0,
-            'callback_lift_block_total_ns': 0,
-            'callback_simprocedure_state_copy_ns': 0,
-        }
+        self._perf_stats = PerformanceTracker()
         # Per-procedure timing: {name: {'count': int, 'execute_ns': int}}
         self._procedure_times: Dict[str, Dict[str, int]] = {}
 
@@ -424,17 +403,17 @@ class RustExplorationManager(
         # Set up callbacks
         _t0 = time.perf_counter_ns()
         self._setup_callbacks()
-        self._perf_stats['init_setup_callbacks_ns'] = time.perf_counter_ns() - _t0
+        self._perf_stats.set_init_phase('setup_callbacks', time.perf_counter_ns() - _t0)
 
         # Load binary regions
         _t0 = time.perf_counter_ns()
         self._load_binary_regions()
-        self._perf_stats['init_load_binary_ns'] = time.perf_counter_ns() - _t0
+        self._perf_stats.set_init_phase('load_binary', time.perf_counter_ns() - _t0)
 
         # Register SimProcedures
         _t0 = time.perf_counter_ns()
         self._register_simprocedures()
-        self._perf_stats['init_register_simprocedures_ns'] = time.perf_counter_ns() - _t0
+        self._perf_stats.set_init_phase('register_simprocedures', time.perf_counter_ns() - _t0)
 
         # Symbolic identity tracker for preserving AST identity across FFI
         # This is critical: BVS("x", 32) must stay the same object after round-trip
@@ -546,7 +525,7 @@ class RustExplorationManager(
                     l.debug(f"Multi-stage reuse: reset manager for state {old_state_id}")
                     # Skip ALL remaining init — callbacks, binary, simprocedures
                     # are already set up on the old manager
-                    self._perf_stats['init_total_ns'] = time.perf_counter_ns() - _init_start
+                    self._perf_stats.set_init_phase('total', time.perf_counter_ns() - _init_start)
                     return
                 except Exception as e:
                     l.debug(f"Multi-stage reuse failed, falling back to normal init: {e}")
@@ -605,13 +584,13 @@ class RustExplorationManager(
                 # that the Rust engine can't execute correctly.
                 _t0 = time.perf_counter_ns()
                 state = self._run_python_init_if_needed(state)
-                self._perf_stats['init_python_run_ns'] += time.perf_counter_ns() - _t0
+                self._perf_stats.add_init_phase('python_run', time.perf_counter_ns() - _t0)
 
                 _t0 = time.perf_counter_ns()
                 self._add_rust_state('active', state)
-                self._perf_stats['init_add_rust_state_ns'] += time.perf_counter_ns() - _t0
+                self._perf_stats.add_init_phase('add_rust_state', time.perf_counter_ns() - _t0)
 
-        self._perf_stats['init_total_ns'] = time.perf_counter_ns() - _init_start
+        self._perf_stats.set_init_phase('total', time.perf_counter_ns() - _init_start)
 
     def perf_report(self) -> str:
         """Return a formatted performance report."""
@@ -807,8 +786,7 @@ class RustExplorationManager(
                 l.warning(f"Memory load error at 0x{addr:x}: {e}")
                 return (bytes(size), False, None)
         finally:
-            self._perf_stats['callback_memory_load_count'] += 1
-            self._perf_stats['callback_memory_load_total_ns'] += time.perf_counter_ns() - _ml_start
+            self._perf_stats.record_memory_load(time.perf_counter_ns() - _ml_start)
 
     def _cb_memory_store(self, addr: int, data: bytes):
         state = self._get_per_fork_state()
@@ -834,8 +812,7 @@ class RustExplorationManager(
                 l.warning(f"Lift error at 0x{addr:x}: {e}")
                 return '{}'
         finally:
-            self._perf_stats['callback_lift_block_count'] += 1
-            self._perf_stats['callback_lift_block_total_ns'] += time.perf_counter_ns() - _lb_start
+            self._perf_stats.record_lift_block(time.perf_counter_ns() - _lb_start)
 
     def _cb_fetch_page(self, page_addr: int) -> tuple:
         _fp_start = time.perf_counter_ns()
@@ -856,8 +833,7 @@ class RustExplorationManager(
                 l.debug("fetch_page 0x%x: failed to load/eval, returning empty", page_addr, exc_info=True)
                 return (bytes(4096), 0, False)
         finally:
-            self._perf_stats['callback_fetch_page_count'] += 1
-            self._perf_stats['callback_fetch_page_total_ns'] += time.perf_counter_ns() - _fp_start
+            self._perf_stats.record_fetch_page(time.perf_counter_ns() - _fp_start)
 
     def _cb_sync_constraints(self, constraints: list) -> bool:
         """Sync constraints from Rust to Python's claripy solver."""
@@ -1695,12 +1671,12 @@ class RustExplorationManager(
         self._precomputed_regs = None  # Consume once
         self._sync_registers_to_rust(angr_state, rust_state,
                                      precomputed_regs=precomputed)
-        self._perf_stats['init_register_sync_ns'] += time.perf_counter_ns() - _t_reg
+        self._perf_stats.add_init_phase('register_sync', time.perf_counter_ns() - _t_reg)
 
         # Map memory regions
         _t_mem = time.perf_counter_ns()
         self._sync_memory_to_rust(angr_state, rust_state)
-        self._perf_stats['init_memory_sync_ns'] += time.perf_counter_ns() - _t_mem
+        self._perf_stats.add_init_phase('memory_sync', time.perf_counter_ns() - _t_mem)
 
         # Mirror angr's STRICT_PAGE_ACCESS: when set on the SimState, the Rust
         # memory model rejects loads/stores that violate per-page R/W bits.
