@@ -1,50 +1,50 @@
-# Loop session notes (2026-05-06, eighty-sixth loop session — DONE)
+# Loop session notes (2026-05-06, eighty-seventh loop session — DONE)
 
-## Status: COMPLETE — angr-lbze closed
+## Status: COMPLETE — angr-88mp closed
 
-Loop benchmark gate was broken: every iteration shipped commits without
-functional regression validation (28+ logged iterations).
+Made symbolic-store fallback policy consistent across the three sites
+flagged by the audit in interpreter_cb/statements.rs.
 
-## Root cause
+## Changes
 
-`tests/benchmarks/run_regression.py` uses
-`multiprocessing.get_context("spawn").Pool(1)` to isolate each benchmark.
-`spawn` re-execs Python with `sys.path` inherited from the parent. When
-the orchestrator launches `python tests/benchmarks/run_regression.py ...`,
-Python sets the parent's `sys.path[0]` to that script's directory
-(`tests/benchmarks/`) — REPO_DIR is NOT on `sys.path`. The spawn child
-inherits this, so `import angr` fails inside the worker.
+`native/angr/src/interpreter_cb/statements.rs`:
 
-The angr editable install also has no `.pth` in site-packages — only the
-`__editable__*finder.pyc`. Without the matching `.pth` import side-effect,
-that finder never registers. So `import angr` only works when REPO_DIR is
-implicitly in `sys.path` (e.g. cwd matches via the `''` entry on `python -c`).
+1. **StoreG sym-guard, non-Single addr (lines ~360-380)** —
+   replaced silent `log::warn!("Store may be lost, but continuing
+   execution.")` with `Err(CbExecutionError::Unsupported(...))`.
+   Still delegates via `memory_store_symbolic_full` when registered.
 
-## Fix
+2. **StoreG concrete-guard sym-data, Multiple addrs (lines ~422-440)** —
+   replaced silent `call_memory_store_symbolic_value(addrs[0], ...)` (which
+   dropped the other candidates) with the canonical pattern: prefer
+   full callback; else `build_ite_store_from_callbacks` for ≤16 addrs;
+   else return Unsupported.
 
-`run_optimization_loop.py:run_benchmark_gate` now prepends REPO_DIR to
-`PYTHONPATH` in the env passed to systemd-run. PYTHONPATH lands on every
-interpreter in the scope, including spawn workers, and is independent of
-sys.path[0].
-
-Also added gate-broken detection: when every failure matches an
-import/harness pattern (`No module named`, `ImportError`,
-`ModuleNotFoundError`, `subprocess crashed`), the result dict now has
-`gate_broken=True`. The orchestrator's main loop logs `log.error("BENCHMARK
-GATE BROKEN ...")` instead of `log.warning("BENCHMARK REGRESSIONS ...")`
-in this case, so a future re-break is loud rather than silent.
+3. **CAS sym-addr sym-data (lines ~702-715)** — was hard-erroring
+   without trying any delegation; now tries
+   `memory_store_symbolic_full` first.
 
 ## Verification
 
-- Manual call to `run_benchmark_gate("4G")` now reports `passed=11
-  failed=1 gate_broken=False`. The single failure is `csgames2018:
-  Rust engine failed: list index out of range` — a pre-existing real bug,
-  not the gate.
-- Manual repro with PYTHONPATH stripped reports `failed=12
-  gate_broken=True` with the original `No module named 'angr'` failures.
-- pytest tests/engines/test_rust_exploration.py: 243/243 pass.
+- `cargo check --release`: clean.
+- `pytest tests/engines/test_rust_exploration.py`: 243/243 pass.
+- `tests/benchmarks/run_regression.py`: 11/12 pass (csgames2018 is
+  pre-existing per loop-session 2026-05-06).
+- Smoke: `run_single.py {fauxware, csaw_wyvern, codegate_2017-angrybird}`
+  all pass with rust engine.
+
+## Memories saved (bd remember)
+
+- `invariant-symbolic-store-fallback-policy` — the canonical policy and
+  where to apply it in statements.rs.
+- `memory-store-symbolic-full-not-registered` — `memory_store_symbolic_full`
+  callback is plumbed in Rust but no Python code wires it up; `has_*()`
+  is always false.
+- `build-z3-headers-not-in-venv` — venv pip is broken; manual build via
+  `cargo build --release` + `cp target/release/librustylib.so
+  angr/rustylib.cpython-312-x86_64-linux-gnu.so`. Use
+  `Z3_SYS_Z3_HEADER=/usr/include/z3.h`.
 
 ## Files modified
 
-- `run_optimization_loop.py` (run_benchmark_gate env fix + gate_broken flag,
-  main-loop branch in benchmark gate handling)
+- `native/angr/src/interpreter_cb/statements.rs` (+36, -19)
