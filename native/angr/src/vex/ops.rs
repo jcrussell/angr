@@ -346,6 +346,12 @@ impl VEXOps {
                 Self::set_v128_lo64(left, right, ctx)
             }
 
+            // Iop_SqrtF{32,64} is a VEX Binop (arg1=rm, arg2=value) that we
+            // model as IROp::FSqrt — keep the translation here so the
+            // interpreter's Binop dispatch routes the rm through
+            // unop_with_rm instead of falling back to a fresh symbolic.
+            IROp::FSqrt(_) => Self::unop_with_rm(op, left, right, ctx),
+
             _ => Err(OpError::NotBinary(op)),
         }
     }
@@ -3119,6 +3125,35 @@ mod tests {
             VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_rne, two, &ctx).unwrap();
         assert!(!result.is_symbolic());
         assert_eq!(result.as_u64(), Some(0x3FB504F3));
+    }
+
+    /// Iop_SqrtF32 reaches us as a VEX Binop (arg1=rm, arg2=value). Verify
+    /// that VEXOps::binop routes it through unop_with_rm so the rounding
+    /// mode is honored — RU on sqrt(2.0f32) must round up by one ulp.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_float_sqrt_via_binop_with_rm_ru_f32() {
+        let ctx = SymContext::new_mock();
+        let rm_ru = RustBV::concrete(2, 32);
+        let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+
+        let result =
+            VEXOps::binop(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
+        let bits = ctx.eval(&result).expect("eval failed") as u32;
+        assert_eq!(bits, 0x3FB504F4, "binop FSqrt+RU rounds up one ulp");
+    }
+
+    /// Iop_SqrtF64 via binop with RNE: native fast path returns sqrt(16.0)=4.0.
+    #[test]
+    fn test_float_sqrt_via_binop_rne_fastpath_f64() {
+        let ctx = SymContext::new_mock();
+        let rm_rne = RustBV::concrete(0, 32);
+        let sixteen = RustBV::concrete(16.0f64.to_bits() as u128, 64);
+
+        let result =
+            VEXOps::binop(IROp::FSqrt(IRType::F64), rm_rne, sixteen, &ctx).unwrap();
+        assert!(!result.is_symbolic(), "RNE concrete must stay native");
+        assert_eq!(result.as_u64(), Some(4.0f64.to_bits()));
     }
 
     /// F32→I32S with NaN: Rust `as` cast collapses NaN to 0.
