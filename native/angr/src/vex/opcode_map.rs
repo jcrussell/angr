@@ -522,6 +522,23 @@ fn parse_float(op_str: &str) -> Option<IROp> {
         "Iop_CmpUN32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F32 }),
         "Iop_CmpUN64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F64 }),
 
+        // Packed FP compares (SSE cmpps/cmppd, ARM NEON 32Fx2). Per-lane mask:
+        // each lane independently produces all-1s (true) or 0 (false).
+        // 32Fx2 returns I64 (ARM NEON), 32Fx4 / 64Fx2 return V128 (SSE).
+        "Iop_CmpEQ32Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F32, count: 2 }),
+        "Iop_CmpGT32Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Gt, elem: IRType::F32, count: 2 }),
+        "Iop_CmpGE32Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Ge, elem: IRType::F32, count: 2 }),
+        "Iop_CmpEQ32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F32, count: 4 }),
+        "Iop_CmpLT32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Lt, elem: IRType::F32, count: 4 }),
+        "Iop_CmpLE32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Le, elem: IRType::F32, count: 4 }),
+        "Iop_CmpGT32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Gt, elem: IRType::F32, count: 4 }),
+        "Iop_CmpGE32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Ge, elem: IRType::F32, count: 4 }),
+        "Iop_CmpUN32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Un, elem: IRType::F32, count: 4 }),
+        "Iop_CmpEQ64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F64, count: 2 }),
+        "Iop_CmpLT64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Lt, elem: IRType::F64, count: 2 }),
+        "Iop_CmpLE64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Le, elem: IRType::F64, count: 2 }),
+        "Iop_CmpUN64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Un, elem: IRType::F64, count: 2 }),
+
         // FP conversions
         "Iop_F32toF64" => Some(IROp::F32toF64),
         "Iop_F64toF32" => Some(IROp::F64toF32),

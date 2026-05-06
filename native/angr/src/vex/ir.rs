@@ -495,12 +495,17 @@ impl IRType {
     }
 }
 
-/// Kind of SSE scalar-lane FP compare. `Un` detects NaN (unordered).
+/// Kind of FP compare used by SSE scalar-lane and packed-vector compares.
+/// `Un` detects NaN (unordered). `Gt` / `Ge` are emitted by ARM NEON
+/// (Iop_CmpGT/GE32Fx2) and SSE packed (Iop_CmpGT/GE32Fx4); the scalar-lane
+/// SSE compares only emit Eq/Lt/Le/Un.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FCmpKind {
     Eq,
     Lt,
     Le,
+    Gt,
+    Ge,
     Un,
 }
 
@@ -600,6 +605,12 @@ pub enum IROp {
     /// on false. Upper lanes are passed through from the left operand.
     /// `Un` is the unordered (NaN-detect) compare.
     FCmpScalarLane { kind: FCmpKind, ty: IRType },
+
+    /// Packed FP compare (Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,64Fx2}).
+    /// Each lane independently produces 0 (false) or all-ones (true).
+    /// Result width = elem.bits() * count: 32Fx2 -> I64, 32Fx4 / 64Fx2 -> V128.
+    /// `Un` is the unordered (NaN-detect) compare.
+    FCmpVecPacked { kind: FCmpKind, elem: IRType, count: u8 },
 
     /// x87 FCOM-style compare (Iop_CmpF32/F64/F128).
     /// Returns I32 encoded as 0x00 = GT, 0x01 = LT, 0x40 = EQ, 0x45 = UN.
@@ -825,6 +836,18 @@ impl IROp {
             // Scalar-lane SSE compares write into a V128 register (lane 0 mask
             // + upper lanes from `left`).
             IROp::FCmpScalarLane { .. } => Some(IRType::V128),
+
+            // Packed FP compare: total = elem.bits() * count.
+            // 32Fx2 -> I64, 32Fx4 / 64Fx2 -> V128.
+            IROp::FCmpVecPacked { elem, count, .. } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    256 => Some(IRType::V256),
+                    _ => None,
+                }
+            }
 
             // x87 FCOM-style compare encodes the result as a 32-bit value.
             IROp::FComCC(_) => Some(IRType::I32),
