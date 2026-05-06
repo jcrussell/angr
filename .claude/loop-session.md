@@ -1,50 +1,47 @@
-# Loop session notes (2026-05-06, eighty-seventh loop session — DONE)
+# Loop session notes (2026-05-06, eighty-ninth loop session — DONE)
 
-## Status: COMPLETE — angr-88mp closed
+## Status: COMPLETE — angr-hnd4 closed
 
-Made symbolic-store fallback policy consistent across the three sites
-flagged by the audit in interpreter_cb/statements.rs.
+Task: Audit/remove unused memory_store_ast callback hook.
 
-## Changes
+## Outcome
 
-`native/angr/src/interpreter_cb/statements.rs`:
+Removed `memory_load_ast` and `memory_store_ast` from PythonCallbacks.
+Both hooks were dead — setters never called from any Python file, so
+the fields were always `None`. Their callsites silently no-op'd
+(store) or returned zeros (load) when unset — strictly worse than
+failing loud.
 
-1. **StoreG sym-guard, non-Single addr (lines ~360-380)** —
-   replaced silent `log::warn!("Store may be lost, but continuing
-   execution.")` with `Err(CbExecutionError::Unsupported(...))`.
-   Still delegates via `memory_store_symbolic_full` when registered.
+## Files changed
 
-2. **StoreG concrete-guard sym-data, Multiple addrs (lines ~422-440)** —
-   replaced silent `call_memory_store_symbolic_value(addrs[0], ...)` (which
-   dropped the other candidates) with the canonical pattern: prefer
-   full callback; else `build_ite_store_from_callbacks` for ≤16 addrs;
-   else return Unsupported.
+- `native/angr/src/callbacks.rs`: removed both fields, both setters,
+  both call methods (-101 lines), updated traverse_fields/clear_fields
+  field lists.
+- `native/angr/src/interpreter_cb/statements.rs:1179-1188`: replaced
+  legacy fallback with `Err(CbExecutionError::Unsupported(...))`.
+- `native/angr/src/interpreter_cb/expressions.rs:194-243`: removed
+  legacy fallback (50 lines), replaced with explicit Unsupported error
+  when `memory_load_symbolic_full` is not set.
 
-3. **CAS sym-addr sym-data (lines ~702-715)** — was hard-erroring
-   without trying any delegation; now tries
-   `memory_store_symbolic_full` first.
+Net diff: -158 +10. Tests: 243/243 passing.
 
-## Verification
+## Bonus finding (saved as memories)
 
-- `cargo check --release`: clean.
-- `pytest tests/engines/test_rust_exploration.py`: 243/243 pass.
-- `tests/benchmarks/run_regression.py`: 11/12 pass (csgames2018 is
-  pre-existing per loop-session 2026-05-06).
-- Smoke: `run_single.py {fauxware, csaw_wyvern, codegate_2017-angrybird}`
-  all pass with rust engine.
+While auditing, found that BOTH `memory_store_symbolic_full` and
+`memory_load_symbolic_full` are ALSO never set from Python code —
+only `memory_store_symbolic_value` is wired (rust_manager.py:711).
+This means any TooLarge ConcretizationResult on store/load now hits
+the new Unsupported error. Saved as
+`invariant-symbolic-full-callbacks-unset` for angr-pufm future work.
 
-## Memories saved (bd remember)
+Also saved `avoid-silent-no-op-callback-fallbacks` as an anti-pattern
+memory.
 
-- `invariant-symbolic-store-fallback-policy` — the canonical policy and
-  where to apply it in statements.rs.
-- `memory-store-symbolic-full-not-registered` — `memory_store_symbolic_full`
-  callback is plumbed in Rust but no Python code wires it up; `has_*()`
-  is always false.
-- `build-z3-headers-not-in-venv` — venv pip is broken; manual build via
-  `cargo build --release` + `cp target/release/librustylib.so
-  angr/rustylib.cpython-312-x86_64-linux-gnu.so`. Use
-  `Z3_SYS_Z3_HEADER=/usr/include/z3.h`.
+## Build env note
 
-## Files modified
+`pip install -e .` is broken (pip 24.0 ImportError on pip._vendor.resolvelib).
+Used the documented direct-cargo-build workaround:
+`Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --release` then
+`cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
 
-- `native/angr/src/interpreter_cb/statements.rs` (+36, -19)
+Commit: f4c931eff
