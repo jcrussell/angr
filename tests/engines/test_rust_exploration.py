@@ -2248,6 +2248,137 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected symbolic store bug"):
             mgr._cb_memory_store_symbolic_value(0x1000, ast)
 
+    # angr-b1qq: wire memory_{store,load}_symbolic_full so the existing
+    # interpreter_cb fallbacks (statements.rs:368/444/710/1174,
+    # expressions.rs:149) can actually delegate to Python instead of returning
+    # CbExecutionError::Unsupported on TooLarge symbolic addresses.
+
+    def test_symbolic_full_callbacks_are_wired(self):
+        """_init_callbacks must bind both *_symbolic_full callbacks. Without
+        them the Rust TooLarge branches at interpreter_cb/statements.rs:368/
+        444/710/1174 and expressions.rs:149 hard-error instead of falling
+        back to Python's memory model."""
+        mgr, _ = self._build_load_store_manager()
+        # Bound-method presence is the contract: _init_callbacks must have
+        # called set_memory_{store,load}_symbolic_full with the corresponding
+        # method. The setters are unconditional in PythonCallbacks (see
+        # callbacks.rs:560/566).
+        assert callable(getattr(mgr, "_cb_memory_store_symbolic_full", None))
+        assert callable(getattr(mgr, "_cb_memory_load_symbolic_full", None))
+
+    def test_cb_memory_store_symbolic_full_round_trip(self):
+        """Storing a symbolic value at a (pinned) symbolic address via the
+        full callback must land in Python state memory and be loadable back.
+        Uses 0x4000 because 0x1000 is already mapped by load_shellcode."""
+        import claripy
+        mgr, state = self._build_load_store_manager()
+        mgr._set_callback_state(state)
+
+        target_addr = 0x4000
+        state.memory.map_region(target_addr, 0x100, 7)
+        addr = claripy.BVS("sym_addr", 64)
+        state.solver.add(addr == target_addr)
+        data = claripy.BVV(0xCAFEBABE, 32)
+
+        mgr._cb_memory_store_symbolic_full(addr, data)
+
+        loaded = state.memory.load(target_addr, 4, endness=state.arch.memory_endness,
+                                   inspect=False, disable_actions=True)
+        assert state.solver.eval(loaded) == 0xCAFEBABE
+
+    def test_cb_memory_load_symbolic_full_returns_stored_ast(self):
+        """Loading via the full callback must return a claripy AST that
+        evaluates to the previously stored value at a symbolic-but-pinned
+        address."""
+        import claripy
+        mgr, state = self._build_load_store_manager()
+        mgr._set_callback_state(state)
+
+        target_addr = 0x4000
+        state.memory.map_region(target_addr, 0x100, 7)
+        state.memory.store(target_addr, claripy.BVV(0xDEADBEEF, 32),
+                           endness=state.arch.memory_endness,
+                           inspect=False, disable_actions=True)
+
+        addr = claripy.BVS("sym_load_addr", 64)
+        state.solver.add(addr == target_addr)
+
+        result = mgr._cb_memory_load_symbolic_full(addr, 4)
+        assert result is not None
+        assert state.solver.eval(result) == 0xDEADBEEF
+
+    def test_cb_memory_store_symbolic_full_swallows_sim_memory_error(self):
+        """SimMemoryError from state.memory.store() must be swallowed (matches
+        the angr-8e81 / angr-2f7o convention used by the other symbolic
+        callbacks). Otherwise Rust's flush_stores() path would propagate the
+        error and tear down exploration."""
+        import claripy
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped symbolic-address store")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        addr = claripy.BVS("sym_addr", 64)
+        data = claripy.BVS("sym_data", 32)
+        # Should not raise.
+        mgr._cb_memory_store_symbolic_full(addr, data)
+
+    def test_cb_memory_store_symbolic_full_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate so real bugs aren't
+        masked as silent no-ops."""
+        import claripy
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected symbolic-address store bug")
+        state.memory.store = boom
+
+        mgr._set_callback_state(state)
+
+        addr = claripy.BVS("sym_addr", 64)
+        data = claripy.BVS("sym_data", 32)
+        with pytest.raises(RuntimeError, match="unexpected symbolic-address store bug"):
+            mgr._cb_memory_store_symbolic_full(addr, data)
+
+    def test_cb_memory_load_symbolic_full_swallows_sim_memory_error(self):
+        """SimMemoryError must be swallowed and a fresh symbolic AST returned
+        so Rust can keep going (it'll wrap the result in a sym_pyref_*
+        placeholder via expressions.rs)."""
+        import claripy
+        from angr.errors import SimMemoryError
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise SimMemoryError("simulated unmapped symbolic-address load")
+        state.memory.load = boom
+
+        mgr._set_callback_state(state)
+
+        addr = claripy.BVS("sym_addr", 64)
+        result = mgr._cb_memory_load_symbolic_full(addr, 4)
+        # Returns something valid for Rust to consume — width must match.
+        assert result is not None
+        assert getattr(result, "length", None) == 32
+
+    def test_cb_memory_load_symbolic_full_propagates_unrelated_exceptions(self):
+        """Non-Sim/Claripy exceptions must propagate."""
+        import claripy
+        mgr, state = self._build_load_store_manager()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("unexpected symbolic-address load bug")
+        state.memory.load = boom
+
+        mgr._set_callback_state(state)
+
+        addr = claripy.BVS("sym_addr", 64)
+        with pytest.raises(RuntimeError, match="unexpected symbolic-address load bug"):
+            mgr._cb_memory_load_symbolic_full(addr, 4)
+
     def test_z3_solver_timeout_does_not_hang(self):
         """A tight Z3 timeout must bound `satisfiable()` wall-clock — even
         on a constraint set Z3 would otherwise grind on forever (factoring a

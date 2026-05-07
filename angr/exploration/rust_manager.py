@@ -720,6 +720,10 @@ class RustExplorationManager(
             callbacks.set_batch_fetch_pages(self._cb_batch_fetch_pages)
         if hasattr(callbacks, 'set_memory_store_symbolic_value'):
             callbacks.set_memory_store_symbolic_value(self._cb_memory_store_symbolic_value)
+        if hasattr(callbacks, 'set_memory_store_symbolic_full'):
+            callbacks.set_memory_store_symbolic_full(self._cb_memory_store_symbolic_full)
+        if hasattr(callbacks, 'set_memory_load_symbolic_full'):
+            callbacks.set_memory_load_symbolic_full(self._cb_memory_load_symbolic_full)
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks
 
@@ -1164,6 +1168,48 @@ class RustExplorationManager(
                 self._register_handle(id(ast), ast, addr=addr, size=size)
         except (SimError, ClaripyError) as e:
             l.debug(f"Symbolic store at 0x{addr:x} failed: {e}")
+
+    def _cb_memory_store_symbolic_full(self, addr_ast, data_ast):
+        """Store a symbolic value at a *symbolic* address.
+
+        Called from Rust when address concretization yields TooLarge (or for the
+        Multiple/StoreG fallback paths in interpreter_cb/statements.rs). Python's
+        memory model natively supports symbolic addresses via angr's
+        SimConcretizationStrategy chain, which is the whole reason the *_full
+        callback exists.
+        """
+        state = self._get_per_fork_state()
+        if state is None or addr_ast is None or data_ast is None:
+            return
+        try:
+            state.memory.store(addr_ast, data_ast, endness=state.arch.memory_endness,
+                               inspect=False, disable_actions=True)
+            self._register_handle(id(data_ast), data_ast)
+        except (SimError, ClaripyError) as e:
+            l.debug(f"Symbolic-address store failed: {e}")
+
+    def _cb_memory_load_symbolic_full(self, addr_ast, size: int):
+        """Load `size` bytes at a *symbolic* address, returning a claripy AST.
+
+        Counterpart to `_cb_memory_store_symbolic_full`. Rust delegates here when
+        a load address has a TooLarge solution range (expressions.rs:149); Python
+        builds the appropriate ITE chain or memory access via angr's
+        concretization strategies and returns the AST. Rust converts the AST
+        back via claripy_to_rustbv (or a fresh sym_pyref_* placeholder if
+        conversion fails).
+        """
+        state = self._get_per_fork_state()
+        if state is None or addr_ast is None:
+            return claripy.BVV(0, size * 8)
+        try:
+            ast = state.memory.load(addr_ast, size, endness=state.arch.memory_endness,
+                                    inspect=False, disable_actions=True)
+            if ast is not None:
+                self._register_handle(id(ast), ast, size=size)
+            return ast
+        except (SimError, ClaripyError) as e:
+            l.debug(f"Symbolic-address load failed: {e}")
+            return claripy.BVS(f"sym_load_full_fail_{size}", size * 8, explicit_name=False)
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""
