@@ -1,73 +1,67 @@
-# Loop session notes (2026-05-07, 103rd loop session)
+# Loop session notes (2026-05-07, 104th loop session)
 
-## Task: angr-w6nq — Z3 ref-count churn during SymContext::fork (CLOSED)
+## Task: angr-ar8r — HashMap clone audit in RustSimState::fork (CLOSED)
 
-Bead closed (commit 589b814e9).
+Bead closed (commit 76aef1ca2).
 
 ### What changed
 
-`native/angr/src/symbolic/context.rs`:
+`native/angr/src/state.rs`:
 
-- Wrapped `z3_assertions_shared` and `assumed_constraints_shared` from
-  `Arc<Vec<...>>` to `Mutex<Arc<Vec<...>>>` for interior mutability.
-- Updated all read sites to acquire-clone-release the inner Arc (locks are
-  uncontested in practice; SymContext is single-threaded via Rc<RefCell<>>).
-- Added two private helpers `freeze_z3_assertions` and
-  `freeze_assumed_constraints` that do the heavy lifting in fork():
-    * If local is empty: just `Arc::clone` shared (unchanged fast path).
-    * If `push_level > 0` (inside a push/pop): allocate new Vec via
-      extend_from_slice (current behavior — must preserve local for
-      transaction_rollback).
-    * Otherwise: drain local into shared. When `Arc::get_mut` succeeds (no
-      other refs), append in place — zero element clones. When refcount > 1
-      (children already hold the old Arc), allocate new Vec but use
-      `Vec::append` to *move* local's elements (still avoids the M Bool
-      clones from local; only the N from old shared cost ref-counts).
-- Refactored fork() Z3 path and non-Z3 path to use the new helpers.
+- Wrapped `FileSystem.fds: HashMap<u32, FileDescriptor>` in
+  `Arc<HashMap<...>>`. Mutating methods (open / open_with_content / close /
+  write / read / seek) call `Arc::make_mut` lazily; close/read/seek peek
+  the read path first to skip CoW when the op would be a no-op.
+- Wrapped `RustSimState.hooks: HashSet<u64>` in `Arc<HashSet<u64>>`.
+  add_hook/remove_hook/clear_hooks use Arc::make_mut. clear_hooks skips
+  the clone when already empty.
+- Wrapped `RustSimState.environment: HashMap<Vec<u8>, Vec<u8>>` in
+  `Arc<HashMap<...>>`. setenv uses Arc::make_mut.
 
-### Measured impact (criterion `vex_engine` bench)
+### Measured impact (state_fork criterion bench)
 
-`symcontext_fork_scaling`:
-- 5 constraints:  225ns → 209ns   (~7% faster — small, mostly noise)
-- 20 constraints: 806ns → 208ns   (3.9x faster)
-- 50 constraints: 1980ns → 208ns  (9.5x faster)
+```
+state_fork: 338.86 ns -> 283.80 ns (-16.4%, p < 0.05)
+```
 
-Fork is now **O(1) regardless of constraint count**.
-
-Other benches unchanged: check_branch_feasibility ~114µs, assume_true ~2.1µs,
-push_pop ~700ns, fauxware end-to-end 0.37s.
-
-### Verification
-
-- `cargo check --release` clean.
-- `cargo test --release --lib` all 517 Rust unit tests pass.
-- `cargo check --release --no-default-features --features "vex-engine,automaton"`
-  (non-Z3 path) builds clean.
-- `pytest tests/engines/test_rust_exploration.py` 254/254 pass.
-- `run_single.py fauxware --engine rust` succeeds with expected output.
+Other fork-related benches unchanged (symcontext_fork_scaling 215 ns at
+all sizes — still O(1) post angr-w6nq). 254 Python tests + 517 Rust unit
+tests + 11/12 regression benchmarks pass (csgames2018 was already
+failing on master pre-change with "list index out of range" — verified
+by stashing the change and reproducing).
 
 ### Memories saved
 
-- `arc-shared-z3-cache` — updated to reflect new Mutex-wrapped design and
-  freeze-self-on-fork mechanism.
-- `fork-freeze-self-invariant` — the push_level==0 invariant and why
-  draining local during a transaction would corrupt rollback.
-- `benchmark-fork-scaling` — before/after numbers and the fact that fork is
-  now O(1).
+- `benchmark-state-fork-arc-wrap` — bench numbers + still-extant clone
+  hot spots (RegisterFile fields, HeapMetadata, SymbolicMemory internals).
+- `invariant-arc-make-mut-cow` — pattern for read-mostly RustSimState
+  fields: wrap in Arc, peek read path first in mutators to skip CoW for
+  no-op calls. Avoid Arc-wrap for fields mutated on every fork.
+- `avoid-csgames2018-as-regression-signal` — csgames2018 is broken on
+  master, not a regression signal.
 
 ### Build note
 
-`pip install -e .` is broken in the venv (system pip can't import setuptools
-modules). Workaround used this session: `cargo build --release --lib`, then
-`cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
-This worked because the editable install only needs the .so to be present at
-the package import path. Worth filing a separate bead if the next session
-hits this too.
+Same as last session: `pip install -e .` is broken in venv. Workaround:
+
+    Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --manifest-path \
+        native/angr/Cargo.toml --release --lib
+    cp target/release/librustylib.so \
+        angr/rustylib.cpython-312-x86_64-linux-gnu.so
+
+(The Python z3 package install is missing headers, so we point the
+build at the system z3 headers via the env var. The .cargo/config.toml
+rule honors Z3_SYS_Z3_HEADER if set.)
 
 ## Suggested next slices
 
-- `angr-ar8r` (HashMap clone audit) — RustSimState::fork has 9% in HashMap
-  clones; quick win after this session.
-- `angr-6n56` (Arc-tree teardown for transient RustBV results) — bigger
-  effort, 36% of arithmetic time.
+- `angr-6n56` (Arc-tree teardown for transient RustBV results) — 36% of
+  symbolic arithmetic time. Bigger refactor (likely needs an arena).
 - `angr-pufm` lazy guarded-entries (still open).
+- Smaller fork-time wins still on the table:
+  - `RegisterFile.data: Vec<u8>` (2.51% in fork) — but mutated every
+    register write, so Arc::make_mut might break even.
+  - `RegisterFile.symbolic: HashMap<u32, RustBV>` (2.48%) — mutated
+    every symbolic write.
+  - `HeapMetadata` (1%) — mutated every malloc/free.
+  - `SymbolicMemory` internals (HashMap 2.70%, HashSet 1.71%).
