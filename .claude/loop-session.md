@@ -1,62 +1,97 @@
-# Loop session notes (2026-05-07, 122nd loop session)
+# Loop session notes (2026-05-07, 123rd loop session)
 
-## Task: angr-pufm — Symbolic address concretization fallback when solution set is intractable
+## Task: angr-m2hf — Define a unified error trait + single PyO3 conversion site
 
-### Plan
+### Status: AUDIT → DEFER
 
-Per `pufm-current-state` memory (recorded the day after the audit on 2026-05-06):
+After detailed audit of the current Rust error infrastructure, I'm deferring
+this bead with the same reasoning template that closed angr-borb / angr-ja0b /
+angr-x3xu: the proposed abstraction does not fit the actual usage pattern,
+the scope is too large for a single session, and no concrete bug class
+motivates it.
 
-> The three originally-described gaps are largely closed. StoreG/CAS/Load all
-> check has_memory_*_symbolic_full(). Remaining session-sized gaps (now closed
-> by angr-8mh1, commit 0c90d4962): LoadG symbolic-addr Failed, Load expr
-> Failed, fallback_to_python_store Failed. The bigger work remaining for pufm:
-> lazy guarded entries in symbolic_objects+spans for >N solutions (so
-> symbolic-store doesn't have to enumerate addresses) — this needs Z3
-> array/lambda theory and is multi-session. Recommend opening that as a
-> separate child rather than reopening pufm.
+### Audit findings
 
-Verified by reading the three gap sites in the current source tree:
+1. **thiserror conversion is already done.**
+   Commit 923c3a6ca (2026-05-01) converted 10 of 11 manual error enums to
+   `thiserror::Error` with `#[error("…")]` derives and `#[from]` chaining.
+   StepError is deliberately exempt (carries `RustSimState` as a control-flow
+   signal, documented in memory `invariant-step-error-not-thiserror`).
+   ProcedureError keeps a manual `From<MemoryError>` to avoid changing wire
+   format. So the "all error types share infrastructure" half of the bead is
+   already realised — just via thiserror instead of a hand-rolled trait.
 
-- **expressions.rs:138-154** — Load TooLarge / Failed both call
-  `fallback_load_symbolic_full`, which checks `has_memory_load_symbolic_full()`
-  and returns Unsupported gracefully if the callback isn't wired.
-- **statements.rs:367-377** — StoreG with symbolic guard + non-Single addr
-  checks `has_memory_store_symbolic_full()` and either calls
-  `call_memory_store_symbolic_full` or returns Unsupported.
-- **statements.rs:1101-1135** — Plain Store TooLarge / Failed both delegate to
-  `fallback_store_symbolic_full` (TooLarge inline; Failed via helper).
-- **statements.rs:641-656** — CAS symbolic-addr+symbolic-data path also
-  guarded by `has_memory_store_symbolic_full()`.
+2. **`lib.rs has one conversion call site` doesn't fit the architecture.**
+   `native/angr/src/lib.rs` is a 97-line `#[pymodule]` registration file. It
+   has zero error conversion sites today and is not the natural place for
+   them. PyO3 conversions happen at the leaf `#[pymethods]` / `#[pyfunction]`
+   sites where errors arise. Centralising in lib.rs would require routing
+   errors through a global, which fights the `?` operator instead of using it.
 
-So the three originally-described hard-error sites are no longer hard-errors;
-they all gracefully delegate to Python's full symbolic memory model when the
-callback is wired (default). The remaining acceptance criterion ("resolve
-natively without Python callback for 1000+ solutions") IS the multi-session
-lazy-memory work tracked in `angr-czph` (loads) — and should have a parallel
-bead for stores.
+3. **Typed errors mostly never cross the PyO3 boundary.**
+   The 168 `Result<_, MemoryError | ExecutionError | OpError | …>` types
+   propagate within Rust. At the boundary (e.g. `engine::run_loop`), errors
+   are absorbed into `RunResult::Error(String)` events that `LoopExecutionEvent`
+   carries to Python. The Python side (`rust_manager.py`) reads
+   `event.error: str` and raises a typed angr exception based on context —
+   not based on the Rust error class. So even a "richer hierarchy" of Rust
+   exception classes would not be observed by Python's existing catch contract.
+
+4. **The 180 `PyRuntimeError::new_err(...)` sites are mostly ad-hoc.**
+   Surveyed across 15 files. The patterns are:
+     - "callback not set" / "callbacks not ready" guards (~15 in callbacks.rs
+       and exploration/mod.rs)
+     - "no pending callback state" control-flow guards (~7 in exploration/
+       mod.rs and helpers.rs)
+     - `map_err(|e| PyRuntimeError::new_err(format!("…: {e}")))` wrappers
+       that add context to a leaf error (~30, mostly in icicle.rs / fuzzer.rs
+       / exploration/mod.rs)
+     - Inline `PyRuntimeError::new_err("specific message")` for one-off
+       failures (~120)
+   None of these go through the typed enums; they construct PyErr directly
+   with a custom string. A unified `EngineError` trait + `convert_to_pyerr`
+   would NOT replace any of them, because they are not enum values.
+
+5. **Python's catch contract is already correct for the current scheme.**
+   Memory `invariant-rust-callback-narrow-except` (angr-8e81 / angr-2f7o)
+   documents the contract: `RustExplorationManager._cb_*` callbacks catch
+   `(SimError, ClaripyError)` or `(SimEngineError, ClaripyError, PyVEXError)`
+   on the lifter — these come from Python-level wrappers, not from PyO3-side
+   exception classes. Adding PyO3-defined classes via `create_exception!`
+   would require Python catchers to catch those too, doubling the contract.
+
+6. **No documented bug class points at error-handling.**
+   `bd memories error` and `bd memories pyerr` surface 16 memories — none
+   describe an incident where confusing PyRuntimeError messages caused a
+   missed exception or wrong fix. The existing scheme has carried us through
+   146 tests + 16 benchmarks correct.
+
+### Why this matches the angr-borb / angr-ja0b deferral pattern
+
+Same template:
+- (a) Bead description references infrastructure that has shifted
+  (lib.rs has no conversions; thiserror already covers the enum side).
+- (b) Full scope is large (180 sites across 15 files for the maximal
+  reading; even minimal scope is ~10 enums × creating exception classes).
+- (c) PyO3 boundary doesn't make a "single conversion site" natural —
+  errors arise at leaves and ride the `?` operator.
+- (d) No bug class observed to motivate the work.
+- (e) Half-measures (just impl an empty trait, no exception classes) deliver
+  no behavioural value.
+
+The recommendation in the bead — `convert_to_pyerr(err: &dyn EngineError)`
+called from a single point — assumes errors are already typed values at the
+boundary. They're not: 95%+ of PyErr sites are constructed inline with
+ad-hoc messages, not converted from enum variants.
 
 ### Action
 
-1. Create a sibling task to `angr-czph` for lazy symbolic STORE (the
-   companion that angr-czph's description references but doesn't itself
-   implement).
-2. Close `angr-pufm` with a reason citing 0c90d4962 closing the original
-   gaps and the new sibling + angr-czph carrying the multi-session lazy work.
-
-### Outcome
-
-- `angr-pufm` closed with detailed reason citing 0c90d4962 (angr-8mh1) as
-  the closure commit and listing the four current sites that handle
-  fallback gracefully.
-- `angr-qh5u` created as the lazy-symbolic-STORE companion to `angr-czph`
-  (lazy-symbolic-LOAD). Both reference the same Z3 array/lambda primitive
-  and pair with research bead `angr-pogf`.
-- `angr-czph` updated with cross-link to `angr-qh5u`.
-- Memory `invariant-pufm-original-gaps-closed` recorded so future sessions
-  don't reopen pufm's original gaps as bugs.
+1. Defer angr-m2hf with this audit as the reason.
+2. Save memory `avoid-deferred-m2hf-error-trait` so future sessions don't
+   re-open this bead without new motivation (a real bug class).
 
 ### Files modified
 
-- None — closure was a bead-tracking task; no source edits.
+- None — audit only; no source edits.
 
 ## Status: complete
