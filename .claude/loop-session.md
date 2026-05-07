@@ -1,48 +1,62 @@
-# Loop session notes (2026-05-07, 121st loop session)
+# Loop session notes (2026-05-07, 122nd loop session)
 
-## Task: angr-p5hl — Benchmark gate still broken: angr-lbze fix didn't land  ✓ CLOSED
+## Task: angr-pufm — Symbolic address concretization fallback when solution set is intractable
 
-Bead premise was incorrect. The angr-lbze fix (commit a6b4f6615) DID land
-and works correctly — verified end-to-end via direct invocation of
-`run_benchmark_gate('2G')`: 12/12 benchmarks passed in 19.6s.
+### Plan
 
-The reason iter 48-50 of the previous loop run still showed 12 fake
-"No module named 'angr'" failures is that those iterations belonged to
-a long-running orchestrator process started BEFORE the fix landed.
-Python doesn't reload its source code on file edits, so the orchestrator
-kept executing pre-fix bytecode for the rest of its run. The current
-orchestrator (PID 929591, started 2026-05-07 16:17:33 — after the fix)
-correctly applies PYTHONPATH and the gate passes.
+Per `pufm-current-state` memory (recorded the day after the audit on 2026-05-06):
 
-### Diagnosis evidence
+> The three originally-described gaps are largely closed. StoreG/CAS/Load all
+> check has_memory_*_symbolic_full(). Remaining session-sized gaps (now closed
+> by angr-8mh1, commit 0c90d4962): LoadG symbolic-addr Failed, Load expr
+> Failed, fallback_to_python_store Failed. The bigger work remaining for pufm:
+> lazy guarded entries in symbolic_objects+spans for >N solutions (so
+> symbolic-store doesn't have to enumerate addresses) — this needs Z3
+> array/lambda theory and is multi-session. Recommend opening that as a
+> separate child rather than reopening pufm.
 
-- Manual reproduction at 16:19 with same env/cmd as `run_benchmark_gate`:
-  12/12 benchmarks pass in 19.3s.
-- Manual reproduction with PYTHONPATH stripped from env: 12/12 fail with
-  "No module named 'angr'" in 0.7s — exactly matches the iter 48-50 logs.
-- `gate_broken` field absent from iter50 JSON output → that iter ran
-  pre-fix code (the field was added by angr-lbze).
-- Currently running `run_benchmark_gate` test: passed=12, failed=0,
-  gate_broken=False, duration=19.6s.
+Verified by reading the three gap sites in the current source tree:
 
-### Fix added (defensive)
+- **expressions.rs:138-154** — Load TooLarge / Failed both call
+  `fallback_load_symbolic_full`, which checks `has_memory_load_symbolic_full()`
+  and returns Unsupported gracefully if the callback isn't wired.
+- **statements.rs:367-377** — StoreG with symbolic guard + non-Single addr
+  checks `has_memory_store_symbolic_full()` and either calls
+  `call_memory_store_symbolic_full` or returns Unsupported.
+- **statements.rs:1101-1135** — Plain Store TooLarge / Failed both delegate to
+  `fallback_store_symbolic_full` (TooLarge inline; Failed via helper).
+- **statements.rs:641-656** — CAS symbolic-addr+symbolic-data path also
+  guarded by `has_memory_store_symbolic_full()`.
 
-Added a stale-orchestrator detector in `run_optimization_loop.py`:
-- `_orchestrator_source_hash()` SHA-256s `__file__` on disk.
-- Captured at startup, compared at each iteration; warns once when the
-  hashes diverge so the operator can spot pre-fix bytecode reuse.
-- Startup log line now includes `source_sha=...`.
+So the three originally-described hard-error sites are no longer hard-errors;
+they all gracefully delegate to Python's full symbolic memory model when the
+callback is wired (default). The remaining acceptance criterion ("resolve
+natively without Python callback for 1000+ solutions") IS the multi-session
+lazy-memory work tracked in `angr-czph` (loads) — and should have a parallel
+bead for stores.
+
+### Action
+
+1. Create a sibling task to `angr-czph` for lazy symbolic STORE (the
+   companion that angr-czph's description references but doesn't itself
+   implement).
+2. Close `angr-pufm` with a reason citing 0c90d4962 closing the original
+   gaps and the new sibling + angr-czph carrying the multi-session lazy work.
+
+### Outcome
+
+- `angr-pufm` closed with detailed reason citing 0c90d4962 (angr-8mh1) as
+  the closure commit and listing the four current sites that handle
+  fallback gracefully.
+- `angr-qh5u` created as the lazy-symbolic-STORE companion to `angr-czph`
+  (lazy-symbolic-LOAD). Both reference the same Z3 array/lambda primitive
+  and pair with research bead `angr-pogf`.
+- `angr-czph` updated with cross-link to `angr-qh5u`.
+- Memory `invariant-pufm-original-gaps-closed` recorded so future sessions
+  don't reopen pufm's original gaps as bugs.
 
 ### Files modified
 
-- `run_optimization_loop.py` (+33 lines): hashlib import, helper, startup
-  capture, per-iter freshness check.
-
-### Validation
-
-- `python -m pytest tests/engines/test_rust_exploration.py`: 261/261 pass.
-- `python -c "import run_optimization_loop"`: imports cleanly.
-- `_orchestrator_source_hash()` returns 12-char prefix as expected.
-- Direct `run_benchmark_gate('2G')` call: passed=12 failed=0 gate_broken=False.
+- None — closure was a bead-tracking task; no source edits.
 
 ## Status: complete
