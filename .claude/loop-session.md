@@ -1,93 +1,86 @@
-# Loop session notes (2026-05-07, 114th loop session)
+# Loop session notes (2026-05-07, 115th loop session)
 
-## Task: angr-4t2u — NAMING_CONVENTIONS.md (DONE)
+## Task: angr-khth — separate init-pipeline phases (DONE)
 
-### What landed (commit 572fe4585)
+### What landed (commit aed1ec175)
 
-- New `native/angr/NAMING_CONVENTIONS.md` (93 lines, well under 200)
-  codifying parameter naming for `native/angr/src`:
-  - Canonical names: `addr` (u64), `ctx` (&SymContext), `py` (Python),
-    `state` (&mut RustSimState), `data` (&[u8]), `bv` (&RustBV
-    generic), `value` (&RustBV stored).
-  - Method prefixes (`call_*`, `has_*`, `is_*`, `try_*`, `add_*`,
-    `set_*`).
-  - Local bindings in VEX op handlers (`val`, `vec`, `lo`, `hi`,
-    etc.) explicitly allowed.
-  - RustBV ownership guidance.
-  - Intentional exceptions:
-    - `segmentlist.rs` uses `address: u64` because it mirrors the
-      angr Python public API in `angr/rustylib/__init__.pyi`.
-    - `value: &RustBV` over `bv: &RustBV` in memory store paths
-      (semantic role is "value being stored").
-    - `bytes: &[u8]` (not `data:`) in lift/decode paths
-      (specifically machine-code bytes).
+Split `_load_init_from_disk_cache` (rust_manager.py:1398) — previously a
+single ~80-line function fusing pickle I/O, SimState deserialization, and
+manager-owned metadata mutation — into three independently testable phases:
 
-### No rename pass
+- `_load_init_pickle` (~1398) — pure I/O; returns data dict or None on miss
+  or read failure (catches OSError / UnpicklingError / EOFError).
+- `_deserialize_init_state` (~1411) — pure SimState + mem_cache construction
+  from data dict; NO manager metadata mutation.
+- `_apply_init_side_effects` (~1465) — populates
+  `self._pending_procedure_data` (continuation slots) and
+  `self._precomputed_regs` (fast Rust register sync).
+- `_load_init_from_disk_cache` (~1476) — thin orchestrator preserving the
+  prior all-or-nothing semantic (deserialize failure → metadata untouched,
+  return (None, None)).
 
-Codebase audit showed the crate is already consistent:
-- `addr: u64` 240 sites vs `address: u64` 8 sites (all in
-  segmentlist, intentional).
-- `ctx: &SymContext` 166 sites, no `context` or `cx` outliers.
-- `py: Python` 102 sites, no `python` outliers.
-- `state: &mut RustSimState` 85 sites + 13 owned + 5 borrowed, no
-  `st`/`sim_state` outliers.
+### Why I rejected the "overlay symbolic pages / hook memory / stdin" half
 
-Outliers like `val: RustBV` (3) live in VEX op handlers
-(`vex/ops.rs`, `vex/ccall.rs`) where the doc explicitly endorses
-short local names. Not renamed.
+`_save_init_to_disk_cache` does NOT store those — by design. The disk cache
+serves a *blank* state at main, BEFORE user symbolic data exists. A binary's
+init sequence runs purely concrete. Symbolic pages, hook memory, and stdin
+metadata are populated DURING exploration via Python callbacks, not at init.
+
+### Cache validator already done
+
+`_disk_cache_key` (rust_manager.py:1305) already combines binary hash +
+RUST_CACHE_VERSION + PYTHON_METADATA_VERSION + arch_name (4 axes). The
+bead's "feature flags" axis is already absorbed by the two version axes
+(bump version when a feature changes the cache layout).
+
+### Other init-pipeline phases were already modular
+
+- `_compute_disk_init_key` (rust_manager.py:1571) — caller-side guard.
+- `_save_init_to_disk_cache` (rust_manager.py:1335).
+- `_run_python_init_if_needed` (rust_manager.py:1506) — orchestrator.
+- `_try_in_memory_init_cache` (rust_manager.py:1582).
+- `_try_disk_init_cache` (rust_manager.py:1593).
+- `_apply_state_metadata` (rust_manager.py:1544).
+- `_extract_continuation_data` (rust_manager.py:1482).
 
 ### Test results
 
-- 261/261 Python tests pass (no code changed; doc-only commit).
-- No Rust changes, so cargo check skipped.
+- 261/261 Python tests pass.
+- fauxware benchmark (rust engine) runs cleanly post-refactor.
+- No Rust changes; no cargo build needed.
 
 ### Memories saved
 
-- `invariant-naming-conventions` — full convention map, including
-  intentional exceptions, with pointers to the doc and the public
-  Python API rationale.
+- `invariant-init-pipeline-phases` — full phase map with line numbers and
+  the rule "if you save a NEW field to disk cache, decide whether
+  deserialization (pure) or side-effect (manager mutation) phase owns it.
+  Don't mix the two."
 
 ### Next session candidates
 
 P1 / P2 ready (still unblocked):
 - angr-pufm (P1) symbolic concretization fallback — multi-session.
-- angr-prem (P2) MemoryLayer trait refactor.
+- angr-prem (P2) MemoryLayer trait refactor — multi-session.
 - angr-fk0m (P2) unify state mixin classes (rust_state_sync /
   rust_state_cache / rust_state_export).
-- angr-4j5u (P2) decompose 95-field god struct.
-- angr-m2hf (P2) unified error trait.
-- angr-wqao (P2) split rust_manager.py 2800 lines.
+- angr-4j5u (P2) decompose 95-field god struct — multi-session.
+- angr-m2hf (P2) unified error trait — 11 error enums, multi-Rust-file change.
+- angr-wqao (P2) split rust_manager.py 2949 lines — multi-session.
 
 P3 ready:
-- angr-3vrj — StateMetadata dataclass (~85 metadata refs across 5
-  files; bigger than the bead's "56 sites" estimate).
-- angr-ja0b — StepOutcome trait (rejected this session as the
-  proposed trait design doesn't fit the actual variant shapes;
-  see analysis below).
-- angr-khth — init pipeline phase split (init pipeline already
-  fairly modular: `_run_python_init_if_needed`,
-  `_try_in_memory_init_cache`, `_try_disk_init_cache`,
-  `_load_init_from_disk_cache`, `_save_init_to_disk_cache`,
-  `_apply_state_metadata`).
-- angr-csd1 — split PythonCallbacks into focused traits (touches
-  48 callsites across 12 Rust files).
-- angr-x3xu — SolverBridge protocol (note: bead description
-  overstates RustSolverContext coupling; manager mostly calls
-  state.solver.eval, not RustSolverContext directly).
+- angr-3vrj — StateMetadata dataclass (~86 metadata refs across 6 files, larger
+  than the bead's "56 sites" estimate; could do a focused first slice with just
+  the 3 fields the bead lists).
+- angr-csd1 — split PythonCallbacks into focused traits (48 callsites across
+  12 Rust files).
+- angr-x3xu — SolverBridge protocol; previous session noted manager has no
+  direct RustSolverContext coupling, so the refactor is mostly a Protocol
+  declaration. Limited value unless paired with a generic-over-backend test
+  harness.
 - angr-qrhl — VEX op trait dispatcher (needs perf measurement).
-- angr-czph, angr-bkcs, angr-n28w — feature work.
+- angr-czph, angr-bkcs, angr-n28w — feature work, multi-session.
 
-### Notes on angr-ja0b (skipped)
-
-The current StepError has 4 variants with very different shapes:
-- NeedCallback(PendingCallback) — rich, drives the run loop's
-  callback-dispatch flow with find/avoid handling and event
-  construction (~180 lines in mod.rs:2752–2929).
-- Deadended(state) / Error(state, msg) / Unconstrained(state) — each
-  one-liner: push to terminal stash.
-
-A trait with `action() -> Action` + `state() -> &RustSimState` would
-push the rich NeedCallback handling either into the outcome's
-`action()` (bloats the trait impl with run-loop knowledge) or back
-into the run loop's match arm (defeats the trait's purpose). The
-current pattern matching is the natural Rust expression.
+Already addressed and closed in prior sessions:
+- angr-ja0b (StepOutcome trait) — pattern-matching is the natural Rust
+  expression here; rejected with rationale.
+- angr-khth (init-pipeline split) — done THIS session.
