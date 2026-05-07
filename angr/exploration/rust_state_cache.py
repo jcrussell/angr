@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from angr.exploration._state_metadata import StateMetadata
+
 if TYPE_CHECKING:
     import angr
 
@@ -17,6 +19,18 @@ class RustStateCacheMixin:
     This mixin expects the host class to have the standard
     RustExplorationManager attributes (self._rust_mgr, self._project, etc.).
     """
+
+    def _state_md(self, state_id: int) -> StateMetadata:
+        """Get or lazily create the metadata entry for ``state_id``.
+
+        Use this on write paths. Read paths that should not allocate a missing
+        entry should call ``self._state_metadata.get(state_id)`` directly.
+        """
+        md = self._state_metadata.get(state_id)
+        if md is None:
+            md = StateMetadata()
+            self._state_metadata[state_id] = md
+        return md
 
     def _get_default_state(self) -> Optional["angr.SimState"]:
         """Get a default state for callbacks."""
@@ -85,10 +99,8 @@ class RustStateCacheMixin:
         if addr is not None and state_id is not None:
             effective_id = self._get_effective_state_id(state_id)
             if effective_id is not None:
-                if effective_id not in self._addr_to_ast:
-                    self._addr_to_ast[effective_id] = {}
                 actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, 'length') else 1)
-                self._addr_to_ast[effective_id][addr] = (ast, actual_size)
+                self._state_md(effective_id).addr_to_ast[addr] = (ast, actual_size)
 
         # Limit cache size to prevent memory issues
         # Use smarter eviction that preserves active handles
@@ -179,14 +191,12 @@ class RustStateCacheMixin:
 
     def _cleanup_symbolic_pages_cache(self):
         """Enforce the symbolic pages cache size limit."""
-        to_remove = self._evict_oldest(self._symbolic_pages, self._max_symbolic_pages_cache)
+        to_remove = self._evict_oldest(self._state_metadata, self._max_symbolic_pages_cache)
         for state_id in to_remove:
-            del self._symbolic_pages[state_id]
-            if state_id in self._addr_to_ast:
-                del self._addr_to_ast[state_id]
+            del self._state_metadata[state_id]
             self._identity_tracker.mark_inactive(state_id)
         if to_remove:
-            l.debug(f"Cleaned up {len(to_remove)} symbolic page cache entries")
+            l.debug(f"Cleaned up {len(to_remove)} state metadata entries")
 
     def _evaluate_predicates_on_active(self):
         """Evaluate callable find/avoid predicates on all Rust states.
@@ -368,7 +378,7 @@ class RustStateCacheMixin:
         to_remove = self._evict_oldest(self._state_cache, self._max_state_cache_size)
         for state_id in to_remove:
             del self._state_cache[state_id]
-            self._symbolic_pages.pop(state_id, None)
+            self._state_metadata.pop(state_id, None)
             self._identity_tracker.mark_inactive(state_id)
         if to_remove:
             l.debug(f"Cleaned up {len(to_remove)} state cache entries")
@@ -380,8 +390,8 @@ class RustStateCacheMixin:
         """
         # Remove from state cache
         self._state_cache.pop(state_id, None)
-        # Remove from symbolic pages cache
-        self._symbolic_pages.pop(state_id, None)
+        # Remove all per-state metadata
+        self._state_metadata.pop(state_id, None)
         # Remove from predicate evaluation cache
         if hasattr(self, '_predicate_eval_cache'):
             self._predicate_eval_cache.pop(state_id, None)

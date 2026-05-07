@@ -1176,9 +1176,7 @@ class RustStateSyncMixin:
                     # the symbolic relationship without this tracking
                     state_id = self._current_callback_state_id
                     if state_id is not None:
-                        if state_id not in self._hook_symbolic_memory:
-                            self._hook_symbolic_memory[state_id] = {}
-                        self._hook_symbolic_memory[state_id][start] = (ast, size)
+                        self._state_md(state_id).hook_symbolic_memory[start] = (ast, size)
                         if _DBG:
                             l.debug(f"Preserved symbolic memory at 0x{start:x} for state {state_id}")
 
@@ -1463,20 +1461,23 @@ class RustStateSyncMixin:
         """
         # Try direct lookup, then ancestry chain for forked states
         symbolic_pages = None
-        if state_id in self._symbolic_pages:
-            symbolic_pages = self._symbolic_pages[state_id]
+        direct_md = self._state_metadata.get(state_id)
+        if direct_md is not None and direct_md.symbolic_pages:
+            symbolic_pages = direct_md.symbolic_pages
         else:
             # Try root state first (most likely to have cached pages)
             root_id = self._get_pending_root_state_id()
-            if root_id is not None and root_id in self._symbolic_pages:
-                symbolic_pages = self._symbolic_pages[root_id]
+            root_md = self._state_metadata.get(root_id) if root_id is not None else None
+            if root_md is not None and root_md.symbolic_pages:
+                symbolic_pages = root_md.symbolic_pages
                 if _DBG:
                     l.debug(f"Using root {root_id} symbolic pages for state {state_id}")
             else:
                 # Walk full ancestry chain
                 for ancestor_id in self._get_pending_ancestry():
-                    if ancestor_id in self._symbolic_pages:
-                        symbolic_pages = self._symbolic_pages[ancestor_id]
+                    ancestor_md = self._state_metadata.get(ancestor_id)
+                    if ancestor_md is not None and ancestor_md.symbolic_pages:
+                        symbolic_pages = ancestor_md.symbolic_pages
                         if _DBG:
                             l.debug(f"Using ancestor {ancestor_id} symbolic pages for state {state_id}")
                         break
@@ -1544,20 +1545,23 @@ class RustStateSyncMixin:
         """
         # Try direct lookup, then ancestry chain for forked states
         hook_memory = None
-        if state_id in self._hook_symbolic_memory:
-            hook_memory = self._hook_symbolic_memory[state_id]
+        direct_md = self._state_metadata.get(state_id)
+        if direct_md is not None and direct_md.hook_symbolic_memory:
+            hook_memory = direct_md.hook_symbolic_memory
         else:
             # Try root state first (most likely to have hook memory)
             root_id = self._get_pending_root_state_id()
-            if root_id is not None and root_id in self._hook_symbolic_memory:
-                hook_memory = self._hook_symbolic_memory[root_id]
+            root_md = self._state_metadata.get(root_id) if root_id is not None else None
+            if root_md is not None and root_md.hook_symbolic_memory:
+                hook_memory = root_md.hook_symbolic_memory
                 if _DBG:
                     l.debug(f"Using root {root_id} hook symbolic memory for state {state_id}")
             else:
                 # Walk full ancestry chain
                 for ancestor_id in self._get_pending_ancestry():
-                    if ancestor_id in self._hook_symbolic_memory:
-                        hook_memory = self._hook_symbolic_memory[ancestor_id]
+                    ancestor_md = self._state_metadata.get(ancestor_id)
+                    if ancestor_md is not None and ancestor_md.hook_symbolic_memory:
+                        hook_memory = ancestor_md.hook_symbolic_memory
                         if _DBG:
                             l.debug(f"Using ancestor {ancestor_id} hook symbolic memory for state {state_id}")
                         break
