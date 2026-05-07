@@ -1,119 +1,100 @@
-# Loop session notes (2026-05-07, 127th loop session)
+# Loop session notes (2026-05-07, 128th loop session)
 
-## Task: angr-wqao — Split rust_manager.py (~2800 lines) into single-responsibility components
+## Task: angr-csd1 — Split PythonCallbacks into focused traits
 
 ### Status: AUDIT → DEFER
 
-After audit, deferring with the same reasoning template as the seven prior
-architecture refactor deferrals (angr-borb / angr-ja0b / angr-x3xu /
-angr-m2hf / angr-prem / angr-fk0m / angr-4j5u). Same blast-radius profile,
-same outdated bead description, same already-partially-implemented
-decomposition, no concrete bug class to motivate the work.
+After audit, deferring with the same reasoning template as the prior eight
+architecture refactor deferrals (wqao / 4j5u / borb / fk0m / m2hf / prem /
+x3xu / ja0b). Same blast-radius profile, same outdated bead description,
+no concrete bug class to motivate the work.
 
 ### Audit findings
 
-1. **Bead description significantly out of date.**
-   - Bead claims: "RustExplorationManager + 4 mixins total ~2800 lines and ~165 functions"
-   - Actual `wc -l`:
-     - rust_manager.py 2963
-     - rust_callback_dispatch.py 1915
-     - rust_state_sync.py 1587
-     - rust_state_cache.py 400
-     - rust_state_export.py 955
-     - **Total 7820 lines** — bead is **~2.8x off**
-   - Method counts: 91 + 30 + 37 + 15 + 29 = **202 methods** (bead says ~165).
-   - Looks like a stale snapshot from before the 4-mixin extraction landed.
+1. **Bead description out of date.**
+   - Bead claims: "callbacks.rs:298-400 — single PythonCallbacks struct
+     with 15+ methods."
+   - Actual file: 1780 lines. PythonCallbacks has **18** callback fields,
+     19 set_* methods, 18 call_* methods, plus GC traversal helpers
+     (traverse_fields/clear_fields), Default impl, and a CallbackHandle
+     Arc wrapper.
+   - Lines 298-400 only cover the struct definition, not the full impl.
 
-2. **Three of the four proposed extractions already exist as mixins.**
-   - Bead proposes: StateLifecycleManager, DiskCacheManager, ConstraintBridge,
-     CallbackRouter.
-   - Already extracted (per `class RustExplorationManager(...)` mixin list at
-     rust_manager.py:291):
-     - `RustStateCacheMixin` + `RustStateExportMixin` ≈ StateLifecycleManager
-     - `RustStateSyncMixin` ≈ ConstraintBridge
-     - `RustCallbackDispatchMixin` ≈ CallbackRouter (event-side; the 15
-       FFI-side `_cb_*` low-level callbacks remain in rust_manager.py because
-       they are FFI-bound to the manager identity)
-   - Only the ~700-line disk-cache section (lines 1248-1957) is not yet
-     mixin-extracted, and it is *already being decomposed* incrementally
-     (commits aed1ec175 split disk-cache load into 3 phases, eece5e3c5 split
-     `_save_init_to_disk_cache` into helpers, 9bbc301b0 split cache version
-     into rust+python axes, 7def453e3 extracted IRSB serializer).
+2. **No current mocking pain that this would relieve.**
+   - callbacks.rs has 2 in-file tests (test_callbacks_creation,
+     test_loop_execution_event); neither is blocked by lack of trait split.
+   - tests/engines/test_rust_exploration.py: 146/146 passing.
+   - The bead acceptance criterion ("each callback group independently
+     mockable in tests") has no current test in the suite that needs it.
 
-3. **Refactor cost is high, payoff is cosmetic.**
-   - 33 methods are candidates for extraction (15 `_cb_*` + 18 disk-cache /
-     init-pipeline helpers).
-   - 40 internal callsites within angr/exploration/.
-   - 102 callsites for the 6 most-shared fields used by `_cb_*` methods
-     (`_perf_stats`, `_state_metadata`, `_current_callback_state_id`,
-     `_register_handle`, `_get_per_fork_state`, `_get_effective_state_id`)
-     — extraction means either keeping the mixin pattern (no real
-     decomposition) or passing the manager into a router (just adds
-     indirection from `self.x` → `self._router.mgr.x`).
-   - 38 instance fields are set in `__init__`; the disk-cache and init-cache
-     pipelines tightly couple many of them.
-   - Acceptance criterion "rust_manager.py under 1000 lines" requires moving
-     ~2000 lines across multiple new files without changing behavior.
+3. **Today already supports partial wiring.**
+   - Each callback is `Option<Py<PyAny>>`. Python can set only the hooks
+     it needs and leave the rest as None.
+   - The hard-error invariant (memory `avoid-silent-no-op-callback-
+     fallbacks`) ensures None hooks raise PyRuntimeError instead of
+     silently no-op'ing — exactly the safety the bead wants from
+     compile-time enforcement.
 
-4. **Multiple documented invariants live in the proposed-extraction code.**
-   Risk of silent breakage during decomposition:
-   - `invariant-disk-cache-key-axes` (cache version axes must be incremented
-     together)
-   - `invariant-init-cache-lazy-regions-order` (lazy_regions ordering must be
-     preserved)
-   - `disk-cache-register-filter` (disk init cache stores all archinfo
-     registers)
-   - `disk-cache-symbolic-guard`
-   - `explore-predicate-loop-termination`
-   None have test coverage that would catch silent regressions in a
-   mechanical move-files refactor.
+4. **PyO3 surface preservation requires a shim.**
+   - rust_manager.py:696-716 calls `callbacks.set_memory_load(...)`,
+     `callbacks.set_memory_store_symbolic_full(...)` etc. on a single
+     PythonCallbacks instance.
+   - Splitting into traits means PythonCallbacks must delegate setters
+     to inner trait holders — doubling indirection
+     (`cb.memory.set_memory_load(...)` proxied through `cb.set_memory_load`).
+   - Or break Python wiring entirely → not acceptable.
 
-5. **No bug class motivates the work.**
-   - rust_manager.py has 39 commits in the past ~3 weeks — actively
-     maintained, not crystallizing rot.
-   - Bug-related memories (`deadend-drops-deferred-forks`,
-     `shared-solver-for-callbacks`,
-     `symwrite-rustbv-to-claripy-bottleneck`) all point to
-     `rust_callback_dispatch.py`, which has *already* been extracted as
-     `RustCallbackDispatchMixin`.
-   - 146/146 tests + 16/16 benchmarks pass under current structure.
+5. **30+ call sites across the engine take `&PythonCallbacks`.**
+   - engine.rs, exploration/{mod,stepping}.rs, interpreter_cb/{mod,
+     prefetch,execution,expressions,statements,exits,constraints}.rs.
+   - Multiple functions use BOTH memory AND register/exec callbacks in
+     the same scope (e.g., interpreter_cb/expressions.rs uses memory_load
+     + get_register; statements.rs uses memory + sync_constraints).
+   - To get real "depending on what you don't use" benefit, every site
+     would need to switch from `&PythonCallbacks` to multiple `&dyn`
+     references (or composite refs). That's a huge plumbing change for
+     cosmetic gain.
 
-6. **Repo practice is incremental decomposition, not big-bang.**
-   - aed1ec175 split disk-cache load into 3 testable phases
-   - eece5e3c5 split `_save_init_to_disk_cache` into helpers
-   - 0d6af2dd1 encapsulated `_perf_stats` behind `PerformanceTracker`
-   - 7def453e3 extracted IRSB serializer
-   - 9bbc301b0 split cache version into 2 axes
-   - This is the pattern that works. A big-bang decomposition contradicts
-     the proven approach.
+6. **Hot-path performance risk.**
+   - call_memory_load is invoked on every cache-missed memory load.
+   - Replacing direct method dispatch with virtual dispatch via
+     Arc<dyn MemoryCallbacks> is likely measurable.
+   - Acceptance criterion has no perf bar — easy to silently regress.
+
+7. **No bug class motivates the work.**
+   - Recent bug memories (deadend-drops-deferred-forks,
+     shared-solver-for-callbacks, symwrite-rustbv-to-claripy-bottleneck)
+     all point to dispatch/state-sync logic, not the PythonCallbacks
+     shape. Splitting would not catch them.
+
+8. **Invariant risk.**
+   - `avoid-silent-no-op-callback-fallbacks` lives in this file: every
+     call_* uses `ok_or_else(PyRuntimeError)` for missing hooks.
+   - A mechanical split risks introducing different error idioms across
+     traits, silently weakening the guarantee.
 
 ### Why this matches the prior deferral pattern
 
-Same template as angr-borb / angr-ja0b / angr-x3xu / angr-m2hf /
-angr-prem / angr-fk0m / angr-4j5u:
-- (a) Bead description references infrastructure that has shifted (file
-  total is 7820 lines not 2800; mixin pattern already in use covers 3 of
-  4 proposed extractions).
-- (b) Full scope is large — moving ~2000 lines across multiple new files
-  with 102+ callsites and 38 fields to plumb.
-- (c) Proposed extractions are largely renames / rehoming — `_cb_*`
-  methods stay FFI-bound to the manager either way; pulling them out
-  adds indirection without changing responsibilities.
-- (d) No bug class observed to motivate the work — bugs that did
-  occur were in the rust_callback_dispatch mixin, which has already
-  been extracted.
-- (e) Half-measures (e.g., extracting only disk-cache section into
-  `RustDiskCacheMixin`) still cost ~700 lines moved + invariant
-  preservation work for cosmetic gain.
+- (a) Bead description references infrastructure that has shifted (15+
+  methods → 18, line range 298-400 → struct def only out of 1780-line
+  file).
+- (b) Full scope is large — 30+ call sites, 3+ traits, PyO3 shim, hot
+  path performance considerations.
+- (c) Stated motivation ("partial wiring", "mockability") is achievable
+  with the current Option-based design.
+- (d) No bug class observed — bugs are in dispatch/sync logic, not
+  PythonCallbacks shape.
+- (e) Invariant `avoid-silent-no-op-callback-fallbacks` lives in this
+  code; mechanical split risks silent regressions.
 
 ### Action
 
-1. Defer angr-wqao with this audit as the reason.
-2. Save memory `avoid-deferred-wqao-rust-manager-decomposition` so future
-   sessions don't re-open without (a) a concrete bug showing
-   field-coupling drift in rust_manager.py, OR (b) a refactor with
-   genuinely changed responsibilities (e.g., the disk-cache pipeline gets
-   pluggable backends), not just renames.
+1. Defer angr-csd1 with this audit as the reason.
+2. Save memory `avoid-deferred-csd1-pythoncallbacks-trait-split` so
+   future sessions don't re-open without (a) a concrete test that needs
+   pure-Rust mocking of one callback group, OR (b) a measured perf win
+   that requires monomorphizing one callback group, OR (c) a real bug
+   that the trait split would have caught.
 
 ### Files modified
 
