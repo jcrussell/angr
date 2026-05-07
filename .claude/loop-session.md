@@ -1,89 +1,83 @@
-# Loop session notes (2026-05-07, 124th loop session)
+# Loop session notes (2026-05-07, 125th loop session)
 
-## Task: angr-prem — Introduce a MemoryLayer trait so the interpreter is generic over backend
+## Task: angr-fk0m — Unify rust_state_sync / rust_state_cache / rust_state_export mixins
 
 ### Status: AUDIT → DEFER
 
-After audit, deferring with the same reasoning template as angr-borb /
-angr-ja0b / angr-x3xu / angr-m2hf. The proposed trait does not fit the
-actual usage pattern.
+After audit, deferring with the same reasoning template as the prior
+architecture refactor deferrals (angr-borb / angr-ja0b / angr-x3xu /
+angr-m2hf / angr-prem). The proposed unification doesn't fit the actual
+mixin structure.
 
 ### Audit findings
 
-1. **`memory.rs is pure data` is wrong.**
-   `native/angr/src/memory/mod.rs` (and its sibling load.rs / store.rs) is
-   not pure data — its `MemoryError` enum drives control flow at the
-   call site:
-     - `MemoryError::UnmappedPageInRegion { page_addr }` → fetch the
-       Python page and retry the operation.
-     - `MemoryError::Unmapped { addr, size }` → fall through to Python.
-     - `MemoryError::SymbolicAddress { description }` → fall through to
-       Python (Python's wide concretization handles this case natively).
-     - Other variants → propagate as `CbExecutionError`.
+1. **Mixins are already phase-organized by direction.**
+   - `rust_state_sync.py` — 37 methods, Python→Rust direction (register
+     sync, memory sync, page sync, lazy regions).
+   - `rust_state_cache.py` — 15 methods, state metadata management
+     (handle lookup, predicate eval skip flags).
+   - `rust_state_export.py` — 29 methods, Rust→Python direction (state
+     export, plugin restoration, RustSolverFallback wrapper class).
 
-   These signals are interpreter-layer concerns, not backend-layer.
+   These ARE the three phases the bead proposes (Synchronization /
+   Caching / Export). Renaming them into a `RustStateCoordinator` with
+   `phase_sync()`, `phase_cache()`, `phase_export()` methods is purely
+   cosmetic — same boundaries, same methods, different file.
 
-2. **try_rust_memory_load is not a peer to load_from_callback.**
-   - `try_rust_memory_load` (interpreter_cb/expressions.rs:619) returns
-     `Result<Option<RustBV>>`: `Some` = Rust handled, `None` = fall
-     through, `Err` = hard error. It also takes `&self.concretizer` and
-     timing stats — interpreter-level inputs.
-   - `load_from_callback` (interpreter_cb/mod.rs:1015) returns plain
-     `Result<RustBV>`. Python is the page authority and concretizer; it
-     doesn't have UnmappedPageInRegion semantics at all.
+2. **Total LoC is large.** 1587 + 400 + 955 = 2942 lines across the
+   three mixins. A real merge would be a substantial refactor with no
+   behavioral payoff.
 
-3. **The Load expression walks ~8 sources, not 2.**
-   `expressions.rs:45` consults: try_rust_memory_load → pending_symbolic_stores
-   → pending_stores buffer → all_flushed_symbolic_stores → all_flushed_stores
-   → prefetch cache → try_read_concrete_memory → load_from_callback. Most
-   of these are caches, not "memory layers." A trait with two impls would
-   collapse only 2 of those cases.
+3. **Multiple documented invariants run across these files.**
+   - `invariant-callstack-sync-export-pipeline`: export has 4 paths
+     (cached fast path L207, parent-state ...).
+   - `invariant-rust-solver-fallback-class`: RustSolverFallback owns
+     per-state Rust solver fallback wiring; lives in export module.
+   - `disk-cache-register-filter`: disk init cache stores ALL archinfo
+     registers — invariant in sync module.
+   - `callstack-rebuild-pattern`: detailed pattern for CallStack rebuild
+     — invariant in export module.
+   - `flareon5-post-exploration-constraints`: root cause was in solver
+     fallback (export module).
 
-4. **`trait MemoryLayer { fn load(addr, size); fn store(addr, value, size); }`
-   discards the rich semantics.** A faithful unification would need:
-     - Two-phase result (`Some` / `None` / `Err`) for fall-through.
-     - Page-fetch hook so the layer can request more data before retrying.
-     - Concretization context.
-     - Timing stats path.
-   At that point the "trait" is the entire interpreter Load/Store routine,
-   not a memory backend.
+   Unifying risks breaking these invariants without test signal.
 
-5. **PythonCallbackMemory is not a peer impl.**
-   The Python callback layer doesn't have UnmappedPageInRegion or
-   SymbolicAddress concepts because Python owns the full memory model.
-   A `MemoryLayer for PythonCallbacks` impl would either always return
-   "handled" (Some) or would have to fabricate signals that aren't
-   meaningful in the Python model.
-
-6. **No documented bug class motivates the work.**
-   `bd memories memory` and `bd memories rust-memory` produce no
-   incident pointing at the dual-path design. The current scheme has
+4. **No documented bug class motivates the work.**
+   `bd memories drift` and `bd memories cache invalidation` produce no
+   incident pointing at mixin fragmentation. The current scheme has
    carried us through 146 tests + 16 benchmarks correct.
+
+5. **The "drift risk" claim is unsupported.** The bead asserts "Each
+   has its own cache invalidation rules; no shared invariant." But the
+   mixins don't share state — they share `self._rust_mgr`,
+   `self._project`, `self._state_metadata`, and the StateMetadata
+   dataclass (per `invariant-state-metadata-dataclass`). Cache
+   invalidation is centralized in StateMetadata, not duplicated across
+   mixins.
 
 ### Why this matches the prior deferral pattern
 
-Same template as angr-borb / angr-ja0b / angr-x3xu / angr-m2hf:
+Same template as angr-borb / angr-ja0b / angr-x3xu / angr-m2hf / angr-prem:
 - (a) Bead description references infrastructure that has shifted
-  ("memory.rs is pure data" was once true; now it carries control-flow
-  signals).
-- (b) Full scope is large (~8 sources to unify; lazy-page protocol to
-  thread; concretizer to plumb through).
-- (c) The "two parallel code paths" pitch doesn't match reality — the
-  Python path is a fall-through target, not a peer backend.
+  (mixins are already phase-organized; "fragmentation" pitch overstates
+  drift).
+- (b) Full scope is large (~3000 lines + 81 methods to consolidate).
+- (c) Proposed RustStateCoordinator phases = current mixin boundaries
+  with renamed methods. No architectural improvement.
 - (d) No bug class observed to motivate the work.
-- (e) Half-measures (trait wrapping only SymbolicMemory, with Python kept
-  separate) deliver no behavioural value.
+- (e) Half-measures (e.g., merging cache into sync) would break
+  documented invariants without behavioural value.
 
 ### Action
 
-1. Defer angr-prem with this audit as the reason. (done)
-2. Save memory `avoid-deferred-prem-memory-layer` so future sessions
-   don't re-open without (a) a concrete bug class showing the dual
-   path causes wrong behavior, OR (b) a third backend that needs the
-   trait. (done)
+1. Defer angr-fk0m with this audit as the reason.
+2. Save memory `avoid-deferred-fk0m-state-mixin-unification` so future
+   sessions don't re-open without (a) a concrete bug showing mixin
+   drift, OR (b) a refactor that genuinely changes responsibilities,
+   not just renames classes.
 
 ### Files modified
 
 - None — audit only; no source edits.
 
-## Status: complete
+## Status: complete (deferred with audit + memory saved)
