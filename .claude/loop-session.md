@@ -1,100 +1,56 @@
-# Loop session notes (2026-05-07, 107th loop session)
+# Loop session notes (2026-05-07, 108th loop session)
 
-## Task: angr-07rg — FxHasher swap on CallbackInterpreter per-step HashMaps (CLOSED)
+## Task: angr-8f7d — Optionally cache lane extraction in SSE scalar float ops (CLOSED wontfix)
 
-Bead closed (commit 76c76c1b3).
+Bead closed as wontfix without code change.
 
-### What changed
+### Decision
 
-Continued the invariant-fxhash-internal-keys pattern on 7 u64-keyed std
-HashMaps inside `CallbackInterpreter` (interpreter_cb/mod.rs) plus
-`PendingStoreBuffer.byte_index` (pending_store.rs). The signatures that
-cross between interpreter_cb, exploration/mod.rs (PendingCallback), and
-exploration/stepping.rs were updated together so the FxHashMap type
-flows end-to-end.
+The bead's acceptance criterion explicitly allowed close-as-wontfix when
+profiling shows lane-extract is not hot. The prerequisite bead angr-q2dk
+already had that profiling and the answer was unambiguous:
 
-| Field                                                         | Before                | After |
-|---------------------------------------------------------------|-----------------------|---------|
-| CallbackInterpreter.all_flushed_stores                        | HashMap<u64, Vec<u8>> | FxHashMap |
-| CallbackInterpreter.all_flushed_symbolic_stores               | HashMap<u64, RustBV>  | FxHashMap |
-| CallbackInterpreter.pending_symbolic_stores                   | HashMap<u64, RustBV>  | FxHashMap |
-| CallbackInterpreter.load_prefetch_cache                       | HashMap<(u64,usize),..>| FxHashMap |
-| CallbackInterpreter.stored_conditions                         | HashMap<u64, RustBV>  | FxHashMap |
-| CallbackInterpreter.fork_snapshots                            | HashMap<u64, BranchSnapshot> | FxHashMap |
-| CallbackInterpreter.concretize_cache                          | HashMap<u64, Arc<...>>| FxHashMap |
-| PendingStoreBuffer.byte_index                                 | HashMap<u64, usize>   | FxHashMap |
-| PendingCallback.{stored_conditions,fork_snapshots}            | HashMap<u64, ...>     | FxHashMap |
+- **Total fairlight wallclock:** 12.9-14.0s
+- **Z3 contribution:** ~95% (z3_check umbrella 12.3-13.3s)
+- **Top single cost:** z3_site_branch_true (9.1-10.6s over 13 calls,
+  ~700-820ms per call — path-condition accumulation, not single-op cost)
+- **Interpreter expr_eval:** 14ms over 11,109 calls (well under 1%)
+- **block_exec ex-Z3:** sub-second
 
-`take_stored_conditions` / `take_fork_snapshots` now return FxHashMap;
-five stepping.rs helper signatures and `process_deferred_forks_into`
-were updated to match.
+vec_float_scalar_lane_binop / vec_float_scalar_lane_minmax /
+vec_float_scalar_sqrt do the extract(127, lane_bits) + concat that the
+bead worried about, but only on the symbolic fallback path — the
+concrete fast path (`as_u128()` guard) already returns early. Even if
+every one of the 11109 expr_evals were one of these ops, there's still
+no daylight: the entire interpreter side is far below 1% of the runtime
+that fairlight cares about.
 
-### Measured impact (criterion --baseline before)
+The remaining headroom for fairlight lives in the Z3 path-condition
+side. That's tracked by angr-faws (now unblocked).
 
-```
-state_fork                   : 204.59 ns -> 199.66 ns (-2.1%, p<0.05)
-memory_concrete/store_8b     :  33.04 ns ->  33.12 ns (no change)
-memory_concrete/load_1b      :  21.22 ns ->  21.05 ns (-0.6%, noise)
-memory_fork_16pages          :  39.97 ns ->  39.22 ns (-2.0%, recovers
-                                                       last session +4.3%
-                                                       drift)
-memory_symbolic_load_16range :   1.66 ms ->   1.69 ms (+2.2%, 1.7ms test
-                                                       on heavy Z3 work,
-                                                       not on the FxHash
-                                                       path; noise)
-```
+### Files changed
 
-state_fork's smaller win this round is expected: state.fork() doesn't
-clone the interpreter — these maps live inside CallbackInterpreter and
-only matter on per-step insert/lookup, which we don't have a microbench
-for. The fork bench picks up only the secondary effect of FxHashMap's
-smaller default capacity on the rest of the workload.
-
-### Tests
-
-- 254/254 Python tests pass (tests/engines/test_rust_exploration.py)
-- 517/517 Rust unit tests pass
-- 11/12 regression benchmarks pass; csgames2018 was already broken on
-  master per `avoid-csgames2018-as-regression-signal`.
+None — close-only.
 
 ### Memories saved
 
-- `benchmark-fxhash-interpreter-cb` — bench numbers + reasoning for the
-  per-step interpreter swap.
-- `invariant-fxhash-cross-module-signatures` — when changing internal
-  Rust HashMap signatures across the stepping.rs / interpreter_cb /
-  exploration/mod.rs boundary, change them all in one pass; the
-  signatures flow end-to-end and skipping any one site triggers ~11
-  E0308 mismatches at call sites.
-- Updated `invariant-fxhash-internal-keys` with new completed targets
-  and remaining candidates.
+- `sse-lane-extract-not-hot` — anchors the wontfix decision so we
+  don't re-claim or re-investigate this in a future session.
 
-### Build note
+### Tests
 
-Same pattern as last sessions: `pip install -e .` is broken in venv.
-Working command:
+None run — no code change. (Build state inherited from 76c76c1b3 /
+ccb327850 from the prior session; benchmarks last sweep stayed at
+11/12 regression-pass with csgames2018 already-broken-on-master per
+existing memory.)
 
-    Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --manifest-path \
-        native/angr/Cargo.toml --release --lib
-    cp -f target/release/librustylib.so \
-        angr/rustylib.cpython-312-x86_64-linux-gnu.so
+### Unblocked
 
-The run_single.py harness needs `PYTHONPATH=/home/ubuntu/repos/angr`
-when invoked from a multiprocessing-spawn context.
-
-## Suggested next slices
-
-- Continue FxHasher swap on remaining candidates from
-  `invariant-fxhash-internal-keys`:
-  - `engine.rs:187` RustVEXEngine.symbolic_registers (HashMap<u32, RustBV>)
-    — only matters on `engine.fork()`, not `state.fork()`. Smaller win
-    but cheap to do.
-  - exploration/mod.rs RustExplorationManager id maps
-    (state→id maps, vex_fallback_addrs, simprocedures).
-- `angr-6n56` (P2) — Arc-tree teardown for transient RustBV results,
-  36% of symbolic arithmetic time. Bigger refactor (likely needs an
-  arena).
-- `angr-pufm` (P1) lazy guarded-entries — still open; the audit notes
-  recommend splitting into a fallback-strategy enum and a separate
-  lazy guarded-entries bead before claiming. Either could become a
-  session task once split.
+- angr-faws (Decide on opt-out flag for Z3 FP theory if intrinsic
+  overhead is irreducible) was depending on angr-8f7d. Per the bead
+  notes, the right reframe is "Add a concrete-FP fast path that skips
+  Z3 when both operands are concrete" — but inspection of vex/ops.rs
+  shows that fast path is already present in vec_float_scalar_*
+  (`as_u128` guard returns `RustBV::concrete(...)` early). A future
+  session should audit whether any FP op is missing the concrete fast
+  path and then close angr-faws accordingly.
