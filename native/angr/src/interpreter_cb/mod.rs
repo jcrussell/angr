@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use lru::LruCache;
 use pyo3::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::arch::{arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch, RegisterFile};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
@@ -509,7 +509,7 @@ pub struct CallbackInterpreter<'a> {
     current_insn_len: u32,
     /// Hook addresses (return to Python when hit).
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
-    hook_addrs: Arc<HashSet<u64>>,
+    hook_addrs: Arc<FxHashSet<u64>>,
     /// VEX architecture.
     arch: VexArch,
     /// Block cache (shared across runs) using Arc for O(1) cloning.
@@ -589,7 +589,7 @@ pub struct CallbackInterpreter<'a> {
     /// Registry mapping hook addresses to SimProcedure info.
     /// When a hook is hit, we can extract arguments using this info.
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
-    simprocedure_registry: Arc<HashMap<u64, SimProcedureInfo>>,
+    simprocedure_registry: Arc<FxHashMap<u64, SimProcedureInfo>>,
     /// Calling convention for argument extraction.
     calling_convention: Box<dyn CallingConvention>,
     /// Last branch condition encountered (for symbolic branch handling).
@@ -633,7 +633,7 @@ pub struct CallbackInterpreter<'a> {
     pub vex_opt_level: Option<i32>,
     /// Per-address VEX optimization level overrides.
     /// Arc-shared on fork (O(1) clone). Setters replace the Arc wholesale.
-    pub vex_opt_level_overrides: Arc<HashMap<u64, i32>>,
+    pub vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
 }
 impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
@@ -655,7 +655,7 @@ impl<'a> CallbackInterpreter<'a> {
             pc: 0,
             current_insn_addr: 0,
             current_insn_len: 0,
-            hook_addrs: Arc::new(HashSet::new()),
+            hook_addrs: Arc::new(FxHashSet::default()),
             arch,
             block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
             use_memory_callbacks: true,
@@ -682,7 +682,7 @@ impl<'a> CallbackInterpreter<'a> {
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
-            simprocedure_registry: Arc::new(HashMap::new()),
+            simprocedure_registry: Arc::new(FxHashMap::default()),
             calling_convention: cc,
             last_branch_condition: None,
             pending_python_constraints: Vec::new(),
@@ -699,7 +699,7 @@ impl<'a> CallbackInterpreter<'a> {
             call_stack: Vec::new(),
             detailed_history: Vec::new(),
             vex_opt_level: None,
-            vex_opt_level_overrides: Arc::new(HashMap::new()),
+            vex_opt_level_overrides: Arc::new(FxHashMap::default()),
         }
     }
 

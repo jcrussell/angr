@@ -445,7 +445,7 @@ pub struct RustExplorationManager {
     /// VEX optimization level (0-3). None = use pyvex default (typically 1).
     pub(crate) vex_opt_level: Option<i32>,
     /// Per-address VEX optimization level overrides.
-    pub(crate) vex_opt_level_overrides: HashMap<u64, i32>,
+    pub(crate) vex_opt_level_overrides: FxHashMap<u64, i32>,
     /// Maximum length of per-state `history` / `detailed_history` ring buffers.
     /// 0 = unlimited (legacy, can OOM on long runs). Default 1000 keeps each
     /// state's history bounded at ~8KB (history) + ~24KB (detailed_history).
@@ -509,7 +509,7 @@ impl RustExplorationManager {
             little_endian,
             concretizer_config: crate::concretize::AddressConcretizer::default(),
             vex_opt_level: None,
-            vex_opt_level_overrides: HashMap::new(),
+            vex_opt_level_overrides: FxHashMap::default(),
             max_history: 1000,
         })
     }
