@@ -151,6 +151,18 @@ def _patch_rust_explore_to_single_step(manager, max_snapshots: int):
                 break
             manager.step(1)
             steps += 1
+            # Mirror _explore_with_predicates: callable find/avoid
+            # predicates aren't observable from inside Rust, so evaluate
+            # them between step(1) calls and route matches into
+            # found/avoid stashes manually. Without this, csgames2018
+            # and sym-write never see their stdout-based find predicate
+            # fire in --diff-state mode.
+            if (getattr(manager, "_find_predicate", None) is not None
+                    or getattr(manager, "_avoid_predicate", None) is not None):
+                try:
+                    manager._evaluate_predicates_on_active()
+                except Exception:
+                    pass
         return manager
 
     def diff_explore(find=None, avoid=None, num_find=1, until=None,
