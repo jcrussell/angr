@@ -1,6 +1,12 @@
 # Loop session notes (2026-05-07, 116th loop session)
 
-## Task: angr-ja0b — Replace StepError variants with a richer StepOutcome trait (REJECTED)
+Two related P3 architectural-refactor beads closed wontfix in this
+session: angr-ja0b (StepOutcome trait) and angr-x3xu (SolverBridge
+protocol). Both proposed adding abstraction layers that, on real code
+review, decouple coupling that doesn't exist or that the existing
+enum/duck-typing already expresses cleanly.
+
+## Task 1: angr-ja0b — Replace StepError variants with a richer StepOutcome trait (REJECTED)
 
 ### What the bead proposed
 
@@ -64,6 +70,45 @@ Closing as wontfix.
 
 ---
 
+## Task 2: angr-x3xu — Define a SolverBridge protocol (REJECTED)
+
+### What the bead proposed
+
+Replace direct manager calls to `RustSolverContext` with a Python
+`SolverBridge` Protocol; provide `RustSolverBridge` and
+`ClaripySolverBridge` implementations.
+
+### Why rejected (real code review)
+
+- `angr/exploration/rust_manager.py` has **zero** references to
+  `RustSolverContext` / `RustSolverFallback` / `RustSolverProxy`. The
+  manager already has no direct concrete-type coupling to decouple.
+  The bead's premise (`manager calls into RustSolverContext directly`)
+  is incorrect.
+- The Rust solver is reached either via
+  `self._rust_mgr.fork_state_solver(state_id)` (PyO3 type used as a
+  duck-typed object) or via `RustSolverFallback`
+  (rust_state_export.py:20), which already wraps the solver and
+  patches `state.solver` post-exploration. `RustSolverProxy`
+  (rust_state_proxy.py:19) is a second duck-typed wrapper for the
+  SimProcedure path. Both wrappers expose the same eval / satisfiable
+  / min / max contract.
+- Tests do NOT mock/substitute the solver (grep
+  `mock.*solver|FakeSolver|StubSolver` in `tests/` returns nothing).
+  The bead's "swap the backend in tests" value-prop is hypothetical.
+- A Protocol class would document the duck-typed contract but provide
+  no decoupling gain — there is no caller to redirect away from a
+  concrete import.
+
+### Memory saved
+
+- `avoid-solver-bridge-protocol` — code-evidence rationale, file
+  pointers, and the hypothetical-test-harness caveat.
+
+### No code changes; no build/test required.
+
+---
+
 ## Carried over from previous session (115th, angr-khth init-pipeline split)
 
 `_load_init_from_disk_cache` (rust_manager.py:1398) was split into
@@ -72,12 +117,8 @@ three independently testable phases: `_load_init_pickle` (pure I/O),
 `_apply_init_side_effects` (manager-owned metadata). Memory saved:
 `invariant-init-pipeline-phases`. See git log f32505930 / aed1ec175.
 
-### Next session candidates (P3 ready, may also warrant rejection review)
+### Next session candidates (P3 ready)
 
-- angr-x3xu (P3) SolverBridge protocol — manager has no direct
-  RustSolverContext coupling; declaring a Protocol is mostly
-  documentation. Limited value without a generic-over-backend test
-  harness. Possible wontfix.
 - angr-3vrj (P3) StateMetadata dataclass — 86 sites across 6 files;
   refactor scope larger than the bead lists. Could attempt focused
   first slice.
