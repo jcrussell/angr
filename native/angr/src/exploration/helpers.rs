@@ -566,6 +566,28 @@ impl RustExplorationManager {
         args
     }
 
+    /// Extract syscall arguments from state registers.
+    ///
+    /// Uses the calling convention's `syscall_arg_registers()` rather than
+    /// `arg_registers()`. On Linux amd64 these differ at the 4th argument
+    /// (R10 vs RCX). Syscalls do not pull args from the stack: if `num_args`
+    /// exceeds the available register count, the extra slots are zero —
+    /// callers should treat that as a misconfiguration.
+    pub(crate) fn extract_syscall_args(&self, state: &RustSimState, num_args: usize) -> Vec<RustBV> {
+        let arg_regs = self.calling_convention.syscall_arg_registers();
+        let ptr_size = self.calling_convention.pointer_size();
+        let mut args = Vec::with_capacity(num_args);
+
+        for &offset in arg_regs.iter().take(num_args) {
+            args.push(state.get_register_by_offset(offset, ptr_size));
+        }
+        for _ in args.len()..num_args {
+            args.push(RustBV::zero(ptr_size * 8));
+        }
+
+        args
+    }
+
     /// Get return address from stack.
     pub(crate) fn get_return_addr(&self, state: &RustSimState) -> Option<u64> {
         let sp = state.get_sp().as_u64()?;

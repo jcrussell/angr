@@ -150,7 +150,7 @@ impl RustExplorationManager {
                     let args = if n_args == 0 {
                         Vec::new()
                     } else {
-                        self.extract_procedure_args(&state, n_args)
+                        self.extract_syscall_args(&state, n_args)
                     };
                     match handler.call(&mut state, &args) {
                         Ok(SyscallOutcome::Continue { ret }) => {

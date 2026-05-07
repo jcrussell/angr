@@ -19,6 +19,7 @@
 pub mod brk;
 pub mod exit;
 pub mod mprotect;
+pub mod munmap;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -83,6 +84,8 @@ impl NativeSyscallRegistry {
         r.register("AMD64", 10, Arc::new(mprotect::NativeMprotectSyscall));
         // amd64: brk (12) — grow/query the program break.
         r.register("AMD64", 12, Arc::new(brk::NativeBrkSyscall));
+        // amd64: munmap (11) — Python implementation is a no-op return 0.
+        r.register("AMD64", 11, Arc::new(munmap::NativeMunmapSyscall));
         r
     }
 
@@ -142,6 +145,7 @@ mod tests {
         assert!(r.get("AMD64", 231).is_some(), "exit_group (231) should be registered");
         assert!(r.get("AMD64", 10).is_some(), "mprotect (10) should be registered");
         assert!(r.get("AMD64", 12).is_some(), "brk (12) should be registered");
+        assert!(r.get("AMD64", 11).is_some(), "munmap (11) should be registered");
         assert!(r.get("AMD64", 0).is_none(), "read (0) is intentionally unregistered");
         assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");
     }

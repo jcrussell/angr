@@ -17,6 +17,15 @@ pub trait CallingConvention: Send + Sync {
     /// Get the register offsets used for integer/pointer arguments.
     fn arg_registers(&self) -> &[u32];
 
+    /// Get the register offsets used for syscall arguments.
+    ///
+    /// Defaults to `arg_registers()`. Override on architectures where the
+    /// syscall ABI differs from the C ABI (e.g. amd64 Linux uses R10 in
+    /// place of RCX for the 4th argument).
+    fn syscall_arg_registers(&self) -> &[u32] {
+        self.arg_registers()
+    }
+
     /// Get the register offsets used for floating-point arguments.
     fn fp_arg_registers(&self) -> &[u32];
 
@@ -124,6 +133,12 @@ impl CallingConvention for SystemVAMD64 {
     fn arg_registers(&self) -> &[u32] {
         // RDI, RSI, RDX, RCX, R8, R9
         &[72, 64, 32, 24, 80, 88]
+    }
+
+    fn syscall_arg_registers(&self) -> &[u32] {
+        // Linux amd64 syscall ABI: RDI, RSI, RDX, R10, R8, R9.
+        // Differs from the C ABI at the 4th argument: R10 (96) vs RCX (24).
+        &[72, 64, 32, 96, 80, 88]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
@@ -365,6 +380,28 @@ mod tests {
         assert_eq!(cc.arg_registers().len(), 6);
         assert_eq!(cc.pointer_size(), 8);
         assert_eq!(cc.stack_arg_offset(), 8);
+    }
+
+    #[test]
+    fn test_systemv_amd64_syscall_args_use_r10_not_rcx() {
+        // Linux amd64 syscall ABI uses RDI, RSI, RDX, R10, R8, R9.
+        // Differs from C ABI at the 4th arg: R10 (offset 96) replaces RCX
+        // (offset 24). Required for 4+ arg syscalls (mmap takes 6).
+        let cc = SystemVAMD64;
+        assert_eq!(
+            cc.syscall_arg_registers(),
+            &[72, 64, 32, 96, 80, 88][..],
+            "amd64 syscall ABI must use R10 (96), not RCX (24), at arg 4",
+        );
+        assert_eq!(cc.arg_registers()[3], 24, "C ABI arg 4 is RCX (sanity check)");
+    }
+
+    #[test]
+    fn test_default_syscall_args_match_arg_registers() {
+        // CCs that don't override syscall_arg_registers should fall back to
+        // the C ABI registers. Verify on a non-amd64 CC.
+        let cc = Cdecl;
+        assert_eq!(cc.syscall_arg_registers(), cc.arg_registers());
     }
 
     #[test]
