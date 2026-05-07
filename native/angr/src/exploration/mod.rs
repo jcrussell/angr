@@ -10,6 +10,7 @@
 //! minimizing Python callback overhead.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use rustc_hash::FxHashMap;
 use crate::stash::{StashManager, STASH_ACTIVE, STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_PRUNED, STASH_UNCONSTRAINED};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -242,10 +243,10 @@ pub(crate) struct PendingCallback {
     /// These should be processed when the callback returns.
     pub(crate) deferred_forks: Vec<DeferredFork>,
     /// Stored conditions for deferred fork handling.
-    pub(crate) stored_conditions: HashMap<u64, RustBV>,
+    pub(crate) stored_conditions: FxHashMap<u64, RustBV>,
     /// Full state snapshots from before branch constraints were added.
     /// Keyed by condition_id, enables correct alternate-path forking.
-    pub(crate) fork_snapshots: HashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+    pub(crate) fork_snapshots: FxHashMap<u64, crate::interpreter_cb::BranchSnapshot>,
 }
 
 impl PendingCallback {
@@ -259,8 +260,8 @@ impl PendingCallback {
             jumpkind: None,
             solver_ctx: None,
             deferred_forks: Vec::new(),
-            stored_conditions: HashMap::new(),
-            fork_snapshots: HashMap::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
         }
     }
 
@@ -273,8 +274,8 @@ impl PendingCallback {
         jumpkind: &str,
         solver_ctx: Option<RustSolverContext>,
         deferred_forks: Vec<DeferredFork>,
-        stored_conditions: HashMap<u64, RustBV>,
-        fork_snapshots: HashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+        stored_conditions: FxHashMap<u64, RustBV>,
+        fork_snapshots: FxHashMap<u64, crate::interpreter_cb::BranchSnapshot>,
     ) -> Self {
         PendingCallback {
             state,
@@ -2689,8 +2690,8 @@ impl RustExplorationManager {
                         "Ijk_Call",
                         Some(shared_ctx),
                         Vec::new(),
-                        HashMap::new(),
-                        HashMap::new(),
+                        FxHashMap::default(),
+                        FxHashMap::default(),
                     ));
 
                     return Ok(ExplorationEvent::need_simprocedure(

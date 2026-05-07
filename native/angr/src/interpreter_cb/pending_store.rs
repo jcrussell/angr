@@ -4,7 +4,7 @@
 //! per-byte address → store-index map so concrete-addr loads can fast-skip the
 //! reverse linear scan when no pending store overlaps the load address.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// Pending concrete stores buffered for a single VEX block.
 ///
@@ -23,14 +23,14 @@ pub(crate) struct PendingStoreBuffer {
     /// the indexed entry is checked first; only if that store is smaller than
     /// the load do we fall back to a reverse scan to find an earlier covering
     /// store (matches the prior reverse-scan-first-fully-covering semantics).
-    byte_index: HashMap<u64, usize>,
+    byte_index: FxHashMap<u64, usize>,
 }
 
 impl PendingStoreBuffer {
     pub(crate) fn with_capacity(cap: usize) -> Self {
         Self {
             stores: Vec::with_capacity(cap),
-            byte_index: HashMap::with_capacity(cap * 4),
+            byte_index: FxHashMap::with_capacity_and_hasher(cap * 4, Default::default()),
         }
     }
 

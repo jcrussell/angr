@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use lru::LruCache;
 use pyo3::prelude::*;
+use rustc_hash::FxHashMap;
 
 use crate::arch::{arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch, RegisterFile};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
@@ -554,14 +555,14 @@ pub struct CallbackInterpreter<'a> {
     /// All stores flushed during this step (accumulated across block boundaries).
     /// Used for same-step cross-block load forwarding and for applying to state memory.
     /// HashMap for O(1) lookup by address. Value is the most recent store data.
-    all_flushed_stores: HashMap<u64, Vec<u8>>,
+    all_flushed_stores: FxHashMap<u64, Vec<u8>>,
     /// All symbolic stores flushed during this step (accumulated across block boundaries).
     /// Preserves symbolic RustBV values for cross-block load forwarding.
     /// Takes priority over all_flushed_stores (concrete) during loads.
-    all_flushed_symbolic_stores: HashMap<u64, RustBV>,
+    all_flushed_symbolic_stores: FxHashMap<u64, RustBV>,
     /// Pending symbolic stores - maps address to symbolic RustBV.
     /// These override the concrete bytes in pending_stores for load forwarding.
-    pending_symbolic_stores: HashMap<u64, RustBV>,
+    pending_symbolic_stores: FxHashMap<u64, RustBV>,
     /// Maximum pending stores before auto-flush.
     max_pending_stores: usize,
     /// Rust-native symbolic memory (replaces Python callbacks when enabled).
@@ -576,7 +577,7 @@ pub struct CallbackInterpreter<'a> {
     /// Prefetch cache for batched memory loads.
     /// Key is (address, size), value is the prefetched result.
     /// This is populated at block start and used during Load expression evaluation.
-    load_prefetch_cache: HashMap<(u64, usize), PrefetchedLoad>,
+    load_prefetch_cache: FxHashMap<(u64, usize), PrefetchedLoad>,
     /// Whether load prefetching is enabled.
     use_load_prefetch: bool,
     /// Number of pages to prefetch in each direction when fetching a page.
@@ -601,11 +602,11 @@ pub struct CallbackInterpreter<'a> {
     /// Stored branch conditions by ID for deferred fork handling.
     /// When a deferred fork is created, we store the condition here so
     /// callers can retrieve it to properly constrain forked states.
-    stored_conditions: HashMap<u64, RustBV>,
+    stored_conditions: FxHashMap<u64, RustBV>,
     /// Full state snapshots taken BEFORE branch constraints were added.
     /// Keyed by condition_id, these enable correct alternate-path forking
     /// with solver, registers, and memory from the branch point.
-    fork_snapshots: HashMap<u64, BranchSnapshot>,
+    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     /// Execution statistics for profiling.
     stats: ExecutionStats,
     /// Whether profiling is enabled.
@@ -616,7 +617,7 @@ pub struct CallbackInterpreter<'a> {
     /// Per-block concretization cache.
     /// Maps BV id to cached ConcretizationResult.
     /// Cleared at the start of each block since constraints don't change within a block.
-    concretize_cache: HashMap<u64, Arc<ConcretizationResult>>,
+    concretize_cache: FxHashMap<u64, Arc<ConcretizationResult>>,
     /// Scratch buffers reused across `prefetch_loads_for_block` calls to avoid
     /// per-block allocator churn. Each is cleared (not reallocated) at block start.
     prefetch_loads_scratch: Vec<(u64, usize)>,
@@ -670,14 +671,14 @@ impl<'a> CallbackInterpreter<'a> {
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
             pending_stores: PendingStoreBuffer::with_capacity(256),
-            all_flushed_stores: HashMap::new(),
-            all_flushed_symbolic_stores: HashMap::new(),
-            pending_symbolic_stores: HashMap::new(),
+            all_flushed_stores: FxHashMap::default(),
+            all_flushed_symbolic_stores: FxHashMap::default(),
+            pending_symbolic_stores: FxHashMap::default(),
             max_pending_stores: 256,
             rust_memory: None,
             use_rust_memory: false,
             lazy_solves: false,
-            load_prefetch_cache: HashMap::new(),
+            load_prefetch_cache: FxHashMap::default(),
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
@@ -685,12 +686,12 @@ impl<'a> CallbackInterpreter<'a> {
             calling_convention: cc,
             last_branch_condition: None,
             pending_python_constraints: Vec::new(),
-            stored_conditions: HashMap::new(),
-            fork_snapshots: HashMap::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
             stats: ExecutionStats::default(),
             profiling_enabled: false,
             concrete_memory_sorted: false,
-            concretize_cache: HashMap::new(),
+            concretize_cache: FxHashMap::default(),
             prefetch_loads_scratch: Vec::new(),
             prefetch_unique_scratch: Vec::new(),
             prefetch_dedup_scratch: HashSet::new(),
@@ -1316,7 +1317,7 @@ impl<'a> CallbackInterpreter<'a> {
     ///
     /// Returns all stored conditions as a HashMap. The internal map is cleared.
     /// This is useful for bulk retrieval when processing multiple deferred forks.
-    pub fn take_stored_conditions(&mut self) -> HashMap<u64, RustBV> {
+    pub fn take_stored_conditions(&mut self) -> FxHashMap<u64, RustBV> {
         std::mem::take(&mut self.stored_conditions)
     }
 
@@ -1324,7 +1325,7 @@ impl<'a> CallbackInterpreter<'a> {
     ///
     /// Returns full state snapshots captured BEFORE branch constraints were added,
     /// keyed by condition_id. Used for correct alternate-path forking.
-    pub fn take_fork_snapshots(&mut self) -> HashMap<u64, BranchSnapshot> {
+    pub fn take_fork_snapshots(&mut self) -> FxHashMap<u64, BranchSnapshot> {
         std::mem::take(&mut self.fork_snapshots)
     }
 
@@ -1360,15 +1361,15 @@ impl<'a> CallbackInterpreter<'a> {
             concretizer: self.concretizer.clone(), // Share concretizer settings
             dirty_registers: 0, // Fresh dirty tracking for fork
             pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
-            all_flushed_stores: HashMap::new(),
-            all_flushed_symbolic_stores: HashMap::new(),
-            pending_symbolic_stores: HashMap::new(),
+            all_flushed_stores: FxHashMap::default(),
+            all_flushed_symbolic_stores: FxHashMap::default(),
+            pending_symbolic_stores: FxHashMap::default(),
             max_pending_stores: self.max_pending_stores,
             // Fork Rust memory with O(1) CoW
             rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),
             use_rust_memory: self.use_rust_memory,
             lazy_solves: self.lazy_solves,
-            load_prefetch_cache: HashMap::new(), // Fresh prefetch cache for fork
+            load_prefetch_cache: FxHashMap::default(), // Fresh prefetch cache for fork
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
             dirty_dispatch: DirtyHelperDispatch::new(), // Fresh dispatch (stateless)
@@ -1376,12 +1377,12 @@ impl<'a> CallbackInterpreter<'a> {
             calling_convention: cc,
             last_branch_condition: None, // Fresh for fork
             pending_python_constraints: Vec::new(), // Fresh constraints for fork
-            stored_conditions: HashMap::new(), // Fresh for fork
-            fork_snapshots: HashMap::new(), // Fresh for fork
+            stored_conditions: FxHashMap::default(), // Fresh for fork
+            fork_snapshots: FxHashMap::default(), // Fresh for fork
             stats: ExecutionStats::default(), // Fresh stats for fork
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
-            concretize_cache: HashMap::new(), // Fresh cache for fork
+            concretize_cache: FxHashMap::default(), // Fresh cache for fork
             prefetch_loads_scratch: Vec::new(),
             prefetch_unique_scratch: Vec::new(),
             prefetch_dedup_scratch: HashSet::new(),

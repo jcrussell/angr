@@ -24,8 +24,8 @@ struct InterpreterStepResult {
     result: RunResult,
     deferred_forks: Vec<DeferredFork>,
     last_condition: Option<RustBV>,
-    stored_conditions: HashMap<u64, RustBV>,
-    fork_snapshots: HashMap<u64, BranchSnapshot>,
+    stored_conditions: FxHashMap<u64, RustBV>,
+    fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     new_registers: RegisterFile,
     new_pc: u64,
     new_call_stack: Vec<CallStackEntry>,
@@ -294,8 +294,8 @@ impl RustExplorationManager {
         mut state: RustSimState,
         pc: u64,
         deferred_forks: Vec<DeferredFork>,
-        stored_conditions: HashMap<u64, RustBV>,
-        mut fork_snapshots: HashMap<u64, BranchSnapshot>,
+        stored_conditions: FxHashMap<u64, RustBV>,
+        mut fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         state.set_pc(pc);
 
@@ -420,8 +420,8 @@ impl RustExplorationManager {
         num_args: usize,
         return_addr: u64,
         deferred_forks: Vec<DeferredFork>,
-        stored_conditions: HashMap<u64, RustBV>,
-        fork_snapshots: HashMap<u64, BranchSnapshot>,
+        stored_conditions: FxHashMap<u64, RustBV>,
+        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         // Try native procedure first — avoids Python callback overhead.
         // Skip native for addresses inside the binary — these are user-placed
@@ -530,8 +530,8 @@ impl RustExplorationManager {
         targets: Vec<u64>,
         condition_id: u64,
         deferred_forks: Vec<DeferredFork>,
-        stored_conditions: HashMap<u64, RustBV>,
-        fork_snapshots: HashMap<u64, BranchSnapshot>,
+        stored_conditions: FxHashMap<u64, RustBV>,
+        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         // Look up the condition for constraint addition
         let target_expr = stored_conditions.get(&condition_id).cloned();
@@ -624,8 +624,8 @@ impl RustExplorationManager {
         return_addr: u64,
         symbol_name: Option<String>,
         deferred_forks: Vec<DeferredFork>,
-        stored_conditions: HashMap<u64, RustBV>,
-        fork_snapshots: HashMap<u64, BranchSnapshot>,
+        stored_conditions: FxHashMap<u64, RustBV>,
+        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         // Unhooked CALL target - try to resolve via Python callback
         state.set_pc(addr);
@@ -704,8 +704,8 @@ impl RustExplorationManager {
         addr: u64,
         return_addr: u64,
         deferred_forks: Vec<DeferredFork>,
-        stored_conditions: HashMap<u64, RustBV>,
-        fork_snapshots: HashMap<u64, BranchSnapshot>,
+        stored_conditions: FxHashMap<u64, RustBV>,
+        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         log::debug!(
             "P21: Unmodeled call at 0x{:x} - generic skip (ret=0) to return_addr=0x{:x}",
@@ -876,8 +876,8 @@ impl RustExplorationManager {
         &mut self,
         successors: &mut Vec<RustSimState>,
         deferred_forks: Vec<DeferredFork>,
-        stored_conditions: &std::collections::HashMap<u64, RustBV>,
-        mut fork_snapshots: std::collections::HashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+        stored_conditions: &FxHashMap<u64, RustBV>,
+        mut fork_snapshots: FxHashMap<u64, crate::interpreter_cb::BranchSnapshot>,
     ) {
         if deferred_forks.is_empty() {
             return;
