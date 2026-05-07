@@ -417,6 +417,172 @@ class RustPosixProxy:
             return b""
 
 
+class RustCallStackFrameProxy:
+    """A single frame view backed by a Rust CallStackEntry tuple.
+
+    The Rust engine returns frames as (call_site_addr, callee_addr, return_addr,
+    stack_ptr) tuples. This proxy presents the same attribute names as
+    angr's CallStack plugin so user code can read frames uniformly.
+    """
+
+    __slots__ = ("call_site_addr", "func_addr", "ret_addr", "stack_ptr",
+                 "_index", "_owner")
+
+    def __init__(self, frame_tuple, index, owner):
+        call_site_addr, callee_addr, return_addr, stack_ptr = frame_tuple
+        self.call_site_addr = call_site_addr
+        self.func_addr = callee_addr
+        self.ret_addr = return_addr
+        self.stack_ptr = stack_ptr
+        self._index = index
+        self._owner = owner
+
+    @property
+    def current_function_address(self):
+        return self.func_addr
+
+    @property
+    def current_return_target(self):
+        return self.ret_addr
+
+    @property
+    def current_stack_pointer(self):
+        return self.stack_ptr
+
+    @property
+    def jumpkind(self):
+        return "Ijk_Call"
+
+    @property
+    def next(self):
+        """Walk one frame down the stack (toward the bottom)."""
+        next_index = self._index + 1
+        if next_index >= len(self._owner._frames):
+            return None
+        return RustCallStackFrameProxy(
+            self._owner._frames[next_index], next_index, self._owner
+        )
+
+    def __repr__(self):
+        return (f"<RustCallStackFrame func=0x{self.func_addr:x} "
+                f"ret=0x{self.ret_addr:x} sp=0x{self.stack_ptr:x}>")
+
+
+class RustCallStackProxy:
+    """Iterable callstack view of a Rust state.
+
+    Frames are stored as a list with the most-recent (top) frame first,
+    matching angr's CallStack iteration order. The Rust engine stores
+    frames in push order (top last), so we reverse on construction.
+    """
+
+    def __init__(self, rust_mgr, state_id):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+        self._frames_cache = None
+
+    @property
+    def _frames(self):
+        if self._frames_cache is None:
+            try:
+                raw = self._mgr.get_state_call_stack(self._state_id)
+            except Exception:
+                raw = []
+            # Rust pushes onto the end → most recent is last → reverse.
+            self._frames_cache = list(reversed(raw))
+        return self._frames_cache
+
+    def __iter__(self):
+        for i, frame in enumerate(self._frames):
+            yield RustCallStackFrameProxy(frame, i, self)
+
+    def __len__(self):
+        return len(self._frames)
+
+    def __getitem__(self, k):
+        if k < 0:
+            k += len(self._frames)
+        if k < 0 or k >= len(self._frames):
+            raise IndexError(k)
+        return RustCallStackFrameProxy(self._frames[k], k, self)
+
+    @property
+    def top(self):
+        if not self._frames:
+            return None
+        return RustCallStackFrameProxy(self._frames[0], 0, self)
+
+    @property
+    def current_function_address(self):
+        if not self._frames:
+            return 0
+        return self._frames[0][1]  # callee_addr
+
+    @property
+    def current_return_target(self):
+        if not self._frames:
+            return 0
+        return self._frames[0][2]  # return_addr
+
+    @property
+    def current_stack_pointer(self):
+        if not self._frames:
+            return 0
+        return self._frames[0][3]  # stack_ptr
+
+    @property
+    def func_addr(self):
+        return self.current_function_address
+
+    @property
+    def ret_addr(self):
+        return self.current_return_target
+
+    @property
+    def stack_ptr(self):
+        return self.current_stack_pointer
+
+    @property
+    def call_site_addr(self):
+        if not self._frames:
+            return 0
+        return self._frames[0][0]
+
+    def __repr__(self):
+        return f"<RustCallStackProxy depth={len(self)}>"
+
+
+class _NoOpInspectProxy:
+    """No-op stand-in for state.inspect on RustStateProxy.
+
+    Real angr SimInspector triggers breakpoints at events. The Rust engine
+    doesn't surface inspect hooks, so this proxy silently accepts breakpoint
+    registration but never fires. Lets technique code that touches
+    state.inspect.b(...) run without exploding.
+    """
+
+    def b(self, *args, **kwargs):
+        return self
+
+    def make_breakpoint(self, *args, **kwargs):
+        return None
+
+    def add_breakpoint(self, *args, **kwargs):
+        return None
+
+    def remove_breakpoint(self, *args, **kwargs):
+        return None
+
+    def action(self, *args, **kwargs):
+        return None
+
+    def __getattr__(self, name):
+        # Any other attr access yields a no-op callable.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return lambda *a, **kw: None
+
+
 class RustStateProxy:
     """
     Lightweight read-through proxy to a Rust symex state.
@@ -445,6 +611,8 @@ class RustStateProxy:
         self._mem_proxy = None
         self._history_proxy = None
         self._posix_proxy = None
+        self._callstack_proxy = None
+        self._inspect_proxy = None
 
     @property
     def state_id(self):
@@ -543,6 +711,26 @@ class RustStateProxy:
                 stdout_data=self._stdout_data,
             )
         return self._posix_proxy
+
+    @property
+    def callstack(self):
+        """Callstack proxy — iterable view of the Rust state's call frames.
+
+        Top frame (most recent) first. Frame attrs match angr's CallStack
+        plugin (call_site_addr, func_addr, ret_addr, stack_ptr).
+        """
+        if self._callstack_proxy is None:
+            self._callstack_proxy = RustCallStackProxy(self._mgr, self._state_id)
+        return self._callstack_proxy
+
+    @property
+    def inspect(self):
+        """No-op inspect proxy. Breakpoint registration silently succeeds
+        but never fires — the Rust engine doesn't surface inspect events.
+        """
+        if self._inspect_proxy is None:
+            self._inspect_proxy = _NoOpInspectProxy()
+        return self._inspect_proxy
 
     @property
     def options(self):

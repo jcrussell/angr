@@ -623,6 +623,97 @@ class TestCallablePredicates:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestCallStackProxy:
+    """Tests for RustCallStackProxy on RustStateProxy."""
+
+    def test_callstack_empty_on_unit_state(self):
+        """A bare manager state has no frames; proxy reports depth 0."""
+        from angr.exploration.rust_state_proxy import RustCallStackProxy
+
+        mgr = _RustExplorationManager("amd64")
+        state_id = mgr.create_state("active")
+        proxy = RustCallStackProxy(mgr, state_id)
+        assert len(proxy) == 0
+        assert list(proxy) == []
+        assert proxy.top is None
+        assert proxy.current_function_address == 0
+        assert proxy.current_return_target == 0
+
+    def test_callstack_proxy_after_explore(self, fauxware_project):
+        """After exploration, found-state callstack frames match the
+        snapshot exposed by the underlying Rust manager."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import (
+            RustCallStackProxy,
+            RustCallStackFrameProxy,
+        )
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed)
+        assert len(mgr.found) > 0
+
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        sid = found_ids[0]
+        proxy = RustCallStackProxy(mgr._rust_mgr, sid)
+        # Same depth as the raw API, modulo direction.
+        raw = mgr._rust_mgr.get_state_call_stack(sid)
+        assert len(proxy) == len(raw)
+        # Iteration yields proxies with matching attrs in reverse order
+        # (top-first).
+        frames = list(proxy)
+        assert all(isinstance(f, RustCallStackFrameProxy) for f in frames)
+        if raw:
+            top = frames[0]
+            expected_top = raw[-1]  # raw is push-order; top is last
+            assert top.call_site_addr == expected_top[0]
+            assert top.func_addr == expected_top[1]
+            assert top.ret_addr == expected_top[2]
+            assert top.stack_ptr == expected_top[3]
+            assert proxy.current_function_address == expected_top[1]
+
+    def test_callstack_indexing_and_walk(self):
+        """Frame __getitem__ and .next walk the same path."""
+        from angr.exploration.rust_state_proxy import RustCallStackProxy
+
+        proxy = RustCallStackProxy.__new__(RustCallStackProxy)
+        proxy._mgr = None
+        proxy._state_id = None
+        # Most-recent first: function 0x300 called from 0x200, etc.
+        proxy._frames_cache = [
+            (0x250, 0x300, 0x255, 0x7000),  # top
+            (0x150, 0x200, 0x155, 0x7100),
+            (0x050, 0x100, 0x055, 0x7200),  # bottom
+        ]
+        assert len(proxy) == 3
+        top = proxy[0]
+        assert top.func_addr == 0x300
+        assert top.next.func_addr == 0x200
+        assert top.next.next.func_addr == 0x100
+        assert top.next.next.next is None
+        # Negative indexing
+        assert proxy[-1].func_addr == 0x100
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestInspectProxy:
+    """Tests for the no-op inspect proxy on RustStateProxy."""
+
+    def test_inspect_breakpoint_calls_succeed(self):
+        """state.inspect.b('mem_read', ...) and friends silently succeed."""
+        from angr.exploration.rust_state_proxy import _NoOpInspectProxy
+
+        ins = _NoOpInspectProxy()
+        # All these should be silent no-ops.
+        ins.b("mem_read", when="before", action=lambda s: None)
+        ins.make_breakpoint("mem_write")
+        ins.add_breakpoint("call", lambda s: None)
+        ins.remove_breakpoint("call", 0)
+        # Unknown attr returns a callable no-op.
+        ins.unknown_method(1, 2, key="value")
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStashOperations:
     """Tests for stash management operations."""
 
