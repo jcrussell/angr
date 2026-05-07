@@ -1,59 +1,63 @@
-# Loop session notes (2026-05-07, 112th loop session)
+# Loop session notes (2026-05-07, 113th loop session)
 
-## Task: angr-ygjh — State plugin coverage: callstack, libc, trace (DONE)
+## Task: angr-cmy1 — register_procedure() PyO3 API (DONE)
 
-### What landed (commit 7f769212d)
+### What landed (commit add6c5ceb)
 
-- New `_sync_rust_callstack_to_state(state, state_id)` in
-  `angr/exploration/rust_state_export.py` (next to the existing
-  register/memory sync helpers).
-- Wired into all four paths inside `_get_stash_states`:
-  cached fast-path (L207), parent-state copy (L239), stepping-state
-  copy (L262), snapshot fallback (L284).
-- Reads `self._rust_mgr.get_state_call_stack(state_id)` (push-order:
-  outermost first), builds an angr CallStack linked list bottom-up so
-  the head is the most-recent Rust call, then
-  `state.register_plugin("callstack", chain)`.
-- New test `TestCallStackProxy::test_simstate_callstack_synced_after_explore`
-  asserts `mgr.found[0].callstack.func_addr == raw[-1].callee_addr`
-  (top frame matches the most recent Rust call).
-
-### Why this was the right scope
-
-The callstack proxy work from session 111 (angr-nnov) gave callers
-`state.callstack` on RustStateProxy. But `mgr.found` returns full angr
-SimStates, and those still had only the entry-state's empty CallStack.
-This session closes the gap on the angr SimState path. libc / trace
-plugin coverage was deprioritized in the bead body ("can wait"), so the
-callstack-only acceptance criterion is what was needed.
+- New `PythonNativeProcedure` in
+  `native/angr/src/procedures/python_proc.rs` — wraps a Python callable
+  so it satisfies the `NativeSimProcedure` trait. Concrete u64 args are
+  extracted via `extract_concrete_arg` (symbolic args bubble up
+  `SymbolicArgument` so the dispatcher falls back to Python's regular
+  SimProcedure path). With GIL it calls `cb.call1((args,))` and accepts
+  `Optional[int]` back, wrapping the int in a `RustBV` of arch bits.
+- New `pub mod python_proc;` in `native/angr/src/procedures/mod.rs`.
+- New PyO3 method `register_python_procedure(name, num_args, no_return,
+  callable)` on `RustExplorationManager` in `exploration/mod.rs:1995`.
+  Wraps the callable in `Arc::new(PythonNativeProcedure::new(...))` and
+  registers via the existing `NativeProcedureRegistry::register`. No
+  changes needed in the dispatch loop — existing path at
+  `exploration/mod.rs:2598` already handles any registered procedure.
+- Tests:
+  - 4 Rust `#[test]`s in `python_proc.rs::tests` covering basic call,
+    symbolic-arg fallback, None return, and registry round-trip.
+  - 2 Python tests in
+    `tests/engines/test_rust_exploration.py::TestRustExplorationManagerUnit`:
+    `test_register_python_procedure_appears_in_listing` and
+    `test_register_python_procedure_invoked_via_simprocedure_hook`.
 
 ### Test results
 
-259/259 passing in test_rust_exploration.py (was 258 before the new test).
+- 261/261 Python tests pass (was 259, +2 new).
+- 4/4 new Rust unit tests pass.
 
 ### Memories saved
 
-- `invariant-callstack-sync-export-pipeline` — there are four export
-  paths in `_get_stash_states`; any per-state sync helper must hit all
-  four.
-- `callstack-rebuild-pattern` — exact algorithm to rebuild an angr
-  CallStack chain from a push-order Rust frames list, including the
-  `next_frame` ordering rule and `register_plugin` install.
-- `venv-binaries-can-disappear` — recovery procedure when `.venv/bin`
-  vanishes between sessions while site-packages survives.
+- `python-native-procedure-api` — full API contract and implementation
+  pointers.
+- `invariant-nativesimprocedure-name-static` — the trait's
+  `name() -> &'static str` constraint and the `Box::leak` pattern used
+  for dynamic names.
+- `venv-z3-headers-missing` — recovery procedure when `.venv` lacks
+  the z3 headers (must `cp /usr/include/z3*.h` into expected path).
 
 ### Setup hiccup
 
-`.venv/` was missing `bin/`, `include/`, and `pyvenv.cfg` at session
-start (only `lib/` survived). Recovered by copying a fresh
-`python3 -m venv` reference's bin/include and writing `pyvenv.cfg`
-manually. Site-packages (angr editable, claripy, z3-solver) were intact.
+- `.venv/lib/python3.12/site-packages/z3/include/` was missing; cargo
+  check fails until headers are copied from `/usr/include/`.
+- `pip` in the venv is corrupted (`ImportError: cannot import name
+  'RequirementInformation'`). Used the `venv-rebuild-cargo-direct-copy`
+  workflow: `cargo build --release` then `cp
+  target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
+- `tests/benchmarks/run_single.py` failed with "No module named
+  'angr'" in subprocess (unrelated to this change — likely
+  multiprocessing spawn vs. fork; tests cover the same surface).
 
 ### Next session candidates
 
-P1 / P2 ready:
+P1 / P2 ready (from previous session log, still unblocked):
 - angr-pufm (P1) symbolic concretization fallback — multi-session,
-  needs splitting per audit notes.
+  audit recommends splitting in two children.
 - angr-prem (P2) MemoryLayer trait refactor.
 - angr-fk0m (P2) unify state mixin classes.
 - angr-4j5u (P2) decompose 95-field god struct.
@@ -61,7 +65,6 @@ P1 / P2 ready:
 - angr-wqao (P2) split rust_manager.py 2800 lines.
 
 P3 well-bounded:
-- angr-cmy1 — register_procedure() PyO3 API (Python callable shim).
-- angr-3vrj — StateMetadata dataclass (56 call sites, mostly
-  mechanical).
-- angr-x3xu — SolverBridge protocol (Python-only).
+- angr-3vrj — StateMetadata dataclass (56 call sites, mostly mechanical).
+- angr-ja0b — StepOutcome trait refactor.
+- angr-khth — Init pipeline phase split.
