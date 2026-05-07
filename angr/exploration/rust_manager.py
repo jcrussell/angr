@@ -1395,89 +1395,110 @@ class RustExplorationManager(
             RustExplorationManager._blank_state_cache[cache_key] = state.copy()
         return state
 
+    def _load_init_pickle(self, cache_key: str):
+        """Read and unpickle the disk cache file. Returns the raw data dict
+        on hit, None on miss or read failure. Pure I/O — no state mutation."""
+        try:
+            cache_path = os.path.join(self._disk_cache_dir(), f"{cache_key}.pkl")
+            if not os.path.exists(cache_path):
+                return None
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+        except (OSError, pickle.UnpicklingError, EOFError) as e:
+            l.debug(f"Disk cache read failed: {e}")
+            return None
+
+    def _deserialize_init_state(self, data: dict):
+        """Build a SimState + memory_cache from a cache data dict. Pure
+        function over `self._project` and the cached blank-state pool — no
+        mutation of manager-owned metadata dicts (those happen in
+        `_apply_init_side_effects`)."""
+        state = self._get_cached_blank_state(data['addr'])
+        for reg_name, val in data['registers'].items():
+            try:
+                setattr(state.regs, reg_name, val)
+            except (AttributeError, TypeError, ValueError):
+                pass
+        if data.get('stack_page'):
+            sp_page, page_bytes = data['stack_page']
+            state.memory.store(
+                sp_page, claripy.BVV(page_bytes), endness='Iend_BE',
+                inspect=False, disable_actions=True)
+
+        # Restore extra memory pages created during init
+        # (e.g., ctype tables at 0xc0000000 written by SimProcedures)
+        for page_addr, page_bytes in data.get('extra_pages', []):
+            try:
+                state.memory.store(
+                    page_addr, claripy.BVV(page_bytes), endness='Iend_BE',
+                    inspect=False, disable_actions=True)
+            except (TypeError, ValueError):
+                pass
+
+        # Restore callstack frames
+        callstack_frames = data.get('callstack_frames', [])
+        if callstack_frames and len(callstack_frames) > 1:
+            # The first frame is the top of the callstack (main's frame).
+            # We need to push frames from bottom to top.
+            try:
+                from angr.state_plugins.callstack import CallStack
+                cs = state.callstack
+                for frame_data in reversed(callstack_frames[:-1]):
+                    # Skip the bottom sentinel frame (all zeros)
+                    if frame_data['call_site_addr'] == 0 and frame_data['func_addr'] == 0:
+                        continue
+                    cs.call(
+                        frame_data['call_site_addr'],
+                        frame_data['func_addr'],
+                        return_address=frame_data['ret_addr'],
+                        stack_pointer=frame_data['stack_ptr'],
+                    )
+            except Exception as e:
+                l.debug(f"Failed to restore callstack: {e}")
+
+        mem_cache = None
+        if data.get('batch_pages') is not None:
+            mem_cache = {
+                'batch_pages': data['batch_pages'],
+                'lazy_regions': data.get('lazy_regions', []),
+                'section_patches': data.get('section_patches', []),
+                'stack_page': data.get('stack_page'),
+            }
+        return state, mem_cache
+
+    def _apply_init_side_effects(self, data: dict) -> None:
+        """Populate manager-owned metadata from a cache data dict:
+        `_pending_procedure_data` (continuation slots) and `_precomputed_regs`
+        (fast Rust register sync). Separated from deserialization so the
+        SimState construction can be tested in isolation."""
+        for cont_addr in data.get('continuation_addrs', []):
+            if cont_addr > 0:
+                self._pending_procedure_data.setdefault(cont_addr, None)
+        self._precomputed_regs = data.get('registers', {})
+
     def _load_init_from_disk_cache(self, cache_key: str):
         """Load post-init state from disk cache.
 
         Returns (SimState, memory_cache_data) on hit, (None, None) on miss.
         memory_cache_data contains pre-computed loader pages and lazy regions
         for fast memory sync.
+
+        Phases (each independently testable):
+        1. `_load_init_pickle` — pure I/O.
+        2. `_deserialize_init_state` — pure SimState construction.
+        3. `_apply_init_side_effects` — manager-owned metadata mutation.
         """
-        try:
-            cache_path = os.path.join(self._disk_cache_dir(), f"{cache_key}.pkl")
-            if not os.path.exists(cache_path):
-                return None, None
-
-            with open(cache_path, 'rb') as f:
-                data = pickle.load(f)
-
-            # Restore to a blank state (cached for repeat constructions)
-            state = self._get_cached_blank_state(data['addr'])
-            for reg_name, val in data['registers'].items():
-                try:
-                    setattr(state.regs, reg_name, val)
-                except (AttributeError, TypeError, ValueError):
-                    pass
-            if data.get('stack_page'):
-                sp_page, page_bytes = data['stack_page']
-                state.memory.store(
-                    sp_page, claripy.BVV(page_bytes), endness='Iend_BE',
-                    inspect=False, disable_actions=True)
-
-            # Restore extra memory pages created during init
-            # (e.g., ctype tables at 0xc0000000 written by SimProcedures)
-            for page_addr, page_bytes in data.get('extra_pages', []):
-                try:
-                    state.memory.store(
-                        page_addr, claripy.BVV(page_bytes), endness='Iend_BE',
-                        inspect=False, disable_actions=True)
-                except (TypeError, ValueError):
-                    pass
-
-            # Restore callstack frames
-            callstack_frames = data.get('callstack_frames', [])
-            if callstack_frames and len(callstack_frames) > 1:
-                # The first frame is the top of the callstack (main's frame).
-                # We need to push frames from bottom to top.
-                try:
-                    from angr.state_plugins.callstack import CallStack
-                    cs = state.callstack
-                    for frame_data in reversed(callstack_frames[:-1]):
-                        # Skip the bottom sentinel frame (all zeros)
-                        if frame_data['call_site_addr'] == 0 and frame_data['func_addr'] == 0:
-                            continue
-                        cs.call(
-                            frame_data['call_site_addr'],
-                            frame_data['func_addr'],
-                            return_address=frame_data['ret_addr'],
-                            stack_pointer=frame_data['stack_ptr'],
-                        )
-                except Exception as e:
-                    l.debug(f"Failed to restore callstack: {e}")
-
-            # Restore continuation data
-            for cont_addr in data.get('continuation_addrs', []):
-                if cont_addr > 0:
-                    self._pending_procedure_data.setdefault(cont_addr, None)
-
-            # Extract memory cache data for fast sync
-            mem_cache = None
-            if data.get('batch_pages') is not None:
-                mem_cache = {
-                    'batch_pages': data['batch_pages'],
-                    'lazy_regions': data.get('lazy_regions', []),
-                    'section_patches': data.get('section_patches', []),
-                    'stack_page': data.get('stack_page'),
-                }
-
-            # Store raw register dict for fast Rust sync (avoids reading
-            # registers back from SimState's register plugin)
-            self._precomputed_regs = data.get('registers', {})
-
-            l.info(f"Disk cache hit: restored state at 0x{data['addr']:x}")
-            return state, mem_cache
-        except Exception as e:
-            l.debug(f"Disk cache load failed: {e}")
+        data = self._load_init_pickle(cache_key)
+        if data is None:
             return None, None
+        try:
+            state, mem_cache = self._deserialize_init_state(data)
+        except Exception as e:
+            l.debug(f"Disk cache deserialization failed: {e}")
+            return None, None
+        self._apply_init_side_effects(data)
+        l.info(f"Disk cache hit: restored state at 0x{data['addr']:x}")
+        return state, mem_cache
 
     def _extract_continuation_data(self, state: "angr.SimState"):
         """Extract SimProcedure continuation data from a state's callstack.
