@@ -259,7 +259,13 @@ mod tests {
         let ctx = SymContext::new();
         let sym = RustBV::symbolic(&ctx, "new_brk", 64);
         let err = h.call(&mut state, &[sym]).expect_err("must fall back");
-        assert!(matches!(err, SyscallError::SymbolicArgument(_)));
+        match err {
+            SyscallError::SymbolicArgument(msg) => assert!(
+                msg.contains("new_brk"),
+                "message should name the symbolic arg, got {msg:?}",
+            ),
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
         assert_eq!(state.posix_brk(), DEFAULT_BRK);
     }
 

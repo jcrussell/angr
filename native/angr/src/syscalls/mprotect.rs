@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn symbolic_arg_falls_back() {
+    fn symbolic_addr_falls_back() {
         use crate::symbolic::SymContext;
         let h = NativeMprotectSyscall;
         let mut state = mk_state_with_page(0x1000, Permission::RW);
@@ -248,7 +248,61 @@ mod tests {
             RustBV::concrete(0x5, 64),
         ];
         let err = h.call(&mut state, &args).expect_err("must fall back");
-        assert!(matches!(err, SyscallError::SymbolicArgument(_)));
+        match err {
+            SyscallError::SymbolicArgument(msg) => assert!(
+                msg.contains("addr"),
+                "message should name the symbolic arg, got {msg:?}",
+            ),
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+        // Pre-call perms must be intact (no partial mutation on Err).
+        assert_eq!(state.memory().page_permissions(0x1), Some(Permission::RW));
+    }
+
+    #[test]
+    fn symbolic_length_falls_back() {
+        use crate::symbolic::SymContext;
+        let h = NativeMprotectSyscall;
+        let mut state = mk_state_with_page(0x1000, Permission::RW);
+        let ctx = SymContext::new();
+        let sym_length = RustBV::symbolic(&ctx, "length", 64);
+        let args = vec![
+            RustBV::concrete(0x1000, 64),
+            sym_length,
+            RustBV::concrete(0x5, 64),
+        ];
+        let err = h.call(&mut state, &args).expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => assert!(
+                msg.contains("length"),
+                "message should name the symbolic arg, got {msg:?}",
+            ),
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+        assert_eq!(state.memory().page_permissions(0x1), Some(Permission::RW));
+    }
+
+    #[test]
+    fn symbolic_prot_falls_back() {
+        use crate::symbolic::SymContext;
+        let h = NativeMprotectSyscall;
+        let mut state = mk_state_with_page(0x1000, Permission::RW);
+        let ctx = SymContext::new();
+        let sym_prot = RustBV::symbolic(&ctx, "prot", 64);
+        let args = vec![
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x1000, 64),
+            sym_prot,
+        ];
+        let err = h.call(&mut state, &args).expect_err("must fall back");
+        match err {
+            SyscallError::SymbolicArgument(msg) => assert!(
+                msg.contains("prot"),
+                "message should name the symbolic arg, got {msg:?}",
+            ),
+            other => panic!("expected SymbolicArgument, got {other:?}"),
+        }
+        assert_eq!(state.memory().page_permissions(0x1), Some(Permission::RW));
     }
 
     #[test]
