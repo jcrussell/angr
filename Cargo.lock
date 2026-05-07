@@ -89,6 +89,7 @@ dependencies = [
  "quickcheck",
  "quickcheck_macros",
  "rangemap",
+ "rustc-hash",
  "send_wrapper",
  "serde",
  "serde_json",

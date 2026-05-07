@@ -5,9 +5,8 @@
 //! - Mixed concrete/symbolic value storage
 //! - Efficient symbolic address handling
 
-use std::collections::{HashMap, HashSet};
-
 use im::OrdMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
@@ -77,7 +76,7 @@ pub struct SymbolicMemory {
     /// Pages indexed by page number (addr >> 12).
     pages: OrdMap<u64, MemoryPage>,
     /// Symbolic objects (for values that span multiple bytes).
-    symbolic_objects: HashMap<u64, RustBV>,
+    symbolic_objects: FxHashMap<u64, RustBV>,
     /// Next symbolic object ID.
     next_sym_id: u64,
     /// Default permissions for new pages.
@@ -86,7 +85,7 @@ pub struct SymbolicMemory {
     endness: Endness,
     /// Pages that have been modified since last clear.
     /// Stores page numbers (addr >> 12) for efficient tracking.
-    dirty_pages: HashSet<u64>,
+    dirty_pages: FxHashSet<u64>,
     /// Lazy regions: page ranges that CAN have pages fetched on-demand.
     /// Stores (start_page_num, end_page_num) pairs.
     /// When a load hits an unmapped page in a lazy region, the interpreter
@@ -95,7 +94,7 @@ pub struct SymbolicMemory {
     /// Reverse index for symbolic objects: maps each byte offset within a
     /// symbolic object to (base_addr, width_bits). Enables O(1) lookup when
     /// loading a byte that falls inside a wider symbolic object.
-    symbolic_spans: HashMap<u64, (u64, u32)>,
+    symbolic_spans: FxHashMap<u64, (u64, u32)>,
     /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
     /// addresses at store time, we append here and materialize on load.
     pending_writes: Vec<PendingWrite>,
@@ -106,7 +105,7 @@ pub struct SymbolicMemory {
     /// Used to filter get_state_symbolic_z3_asts: even if the binary modifies
     /// an imported value (turning Symbolic→Expression), the address should be
     /// excluded from export since Python already has the correct original value.
-    imported_addrs: HashSet<u64>,
+    imported_addrs: FxHashSet<u64>,
     /// If true, enforce per-page R/W permissions on load and store. Mirrors
     /// angr's STRICT_PAGE_ACCESS option. Default is false to keep existing
     /// callers (which often map all memory as RWX or rely on Python perms)
@@ -132,16 +131,16 @@ impl SymbolicMemory {
     pub fn new(endness: Endness) -> Self {
         SymbolicMemory {
             pages: OrdMap::new(),
-            symbolic_objects: HashMap::new(),
+            symbolic_objects: FxHashMap::default(),
             next_sym_id: 0,
             default_permissions: Permission::RWX,
             endness,
-            dirty_pages: HashSet::new(),
+            dirty_pages: FxHashSet::default(),
             lazy_regions: Vec::new(),
-            symbolic_spans: HashMap::new(),
+            symbolic_spans: FxHashMap::default(),
             pending_writes: Vec::new(),
             zero_fill_unconstrained: false,
-            imported_addrs: HashSet::new(),
+            imported_addrs: FxHashSet::default(),
             enforce_permissions: false,
         }
     }
@@ -293,7 +292,7 @@ impl SymbolicMemory {
             next_sym_id: self.next_sym_id,
             default_permissions: self.default_permissions,
             endness: self.endness,
-            dirty_pages: HashSet::new(), // Fresh dirty tracking for fork
+            dirty_pages: FxHashSet::default(), // Fresh dirty tracking for fork
             lazy_regions: self.lazy_regions.clone(), // Share lazy regions
             symbolic_spans: self.symbolic_spans.clone(),
             pending_writes: self.pending_writes.clone(),
