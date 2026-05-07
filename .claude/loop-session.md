@@ -1,51 +1,39 @@
-# Loop session notes (2026-05-07, 131st loop session)
+# Loop session notes (2026-05-07, 132nd loop session)
 
-## Task: angr-n28w — FP transcendentals: sin / cos / exp / log / pow / etc.
+## Task: angr-qrhl — Trait-based VEX op dispatcher
 
-### Status: closed (commit ef020d101)
+### Status: closed (deferred after audit)
 
-### What landed
-Added concrete-only fast paths for x87 FPU transcendentals plus
-ARM AArch64 FRECPX. New module `native/angr/src/vex/transcendentals.rs`
-with `try_concrete_binop_rm` and `try_concrete_triop_rm`. Wired into
-`VEXOps::binop` (Raw arm) and `VEXOps::binop_with_rm` (new Raw arm
-before the falls-through-to-binop wildcard).
+### Outcome
+Deferred per the same template as angr-prem / angr-csd1 / angr-m2hf /
+angr-wqao / angr-ja0b — large abstraction, weak fit, no motivating bug,
+hot-path performance risk.
 
-Opcodes covered (all hex from libvex_ir.h, validated via pyvex.const):
-- Binops:  SinF64 0x14e6, CosF64 0x14e7, TanF64 0x14e8,
-           2xm1F64 0x14e9, RecpExpF64 0x14fa, RecpExpF32 0x14fb
-- Triops:  AtanF64 0x14de, Yl2xF64 0x14df, Yl2xp1F64 0x14e0,
-           ScaleF64 0x14e5
+Memory saved: avoid-deferred-qrhl-vex-trait-dispatcher
 
-Symbolic inputs return None → existing fresh-sym fallback in
-`expressions.rs` (Z3 has no transcendental theory).
+### Audit summary
+- vex/ops.rs has 5 #[inline] dispatch entry points; 4 hot-path call sites
+  in interpreter_cb/expressions.rs.
+- IROp enum has 224 variants, MOST carrying an IRType parameter that
+  current arms forward to width_binop!/width_unop! macros (compile to
+  direct RustBV intrinsics). A trait keyed on op kind cannot access
+  the IRType without re-matching the variant, defeating the abstraction.
+- Acceptance "dispatch overhead within 5%" is structurally hard — match
+  jump-tables beat Box<dyn>+HashMap.
+- "Adding a new op" workflow has the same touch-point count either way
+  (still need IROp variant + opcode_map entry); trait rehomes work
+  rather than reducing it.
+- No concrete external-crate plugin consumer; no bug class motivates.
+- Recent VEX additions (angr-n28w transcendentals, angr-3ekz packed FP
+  cmp) used match arms successfully — the exact workflow the trait
+  would complicate.
 
-### Why this fixes a real bug
-Previously `IROp::Raw(opcode)` returned `Err(RawOpcode)` and the
-fallback in `IRExpr::Binop`/`IRExpr::Triop` substituted concrete 0
-for concrete inputs (silently wrong) or fresh-unconstrained-symbolic
-for symbolic. The bead description called this "Python fallback" —
-this was inaccurate. Concrete-input transcendentals were returning 0,
-not getting executed in Python.
+### What follows
+Open beads (5 remaining):
+- angr-bkcs P3 NEON SIMD
+- angr-czph P3 lazy LOAD
+- angr-qh5u P3 lazy STORE
+- angr-0z34 P4 read/write syscalls (blocked on state-cache sync)
 
-### Validation
-- Rust unit tests: 9 new in vex::transcendentals, all pass
-- Python integration: 261/261 in test_rust_exploration.py
-- fauxware: OK rust 0.35s
-- ekopartyctf2016_sokohashv2 (uses fyl2x/fscale/f2xm1):
-  Before: 12.091s (silent-zero path), After: 11.29s (correct concrete)
-
-### Memories saved
-- invariant-vex-transcendentals — opcode constants, dispatch sites,
-  how to add new transcendentals
-- avoid-silent-zero-raw-fallback — describes the prior buggy behavior
-  so future debug sessions recognize the smell
-- build-env-pyo3-workaround — required env steps because pip install
-  is broken in .venv (PYO3_PYTHON env, target dir is workspace root)
-
-### Build env (still broken — use workaround)
-- `PYO3_PYTHON=$(which python) cargo build --release --manifest-path native/angr/Cargo.toml`
-- `cp ./target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
-- Tests need `PYTHONPATH=$(pwd)` to find `angr` from the repo
-
-## Status: complete
+NEON or lazy-load are the substantive next options, both multi-session
+design efforts.
