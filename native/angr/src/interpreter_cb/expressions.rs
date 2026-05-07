@@ -136,72 +136,20 @@ impl<'a> CallbackInterpreter<'a> {
                             self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
-                            let (min, max) = (*min, *max);
-                            // Address range too large - delegate to Python's memory model
-                            // which has access to angr's address concretization strategies
-
-                            // Sync any pending constraints to Python before fallback
-                            self.sync_before_callback(py, callbacks)?;
-
-                            // NEW: Use full symbolic load if available - passes address AST to Python
-                            // This allows Python's memory model to properly resolve the symbolic address
-                            // and return the actual stored value instead of a fresh unconstrained symbol
-                            if callbacks.has_memory_load_symbolic_full() {
-                                let result_ast = callbacks
-                                    .call_memory_load_symbolic_full(py, &addr_val, size as u32)
-                                    .map_err(|e| CbExecutionError::Callback(format!(
-                                        "symbolic load full callback failed at 0x{:x}-0x{:x}: {}",
-                                        min, max, e
-                                    )))?;
-
-                                // Try to convert claripy AST back to RustBV
-                                let ast = result_ast.bind(py);
-
-                                // Fast path: check for RustBVHandle first
-                                if let Some(ref table) = self.symbol_table {
-                                    if let Some(bv) = try_handle_to_rustbv(&ast, table) {
-                                        return Ok(bv);
-                                    }
-                                }
-
-                                // Slow path: claripy AST conversion
-                                if is_claripy_ast(&ast) {
-                                    match claripy_to_rustbv(py, &ast, self.ctx) {
-                                        Ok(bv) => return Ok(bv),
-                                        Err(e) => {
-                                            // Log warning about conversion failure
-                                            log::warn!(
-                                                "Symbolic load at 0x{:x} (size={}): AST conversion failed: {}. \
-                                                 Creating fresh symbol - constraints may diverge!",
-                                                min, size, e
-                                            );
-                                        }
-                                    }
-                                }
-
-                                // Fallback: create a fresh symbolic value with marker name
-                                log::debug!(
-                                    "Creating fresh symbolic value sym_pyref_{:x}_{} for symbolic load",
-                                    min, size
-                                );
-                                return Ok(RustBV::symbolic(
-                                    self.ctx,
-                                    format!("sym_pyref_{:x}_{}", min, size),  // Named to indicate Python reference
-                                    (size * 8) as u32,
-                                ));
-                            }
-
-                            Err(CbExecutionError::Unsupported(format!(
-                                "symbolic load with too-large address range 0x{:x}-0x{:x}: \
-                                 no memory_load_symbolic_full callback",
-                                min, max
-                            )))
+                            let descr = format!("range 0x{:x}-0x{:x}", min, max);
+                            self.fallback_load_symbolic_full(
+                                py, callbacks, &addr_val, size, "Load", &descr,
+                            )
                         }
                         ConcretizationResult::Failed(reason) => {
-                            Err(CbExecutionError::Unsupported(format!(
-                                "symbolic load address: {}",
-                                reason
-                            )))
+                            // Concretization failed entirely (e.g., timeout, no
+                            // strategy applies). Try the full symbolic load callback;
+                            // Python's memory model can still resolve it via its
+                            // own address concretization strategies.
+                            let descr = format!("concretize failed: {}", reason);
+                            self.fallback_load_symbolic_full(
+                                py, callbacks, &addr_val, size, "Load", &descr,
+                            )
                         }
                     }
                 }
@@ -584,6 +532,61 @@ impl<'a> CallbackInterpreter<'a> {
             IRConst::V128(v) => RustBV::concrete(*v, 128),
             IRConst::V256(v) => {
                 RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128)
+            }
+        }
+    }
+
+    /// Resolve a LoadG load given its address BV. Handles concrete addresses,
+    /// Single/Multiple concretizations, and falls back to the Python full
+    /// symbolic load callback for TooLarge / Strided / Failed shapes (so the
+    /// load no longer hard-errors when angr's address strategies could resolve
+    /// it). Multiple addresses still take the first solution to preserve the
+    /// pre-existing LoadG behavior — broader Multiple handling can be added
+    /// later if needed.
+    pub(super) fn resolve_loadg_load(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        load_size: usize,
+        context: &str,
+    ) -> Result<RustBV, CbExecutionError> {
+        if let Some(addr_concrete) = addr_val.as_u64() {
+            return self.load_from_callback(py, callbacks, addr_concrete, load_size);
+        }
+        let conc = self.concretize_cached_read(addr_val);
+        match &*conc {
+            ConcretizationResult::Single(a) => {
+                let a = *a;
+                self.track_concretization_constraint(addr_val, a);
+                self.load_from_callback(py, callbacks, a, load_size)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                let a = *addrs.first().ok_or_else(|| {
+                    CbExecutionError::Unsupported(format!("{} with empty address set", context))
+                })?;
+                self.load_from_callback(py, callbacks, a, load_size)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                let descr = format!(
+                    "strided base=0x{:x} stride=0x{:x} count={}",
+                    base, stride, count
+                );
+                self.fallback_load_symbolic_full(
+                    py, callbacks, addr_val, load_size, context, &descr,
+                )
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                let descr = format!("range 0x{:x}-0x{:x}", min, max);
+                self.fallback_load_symbolic_full(
+                    py, callbacks, addr_val, load_size, context, &descr,
+                )
+            }
+            ConcretizationResult::Failed(reason) => {
+                let descr = format!("concretize failed: {}", reason);
+                self.fallback_load_symbolic_full(
+                    py, callbacks, addr_val, load_size, context, &descr,
+                )
             }
         }
     }

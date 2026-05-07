@@ -499,32 +499,10 @@ impl<'a> CallbackInterpreter<'a> {
                     if can_be_true && !can_be_false {
                         // Guard is always true - perform load unconditionally
                         let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-
-                        // Get concrete address (directly or via concretization)
-                        let addr_concrete = match addr_val.as_u64() {
-                            Some(a) => a,
-                            None => {
-                                // Symbolic address - concretize for read
-                                match &*self.concretize_cached_read(&addr_val) {
-                                    ConcretizationResult::Single(a) => {
-                                        let a = *a;
-                                        // Track concretization constraint for Python sync
-                                        self.track_concretization_constraint(&addr_val, a);
-                                        a
-                                    }
-                                    ConcretizationResult::Multiple(addrs) => {
-                                        *addrs.first().ok_or_else(|| {
-                                            CbExecutionError::Unsupported("LoadG with empty address set".to_string())
-                                        })?
-                                    }
-                                    _ => {
-                                        return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
-                                    }
-                                }
-                            }
-                        };
-
-                        let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
+                        let loaded = self.resolve_loadg_load(
+                            py, callbacks, &addr_val, load_size,
+                            "LoadG (always-true guard)",
+                        )?;
 
                         // Apply conversion
                         let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
@@ -545,31 +523,10 @@ impl<'a> CallbackInterpreter<'a> {
 
                     // Both paths possible - evaluate address and load, then ITE
                     let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-
-                    // Get concrete address
-                    let addr_concrete = match addr_val.as_u64() {
-                        Some(a) => a,
-                        None => {
-                            match &*self.concretize_cached_read(&addr_val) {
-                                ConcretizationResult::Single(a) => {
-                                    let a = *a;
-                                    // Track concretization constraint for Python sync
-                                    self.track_concretization_constraint(&addr_val, a);
-                                    a
-                                }
-                                ConcretizationResult::Multiple(addrs) => {
-                                    *addrs.first().ok_or_else(|| {
-                                        CbExecutionError::Unsupported("LoadG with empty address set".to_string())
-                                    })?
-                                }
-                                _ => {
-                                    return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
-                                }
-                            }
-                        }
-                    };
-
-                    let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
+                    let loaded = self.resolve_loadg_load(
+                        py, callbacks, &addr_val, load_size,
+                        "LoadG (symbolic guard)",
+                    )?;
 
                     // Apply conversion to loaded value
                     let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
@@ -588,31 +545,10 @@ impl<'a> CallbackInterpreter<'a> {
                     let result = if g != 0 {
                         // Guard is true - perform the load
                         let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-
-                        // Get concrete address
-                        let addr_concrete = match addr_val.as_u64() {
-                            Some(a) => a,
-                            None => {
-                                match &*self.concretize_cached_read(&addr_val) {
-                                    ConcretizationResult::Single(a) => {
-                                        let a = *a;
-                                        // Track concretization constraint for Python sync
-                                        self.track_concretization_constraint(&addr_val, a);
-                                        a
-                                    }
-                                    ConcretizationResult::Multiple(addrs) => {
-                                        *addrs.first().ok_or_else(|| {
-                                            CbExecutionError::Unsupported("LoadG with empty address set".to_string())
-                                        })?
-                                    }
-                                    _ => {
-                                        return Err(CbExecutionError::Unsupported("LoadG address concretization failed".to_string()));
-                                    }
-                                }
-                            }
-                        };
-
-                        let loaded = self.load_from_callback(py, callbacks, addr_concrete, load_size)?;
+                        let loaded = self.resolve_loadg_load(
+                            py, callbacks, &addr_val, load_size,
+                            "LoadG (concrete-true guard)",
+                        )?;
                         self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
                     } else {
                         // Guard is false - use alternative value
@@ -1187,10 +1123,14 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                 }
                 ConcretizationResult::Failed(reason) => {
-                    return Err(CbExecutionError::Unsupported(format!(
-                        "symbolic store address: {}",
-                        reason
-                    )));
+                    // Concretization failed entirely. Try the full symbolic
+                    // store callback so Python's memory model can still
+                    // resolve the address; only error out if the callback
+                    // isn't wired up.
+                    let descr = format!("concretize failed: {}", reason);
+                    self.fallback_store_symbolic_full(
+                        py, callbacks, addr_val, &data_val, "store", &descr,
+                    )?;
                 }
             }
         }

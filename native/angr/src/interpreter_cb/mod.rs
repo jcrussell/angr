@@ -916,6 +916,100 @@ impl<'a> CallbackInterpreter<'a> {
         std::mem::take(&mut self.stats)
     }
 
+    /// Fall back to Python's full symbolic load callback for a symbolic
+    /// address that we can't resolve to a useful concretization shape
+    /// (TooLarge / Failed / Strided in callers that don't enumerate).
+    ///
+    /// Syncs pending constraints first, then passes the address AST to
+    /// Python's memory model. The returned AST is converted back to a
+    /// `RustBV` via the handle table (fast path) or claripy bridge.
+    ///
+    /// `context` is a short label included in the Unsupported error when
+    /// the callback isn't wired up — e.g. "Load", "LoadG", "store".
+    pub(super) fn fallback_load_symbolic_full(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        size: usize,
+        context: &str,
+        addr_descr: &str,
+    ) -> Result<RustBV, CbExecutionError> {
+        if !callbacks.has_memory_load_symbolic_full() {
+            return Err(CbExecutionError::Unsupported(format!(
+                "{} with symbolic address ({}): no memory_load_symbolic_full callback",
+                context, addr_descr
+            )));
+        }
+
+        self.sync_before_callback(py, callbacks)?;
+
+        let result_ast = callbacks
+            .call_memory_load_symbolic_full(py, addr_val, size as u32)
+            .map_err(|e| CbExecutionError::Callback(format!(
+                "{} symbolic load full callback failed ({}): {}",
+                context, addr_descr, e
+            )))?;
+
+        let ast = result_ast.bind(py);
+
+        if let Some(ref table) = self.symbol_table {
+            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
+                return Ok(bv);
+            }
+        }
+
+        if is_claripy_ast(&ast) {
+            if let Ok(bv) = claripy_to_rustbv(py, &ast, self.ctx) {
+                return Ok(bv);
+            }
+            log::warn!(
+                "{} symbolic load ({}, size={}): AST conversion failed; using fresh symbol",
+                context, addr_descr, size
+            );
+        }
+
+        Ok(RustBV::symbolic(
+            self.ctx,
+            format!("sym_pyref_{}_{}", addr_descr, size),
+            (size * 8) as u32,
+        ))
+    }
+
+    /// Fall back to Python's full symbolic store callback for a store
+    /// where the address concretization didn't produce a usable shape.
+    ///
+    /// Syncs pending constraints first, then hands the address AST and
+    /// data to Python's memory model.
+    ///
+    /// `context` is a short label included in the Unsupported error when
+    /// the callback isn't wired up.
+    pub(super) fn fallback_store_symbolic_full(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        data_val: &RustBV,
+        context: &str,
+        addr_descr: &str,
+    ) -> Result<(), CbExecutionError> {
+        if !callbacks.has_memory_store_symbolic_full() {
+            return Err(CbExecutionError::Unsupported(format!(
+                "{} with symbolic address ({}): no memory_store_symbolic_full callback",
+                context, addr_descr
+            )));
+        }
+
+        self.sync_before_callback(py, callbacks)?;
+        callbacks
+            .call_memory_store_symbolic_full(py, addr_val, data_val)
+            .map_err(|e| CbExecutionError::Callback(format!(
+                "{} symbolic store full callback failed ({}): {}",
+                context, addr_descr, e
+            )))?;
+        Ok(())
+    }
+
     /// Load from memory via Python callback.
     /// This handles the common case of loading from a concrete address.
     fn load_from_callback(
