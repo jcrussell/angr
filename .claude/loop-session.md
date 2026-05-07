@@ -1,75 +1,73 @@
-# Loop session notes (2026-05-07, 102nd loop session)
+# Loop session notes (2026-05-07, 103rd loop session)
 
-## Task: angr-b6og — Audit native/angr for allocator hotspots via flamegraph (CLOSED)
+## Task: angr-w6nq — Z3 ref-count churn during SymContext::fork (CLOSED)
 
-Bead closed (commit 03d825fa3).
+Bead closed (commit 589b814e9).
 
 ### What changed
 
-Committed `tests/benchmarks/profile_rust_bench.sh` (the previous session
-created it but left it untracked) and fixed two issues that prevented it
-from producing readable profiles on this host:
+`native/angr/src/symbolic/context.rs`:
 
-1. **strip override.** Workspace `[profile.release]` sets `strip = "symbols"`
-   and the bench profile inherits that. perf reports were showing only raw
-   `0xNNN` addresses. Script now passes
-   `--config 'profile.bench.strip=false' --config 'profile.bench.debug=true'`
-   to all `cargo bench` invocations.
-2. **z3 header fallback.** When `Z3_SYS_Z3_HEADER` is unset and
-   `.venv/.../z3/include/z3.h` is missing, the script now auto-falls-back to
-   `/usr/include/z3.h`. The same workaround that's needed for `cargo check`.
+- Wrapped `z3_assertions_shared` and `assumed_constraints_shared` from
+  `Arc<Vec<...>>` to `Mutex<Arc<Vec<...>>>` for interior mutability.
+- Updated all read sites to acquire-clone-release the inner Arc (locks are
+  uncontested in practice; SymContext is single-threaded via Rc<RefCell<>>).
+- Added two private helpers `freeze_z3_assertions` and
+  `freeze_assumed_constraints` that do the heavy lifting in fork():
+    * If local is empty: just `Arc::clone` shared (unchanged fast path).
+    * If `push_level > 0` (inside a push/pop): allocate new Vec via
+      extend_from_slice (current behavior — must preserve local for
+      transaction_rollback).
+    * Otherwise: drain local into shared. When `Arc::get_mut` succeeds (no
+      other refs), append in place — zero element clones. When refcount > 1
+      (children already hold the old Arc), allocate new Vec but use
+      `Vec::append` to *move* local's elements (still avoids the M Bool
+      clones from local; only the N from old shared cost ref-counts).
+- Refactored fork() Z3 path and non-Z3 path to use the new helpers.
 
-Also pointed `TARGET_DIR` at the workspace root target (`$REPO_ROOT/target`)
-since cargo writes there, not into the package's own `target/`.
+### Measured impact (criterion `vex_engine` bench)
 
-### Audit findings
+`symcontext_fork_scaling`:
+- 5 constraints:  225ns → 209ns   (~7% faster — small, mostly noise)
+- 20 constraints: 806ns → 208ns   (3.9x faster)
+- 50 constraints: 1980ns → 208ns  (9.5x faster)
 
-Validated end-to-end with `perf record` (after `sudo sysctl -w
-kernel.perf_event_paranoid=2` — the loop-agent host has passwordless sudo).
-Captured profiles for four representative groups; raw artifacts at
-`target/profile/{rustbv_symbolic,symcontext_fork,memory_,state_fork}/`.
+Fork is now **O(1) regardless of constraint count**.
 
-Top hotspots:
-- **rustbv_symbolic** — `drop_in_place<RustBV>` + `Arc::drop_slow` ~36%,
-  malloc/cfree ~14.6%, Z3 ref-count ~6%, op methods 17.5%. Arc-tree teardown
-  beats the math.
-- **symcontext_fork** — `Z3_dec_ref` + `Z3_inc_ref` 22.4%, fork-time vec
-  clone (`Vec::extend_trusted`) 10.75%. Each cloned constraint pays 2 FFI
-  ref-count ops.
-- **state_fork** — three `HashMap::clone` instances total ~9%; suggests at
-  least one map field is still doing a deep clone instead of structural
-  sharing.
-- **memory_** — `load_concrete` 13.97%, `BuildHasher::hash_one` 4.26%; the
-  default SipHasher dominates concrete page lookups.
-
-### Follow-ups filed
-
-- `angr-6n56` (P2) — Arc/arena experiment for transient RustBV results.
-- `angr-w6nq` (P2) — Share Z3 assertion vec by Arc instead of cloning.
-- `angr-ar8r` (P2) — Audit which `RustSimState` maps still deep-clone.
-- `angr-75y3` (P3) — Try `FxHasher` for the `SymbolicMemory` page map.
-
-### Memories saved
-
-- `b6og-perf-hotspots` — full per-group hotspot summary with paths to the
-  perf data so future audits start from this baseline.
-- `invariant-profile-rust-bench-script` — the two non-obvious traps the
-  script now handles (strip override, Z3 header fallback) plus the runtime
-  prereqs (perf paranoid, sudo on this host, no inferno locally).
+Other benches unchanged: check_branch_feasibility ~114µs, assume_true ~2.1µs,
+push_pop ~700ns, fauxware end-to-end 0.37s.
 
 ### Verification
 
-- `cargo check --release` clean (with `Z3_SYS_Z3_HEADER=/usr/include/z3.h`).
-- `bash -n` of the script: clean.
-- `perf report` on captured profiles resolves Rust symbols correctly.
-- No production code touched, so the test suite was not re-run; the change
-  is purely dev-tooling.
+- `cargo check --release` clean.
+- `cargo test --release --lib` all 517 Rust unit tests pass.
+- `cargo check --release --no-default-features --features "vex-engine,automaton"`
+  (non-Z3 path) builds clean.
+- `pytest tests/engines/test_rust_exploration.py` 254/254 pass.
+- `run_single.py fauxware --engine rust` succeeds with expected output.
+
+### Memories saved
+
+- `arc-shared-z3-cache` — updated to reflect new Mutex-wrapped design and
+  freeze-self-on-fork mechanism.
+- `fork-freeze-self-invariant` — the push_level==0 invariant and why
+  draining local during a transaction would corrupt rollback.
+- `benchmark-fork-scaling` — before/after numbers and the fact that fork is
+  now O(1).
+
+### Build note
+
+`pip install -e .` is broken in the venv (system pip can't import setuptools
+modules). Workaround used this session: `cargo build --release --lib`, then
+`cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
+This worked because the editable install only needs the .so to be present at
+the package import path. Worth filing a separate bead if the next session
+hits this too.
 
 ## Suggested next slices
 
-- `angr-w6nq` (Z3 ref-count Arc-share) — direct, well-scoped optimisation;
-  bench is already wired for the before/after measurement.
-- `angr-ar8r` (HashMap clone audit) — needs a quick read of
-  `RustSimState::fork` + per-field profile pass to localise the clone.
-- `angr-pufm` lazy guarded-entries (still open from prior sessions).
-- `angr-fk0m` mixin unification.
+- `angr-ar8r` (HashMap clone audit) — RustSimState::fork has 9% in HashMap
+  clones; quick win after this session.
+- `angr-6n56` (Arc-tree teardown for transient RustBV results) — bigger
+  effort, 36% of arithmetic time.
+- `angr-pufm` lazy guarded-entries (still open).
