@@ -1,49 +1,45 @@
-# Loop session notes (2026-05-07, 129th loop session)
+# Loop session notes (2026-05-07, 130th loop session)
 
-## Task: angr-vybt — Native amd64 mmap/munmap syscall handlers
+## Task: angr-2jyk — Native amd64 mmap syscall handler
 
-### Status: closed (partial — mmap split to angr-2jyk)
+### Status: closed (commit 7391b2426)
 
-### What landed (commit 129facc20)
+### What landed
+1. RustSimState.mmap_base: u64 field (default 0xC100_0000 = heap_base
+   0xC0000000 + heap_size 0x00800000 * 2). Mirrored in 3 constructors
+   + 5 fork/merge sites alongside posix_brk. Accessors mmap_base() /
+   set_mmap_base() in native/angr/src/state.rs.
+2. NativeMmapSyscall at AMD64/9, mirroring procedures/posix/mmap.py.
+   Native subset: concrete addr/length/prot/flags/fd/offset, anonymous
+   (MAP_ANONYMOUS, fd[31:0]==-1), exactly one of MAP_SHARED/MAP_PRIVATE.
+   addr=0 → allocate from mmap_base + bump page-aligned;
+   addr!=0 → map at addr if range unmapped.
+3. Bad-flags fast path returns -1 directly (matches Python).
+4. Falls back (Err) for: symbolic any arg, file-backed, MAP_FIXED+
+   collision, addr=0 collision (Python loops to find alt addr).
+5. Tests: 20 new in syscalls::mmap (cargo).
 
-1. `CallingConvention::syscall_arg_registers()` — defaults to
-   arg_registers(); SystemVAMD64 overrides to RDI/RSI/RDX/R10/R8/R9.
-   Required for 4+ arg syscalls because Linux amd64 syscall ABI
-   replaces RCX with R10 at arg 4.
-2. `RustExplorationManager::extract_syscall_args()` — reads syscall
-   registers; no stack fallback (Linux amd64 syscalls cap at 6 args).
-3. `stepping.rs:153` syscall dispatch now calls extract_syscall_args
-   (was extract_procedure_args, which would have routed RCX to arg 4
-   for any future 4+ arg syscall — silent miscompile risk).
-4. `NativeMunmapSyscall` at AMD64/11 — mirrors Python's no-op `return 0`.
-5. Tests: 3 new in syscalls::munmap, 2 new in calling_conventions.
+### Why no cross-engine sync was added
+- mmap_base advances are NOT propagated back to Python state.heap.mmap_base
+  on fallback (same drift pattern as posix_brk).
+- Acceptable while syscall fallbacks rarely interleave with successful
+  native calls. Future cross-engine sync work (angr-0z34 area) should
+  address both fields together at the syscall callback boundary.
+- Documented inline in mmap.rs module comment + state.rs field comment.
 
 ### Tests
-- 29 passed in syscalls::* (cargo)
-- 6 passed in arch::calling_conventions::tests (cargo)
-- 261 passed in tests/engines/test_rust_exploration.py (Python)
+- 49 passed in syscalls::* (cargo, was 29)
+- 261 passed in tests/engines/test_rust_exploration.py
 - fauxware sanity: OK rust 0.36s — no regression
 
-### Why mmap was split off (now angr-2jyk)
-- mmap needs `state.heap.mmap_base` mirrored into RustSimState
-  (default 0xC1000000 = 0xC0000000 + 0x00800000*2).
-- Cross-engine sync risk: when mmap falls back to Python (file-backed,
-  symbolic args, MAP_FIXED collision), Python reads heap.mmap_base.
-  Rust's mirror must propagate back, or Python allocates at a stale
-  base and collides with Rust's region. Same problem class as
-  angr-0z34 (read/write fd-state sync).
-- Without mmap_base, the addr=0 (kernel-chooses) path can't run
-  natively — and that's the common case in real binaries.
-
 ### Memories saved
-- invariant-syscall-arg-extraction (replaces obsolete invariant-amd64-syscall-abi)
-- avoid-pip-install-editable-broken-venv (env-specific build workaround)
+- invariant-mmap-base-mirror — field/accessors/sync caveat
+- invariant-mmap-syscall-semantics — fd[31:0] mask, bad-flags fast
+  path, prot[2:0] mask
 
-### Build env gotcha
-- `.venv/lib/python3.12/site-packages/setuptools` is corrupted
-  (version "0.dev0+unknown", missing Lorem ipsum.txt). pip install -e
-  fails with "invalid command 'dist_info'". Worked around by
-  `cargo build --release` + cp librustylib.so → angr/rustylib.cpython-*.so,
-  and using PYTHONPATH=/home/ubuntu/repos/angr for test invocation.
+### Build env (still broken)
+Same workaround as 129th session: pip install -e fails (broken
+setuptools in .venv). Used `cargo build --release` + cp librustylib.so
+→ angr/rustylib.cpython-312-x86_64-linux-gnu.so + PYTHONPATH for tests.
 
 ## Status: complete
