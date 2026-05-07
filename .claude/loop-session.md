@@ -1,67 +1,73 @@
-# Loop session notes (2026-05-07, 91st loop session — DONE for step 2)
+# Loop session notes (2026-05-07, 92nd loop session)
 
-## Task: angr-0lre — Split memory.rs into focused modules (in progress)
+## Task: angr-0lre — Split memory/mod.rs into focused modules (in progress)
 
-This session: extracted the six private ITE-tree builders out of
-`native/angr/src/memory/mod.rs` into a new submodule
-`native/angr/src/memory/ite_builder.rs`.
+This session extracted two more slices out of `native/angr/src/memory/mod.rs`:
 
-## Outcome
+1. `memory/symbolic_objects.rs` (115 lines) — the eight symbolic-object
+   preservation methods that own `symbolic_objects` / `symbolic_spans` /
+   `imported_addrs`:
+   - `get_symbolic_regions`
+   - `import_symbolic_value`
+   - `get_symbolic_object`
+   - `has_symbolic_objects`
+   - `symbolic_object_count`
+   - `is_imported_addr`
+   - `symbolic_objects_iter`
+   - `clear_symbolic_objects`
+   Commit: `fa59ba344`. mod.rs 3039 → 2941.
 
-- `native/angr/src/memory/mod.rs`: 3237 lines → 3039 lines (−198)
-- New `native/angr/src/memory/ite_builder.rs` (219 lines) holds:
-  - `load_strided_balanced` (pub(super))
-  - `build_strided_ite_tree` (private)
-  - `build_balanced_ite_load` (pub(super))
-  - `build_balanced_ite_load_inner` (private)
-  - `build_balanced_ite_load_after_prep` (pub(super))
-  - `build_ite_tree_inner` (private)
-- Same `impl SymbolicMemory` block (just lives in another file) — call
-  sites in `mod.rs` keep using `self.method(...)`. The three external
-  entry points are `pub(super)`; the three recursive helpers remain
-  private to `ite_builder.rs`.
+2. `memory/concretize_glue.rs` (75 lines) — concretizer ↔ page-table glue:
+   - `prepare_addresses_for_ite` (kept `pub`)
+   - `prepare_strided_region` (was `fn`, moved as `pub(super)` so `mod.rs`
+     callers can still reach it).
+   Commit: `6a791be8a`. mod.rs 2941 → 2881.
 
 ## Tests / build
 
 - `Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo check --release` clean
-- `Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --release` clean
+- `cargo build --release` clean
 - 243/243 tests pass (`pytest tests/engines/test_rust_exploration.py`)
-- fauxware benchmark: 0.35s, finds SOSNEAKY (matches baseline)
+- fauxware benchmark: ~107ms (matches baseline)
 
 ## Build env note (still applies)
 
-`pip install -e .` is broken on this venv. Workaround used:
+`pip install -e .` is broken on this venv. Use:
 `Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --release` then
 `cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
 
-To run benchmarks/tests interactively after a build, prefix with
-`PYTHONPATH=/home/ubuntu/repos/angr` if `.venv` site-packages doesn't
-include the editable install (see `env-venv-fully-wiped-2026-05-05`
-memory).
+For pytest/benchmarks, prefix with `PYTHONPATH=/home/ubuntu/repos/angr` if
+the editable install is missing from `.venv` site-packages
+(see `env-venv-fully-wiped-2026-05-05` memory).
 
-## Files
+## Module layout after this session
 
-- `native/angr/src/memory/mod.rs` (−198 lines)
-- `native/angr/src/memory/ite_builder.rs` (new, +219 lines)
-
-Commit: 96469dc0f
+```
+memory/
+  mod.rs              2881 lines  (was 3039 going in, -158 this session)
+  ite_builder.rs       219 lines
+  symbolic_objects.rs  115 lines  (NEW)
+  concretize_glue.rs    75 lines  (NEW)
+  page.rs              251 lines
+```
 
 ## Bead state
 
-`angr-0lre` remains open. Two extractions complete (page.rs,
-ite_builder.rs); description still calls for `symbolic_objects.rs` and
-`concretize_glue.rs`. Acceptance criteria target: memory.rs under 1000
-lines (currently 3039).
+`angr-0lre` remains open. Acceptance criteria: memory.rs <1000 lines
+(currently 2881; need −1881). Three of the four named slices in the bead
+description are now done (page, ite_builder, symbolic_objects,
+concretize_glue). Public API of `SymbolicMemory` unchanged.
 
-Next slice candidates per bead description:
-- `memory/symbolic_objects.rs` — get_symbolic_regions,
-  import_symbolic_value, get_symbolic_object, has_symbolic_objects,
-  symbolic_object_count, is_imported_addr, symbolic_objects_iter,
-  clear_symbolic_objects (~90 lines)
-- `memory/concretize_glue.rs` — prepare_addresses_for_ite,
-  prepare_strided_region (~60 lines)
+## Suggested next slices
 
-After those, the bulk of `mod.rs` is the load/store paths and the
-embedded test module (~1000 lines of tests). Larger seams to consider:
-move tests to a `#[cfg(test)] mod tests;` file, then load_*/store_*
-families.
+The remaining bulk in `mod.rs` is roughly:
+- The `#[cfg(test)] mod tests` block (~700 lines) — a big easy win.
+  Move to `memory/tests.rs` and declare `#[cfg(test)] mod tests;` in mod.rs.
+- The load/store family (~1500 lines): `load_concrete_*`, `load_symbolic_*`,
+  `store_concrete_*`, `store_symbolic_*`, `apply_pending_writes_*`. This
+  would split naturally as `memory/load.rs` + `memory/store.rs` + a small
+  `memory/pending_writes.rs`. Heavier — touches private fields and shares
+  state machinery.
+
+Tests file slice is the recommended next bite for a single session:
+mechanical, no behavior change, clears ~25% of mod.rs in one shot.
