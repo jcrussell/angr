@@ -1,94 +1,86 @@
-# Loop session notes (2026-05-07, 123rd loop session)
+# Loop session notes (2026-05-07, 124th loop session)
 
-## Task: angr-m2hf — Define a unified error trait + single PyO3 conversion site
+## Task: angr-prem — Introduce a MemoryLayer trait so the interpreter is generic over backend
 
 ### Status: AUDIT → DEFER
 
-After detailed audit of the current Rust error infrastructure, I'm deferring
-this bead with the same reasoning template that closed angr-borb / angr-ja0b /
-angr-x3xu: the proposed abstraction does not fit the actual usage pattern,
-the scope is too large for a single session, and no concrete bug class
-motivates it.
+After audit, deferring with the same reasoning template as angr-borb /
+angr-ja0b / angr-x3xu / angr-m2hf. The proposed trait does not fit the
+actual usage pattern.
 
 ### Audit findings
 
-1. **thiserror conversion is already done.**
-   Commit 923c3a6ca (2026-05-01) converted 10 of 11 manual error enums to
-   `thiserror::Error` with `#[error("…")]` derives and `#[from]` chaining.
-   StepError is deliberately exempt (carries `RustSimState` as a control-flow
-   signal, documented in memory `invariant-step-error-not-thiserror`).
-   ProcedureError keeps a manual `From<MemoryError>` to avoid changing wire
-   format. So the "all error types share infrastructure" half of the bead is
-   already realised — just via thiserror instead of a hand-rolled trait.
+1. **`memory.rs is pure data` is wrong.**
+   `native/angr/src/memory/mod.rs` (and its sibling load.rs / store.rs) is
+   not pure data — its `MemoryError` enum drives control flow at the
+   call site:
+     - `MemoryError::UnmappedPageInRegion { page_addr }` → fetch the
+       Python page and retry the operation.
+     - `MemoryError::Unmapped { addr, size }` → fall through to Python.
+     - `MemoryError::SymbolicAddress { description }` → fall through to
+       Python (Python's wide concretization handles this case natively).
+     - Other variants → propagate as `CbExecutionError`.
 
-2. **`lib.rs has one conversion call site` doesn't fit the architecture.**
-   `native/angr/src/lib.rs` is a 97-line `#[pymodule]` registration file. It
-   has zero error conversion sites today and is not the natural place for
-   them. PyO3 conversions happen at the leaf `#[pymethods]` / `#[pyfunction]`
-   sites where errors arise. Centralising in lib.rs would require routing
-   errors through a global, which fights the `?` operator instead of using it.
+   These signals are interpreter-layer concerns, not backend-layer.
 
-3. **Typed errors mostly never cross the PyO3 boundary.**
-   The 168 `Result<_, MemoryError | ExecutionError | OpError | …>` types
-   propagate within Rust. At the boundary (e.g. `engine::run_loop`), errors
-   are absorbed into `RunResult::Error(String)` events that `LoopExecutionEvent`
-   carries to Python. The Python side (`rust_manager.py`) reads
-   `event.error: str` and raises a typed angr exception based on context —
-   not based on the Rust error class. So even a "richer hierarchy" of Rust
-   exception classes would not be observed by Python's existing catch contract.
+2. **try_rust_memory_load is not a peer to load_from_callback.**
+   - `try_rust_memory_load` (interpreter_cb/expressions.rs:619) returns
+     `Result<Option<RustBV>>`: `Some` = Rust handled, `None` = fall
+     through, `Err` = hard error. It also takes `&self.concretizer` and
+     timing stats — interpreter-level inputs.
+   - `load_from_callback` (interpreter_cb/mod.rs:1015) returns plain
+     `Result<RustBV>`. Python is the page authority and concretizer; it
+     doesn't have UnmappedPageInRegion semantics at all.
 
-4. **The 180 `PyRuntimeError::new_err(...)` sites are mostly ad-hoc.**
-   Surveyed across 15 files. The patterns are:
-     - "callback not set" / "callbacks not ready" guards (~15 in callbacks.rs
-       and exploration/mod.rs)
-     - "no pending callback state" control-flow guards (~7 in exploration/
-       mod.rs and helpers.rs)
-     - `map_err(|e| PyRuntimeError::new_err(format!("…: {e}")))` wrappers
-       that add context to a leaf error (~30, mostly in icicle.rs / fuzzer.rs
-       / exploration/mod.rs)
-     - Inline `PyRuntimeError::new_err("specific message")` for one-off
-       failures (~120)
-   None of these go through the typed enums; they construct PyErr directly
-   with a custom string. A unified `EngineError` trait + `convert_to_pyerr`
-   would NOT replace any of them, because they are not enum values.
+3. **The Load expression walks ~8 sources, not 2.**
+   `expressions.rs:45` consults: try_rust_memory_load → pending_symbolic_stores
+   → pending_stores buffer → all_flushed_symbolic_stores → all_flushed_stores
+   → prefetch cache → try_read_concrete_memory → load_from_callback. Most
+   of these are caches, not "memory layers." A trait with two impls would
+   collapse only 2 of those cases.
 
-5. **Python's catch contract is already correct for the current scheme.**
-   Memory `invariant-rust-callback-narrow-except` (angr-8e81 / angr-2f7o)
-   documents the contract: `RustExplorationManager._cb_*` callbacks catch
-   `(SimError, ClaripyError)` or `(SimEngineError, ClaripyError, PyVEXError)`
-   on the lifter — these come from Python-level wrappers, not from PyO3-side
-   exception classes. Adding PyO3-defined classes via `create_exception!`
-   would require Python catchers to catch those too, doubling the contract.
+4. **`trait MemoryLayer { fn load(addr, size); fn store(addr, value, size); }`
+   discards the rich semantics.** A faithful unification would need:
+     - Two-phase result (`Some` / `None` / `Err`) for fall-through.
+     - Page-fetch hook so the layer can request more data before retrying.
+     - Concretization context.
+     - Timing stats path.
+   At that point the "trait" is the entire interpreter Load/Store routine,
+   not a memory backend.
 
-6. **No documented bug class points at error-handling.**
-   `bd memories error` and `bd memories pyerr` surface 16 memories — none
-   describe an incident where confusing PyRuntimeError messages caused a
-   missed exception or wrong fix. The existing scheme has carried us through
-   146 tests + 16 benchmarks correct.
+5. **PythonCallbackMemory is not a peer impl.**
+   The Python callback layer doesn't have UnmappedPageInRegion or
+   SymbolicAddress concepts because Python owns the full memory model.
+   A `MemoryLayer for PythonCallbacks` impl would either always return
+   "handled" (Some) or would have to fabricate signals that aren't
+   meaningful in the Python model.
 
-### Why this matches the angr-borb / angr-ja0b deferral pattern
+6. **No documented bug class motivates the work.**
+   `bd memories memory` and `bd memories rust-memory` produce no
+   incident pointing at the dual-path design. The current scheme has
+   carried us through 146 tests + 16 benchmarks correct.
 
-Same template:
+### Why this matches the prior deferral pattern
+
+Same template as angr-borb / angr-ja0b / angr-x3xu / angr-m2hf:
 - (a) Bead description references infrastructure that has shifted
-  (lib.rs has no conversions; thiserror already covers the enum side).
-- (b) Full scope is large (180 sites across 15 files for the maximal
-  reading; even minimal scope is ~10 enums × creating exception classes).
-- (c) PyO3 boundary doesn't make a "single conversion site" natural —
-  errors arise at leaves and ride the `?` operator.
+  ("memory.rs is pure data" was once true; now it carries control-flow
+  signals).
+- (b) Full scope is large (~8 sources to unify; lazy-page protocol to
+  thread; concretizer to plumb through).
+- (c) The "two parallel code paths" pitch doesn't match reality — the
+  Python path is a fall-through target, not a peer backend.
 - (d) No bug class observed to motivate the work.
-- (e) Half-measures (just impl an empty trait, no exception classes) deliver
-  no behavioural value.
-
-The recommendation in the bead — `convert_to_pyerr(err: &dyn EngineError)`
-called from a single point — assumes errors are already typed values at the
-boundary. They're not: 95%+ of PyErr sites are constructed inline with
-ad-hoc messages, not converted from enum variants.
+- (e) Half-measures (trait wrapping only SymbolicMemory, with Python kept
+  separate) deliver no behavioural value.
 
 ### Action
 
-1. Defer angr-m2hf with this audit as the reason.
-2. Save memory `avoid-deferred-m2hf-error-trait` so future sessions don't
-   re-open this bead without new motivation (a real bug class).
+1. Defer angr-prem with this audit as the reason. (done)
+2. Save memory `avoid-deferred-prem-memory-layer` so future sessions
+   don't re-open without (a) a concrete bug class showing the dual
+   path causes wrong behavior, OR (b) a third backend that needs the
+   trait. (done)
 
 ### Files modified
 
