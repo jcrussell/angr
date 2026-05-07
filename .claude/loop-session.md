@@ -1,39 +1,39 @@
-# Loop session notes (2026-05-07, 132nd loop session)
+# Loop session notes (2026-05-07, 133rd loop session)
 
-## Task: angr-qrhl — Trait-based VEX op dispatcher
+## Task: angr-q7r0 — sym-write regressed +660% (3.22s vs 0.42s baseline)
 
-### Status: closed (deferred after audit)
+### Status: closed (fixed)
 
-### Outcome
-Deferred per the same template as angr-prem / angr-csd1 / angr-m2hf /
-angr-wqao / angr-ja0b — large abstraction, weak fit, no motivating bug,
-hot-path performance risk.
+### Root cause
+sym-write regression bottleneck was NOT memory_*_symbolic_full callbacks
+(audit hypothesis). Only 3 memory_load callbacks fire during sym-write.
 
-Memory saved: avoid-deferred-qrhl-vex-trait-dispatcher
+True bottleneck: callback-time register sync of `edx`. After main runs,
+`edx` contains a RustBV::Expression with 142,133 expanded nodes but only
+**25 unique Arc-shared subtrees** (DAG with heavy reuse).
+`rustbv_to_claripy` recursively walked the DAG without memoization,
+fanning it into a tree and creating ~142k Python claripy objects (~2.7s
+for one register).
 
-### Audit summary
-- vex/ops.rs has 5 #[inline] dispatch entry points; 4 hot-path call sites
-  in interpreter_cb/expressions.rs.
-- IROp enum has 224 variants, MOST carrying an IRType parameter that
-  current arms forward to width_binop!/width_unop! macros (compile to
-  direct RustBV intrinsics). A trait keyed on op kind cannot access
-  the IRType without re-matching the variant, defeating the abstraction.
-- Acceptance "dispatch overhead within 5%" is structurally hard — match
-  jump-tables beat Box<dyn>+HashMap.
-- "Adding a new op" workflow has the same touch-point count either way
-  (still need IROp variant + opcode_map entry); trait rehomes work
-  rather than reducing it.
-- No concrete external-crate plugin consumer; no bug class motivates.
-- Recent VEX additions (angr-n28w transcendentals, angr-3ekz packed FP
-  cmp) used match arms successfully — the exact workflow the trait
-  would complicate.
+### Fix
+commit c88947e65: memoize `rustbv_to_claripy` by RustBV pointer identity.
+Operands stored inline inside a shared `Arc<[RustBV]>` have stable
+addresses, so sibling references hit the cache. Per-call
+`HashMap<*const RustBV, Py<PyAny>>`. Memoization gated on Expression
+variant only.
 
-### What follows
-Open beads (5 remaining):
-- angr-bkcs P3 NEON SIMD
-- angr-czph P3 lazy LOAD
-- angr-qh5u P3 lazy STORE
-- angr-0z34 P4 read/write syscalls (blocked on state-cache sync)
+### Results
+- sym-write: **3.22s → 0.44s** (matches 0.42s baseline)
+- 261/261 tests pass
+- 12/12 regression-suite benchmarks pass (19.7s total)
 
-NEON or lazy-load are the substantive next options, both multi-session
-design efforts.
+### Memories saved
+- rustbv-to-claripy-memoization
+- symwrite-regression-q7r0-root-cause
+- invariant-rustbv-arc-operands-shared
+- benchmark-q7r0-symwrite-recovered
+
+### Follow-on
+- angr-491g (concrete-addr fast path): premise no longer holds for
+  sym-write. Annotated bead with note. mma_howtouse motivation should be
+  re-profiled before that work is taken on.
