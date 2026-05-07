@@ -1,76 +1,78 @@
-# Loop session notes (2026-05-07, 98th loop session)
+# Loop session notes (2026-05-07, 99th loop session)
 
-## Task: angr-xvnz — Wire-or-remove state.dirty_registers (CLOSED)
+## Task: angr-p7oa — diff-state harness: invoke callable find/avoid predicates in step loop (CLOSED)
 
-Bead closed (commit d320e67c3).
+Bead closed (commit a66f73fcd).
 
-### Decision: REMOVED
+### Problem
 
-Reasons:
+`tests/benchmarks/diff_state.py:_patch_rust_explore_to_single_step`
+replaces `RustExplorationManager.explore()` with a step(1) loop, but
+between steps it never evaluated callable find/avoid predicates. So
+benchmarks like csgames2018 and sym-write (stdout-based find predicates)
+silently never matched in `--diff-state` mode — Rust can't observe
+Python callables, and the harness wasn't filling that gap.
 
-1. **Structurally incomplete.** The `u128` bitset addressed `offset / 4`
-   for `bit < 128`, capping coverage at 512 bytes of register file.
-   amd64 state_size is ~1664 bytes, so XMM/YMM/AVX writes silently fell
-   off the edge.
-2. **Already cheap to fork.** `RegisterFile.data` is a small `Vec<u8>`
-   (~1.7KB on amd64) that clones cheaply. No fork-perf win to chase.
-3. **Zero live consumers.** Verified by repo-wide grep:
-   - `RustSimState::export_changes` (the only reader of
-     `get_dirty_registers`) had no callers.
-   - `RustExplorationManager::get_pending_dirty_registers` PyO3 method
-     had no Python caller.
-   - The register half of `clear_pending_dirty_tracking` was symmetric
-     dead code with no caller relying on it.
+### Fix
 
-### Out of scope (intentionally kept)
+In `diff_state.py:_drive`, after `manager.step(1)`:
 
-- `Interpreter`, `Engine`, `CallbackInterpreter` each have their own
-  `dirty_registers` field. The bead is scoped to state.rs:607–608, and
-  those have separate set sites and copy-from-interpreter logic
-  (`engine.rs:1017,1391`). Leaving them alone.
-- `StateChanges` struct + `apply_changes` are still used by
-  `exploration/mod.rs:2983` (`pending_callback_complete` writeback).
-- `dirty_pages` (memory-side tracking) untouched — only registers half
-  removed.
+```python
+if (getattr(manager, "_find_predicate", None) is not None
+        or getattr(manager, "_avoid_predicate", None) is not None):
+    try:
+        manager._evaluate_predicates_on_active()
+    except Exception:
+        pass
+```
+
+`_evaluate_predicates_on_active()` (rust_state_cache.py:191) is the
+same path the production exploration loops use:
+
+- `_explore_with_predicates` (rust_manager.py:2099, 2115) calls it
+  after every batch and at the end.
+- `_explore_with_addresses` (rust_manager.py:2231) calls it after the
+  step when callable predicates are set.
+
+It walks active+deadended states and any cached Python states, runs the
+predicate, and routes matches into found/avoid stashes via
+`_rust_mgr.move_state`. Termination via `manager._found_count()`
+already counts both Rust-native and predicate-matched finds, so no
+loop-condition change was needed.
 
 ### Files changed
 
-- `native/angr/src/state.rs`:
-  - Removed `dirty_registers: u128` field from `RustSimState`.
-  - Removed all 6 init sites (3 constructors + fork + 2 internal helpers).
-  - Stripped `if bit < 128 { dirty |= ... }` blocks from
-    `set_register` and `set_register_by_offset`.
-  - Removed `get_dirty_registers`, `clear_dirty_registers` (impl) and
-    their PyO3 wrappers on `RustSimState` (the wrapper struct).
-  - Removed `export_changes` (orphaned).
-- `native/angr/src/exploration/mod.rs`:
-  - Removed `get_pending_dirty_registers` PyO3 method.
-  - `clear_pending_dirty_tracking` now only clears dirty pages.
+- `tests/benchmarks/diff_state.py`: 12 lines added in `_drive`.
+- No Rust code touched.
+- No tests modified — pytest still 247/247.
 
-### Test counts
+### Verification
 
-- `cargo test --release --lib` → 517/517 (no change vs. last session).
-- `pytest tests/engines/test_rust_exploration.py` → 247/247.
+- pytest `tests/engines/test_rust_exploration.py` → 247 passed.
+- End-to-end `--diff-state` could not be exercised this session: the
+  `.venv` editable-install hook is currently broken for spawned child
+  processes (no `.pth` file, only the `__editable_*_finder.pyc`), so
+  any `multiprocessing.spawn` child whose cwd is changed via `chdir`
+  cannot `import angr`. Pre-existing env issue unrelated to this fix.
+  Track: `bd memories env-venv-corruption` / `env-venv-recovery-procedure`.
 
 ### Memories saved
 
-- `invariant-register-dirty-bitset-incomplete` — if anyone reintroduces
-  register-dirty tracking, use Vec<bool>/HashSet sized to
-  `arch.state_size() / 4`, not a u128. Old bitset capped at 512 bytes
-  silently dropped XMM/YMM/AVX writes.
-- `dead-export-changes` — `export_changes` was orphaned because only
-  `apply_changes` (write-from-Python direction) is used in pending
-  callback handling. Don't resurrect it; the memory side already has
-  `get_dirty_page_addrs()`.
+- `invariant-rust-explore-replacement-needs-predicate-eval` — any
+  harness or technique that replaces `RustExplorationManager.explore`
+  with its own step loop must call `_evaluate_predicates_on_active()`
+  between steps when callable predicates are set, since Rust can't
+  evaluate Python callables.
 
 ## Bead state
 
-`angr-xvnz` CLOSED.
+`angr-p7oa` CLOSED. 26 → 25 ready issues remaining.
 
-## Suggested next slices (P3, contained)
+## Suggested next slices
 
-- `angr-3vrj` — StateMetadata dataclass (Python-only).
-- `angr-4t2u` — NAMING_CONVENTIONS.md + minor renames.
-- `angr-p7oa` — diff-state harness for callable find/avoid predicates.
-- Memory module continuation (uncreated): extract `flush_pending_writes`
-  and `merge` into separate files in `memory/`. Pure cuts.
+- `angr-3vrj` — StateMetadata dataclass (Python-only, but 56 call
+  sites across 5 files; size/risk worth a careful plan first).
+- `angr-4t2u` — NAMING_CONVENTIONS.md + cosmetic param renames.
+- `angr-8f7d` — SSE scalar lane caching (needs flamegraph first per
+  acceptance criteria).
+- `angr-b6og` — Wire flamegraph/pprof into criterion benches.
