@@ -642,7 +642,9 @@ impl<'a> CallbackInterpreter<'a> {
             } => {
                 // Single CAS only — defer double-CAS to Python.
                 if old_hi.is_some() || expdHi.is_some() || dataHi.is_some() {
-                    return Err(CbExecutionError::Unsupported("double compare-and-swap".to_string()));
+                    return Err(CbExecutionError::Unsupported(
+                        super::DCAS_UNSUPPORTED_REASON.to_string(),
+                    ));
                 }
 
                 // Type comes from expdLo — must match what is being CAS'd.

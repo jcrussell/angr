@@ -172,6 +172,11 @@ define_execution_stats! {
     run_loop_time_ns: sum,
 }
 
+/// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).
+/// Shared with `exploration::mod` so the manager can identify DCAS in
+/// `PythonVEXFallback` events and bump a dedicated visibility counter.
+pub const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
+
 /// Errors during callback-based VEX execution.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum CbExecutionError {

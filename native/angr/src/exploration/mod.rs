@@ -23,7 +23,7 @@ use pyo3::types::PyDict;
 use crate::arch::{arch_from_name, default_cc_for_arch, CallingConvention};
 use crate::callbacks::{ExecutionConfig, PythonCallbacks, RunResult, DeferredFork};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
-use crate::interpreter_cb::{CallbackInterpreter, ExecutionStats};
+use crate::interpreter_cb::{CallbackInterpreter, ExecutionStats, DCAS_UNSUPPORTED_REASON};
 use crate::memory::Permission;
 use crate::procedures::NativeProcedureRegistry;
 use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
@@ -390,6 +390,14 @@ pub struct RustExplorationManager {
     /// VEX fallback tracking: count and unique addresses.
     pub(crate) vex_fallback_count: u64,
     pub(crate) vex_fallback_addrs: HashMap<u64, String>,
+    /// Visibility counter for `IRStmt::CAS` double-CAS (cmpxchg16b) fallbacks.
+    /// Incremented alongside `vex_fallback_count` whenever the reason carries
+    /// `DCAS_UNSUPPORTED_REASON`. Surfaced via `stats()` and
+    /// `get_fallback_stats()` so DCAS-driven deadends are diagnosable.
+    pub(crate) dcas_unsupported_count: u64,
+    /// State IDs that have already produced a DCAS warning. We log the first
+    /// DCAS hit per state to avoid spamming the log on tight DCAS loops.
+    pub(crate) dcas_warned_states: HashSet<u64>,
     /// Stack of (address, expiry_step) for zero-length hook skip tracking.
     /// Each entry represents an address to skip, valid until the specified step.
     /// This prevents infinite loops when a hook with length=0 runs and
@@ -477,6 +485,8 @@ impl RustExplorationManager {
             native_proc_stats: NativeProcStats::default(),
             vex_fallback_count: 0,
             vex_fallback_addrs: HashMap::new(),
+            dcas_unsupported_count: 0,
+            dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
             lazy_solves: false,
@@ -1865,6 +1875,7 @@ impl RustExplorationManager {
         dict.set_item("state_roots_size", self.sm.roots().len())?;
         dict.set_item("vex_fallback_count", self.vex_fallback_count)?;
         dict.set_item("vex_fallback_unique_addrs", self.vex_fallback_addrs.len())?;
+        dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
         Ok(dict)
     }
 
@@ -1873,6 +1884,7 @@ impl RustExplorationManager {
     /// Returns a dict with:
     ///   "count": total number of VEX fallbacks
     ///   "addresses": dict mapping hex address string -> reason string
+    ///   "dcas_unsupported_count": subset of fallbacks driven by double-CAS
     pub fn get_fallback_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         dict.set_item("count", self.vex_fallback_count)?;
@@ -1881,6 +1893,7 @@ impl RustExplorationManager {
             addrs.set_item(format!("0x{:x}", addr), reason)?;
         }
         dict.set_item("addresses", addrs)?;
+        dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
         Ok(dict)
     }
 
@@ -2826,6 +2839,16 @@ impl RustExplorationManager {
                         CallbackReason::PythonVEXFallback { addr, reason } => {
                             self.vex_fallback_count += 1;
                             self.vex_fallback_addrs.entry(*addr).or_insert_with(|| reason.clone());
+                            if reason.contains(DCAS_UNSUPPORTED_REASON) {
+                                self.dcas_unsupported_count += 1;
+                                if self.dcas_warned_states.insert(state_id) {
+                                    log::warn!(
+                                        "DCAS (cmpxchg16b) unsupported in Rust interpreter at \
+                                         0x{:x} (state {}); falling back to Python VEX engine",
+                                        addr, state_id
+                                    );
+                                }
+                            }
                             ExplorationEvent::need_python_vex(
                                 state_id,
                                 *addr,

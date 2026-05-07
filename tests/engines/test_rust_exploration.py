@@ -105,6 +105,18 @@ class TestRustExplorationManagerUnit:
         assert stats["simprocedures"] == 3
         assert stats["hooks"] == 3
 
+    def test_dcas_unsupported_metric_exposed(self):
+        """DCAS visibility counter is exposed via stats() and get_fallback_stats()."""
+        mgr = _RustExplorationManager("amd64")
+
+        stats = mgr.stats()
+        assert "dcas_unsupported_count" in stats
+        assert stats["dcas_unsupported_count"] == 0
+
+        fb = mgr.get_fallback_stats()
+        assert "dcas_unsupported_count" in fb
+        assert fb["dcas_unsupported_count"] == 0
+
     def test_add_rust_state(self):
         """Test adding an existing RustSimState."""
         mgr = _RustExplorationManager("amd64")
