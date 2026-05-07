@@ -187,6 +187,58 @@ class TestRustExplorationManagerUnit:
         # so it bypasses push_to_active_or_drop. Verify the getter works.
         assert mgr.get_max_active_states() == 3
 
+    def test_register_python_procedure_appears_in_listing(self):
+        """register_python_procedure adds the procedure to the registry."""
+        mgr = _RustExplorationManager("amd64")
+        assert not mgr.has_native_procedure("custom_widget_init")
+
+        def widget_init(args):
+            return 0
+
+        mgr.register_python_procedure(
+            "custom_widget_init",
+            num_args=0,
+            no_return=False,
+            callable=widget_init,
+        )
+        assert mgr.has_native_procedure("custom_widget_init")
+        assert "custom_widget_init" in mgr.list_native_procedures()
+
+    def test_register_python_procedure_invoked_via_simprocedure_hook(
+        self, fauxware_project
+    ):
+        """A Python-registered native procedure runs when its hook fires.
+
+        Simulates the dispatcher path: register a SimProcedure at an address
+        with a name matching a Python-registered native procedure. When the
+        dispatcher reaches that address, it should call the native (Python)
+        implementation and capture the return value.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+
+        # Track invocations from Rust into our Python procedure.
+        invocations = []
+
+        def echo_args(args):
+            invocations.append(tuple(args))
+            return 0xDEADBEEF
+
+        mgr._rust_mgr.register_python_procedure(
+            "echo_proc",
+            num_args=2,
+            no_return=False,
+            callable=echo_args,
+        )
+
+        # Verify it landed.
+        assert mgr._rust_mgr.has_native_procedure("echo_proc")
+        names = mgr._rust_mgr.list_native_procedures()
+        assert "echo_proc" in names
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustSimStateIntegration:

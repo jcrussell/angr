@@ -1992,6 +1992,29 @@ impl RustExplorationManager {
         Ok(dict)
     }
 
+    /// Register a Python callable as a native procedure.
+    ///
+    /// The callable receives `list[int]` of concrete arg values and must
+    /// return `Optional[int]` for the return value (None = no value).
+    /// Symbolic arguments cause an automatic fallback to the regular
+    /// Python SimProcedure path; the registered callable is only invoked
+    /// when all args are concrete.
+    #[pyo3(signature = (name, num_args, no_return, callable))]
+    pub fn register_python_procedure(
+        &mut self,
+        name: String,
+        num_args: usize,
+        no_return: bool,
+        callable: Py<PyAny>,
+    ) {
+        let proc = std::sync::Arc::new(
+            crate::procedures::python_proc::PythonNativeProcedure::new(
+                name, num_args, no_return, callable,
+            ),
+        );
+        self.native_procedures.register(proc);
+    }
+
     // =========================================================================
     // Native Uniqueness Filter
     // =========================================================================

@@ -40,6 +40,7 @@ pub mod memcmp;
 pub mod strstr;
 pub mod scanf;
 pub mod getenv;
+pub mod python_proc;
 
 use std::collections::HashMap;
 use std::sync::Arc;
