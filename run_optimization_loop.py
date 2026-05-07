@@ -21,6 +21,7 @@ Usage:
 import argparse
 import datetime
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -208,6 +209,21 @@ def monitor_memory() -> float:
     except (OSError, ValueError):
         pass
     return 0.0
+
+
+def _orchestrator_source_hash() -> Optional[str]:
+    """SHA256 of run_optimization_loop.py on disk (12-char prefix).
+
+    Returned None on read failure. Used to detect when the running orchestrator
+    process is stale relative to the current source file (e.g. the fix in
+    angr-lbze was applied to disk but the long-running loop kept executing the
+    old in-memory bytecode for 28+ iterations, silently masking gate failures).
+    """
+    try:
+        with open(__file__, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        return None
 
 
 def detect_git_state() -> dict:
@@ -822,8 +838,10 @@ def main():
         print(prompt)
         return
 
+    startup_source_hash = _orchestrator_source_hash()
     log.info(f"Starting optimization loop: max_iterations={args.max_iterations}, "
-             f"timeout={args.timeout}s, memory_limit={args.memory_limit}")
+             f"timeout={args.timeout}s, memory_limit={args.memory_limit}, "
+             f"source_sha={startup_source_hash}")
 
     consecutive_failures = 0
     consecutive_dirty = 0
@@ -831,10 +849,26 @@ def main():
     iteration = 0
     terminal_failure: Optional[str] = None  # set when calculate_backoff returns BACKOFF_EXIT
 
+    stale_warned = False
     for iteration in range(1, args.max_iterations + 1):
         rss = monitor_memory()
         log.info(f"{'='*60}")
         log.info(f"Iteration {iteration}/{args.max_iterations} | RSS={rss:.1f}MB")
+
+        # Detect stale orchestrator: if the source file on disk has been
+        # modified since process start, the running bytecode is out of date.
+        # angr-lbze masked a real bug for 28+ iterations exactly because the
+        # orchestrator kept running pre-fix code while the patched file sat
+        # untouched on disk. Warn once so logs make this obvious.
+        if not stale_warned and startup_source_hash is not None:
+            current_hash = _orchestrator_source_hash()
+            if current_hash is not None and current_hash != startup_source_hash:
+                log.warning(
+                    f"ORCHESTRATOR SOURCE STALE: run_optimization_loop.py changed on disk "
+                    f"(startup={startup_source_hash}, on-disk={current_hash}). "
+                    f"This process is still running pre-edit bytecode — restart to pick up changes."
+                )
+                stale_warned = True
 
         # Check task availability
         tasks = check_tasks_available()
