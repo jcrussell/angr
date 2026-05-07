@@ -11,6 +11,8 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use rustc_hash::FxHashMap;
+
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PyDict;
@@ -44,7 +46,7 @@ pub struct CallStackEntry {
 #[derive(Clone, Debug, Default)]
 pub struct HeapMetadata {
     /// Currently allocated regions: address -> size in bytes.
-    pub allocated: HashMap<u64, u64>,
+    pub allocated: FxHashMap<u64, u64>,
     /// Freed addresses (in order of free calls).
     pub freed: Vec<u64>,
 }

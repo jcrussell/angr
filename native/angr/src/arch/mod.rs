@@ -25,6 +25,7 @@ pub use x86::X86;
 
 use crate::symbolic::RustBV;
 use crate::vex::VexArch;
+use rustc_hash::FxHashMap;
 
 /// Architecture trait.
 ///
@@ -92,7 +93,7 @@ pub struct RegisterFile {
     /// Raw storage (byte-addressable).
     data: Vec<u8>,
     /// Symbolic overlays (offset -> value).
-    symbolic: std::collections::HashMap<u32, RustBV>,
+    symbolic: FxHashMap<u32, RustBV>,
     /// Architecture information.
     arch: Box<dyn Arch>,
 }
@@ -103,7 +104,7 @@ impl RegisterFile {
         let size = arch.state_size();
         RegisterFile {
             data: vec![0; size],
-            symbolic: std::collections::HashMap::new(),
+            symbolic: FxHashMap::default(),
             arch,
         }
     }
