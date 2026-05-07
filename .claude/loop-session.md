@@ -1,78 +1,74 @@
-# Loop session notes (2026-05-07, 99th loop session)
+# Loop session notes (2026-05-07, 100th loop session)
 
-## Task: angr-p7oa — diff-state harness: invoke callable find/avoid predicates in step loop (CLOSED)
+## Task: angr-b1qq — Wire memory_{store,load}_symbolic_full callbacks (CLOSED)
 
-Bead closed (commit a66f73fcd).
+Bead closed (commit 30702fa5a). First split of the deferred angr-pufm P1 work.
 
-### Problem
+### Background
 
-`tests/benchmarks/diff_state.py:_patch_rust_explore_to_single_step`
-replaces `RustExplorationManager.explore()` with a step(1) loop, but
-between steps it never evaluated callable find/avoid predicates. So
-benchmarks like csgames2018 and sym-write (stdout-based find predicates)
-silently never matched in `--diff-state` mode — Rust can't observe
-Python callables, and the harness wasn't filling that gap.
+`bd memories invariant-symbolic-full-callbacks-unset` (now updated to STALE):
+- `memory_store_symbolic_full` and `memory_load_symbolic_full` had Rust setters
+  (callbacks.rs:560/566) and consumers at statements.rs:368/444/710/1174 and
+  expressions.rs:149, but were NEVER wired from Python.
+- Result: any TooLarge ConcretizationResult on a symbolic-address load/store
+  errored out as `CbExecutionError::Unsupported`.
 
-### Fix
+### Implementation
 
-In `diff_state.py:_drive`, after `manager.step(1)`:
+Two new callback methods on `RustExplorationManager`
+(`angr/exploration/rust_manager.py`, next to the existing
+`_cb_memory_store_symbolic_value`):
 
-```python
-if (getattr(manager, "_find_predicate", None) is not None
-        or getattr(manager, "_avoid_predicate", None) is not None):
-    try:
-        manager._evaluate_predicates_on_active()
-    except Exception:
-        pass
-```
+- `_cb_memory_store_symbolic_full(addr_ast, data_ast)` — calls
+  `state.memory.store(addr_ast, data_ast, endness=..., inspect=False,
+  disable_actions=True)`.
+- `_cb_memory_load_symbolic_full(addr_ast, size)` — calls
+  `state.memory.load(addr_ast, size, endness=..., inspect=False,
+  disable_actions=True)` and returns the AST.
 
-`_evaluate_predicates_on_active()` (rust_state_cache.py:191) is the
-same path the production exploration loops use:
+Both swallow `SimError`/`ClaripyError` per the angr-8e81 / angr-2f7o convention.
+The load-side fallback returns `claripy.BVS(f"sym_load_full_fail_{size}",
+size*8)` so Rust's expressions.rs:149 path can wrap it into a `sym_pyref_*`
+placeholder.
 
-- `_explore_with_predicates` (rust_manager.py:2099, 2115) calls it
-  after every batch and at the end.
-- `_explore_with_addresses` (rust_manager.py:2231) calls it after the
-  step when callable predicates are set.
-
-It walks active+deadended states and any cached Python states, runs the
-predicate, and routes matches into found/avoid stashes via
-`_rust_mgr.move_state`. Termination via `manager._found_count()`
-already counts both Rust-native and predicate-matched finds, so no
-loop-condition change was needed.
+`_init_callbacks` registers both via `set_memory_store_symbolic_full` /
+`set_memory_load_symbolic_full` (with `hasattr` guards for older .so builds).
 
 ### Files changed
 
-- `tests/benchmarks/diff_state.py`: 12 lines added in `_drive`.
-- No Rust code touched.
-- No tests modified — pytest still 247/247.
+- `angr/exploration/rust_manager.py`: 2 new callback methods + 4 lines in
+  `_init_callbacks`.
+- `tests/engines/test_rust_exploration.py`: 7 new regression tests in
+  `TestErrorRecovery` covering wiring, round-trip (at 0x4000 — 0x1000 is
+  already mapped by `load_shellcode`), Sim-swallow, and non-Sim-propagate.
 
 ### Verification
 
-- pytest `tests/engines/test_rust_exploration.py` → 247 passed.
-- End-to-end `--diff-state` could not be exercised this session: the
-  `.venv` editable-install hook is currently broken for spawned child
-  processes (no `.pth` file, only the `__editable_*_finder.pyc`), so
-  any `multiprocessing.spawn` child whose cwd is changed via `chdir`
-  cannot `import angr`. Pre-existing env issue unrelated to this fix.
-  Track: `bd memories env-venv-corruption` / `env-venv-recovery-procedure`.
+- pytest `tests/engines/test_rust_exploration.py` → 254 passed (was 247).
+- End-to-end benchmarks could not run (still the same `.venv` editable-install
+  issue from session 99 — `__editable_*_finder.pyc` exists but no `.pth`,
+  so spawned subprocesses can't `import angr`).
 
-### Memories saved
+### Memories updated
 
-- `invariant-rust-explore-replacement-needs-predicate-eval` — any
-  harness or technique that replaces `RustExplorationManager.explore`
-  with its own step loop must call `_evaluate_predicates_on_active()`
-  between steps when callable predicates are set, since Rust can't
-  evaluate Python callables.
+- `invariant-symbolic-full-callbacks-unset` → STALE (now points to commit
+  30702fa5a and notes the callbacks are wired).
+- `invariant-symbolic-full-callbacks-wired` → NEW. Captures the new wiring
+  contract: bound-method presence is the wiring check (has_* aren't exposed
+  to Python), the load-side BVS fallback width matches `size*8`, and tests
+  must use 0x4000+ to avoid colliding with `load_shellcode`'s 0x1000 mapping.
 
 ## Bead state
 
-`angr-p7oa` CLOSED. 26 → 25 ready issues remaining.
+`angr-b1qq` CLOSED. `angr-pufm` (P1) still open — its remaining piece is the
+lazy guarded-entries optimization (write records an address constraint instead
+of enumerating).
 
 ## Suggested next slices
 
-- `angr-3vrj` — StateMetadata dataclass (Python-only, but 56 call
-  sites across 5 files; size/risk worth a careful plan first).
-- `angr-4t2u` — NAMING_CONVENTIONS.md + cosmetic param renames.
-- `angr-8f7d` — SSE scalar lane caching (needs flamegraph first per
-  acceptance criteria).
+- `angr-pufm` lazy guarded-entries piece (now that the fallback callbacks are
+  wired, this can be tackled independently — but it interacts with
+  `lazy-memory-load-overlay-fails` and `symwrite-eager-vs-lazy-memory`
+  memories, so plan carefully first).
+- `angr-3zs6` — FallbackStrategy enum walk (cosmetic, well-scoped).
 - `angr-b6og` — Wire flamegraph/pprof into criterion benches.
