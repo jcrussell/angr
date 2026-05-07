@@ -1,0 +1,495 @@
+//! Store operations for `SymbolicMemory`.
+//!
+//! Extracted from `memory/mod.rs` (angr-0lre). Holds the store_*/store_strided/
+//! store_conditional_multiple family in a single file. Multiple `impl SymbolicMemory`
+//! blocks across files are fine — Rust permits inherent impls to be split.
+
+use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::symbolic::{RustBV, SymContext};
+use crate::vex::Endness;
+
+use super::page::{MemoryPage, Permission, PAGE_MASK, PAGE_SIZE};
+use super::{MemoryError, SymbolicMemory};
+
+impl SymbolicMemory {
+    /// Store a value to memory.
+    pub fn store(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        // For symbolic addresses, we need to concretize
+        let concrete_addr = match addr.as_u64() {
+            Some(a) => a,
+            None => {
+                match ctx.eval(&addr) {
+                    Some(a) => a as u64,
+                    None => {
+                        return Err(MemoryError::SymbolicAddress {
+                            description: "could not resolve address for store".to_string(),
+                        });
+                    }
+                }
+            }
+        };
+
+        self.store_concrete(concrete_addr, value)
+    }
+
+    /// Store to a concrete address.
+    pub fn store_concrete(
+        &mut self,
+        addr: u64,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+
+        // Check if pages are mapped (fast path for same-page stores)
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 - 1) >> 12;
+
+        if start_page == end_page {
+            if !self.pages.contains_key(&start_page) {
+                return Err(MemoryError::Unmapped {
+                    addr: start_page << 12,
+                    size: PAGE_SIZE,
+                });
+            }
+        } else {
+            for page_num in start_page..=end_page {
+                if !self.pages.contains_key(&page_num) {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_num << 12,
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+        }
+
+        self.check_perms_range(start_page, end_page, Permission::W)?;
+
+        // If symbolic, store in symbolic_objects
+        if value.is_symbolic() {
+            self.symbolic_objects.insert(addr, value.clone());
+            // Update reverse span index: map each byte offset to (base_addr, width)
+            let width_bits = value.width();
+            let sym_bytes = width_bits / 8;
+            for i in 1..sym_bytes {
+                self.symbolic_spans.insert(addr + i as u64, (addr, width_bits));
+            }
+            // Mark pages as having symbolic bytes — batch per-page
+            let mut current_page_num = u64::MAX;
+            let mut current_page: Option<MemoryPage> = None;
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                let page_num = byte_addr >> 12;
+                let offset = (byte_addr & PAGE_MASK) as u16;
+                if page_num != current_page_num {
+                    // Flush previous page
+                    if let Some(p) = current_page.take() {
+                        self.pages.insert(current_page_num, p);
+                        self.dirty_pages.insert(current_page_num);
+                    }
+                    current_page_num = page_num;
+                    current_page = self.pages.get(&page_num).cloned();
+                }
+                if let Some(ref mut p) = current_page {
+                    p.mark_symbolic(offset, 1);
+                }
+            }
+            if let Some(p) = current_page {
+                self.pages.insert(current_page_num, p);
+                self.dirty_pages.insert(current_page_num);
+            }
+            return Ok(());
+        }
+
+        // Concrete store
+        let concrete_val = value.to_u128();
+
+        // Convert to bytes based on endianness
+        let bytes: Vec<u8> = match self.endness {
+            Endness::Little => (0..size).map(|i| (concrete_val >> (i * 8)) as u8).collect(),
+            Endness::Big => (0..size)
+                .rev()
+                .map(|i| (concrete_val >> (i * 8)) as u8)
+                .collect(),
+        };
+
+        // Write to pages
+        let mut remaining = &bytes[..];
+        let mut current_addr = addr;
+
+        while !remaining.is_empty() {
+            let page_num = current_addr >> 12;
+            let page_offset = (current_addr & PAGE_MASK) as u16;
+            let bytes_in_page = ((PAGE_SIZE - page_offset as u64) as usize).min(remaining.len());
+
+            if let Some(page) = self.pages.get_mut(&page_num) {
+                page.store_concrete(page_offset, &remaining[..bytes_in_page]);
+                // Mark page as dirty
+                self.dirty_pages.insert(page_num);
+            }
+
+            remaining = &remaining[bytes_in_page..];
+            current_addr += bytes_in_page as u64;
+        }
+
+        // Clear any symbolic object at this address and its span entries
+        if let Some(old_sym) = self.symbolic_objects.remove(&addr) {
+            let old_bytes = old_sym.width() / 8;
+            for i in 1..old_bytes {
+                self.symbolic_spans.remove(&(addr + i as u64));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Store to a symbolic address with concretization support.
+    ///
+    /// This method handles symbolic addresses by:
+    /// 1. Trying to concretize the address to a single value (fast path)
+    /// 2. Performing conditional stores for strided access patterns
+    /// 3. Performing conditional stores for multiple possible addresses
+    /// 4. Returning an error if the address range is too large
+    ///
+    /// For multiple addresses, each candidate gets a conditional store:
+    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
+    ///
+    /// For unmapped pages in lazy regions, returns `UnmappedPageInRegion` so
+    /// the interpreter can fetch the page on-demand.
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to store to
+    /// * `value` - The value to store
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer configuration
+    ///
+    /// # Returns
+    /// Ok(()) on success, or a MemoryError if storing fails.
+    pub fn store_symbolic(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<(), MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            return self.store_concrete_lazy(concrete_addr, value);
+        }
+
+        // Try to concretize the address (write mode: falls back to Max solution)
+        match concretizer.concretize_write(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete_lazy(concrete_addr, value)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                self.store_strided(&addr, &value, base, stride, count, ctx)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                let size = value.width() / 8;
+                for &candidate in &addrs {
+                    let addr_const = RustBV::concrete(candidate as u128, addr.width());
+                    let cond = addr.eq(&addr_const, ctx);
+                    let current = self.load_concrete_lazy(candidate, size, ctx)?;
+                    let conditional_value = cond.ite(&value, &current, ctx);
+                    self.store_concrete_lazy(candidate, conditional_value)?;
+                }
+                Ok(())
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress {
+                    description: reason,
+                })
+            }
+        }
+    }
+
+    /// Store to strided addresses with conditional stores.
+    ///
+    /// For each address in the strided pattern, performs:
+    /// `mem[addr] = If(symbolic_addr == addr, new_value, mem[addr])`
+    pub(super) fn store_strided(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        base: u64,
+        stride: u64,
+        count: u64,
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+
+        for i in 0..count {
+            let candidate = base + i * stride;
+
+            // Build condition: addr == candidate
+            let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
+            let cond = addr_expr.eq(&addr_const, ctx);
+
+            // Load current value at candidate address
+            let current = self.load_concrete_lazy(candidate, size, ctx)?;
+
+            // Build conditional value
+            let conditional_value = cond.ite(value, &current, ctx);
+
+            // Store the conditional value
+            self.store_concrete_lazy(candidate, conditional_value)?;
+        }
+
+        Ok(())
+    }
+
+    /// Unified symbolic store that handles all concretization results in Rust.
+    ///
+    /// This method replaces the Python fallback for symbolic memory stores.
+    /// It handles all cases by performing conditional stores for each candidate address:
+    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to store to
+    /// * `value` - The value to store
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer
+    ///
+    /// # Returns
+    /// Ok(()) on success, or an error if storing fails.
+    pub fn store_symbolic_unified(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<Option<ConcretizationResult>, MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            self.store_concrete_automap(concrete_addr, value)?;
+            return Ok(Some(ConcretizationResult::Single(concrete_addr)));
+        }
+
+        // Try to concretize the address (write mode: falls back to Max solution)
+        let result = concretizer.concretize_write(&addr, ctx);
+        match &result {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete_automap(*concrete_addr, value)?;
+                Ok(Some(result))
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // Prepare addresses by auto-mapping
+                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
+
+                // Perform conditional stores for each ready address
+                self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)?;
+                Ok(Some(result))
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                let (base, stride, count) = (*base, *stride, *count);
+                // Prepare strided region
+                self.prepare_strided_region(base, stride, count, value.width() / 8);
+                // Use existing strided store
+                self.store_strided(&addr, &value, base, stride, count, ctx)?;
+                Ok(Some(result))
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                // Return error so caller can fall back to Python's memory model,
+                // which handles large symbolic address ranges natively.
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress { description: reason.clone() })
+            }
+        }
+    }
+
+    /// Store using a pre-computed concretization result.
+    /// Single addresses store concretely. All other symbolic results are deferred
+    /// to pending_writes for lazy materialization on load.
+    pub fn store_with_concretization(
+        &mut self,
+        addr: &RustBV,
+        value: RustBV,
+        conc_result: &ConcretizationResult,
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        match conc_result {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete_automap(*concrete_addr, value)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
+                self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
+                self.store_strided(addr, &value, *base, *stride, *count, ctx)
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                // Return error so caller can fall back to Python's memory model,
+                // which handles large symbolic address ranges natively.
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
+            }
+            ConcretizationResult::Failed(reason) => {
+                Err(MemoryError::SymbolicAddress { description: reason.clone() })
+            }
+        }
+    }
+
+    /// Perform conditional stores to multiple addresses.
+    ///
+    /// For each candidate address, performs:
+    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
+    pub(super) fn store_conditional_multiple(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        addrs: &[u64],
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+        let mut counter = 0u64;
+
+        for &candidate in addrs {
+            // Build condition: addr == candidate
+            let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
+            let cond = addr_expr.eq(&addr_const, ctx);
+
+            // Load current value (with unconstrained fallback)
+            let current = self.load_concrete_or_unconstrained(candidate, size, ctx, &mut counter);
+
+            // Build conditional value: If(addr == candidate, new_value, current)
+            let conditional_value = cond.ite(value, &current, ctx);
+
+            // Store the conditional value with auto-mapping
+            self.store_concrete_automap(candidate, conditional_value)?;
+        }
+
+        Ok(())
+    }
+
+    /// Store to a concrete address, returning UnmappedPageInRegion for lazy regions.
+    pub fn store_concrete_lazy(
+        &mut self,
+        addr: u64,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+
+        // Check if pages are mapped
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+
+        for page_num in start_page..end_page {
+            if !self.pages.contains_key(&page_num) {
+                // Page not mapped - check if it's in a lazy region
+                if self.is_in_lazy_region(page_num) {
+                    return Err(MemoryError::UnmappedPageInRegion {
+                        page_addr: page_num << 12,
+                    });
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_num << 12,
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+        }
+
+        // Permission checks live in store_concrete; this wrapper only adds
+        // lazy-region detection for unmapped pages.
+        self.store_concrete(addr, value)
+    }
+
+    /// Store to a concrete address with lazy region support.
+    ///
+    /// # Deprecation Warning
+    ///
+    /// This function previously auto-mapped zero pages for unmapped regions,
+    /// but that behavior caused state divergence with Python's actual backer
+    /// data. Now it returns UnmappedPageInRegion error so callers can fall
+    /// back to Python callbacks to handle the store correctly.
+    ///
+    /// If you need auto-mapping behavior for internal Rust operations that
+    /// don't involve Python state, use `store_concrete_automap_internal`.
+    pub fn store_concrete_automap(
+        &mut self,
+        addr: u64,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+
+        // Check all pages are mapped - do NOT auto-map
+        for page_num in start_page..end_page {
+            if !self.pages.contains_key(&page_num) {
+                let page_addr = page_num << 12;
+                if self.is_in_lazy_region(page_num) {
+                    // Return error so caller can fall back to Python
+                    return Err(MemoryError::UnmappedPageInRegion { page_addr });
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_addr,
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+        }
+
+        // All pages mapped, proceed with store
+        self.store_concrete(addr, value)
+    }
+
+    /// Store to a concrete address with internal auto-mapping.
+    ///
+    /// This is for internal Rust operations that don't involve Python state.
+    /// For interpreter callbacks, use `store_concrete_automap` which propagates
+    /// errors so Python can handle the store correctly.
+    pub fn store_concrete_automap_internal(
+        &mut self,
+        addr: u64,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+
+        // Auto-map any missing pages in lazy regions
+        for page_num in start_page..end_page {
+            if !self.pages.contains_key(&page_num) {
+                let page_addr = page_num << 12;
+                if self.is_in_lazy_region(page_num) {
+                    self.auto_map_zero_page(page_addr);
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: page_addr,
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+        }
+
+        // All pages now mapped, proceed with store
+        self.store_concrete(addr, value)
+    }
+}

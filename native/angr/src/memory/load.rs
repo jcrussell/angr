@@ -1,0 +1,662 @@
+//! Load operations for `SymbolicMemory`.
+//!
+//! Extracted from `memory/mod.rs` (angr-0lre). Holds the load_*/apply_pending_writes_*
+//! family in a single file. Multiple `impl SymbolicMemory` blocks across files are
+//! fine — Rust permits inherent impls to be split.
+
+use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::symbolic::{RustBV, SymContext};
+use crate::vex::Endness;
+
+use super::page::{Permission, PAGE_MASK, PAGE_SIZE};
+use super::{MemoryError, SymbolicMemory};
+
+impl SymbolicMemory {
+    /// Load bytes from memory as a RustBV.
+    pub fn load(
+        &self,
+        addr: RustBV,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // For symbolic addresses, we need to concretize or fork
+        let concrete_addr = match addr.as_u64() {
+            Some(a) => a,
+            None => {
+                // Try to evaluate the address
+                match ctx.eval(&addr) {
+                    Some(a) => a as u64,
+                    None => {
+                        return Err(MemoryError::SymbolicAddress {
+                            description: "could not resolve address".to_string(),
+                        });
+                    }
+                }
+            }
+        };
+
+        self.load_concrete(concrete_addr, size, ctx)
+    }
+
+    /// Load from a concrete address.
+    pub fn load_concrete(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // Check for stored symbolic object at exact address first
+        if let Some(sym) = self.symbolic_objects.get(&addr) {
+            if sym.width() == size * 8 {
+                return Ok(sym.clone());
+            }
+            // Partial read from a wider symbolic object
+            // e.g., reading 1 byte from a 128-byte BVS
+            if sym.width() > size * 8 {
+                let total_bits = sym.width();
+                // Endianness determines which bits correspond to byte 0.
+                // BE: byte 0 = MSB → hi = total_bits-1, lo = total_bits-size*8.
+                // LE: byte 0 = LSB → hi = size*8-1, lo = 0.
+                let (hi, lo) = match self.endness {
+                    Endness::Big => (total_bits - 1, total_bits - size * 8),
+                    Endness::Little => (size * 8 - 1, 0),
+                };
+                return Ok(sym.extract(hi, lo, ctx));
+            }
+        }
+        // Check if this address falls WITHIN a wider symbolic object
+        // stored at a lower address (e.g., reading byte 5 of a 128-byte BVS)
+        // Uses the symbolic_spans reverse index for O(1) lookup.
+        if let Some(&(base_addr, _width_bits)) = self.symbolic_spans.get(&addr) {
+            if let Some(sym) = self.symbolic_objects.get(&base_addr) {
+                let base_offset = addr - base_addr;
+                let sym_bytes = sym.width() / 8;
+                if base_offset < sym_bytes as u64
+                    && base_offset + size as u64 <= sym_bytes as u64
+                {
+                    let total_bits = sym.width();
+                    let off_bits = base_offset as u32 * 8;
+                    // BE: bytes [off, off+size) of the wide BV occupy bits
+                    //     [total-1-off_bits : total-off_bits-size*8].
+                    // LE: same byte range occupies bits
+                    //     [off_bits+size*8-1 : off_bits].
+                    let (hi, lo) = match self.endness {
+                        Endness::Big => (
+                            total_bits - off_bits - 1,
+                            total_bits - off_bits - size * 8,
+                        ),
+                        Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                    };
+                    return Ok(sym.extract(hi, lo, ctx));
+                }
+            }
+        }
+
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 - 1) >> 12;
+
+        self.check_perms_range(start_page, end_page, Permission::R)?;
+
+        let mut bytes;
+        let mut has_symbolic = false;
+
+        if start_page == end_page {
+            // Fast path: entire load within a single page (common case)
+            let page = self.pages.get(&start_page).ok_or(MemoryError::Unmapped {
+                addr: start_page << 12,
+                size: PAGE_SIZE,
+            })?;
+            let offset = (addr & PAGE_MASK) as u16;
+            bytes = page.load_concrete(offset, size as u16);
+            // Check symbolic markers
+            for i in 0..size as u16 {
+                if page.is_symbolic(offset + i) {
+                    has_symbolic = true;
+                    break;
+                }
+            }
+        } else {
+            // Slow path: load spans multiple pages
+            bytes = Vec::with_capacity(size as usize);
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                let page_num = byte_addr >> 12;
+                let offset = (byte_addr & PAGE_MASK) as u16;
+                if let Some(page) = self.pages.get(&page_num) {
+                    if page.is_symbolic(offset) {
+                        has_symbolic = true;
+                    }
+                    let byte = page.load_concrete(offset, 1);
+                    bytes.push(byte.get(0).copied().unwrap_or(0));
+                } else {
+                    return Err(MemoryError::Unmapped {
+                        addr: byte_addr,
+                        size: 1,
+                    });
+                }
+            }
+        }
+
+        if has_symbolic {
+            // Return stored symbolic object if available at exact address+width
+            if let Some(sym) = self.symbolic_objects.get(&addr) {
+                if sym.width() == size * 8 {
+                    return Ok(sym.clone());
+                }
+            }
+            // Try to reconstruct from per-byte symbolic objects
+            // by concatenating individual byte-level entries
+            let mut parts: Vec<RustBV> = Vec::new();
+            let mut all_found = true;
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
+                    if sym.width() == 8 {
+                        parts.push(sym.clone());
+                    } else if sym.width() > 8 {
+                        // Extract the relevant byte
+                        parts.push(sym.extract(7, 0, ctx));
+                    } else {
+                        all_found = false;
+                        break;
+                    }
+                } else {
+                    all_found = false;
+                    break;
+                }
+            }
+            if all_found && !parts.is_empty() {
+                // Concatenate bytes: first byte is at lowest address.
+                // LE: byte 0 = LSB → low bits of result → parts[N-1] :: ... :: parts[0]
+                // BE: byte 0 = MSB → high bits of result → parts[0] :: ... :: parts[N-1]
+                let result = match self.endness {
+                    Endness::Little => {
+                        let mut acc = parts[parts.len() - 1].clone();
+                        for i in (0..parts.len() - 1).rev() {
+                            acc = acc.concat(&parts[i], ctx);
+                        }
+                        acc
+                    }
+                    Endness::Big => {
+                        let mut acc = parts[0].clone();
+                        for part in parts.iter().skip(1) {
+                            acc = acc.concat(part, ctx);
+                        }
+                        acc
+                    }
+                };
+                return Ok(result);
+            }
+            // Check for wider symbolic objects that contain our range
+            for (&sym_addr, sym_val) in &self.symbolic_objects {
+                let sym_size = sym_val.width() / 8;
+                if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
+                    let total_bits = sym_val.width();
+                    let off_bits = (addr - sym_addr) as u32 * 8;
+                    // Mirror of fast-path angr-v1q2 fix: the wide BV's byte
+                    // layout depends on memory endianness.
+                    // BE: bytes [off, off+size) occupy bits
+                    //     [total-1-off_bits : total-off_bits-size*8].
+                    // LE: same byte range occupies bits [off_bits+size*8-1 : off_bits].
+                    let (hi, lo) = match self.endness {
+                        Endness::Big => (
+                            total_bits - off_bits - 1,
+                            total_bits - off_bits - size * 8,
+                        ),
+                        Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                    };
+                    return Ok(sym_val.extract(hi, lo, ctx));
+                }
+            }
+            // Cannot reconstruct - return error for Python fallback
+            return Err(MemoryError::SymbolicAddress {
+                description: "symbolic bytes not fully tracked".to_string(),
+            });
+        }
+
+        // Convert bytes to value based on endianness
+        let value = match self.endness {
+            Endness::Little => {
+                let mut v: u128 = 0;
+                for (i, &byte) in bytes.iter().enumerate() {
+                    v |= (byte as u128) << (i * 8);
+                }
+                v
+            }
+            Endness::Big => {
+                let mut v: u128 = 0;
+                for &byte in &bytes {
+                    v = (v << 8) | (byte as u128);
+                }
+                v
+            }
+        };
+
+        Ok(RustBV::concrete(value, size * 8))
+    }
+
+    /// Load from a symbolic address with concretization support.
+    ///
+    /// This method handles symbolic addresses by:
+    /// 1. Trying to concretize the address to a single value (fast path)
+    /// 2. Building a balanced ITE tree for strided access patterns (efficient)
+    /// 3. Building an ITE chain for multiple possible addresses
+    /// 4. Returning an error if the address range is too large
+    ///
+    /// For unmapped pages in lazy regions, returns `UnmappedPageInRegion` so
+    /// the interpreter can fetch the page on-demand.
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to load from
+    /// * `size` - Number of bytes to load
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer configuration
+    ///
+    /// # Returns
+    /// The loaded value as a RustBV, or a MemoryError if loading fails.
+    pub fn load_symbolic(
+        &self,
+        addr: RustBV,
+        size: u32,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<RustBV, MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            return self.load_concrete_lazy(concrete_addr, size, ctx);
+        }
+
+        // Try to concretize the address (read mode: falls back to Any single solution)
+        let base_value = match concretizer.concretize_read(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.load_concrete_lazy(concrete_addr, size, ctx)?
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                return Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                });
+            }
+            ConcretizationResult::Failed(reason) => {
+                return Err(MemoryError::SymbolicAddress {
+                    description: reason,
+                });
+            }
+        };
+
+        // Apply any pending writes that might overlap this symbolic load
+        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
+    }
+
+    /// Load from a concrete address, returning an unconstrained symbolic value if unmapped.
+    ///
+    /// This is used as a fallback in ITE construction when an address cannot be mapped.
+    /// Instead of failing, we return a fresh symbolic value representing unknown memory.
+    ///
+    /// # Arguments
+    /// * `addr` - The address to load from
+    /// * `size` - Number of bytes to load
+    /// * `ctx` - The solver context
+    /// * `counter` - A counter for generating unique symbolic names
+    ///
+    /// # Returns
+    /// The loaded value, or a fresh unconstrained symbolic value if unmapped.
+    pub fn load_concrete_or_unconstrained(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+        counter: &mut u64,
+    ) -> RustBV {
+        match self.load_concrete_lazy(addr, size, ctx) {
+            Ok(value) => value,
+            Err(_) => {
+                if self.zero_fill_unconstrained {
+                    RustBV::concrete(0, size * 8)
+                } else {
+                    // Generate a unique name for the unconstrained memory read
+                    *counter += 1;
+                    RustBV::symbolic(ctx, format!("unc_mem_{:x}_{}", addr, counter), size * 8)
+                }
+            }
+        }
+    }
+
+    /// Unified symbolic load that handles all concretization results in Rust.
+    ///
+    /// This method replaces the Python fallback for symbolic memory loads.
+    /// It handles all cases:
+    /// - Single address: direct load
+    /// - Multiple addresses: build balanced ITE tree with auto-mapping
+    /// - Strided access: build balanced ITE tree
+    /// - Too large range: return unconstrained symbolic value
+    /// - Failed concretization: return error
+    ///
+    /// The key improvement is that unmapped pages in lazy regions are auto-mapped
+    /// before ITE construction, and truly unmapped addresses use unconstrained
+    /// symbolic values instead of failing.
+    ///
+    /// # Arguments
+    /// * `addr` - The symbolic address to load from
+    /// * `size` - Number of bytes to load
+    /// * `ctx` - The solver context
+    /// * `concretizer` - The address concretizer
+    ///
+    /// # Returns
+    /// The loaded value as a RustBV, or an error if loading fails.
+    pub fn load_symbolic_unified(
+        &mut self,
+        addr: RustBV,
+        size: u32,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<RustBV, MemoryError> {
+        // Fast path: concrete address
+        if let Some(concrete_addr) = addr.as_u64() {
+            return self.load_concrete_automap(concrete_addr, size, ctx);
+        }
+
+        // Try to concretize the address (read mode: falls back to Any single solution)
+        let base_value = match concretizer.concretize_read(&addr, ctx) {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.load_concrete_automap(concrete_addr, size, ctx)?
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
+
+                if ready_addrs.is_empty() {
+                    return Ok(RustBV::symbolic(
+                        ctx,
+                        format!("mem_all_unmapped_{}", size),
+                        size * 8,
+                    ));
+                }
+
+                let addr_clone = addr.clone();
+                self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)?
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                self.prepare_strided_region(base, stride, count, size);
+                self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                // Return error so caller can fall back to Python's memory model,
+                // which handles large symbolic address ranges natively.
+                return Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                });
+            }
+            ConcretizationResult::Failed(reason) => {
+                return Err(MemoryError::SymbolicAddress { description: reason });
+            }
+        };
+
+        // Apply any pending writes that might overlap this symbolic load
+        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
+    }
+
+    /// Load from a concrete address with lazy region support.
+    ///
+    /// # Deprecation Warning
+    ///
+    /// This function previously auto-mapped zero pages for unmapped regions,
+    /// but that behavior caused state divergence with Python's actual backer
+    /// data. Now it propagates the UnmappedPageInRegion error so callers can
+    /// fall back to Python callbacks to get correct data.
+    ///
+    /// If you need auto-mapping behavior for internal Rust operations that
+    /// don't involve Python state, use `load_concrete_automap_internal`.
+    pub fn load_concrete_automap(
+        &mut self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
+        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
+    }
+
+    /// Load from a concrete address with internal auto-mapping.
+    ///
+    /// This is for internal Rust operations that don't involve Python state.
+    /// For interpreter callbacks, use `load_concrete_automap` which propagates
+    /// errors so Python can provide correct backer data.
+    pub fn load_concrete_automap_internal(
+        &mut self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // First try normal load
+        let base = match self.load_concrete_lazy_inner(addr, size, ctx) {
+            Ok(v) => v,
+            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
+                // Auto-map the missing page
+                self.auto_map_zero_page(page_addr);
+                // Retry the load
+                self.load_concrete_lazy_inner(addr, size, ctx)?
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
+    }
+
+    /// Apply pending writes that might overlap a concrete load address.
+    /// Returns the value with ITE chains for any matching pending writes.
+    pub(super) fn apply_pending_writes_concrete(
+        &self,
+        _addr: u64,
+        _size: u32,
+        base_value: RustBV,
+        _ctx: &SymContext,
+    ) -> RustBV {
+        // Pending writes overlay is disabled during execution.
+        // Stores go through the eager concretize+ITE path.
+        // Pending writes are only used for deferred flushing on export.
+        base_value
+    }
+
+    /// Apply pending writes that might overlap a symbolic load address.
+    /// Returns the value with ITE chains for any matching pending writes.
+    pub(super) fn apply_pending_writes_symbolic(
+        &self,
+        _addr: &RustBV,
+        _size: u32,
+        base_value: RustBV,
+        _ctx: &SymContext,
+    ) -> RustBV {
+        // Pending writes overlay is disabled during execution.
+        // See apply_pending_writes_concrete for rationale.
+        base_value
+    }
+
+    /// Load from a concrete address, returning UnmappedPageInRegion for lazy regions.
+    ///
+    /// This is similar to load_concrete but distinguishes between:
+    /// - Unmapped page in a lazy region (can be fetched)
+    /// - Totally unmapped memory (error)
+    pub fn load_concrete_lazy(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
+        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
+    }
+
+    /// Internal implementation of load_concrete_lazy.
+    pub(super) fn load_concrete_lazy_inner(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        // Check for stored symbolic object first
+        if let Some(sym) = self.symbolic_objects.get(&addr) {
+            if sym.width() == size * 8 {
+                return Ok(sym.clone());
+            }
+        }
+
+        let start_page = addr >> 12;
+        let end_page = (addr + size as u64 - 1) >> 12;
+
+        self.check_perms_range(start_page, end_page, Permission::R)?;
+
+        let mut bytes;
+        let mut has_symbolic = false;
+
+        if start_page == end_page {
+            // Fast path: single page
+            let page = match self.pages.get(&start_page) {
+                Some(p) => p,
+                None => {
+                    if self.is_in_lazy_region(start_page) {
+                        return Err(MemoryError::UnmappedPageInRegion {
+                            page_addr: start_page << 12,
+                        });
+                    } else {
+                        return Err(MemoryError::Unmapped {
+                            addr: start_page << 12,
+                            size: PAGE_SIZE,
+                        });
+                    }
+                }
+            };
+            let offset = (addr & PAGE_MASK) as u16;
+            bytes = page.load_concrete(offset, size as u16);
+            for i in 0..size as u16 {
+                if page.is_symbolic(offset + i) {
+                    has_symbolic = true;
+                    break;
+                }
+            }
+        } else {
+            // Slow path: cross-page load
+            bytes = Vec::with_capacity(size as usize);
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                let page_num = byte_addr >> 12;
+                let offset = (byte_addr & PAGE_MASK) as u16;
+
+                if let Some(page) = self.pages.get(&page_num) {
+                    if page.is_symbolic(offset) {
+                        has_symbolic = true;
+                    }
+                    let byte = page.load_concrete(offset, 1);
+                    bytes.push(byte.get(0).copied().unwrap_or(0));
+                } else {
+                    if self.is_in_lazy_region(page_num) {
+                        return Err(MemoryError::UnmappedPageInRegion {
+                            page_addr: page_num << 12,
+                        });
+                    } else {
+                        return Err(MemoryError::Unmapped {
+                            addr: byte_addr,
+                            size: 1,
+                        });
+                    }
+                }
+            }
+        }
+
+        if has_symbolic {
+            // Return stored symbolic object if available and width matches
+            if let Some(sym) = self.symbolic_objects.get(&addr) {
+                if sym.width() == size * 8 {
+                    return Ok(sym.clone());
+                }
+            }
+
+            // Try to combine individual byte objects into a multi-byte value
+            // This handles the case where hooks write byte-by-byte
+            let mut all_bytes_have_objects = true;
+            let mut byte_objects: Vec<RustBV> = Vec::with_capacity(size as usize);
+            for i in 0..size {
+                let byte_addr = addr + i as u64;
+                if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
+                    if sym.width() == 8 {
+                        byte_objects.push(sym.clone());
+                    } else {
+                        all_bytes_have_objects = false;
+                        break;
+                    }
+                } else {
+                    all_bytes_have_objects = false;
+                    break;
+                }
+            }
+
+            if all_bytes_have_objects && byte_objects.len() == size as usize {
+                // Combine bytes into a single value using Concat
+                // For little-endian, the first byte is the LSB
+                match self.endness {
+                    Endness::Little => {
+                        // Start with the MSB (last byte) and concat towards LSB
+                        let mut result = byte_objects.pop().expect("byte_objects non-empty when size > 0");
+                        while let Some(byte) = byte_objects.pop() {
+                            result = result.concat(&byte, ctx);
+                        }
+                        return Ok(result);
+                    }
+                    Endness::Big => {
+                        // Start with the MSB (first byte) and concat towards LSB
+                        let mut result = byte_objects.remove(0);
+                        for byte in byte_objects {
+                            result = result.concat(&byte, ctx);
+                        }
+                        return Ok(result);
+                    }
+                }
+            }
+
+            // Try to extract from a wider symbolic object that contains our range
+            for (&sym_addr, sym_val) in &self.symbolic_objects {
+                let sym_size = sym_val.width() / 8;
+                if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
+                    let byte_offset = (addr - sym_addr) as u32;
+                    let high = (byte_offset + size) * 8 - 1;
+                    let low = byte_offset * 8;
+                    return Ok(sym_val.extract(high, low, ctx));
+                }
+            }
+
+            // Cannot reconstruct - return error for Python fallback
+            return Err(MemoryError::SymbolicAddress {
+                description: "symbolic bytes not fully tracked".to_string(),
+            });
+        }
+
+        // Convert bytes to value based on endianness
+        let value = match self.endness {
+            Endness::Little => {
+                let mut v: u128 = 0;
+                for (i, &byte) in bytes.iter().enumerate() {
+                    v |= (byte as u128) << (i * 8);
+                }
+                v
+            }
+            Endness::Big => {
+                let mut v: u128 = 0;
+                for &byte in &bytes {
+                    v = (v << 8) | (byte as u128);
+                }
+                v
+            }
+        };
+
+        Ok(RustBV::concrete(value, size * 8))
+    }
+}
