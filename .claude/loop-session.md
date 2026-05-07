@@ -1,59 +1,55 @@
-# Loop session notes (2026-05-07, 110th loop session)
+# Loop session notes (2026-05-07, 111th loop session)
 
-## Task: angr-6n56 — Arc-tree teardown investigation → implementation (DONE)
+## Task: angr-nnov — Fill out RustStateProxy to a faithful SimState substitute (DONE)
 
-### Decision: ship Arc<[RustBV]> inline operands instead of arena/bump
+### What landed (commit 4de453a9a)
 
-The bead asked to explore arena/bump allocation, Box<Inner>+Cow, or
-small-RustBV optimization. Investigation found that the cleanest
-zero-cost-abstraction win was simpler: change
-`RustBV::Expression.operands` from `Arc<[Arc<RustBV>]>` to
-`Arc<[RustBV]>`. The inner Arc layer paid an allocation cost without
-delivering the subtree sharing it theoretically enabled — every
-constructor called `Arc::new(self)` on freshly cloned operands.
+- **RustCallStackFrameProxy** — single-frame view exposing `call_site_addr`,
+  `func_addr`, `ret_addr`, `stack_ptr` plus angr-compatible aliases
+  (`current_function_address`, `current_return_target`, `current_stack_pointer`).
+  `next` walks toward the bottom of the stack.
+- **RustCallStackProxy** — iterable/indexable/`__len__`-able container, top
+  frame first (matches angr CallStack iteration order). Lazily fetches
+  frames via `mgr.get_state_call_stack(state_id)` and reverses on cache.
+- **_NoOpInspectProxy** — silent no-op for `state.inspect.b(...)` etc.
+- `RustStateProxy.callstack` and `.inspect` properties wire them up.
+- 4 new tests in `tests/engines/test_rust_exploration.py`:
+  - `TestCallStackProxy::test_callstack_empty_on_unit_state`
+  - `TestCallStackProxy::test_callstack_proxy_after_explore`
+  - `TestCallStackProxy::test_callstack_indexing_and_walk`
+  - `TestInspectProxy::test_inspect_breakpoint_calls_succeed`
 
-### Bench results (criterion, before→after on same machine)
+### Test results
 
-| Bench                       | Before    | After    | Δ      |
-|-----------------------------|-----------|----------|--------|
-| rustbv_symbolic/add         | 69.1 ns   | 48.1 ns  | -30%   |
-| rustbv_symbolic/concat      | 68.97 ns  | 48.5 ns  | -30%   |
-| rustbv_symbolic/extract_32  | 43.9 ns   | 37.0 ns  | -16%   |
-| rustbv_symbolic/reverse     | 44.5 ns   | 37.3 ns  | -16%   |
-| rustbv_concrete/*           | unchanged | (within ±2% noise) |
-| rustbv_build_z3_ast         | unchanged | (within ±2% noise) |
-
-Real-world impact: negligible. fauxware sanity = 0.35s, unchanged.
-Z3 still dominates real workloads (fairlight Z3 ~95%).
-
-### Files changed (commit fad930315)
-
-- native/angr/src/symbolic/value.rs — field type, ~40 ctors, helpers,
-  `(*operands[0]).clone()` → `operands[0].clone()`.
-- native/angr/src/claripy_bridge.rs — `operand.as_ref()` → `operand`
-- native/angr/src/interpreter_cb/mod.rs — same in `bv_cache_key`.
-- native/angr/src/vex/ops.rs — `build_float_expr` direct from `Vec<RustBV>`.
-
-### Tests
-
-- python -m pytest tests/engines/test_rust_exploration.py — 254/254 PASS
-- cargo check --release: clean
-- cargo bench --bench vex_engine: criterion auto-comparison reports
-  the +43%/+42%/+19%/+19% regression from baseline → which is the
-  inverse of the optimization win.
+258/258 passing in test_rust_exploration.py (was 254 before the 4 new tests).
+No Rust changes — purely Python additions, no rebuild needed.
 
 ### Memories saved
 
-- `invariant-rustbv-operands-inline` — the type change + reasoning.
-- `benchmark-rustbv-inline-operands` — before/after numbers.
-- `rustbv-microbench-vs-realworld` — lesson about microbench framing.
+- `invariant-rust-callstack-order` — frame ordering between Rust Vec push
+  order and angr top-first iteration; RustCallStackProxy reverses on
+  construction.
+- `project-rust-state-proxy-status` — what's still missing in the proxy
+  after this session (options/globals placeholders, libc/trace, memory store).
 
-### Next session
+### Bead audit findings
 
-Other ready tasks:
-- angr-pufm (P1) symbolic concretization fallback — still needs split
-  per previous-session note.
+The bead's 2026-05-06 audit listed 3 gaps: stdin BVS evaluator, posix
+stdout buffer, fork_state_solver — all already implemented in
+RustPosixProxy / proxy code. Only the explicit acceptance criterion
+(`state.callstack` works) remained. After this session: closed.
+
+### Next session candidates (P2 ready, all big refactors)
+
+- angr-pufm (P1) symbolic concretization fallback — multi-session, needs
+  splitting per audit notes.
 - angr-prem (P2) MemoryLayer trait refactor.
 - angr-fk0m (P2) unify state mixin classes.
-- angr-3vrj (P3) StateMetadata dataclass.
-- angr-ja0b (P3) StepOutcome trait.
+- angr-4j5u (P2) decompose 41-field god struct.
+- angr-m2hf (P2) unified error trait.
+- angr-wqao (P2) split rust_manager.py 2800 lines.
+
+P3 well-bounded options:
+- angr-cmy1 — register_procedure() PyO3 API.
+- angr-ja0b — StepOutcome trait (mostly cosmetic; large mechanical change).
+- angr-x3xu — SolverBridge protocol (Python-only).
