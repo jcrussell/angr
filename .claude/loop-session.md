@@ -1,71 +1,76 @@
-# Loop session notes (2026-05-07, 97th loop session)
+# Loop session notes (2026-05-07, 98th loop session)
 
-## Task: angr-cz5f — Make state.max_history configurable (CLOSED)
+## Task: angr-xvnz — Wire-or-remove state.dirty_registers (CLOSED)
 
-Bead closed (commit b91fc4e81).
+Bead closed (commit d320e67c3).
 
-### Problem
+### Decision: REMOVED
 
-`RustSimState.max_history` defaulted to 1000 but had no Python-facing
-knob and — more importantly — was being silently bypassed during
-exploration. The interpreter accumulates `detailed_history` for an
-entire step, then `stepping.rs` calls `state.set_detailed_history(...)`
-which previously just *assigned* the buffer. So long blocks could
-exceed the cap without ever triggering FIFO eviction.
+Reasons:
 
-### Changes
+1. **Structurally incomplete.** The `u128` bitset addressed `offset / 4`
+   for `bit < 128`, capping coverage at 512 bytes of register file.
+   amd64 state_size is ~1664 bytes, so XMM/YMM/AVX writes silently fell
+   off the edge.
+2. **Already cheap to fork.** `RegisterFile.data` is a small `Vec<u8>`
+   (~1.7KB on amd64) that clones cheaply. No fork-perf win to chase.
+3. **Zero live consumers.** Verified by repo-wide grep:
+   - `RustSimState::export_changes` (the only reader of
+     `get_dirty_registers`) had no callers.
+   - `RustExplorationManager::get_pending_dirty_registers` PyO3 method
+     had no Python caller.
+   - The register half of `clear_pending_dirty_tracking` was symmetric
+     dead code with no caller relying on it.
 
-- `native/angr/src/exploration/mod.rs`:
-  - Added `max_history: usize` field on `RustExplorationManager`
-    (default 1000), plus `set_max_history` / `get_max_history` PyO3
-    methods. The setter retroactively applies to every state already
-    in any stash.
-  - `create_state` and `add_state` now call `state.set_max_history(...)`
-    so newly created/added states inherit the manager's cap.
+### Out of scope (intentionally kept)
+
+- `Interpreter`, `Engine`, `CallbackInterpreter` each have their own
+  `dirty_registers` field. The bead is scoped to state.rs:607–608, and
+  those have separate set sites and copy-from-interpreter logic
+  (`engine.rs:1017,1391`). Leaving them alone.
+- `StateChanges` struct + `apply_changes` are still used by
+  `exploration/mod.rs:2983` (`pending_callback_complete` writeback).
+- `dirty_pages` (memory-side tracking) untouched — only registers half
+  removed.
+
+### Files changed
+
 - `native/angr/src/state.rs`:
-  - `set_detailed_history` now drains the oldest entries when the
-    incoming buffer exceeds the cap (FIFO eviction). This was the
-    actual blast radius of the cap not working.
-  - Added two cargo unit tests
-    (`test_set_detailed_history_honors_cap`,
-    `test_set_detailed_history_unlimited`).
-- `angr/exploration/rust_manager.py`:
-  - Added `max_history=1000` kwarg to `RustExplorationManager.__init__`,
-    only pushed to native side when non-default.
-- `tests/engines/test_rust_exploration.py`:
-  - Three new tests in `TestDetailedHistory`:
-    - `test_max_history_get_set_default`
-    - `test_max_history_caps_recorded_history` (uses fauxware,
-      cap=5 — would have caught the set_detailed_history bypass)
-    - `test_max_history_default_bounds_long_run`
+  - Removed `dirty_registers: u128` field from `RustSimState`.
+  - Removed all 6 init sites (3 constructors + fork + 2 internal helpers).
+  - Stripped `if bit < 128 { dirty |= ... }` blocks from
+    `set_register` and `set_register_by_offset`.
+  - Removed `get_dirty_registers`, `clear_dirty_registers` (impl) and
+    their PyO3 wrappers on `RustSimState` (the wrapper struct).
+  - Removed `export_changes` (orphaned).
+- `native/angr/src/exploration/mod.rs`:
+  - Removed `get_pending_dirty_registers` PyO3 method.
+  - `clear_pending_dirty_tracking` now only clears dirty pages.
 
 ### Test counts
 
-- `cargo test --release --lib` → 517/517 (was 515, +2)
-- `pytest tests/engines/test_rust_exploration.py` → 247/247 (was 244, +3)
+- `cargo test --release --lib` → 517/517 (no change vs. last session).
+- `pytest tests/engines/test_rust_exploration.py` → 247/247.
 
-## Memories saved
+### Memories saved
 
-- `invariant-set-detailed-history-cap` — any cap on detailed_history
-  must trim in `set_detailed_history` too, not just
-  `add_to_history`/`add_history_entry`. Interpreter writeback bypasses
-  the per-push checks.
-- `venv-z3-headers-workaround` — `.venv/lib/python3.12/site-packages/z3/include/`
-  was missing on this machine. Build with
-  `Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build ...` and copy
-  `target/release/librustylib.so` → `angr/rustylib.cpython-312-x86_64-linux-gnu.so`
-  manually because `pip install -e .` is broken on this venv
-  (resolvelib import error).
+- `invariant-register-dirty-bitset-incomplete` — if anyone reintroduces
+  register-dirty tracking, use Vec<bool>/HashSet sized to
+  `arch.state_size() / 4`, not a u128. Old bitset capped at 512 bytes
+  silently dropped XMM/YMM/AVX writes.
+- `dead-export-changes` — `export_changes` was orphaned because only
+  `apply_changes` (write-from-Python direction) is used in pending
+  callback handling. Don't resurrect it; the memory side already has
+  `get_dirty_page_addrs()`.
 
 ## Bead state
 
-`angr-cz5f` CLOSED.
+`angr-xvnz` CLOSED.
 
 ## Suggested next slices (P3, contained)
 
-- `angr-xvnz` — Wire-or-remove dirty_registers. Profile first.
-- `angr-3vrj` — StateMetadata dataclass to replace positional dicts/tuples (Python-only).
-- `angr-4t2u` — NAMING_CONVENTIONS.md + minor renames (doc + small refactor).
+- `angr-3vrj` — StateMetadata dataclass (Python-only).
+- `angr-4t2u` — NAMING_CONVENTIONS.md + minor renames.
 - `angr-p7oa` — diff-state harness for callable find/avoid predicates.
-- Memory module continuation (uncreated): extract `flush_pending_writes` and
-  `merge` into separate files in `memory/`. Pure cuts.
+- Memory module continuation (uncreated): extract `flush_pending_writes`
+  and `merge` into separate files in `memory/`. Pure cuts.
