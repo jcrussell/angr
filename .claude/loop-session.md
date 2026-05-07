@@ -1,34 +1,31 @@
-# Loop session notes (2026-05-07, 92nd loop session)
+# Loop session notes (2026-05-07, 93rd loop session)
 
 ## Task: angr-0lre — Split memory/mod.rs into focused modules (in progress)
 
-This session extracted two more slices out of `native/angr/src/memory/mod.rs`:
+This session extracted the embedded test block out of `memory/mod.rs`:
 
-1. `memory/symbolic_objects.rs` (115 lines) — the eight symbolic-object
-   preservation methods that own `symbolic_objects` / `symbolic_spans` /
-   `imported_addrs`:
-   - `get_symbolic_regions`
-   - `import_symbolic_value`
-   - `get_symbolic_object`
-   - `has_symbolic_objects`
-   - `symbolic_object_count`
-   - `is_imported_addr`
-   - `symbolic_objects_iter`
-   - `clear_symbolic_objects`
-   Commit: `fa59ba344`. mod.rs 3039 → 2941.
+- `memory/tests.rs` (992 lines, new): the `#[cfg(test)] mod tests`
+  block that previously lived inline in `mod.rs`. Tests dedented from
+  inside-mod indentation to module-body indentation; behavior unchanged.
+  The block keeps full access to `SymbolicMemory`'s private fields
+  (`symbolic_objects`, `symbolic_spans`, `pages`) because `tests.rs`
+  is still a child module of `memory`.
 
-2. `memory/concretize_glue.rs` (75 lines) — concretizer ↔ page-table glue:
-   - `prepare_addresses_for_ite` (kept `pub`)
-   - `prepare_strided_region` (was `fn`, moved as `pub(super)` so `mod.rs`
-     callers can still reach it).
-   Commit: `6a791be8a`. mod.rs 2941 → 2881.
+`mod.rs` declares the new module with:
+```rust
+#[cfg(test)]
+mod tests;
+```
+(added next to the other `mod xxx;` lines at the top of mod.rs).
+
+Commit: `ab1f223a0`. mod.rs 2881 → 1888 lines (-993).
 
 ## Tests / build
 
 - `Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo check --release` clean
 - `cargo build --release` clean
-- 243/243 tests pass (`pytest tests/engines/test_rust_exploration.py`)
-- fauxware benchmark: ~107ms (matches baseline)
+- `cargo test --release --lib memory::` → 31 memory tests pass
+- pytest tests/engines/test_rust_exploration.py → 243/243 pass
 
 ## Build env note (still applies)
 
@@ -44,30 +41,35 @@ the editable install is missing from `.venv` site-packages
 
 ```
 memory/
-  mod.rs              2881 lines  (was 3039 going in, -158 this session)
+  mod.rs              1888 lines  (was 2881, -993 this session)
+  tests.rs             992 lines  (NEW — the cfg(test) block)
   ite_builder.rs       219 lines
-  symbolic_objects.rs  115 lines  (NEW)
-  concretize_glue.rs    75 lines  (NEW)
+  symbolic_objects.rs  115 lines
+  concretize_glue.rs    75 lines
   page.rs              251 lines
 ```
 
 ## Bead state
 
 `angr-0lre` remains open. Acceptance criteria: memory.rs <1000 lines
-(currently 2881; need −1881). Three of the four named slices in the bead
-description are now done (page, ite_builder, symbolic_objects,
-concretize_glue). Public API of `SymbolicMemory` unchanged.
+(currently 1888; need −889). Public API of `SymbolicMemory` unchanged.
 
 ## Suggested next slices
 
-The remaining bulk in `mod.rs` is roughly:
-- The `#[cfg(test)] mod tests` block (~700 lines) — a big easy win.
-  Move to `memory/tests.rs` and declare `#[cfg(test)] mod tests;` in mod.rs.
-- The load/store family (~1500 lines): `load_concrete_*`, `load_symbolic_*`,
-  `store_concrete_*`, `store_symbolic_*`, `apply_pending_writes_*`. This
-  would split naturally as `memory/load.rs` + `memory/store.rs` + a small
-  `memory/pending_writes.rs`. Heavier — touches private fields and shares
-  state machinery.
+The remaining bulk in `mod.rs` is the load/store family (~1500 lines):
+`load_concrete_*`, `load_symbolic_*`, `store_concrete_*`,
+`store_symbolic_*`, `apply_pending_writes_*`. Natural splits:
+- `memory/load.rs` (load_concrete + load_symbolic_unified + helpers)
+- `memory/store.rs` (store_concrete + store_symbolic + helpers)
+- `memory/pending_writes.rs` (apply_pending_writes + PendingWrite glue)
 
-Tests file slice is the recommended next bite for a single session:
-mechanical, no behavior change, clears ~25% of mod.rs in one shot.
+Heavier than the previous slices: these touch many private fields
+(`pages`, `symbolic_objects`, `symbolic_spans`, `imported_addrs`,
+`pending_writes`, `enforce_permissions`) and share helper functions.
+Likely needs `pub(super)` on several helpers and possibly inherent-impl
+blocks split across files (multiple `impl SymbolicMemory` in different
+files is fine — Rust permits it). Test it on `load.rs` first (lighter
+than store) and build incrementally.
+
+After load/store split: should easily be <1000 lines and clear the
+acceptance criteria for angr-0lre.
