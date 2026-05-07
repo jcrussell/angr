@@ -1,45 +1,51 @@
-# Loop session notes (2026-05-07, 130th loop session)
+# Loop session notes (2026-05-07, 131st loop session)
 
-## Task: angr-2jyk — Native amd64 mmap syscall handler
+## Task: angr-n28w — FP transcendentals: sin / cos / exp / log / pow / etc.
 
-### Status: closed (commit 7391b2426)
+### Status: closed (commit ef020d101)
 
 ### What landed
-1. RustSimState.mmap_base: u64 field (default 0xC100_0000 = heap_base
-   0xC0000000 + heap_size 0x00800000 * 2). Mirrored in 3 constructors
-   + 5 fork/merge sites alongside posix_brk. Accessors mmap_base() /
-   set_mmap_base() in native/angr/src/state.rs.
-2. NativeMmapSyscall at AMD64/9, mirroring procedures/posix/mmap.py.
-   Native subset: concrete addr/length/prot/flags/fd/offset, anonymous
-   (MAP_ANONYMOUS, fd[31:0]==-1), exactly one of MAP_SHARED/MAP_PRIVATE.
-   addr=0 → allocate from mmap_base + bump page-aligned;
-   addr!=0 → map at addr if range unmapped.
-3. Bad-flags fast path returns -1 directly (matches Python).
-4. Falls back (Err) for: symbolic any arg, file-backed, MAP_FIXED+
-   collision, addr=0 collision (Python loops to find alt addr).
-5. Tests: 20 new in syscalls::mmap (cargo).
+Added concrete-only fast paths for x87 FPU transcendentals plus
+ARM AArch64 FRECPX. New module `native/angr/src/vex/transcendentals.rs`
+with `try_concrete_binop_rm` and `try_concrete_triop_rm`. Wired into
+`VEXOps::binop` (Raw arm) and `VEXOps::binop_with_rm` (new Raw arm
+before the falls-through-to-binop wildcard).
 
-### Why no cross-engine sync was added
-- mmap_base advances are NOT propagated back to Python state.heap.mmap_base
-  on fallback (same drift pattern as posix_brk).
-- Acceptable while syscall fallbacks rarely interleave with successful
-  native calls. Future cross-engine sync work (angr-0z34 area) should
-  address both fields together at the syscall callback boundary.
-- Documented inline in mmap.rs module comment + state.rs field comment.
+Opcodes covered (all hex from libvex_ir.h, validated via pyvex.const):
+- Binops:  SinF64 0x14e6, CosF64 0x14e7, TanF64 0x14e8,
+           2xm1F64 0x14e9, RecpExpF64 0x14fa, RecpExpF32 0x14fb
+- Triops:  AtanF64 0x14de, Yl2xF64 0x14df, Yl2xp1F64 0x14e0,
+           ScaleF64 0x14e5
 
-### Tests
-- 49 passed in syscalls::* (cargo, was 29)
-- 261 passed in tests/engines/test_rust_exploration.py
-- fauxware sanity: OK rust 0.36s — no regression
+Symbolic inputs return None → existing fresh-sym fallback in
+`expressions.rs` (Z3 has no transcendental theory).
+
+### Why this fixes a real bug
+Previously `IROp::Raw(opcode)` returned `Err(RawOpcode)` and the
+fallback in `IRExpr::Binop`/`IRExpr::Triop` substituted concrete 0
+for concrete inputs (silently wrong) or fresh-unconstrained-symbolic
+for symbolic. The bead description called this "Python fallback" —
+this was inaccurate. Concrete-input transcendentals were returning 0,
+not getting executed in Python.
+
+### Validation
+- Rust unit tests: 9 new in vex::transcendentals, all pass
+- Python integration: 261/261 in test_rust_exploration.py
+- fauxware: OK rust 0.35s
+- ekopartyctf2016_sokohashv2 (uses fyl2x/fscale/f2xm1):
+  Before: 12.091s (silent-zero path), After: 11.29s (correct concrete)
 
 ### Memories saved
-- invariant-mmap-base-mirror — field/accessors/sync caveat
-- invariant-mmap-syscall-semantics — fd[31:0] mask, bad-flags fast
-  path, prot[2:0] mask
+- invariant-vex-transcendentals — opcode constants, dispatch sites,
+  how to add new transcendentals
+- avoid-silent-zero-raw-fallback — describes the prior buggy behavior
+  so future debug sessions recognize the smell
+- build-env-pyo3-workaround — required env steps because pip install
+  is broken in .venv (PYO3_PYTHON env, target dir is workspace root)
 
-### Build env (still broken)
-Same workaround as 129th session: pip install -e fails (broken
-setuptools in .venv). Used `cargo build --release` + cp librustylib.so
-→ angr/rustylib.cpython-312-x86_64-linux-gnu.so + PYTHONPATH for tests.
+### Build env (still broken — use workaround)
+- `PYO3_PYTHON=$(which python) cargo build --release --manifest-path native/angr/Cargo.toml`
+- `cp ./target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
+- Tests need `PYTHONPATH=$(pwd)` to find `angr` from the repo
 
 ## Status: complete
