@@ -13,6 +13,7 @@ use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
+mod concretize_glue;
 mod ite_builder;
 mod page;
 mod symbolic_objects;
@@ -799,48 +800,8 @@ impl SymbolicMemory {
     // ==================== UNIFIED SYMBOLIC MEMORY OPERATIONS ====================
     // These methods handle all symbolic memory operations entirely in Rust,
     // eliminating the need for Python callbacks that were previously broken.
-
-    /// Prepare addresses for ITE construction by auto-mapping unmapped pages.
-    ///
-    /// For each candidate address, if its page is unmapped but in a lazy region,
-    /// auto-map it as a zero page. Returns the list of addresses that are ready
-    /// for ITE construction (i.e., their pages are mapped).
-    ///
-    /// # Arguments
-    /// * `addrs` - List of candidate addresses
-    /// * `size` - Size of the access in bytes
-    ///
-    /// # Returns
-    /// List of addresses whose pages are mapped. Unmapped addresses are skipped
-    /// to allow fallback to Python callback which has access to actual backer data.
-    ///
-    /// # Note
-    /// This function no longer auto-maps zero pages. When addresses are in lazy
-    /// regions but unmapped, they are skipped. Callers should check if the result
-    /// is incomplete and fall back to Python if needed.
-    pub fn prepare_addresses_for_ite(&mut self, addrs: &[u64], _size: u32) -> Vec<u64> {
-        let mut ready_addrs = Vec::with_capacity(addrs.len());
-
-        for &addr in addrs {
-            let page_num = addr >> 12;
-
-            // Check if page is already mapped
-            if self.pages.contains_key(&page_num) {
-                ready_addrs.push(addr);
-                continue;
-            }
-
-            // Page not mapped - skip this address
-            // The caller should fall back to Python callback which can provide
-            // actual backer data instead of speculative zeros
-            //
-            // NOTE: We intentionally do NOT auto-map zero pages here. Python may
-            // have actual data for this page from backers (file contents, initialized
-            // data). Speculatively creating zero pages causes state divergence.
-        }
-
-        ready_addrs
-    }
+    // See memory/concretize_glue.rs for prepare_addresses_for_ite and
+    // prepare_strided_region.
 
     /// Load from a concrete address, returning an unconstrained symbolic value if unmapped.
     ///
@@ -950,27 +911,6 @@ impl SymbolicMemory {
 
         // Apply any pending writes that might overlap this symbolic load
         Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
-    }
-
-    /// Prepare a strided memory region (no-op - kept for API compatibility).
-    ///
-    /// # Note
-    /// This function previously auto-mapped zero pages for unmapped addresses,
-    /// but that caused state divergence with Python's actual backer data.
-    /// Now it does nothing - unmapped pages will trigger Python fallback.
-    ///
-    /// # Arguments
-    /// * `base` - Base address of the strided pattern
-    /// * `stride` - Stride between consecutive addresses
-    /// * `count` - Number of addresses in the pattern
-    /// * `size` - Size of each access in bytes
-    fn prepare_strided_region(&mut self, _base: u64, _stride: u64, _count: u64, _size: u32) {
-        // No longer auto-maps zero pages.
-        // The interpreter will fall back to Python callback which can provide
-        // actual backer data instead of speculative zeros.
-        //
-        // NOTE: Strided loads/stores may fail and trigger Python fallback.
-        // This is intentional - Python has the correct memory state.
     }
 
     /// Unified symbolic store that handles all concretization results in Rust.
