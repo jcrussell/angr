@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::symbolic::{BVOp, FloatOpKind, FloatPrec, RustBV, SymContext};
 
 use super::ir::{FCmpKind, IROp, IRType};
+use super::transcendentals;
 
 /// Map a VEX float `IRType` to a Z3 FP precision.
 #[inline]
@@ -304,8 +305,17 @@ impl VEXOps {
             IROp::VFMin { elem, count } => Self::vec_float_minmax(left, right, elem, count, /*is_max=*/ false, ctx),
             IROp::VFMax { elem, count } => Self::vec_float_minmax(left, right, elem, count, /*is_max=*/ true, ctx),
 
-            // Raw opcode
-            IROp::Raw(code) => Err(OpError::RawOpcode(code)),
+            // Raw opcode — try concrete x87 transcendental fast path first
+            // (Iop_SinF64, Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_RecpExp*).
+            // These arrive as Binop(rm, x); `left` carries rm, `right` the value.
+            // Symbolic falls through to the existing fresh-symbolic fallback.
+            IROp::Raw(code) => {
+                if let Some(result) = transcendentals::try_concrete_binop_rm(code, &left, &right) {
+                    Ok(result)
+                } else {
+                    Err(OpError::RawOpcode(code))
+                }
+            }
 
             // Float conversions that take a rounding mode as the first argument
             // VEX rounding modes: 0=nearest, 1=down, 2=up, 3=zero (truncate)
@@ -436,6 +446,16 @@ impl VEXOps {
             IROp::FSub(t) => (FloatOpKind::SubRm, t),
             IROp::FMul(t) => (FloatOpKind::MulRm, t),
             IROp::FDiv(t) => (FloatOpKind::DivRm, t),
+            IROp::Raw(code) => {
+                // x87 Triop transcendentals: Iop_AtanF64, Iop_Yl2xF64,
+                // Iop_Yl2xp1F64, Iop_ScaleF64. Concrete-only fast path;
+                // symbolic falls through to the existing fresh-symbolic
+                // fallback in expressions.rs::IRExpr::Triop.
+                if let Some(result) = transcendentals::try_concrete_triop_rm(code, &rm, &left, &right) {
+                    return Ok(result);
+                }
+                return Self::binop(op, left, right, ctx);
+            }
             _ => return Self::binop(op, left, right, ctx),
         };
 

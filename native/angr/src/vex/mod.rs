@@ -18,6 +18,7 @@ mod lifter;
 pub mod opcode_map;
 pub mod ops;
 pub mod pyvex_bridge;
+pub mod transcendentals;
 
 pub use dirty::{DirtyHelperDispatch, DirtyHelperResult};
 pub use ir::*;
