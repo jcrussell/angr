@@ -1,67 +1,86 @@
-# Loop session notes (2026-05-07, 104th loop session)
+# Loop session notes (2026-05-07, 105th loop session)
 
-## Task: angr-ar8r — HashMap clone audit in RustSimState::fork (CLOSED)
+## Task: angr-75y3 — FxHasher for SymbolicMemory hot maps (CLOSED)
 
-Bead closed (commit 76aef1ca2).
+Bead closed (commit df3a5c53e).
 
 ### What changed
 
-`native/angr/src/state.rs`:
+Added `rustc-hash = "2.1"` as a direct dep on the angr crate (was
+already transitively present via z3-sys/syn).
 
-- Wrapped `FileSystem.fds: HashMap<u32, FileDescriptor>` in
-  `Arc<HashMap<...>>`. Mutating methods (open / open_with_content / close /
-  write / read / seek) call `Arc::make_mut` lazily; close/read/seek peek
-  the read path first to skip CoW when the op would be a no-op.
-- Wrapped `RustSimState.hooks: HashSet<u64>` in `Arc<HashSet<u64>>`.
-  add_hook/remove_hook/clear_hooks use Arc::make_mut. clear_hooks skips
-  the clone when already empty.
-- Wrapped `RustSimState.environment: HashMap<Vec<u8>, Vec<u8>>` in
-  `Arc<HashMap<...>>`. setenv uses Arc::make_mut.
+`native/angr/src/memory/mod.rs`: swapped four u64-keyed std collections
+to their rustc_hash equivalents.
 
-### Measured impact (state_fork criterion bench)
+| Field            | Before                       | After                          |
+|------------------|------------------------------|--------------------------------|
+| symbolic_objects | HashMap<u64, RustBV>         | FxHashMap<u64, RustBV>         |
+| symbolic_spans   | HashMap<u64, (u64, u32)>     | FxHashMap<u64, (u64, u32)>     |
+| dirty_pages      | HashSet<u64>                 | FxHashSet<u64>                 |
+| imported_addrs   | HashSet<u64>                 | FxHashSet<u64>                 |
+
+The local HashSet<u64> temporaries in `try_merge_with` are off the hot
+path and stay explicitly std::collections-qualified.
+
+### Measured impact (criterion --baseline before)
 
 ```
-state_fork: 338.86 ns -> 283.80 ns (-16.4%, p < 0.05)
+memory_concrete/store_8bytes : 53.28 ns -> 33.04 ns  (-38.0%, p < 0.05)
+memory_fork_16pages          : 45.30 ns -> 38.24 ns  (-15.5%, p < 0.05)
+state_fork                   :283.80 ns -> 256.29 ns ( -9.8%, p < 0.05)
+memory_concrete/load_8bytes  : 27.98 ns -> 27.49 ns  ( -1.6%, noise)
+memory_concrete/load_1byte   : 21.35 ns -> 21.24 ns  ( -0.6%, noise)
+memory_symbolic_load_16range : 1.629 ms -> 1.630 ms  (no change, Z3-bound)
 ```
 
-Other fork-related benches unchanged (symcontext_fork_scaling 215 ns at
-all sizes — still O(1) post angr-w6nq). 254 Python tests + 517 Rust unit
-tests + 11/12 regression benchmarks pass (csgames2018 was already
-failing on master pre-change with "list index out of range" — verified
-by stashing the change and reproducing).
+store_8bytes is the headline: every store hits dirty_pages.insert plus
+a symbolic_objects.remove on the no-symbolic path; both are now ~2-3x
+faster on u64 keys. fork_16pages drops because cloning two
+FxHashMaps + two FxHashSets is meaningfully cheaper than the std
+SipHasher-based versions. load is mostly empty-table .get() so the
+hash itself dominates and SipHasher already short-circuits a near-empty
+table — small win there.
+
+### Tests
+
+- 254 Python tests pass (tests/engines/test_rust_exploration.py)
+- 517 Rust unit tests pass
+- 11/12 regression benchmarks pass; csgames2018 was already broken on
+  master per `avoid-csgames2018-as-regression-signal` memory.
 
 ### Memories saved
 
-- `benchmark-state-fork-arc-wrap` — bench numbers + still-extant clone
-  hot spots (RegisterFile fields, HeapMetadata, SymbolicMemory internals).
-- `invariant-arc-make-mut-cow` — pattern for read-mostly RustSimState
-  fields: wrap in Arc, peek read path first in mutators to skip CoW for
-  no-op calls. Avoid Arc-wrap for fields mutated on every fork.
-- `avoid-csgames2018-as-regression-signal` — csgames2018 is broken on
-  master, not a regression signal.
+- `benchmark-memory-fxhash` — bench numbers + reasoning per field.
+- `invariant-fxhash-internal-keys` — pattern: u64-keyed internal
+  collections on hot paths should use FxHasher; remaining candidates
+  (RegisterFile.symbolic, HeapMetadata, RustExplorationManager
+  internal id maps).
+- `reference-rustc-hash-dep` — how to add the dep + that it's already
+  transitive so lockfile delta is one line.
 
 ### Build note
 
-Same as last session: `pip install -e .` is broken in venv. Workaround:
+Same as last session: `pip install -e .` broken in venv. Workaround:
 
     Z3_SYS_Z3_HEADER=/usr/include/z3.h cargo build --manifest-path \
         native/angr/Cargo.toml --release --lib
     cp target/release/librustylib.so \
         angr/rustylib.cpython-312-x86_64-linux-gnu.so
 
-(The Python z3 package install is missing headers, so we point the
-build at the system z3 headers via the env var. The .cargo/config.toml
-rule honors Z3_SYS_Z3_HEADER if set.)
+The run_single.py harness needs `PYTHONPATH=/home/ubuntu/repos/angr`
+when invoked from a multiprocessing-spawn context — the spawned child
+doesn't inherit the activated venv's site-packages path even though the
+parent does.
 
 ## Suggested next slices
 
-- `angr-6n56` (Arc-tree teardown for transient RustBV results) — 36% of
-  symbolic arithmetic time. Bigger refactor (likely needs an arena).
-- `angr-pufm` lazy guarded-entries (still open).
-- Smaller fork-time wins still on the table:
-  - `RegisterFile.data: Vec<u8>` (2.51% in fork) — but mutated every
-    register write, so Arc::make_mut might break even.
-  - `RegisterFile.symbolic: HashMap<u32, RustBV>` (2.48%) — mutated
-    every symbolic write.
-  - `HeapMetadata` (1%) — mutated every malloc/free.
-  - `SymbolicMemory` internals (HashMap 2.70%, HashSet 1.71%).
+- `angr-6n56` (P2) — Arc-tree teardown for transient RustBV results,
+  36% of symbolic arithmetic time. Bigger refactor (likely needs an
+  arena).
+- Apply same FxHasher swap to other u64-keyed hot maps:
+  - `RegisterFile.symbolic: HashMap<u32, RustBV>` (2.48% in fork)
+  - `HeapMetadata` internals (1% in fork)
+  - `RustExplorationManager` id maps (state_fork still has fork
+    overhead from these)
+- `angr-pufm` (P1) lazy guarded-entries (still open, deferred multiple
+  times — needs split per the audit note).
