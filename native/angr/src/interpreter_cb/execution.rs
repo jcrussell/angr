@@ -256,16 +256,28 @@ impl<'a> CallbackInterpreter<'a> {
                 }
                 Err(e) => {
                     let forks = self.take_deferred_forks();
-                    // Unsupported operations should fall back to Python VEX engine
-                    // instead of moving the state to the errored stash
-                    let result = match &e {
-                        CbExecutionError::Unsupported(_) | CbExecutionError::NeedPythonFallback(_) => {
+                    // Dispatch via the variant's declared FallbackStrategy.
+                    // Adding a CbExecutionError variant requires choosing a
+                    // strategy in mod.rs; that decision lands here.
+                    let result = match e.strategy() {
+                        FallbackStrategy::PythonCallback => {
                             RunResult::NeedPythonVEX { addr: self.pc, reason: e.to_string() }
                         }
-                        _ => RunResult::Error {
+                        FallbackStrategy::Panic => RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
                         },
+                        FallbackStrategy::Silent => {
+                            // Unreachable today: no CbExecutionError variant
+                            // is tagged Silent. If a future variant uses it,
+                            // the interpreter loop must define a sound default
+                            // *before* propagating Err here, so Silent
+                            // surfacing past the dispatcher is a bug.
+                            RunResult::Error {
+                                message: format!("silent strategy unreachable: {}", e),
+                                addr: self.pc,
+                            }
+                        }
                     };
                     return (result, blocks_executed, forks);
                 }

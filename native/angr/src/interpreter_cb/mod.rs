@@ -177,36 +177,100 @@ define_execution_stats! {
 /// `PythonVEXFallback` events and bump a dedicated visibility counter.
 pub const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 
+/// How an error variant should be handled by the top-level interpreter loop.
+///
+/// Every [`CbExecutionError`] variant maps to one of these via
+/// [`CbExecutionError::strategy`]. Adding a new variant requires an explicit
+/// strategy decision — there is no default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackStrategy {
+    /// Hand the failing block to Python's VEX engine and resume from there.
+    /// Used for VEX features the Rust interpreter doesn't model
+    /// (e.g. unsupported CCalls, VECRET/GSPTR, oversized symbolic addresses).
+    PythonCallback,
+    /// Surface the error to the caller as `RunResult::Error`. The state
+    /// moves to the errored stash; no recovery is attempted. Used for
+    /// genuine bugs (TypeMismatch, UnknownTemp, InvalidIR, lifter errors,
+    /// callback-side failures).
+    Panic,
+    /// Reserved: no current `CbExecutionError` variant uses this. The
+    /// interpreter does have *non-error* silent substitution paths (e.g.
+    /// the `or_else` fallbacks for unsupported binops in
+    /// `expressions.rs`); those return `Ok(...)` and never reach the
+    /// strategy dispatcher. This variant exists so future variants can
+    /// opt into a "log and synthesize a sound default" policy explicitly
+    /// instead of silently swallowing.
+    #[allow(dead_code)]
+    Silent,
+}
+
 /// Errors during callback-based VEX execution.
+///
+/// Each variant has a documented [`FallbackStrategy`]. The dispatcher in
+/// `execution.rs::run` consults [`Self::strategy`] to decide whether the
+/// error becomes `RunResult::NeedPythonVEX` (recoverable) or
+/// `RunResult::Error` (terminal).
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum CbExecutionError {
-    /// Memory error from callback.
+    /// Memory error from callback. Strategy: [`FallbackStrategy::Panic`].
+    /// These come from underlying memory-model failures (unmapped, perms,
+    /// solver timeout) that the interpreter can't paper over.
     #[error("memory error: {0}")]
     Memory(String),
-    /// Operation error.
+    /// Operation error. Strategy: [`FallbackStrategy::Panic`].
+    /// VEX op execution failed in a non-recoverable way; lifting to Python
+    /// would just rerun the same op.
     #[error("operation error: {0}")]
     Op(#[from] OpError),
-    /// Invalid VEX IR.
+    /// Invalid VEX IR. Strategy: [`FallbackStrategy::Panic`].
     #[error("invalid VEX IR: {0}")]
     InvalidIR(String),
-    /// Unsupported feature.
+    /// Unsupported feature. Strategy: [`FallbackStrategy::PythonCallback`].
+    /// Triggered when the Rust interpreter encounters VEX it doesn't model
+    /// (e.g. complex symbolic memory operations, certain DirtyHelpers,
+    /// symbolic exit targets mid-block).
     #[error("unsupported: {0}")]
     Unsupported(String),
-    /// Type mismatch.
+    /// Type mismatch. Strategy: [`FallbackStrategy::Panic`].
     #[error("type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: IRType, got: IRType },
-    /// Unknown temporary variable.
+    /// Unknown temporary variable. Strategy: [`FallbackStrategy::Panic`].
     #[error("unknown temporary t{0}")]
     UnknownTemp(u32),
-    /// Python callback error.
+    /// Python callback error. Strategy: [`FallbackStrategy::Panic`].
+    /// The Python side already had its chance and raised; rerunning the
+    /// block via the VEX engine would not help.
     #[error("callback error: {0}")]
     Callback(String),
-    /// Block lifting error.
+    /// Block lifting error. Strategy: [`FallbackStrategy::Panic`].
     #[error("lift error: {0}")]
     LiftError(String),
-    /// Needs Python fallback for special expressions (P7 fix)
+    /// Needs Python fallback for special expressions (P7 fix).
+    /// Strategy: [`FallbackStrategy::PythonCallback`]. Distinct from
+    /// `Unsupported` so call sites can request fallback explicitly without
+    /// having to invent a "feature missing" message (e.g. VECRET/GSPTR,
+    /// non-eflags CCalls).
     #[error("need Python fallback: {0}")]
     NeedPythonFallback(String),
+}
+
+impl CbExecutionError {
+    /// Map this error to its declared [`FallbackStrategy`]. The match is
+    /// exhaustive so adding a variant forces an explicit strategy choice.
+    pub fn strategy(&self) -> FallbackStrategy {
+        match self {
+            CbExecutionError::Unsupported(_) | CbExecutionError::NeedPythonFallback(_) => {
+                FallbackStrategy::PythonCallback
+            }
+            CbExecutionError::Memory(_)
+            | CbExecutionError::Op(_)
+            | CbExecutionError::InvalidIR(_)
+            | CbExecutionError::TypeMismatch { .. }
+            | CbExecutionError::UnknownTemp(_)
+            | CbExecutionError::Callback(_)
+            | CbExecutionError::LiftError(_) => FallbackStrategy::Panic,
+        }
+    }
 }
 
 /// Result of concretizing a symbolic jump target.
