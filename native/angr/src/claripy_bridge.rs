@@ -904,6 +904,20 @@ pub fn rustbv_to_claripy(
     bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
+    // Memoize by RustBV pointer identity to dedupe shared subtrees in DAGs.
+    // sym-write's symbolic-store ITE chains have ~25 unique Arc-shared
+    // subtrees expanded into a 142k-node tree without dedup; converting that
+    // takes ~2.7s vs ~tens of ms with memoization.
+    let mut memo: HashMap<usize, Py<PyAny>> = HashMap::new();
+    rustbv_to_claripy_memo(py, bv, claripy_mod, &mut memo)
+}
+
+fn rustbv_to_claripy_memo(
+    py: Python<'_>,
+    bv: &RustBV,
+    claripy_mod: &Bound<'_, PyAny>,
+    memo: &mut HashMap<usize, Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
     use crate::symbolic::BVOp;
 
     // Check cache first for Symbolic variants
@@ -916,7 +930,21 @@ pub fn rustbv_to_claripy(
         }
     }
 
-    match bv {
+    // Memoization: only Expression variants are worth caching (the recursive case
+    // with potential DAG sharing). For Expression, key by `bv` pointer so two
+    // sibling references to the same operand inside a shared `Arc<[RustBV]>` only
+    // pay the conversion cost once.
+    let memo_key = if matches!(bv, RustBV::Expression { .. }) {
+        let k = bv as *const RustBV as usize;
+        if let Some(cached) = memo.get(&k) {
+            return Ok(cached.clone_ref(py));
+        }
+        Some(k)
+    } else {
+        None
+    };
+
+    let result: PyResult<Py<PyAny>> = match bv {
         RustBV::Concrete { value, width } => {
             // Create claripy.BVV(value, width)
             if *width <= 64 {
@@ -974,7 +1002,7 @@ pub fn rustbv_to_claripy(
             // Recursively convert operands to claripy ASTs
             let raw_args: Vec<Py<PyAny>> = operands
                 .iter()
-                .map(|operand| rustbv_to_claripy(py, operand, claripy_mod))
+                .map(|operand| rustbv_to_claripy_memo(py, operand, claripy_mod, memo))
                 .collect::<Result<_, _>>()?;
 
             // Validate all args to ensure they're claripy ASTs with correct widths
@@ -1329,6 +1357,16 @@ pub fn rustbv_to_claripy(
                 }
             }
         }
+    };
+
+    match result {
+        Ok(ast) => {
+            if let Some(k) = memo_key {
+                memo.insert(k, ast.clone_ref(py));
+            }
+            Ok(ast)
+        }
+        Err(e) => Err(e),
     }
 }
 
