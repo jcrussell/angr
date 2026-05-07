@@ -1,70 +1,93 @@
-# Loop session notes (2026-05-07, 113th loop session)
+# Loop session notes (2026-05-07, 114th loop session)
 
-## Task: angr-cmy1 — register_procedure() PyO3 API (DONE)
+## Task: angr-4t2u — NAMING_CONVENTIONS.md (DONE)
 
-### What landed (commit add6c5ceb)
+### What landed (commit 572fe4585)
 
-- New `PythonNativeProcedure` in
-  `native/angr/src/procedures/python_proc.rs` — wraps a Python callable
-  so it satisfies the `NativeSimProcedure` trait. Concrete u64 args are
-  extracted via `extract_concrete_arg` (symbolic args bubble up
-  `SymbolicArgument` so the dispatcher falls back to Python's regular
-  SimProcedure path). With GIL it calls `cb.call1((args,))` and accepts
-  `Optional[int]` back, wrapping the int in a `RustBV` of arch bits.
-- New `pub mod python_proc;` in `native/angr/src/procedures/mod.rs`.
-- New PyO3 method `register_python_procedure(name, num_args, no_return,
-  callable)` on `RustExplorationManager` in `exploration/mod.rs:1995`.
-  Wraps the callable in `Arc::new(PythonNativeProcedure::new(...))` and
-  registers via the existing `NativeProcedureRegistry::register`. No
-  changes needed in the dispatch loop — existing path at
-  `exploration/mod.rs:2598` already handles any registered procedure.
-- Tests:
-  - 4 Rust `#[test]`s in `python_proc.rs::tests` covering basic call,
-    symbolic-arg fallback, None return, and registry round-trip.
-  - 2 Python tests in
-    `tests/engines/test_rust_exploration.py::TestRustExplorationManagerUnit`:
-    `test_register_python_procedure_appears_in_listing` and
-    `test_register_python_procedure_invoked_via_simprocedure_hook`.
+- New `native/angr/NAMING_CONVENTIONS.md` (93 lines, well under 200)
+  codifying parameter naming for `native/angr/src`:
+  - Canonical names: `addr` (u64), `ctx` (&SymContext), `py` (Python),
+    `state` (&mut RustSimState), `data` (&[u8]), `bv` (&RustBV
+    generic), `value` (&RustBV stored).
+  - Method prefixes (`call_*`, `has_*`, `is_*`, `try_*`, `add_*`,
+    `set_*`).
+  - Local bindings in VEX op handlers (`val`, `vec`, `lo`, `hi`,
+    etc.) explicitly allowed.
+  - RustBV ownership guidance.
+  - Intentional exceptions:
+    - `segmentlist.rs` uses `address: u64` because it mirrors the
+      angr Python public API in `angr/rustylib/__init__.pyi`.
+    - `value: &RustBV` over `bv: &RustBV` in memory store paths
+      (semantic role is "value being stored").
+    - `bytes: &[u8]` (not `data:`) in lift/decode paths
+      (specifically machine-code bytes).
+
+### No rename pass
+
+Codebase audit showed the crate is already consistent:
+- `addr: u64` 240 sites vs `address: u64` 8 sites (all in
+  segmentlist, intentional).
+- `ctx: &SymContext` 166 sites, no `context` or `cx` outliers.
+- `py: Python` 102 sites, no `python` outliers.
+- `state: &mut RustSimState` 85 sites + 13 owned + 5 borrowed, no
+  `st`/`sim_state` outliers.
+
+Outliers like `val: RustBV` (3) live in VEX op handlers
+(`vex/ops.rs`, `vex/ccall.rs`) where the doc explicitly endorses
+short local names. Not renamed.
 
 ### Test results
 
-- 261/261 Python tests pass (was 259, +2 new).
-- 4/4 new Rust unit tests pass.
+- 261/261 Python tests pass (no code changed; doc-only commit).
+- No Rust changes, so cargo check skipped.
 
 ### Memories saved
 
-- `python-native-procedure-api` — full API contract and implementation
-  pointers.
-- `invariant-nativesimprocedure-name-static` — the trait's
-  `name() -> &'static str` constraint and the `Box::leak` pattern used
-  for dynamic names.
-- `venv-z3-headers-missing` — recovery procedure when `.venv` lacks
-  the z3 headers (must `cp /usr/include/z3*.h` into expected path).
-
-### Setup hiccup
-
-- `.venv/lib/python3.12/site-packages/z3/include/` was missing; cargo
-  check fails until headers are copied from `/usr/include/`.
-- `pip` in the venv is corrupted (`ImportError: cannot import name
-  'RequirementInformation'`). Used the `venv-rebuild-cargo-direct-copy`
-  workflow: `cargo build --release` then `cp
-  target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
-- `tests/benchmarks/run_single.py` failed with "No module named
-  'angr'" in subprocess (unrelated to this change — likely
-  multiprocessing spawn vs. fork; tests cover the same surface).
+- `invariant-naming-conventions` — full convention map, including
+  intentional exceptions, with pointers to the doc and the public
+  Python API rationale.
 
 ### Next session candidates
 
-P1 / P2 ready (from previous session log, still unblocked):
-- angr-pufm (P1) symbolic concretization fallback — multi-session,
-  audit recommends splitting in two children.
+P1 / P2 ready (still unblocked):
+- angr-pufm (P1) symbolic concretization fallback — multi-session.
 - angr-prem (P2) MemoryLayer trait refactor.
-- angr-fk0m (P2) unify state mixin classes.
+- angr-fk0m (P2) unify state mixin classes (rust_state_sync /
+  rust_state_cache / rust_state_export).
 - angr-4j5u (P2) decompose 95-field god struct.
 - angr-m2hf (P2) unified error trait.
 - angr-wqao (P2) split rust_manager.py 2800 lines.
 
-P3 well-bounded:
-- angr-3vrj — StateMetadata dataclass (56 call sites, mostly mechanical).
-- angr-ja0b — StepOutcome trait refactor.
-- angr-khth — Init pipeline phase split.
+P3 ready:
+- angr-3vrj — StateMetadata dataclass (~85 metadata refs across 5
+  files; bigger than the bead's "56 sites" estimate).
+- angr-ja0b — StepOutcome trait (rejected this session as the
+  proposed trait design doesn't fit the actual variant shapes;
+  see analysis below).
+- angr-khth — init pipeline phase split (init pipeline already
+  fairly modular: `_run_python_init_if_needed`,
+  `_try_in_memory_init_cache`, `_try_disk_init_cache`,
+  `_load_init_from_disk_cache`, `_save_init_to_disk_cache`,
+  `_apply_state_metadata`).
+- angr-csd1 — split PythonCallbacks into focused traits (touches
+  48 callsites across 12 Rust files).
+- angr-x3xu — SolverBridge protocol (note: bead description
+  overstates RustSolverContext coupling; manager mostly calls
+  state.solver.eval, not RustSolverContext directly).
+- angr-qrhl — VEX op trait dispatcher (needs perf measurement).
+- angr-czph, angr-bkcs, angr-n28w — feature work.
+
+### Notes on angr-ja0b (skipped)
+
+The current StepError has 4 variants with very different shapes:
+- NeedCallback(PendingCallback) — rich, drives the run loop's
+  callback-dispatch flow with find/avoid handling and event
+  construction (~180 lines in mod.rs:2752–2929).
+- Deadended(state) / Error(state, msg) / Unconstrained(state) — each
+  one-liner: push to terminal stash.
+
+A trait with `action() -> Action` + `state() -> &RustSimState` would
+push the rich NeedCallback handling either into the outcome's
+`action()` (bloats the trait impl with run-loop knowledge) or back
+into the run loop's match arm (defeats the trait's purpose). The
+current pattern matching is the natural Rust expression.
