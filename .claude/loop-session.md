@@ -1,55 +1,67 @@
-# Loop session notes (2026-05-07, 111th loop session)
+# Loop session notes (2026-05-07, 112th loop session)
 
-## Task: angr-nnov — Fill out RustStateProxy to a faithful SimState substitute (DONE)
+## Task: angr-ygjh — State plugin coverage: callstack, libc, trace (DONE)
 
-### What landed (commit 4de453a9a)
+### What landed (commit 7f769212d)
 
-- **RustCallStackFrameProxy** — single-frame view exposing `call_site_addr`,
-  `func_addr`, `ret_addr`, `stack_ptr` plus angr-compatible aliases
-  (`current_function_address`, `current_return_target`, `current_stack_pointer`).
-  `next` walks toward the bottom of the stack.
-- **RustCallStackProxy** — iterable/indexable/`__len__`-able container, top
-  frame first (matches angr CallStack iteration order). Lazily fetches
-  frames via `mgr.get_state_call_stack(state_id)` and reverses on cache.
-- **_NoOpInspectProxy** — silent no-op for `state.inspect.b(...)` etc.
-- `RustStateProxy.callstack` and `.inspect` properties wire them up.
-- 4 new tests in `tests/engines/test_rust_exploration.py`:
-  - `TestCallStackProxy::test_callstack_empty_on_unit_state`
-  - `TestCallStackProxy::test_callstack_proxy_after_explore`
-  - `TestCallStackProxy::test_callstack_indexing_and_walk`
-  - `TestInspectProxy::test_inspect_breakpoint_calls_succeed`
+- New `_sync_rust_callstack_to_state(state, state_id)` in
+  `angr/exploration/rust_state_export.py` (next to the existing
+  register/memory sync helpers).
+- Wired into all four paths inside `_get_stash_states`:
+  cached fast-path (L207), parent-state copy (L239), stepping-state
+  copy (L262), snapshot fallback (L284).
+- Reads `self._rust_mgr.get_state_call_stack(state_id)` (push-order:
+  outermost first), builds an angr CallStack linked list bottom-up so
+  the head is the most-recent Rust call, then
+  `state.register_plugin("callstack", chain)`.
+- New test `TestCallStackProxy::test_simstate_callstack_synced_after_explore`
+  asserts `mgr.found[0].callstack.func_addr == raw[-1].callee_addr`
+  (top frame matches the most recent Rust call).
+
+### Why this was the right scope
+
+The callstack proxy work from session 111 (angr-nnov) gave callers
+`state.callstack` on RustStateProxy. But `mgr.found` returns full angr
+SimStates, and those still had only the entry-state's empty CallStack.
+This session closes the gap on the angr SimState path. libc / trace
+plugin coverage was deprioritized in the bead body ("can wait"), so the
+callstack-only acceptance criterion is what was needed.
 
 ### Test results
 
-258/258 passing in test_rust_exploration.py (was 254 before the 4 new tests).
-No Rust changes — purely Python additions, no rebuild needed.
+259/259 passing in test_rust_exploration.py (was 258 before the new test).
 
 ### Memories saved
 
-- `invariant-rust-callstack-order` — frame ordering between Rust Vec push
-  order and angr top-first iteration; RustCallStackProxy reverses on
-  construction.
-- `project-rust-state-proxy-status` — what's still missing in the proxy
-  after this session (options/globals placeholders, libc/trace, memory store).
+- `invariant-callstack-sync-export-pipeline` — there are four export
+  paths in `_get_stash_states`; any per-state sync helper must hit all
+  four.
+- `callstack-rebuild-pattern` — exact algorithm to rebuild an angr
+  CallStack chain from a push-order Rust frames list, including the
+  `next_frame` ordering rule and `register_plugin` install.
+- `venv-binaries-can-disappear` — recovery procedure when `.venv/bin`
+  vanishes between sessions while site-packages survives.
 
-### Bead audit findings
+### Setup hiccup
 
-The bead's 2026-05-06 audit listed 3 gaps: stdin BVS evaluator, posix
-stdout buffer, fork_state_solver — all already implemented in
-RustPosixProxy / proxy code. Only the explicit acceptance criterion
-(`state.callstack` works) remained. After this session: closed.
+`.venv/` was missing `bin/`, `include/`, and `pyvenv.cfg` at session
+start (only `lib/` survived). Recovered by copying a fresh
+`python3 -m venv` reference's bin/include and writing `pyvenv.cfg`
+manually. Site-packages (angr editable, claripy, z3-solver) were intact.
 
-### Next session candidates (P2 ready, all big refactors)
+### Next session candidates
 
-- angr-pufm (P1) symbolic concretization fallback — multi-session, needs
-  splitting per audit notes.
+P1 / P2 ready:
+- angr-pufm (P1) symbolic concretization fallback — multi-session,
+  needs splitting per audit notes.
 - angr-prem (P2) MemoryLayer trait refactor.
 - angr-fk0m (P2) unify state mixin classes.
-- angr-4j5u (P2) decompose 41-field god struct.
+- angr-4j5u (P2) decompose 95-field god struct.
 - angr-m2hf (P2) unified error trait.
 - angr-wqao (P2) split rust_manager.py 2800 lines.
 
-P3 well-bounded options:
-- angr-cmy1 — register_procedure() PyO3 API.
-- angr-ja0b — StepOutcome trait (mostly cosmetic; large mechanical change).
+P3 well-bounded:
+- angr-cmy1 — register_procedure() PyO3 API (Python callable shim).
+- angr-3vrj — StateMetadata dataclass (56 call sites, mostly
+  mechanical).
 - angr-x3xu — SolverBridge protocol (Python-only).
