@@ -220,6 +220,9 @@ class RustStateExportMixin:
                 # register values computed during Rust execution are visible
                 # (e.g., rdi holding a computed flag address in asisctf).
                 self._sync_rust_registers_to_state(state, state_id)
+                # Sync Rust-tracked call frames so state.callstack reflects
+                # the call/ret events that happened during Rust execution.
+                self._sync_rust_callstack_to_state(state, state_id)
                 states.append(state)
 
         # For states not in cache, try parent state or snapshot export
@@ -247,6 +250,7 @@ class RustStateExportMixin:
                     # root, so it doesn't have Rust-computed values yet)
                     self._sync_rust_memory_to_state(state, sid)
                     self._sync_rust_registers_to_state(state, sid)
+                    self._sync_rust_callstack_to_state(state, sid)
                     # Cache the copy so it stays alive (prevents weakref death
                     # during chained attribute access like sm.active[1].posix.dumps())
                     self._state_cache[sid] = state
@@ -269,6 +273,7 @@ class RustStateExportMixin:
                     self._attach_rust_solver_fallback(state, sid)
                     self._sync_rust_memory_to_state(state, sid)
                     self._sync_rust_registers_to_state(state, sid)
+                    self._sync_rust_callstack_to_state(state, sid)
                     self._state_cache[sid] = state
                     states.append(state)
                     cached_ids.add(sid)
@@ -293,6 +298,7 @@ class RustStateExportMixin:
                                 self._attach_rust_solver_fallback(angr_state, snapshot.state_id)
                                 self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
+                                self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
                                 self._state_cache[snapshot.state_id] = angr_state
                                 states.append(angr_state)
                             except Exception as e:
@@ -374,6 +380,45 @@ class RustStateExportMixin:
                 # Expected: VEX internal registers (e.g. ip_at_syscall) that
                 # angr's register plugin doesn't expose. Log at debug only.
                 l.debug("Skipping register %s during sync: %s", reg_name, e)
+
+    def _sync_rust_callstack_to_state(self, state: "angr.SimState", state_id: int):
+        """Sync Rust-tracked call frames into state.callstack.
+
+        Rust's call_stack (push order, outermost first) is the source of truth
+        for any call/ret that happened during Rust execution. The Python state
+        was forked from a template before exploration, so its CallStack plugin
+        does not reflect Rust-side push/pop. This rebuilds state.callstack as a
+        linked list (top = most recent Rust call) and replaces the plugin via
+        register_plugin. No-op if Rust has zero frames (preserves the
+        template's empty CallStack so we don't clobber pre-Rust call history
+        for forks made from non-entry states).
+        """
+        try:
+            frames = self._rust_mgr.get_state_call_stack(state_id)
+        except Exception as e:
+            l.debug("get_state_call_stack(%d) failed: %s", state_id, e)
+            return
+
+        if not frames:
+            return
+
+        from angr.state_plugins.callstack import CallStack
+
+        chain = CallStack()
+        for call_site, func, ret_addr, sp in frames:
+            chain = CallStack(
+                call_site_addr=call_site,
+                func_addr=func,
+                stack_ptr=sp,
+                ret_addr=ret_addr,
+                jumpkind="Ijk_Call",
+                next_frame=chain,
+            )
+
+        try:
+            state.register_plugin("callstack", chain)
+        except Exception as e:
+            l.debug("register_plugin('callstack') failed for %d: %s", state_id, e)
 
     def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
         """Sync memory from Rust state to Python state.

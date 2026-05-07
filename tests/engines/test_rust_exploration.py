@@ -694,6 +694,37 @@ class TestCallStackProxy:
         # Negative indexing
         assert proxy[-1].func_addr == 0x100
 
+    def test_simstate_callstack_synced_after_explore(self, fauxware_project):
+        """The angr SimState returned from mgr.found has its CallStack
+        plugin populated from Rust's call_stack — not just the empty
+        sentinel from the entry-state template."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed)
+        assert len(mgr.found) > 0
+        found_state = mgr.found[0]
+
+        # Cross-check against the raw Rust API.
+        sid = mgr._rust_mgr.get_state_ids("found")[0]
+        raw = mgr._rust_mgr.get_state_call_stack(sid)
+        if not raw:
+            pytest.skip("Rust call stack empty at find — nothing to verify")
+
+        # angr's CallStack iterates top-first; raw is push-order
+        # (outermost first). Compare the angr-side top to raw[-1].
+        cs_frames = list(found_state.callstack)
+        # cs_frames includes the sentinel (zero-frame) at the bottom, so
+        # the angr-side has len(raw) + 1 entries (worst case). Just check
+        # the top frame matches the most recent Rust call.
+        assert len(cs_frames) >= len(raw)
+        top_call_site, top_func, top_ret, top_sp = raw[-1]
+        assert found_state.callstack.func_addr == top_func
+        assert found_state.callstack.call_site_addr == top_call_site
+        assert found_state.callstack.ret_addr == top_ret
+        assert found_state.callstack.stack_ptr == top_sp
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestInspectProxy:
