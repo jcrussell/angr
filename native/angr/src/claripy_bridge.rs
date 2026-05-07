@@ -974,7 +974,7 @@ pub fn rustbv_to_claripy(
             // Recursively convert operands to claripy ASTs
             let raw_args: Vec<Py<PyAny>> = operands
                 .iter()
-                .map(|operand| rustbv_to_claripy(py, operand.as_ref(), claripy_mod))
+                .map(|operand| rustbv_to_claripy(py, operand, claripy_mod))
                 .collect::<Result<_, _>>()?;
 
             // Validate all args to ensure they're claripy ASTs with correct widths

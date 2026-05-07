@@ -806,7 +806,7 @@ impl<'a> CallbackInterpreter<'a> {
                 std::mem::discriminant(op).hash(&mut hasher);
                 width.hash(&mut hasher);
                 for operand in operands.iter() {
-                    match operand.as_ref() {
+                    match operand {
                         RustBV::Concrete { value, .. } => { value.hash(&mut hasher); }
                         RustBV::Symbolic { id, .. } => { id.hash(&mut hasher); }
                         RustBV::Constrained { id, .. } => { id.hash(&mut hasher); }
