@@ -2778,6 +2778,52 @@ class TestDetailedHistory:
         assert isinstance(history, list)
         assert history == []
 
+    def test_max_history_get_set_default(self):
+        """Manager exposes a configurable per-state history cap (default 1000)."""
+        mgr = _RustExplorationManager("amd64")
+        assert mgr.get_max_history() == 1000
+
+        mgr.set_max_history(50)
+        assert mgr.get_max_history() == 50
+
+        mgr.set_max_history(0)
+        assert mgr.get_max_history() == 0
+
+    def test_max_history_caps_recorded_history(self, fauxware_project):
+        """A tight max_history cap bounds detailed_history during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], max_history=5)
+        mgr.explore(find=0x4006ed)
+
+        assert len(mgr.found) > 0
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        for state_id in found_ids:
+            snap = mgr._rust_mgr.export_state(state_id)
+            history = snap.get_detailed_history()
+            # Cap is 5 — buffer must not exceed it. Fauxware exploration
+            # records >>5 entries before reaching the find target, so the
+            # ring buffer must have evicted older entries down to the cap.
+            assert len(history) <= 5
+            assert len(history) > 0
+
+    def test_max_history_default_bounds_long_run(self, fauxware_project):
+        """Default cap (1000) keeps detailed_history bounded on a real run."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed)
+
+        assert len(mgr.found) > 0
+        found_ids = mgr._rust_mgr.get_state_ids("found")
+        for state_id in found_ids:
+            snap = mgr._rust_mgr.export_state(state_id)
+            history = snap.get_detailed_history()
+            # Default cap is 1000 — must hold for any long-running exploration.
+            assert len(history) <= 1000
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeTechniques:

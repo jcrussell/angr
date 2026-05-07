@@ -445,6 +445,11 @@ pub struct RustExplorationManager {
     pub(crate) vex_opt_level: Option<i32>,
     /// Per-address VEX optimization level overrides.
     pub(crate) vex_opt_level_overrides: HashMap<u64, i32>,
+    /// Maximum length of per-state `history` / `detailed_history` ring buffers.
+    /// 0 = unlimited (legacy, can OOM on long runs). Default 1000 keeps each
+    /// state's history bounded at ~8KB (history) + ~24KB (detailed_history).
+    /// Propagated to every state created or added via this manager.
+    pub(crate) max_history: usize,
 }
 
 #[pymethods]
@@ -504,6 +509,7 @@ impl RustExplorationManager {
             concretizer_config: crate::concretize::AddressConcretizer::default(),
             vex_opt_level: None,
             vex_opt_level_overrides: HashMap::new(),
+            max_history: 1000,
         })
     }
 
@@ -697,6 +703,25 @@ impl RustExplorationManager {
         self.profiling_enabled = enabled;
     }
 
+    /// Set the maximum length of each state's `history` / `detailed_history`
+    /// ring buffers. 0 means unlimited (legacy behavior — can OOM on long
+    /// explorations). Default is 1000. The new value is applied to every
+    /// state already in any stash, plus any future state created via this
+    /// manager.
+    pub fn set_max_history(&mut self, max: usize) {
+        self.max_history = max;
+        for stash in self.sm.stashes_mut().values_mut() {
+            for state in stash.iter_mut() {
+                state.set_max_history(max);
+            }
+        }
+    }
+
+    /// Get the current per-state max_history value. 0 = unlimited.
+    pub fn get_max_history(&self) -> usize {
+        self.max_history
+    }
+
     /// Get accumulated execution statistics as a dict.
     pub fn get_execution_stats(&self) -> HashMap<String, u64> {
         self.accumulated_stats.to_hashmap()
@@ -803,6 +828,9 @@ impl RustExplorationManager {
             state.solver().borrow().set_timeout(self.solver_timeout_ms);
         }
 
+        // Propagate per-state history cap
+        state.set_max_history(self.max_history);
+
         // Copy hooks to state
         for &_addr in &self.hooks {
             // State hooks are checked during execution
@@ -833,6 +861,9 @@ impl RustExplorationManager {
         if self.solver_timeout_ms != 30000 {
             forked.solver().borrow().set_timeout(self.solver_timeout_ms);
         }
+
+        // Propagate per-state history cap
+        forked.set_max_history(self.max_history);
 
         // Track this state as its own root (it was added via Python)
         self.sm.set_root(state_id, state_id);

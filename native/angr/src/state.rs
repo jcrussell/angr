@@ -990,7 +990,13 @@ impl RustSimState {
     }
 
     /// Replace the detailed history (used when restoring from interpreter).
-    pub fn set_detailed_history(&mut self, history: Vec<HistoryEntry>) {
+    /// Honors `max_history` — if the incoming buffer is larger than the cap,
+    /// only the most-recent `max_history` entries are kept (FIFO eviction).
+    pub fn set_detailed_history(&mut self, mut history: Vec<HistoryEntry>) {
+        if self.max_history > 0 && history.len() > self.max_history {
+            let drop = history.len() - self.max_history;
+            history.drain(0..drop);
+        }
         self.detailed_history = history;
     }
 
@@ -2241,6 +2247,36 @@ mod tests {
 
         // state2's parent should be state1
         assert_eq!(state2.parent_id(), Some(state1.state_id()));
+    }
+
+    #[test]
+    fn test_set_detailed_history_honors_cap() {
+        // set_detailed_history (called once per step from interpreter results)
+        // must drain the oldest entries when the incoming buffer exceeds the
+        // configured cap. Otherwise long blocks bypass max_history.
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.set_max_history(3);
+        let entries: Vec<HistoryEntry> = (0..10)
+            .map(|i| HistoryEntry { addr: 0x1000 + i, jumpkind: 0, jump_target: 0 })
+            .collect();
+        state.set_detailed_history(entries);
+        let kept = state.detailed_history();
+        assert_eq!(kept.len(), 3);
+        // FIFO eviction: should retain the most-recent 3 entries.
+        assert_eq!(kept[0].addr, 0x1007);
+        assert_eq!(kept[2].addr, 0x1009);
+    }
+
+    #[test]
+    fn test_set_detailed_history_unlimited() {
+        // max_history = 0 means no cap (legacy behavior).
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.set_max_history(0);
+        let entries: Vec<HistoryEntry> = (0..50)
+            .map(|i| HistoryEntry { addr: 0x2000 + i, jumpkind: 0, jump_target: 0 })
+            .collect();
+        state.set_detailed_history(entries);
+        assert_eq!(state.detailed_history().len(), 50);
     }
 
     #[test]

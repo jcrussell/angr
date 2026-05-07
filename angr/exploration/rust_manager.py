@@ -342,6 +342,7 @@ class RustExplorationManager(
         save_unconstrained: bool = False,
         solver_timeout_ms: int = 30000,
         max_active_states: Optional[int] = None,
+        max_history: int = 1000,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -354,6 +355,11 @@ class RustExplorationManager(
             solver_timeout_ms: Z3 solver timeout in milliseconds (default: 30000).
             max_active_states: Maximum number of states in the active stash.
                 When reached, new forked states are pruned. None = no limit.
+            max_history: Maximum length of each state's history /
+                detailed_history ring buffer (default: 1000). 0 means
+                unlimited — only safe for short runs since long explorations
+                can OOM. Applied to every state created or added via this
+                manager.
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
@@ -376,6 +382,11 @@ class RustExplorationManager(
         # Configure max active states limit
         if max_active_states is not None:
             self._rust_mgr.set_max_active_states(max_active_states)
+
+        # Configure per-state history cap (1000 is the Rust default; only push
+        # a non-default value to keep the FFI surface quiet in the common case)
+        if max_history != 1000:
+            self._rust_mgr.set_max_history(max_history)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()
