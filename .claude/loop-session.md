@@ -1,64 +1,58 @@
-# Loop session notes (2026-05-07, 118th loop session)
+# Loop session notes (2026-05-07, 119th loop session)
 
-## Task: angr-4pkm — csgames2018 'list index out of range' regression  ✓ CLOSED
+## Task: angr-8mh1 — Extend memory_*_symbolic_full fallback to LoadG and Failed  ✓ CLOSED
 
-### Root cause
+Created as a child of angr-pufm. The audit on pufm flagged single-PR scope as
+too big and recommended splitting; this is the smaller sub-task that fixes
+remaining symbolic-address paths that previously hard-errored.
 
-`Cdecl::return_register()` in `native/angr/src/arch/calling_conventions.rs:232`
-returned offset **16**. Comment claimed "EAX (same offset as RAX in VEX)" but
-EAX in the x86 VEX guest state is at **offset 8**; offset 16 is EDX. Native
-SimProcedures returning natively for 32-bit x86 binaries thus wrote their
-result to EDX while EAX kept the stale prior value (typically the buffer
-address pointer that was the strlen argument).
+### Gaps closed
 
-### Why csgames2018 surfaced it
+1. **LoadG with symbolic address → TooLarge / Strided / Failed**
+   (statements.rs, three sites: always-true guard, symbolic guard,
+   concrete-true guard). Previously returned
+   `Unsupported("LoadG address concretization failed")`. Now routed through
+   a new `resolve_loadg_load` helper that handles all five
+   ConcretizationResult shapes: Single/Multiple via load_from_callback,
+   the rest via fallback_load_symbolic_full.
 
-The bug was latent until commit f378ad9a0 (angr-qlh7) made strlen handle
-symbolic bytes natively (instead of falling back to Python). csgames2018
-calls `strlen(argv[1])` where argv[1] is a 16-byte symbolic input. Native
-strlen now returns a symbolic ITE chain ranging 0..=16, but it landed in
-EDX. `cmp $0x10, %eax` then compared EAX (a concrete pointer ≠ 16) against
-16, jne taken concretely, state went straight down the "incorrect" branch
-with no fork — eventually deadending at `exit()` with no stdout. The
-callable predicate `correct(state)` checks `b'correct!' in state.posix.dumps(1)`
-which never matched, so `simulation_manager.found` was empty and
-`simulation_manager.found[-1]` raised IndexError.
+2. **Plain Load Failed branch** (expressions.rs:200) — used to return
+   Unsupported even when memory_load_symbolic_full would work. Now falls
+   through to the same callback path as TooLarge.
 
-### Bisect log (89132680b good ↔ 76aef1ca2 bad → first bad: f378ad9a0)
+3. **fallback_to_python_store Failed branch** (statements.rs:1189) — now
+   tries memory_store_symbolic_full first before erroring.
 
-```
-ca6557cbc good
-348336891 bad
-5148bfd3e good
-5929d6fb9 bad
-2d4e36624 good
-7e1bd9645 good
-f378ad9a0 bad   ← first bad commit (strlen symbolic-arg support)
-```
+### New helpers (native/angr/src/interpreter_cb/mod.rs)
 
-f378ad9a0 itself is correct; it just exposed the latent Cdecl bug.
+- `fallback_load_symbolic_full(addr_val, size, context, addr_descr) ->
+  Result<RustBV>` — sync constraints, call memory_load_symbolic_full,
+  convert AST → RustBV via handle table or claripy bridge, fall back to
+  fresh symbol on conversion failure.
+- `fallback_store_symbolic_full(addr_val, data_val, context, addr_descr) ->
+  Result<()>` — same pattern for stores.
 
-### Fix
-
-`native/angr/src/arch/calling_conventions.rs:232` — return `8` (EAX), not `16`
-(EDX/RAX). Added unit test `test_return_register_offsets_per_arch` asserting
-Cdecl=8, SystemVAMD64=16, MicrosoftX64=16 to lock the offsets per arch.
+The TooLarge branch in plain Load (expressions.rs:138) was also refactored
+to use fallback_load_symbolic_full, eliminating ~50 lines of duplicated
+inline boilerplate.
 
 ### Validation
 
-- `cargo test --release --lib calling_conventions`: 4/4 pass.
+- `cargo check --release`: clean.
 - `pytest tests/engines/test_rust_exploration.py`: 261/261 pass.
-- `tests/benchmarks/run_regression.py`: 12/12 pass (csgames2018 0.97s/294MB,
-  back to baseline performance).
-- `tests/benchmarks/run_single.py csgames2018 --engine rust`: OK 0.98s,
-  100+ keys reported.
+- `tests/benchmarks/run_regression.py`: 12/12 pass.
 
-### Why other 32-bit benchmarks were unaffected
+### Venv repair note
 
-flareon2015_2 is the only other 32-bit x86 benchmark. It doesn't exercise a
-path where a native SimProcedure's return value is consumed in a way that
-needs to fork — most 32-bit benches either rely on procedures that fall back
-to Python (symbolic args) or compare against a value the binary doesn't
-inspect. fauxware/ais3/defcamp are amd64 (correct return offset).
+`.venv/` was broken twice during this session. See bd memory
+`avoid-venv-pip-resolvelib-broken` for the workaround
+(rm -rf resolvers/, then cargo build → cp librustylib.so → .so file in
+angr/, and run benchmarks via PYTHONPATH).
+
+### Remaining pufm work
+
+The lazy guarded-entries approach (symbolic_objects + spans recording an
+address constraint instead of enumerating) is still open. Multi-session
+work; needs Z3 array/lambda theory. Recommend a separate child bead.
 
 ## Status: complete
