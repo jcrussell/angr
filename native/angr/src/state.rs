@@ -158,11 +158,13 @@ impl FileDescriptor {
 /// File system state tracking.
 ///
 /// Manages file descriptors beyond stdin/stdout/stderr. Tracks open/close/read/write/seek
-/// operations. Cloned on fork so each exploration path has its own file system state.
+/// operations. Forking is O(1) via `Arc<HashMap<...>>` — the inner map is only cloned
+/// (via `Arc::make_mut`) when a path actually mutates its file descriptors.
 #[derive(Clone, Debug)]
 pub struct FileSystem {
     /// Open file descriptors. Standard fds: 0=stdin, 1=stdout, 2=stderr.
-    fds: HashMap<u32, FileDescriptor>,
+    /// Wrapped in Arc for cheap fork; copy-on-write via Arc::make_mut on mutation.
+    fds: Arc<HashMap<u32, FileDescriptor>>,
     /// Next file descriptor number to allocate.
     next_fd: u32,
 }
@@ -174,7 +176,7 @@ impl Default for FileSystem {
         fds.insert(0, FileDescriptor::new("/dev/stdin".to_string(), FdFlags::ReadOnly));
         fds.insert(1, FileDescriptor::new("/dev/stdout".to_string(), FdFlags::WriteOnly));
         fds.insert(2, FileDescriptor::new("/dev/stderr".to_string(), FdFlags::WriteOnly));
-        FileSystem { fds, next_fd: 3 }
+        FileSystem { fds: Arc::new(fds), next_fd: 3 }
     }
 }
 
@@ -183,7 +185,7 @@ impl FileSystem {
     pub fn open(&mut self, name: String, flags: FdFlags) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        self.fds.insert(fd, FileDescriptor::new(name, flags));
+        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::new(name, flags));
         fd
     }
 
@@ -191,24 +193,28 @@ impl FileSystem {
     pub fn open_with_content(&mut self, name: String, flags: FdFlags, content: Vec<u8>) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        self.fds.insert(fd, FileDescriptor::with_content(name, flags, content));
+        Arc::make_mut(&mut self.fds)
+            .insert(fd, FileDescriptor::with_content(name, flags, content));
         fd
     }
 
     /// Close a file descriptor. Returns true if it was open.
     pub fn close(&mut self, fd: u32) -> bool {
-        if let Some(desc) = self.fds.get_mut(&fd) {
-            if desc.is_open {
-                desc.is_open = false;
-                return true;
-            }
+        // Read-first to avoid CoW clone if the fd is missing or already closed.
+        if !self.fds.get(&fd).is_some_and(|d| d.is_open) {
+            return false;
         }
-        false
+        if let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) {
+            desc.is_open = false;
+            true
+        } else {
+            false
+        }
     }
 
     /// Write data to a file descriptor's content buffer.
     pub fn write(&mut self, fd: u32, data: &[u8]) {
-        self.fds.entry(fd).or_insert_with(|| {
+        Arc::make_mut(&mut self.fds).entry(fd).or_insert_with(|| {
             FileDescriptor::new(String::new(), FdFlags::WriteOnly)
         }).content.extend_from_slice(data);
     }
@@ -216,33 +222,41 @@ impl FileSystem {
     /// Read up to `count` bytes from a file descriptor at its current position.
     /// Advances the position. Returns bytes read.
     pub fn read(&mut self, fd: u32, count: usize) -> Vec<u8> {
-        if let Some(desc) = self.fds.get_mut(&fd) {
-            let pos = desc.position as usize;
-            let available = desc.content.len().saturating_sub(pos);
-            let n = count.min(available);
-            if n == 0 {
-                return Vec::new();
+        // Peek to compute byte count without forcing CoW when nothing is readable.
+        let n = match self.fds.get(&fd) {
+            Some(desc) => {
+                let pos = desc.position as usize;
+                let available = desc.content.len().saturating_sub(pos);
+                count.min(available)
             }
-            let data = desc.content[pos..pos + n].to_vec();
-            desc.position += n as u64;
-            data
-        } else {
-            Vec::new()
+            None => return Vec::new(),
+        };
+        if n == 0 {
+            return Vec::new();
         }
+        let desc = Arc::make_mut(&mut self.fds)
+            .get_mut(&fd)
+            .expect("fd existed above");
+        let pos = desc.position as usize;
+        let data = desc.content[pos..pos + n].to_vec();
+        desc.position += n as u64;
+        data
     }
 
     /// Seek a file descriptor. Returns the new position.
     ///
     /// whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END
     pub fn seek(&mut self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
-        let desc = self.fds.get_mut(&fd)?;
+        // Compute new position without CoW first; only mutate if the fd exists
+        // and the whence value is valid.
+        let desc = self.fds.get(&fd)?;
         let new_pos = match whence {
             0 => offset.max(0) as u64,                                     // SEEK_SET
             1 => (desc.position as i64 + offset).max(0) as u64,            // SEEK_CUR
             2 => (desc.content.len() as i64 + offset).max(0) as u64,      // SEEK_END
             _ => return None,
         };
-        desc.position = new_pos;
+        Arc::make_mut(&mut self.fds).get_mut(&fd)?.position = new_pos;
         Some(new_pos)
     }
 
@@ -600,8 +614,10 @@ pub struct RustSimState {
     detailed_history: Vec<HistoryEntry>,
     /// Maximum history length (0 = unlimited).
     max_history: usize,
-    /// Hook addresses.
-    hooks: HashSet<u64>,
+    /// Hook addresses. Wrapped in Arc for cheap fork — copy-on-write
+    /// via Arc::make_mut on add/remove/clear. Mutated only at config time
+    /// in typical workloads, so most forks pay no clone cost here.
+    hooks: Arc<HashSet<u64>>,
     /// Address concretization config.
     concretizer: AddressConcretizer,
     /// Whether to track detailed history.
@@ -632,8 +648,9 @@ pub struct RustSimState {
     inspection: InspectionManager,
     /// Environment variables map for native getenv/setenv.
     /// Keys and values are byte vectors (no NUL terminator in storage).
-    /// Cloned on fork so each path has its own environment.
-    environment: HashMap<Vec<u8>, Vec<u8>>,
+    /// Wrapped in Arc for cheap fork — copy-on-write via Arc::make_mut on setenv.
+    /// Most paths only read env vars, so the deep clone is rare.
+    environment: Arc<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl RustSimState {
@@ -672,7 +689,7 @@ impl RustSimState {
             history: Vec::new(),
             detailed_history: Vec::new(),
             max_history: 1000,
-            hooks: HashSet::new(),
+            hooks: Arc::new(HashSet::new()),
             concretizer: AddressConcretizer::default(),
             track_history: true,
             arch,
@@ -683,7 +700,7 @@ impl RustSimState {
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
-            environment: HashMap::new(),
+            environment: Arc::new(HashMap::new()),
         })
     }
 
@@ -707,7 +724,7 @@ impl RustSimState {
             history: Vec::new(),
             detailed_history: Vec::new(),
             max_history: 1000,
-            hooks: HashSet::new(),
+            hooks: Arc::new(HashSet::new()),
             concretizer: AddressConcretizer::default(),
             track_history: true,
             arch,
@@ -718,7 +735,7 @@ impl RustSimState {
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
-            environment: HashMap::new(),
+            environment: Arc::new(HashMap::new()),
         }
     }
 
@@ -752,7 +769,7 @@ impl RustSimState {
             history: Vec::new(),
             detailed_history: Vec::new(),
             max_history: 1000,
-            hooks: HashSet::new(),
+            hooks: Arc::new(HashSet::new()),
             concretizer: AddressConcretizer::default(),
             track_history: true,
             arch,
@@ -763,7 +780,7 @@ impl RustSimState {
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
-            environment: HashMap::new(),
+            environment: Arc::new(HashMap::new()),
         })
     }
 
@@ -864,7 +881,7 @@ impl RustSimState {
 
     /// Set an environment variable.
     pub fn setenv(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.environment.insert(key, value);
+        Arc::make_mut(&mut self.environment).insert(key, value);
     }
 
     /// Get the environment map (for export).
@@ -1248,12 +1265,12 @@ impl RustSimState {
 
     /// Add a hook address.
     pub fn add_hook(&mut self, addr: u64) {
-        self.hooks.insert(addr);
+        Arc::make_mut(&mut self.hooks).insert(addr);
     }
 
     /// Remove a hook address.
     pub fn remove_hook(&mut self, addr: u64) {
-        self.hooks.remove(&addr);
+        Arc::make_mut(&mut self.hooks).remove(&addr);
     }
 
     /// Check if an address is hooked.
@@ -1263,7 +1280,10 @@ impl RustSimState {
 
     /// Clear all hooks.
     pub fn clear_hooks(&mut self) {
-        self.hooks.clear();
+        // Avoid CoW clone if already empty.
+        if !self.hooks.is_empty() {
+            Arc::make_mut(&mut self.hooks).clear();
+        }
     }
 
     // =========================================================================
