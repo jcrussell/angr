@@ -634,6 +634,14 @@ pub struct RustSimState {
     /// for the brk(2) syscall. Default 0x1B00000 (matches Python default).
     /// Distinct from `heap_brk`, which is the malloc bump allocator.
     posix_brk: u64,
+    /// mmap base pointer — mirrors `state.heap.mmap_base` from Python for
+    /// the mmap(2) syscall when addr=0 (kernel chooses the mapping). Default
+    /// 0xC1000000 (heap_base 0xC0000000 + heap_size 0x00800000 * 2 — matches
+    /// `SimHeapBase.mmap_base`). NOT pushed back to Python's
+    /// `state.heap.mmap_base` on syscall fallback today; same drift risk as
+    /// `posix_brk`. Future cross-engine sync work should address both fields
+    /// at the syscall callback boundary.
+    mmap_base: u64,
     /// Symbolic variable names read from stdin (for posix.dumps(0) export).
     /// Each entry is (name, bit_width) for a symbolic BVS created by native
     /// fgets/fgetc/getchar. On export, Python recreates matching claripy BVS
@@ -698,6 +706,7 @@ impl RustSimState {
             fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
+            mmap_base: 0xC100_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -733,6 +742,7 @@ impl RustSimState {
             fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
+            mmap_base: 0xC100_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -778,6 +788,7 @@ impl RustSimState {
             fs: FileSystem::default(),
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
+            mmap_base: 0xC100_0000,
             stdin_symbols: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
@@ -905,6 +916,17 @@ impl RustSimState {
     /// Set the POSIX brk pointer.
     pub fn set_posix_brk(&mut self, addr: u64) {
         self.posix_brk = addr;
+    }
+
+    /// Get the mmap base pointer (mirrors `state.heap.mmap_base` for the
+    /// mmap(2) syscall; advances when addr=0 native mmap allocates).
+    pub fn mmap_base(&self) -> u64 {
+        self.mmap_base
+    }
+
+    /// Set the mmap base pointer.
+    pub fn set_mmap_base(&mut self, addr: u64) {
+        self.mmap_base = addr;
     }
 
     /// Bump-allocate from the heap. Returns the address of the allocation.
@@ -1320,6 +1342,7 @@ impl RustSimState {
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
+            mmap_base: self.mmap_base,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1350,6 +1373,7 @@ impl RustSimState {
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
+            mmap_base: self.mmap_base,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1380,6 +1404,7 @@ impl RustSimState {
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
+            mmap_base: self.mmap_base,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1418,6 +1443,7 @@ impl RustSimState {
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
+            mmap_base: self.mmap_base,
             stdin_symbols: self.stdin_symbols.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
@@ -1501,6 +1527,7 @@ impl RustSimState {
             fs: best_fs,
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
+            mmap_base: self.mmap_base,
             stdin_symbols: merged_stdin,
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),

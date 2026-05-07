@@ -18,6 +18,7 @@
 
 pub mod brk;
 pub mod exit;
+pub mod mmap;
 pub mod mprotect;
 pub mod munmap;
 
@@ -86,6 +87,9 @@ impl NativeSyscallRegistry {
         r.register("AMD64", 12, Arc::new(brk::NativeBrkSyscall));
         // amd64: munmap (11) — Python implementation is a no-op return 0.
         r.register("AMD64", 11, Arc::new(munmap::NativeMunmapSyscall));
+        // amd64: mmap (9) — anonymous concrete-args fast path; falls back
+        // to Python for symbolic / file-backed / collision cases.
+        r.register("AMD64", 9, Arc::new(mmap::NativeMmapSyscall));
         r
     }
 
@@ -146,6 +150,7 @@ mod tests {
         assert!(r.get("AMD64", 10).is_some(), "mprotect (10) should be registered");
         assert!(r.get("AMD64", 12).is_some(), "brk (12) should be registered");
         assert!(r.get("AMD64", 11).is_some(), "munmap (11) should be registered");
+        assert!(r.get("AMD64", 9).is_some(), "mmap (9) should be registered");
         assert!(r.get("AMD64", 0).is_none(), "read (0) is intentionally unregistered");
         assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");
     }
