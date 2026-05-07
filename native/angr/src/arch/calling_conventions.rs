@@ -230,7 +230,8 @@ impl CallingConvention for Cdecl {
     }
 
     fn return_register(&self) -> u32 {
-        16 // EAX (same offset as RAX in VEX)
+        // EAX in x86 VEX register file (offset differs from amd64's RAX=16)
+        8
     }
 }
 
@@ -373,6 +374,21 @@ mod tests {
         assert!(cc.arg_registers().is_empty()); // All args on stack
         assert_eq!(cc.pointer_size(), 4);
         assert_eq!(cc.stack_arg_offset(), 4);
+    }
+
+    #[test]
+    fn test_return_register_offsets_per_arch() {
+        // Each calling convention must use the right return-register offset
+        // for its architecture's VEX register file. EAX (x86) ≠ RAX (amd64).
+        // Bug: cdecl previously returned 16 (RAX) which routed native procedure
+        // results to EDX in 32-bit x86 binaries, leaving EAX unset — and the
+        // caller's cmp/jne against EAX kept the stale prior value, masking
+        // any fork the symbolic return value would have produced.
+        // EAX in x86 VEX guest state = offset 8.
+        assert_eq!(Cdecl.return_register(), 8);
+        // RAX in amd64 VEX guest state = offset 16.
+        assert_eq!(SystemVAMD64.return_register(), 16);
+        assert_eq!(MicrosoftX64.return_register(), 16);
     }
 
     #[test]

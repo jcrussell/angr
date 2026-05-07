@@ -1,49 +1,64 @@
-# Loop session notes (2026-05-07, 117th loop session)
+# Loop session notes (2026-05-07, 118th loop session)
 
-## Task: angr-teo2 — FxHash swap for remaining hot Arc<HashMap/HashSet>  ✓ CLOSED
+## Task: angr-4pkm — csgames2018 'list index out of range' regression  ✓ CLOSED
 
-### What changed (commit a37018771)
+### Root cause
 
-Swapped 3 Arc-shared maps in `native/angr/src/interpreter_cb/mod.rs`
-plus the source HashMap in `native/angr/src/exploration/mod.rs:448`:
+`Cdecl::return_register()` in `native/angr/src/arch/calling_conventions.rs:232`
+returned offset **16**. Comment claimed "EAX (same offset as RAX in VEX)" but
+EAX in the x86 VEX guest state is at **offset 8**; offset 16 is EDX. Native
+SimProcedures returning natively for 32-bit x86 binaries thus wrote their
+result to EDX while EAX kept the stale prior value (typically the buffer
+address pointer that was the strlen argument).
 
-| Before | After |
-| --- | --- |
-| `hook_addrs: Arc<HashSet<u64>>` (line 512) | `Arc<FxHashSet<u64>>` |
-| `simprocedure_registry: Arc<HashMap<u64, SimProcedureInfo>>` (592) | `Arc<FxHashMap<...>>` |
-| `vex_opt_level_overrides: Arc<HashMap<u64, i32>>` (636) | `Arc<FxHashMap<u64, i32>>` |
-| `RustExplorationManager.vex_opt_level_overrides: HashMap<u64, i32>` | `FxHashMap<u64, i32>` |
+### Why csgames2018 surfaced it
 
-Each is looked up per-block during execution
-(`execution.rs:32,134,178,358,394` for the registry/overrides;
-`mod.rs:1175` for hook_addrs.contains). FxHasher's faster integer hash
-helps every per-block lookup; Arc-share on fork is unaffected (already
-cheap).
+The bug was latent until commit f378ad9a0 (angr-qlh7) made strlen handle
+symbolic bytes natively (instead of falling back to Python). csgames2018
+calls `strlen(argv[1])` where argv[1] is a 16-byte symbolic input. Native
+strlen now returns a symbolic ITE chain ranging 0..=16, but it landed in
+EDX. `cmp $0x10, %eax` then compared EAX (a concrete pointer ≠ 16) against
+16, jne taken concretely, state went straight down the "incorrect" branch
+with no fork — eventually deadending at `exit()` with no stdout. The
+callable predicate `correct(state)` checks `b'correct!' in state.posix.dumps(1)`
+which never matched, so `simulation_manager.found` was empty and
+`simulation_manager.found[-1]` raised IndexError.
+
+### Bisect log (89132680b good ↔ 76aef1ca2 bad → first bad: f378ad9a0)
+
+```
+ca6557cbc good
+348336891 bad
+5148bfd3e good
+5929d6fb9 bad
+2d4e36624 good
+7e1bd9645 good
+f378ad9a0 bad   ← first bad commit (strlen symbolic-arg support)
+```
+
+f378ad9a0 itself is correct; it just exposed the latent Cdecl bug.
+
+### Fix
+
+`native/angr/src/arch/calling_conventions.rs:232` — return `8` (EAX), not `16`
+(EDX/RAX). Added unit test `test_return_register_offsets_per_arch` asserting
+Cdecl=8, SystemVAMD64=16, MicrosoftX64=16 to lock the offsets per arch.
 
 ### Validation
 
-- `cargo check --release`: clean.
-- `cargo build --release`: clean.
-- `261/261` pytest tests pass (`tests/engines/test_rust_exploration.py`).
-- Benchmark regression: 11/12 (csgames2018 fails — pre-existing, see
-  angr-4pkm).
+- `cargo test --release --lib calling_conventions`: 4/4 pass.
+- `pytest tests/engines/test_rust_exploration.py`: 261/261 pass.
+- `tests/benchmarks/run_regression.py`: 12/12 pass (csgames2018 0.97s/294MB,
+  back to baseline performance).
+- `tests/benchmarks/run_single.py csgames2018 --engine rust`: OK 0.98s,
+  100+ keys reported.
 
-### Memory update
+### Why other 32-bit benchmarks were unaffected
 
-`bd remember --key fxhash-interpreter-cb-arc-maps` records the swap
-and lists remaining candidates (CLARIPY_AST_CACHE,
-SymbolicIdentityRegistry.rust_id_to_py, RustSymbolTable.symbols, stash
-maps).
-
-## Side-effect: angr-4pkm filed
-
-csgames2018 used to pass at 0.96s/292MB (per
-project_benchmark_status.md, 2026-05-05) but now fails with `list index
-out of range` on the rust engine. Verified to reproduce on HEAD prior
-to angr-teo2 — pre-existing regression, NOT caused by this work.
-
-Filed as P2 bug `angr-4pkm` with bisect candidates noted (commits
-between 2026-05-05 and 2026-05-07: 7f769212d, fad930315, 4de453a9a,
-0bb4389fc, 833761f1b).
+flareon2015_2 is the only other 32-bit x86 benchmark. It doesn't exercise a
+path where a native SimProcedure's return value is consumed in a way that
+needs to fork — most 32-bit benches either rely on procedures that fall back
+to Python (symbolic args) or compare against a value the binary doesn't
+inspect. fauxware/ais3/defcamp are amd64 (correct return offset).
 
 ## Status: complete
