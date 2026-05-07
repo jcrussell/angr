@@ -604,8 +604,6 @@ pub struct RustSimState {
     hooks: HashSet<u64>,
     /// Address concretization config.
     concretizer: AddressConcretizer,
-    /// Dirty register tracking (bitset, each bit = 4 bytes).
-    dirty_registers: u128,
     /// Whether to track detailed history.
     track_history: bool,
     /// File system state: tracks all file descriptors with metadata.
@@ -676,7 +674,6 @@ impl RustSimState {
             max_history: 1000,
             hooks: HashSet::new(),
             concretizer: AddressConcretizer::default(),
-            dirty_registers: 0,
             track_history: true,
             arch,
             fs: FileSystem::default(),
@@ -712,7 +709,6 @@ impl RustSimState {
             max_history: 1000,
             hooks: HashSet::new(),
             concretizer: AddressConcretizer::default(),
-            dirty_registers: 0,
             track_history: true,
             arch,
             fs: FileSystem::default(),
@@ -758,7 +754,6 @@ impl RustSimState {
             max_history: 1000,
             hooks: HashSet::new(),
             concretizer: AddressConcretizer::default(),
-            dirty_registers: 0,
             track_history: true,
             arch,
             fs: FileSystem::default(),
@@ -1052,13 +1047,6 @@ impl RustSimState {
 
     /// Set a register by name.
     pub fn set_register(&mut self, name: &str, value: RustBV) -> bool {
-        if let Some(offset) = self.arch.register_offset(name) {
-            // Mark as dirty
-            let bit = offset / 4;
-            if bit < 128 {
-                self.dirty_registers |= 1u128 << bit;
-            }
-        }
         self.registers.put_reg(name, value)
     }
 
@@ -1070,11 +1058,6 @@ impl RustSimState {
 
     /// Set a register by offset.
     pub fn set_register_by_offset(&mut self, offset: u32, value: RustBV) {
-        // Mark as dirty
-        let bit = offset / 4;
-        if bit < 128 {
-            self.dirty_registers |= 1u128 << bit;
-        }
         self.registers.put(offset, value);
     }
 
@@ -1113,22 +1096,6 @@ impl RustSimState {
     /// Set all register bytes (for bulk sync from Python).
     pub fn set_registers_raw(&mut self, bytes: &[u8]) {
         self.registers.copy_from_bytes(bytes);
-    }
-
-    /// Get dirty register offsets.
-    pub fn get_dirty_registers(&self) -> Vec<u32> {
-        let mut offsets = Vec::new();
-        for bit in 0..128u32 {
-            if (self.dirty_registers & (1u128 << bit)) != 0 {
-                offsets.push(bit * 4);
-            }
-        }
-        offsets
-    }
-
-    /// Clear dirty register tracking.
-    pub fn clear_dirty_registers(&mut self) {
-        self.dirty_registers = 0;
     }
 
     // =========================================================================
@@ -1327,7 +1294,6 @@ impl RustSimState {
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
-            dirty_registers: 0, // Fresh dirty tracking for fork
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
@@ -1358,7 +1324,6 @@ impl RustSimState {
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
-            dirty_registers: 0,
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
@@ -1389,7 +1354,6 @@ impl RustSimState {
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
-            dirty_registers: 0,
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
@@ -1428,7 +1392,6 @@ impl RustSimState {
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
-            dirty_registers: 0,
             track_history: self.track_history,
             fs: self.fs.clone(),
             heap_brk: self.heap_brk,
@@ -1512,7 +1475,6 @@ impl RustSimState {
             max_history: self.max_history,
             hooks: self.hooks.clone(),
             concretizer: self.concretizer.clone(),
-            dirty_registers: 0,
             track_history: self.track_history,
             fs: best_fs,
             heap_brk: self.heap_brk,
@@ -1566,37 +1528,6 @@ impl RustSimState {
         if let Some(new_pc) = changes.new_pc {
             self.pc = new_pc;
         }
-    }
-
-    /// Export changes since last clear for sync to Python.
-    ///
-    /// Returns the minimal diff needed to update Python state.
-    pub fn export_changes(&self) -> StateChanges {
-        let mut changes = StateChanges::new();
-
-        // Export dirty registers
-        let dirty_offsets = self.get_dirty_registers();
-        for offset in dirty_offsets {
-            let size = 8u32; // Most registers are 8 bytes
-            let bv = self.get_register_by_offset(offset, size);
-            if let Some(val) = bv.as_u128() {
-                let bytes: Vec<u8> = (0..size as usize)
-                    .map(|i| (val >> (i * 8)) as u8)
-                    .collect();
-                changes.register_writes.push((offset, size, bytes));
-            }
-        }
-
-        // Export dirty pages
-        for page_addr in self.memory.get_dirty_page_addrs() {
-            let page_num = page_addr >> 12;
-            if let Some((data, _perms)) = self.memory.get_page_data(page_num) {
-                changes.memory_writes.push((page_addr, data));
-            }
-        }
-
-        changes.new_pc = Some(self.pc);
-        changes
     }
 
     // =========================================================================
@@ -1768,16 +1699,6 @@ impl PyRustSimState {
         } else {
             Err(PyValueError::new_err(format!("failed to set register: {}", name)))
         }
-    }
-
-    /// Get dirty register offsets.
-    pub fn get_dirty_registers(&self) -> Vec<u32> {
-        self.inner.get_dirty_registers()
-    }
-
-    /// Clear dirty register tracking.
-    pub fn clear_dirty_registers(&mut self) {
-        self.inner.clear_dirty_registers();
     }
 
     /// Map a memory region.

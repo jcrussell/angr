@@ -1233,16 +1233,10 @@ impl RustExplorationManager {
         self.with_pending(|pending| Ok(pending.state.get_dirty_pages()))
     }
 
-    /// Get dirty register offsets from pending state.
-    pub fn get_pending_dirty_registers(&self) -> PyResult<Vec<u32>> {
-        self.with_pending(|pending| Ok(pending.state.get_dirty_registers()))
-    }
-
-    /// Clear dirty tracking in pending state.
+    /// Clear dirty page tracking in pending state.
     pub fn clear_pending_dirty_tracking(&mut self) -> PyResult<()> {
         self.with_pending_mut(|pending| {
             pending.state.clear_dirty_pages();
-            pending.state.clear_dirty_registers();
             Ok(())
         })
     }
