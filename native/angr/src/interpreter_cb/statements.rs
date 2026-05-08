@@ -859,6 +859,7 @@ impl<'a> CallbackInterpreter<'a> {
                 }
 
                 // Call Python callback
+                self.stats.python_dirty_call_count += 1;
                 let (data, is_symbolic, _symbolic_ast) = callbacks
                     .call_dirty_call(py, &dirty.cee.name, &arg_vals, ret_ty_bits)
                     .map_err(|e| CbExecutionError::Callback(format!(

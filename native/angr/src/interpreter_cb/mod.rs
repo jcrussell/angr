@@ -171,6 +171,22 @@ define_execution_stats! {
     active_states_count: snapshot,
     /// Time spent in the main run() loop overhead (nanoseconds).
     run_loop_time_ns: sum,
+    /// Number of dirty-helper invocations that fell back to the Python
+    /// `call_dirty_call` callback (no native handler matched).
+    python_dirty_call_count: sum,
+    /// Number of VEX op evaluations (Unop/Binop/Triop/Qop) that hit the
+    /// silent symbolic-synthesis fallback because `VEXOps::*` returned an
+    /// `OpError`. These never invoke Python; the value is replaced with a
+    /// fresh symbolic (when any input was symbolic) or zero.
+    python_vex_op_fallback_count: sum,
+    /// Subset of `python_vex_op_fallback_count` that came from `Unop`.
+    python_vex_unop_fallback_count: sum,
+    /// Subset of `python_vex_op_fallback_count` that came from `Binop`.
+    python_vex_binop_fallback_count: sum,
+    /// Subset of `python_vex_op_fallback_count` that came from `Triop`.
+    python_vex_triop_fallback_count: sum,
+    /// Subset of `python_vex_op_fallback_count` that came from `Qop`.
+    python_vex_qop_fallback_count: sum,
 }
 
 /// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).

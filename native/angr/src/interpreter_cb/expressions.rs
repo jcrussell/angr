@@ -158,16 +158,21 @@ impl<'a> CallbackInterpreter<'a> {
             IRExpr::Unop { op, arg } => {
                 let arg_val = self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?;
                 let arg_is_sym = arg_val.is_symbolic();
-                VEXOps::unop(*op, arg_val, self.ctx).or_else(|_| {
-                    // Fallback for unsupported unary ops (e.g., float conversions).
-                    // Return fresh symbolic if input was symbolic, else zero.
-                    let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                    if arg_is_sym {
-                        Ok(RustBV::symbolic(self.ctx, format!("unsup_unop_{:x}", self.pc), width))
-                    } else {
-                        Ok(RustBV::concrete(0, width))
+                match VEXOps::unop(*op, arg_val, self.ctx) {
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        // Fallback for unsupported unary ops (e.g., float conversions).
+                        // Return fresh symbolic if input was symbolic, else zero.
+                        self.stats.python_vex_op_fallback_count += 1;
+                        self.stats.python_vex_unop_fallback_count += 1;
+                        let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                        if arg_is_sym {
+                            Ok(RustBV::symbolic(self.ctx, format!("unsup_unop_{:x}", self.pc), width))
+                        } else {
+                            Ok(RustBV::concrete(0, width))
+                        }
                     }
-                })
+                }
             }
 
             IRExpr::Binop { op, left, right } => {
@@ -177,14 +182,19 @@ impl<'a> CallbackInterpreter<'a> {
                     left_val.width().max(right_val.width())
                 );
                 let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
-                VEXOps::binop(*op, left_val, right_val, self.ctx).or_else(|_| {
-                    // Fallback for unsupported binary ops (e.g., vector float ops).
-                    if any_sym {
-                        Ok(RustBV::symbolic(self.ctx, format!("unsup_binop_{:x}", self.pc), fallback_width))
-                    } else {
-                        Ok(RustBV::concrete(0, fallback_width))
+                match VEXOps::binop(*op, left_val, right_val, self.ctx) {
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        // Fallback for unsupported binary ops (e.g., vector float ops).
+                        self.stats.python_vex_op_fallback_count += 1;
+                        self.stats.python_vex_binop_fallback_count += 1;
+                        if any_sym {
+                            Ok(RustBV::symbolic(self.ctx, format!("unsup_binop_{:x}", self.pc), fallback_width))
+                        } else {
+                            Ok(RustBV::concrete(0, fallback_width))
+                        }
                     }
-                })
+                }
             }
 
             IRExpr::ITE { cond, iftrue, iffalse } => {
@@ -239,13 +249,18 @@ impl<'a> CallbackInterpreter<'a> {
                 let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
                 let any_sym = v2.is_symbolic() || v3.is_symbolic() || rm.is_symbolic();
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                VEXOps::binop_with_rm(*op, rm, v2, v3, self.ctx).or_else(|_| {
-                    if any_sym {
-                        Ok(RustBV::symbolic(self.ctx, format!("triop_{:x}", self.pc), width))
-                    } else {
-                        Ok(RustBV::concrete(0, width))
+                match VEXOps::binop_with_rm(*op, rm, v2, v3, self.ctx) {
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        self.stats.python_vex_op_fallback_count += 1;
+                        self.stats.python_vex_triop_fallback_count += 1;
+                        if any_sym {
+                            Ok(RustBV::symbolic(self.ctx, format!("triop_{:x}", self.pc), width))
+                        } else {
+                            Ok(RustBV::concrete(0, width))
+                        }
                     }
-                })
+                }
             }
 
             IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
@@ -258,13 +273,18 @@ impl<'a> CallbackInterpreter<'a> {
                 let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
                 let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                VEXOps::qop(*op, v2, v3, v4, self.ctx).or_else(|_| {
-                    if any_sym {
-                        Ok(RustBV::symbolic(self.ctx, format!("qop_{:x}", self.pc), width))
-                    } else {
-                        Ok(RustBV::concrete(0, width))
+                match VEXOps::qop(*op, v2, v3, v4, self.ctx) {
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        self.stats.python_vex_op_fallback_count += 1;
+                        self.stats.python_vex_qop_fallback_count += 1;
+                        if any_sym {
+                            Ok(RustBV::symbolic(self.ctx, format!("qop_{:x}", self.pc), width))
+                        } else {
+                            Ok(RustBV::concrete(0, width))
+                        }
                     }
-                })
+                }
             }
 
             IRExpr::CCall { cee, retty, args } => {

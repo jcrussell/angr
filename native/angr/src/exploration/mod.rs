@@ -396,6 +396,18 @@ pub struct RustExplorationManager {
     /// `DCAS_UNSUPPORTED_REASON`. Surfaced via `stats()` and
     /// `get_fallback_stats()` so DCAS-driven deadends are diagnosable.
     pub(crate) dcas_unsupported_count: u64,
+    /// Total count of SimProcedure invocations that were dispatched to the
+    /// Python `_handle_simprocedure_callback` (rather than handled natively).
+    /// This includes: native handler missing, native handler returned `Err`,
+    /// and addresses inside the binary (user-placed Python hooks). Surfaced
+    /// via `stats()` so a regression that flips a hot procedure off the
+    /// native path is visible without rebuilding.
+    pub(crate) simprocedure_python_fallback_count: u64,
+    /// Total count of syscalls dispatched to the Python
+    /// `_handle_syscall_callback` (rather than handled by `NativeSyscall`).
+    /// Includes: no native handler registered for (arch, num) and native
+    /// handler returned `Err`. Surfaced via `stats()`.
+    pub(crate) syscall_python_fallback_count: u64,
     /// State IDs that have already produced a DCAS warning. We log the first
     /// DCAS hit per state to avoid spamming the log on tight DCAS loops.
     pub(crate) dcas_warned_states: HashSet<u64>,
@@ -492,6 +504,8 @@ impl RustExplorationManager {
             vex_fallback_count: 0,
             vex_fallback_addrs: HashMap::new(),
             dcas_unsupported_count: 0,
+            simprocedure_python_fallback_count: 0,
+            syscall_python_fallback_count: 0,
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
@@ -2107,6 +2121,14 @@ impl RustExplorationManager {
         dict.set_item("vex_fallback_count", self.vex_fallback_count)?;
         dict.set_item("vex_fallback_unique_addrs", self.vex_fallback_addrs.len())?;
         dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
+        dict.set_item(
+            "simprocedure_python_fallback_count",
+            self.simprocedure_python_fallback_count,
+        )?;
+        dict.set_item(
+            "syscall_python_fallback_count",
+            self.syscall_python_fallback_count,
+        )?;
         Ok(dict)
     }
 
@@ -2116,6 +2138,8 @@ impl RustExplorationManager {
     ///   "count": total number of VEX fallbacks
     ///   "addresses": dict mapping hex address string -> reason string
     ///   "dcas_unsupported_count": subset of fallbacks driven by double-CAS
+    ///   "simprocedure_python_fallback_count": SimProcedures dispatched to Python
+    ///   "syscall_python_fallback_count": syscalls dispatched to Python
     pub fn get_fallback_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         dict.set_item("count", self.vex_fallback_count)?;
@@ -2125,6 +2149,14 @@ impl RustExplorationManager {
         }
         dict.set_item("addresses", addrs)?;
         dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
+        dict.set_item(
+            "simprocedure_python_fallback_count",
+            self.simprocedure_python_fallback_count,
+        )?;
+        dict.set_item(
+            "syscall_python_fallback_count",
+            self.syscall_python_fallback_count,
+        )?;
         Ok(dict)
     }
 
@@ -2897,6 +2929,7 @@ impl RustExplorationManager {
                     } // if !is_in_binary
 
                     // Fall back to Python for SimProcedure execution
+                    self.simprocedure_python_fallback_count += 1;
                     let state_id = state.state_id();
                     let return_addr = self.get_return_addr(&state).unwrap_or(0);
 

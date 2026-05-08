@@ -628,6 +628,26 @@ class RustExplorationManager(
         lines.append(f"  Total time: {s['callback_lift_block_total_ns']/1e6:.1f}ms")
         if s['callback_lift_block_count'] > 0:
             lines.append(f"  Avg per call: {s['callback_lift_block_total_ns']/s['callback_lift_block_count']/1e3:.1f}us")
+        # Per-category fallback counters (angr-md0m). Pulled live from
+        # self.stats — values may be 0 if the run never tripped the path.
+        try:
+            fb = self.stats
+        except Exception:
+            fb = {}
+        if fb:
+            lines.append("Fallback counters:")
+            lines.append(f"  SimProcedure -> Python: {fb.get('simprocedure_python_fallback_count', 0)}")
+            lines.append(f"  Syscall -> Python: {fb.get('syscall_python_fallback_count', 0)}")
+            lines.append(f"  Dirty call -> Python: {fb.get('rust_python_dirty_call_count', 0)}")
+            lines.append(f"  VEX op fallback (silent): {fb.get('rust_python_vex_op_fallback_count', 0)}")
+            lines.append(
+                f"    unop {fb.get('rust_python_vex_unop_fallback_count', 0)}, "
+                f"binop {fb.get('rust_python_vex_binop_fallback_count', 0)}, "
+                f"triop {fb.get('rust_python_vex_triop_fallback_count', 0)}, "
+                f"qop {fb.get('rust_python_vex_qop_fallback_count', 0)}"
+            )
+            lines.append(f"  DCAS unsupported: {fb.get('dcas_unsupported_count', 0)}")
+            lines.append(f"  VEX block fallback (PythonVEXFallback): {fb.get('vex_fallback_count', 0)}")
         return "\n".join(lines)
 
     def get_exploration_summary(self) -> str:

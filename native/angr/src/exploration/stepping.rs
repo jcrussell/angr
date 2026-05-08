@@ -199,6 +199,9 @@ impl RustExplorationManager {
                     }
                 }
 
+                // Falling through to Python syscall callback (no native handler
+                // matched, or native handler returned Err).
+                self.syscall_python_fallback_count += 1;
                 // Only snapshot if deferred forks need it
                 let pre_callback_snapshot = if !deferred_forks.is_empty() {
                     Some(state.fork())
@@ -503,6 +506,7 @@ impl RustExplorationManager {
             Ok(successors)
         } else {
             // Fall through to Python callback
+            self.simprocedure_python_fallback_count += 1;
             state.set_pc(addr);
             state.add_to_history(addr);
             // Only snapshot if deferred forks need it

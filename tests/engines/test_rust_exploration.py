@@ -117,6 +117,32 @@ class TestRustExplorationManagerUnit:
         assert "dcas_unsupported_count" in fb
         assert fb["dcas_unsupported_count"] == 0
 
+    def test_per_category_fallback_counters_exposed(self):
+        """Per-category fallback counters (angr-md0m) appear in stats() and
+        get_fallback_stats(). All start at zero on a fresh manager.
+        """
+        mgr = _RustExplorationManager("amd64")
+
+        stats = mgr.stats()
+        # Manager-side counters
+        assert stats["simprocedure_python_fallback_count"] == 0
+        assert stats["syscall_python_fallback_count"] == 0
+
+        # Interpreter-side counters land under the rust_ prefix once the
+        # ExecutionStats hashmap is merged. Before any run, they are zero.
+        exec_stats = mgr.get_execution_stats()
+        assert exec_stats["python_dirty_call_count"] == 0
+        assert exec_stats["python_vex_op_fallback_count"] == 0
+        # Op-family breakdown
+        assert exec_stats["python_vex_unop_fallback_count"] == 0
+        assert exec_stats["python_vex_binop_fallback_count"] == 0
+        assert exec_stats["python_vex_triop_fallback_count"] == 0
+        assert exec_stats["python_vex_qop_fallback_count"] == 0
+
+        fb = mgr.get_fallback_stats()
+        assert fb["simprocedure_python_fallback_count"] == 0
+        assert fb["syscall_python_fallback_count"] == 0
+
     def test_add_rust_state(self):
         """Test adding an existing RustSimState."""
         mgr = _RustExplorationManager("amd64")
