@@ -2607,6 +2607,30 @@ class RustExplorationManager(
         """Disable Rust-side execution profiling."""
         self._rust_mgr.set_profiling(False)
 
+    def get_solver_stats(self) -> dict:
+        """Return Z3 solver profiling counters as a dict.
+
+        Counters are global (process-wide atomics) and accumulate across all
+        SymContexts. Includes overall query/sat/unsat/timeout counts, total
+        time spent in solver.check(), assume/branch fast-path counters, and
+        per-call-site breakdowns.
+
+        Returns an empty dict if the Rust extension was built without Z3.
+        """
+        try:
+            from angr.rustylib.vex_engine import RustExplorationManager as _REM
+            return dict(_REM.get_solver_stats())
+        except (ImportError, RuntimeError, AttributeError):
+            return {}
+
+    def reset_solver_stats(self):
+        """Reset all global Z3 solver profiling counters to zero."""
+        try:
+            from angr.rustylib.vex_engine import RustExplorationManager as _REM
+            _REM.reset_solver_stats()
+        except (ImportError, RuntimeError, AttributeError):
+            pass
+
     # Compatibility methods for SimulationManager API
 
     def use_technique(self, technique, **kwargs):

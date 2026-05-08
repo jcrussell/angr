@@ -442,6 +442,42 @@ class TestRustExplorationPython:
             "permission check must fire before lift_block is dispatched"
         )
 
+    def test_solver_stats_populated(self, fauxware_project):
+        """mgr.get_solver_stats() returns populated counters after exploration.
+
+        Verifies the observability surface for angr-2usz: per-process Z3 query
+        counters (sat/unsat/timeout, total time, per-site breakdown) reach
+        Python via the instance method.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.reset_solver_stats()
+
+        baseline = mgr.get_solver_stats()
+        assert isinstance(baseline, dict)
+        assert "z3_check_count" in baseline
+        assert "z3_sat_count" in baseline
+        assert "z3_unsat_count" in baseline
+        assert "z3_timeout_count" in baseline
+        assert "z3_check_time_ns" in baseline
+        assert baseline["z3_check_count"] == 0
+        assert baseline["z3_sat_count"] == 0
+        assert baseline["z3_unsat_count"] == 0
+        assert baseline["z3_timeout_count"] == 0
+
+        mgr.explore(find=0x4006ed, num_find=1)
+
+        stats = mgr.get_solver_stats()
+        assert stats["z3_check_count"] >= 1, \
+            f"expected at least one solver query, got {stats['z3_check_count']}"
+        assert stats["z3_check_time_ns"] >= 0
+        # Sat + unsat + timeout should account for every check.
+        assert (stats["z3_sat_count"]
+                + stats["z3_unsat_count"]
+                + stats["z3_timeout_count"]) == stats["z3_check_count"]
+
     def test_basic_explore(self, fauxware_project):
         """Test basic exploration with find address."""
         from angr.exploration import RustExplorationManager

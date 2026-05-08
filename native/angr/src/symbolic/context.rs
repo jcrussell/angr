@@ -47,6 +47,12 @@ static Z3_BRANCH_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static Z3_BRANCH_MODEL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
 static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of Z3 solver.check() calls that returned Sat.
+static Z3_SAT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of Z3 solver.check() calls that returned Unsat.
+static Z3_UNSAT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of Z3 solver.check() calls that returned Unknown (timeout / resource limit).
+static Z3_TIMEOUT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Per-site counters and timers for solver.check() calls.
 /// Indexed by `CheckSite as usize`.
@@ -104,6 +110,9 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     stats.insert("z3_branch_model_hit".into(), Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed));
     stats.insert("z3_branch_model_miss".into(), Z3_BRANCH_MODEL_MISS_COUNT.load(Ordering::Relaxed));
     stats.insert("z3_ast_build".into(), Z3_AST_BUILD_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_sat_count".into(), Z3_SAT_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_unsat_count".into(), Z3_UNSAT_COUNT.load(Ordering::Relaxed));
+    stats.insert("z3_timeout_count".into(), Z3_TIMEOUT_COUNT.load(Ordering::Relaxed));
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
         let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
@@ -129,6 +138,9 @@ pub fn reset_solver_stats() {
     Z3_BRANCH_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_BRANCH_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
+    Z3_SAT_COUNT.store(0, Ordering::Relaxed);
+    Z3_UNSAT_COUNT.store(0, Ordering::Relaxed);
+    Z3_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
     for i in 0..NUM_CHECK_SITES {
         Z3_CHECK_SITE_COUNT[i].store(0, Ordering::Relaxed);
         Z3_CHECK_SITE_TIME_NS[i].store(0, Ordering::Relaxed);
@@ -153,6 +165,11 @@ fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
     let idx = site as usize;
     Z3_CHECK_SITE_COUNT[idx].fetch_add(1, Ordering::Relaxed);
     Z3_CHECK_SITE_TIME_NS[idx].fetch_add(elapsed_ns, Ordering::Relaxed);
+    match result {
+        z3::SatResult::Sat => Z3_SAT_COUNT.fetch_add(1, Ordering::Relaxed),
+        z3::SatResult::Unsat => Z3_UNSAT_COUNT.fetch_add(1, Ordering::Relaxed),
+        z3::SatResult::Unknown => Z3_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed),
+    };
     result
 }
 

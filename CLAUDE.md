@@ -133,3 +133,30 @@ print(f'satisfiable: {ctx.satisfiable()}')
 print(f'min: {ctx.min(x, signed=False)}')  # 11
 print(f'max: {ctx.max(x, signed=False)}')  # 19
 ```
+
+### Z3 Solver Profiling Counters
+
+Process-wide atomics in `native/angr/src/symbolic/context.rs` track every
+`solver.check()` call. Read or reset them via the manager:
+
+```python
+mgr = RustExplorationManager(proj, [state])
+mgr.reset_solver_stats()
+mgr.explore(find=...)
+stats = mgr.get_solver_stats()
+# stats includes:
+#   z3_check_count        — total solver.check() calls
+#   z3_check_time_ns      — total time in solver.check()
+#   z3_sat_count / z3_unsat_count / z3_timeout_count — by SatResult
+#   z3_materialize_count, z3_materialize_time_ns — lazy-fork solver materialization
+#   z3_assume_concrete / z3_assume_symbolic — assume_true/false fast-path counters
+#   z3_branch_check / z3_branch_concrete / z3_branch_model_hit / z3_branch_model_miss
+#   z3_ast_build          — AST construction count
+#   z3_site_<name>_count, z3_site_<name>_time_ns — per-call-site breakdown
+#     (sites: satisfiable, branch_true, branch_false, eval, eval_upto,
+#      min_init, min_search, max_init, max_search)
+```
+
+Counters are global (shared across SymContexts). Call
+`mgr.reset_solver_stats()` to zero them at the start of a measured window.
+The same dict is also merged into `mgr.stats` for convenience.
