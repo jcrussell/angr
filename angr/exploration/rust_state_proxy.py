@@ -552,35 +552,35 @@ class RustCallStackProxy:
         return f"<RustCallStackProxy depth={len(self)}>"
 
 
-class _NoOpInspectProxy:
-    """No-op stand-in for state.inspect on RustStateProxy.
+_INSPECT_NOT_IMPLEMENTED_MSG = (
+    "state.inspect breakpoints are not dispatched by the Rust symex engine. "
+    "Registering a breakpoint here would silently never fire. "
+    "Switch to use_rust_engine=False or track this in beads angr-osuu."
+)
 
-    Real angr SimInspector triggers breakpoints at events. The Rust engine
-    doesn't surface inspect hooks, so this proxy silently accepts breakpoint
-    registration but never fires. Lets technique code that touches
-    state.inspect.b(...) run without exploding.
+
+class _NoOpInspectProxy:
+    """Stand-in for state.inspect on RustStateProxy.
+
+    The Rust engine does not surface inspect events, so any breakpoint
+    registered here would silently never fire. Rather than letting that
+    fail invisibly, registration methods raise NotImplementedError.
     """
 
     def b(self, *args, **kwargs):
-        return self
+        raise NotImplementedError(_INSPECT_NOT_IMPLEMENTED_MSG)
 
     def make_breakpoint(self, *args, **kwargs):
-        return None
+        raise NotImplementedError(_INSPECT_NOT_IMPLEMENTED_MSG)
 
     def add_breakpoint(self, *args, **kwargs):
-        return None
+        raise NotImplementedError(_INSPECT_NOT_IMPLEMENTED_MSG)
 
     def remove_breakpoint(self, *args, **kwargs):
-        return None
+        raise NotImplementedError(_INSPECT_NOT_IMPLEMENTED_MSG)
 
     def action(self, *args, **kwargs):
-        return None
-
-    def __getattr__(self, name):
-        # Any other attr access yields a no-op callable.
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return lambda *a, **kw: None
+        raise NotImplementedError(_INSPECT_NOT_IMPLEMENTED_MSG)
 
 
 class RustStateProxy:

@@ -780,20 +780,27 @@ class TestCallStackProxy:
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestInspectProxy:
-    """Tests for the no-op inspect proxy on RustStateProxy."""
+    """Tests for the loud inspect proxy on RustStateProxy."""
 
-    def test_inspect_breakpoint_calls_succeed(self):
-        """state.inspect.b('mem_read', ...) and friends silently succeed."""
+    def test_inspect_breakpoint_calls_raise(self):
+        """state.inspect.b/make_breakpoint/add_breakpoint raise NotImplementedError.
+
+        Silent no-ops would let breakpoint-based techniques register hooks
+        that never fire. Raising loudly surfaces the unsupported path.
+        """
         from angr.exploration.rust_state_proxy import _NoOpInspectProxy
 
         ins = _NoOpInspectProxy()
-        # All these should be silent no-ops.
-        ins.b("mem_read", when="before", action=lambda s: None)
-        ins.make_breakpoint("mem_write")
-        ins.add_breakpoint("call", lambda s: None)
-        ins.remove_breakpoint("call", 0)
-        # Unknown attr returns a callable no-op.
-        ins.unknown_method(1, 2, key="value")
+        with pytest.raises(NotImplementedError, match="angr-osuu"):
+            ins.b("mem_read", when="before", action=lambda s: None)
+        with pytest.raises(NotImplementedError, match="angr-osuu"):
+            ins.make_breakpoint("mem_write")
+        with pytest.raises(NotImplementedError, match="angr-osuu"):
+            ins.add_breakpoint("call", lambda s: None)
+        with pytest.raises(NotImplementedError, match="angr-osuu"):
+            ins.remove_breakpoint("call", 0)
+        with pytest.raises(NotImplementedError, match="angr-osuu"):
+            ins.action("call", lambda s: None)
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
