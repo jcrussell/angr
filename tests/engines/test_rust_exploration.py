@@ -239,6 +239,83 @@ class TestRustExplorationManagerUnit:
         names = mgr._rust_mgr.list_native_procedures()
         assert "echo_proc" in names
 
+    def test_x86_native_procedure_returns_to_eax_not_edx(self):
+        """Native procedure return value must land in EAX (offset 8), not EDX
+        (offset 16) for 32-bit x86 (Cdecl). Locks the regression fixed in
+        commit 5329d8222 — Cdecl previously used offset 16 (RAX in amd64) which
+        routed native results to EDX in 32-bit binaries, leaving EAX with stale
+        data and masking forks driven by the symbolic return value.
+        """
+        mgr = _RustExplorationManager("x86")
+
+        # Minimal callbacks (lift_block won't fire — we hook every PC we visit).
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: '{}')
+        mgr.set_callbacks(callbacks)
+
+        STRLEN_HOOK = 0x500000
+        EXIT_HOOK = 0x600000
+        STRING_ADDR = 0x2000
+        STACK_BASE = 0x7FFF0000
+        EAX_POISON = 0xDEADBEEF
+        EDX_POISON = 0xCAFEBABE
+
+        # Native strlen and exit are pre-registered in the procedure registry;
+        # binding them to addresses makes the dispatcher invoke them on PC hit.
+        # Both hook addresses are outside any loaded binary region, so the
+        # `is_in_binary` gate lets native dispatch fire.
+        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+
+        state = RustSimState("x86")
+
+        # Map memory: 4KB string region + 4KB stack page. Permission 7 = RWX.
+        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state.map_memory(STACK_BASE, 0x1000, 7)
+
+        # "hello" + null = length 5.
+        state.memory_store(STRING_ADDR, b"hello\x00")
+
+        # Cdecl: arg passed on stack at [esp+4], return address at [esp].
+        # Place return address pointing at the exit hook so the state deadends.
+        # 32-bit little-endian: 4 bytes each.
+        state.memory_store(STACK_BASE, EXIT_HOOK.to_bytes(4, "little"))
+        state.memory_store(STACK_BASE + 4, STRING_ADDR.to_bytes(4, "little"))
+
+        state.set_register("esp", STACK_BASE)
+        state.set_register("eax", EAX_POISON)
+        state.set_register("edx", EDX_POISON)
+        state.pc = STRLEN_HOOK
+
+        mgr.add_state("active", state)
+        # ~3 dispatcher iterations: strlen → ret to exit → exit deadends.
+        mgr.run(10)
+
+        deadended_ids = mgr.get_state_ids("deadended")
+        assert len(deadended_ids) == 1, (
+            f"expected exactly one deadended state after exit hook fired; "
+            f"stashes={mgr.stash_counts()}"
+        )
+        sid = deadended_ids[0]
+
+        eax = mgr.get_state_register(sid, "eax")
+        edx = mgr.get_state_register(sid, "edx")
+
+        # EAX must hold the strlen result, NOT the poison value.
+        assert eax == 5, (
+            f"strlen('hello') landed in wrong register: eax={eax!r} edx={edx!r}. "
+            f"Expected eax=5 (Cdecl return register = EAX, offset 8). "
+            f"If eax==0xdeadbeef and edx==5, Cdecl is using offset 16 (EDX) — "
+            f"the angr-4pkm regression has come back."
+        )
+        # EDX must remain poisoned — strlen does not write it under Cdecl.
+        assert edx == EDX_POISON, (
+            f"EDX was clobbered: edx={edx:#x}; expected {EDX_POISON:#x}. "
+            f"Native procedure return register is bleeding into the wrong slot."
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustSimStateIntegration:
