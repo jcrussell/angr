@@ -50,6 +50,10 @@ pub enum SyscallOutcome {
     /// State should continue at PC. `ret` is written to the return
     /// register (rax on amd64).
     Continue { ret: u64 },
+    /// State should continue at PC with a symbolic return value. The BV
+    /// is written directly to the return register (rax on amd64). Used by
+    /// syscalls like time(2) that return a fresh symbolic value.
+    ContinueSymbolic { ret: RustBV },
     /// State should be deadended (used by exit / exit_group).
     Exit,
 }
@@ -101,6 +105,9 @@ impl NativeSyscallRegistry {
         r.register("AMD64", 96, Arc::new(sim_time::NativeGettimeofdaySyscall));
         // amd64: arch_prctl (158) — fs_const/gs_const set/get.
         r.register("AMD64", 158, Arc::new(arch_prctl::NativeArchPrctlSyscall));
+        // amd64: time (201) — fresh symbolic time_t in rax; monotonic via
+        // state.last_time; stores at *pointer if non-null.
+        r.register("AMD64", 201, Arc::new(sim_time::NativeTimeSyscall));
         // amd64: clock_gettime (228) — CLOCK_REALTIME-only; -1 on null;
         // other clocks fall back to Python's SimProcedureError path.
         r.register("AMD64", 228, Arc::new(sim_time::NativeClockGettimeSyscall));
@@ -168,6 +175,7 @@ mod tests {
         assert!(r.get("AMD64", 13).is_some(), "rt_sigaction (13) should be registered");
         assert!(r.get("AMD64", 96).is_some(), "gettimeofday (96) should be registered");
         assert!(r.get("AMD64", 158).is_some(), "arch_prctl (158) should be registered");
+        assert!(r.get("AMD64", 201).is_some(), "time (201) should be registered");
         assert!(r.get("AMD64", 228).is_some(), "clock_gettime (228) should be registered");
         assert!(r.get("AMD64", 0).is_none(), "read (0) is intentionally unregistered");
         assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");

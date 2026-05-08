@@ -731,6 +731,12 @@ pub struct RustSimState {
     /// state export can recover the original symbol instead of a fresh BVS.
     /// Cloned on fork.
     addr_to_ast: HashMap<u64, (Py<PyAny>, u32)>,
+    /// Most recent symbolic value returned by the time(2) syscall — mirrors
+    /// `state.globals['sys_last_time']` in Python's
+    /// `procedures/linux_kernel/time.py`. Used to constrain consecutive calls
+    /// to be monotonic (`new >= prev`). Cloned on fork; not synced across the
+    /// Python boundary today (same drift class as `posix_brk` / `mmap_base`).
+    last_time: Option<RustBV>,
 }
 
 impl RustSimState {
@@ -785,6 +791,7 @@ impl RustSimState {
             symbolic_pages: HashMap::new(),
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
+            last_time: None,
         })
     }
 
@@ -824,6 +831,7 @@ impl RustSimState {
             symbolic_pages: HashMap::new(),
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
+            last_time: None,
         }
     }
 
@@ -873,6 +881,7 @@ impl RustSimState {
             symbolic_pages: HashMap::new(),
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
+            last_time: None,
         })
     }
 
@@ -1006,6 +1015,20 @@ impl RustSimState {
     /// Set the mmap base pointer.
     pub fn set_mmap_base(&mut self, addr: u64) {
         self.mmap_base = addr;
+    }
+
+    /// Most recent symbolic value returned by the time(2) syscall, used to
+    /// chain monotonic constraints across consecutive calls. Mirrors
+    /// `state.globals['sys_last_time']` in Python's
+    /// `procedures/linux_kernel/time.py`.
+    pub fn last_time(&self) -> Option<&RustBV> {
+        self.last_time.as_ref()
+    }
+
+    /// Record the most recent time(2) return value (called by the native time
+    /// syscall handler).
+    pub fn set_last_time(&mut self, bv: RustBV) {
+        self.last_time = Some(bv);
     }
 
     /// Bump-allocate from the heap. Returns the address of the allocation.
@@ -1501,6 +1524,7 @@ impl RustSimState {
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
+            last_time: self.last_time.clone(),
         }
     }
 
@@ -1536,6 +1560,7 @@ impl RustSimState {
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
+            last_time: self.last_time.clone(),
         }
     }
 
@@ -1571,6 +1596,7 @@ impl RustSimState {
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
+            last_time: self.last_time.clone(),
         }
     }
 
@@ -1614,6 +1640,7 @@ impl RustSimState {
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
+            last_time: self.last_time.clone(),
         }
     }
 
@@ -1702,6 +1729,7 @@ impl RustSimState {
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
+            last_time: self.last_time.clone(),
         }
     }
 

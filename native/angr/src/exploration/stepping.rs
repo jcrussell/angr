@@ -169,6 +169,18 @@ impl RustExplorationManager {
                             );
                             return Ok(successors);
                         }
+                        Ok(SyscallOutcome::ContinueSymbolic { ret }) => {
+                            let ret_reg = self.calling_convention.return_register();
+                            state.set_register_by_offset(ret_reg, ret);
+                            let mut successors = vec![state];
+                            self.process_deferred_forks_into(
+                                &mut successors,
+                                deferred_forks,
+                                &stored_conditions,
+                                fork_snapshots,
+                            );
+                            return Ok(successors);
+                        }
                         Ok(SyscallOutcome::Exit) => {
                             let mut successors = vec![state];
                             self.process_deferred_forks_into(

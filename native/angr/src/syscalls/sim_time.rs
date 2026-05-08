@@ -1,4 +1,4 @@
-//! amd64 gettimeofday (96) and clock_gettime (228) syscall handlers.
+//! amd64 time (201), gettimeofday (96), and clock_gettime (228) syscall handlers.
 //!
 //! Mirror `procedures/posix/sim_time.py`. Each writes a fresh symbolic
 //! `struct timeval` / `struct timespec` to the user-supplied pointer:
@@ -90,6 +90,67 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
             .memory_store(tv + stride, tv_usec)
             .map_err(|e| SyscallError::Other(format!("gettimeofday tv_usec store: {e:?}")))?;
         Ok(SyscallOutcome::Continue { ret: 0 })
+    }
+}
+
+/// time(pointer) — return a fresh symbolic time_t in rax, optionally
+/// store it at *pointer. Mirrors `procedures/linux_kernel/time.py`:
+///
+/// * `result := BVS("sys_time", arch.bits)`
+/// * if `state.last_time` is `Some(prev)`: constrain `result.SGE(prev)`
+/// * else: constrain `result.SGE(0)`
+/// * `state.last_time := result`
+/// * if `pointer != 0` (concrete): store `result` at `*pointer`
+/// * return `result` via rax (ContinueSymbolic)
+///
+/// Symbolic `pointer`: fall back to Python so its `condition=(pointer != 0)`
+/// store logic runs. (Most binaries pass NULL or a concrete stack address.)
+pub struct NativeTimeSyscall;
+
+impl NativeSyscall for NativeTimeSyscall {
+    fn name(&self) -> &'static str {
+        "time"
+    }
+
+    fn num_args(&self) -> usize {
+        1
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<SyscallOutcome, SyscallError> {
+        if args.is_empty() {
+            return Err(SyscallError::Other(format!(
+                "time expected 1 arg, got {}",
+                args.len()
+            )));
+        }
+        let pointer = args[0]
+            .as_u64()
+            .ok_or_else(|| SyscallError::SymbolicArgument("time pointer".into()))?;
+
+        let bits = state.arch().bits();
+        let (sys_time, monotonic_constraint) = {
+            let ctx = state.solver().borrow();
+            let sys_time = RustBV::symbolic(&ctx, "sys_time", bits);
+            let zero = RustBV::concrete(0, bits);
+            // Monotonic constraint: sys_time >= last_time (or >= 0 first call).
+            let lower = state.last_time().cloned().unwrap_or(zero);
+            let cmp = sys_time.sge(&lower, &ctx);
+            (sys_time, cmp)
+        };
+        state.add_constraint(monotonic_constraint);
+
+        if pointer != 0 {
+            state
+                .memory_store(pointer, sys_time.clone())
+                .map_err(|e| SyscallError::Other(format!("time *pointer store: {e:?}")))?;
+        }
+
+        state.set_last_time(sys_time.clone());
+        Ok(SyscallOutcome::ContinueSymbolic { ret: sys_time })
     }
 }
 
@@ -321,5 +382,107 @@ mod tests {
         let c = NativeClockGettimeSyscall;
         assert_eq!(c.name(), "clock_gettime");
         assert_eq!(c.num_args(), 2);
+        let t = NativeTimeSyscall;
+        assert_eq!(t.name(), "time");
+        assert_eq!(t.num_args(), 1);
+    }
+
+    // ---- time --------------------------------------------------------
+
+    #[test]
+    fn time_null_pointer_returns_symbolic_and_does_not_store() {
+        let h = NativeTimeSyscall;
+        let mut state = fresh_state();
+        let outcome = h
+            .call(&mut state, &[RustBV::concrete(0, 64)])
+            .expect("ok");
+        match outcome {
+            SyscallOutcome::ContinueSymbolic { ret } => {
+                assert!(ret.is_symbolic(), "time return must be symbolic");
+                assert_eq!(ret.width(), 64);
+            }
+            _ => panic!("expected ContinueSymbolic"),
+        }
+        // last_time updated.
+        assert!(state.last_time().is_some());
+    }
+
+    #[test]
+    fn time_writes_symbolic_to_pointer() {
+        let h = NativeTimeSyscall;
+        let mut state = fresh_state();
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+        let outcome = h
+            .call(&mut state, &[RustBV::concrete(0x4000, 64)])
+            .expect("ok");
+        let ret = match outcome {
+            SyscallOutcome::ContinueSymbolic { ret } => ret,
+            _ => panic!("expected ContinueSymbolic"),
+        };
+        let stored = state.memory_load(0x4000, 8).expect("loadable");
+        assert!(stored.is_symbolic(), "stored value must be symbolic");
+        // The stored value is the same BV that was returned.
+        assert_eq!(ret.width(), stored.width());
+    }
+
+    #[test]
+    fn time_first_call_constrains_nonnegative() {
+        let h = NativeTimeSyscall;
+        let mut state = fresh_state();
+        let outcome = h
+            .call(&mut state, &[RustBV::concrete(0, 64)])
+            .expect("ok");
+        let ret = match outcome {
+            SyscallOutcome::ContinueSymbolic { ret } => ret,
+            _ => panic!("expected ContinueSymbolic"),
+        };
+        // Min should be >= 0 (signed).
+        let min = state.min(&ret, true).expect("min computable");
+        assert!(min as i64 >= 0, "first time() must be SGE 0; got min={min}");
+    }
+
+    #[test]
+    fn time_consecutive_calls_are_monotonic() {
+        let h = NativeTimeSyscall;
+        let mut state = fresh_state();
+        let first = match h.call(&mut state, &[RustBV::concrete(0, 64)]).expect("ok") {
+            SyscallOutcome::ContinueSymbolic { ret } => ret,
+            _ => panic!("expected ContinueSymbolic"),
+        };
+        // Pin the first call to a concrete value to make the monotonicity
+        // constraint testable: first == 100.
+        let pin = {
+            let ctx = state.solver().borrow();
+            first.eq(&RustBV::concrete(100, 64), &ctx)
+        };
+        state.add_constraint(pin);
+
+        let second = match h.call(&mut state, &[RustBV::concrete(0, 64)]).expect("ok") {
+            SyscallOutcome::ContinueSymbolic { ret } => ret,
+            _ => panic!("expected ContinueSymbolic"),
+        };
+        // second >= first, and first is pinned to 100, so second >= 100.
+        let min = state.min(&second, true).expect("min computable");
+        assert!(min as i64 >= 100, "second time() must be >= first; got min={min}");
+    }
+
+    #[test]
+    fn time_symbolic_pointer_falls_back() {
+        let h = NativeTimeSyscall;
+        let mut state = fresh_state();
+        let ctx = SymContext::new();
+        let sym = RustBV::symbolic(&ctx, "ptr", 64);
+        let err = h.call(&mut state, &[sym]).expect_err("must fall back");
+        assert!(matches!(err, SyscallError::SymbolicArgument(_)));
+    }
+
+    #[test]
+    fn time_unmapped_pointer_falls_back() {
+        let h = NativeTimeSyscall;
+        let mut state = fresh_state();
+        let err = h
+            .call(&mut state, &[RustBV::concrete(0xDEAD_0000, 64)])
+            .expect_err("must fall back");
+        assert!(matches!(err, SyscallError::Other(_)));
     }
 }
