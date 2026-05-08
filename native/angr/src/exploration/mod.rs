@@ -1658,6 +1658,34 @@ impl RustExplorationManager {
         Ok(state.solver().borrow().timeout_ms())
     }
 
+    /// Get the per-state mmap base pointer (mirrors Python's
+    /// `state.heap.mmap_base`). The native mmap syscall handler bumps this
+    /// on `addr=0` calls; Python imports it on stash export to keep the two
+    /// engines from handing out overlapping mmap regions.
+    pub fn get_state_mmap_base(&self, state_id: u64) -> PyResult<u64> {
+        let state = self.find_state(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "get_state_mmap_base: state {} not found",
+                state_id
+            ))
+        })?;
+        Ok(state.mmap_base())
+    }
+
+    /// Set the per-state mmap base pointer. Used by tests and by Python-side
+    /// fallbacks that allocate from `state.heap.mmap_base` and need to push
+    /// the advance back into Rust so subsequent native mmaps don't collide.
+    pub fn set_state_mmap_base(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
+        let state = self.find_state_mut(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "set_state_mmap_base: state {} not found",
+                state_id
+            ))
+        })?;
+        state.set_mmap_base(addr);
+        Ok(())
+    }
+
     /// Fork the solver context of an arbitrary state (by ID).
     ///
     /// Returns a new RustSolverContext with all of the state's constraints,

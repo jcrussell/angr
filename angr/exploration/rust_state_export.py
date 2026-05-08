@@ -222,6 +222,7 @@ class RustStateExportMixin:
                 # Sync Rust-tracked call frames so state.callstack reflects
                 # the call/ret events that happened during Rust execution.
                 self._sync_rust_callstack_to_state(state, state_id)
+                self._sync_rust_mmap_base_to_state(state, state_id)
                 states.append(state)
 
         # For states not in cache, try parent state or snapshot export
@@ -250,6 +251,7 @@ class RustStateExportMixin:
                     self._sync_rust_memory_to_state(state, sid)
                     self._sync_rust_registers_to_state(state, sid)
                     self._sync_rust_callstack_to_state(state, sid)
+                    self._sync_rust_mmap_base_to_state(state, sid)
                     # Cache the copy so it stays alive (prevents weakref death
                     # during chained attribute access like sm.active[1].posix.dumps())
                     self._state_cache[sid] = state
@@ -273,6 +275,7 @@ class RustStateExportMixin:
                     self._sync_rust_memory_to_state(state, sid)
                     self._sync_rust_registers_to_state(state, sid)
                     self._sync_rust_callstack_to_state(state, sid)
+                    self._sync_rust_mmap_base_to_state(state, sid)
                     self._state_cache[sid] = state
                     states.append(state)
                     cached_ids.add(sid)
@@ -298,6 +301,7 @@ class RustStateExportMixin:
                                 self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
+                                self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
                                 self._state_cache[snapshot.state_id] = angr_state
                                 states.append(angr_state)
                             except Exception as e:
@@ -379,6 +383,29 @@ class RustStateExportMixin:
                 # Expected: VEX internal registers (e.g. ip_at_syscall) that
                 # angr's register plugin doesn't expose. Log at debug only.
                 l.debug("Skipping register %s during sync: %s", reg_name, e)
+
+    def _sync_rust_mmap_base_to_state(self, state: "angr.SimState", state_id: int):
+        """Push Rust's per-state mmap_base into Python's state.heap.mmap_base.
+
+        The native mmap syscall handler bumps Rust's mmap_base on addr=0 calls;
+        without this sync, a subsequent Python-side allocation (SimProcedure
+        fallback or unhandled syscall) reads a stale state.heap.mmap_base and
+        hands out an address that overlaps a Rust-allocated region.
+
+        Take max(rust, python) to avoid clobbering a Python-side advance that
+        happened between Rust runs (e.g. the user calling state.heap.mmap_base
+        = N before re-entering exploration).
+        """
+        heap = getattr(state, "heap", None)
+        if heap is None or not hasattr(heap, "mmap_base"):
+            return
+        try:
+            rust_base = self._rust_mgr.get_state_mmap_base(state_id)
+        except Exception as e:
+            l.debug("get_state_mmap_base(%d) failed: %s", state_id, e)
+            return
+        if rust_base > heap.mmap_base:
+            heap.mmap_base = rust_base
 
     def _sync_rust_callstack_to_state(self, state: "angr.SimState", state_id: int):
         """Sync Rust-tracked call frames into state.callstack.

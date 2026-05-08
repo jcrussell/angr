@@ -861,6 +861,107 @@ class TestSolverProxyTimeout:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestMmapBaseSync:
+    """Tests that the Rust per-state mmap_base mirrors back to Python's
+    state.heap.mmap_base on stash export.
+
+    Regression for angr-0cnm: previously the native mmap syscall handler
+    bumped Rust's mmap_base on addr=0 calls, but nothing pushed that bump
+    back to the angr SimState — so a subsequent Python-side fallback
+    allocation would overlap a Rust-allocated region.
+    """
+
+    def test_get_state_mmap_base_default(self):
+        """The Rust manager's mmap_base getter returns the documented default
+        (heap_base 0xC0000000 + heap_size 0x00800000 * 2 = 0xC1000000)."""
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        assert mgr.get_state_mmap_base(sid) == 0xC100_0000
+
+    def test_set_state_mmap_base_round_trips(self):
+        """Setter advances the value and getter reads it back — proves the
+        FFI accessor pair is wired to the same RustSimState field that the
+        native mmap syscall handler bumps."""
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        mgr.set_state_mmap_base(sid, 0xC100_5000)
+        assert mgr.get_state_mmap_base(sid) == 0xC100_5000
+
+    def test_get_state_mmap_base_unknown_state_raises(self):
+        """Unknown state IDs surface a ValueError (matches the timeout API)."""
+        mgr = _RustExplorationManager("amd64")
+        with pytest.raises(ValueError, match="state .* not found"):
+            mgr.get_state_mmap_base(999_999)
+
+    def test_export_path_syncs_rust_mmap_base_into_state_heap(self, fauxware_project):
+        """End-to-end: a Rust-side mmap_base advance is visible on the angr
+        SimState returned by mgr.active.
+
+        Pre-fix this fails — state.heap.mmap_base stays at the default
+        0xC1000000 even though Rust bumped its internal counter, leading to
+        the silent-corruption scenario in the bead description.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        # Sanity: the Python default matches the Rust default so the test
+        # detects only sync changes, not a base-address mismatch.
+        assert state.heap.mmap_base == 0xC100_0000
+
+        mgr = RustExplorationManager(proj, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        assert len(active_ids) == 1
+        sid = active_ids[0]
+
+        # Simulate what NativeMmapSyscall does on a successful addr=0 mmap:
+        # bump the per-state mmap_base by one page.
+        bumped = 0xC100_1000
+        mgr._rust_mgr.set_state_mmap_base(sid, bumped)
+        assert mgr._rust_mgr.get_state_mmap_base(sid) == bumped
+
+        # Pull the state back via the public stash API. _get_stash_states
+        # is the path mgr.active / mgr.found go through.
+        states = mgr._get_stash_states("active")
+        assert len(states) == 1
+        synced = states[0]
+
+        assert synced.heap.mmap_base == bumped, (
+            f"state.heap.mmap_base = 0x{synced.heap.mmap_base:x} but Rust's "
+            f"mmap_base advanced to 0x{bumped:x} — sync did not run on stash "
+            f"export and a Python-side mmap fallback would now overlap a "
+            f"Rust-allocated region."
+        )
+
+    def test_export_path_does_not_clobber_higher_python_mmap_base(self, fauxware_project):
+        """The sync takes max(rust, python) — a Python-side advance that
+        outpaced Rust must not be reverted.
+
+        Scenario: Python-side SimProcedure bumped state.heap.mmap_base; Rust's
+        per-state field was not yet updated (drift in the opposite direction).
+        On stash export we must keep the Python value, not overwrite it with
+        the smaller Rust value.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        sid = active_ids[0]
+
+        # Python advanced its mmap_base; Rust still at default.
+        cached = mgr._state_cache[sid]
+        cached.heap.mmap_base = 0xC100_8000
+        assert mgr._rust_mgr.get_state_mmap_base(sid) == 0xC100_0000
+
+        states = mgr._get_stash_states("active")
+        assert len(states) == 1
+        # Python's higher value wins — not clobbered by Rust's smaller value.
+        assert states[0].heap.mmap_base == 0xC100_8000
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStashOperations:
     """Tests for stash management operations."""
 
