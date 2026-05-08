@@ -1,60 +1,49 @@
-## Session log: 2026-05-08, 162nd loop session
+## Session log: 2026-05-08, 163rd loop session
 
-### Tasks: angr-13ir + angr-j1nk (both closed) — CLAUDE.md docs additions
+### Task: angr-k5mj (closed) — Sync profile_rust_bench.sh --list with vex_engine.rs criterion ids
 
-Two related docs tasks bundled because both touch CLAUDE.md and the second
-finished the first one's narrative arc (profiling -> debugging).
+P3 bug filed in the previous session. Fixed by renaming criterion ids
+in `native/angr/benches/vex_engine.rs` so that every name advertised by
+`tests/benchmarks/profile_rust_bench.sh --list` resolves to a real
+bench id under criterion's regex/substring `--filter`.
 
-### angr-13ir — Document profile_rust_bench.sh in CLAUDE.md (P3)
+### What changed
 
-**Outcome: closed.** Commit 247de1f0b adds a "Profiling Rust Benches"
-section to CLAUDE.md describing tests/benchmarks/profile_rust_bench.sh:
-auto-tool detection (cargo-flamegraph > perf > callgrind), --secs/--filter
-flags, output dir target/profile/<filter-or-all>/, tool prerequisites.
+Commit ee08a03d4 — `bench(rust): rename criterion ids to match
+profile_rust_bench.sh --list`:
 
-**Surprise finding (saved to bd memory invariant-profile-rust-bench-list-vs-criterion):**
-The script's `--list` output advertises group names like `rustbv_z3`,
-`symcontext_fork`, `symcontext_check_branch`, but the actual criterion
-benchmark_group / bench_function names in vex_engine.rs are
-`rustbv_build_z3_ast`, `symcontext` (group) / `fork_2constraints` (fn),
-`symcontext_check_branch_feasibility`. So `--filter rustbv_z3` matches
-nothing, and `--filter symcontext_fork` misses the symcontext group.
-Filed angr-k5mj (P3 bug) to sync names.
+- `rustbv_build_z3_ast` → `rustbv_z3`
+- benchmark_group `symcontext` / fn `fork_2constraints` →
+  benchmark_group `symcontext_fork` / fn `2_constraints`
+- `symcontext_check_branch_feasibility` → `symcontext_check_branch`
+- `symcontext_assume_true` → `symcontext_assume`
+- `memory_symbolic_load_16range` → `memory_symbolic_load`
+- `memory_fork_16pages` → `memory_fork`
 
-The CLAUDE.md docs intentionally avoid republishing the misleading list —
-they tell users to run `--list` instead.
+### Verification
 
-### angr-j1nk — ANGR_RUST_LOG env var + Debugging section (P3)
+Built the bench (`cargo bench --bench vex_engine --no-run`) and
+listed ids via `target/release/deps/vex_engine-* --bench --list`.
+Confirmed each --list-advertised name now appears as a real bench
+id, and `--list <name>` filters resolve to the expected entries.
 
-**Outcome: closed.** Commit 1fa809945:
-- New section "Debugging Rust-side Logs" in CLAUDE.md
-- Code: `_apply_rust_log_env()` helper in rust_manager.py reads
-  `ANGR_RUST_LOG` once on first manager construction and calls
-  `set_rust_log_level()`
-- Verified end-to-end: `ANGR_RUST_LOG=debug` surfaces `[rust:DEBUG]`
-  z3::ast / z3::solver lines on stderr through fauxware
+`python -m pytest tests/engines/test_rust_exploration.py` →
+**332/332 passing**.
 
-**Key clarification (saved to bd memory invariant-rust-log-no-env-logger):**
-The engine uses a hand-rolled StderrLogger (engine.rs:1476-1516) via
-`log::set_logger` + `log::set_max_level` — NOT env_logger. Two consequences
-documented in CLAUDE.md:
-1. Standard `RUST_LOG` env var is **not** honored
-2. Per-module log filters are not supported, only a single global level
+### Disambiguation gotcha (saved to bd memory)
+
+`--filter symcontext_fork` is a substring match — it now matches both
+`symcontext_fork/2_constraints` AND `symcontext_fork_scaling/*`. The
+same applies to any name that is a prefix of another. Anchor with
+`--filter '^symcontext_fork$'` or `--filter symcontext_fork/` to
+isolate the simple fork bench. Memory
+`invariant-profile-rust-bench-list-vs-criterion` updated with the
+post-fix list and this gotcha.
 
 ### Files changed
-- `CLAUDE.md` — added "Profiling Rust Benches" + "Debugging Rust-side Logs"
-- `angr/exploration/rust_manager.py` — `_apply_rust_log_env()` and call
-  site in `RustExplorationManager.__init__`
 
-### bd memories saved
-- `invariant-profile-rust-bench-list-vs-criterion` — script --list ≠ actual
-  criterion ids; filter prefixes that work vs. don't
-- `invariant-rust-log-no-env-logger` — engine uses custom StderrLogger,
-  RUST_LOG silently ignored, ANGR_RUST_LOG is the one to use
-
-### Followups filed
-- `angr-k5mj` (P3 bug) — Sync profile_rust_bench.sh --list with actual
-  criterion group names in vex_engine.rs
+- `native/angr/benches/vex_engine.rs` (7 lines)
 
 ### Tests
-332/332 passing on tests/engines/test_rust_exploration.py.
+
+332/332 passing on `tests/engines/test_rust_exploration.py`.
