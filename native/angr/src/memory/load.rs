@@ -45,49 +45,65 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        // Check for stored symbolic object at exact address first
-        if let Some(sym) = self.symbolic_objects.get(&addr) {
-            if sym.width() == size * 8 {
-                return Ok(sym.clone());
+        // angr-3zhl: a later partial store that begins inside [addr+1, addr+size)
+        // overwrites trailing bytes of an earlier wider object at `addr`. The
+        // exact-address and span fast paths below would return the stale wider
+        // value, ignoring the overwrite. Detect by scanning for any
+        // symbolic_objects entry whose start lies strictly inside our range,
+        // and fall back to a per-byte merge (which uses both indices).
+        let has_inner_overlap = (1..size as u64)
+            .any(|i| self.symbolic_objects.contains_key(&(addr + i)));
+        if has_inner_overlap {
+            if let Some(merged) = self.try_byte_merge_load(addr, size, ctx) {
+                return Ok(merged);
             }
-            // Partial read from a wider symbolic object
-            // e.g., reading 1 byte from a 128-byte BVS
-            if sym.width() > size * 8 {
-                let total_bits = sym.width();
-                // Endianness determines which bits correspond to byte 0.
-                // BE: byte 0 = MSB → hi = total_bits-1, lo = total_bits-size*8.
-                // LE: byte 0 = LSB → hi = size*8-1, lo = 0.
-                let (hi, lo) = match self.endness {
-                    Endness::Big => (total_bits - 1, total_bits - size * 8),
-                    Endness::Little => (size * 8 - 1, 0),
-                };
-                return Ok(sym.extract(hi, lo, ctx));
-            }
-        }
-        // Check if this address falls WITHIN a wider symbolic object
-        // stored at a lower address (e.g., reading byte 5 of a 128-byte BVS)
-        // Uses the symbolic_spans reverse index for O(1) lookup.
-        if let Some(&(base_addr, _width_bits)) = self.symbolic_spans.get(&addr) {
-            if let Some(sym) = self.symbolic_objects.get(&base_addr) {
-                let base_offset = addr - base_addr;
-                let sym_bytes = sym.width() / 8;
-                if base_offset < sym_bytes as u64
-                    && base_offset + size as u64 <= sym_bytes as u64
-                {
+            // Byte-merge fell through (e.g. unmapped/non-symbolic byte gap);
+            // continue to the page-scan path below.
+        } else {
+            // Check for stored symbolic object at exact address first
+            if let Some(sym) = self.symbolic_objects.get(&addr) {
+                if sym.width() == size * 8 {
+                    return Ok(sym.clone());
+                }
+                // Partial read from a wider symbolic object
+                // e.g., reading 1 byte from a 128-byte BVS
+                if sym.width() > size * 8 {
                     let total_bits = sym.width();
-                    let off_bits = base_offset as u32 * 8;
-                    // BE: bytes [off, off+size) of the wide BV occupy bits
-                    //     [total-1-off_bits : total-off_bits-size*8].
-                    // LE: same byte range occupies bits
-                    //     [off_bits+size*8-1 : off_bits].
+                    // Endianness determines which bits correspond to byte 0.
+                    // BE: byte 0 = MSB → hi = total_bits-1, lo = total_bits-size*8.
+                    // LE: byte 0 = LSB → hi = size*8-1, lo = 0.
                     let (hi, lo) = match self.endness {
-                        Endness::Big => (
-                            total_bits - off_bits - 1,
-                            total_bits - off_bits - size * 8,
-                        ),
-                        Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                        Endness::Big => (total_bits - 1, total_bits - size * 8),
+                        Endness::Little => (size * 8 - 1, 0),
                     };
                     return Ok(sym.extract(hi, lo, ctx));
+                }
+            }
+            // Check if this address falls WITHIN a wider symbolic object
+            // stored at a lower address (e.g., reading byte 5 of a 128-byte BVS)
+            // Uses the symbolic_spans reverse index for O(1) lookup.
+            if let Some(&(base_addr, _width_bits)) = self.symbolic_spans.get(&addr) {
+                if let Some(sym) = self.symbolic_objects.get(&base_addr) {
+                    let base_offset = addr - base_addr;
+                    let sym_bytes = sym.width() / 8;
+                    if base_offset < sym_bytes as u64
+                        && base_offset + size as u64 <= sym_bytes as u64
+                    {
+                        let total_bits = sym.width();
+                        let off_bits = base_offset as u32 * 8;
+                        // BE: bytes [off, off+size) of the wide BV occupy bits
+                        //     [total-1-off_bits : total-off_bits-size*8].
+                        // LE: same byte range occupies bits
+                        //     [off_bits+size*8-1 : off_bits].
+                        let (hi, lo) = match self.endness {
+                            Endness::Big => (
+                                total_bits - off_bits - 1,
+                                total_bits - off_bits - size * 8,
+                            ),
+                            Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                        };
+                        return Ok(sym.extract(hi, lo, ctx));
+                    }
                 }
             }
         }
@@ -658,5 +674,98 @@ impl SymbolicMemory {
         };
 
         Ok(RustBV::concrete(value, size * 8))
+    }
+
+    /// Reconstruct a load by per-byte lookup against `symbolic_objects` and
+    /// `symbolic_spans`, producing the correct interleaving when an earlier
+    /// wider symbolic value was partially overwritten by a later store
+    /// (angr-3zhl).
+    ///
+    /// For each byte in `[addr, addr + size)`:
+    /// - if `symbolic_objects[byte_addr]` is set, this byte is the start
+    ///   of a stored symbolic value — its byte-0 lane is used;
+    /// - otherwise `symbolic_spans[byte_addr]` is consulted, and the
+    ///   referenced wider value's byte at the matching offset is used;
+    /// - any other case (concrete bytes, gaps, stale-span mismatch)
+    ///   short-circuits to `None` so the caller can fall through to the
+    ///   page-scan path.
+    ///
+    /// Returns the byte-merged bitvector, or `None` if a fully-symbolic
+    /// reconstruction was not possible.
+    fn try_byte_merge_load(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Option<RustBV> {
+        let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
+        for i in 0..size {
+            let byte_addr = addr + i as u64;
+            let part = if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
+                Self::extract_byte_lane(sym, 0, self.endness, ctx)?
+            } else if let Some(&(base_addr, base_width)) =
+                self.symbolic_spans.get(&byte_addr)
+            {
+                let sym = self.symbolic_objects.get(&base_addr)?;
+                if sym.width() != base_width {
+                    return None;
+                }
+                let offset = (byte_addr - base_addr) as u32;
+                Self::extract_byte_lane(sym, offset, self.endness, ctx)?
+            } else {
+                return None;
+            };
+            byte_parts.push(part);
+        }
+        // Concatenate per endianness:
+        //   LE: byte[0] is the LSB → fold from high byte to low byte.
+        //   BE: byte[0] is the MSB → fold from low byte to high byte.
+        // In both folds, the accumulator is the high half of each `concat`.
+        let result = match self.endness {
+            Endness::Little => {
+                let mut iter = byte_parts.into_iter().rev();
+                let mut acc = iter.next().expect("size > 0");
+                for b in iter {
+                    acc = acc.concat(&b, ctx);
+                }
+                acc
+            }
+            Endness::Big => {
+                let mut iter = byte_parts.into_iter();
+                let mut acc = iter.next().expect("size > 0");
+                for b in iter {
+                    acc = acc.concat(&b, ctx);
+                }
+                acc
+            }
+        };
+        Some(result)
+    }
+
+    /// Extract the byte at `byte_offset` from a wider symbolic value,
+    /// honouring memory endianness:
+    ///   LE: byte 0 is the LSB → bits `[off*8+7 : off*8]`.
+    ///   BE: byte 0 is the MSB → bits `[total-off*8-1 : total-off*8-8]`.
+    /// Returns `None` if the offset is out of range.
+    fn extract_byte_lane(
+        sym: &RustBV,
+        byte_offset: u32,
+        endness: Endness,
+        ctx: &SymContext,
+    ) -> Option<RustBV> {
+        let total_bits = sym.width();
+        if (byte_offset + 1) * 8 > total_bits {
+            return None;
+        }
+        Some(match endness {
+            Endness::Little => {
+                sym.extract(byte_offset * 8 + 7, byte_offset * 8, ctx)
+            }
+            Endness::Big => sym.extract(
+                total_bits - byte_offset * 8 - 1,
+                total_bits - byte_offset * 8 - 8,
+                ctx,
+            ),
+        })
     }
 }

@@ -965,6 +965,73 @@ fn test_permission_enforcement_wide_store_three_pages_middle_readonly() {
     }
 }
 
+/// angr-3zhl: load_concrete must not return a stale wider symbolic
+/// object when a later store has partially overwritten its trailing
+/// bytes. Setup: store sym1 (64-bit) at 0x1000, then sym2 (64-bit)
+/// at 0x1004 — sym2's lower 4 bytes overwrite sym1's upper 4 bytes.
+/// A subsequent load(0x1000, 8) must produce concat(sym2[31:0],
+/// sym1[31:0]) for LE memory, not the entire sym1 via the
+/// exact-address fast path.
+#[test]
+fn test_load_concrete_partial_overlap_later_store_wins() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // Pin two symbolic 64-bit values to known constants so we can
+    // predict every byte after the partial overwrite.
+    let k1: u128 = 0x1122_3344_5566_7788;
+    let k2: u128 = 0xAABB_CCDD_EEFF_0011;
+    let sym1 = RustBV::symbolic(&ctx, "sym1_3zhl".to_string(), 64);
+    let sym2 = RustBV::symbolic(&ctx, "sym2_3zhl".to_string(), 64);
+    ctx.assume_true(&sym1.eq(&RustBV::concrete(k1, 64), &ctx));
+    ctx.assume_true(&sym2.eq(&RustBV::concrete(k2, 64), &ctx));
+
+    // Store sym1 at 0x1000 (covers 0x1000..0x1008), then sym2 at
+    // 0x1004 (covers 0x1004..0x100C). Bytes 0x1004..0x1008 are now
+    // sym2's lower half; bytes 0x1000..0x1004 remain sym1's lower half.
+    mem.store_concrete(0x1000, sym1.clone()).expect("store sym1");
+    mem.store_concrete(0x1004, sym2.clone()).expect("store sym2");
+    assert!(ctx.is_sat(), "context must remain SAT after both stores");
+
+    // 8-byte load at 0x1000 must reflect both writes:
+    //   bytes 0x1000..0x1004 = sym1[31:0]
+    //   bytes 0x1004..0x1008 = sym2[31:0]
+    // LE: result low half = sym1[31:0], result high half = sym2[31:0].
+    let loaded = mem
+        .load_concrete(0x1000, 8, &ctx)
+        .expect("8-byte load at 0x1000 must succeed");
+    let expected: u128 = ((k2 & 0xFFFF_FFFF) << 32) | (k1 & 0xFFFF_FFFF);
+    assert_eq!(
+        ctx.eval(&loaded),
+        Some(expected),
+        "load(0x1000, 8) must merge sym1's low half with sym2's low half; \
+         expected 0x{:016x}, the bug would return sym1 entire (0x{:016x})",
+        expected,
+        k1,
+    );
+
+    // Sanity checks for the unaffected ranges:
+    // load(0x1000, 4) is sym1's low 4 bytes.
+    let lower = mem
+        .load_concrete(0x1000, 4, &ctx)
+        .expect("4-byte load at 0x1000 must succeed");
+    assert_eq!(
+        ctx.eval(&lower),
+        Some(k1 & 0xFFFF_FFFF),
+        "load(0x1000, 4) must equal sym1's low 4 bytes"
+    );
+    // load(0x1004, 8) is the full sym2.
+    let upper = mem
+        .load_concrete(0x1004, 8, &ctx)
+        .expect("8-byte load at 0x1004 must succeed");
+    assert_eq!(
+        ctx.eval(&upper),
+        Some(k2),
+        "load(0x1004, 8) must equal sym2 entire"
+    );
+}
+
 /// angr-xok8: dual of the wide-store test for loads. With a W-only
 /// middle page, a 3-page load must surface a Permission error on
 /// the middle page (R required, W actual).
