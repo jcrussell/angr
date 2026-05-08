@@ -3,6 +3,7 @@
 This module tests the Rust-native exploration manager for symbolic execution.
 """
 import os
+import re
 import pytest
 
 import angr
@@ -1295,6 +1296,75 @@ class TestStatePluginsProxy:
         # No python_mgr -> empty fallback (does not raise).
         assert proxy.options == set()
         assert proxy.globals == {}
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStateProxyRepr:
+    """Tests for the enriched RustStateProxy.__repr__ (angr-4c20).
+
+    repr should expose stash membership and constraint count so that
+    `print(mgr.proxy.active[0])` returns something actionable in the REPL.
+    """
+
+    def test_repr_includes_stash_and_constraints(self, fauxware_project):
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        text = repr(proxy)
+        assert text.startswith("<RustStateProxy ")
+        assert f"id={proxy.state_id}" in text
+        assert f"addr={hex(proxy.addr)}" in text
+        assert "stash=active" in text
+        assert "constraints=0" in text
+
+    def test_repr_reflects_seeded_constraint(self, fauxware_project):
+        """A state seeded into the manager with N constraints already attached
+        should show constraints=N through repr."""
+        from angr.exploration import RustExplorationManager
+        import claripy
+
+        state = fauxware_project.factory.entry_state()
+        x = claripy.BVS("repr_test_x", 32)
+        state.solver.add(x > 5)
+        state.solver.add(x < 100)
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        text = repr(proxy)
+        # constraint_count is read off the SymContext atomic and reflects
+        # whatever was loaded during state seeding.
+        match = re.search(r"constraints=(\d+)", text)
+        assert match is not None, text
+        assert int(match.group(1)) >= 2, text
+
+    def test_repr_unknown_state_falls_back(self):
+        """When the state_id has been GC'd (no longer in any stash and not
+        the pending callback), repr still produces something readable rather
+        than raising — stash/constraints fields just disappear."""
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        # Use the proxy before clearing the state, then drop the state.
+        proxy = RustStateProxy(mgr, sid)
+        # Capture the addr before clearing — proxy.addr does its own FFI lookup.
+        baseline_repr = repr(proxy)
+        assert f"id={sid}" in baseline_repr
+        assert "stash=active" in baseline_repr
+
+        # Clear the active stash. State is gone — stash/constraints disappear,
+        # but the addr lookup uses cached value from the original creation
+        # path, so repr still returns a valid string.
+        mgr.clear_stash("active")
+        text = repr(proxy)
+        assert text.startswith("<RustStateProxy ")
+        assert f"id={sid}" in text
+        # Stash and constraints are absent now since the state is gone.
+        assert "stash=" not in text
+        assert "constraints=" not in text
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

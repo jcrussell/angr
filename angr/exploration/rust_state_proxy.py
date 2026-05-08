@@ -857,7 +857,20 @@ class RustStateProxy:
         )
 
     def __repr__(self):
-        return f"<RustStateProxy id={self._state_id} addr={hex(self.addr)}>"
+        try:
+            stash = self._mgr.state_stash(self._state_id)
+        except Exception:
+            stash = None
+        try:
+            n_constraints = self._mgr.state_constraint_count(self._state_id)
+        except Exception:
+            n_constraints = None
+        parts = [f"id={self._state_id}", f"addr={hex(self.addr)}"]
+        if stash is not None:
+            parts.append(f"stash={stash}")
+        if n_constraints is not None:
+            parts.append(f"constraints={n_constraints}")
+        return f"<RustStateProxy {' '.join(parts)}>"
 
 
 class RustSimulationManagerProxy:

@@ -992,6 +992,21 @@ impl RustExplorationManager {
         self.sm.get(stash).map_or(0, |s| s.len())
     }
 
+    /// Get the stash name a state currently belongs to (O(1) via state index).
+    /// Returns None if the state isn't found in any stash. Used by
+    /// RustStateProxy.__repr__ for cheap REPL debugging output.
+    pub fn state_stash(&self, state_id: u64) -> Option<String> {
+        self.sm.stash_of(state_id).map(|s| s.to_string())
+    }
+
+    /// Get the number of solver constraints for a state (O(1), reads
+    /// the SymContext's atomic counter — no Z3 traversal). Returns None
+    /// if the state isn't found. Used by RustStateProxy.__repr__.
+    pub fn state_constraint_count(&self, state_id: u64) -> Option<usize> {
+        let state = self.find_state(state_id)?;
+        Some(state.solver().borrow().num_constraints())
+    }
+
     /// Rebuild the state index after run() modifies stashes internally.
     /// Call from Python after run() returns to keep index up to date.
     pub fn sync_state_index(&mut self) {
