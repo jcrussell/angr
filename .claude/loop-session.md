@@ -1,73 +1,79 @@
-## Session log: 2026-05-08, 168th loop session
+## Session log: 2026-05-08, 169th loop session
 
-### Task: angr-4j5u.1 (closed) — Extract ProfilingCollector struct
+### Task: angr-4j5u.2 (closed) — Extract ConstraintSolver + ConstraintTracker
 
-First child of the angr-4j5u decomposition epic. Move three profiling-related
-fields off `RustExplorationManager` and into a single `ProfilingCollector`
-struct so the manager can track an enable flag + per-step stats + native-proc
-counters via one delegated field.
+Second child of the angr-4j5u decomposition epic. Group six constraint-
+related fields off `RustExplorationManager` into two sub-structs in a new
+`constraints.rs` module.
 
 ### What changed
 
-**New: native/angr/src/exploration/profiling.rs (34 lines)**
-- `ProfilingCollector` struct with three pub(crate) fields:
-  `profiling_enabled: bool`, `accumulated_stats: ExecutionStats`,
-  `native_proc_stats: NativeProcStats`. `#[derive(Default)]`.
-- `NativeProcStats` moved here from mod.rs; the inline `impl Default`
-  collapsed to a derive (HashMap::default == HashMap::new for the
-  `call_counts` field).
+**New: native/angr/src/exploration/constraints.rs (~50 lines)**
+
+- `ConstraintSolver`: solver knobs propagated to per-state solvers.
+    - `lazy_solves: bool`
+    - `solver_timeout_ms: u32` (default 30000 via `new()`)
+- `ConstraintTracker`: per-run bookkeeping.
+    - `uniqueness_registers: Vec<String>`
+    - `uniqueness_set: HashSet<u64>`
+    - `skip_find_predicate_states: HashSet<u64>`
+    - `skip_avoid_predicate_states: HashSet<u64>`
+    - `#[derive(Default)]` only.
+
+Both use `pub(crate)` direct fields. Same load-bearing-simplicity pattern
+as ProfilingCollector — see memory `invariant-constraint-substructs-direct-fields`.
 
 **native/angr/src/exploration/mod.rs**
-- New `mod profiling;` + `use self::profiling::ProfilingCollector;`.
-- Removed inline `NativeProcStats` definition (~17 lines).
-- Removed the three field declarations on `RustExplorationManager`,
-  replaced with a single `pub(crate) profiling: ProfilingCollector`.
-- Constructor: three `field: default()` lines collapse to
-  `profiling: ProfilingCollector::default()`.
-- All ~25 callsites updated mechanically:
-  `self.profiling_enabled` → `self.profiling.profiling_enabled`,
-  `self.accumulated_stats.<x>` → `self.profiling.accumulated_stats.<x>`,
-  `self.native_proc_stats.<x>` → `self.profiling.native_proc_stats.<x>`.
+- New `mod constraints;` + `use self::constraints::{ConstraintSolver, ConstraintTracker};`.
+- Removed six standalone field declarations on `RustExplorationManager`,
+  replaced with two sub-struct fields.
+- Constructor: six fields collapse to
+  `constraint_solver: ConstraintSolver::new()` +
+  `constraint_tracker: ConstraintTracker::default()`.
+- ~28 callsites updated mechanically.
 
 **native/angr/src/exploration/stepping.rs**
-- Same mechanical replacement for the ~20 callsites here.
-- No structural changes; uses `super::*` so it picks up `ProfilingCollector`
-  via the parent module.
+- 5 `self.lazy_solves` → `self.constraint_solver.lazy_solves` replacements.
+- Includes the `interp.lazy_solves = self.lazy_solves` propagation site.
 
-### Field count on the manager: 42 → 40 (net -2)
+**native/angr/src/exploration/helpers.rs**
+- 3 `self.uniqueness_*` → `self.constraint_tracker.uniqueness_*` replacements.
 
-The bead description said "95-field god struct" but the actual count is in
-the low 40s (per `avoid-deferred-4j5u` memory). Three fields collapsed to
-one means 42 → 40.
+### Field count on the manager: 40 → 36 (net -4)
 
-### Build hiccup (recurring)
+Six fields collapsed to two sub-struct fields.
 
-The CLAUDE.md `pip install -e . --no-build-isolation --no-deps` path is still
-broken — `.venv/bin/pip` is missing entirely (just `python` + `python3.12`).
-Used the cargo + cp fallback per `avoid-broken-venv-pip-fallback-cargo-build`:
-1. `cargo build --manifest-path native/angr/Cargo.toml --release`
-2. `cp -f target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
+### Build hiccup (recurring, same as 4j5u.1)
+
+`pip install -e . --no-build-isolation --no-deps` still doesn't work because
+`.venv/bin/pip` is missing. Used the cargo + cp fallback per
+`avoid-broken-venv-pip-fallback-cargo-build`:
+
+```
+cargo build --manifest-path native/angr/Cargo.toml --release
+cp -f target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so
+```
+
+Also, `run_single.py` subprocess can't import angr without
+`PYTHONPATH=/home/ubuntu/repos/angr` prefix. Multiprocessing.spawn inherits
+sys.executable but not cwd, and the editable install's `.pth` file is
+missing (only `__editable_*.pyc` survives). Pre-existing venv issue, not
+caused by the refactor.
 
 ### Final state
 
-- 342/342 tests passing on tests/engines/test_rust_exploration.py (19.6s)
-- fauxware: OK rust 0.34s peak_mem=188MB
-- ais3_crackme: OK rust 0.96s peak_mem=387MB
-- Profiling counters in benchmark output unchanged (block_exec, lift,
-  z3 stats, etc. — all populated as before)
-- Commit: `c3af9aa80` on rust-symex
+- 342/342 tests passing on tests/engines/test_rust_exploration.py (19.4s)
+- fauxware: OK rust 0.35s peak_mem=188MB
+  (matches 4j5u.1 baseline of 0.34s/188MB within noise)
+- Commit: `4e66c8d13` on rust-symex
 
 ### Memories saved
 
-- `invariant-profiling-collector-direct-fields` — pub(crate) direct field
-  access by design; do not "improve" it with methods as a separate cleanup
-  (parent angr-4j5u was deferred multiple times for cosmetic gain)
+- `invariant-constraint-substructs-direct-fields` — same direct-field
+  pattern as ProfilingCollector; do not add methods as cleanup.
 
 ### Next children in the angr-4j5u sequence
 
-- 4j5u.2 — Extract ConstraintTracker + ConstraintSolver fields
 - 4j5u.3 — Extract MemoryConfiguration struct
 - 4j5u.4 — Extract ExecutionEnvironment struct
 - 4j5u.5 — Consolidate orchestrator (final pass)
-
-Each is sized to one session per the round-3 audit notes on the parent.
