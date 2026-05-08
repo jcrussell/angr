@@ -39,8 +39,10 @@ mod stepping;
 mod helpers;
 mod profiling;
 mod constraints;
+mod memory_config;
 
 use self::constraints::{ConstraintSolver, ConstraintTracker};
+use self::memory_config::MemoryConfiguration;
 use self::profiling::ProfilingCollector;
 use self::stepping::StepError;
 
@@ -403,8 +405,8 @@ pub struct RustExplorationManager {
     pub(crate) use_lifo: bool,
     /// Solver configuration: lazy_solves flag and Z3 timeout.
     pub(crate) constraint_solver: ConstraintSolver,
-    /// When true, fill unconstrained memory reads with zero instead of symbolic values.
-    pub(crate) zero_fill_unconstrained: bool,
+    /// Memory and VEX configuration: zero-fill, concretizer, vex opt levels.
+    pub(crate) memory_config: MemoryConfiguration,
     /// Maximum number of states in the active stash. None = unlimited.
     pub(crate) max_active_states: Option<usize>,
     // drop_terminal_states, avoided_count, pruned_count, deadended_count
@@ -420,12 +422,6 @@ pub struct RustExplorationManager {
     // state_index is now in self.sm (StashManager)
     /// Endianness override: None = use arch default, Some(true) = little-endian.
     pub(crate) little_endian: Option<bool>,
-    /// Address concretization configuration, propagated to each engine/interpreter.
-    pub(crate) concretizer_config: crate::concretize::AddressConcretizer,
-    /// VEX optimization level (0-3). None = use pyvex default (typically 1).
-    pub(crate) vex_opt_level: Option<i32>,
-    /// Per-address VEX optimization level overrides.
-    pub(crate) vex_opt_level_overrides: FxHashMap<u64, i32>,
     /// Maximum length of per-state `history` / `detailed_history` ring buffers.
     /// 0 = unlimited (legacy, can OOM on long runs). Default 1000 keeps each
     /// state's history bounded at ~8KB (history) + ~24KB (detailed_history).
@@ -477,15 +473,12 @@ impl RustExplorationManager {
             skip_hook_stack: Vec::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
             constraint_solver: ConstraintSolver::new(),
-            zero_fill_unconstrained: false,
+            memory_config: MemoryConfiguration::default(),
             max_active_states: None,
             native_techniques: Vec::new(),
             constraint_tracker: ConstraintTracker::default(),
             profiling: ProfilingCollector::default(),
             little_endian,
-            concretizer_config: crate::concretize::AddressConcretizer::default(),
-            vex_opt_level: None,
-            vex_opt_level_overrides: FxHashMap::default(),
             max_history: 1000,
         })
     }
@@ -578,7 +571,7 @@ impl RustExplorationManager {
     /// Enable zero-fill for unconstrained memory reads.
     /// When true, unmapped memory returns zero instead of fresh symbolic values.
     pub fn set_zero_fill_unconstrained(&mut self, enabled: bool) {
-        self.zero_fill_unconstrained = enabled;
+        self.memory_config.zero_fill_unconstrained = enabled;
     }
 
     /// Set the Z3 solver timeout in milliseconds (default: 30000).
@@ -604,34 +597,34 @@ impl RustExplorationManager {
     /// Level 0: no optimization. Level 1: standard. Level 2-3: aggressive.
     #[pyo3(signature = (level=None))]
     pub fn set_vex_opt_level(&mut self, level: Option<i32>) {
-        self.vex_opt_level = level;
+        self.memory_config.vex_opt_level = level;
         // Invalidate block cache since opt_level affects IR output
         self.block_cache.clear();
     }
 
     /// Get the current VEX optimization level.
     pub fn get_vex_opt_level(&self) -> Option<i32> {
-        self.vex_opt_level
+        self.memory_config.vex_opt_level
     }
 
     /// Set a per-address VEX optimization level override.
     /// Blocks at this address will be lifted with the specified opt_level.
     pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {
-        self.vex_opt_level_overrides.insert(addr, level);
+        self.memory_config.vex_opt_level_overrides.insert(addr, level);
         // Remove this address from block cache since opt_level changed
         self.block_cache.pop(&addr);
     }
 
     /// Remove a per-address VEX optimization level override.
     pub fn remove_vex_opt_level_override(&mut self, addr: u64) {
-        self.vex_opt_level_overrides.remove(&addr);
+        self.memory_config.vex_opt_level_overrides.remove(&addr);
         self.block_cache.pop(&addr);
     }
 
     /// Clear all per-address VEX optimization level overrides.
     pub fn clear_vex_opt_level_overrides(&mut self) {
-        let addrs: Vec<u64> = self.vex_opt_level_overrides.keys().copied().collect();
-        self.vex_opt_level_overrides.clear();
+        let addrs: Vec<u64> = self.memory_config.vex_opt_level_overrides.keys().copied().collect();
+        self.memory_config.vex_opt_level_overrides.clear();
         for addr in addrs {
             self.block_cache.pop(&addr);
         }
@@ -640,8 +633,8 @@ impl RustExplorationManager {
     /// Resolve the VEX optimization level for a given address.
     /// Per-address overrides take precedence over the global level.
     pub fn resolve_vex_opt_level(&self, addr: u64) -> Option<i32> {
-        self.vex_opt_level_overrides.get(&addr).copied()
-            .or(self.vex_opt_level)
+        self.memory_config.vex_opt_level_overrides.get(&addr).copied()
+            .or(self.memory_config.vex_opt_level)
     }
 
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
@@ -666,7 +659,7 @@ impl RustExplorationManager {
         write_range_limit: Option<u64>,
         symbolic_write_addresses: bool,
     ) {
-        self.concretizer_config.configure_strategies(
+        self.memory_config.concretizer_config.configure_strategies(
             use_approximate,
             read_range_limit,
             write_range_limit,
@@ -796,7 +789,7 @@ impl RustExplorationManager {
         let state_id = state.state_id();
 
         // Propagate memory options
-        if self.zero_fill_unconstrained {
+        if self.memory_config.zero_fill_unconstrained {
             state.memory_mut().set_zero_fill_unconstrained(true);
         }
 
@@ -830,7 +823,7 @@ impl RustExplorationManager {
         let state_id = forked.state_id();
 
         // Propagate memory options
-        if self.zero_fill_unconstrained {
+        if self.memory_config.zero_fill_unconstrained {
             forked.memory_mut().set_zero_fill_unconstrained(true);
         }
 

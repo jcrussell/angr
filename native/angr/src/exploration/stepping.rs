@@ -778,12 +778,12 @@ impl RustExplorationManager {
         interp.lazy_solves = self.constraint_solver.lazy_solves;
         interp.set_profiling(self.profiling.profiling_enabled);
         // Propagate concretization strategy config
-        interp.set_concretizer(self.concretizer_config.clone());
+        interp.set_concretizer(self.memory_config.concretizer_config.clone());
         // Propagate VEX optimization level settings
-        interp.vex_opt_level = self.vex_opt_level;
+        interp.vex_opt_level = self.memory_config.vex_opt_level;
         // Take a fresh Arc snapshot of the manager's overrides; interp will
         // share until a setter mutates (none do during step execution).
-        interp.vex_opt_level_overrides = Arc::new(self.vex_opt_level_overrides.clone());
+        interp.vex_opt_level_overrides = Arc::new(self.memory_config.vex_opt_level_overrides.clone());
 
         // Copy state registers to interpreter (including symbolic values)
         interp.registers = state.registers().fork();
