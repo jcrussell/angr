@@ -1176,7 +1176,11 @@ class RustStateSyncMixin:
                     # the symbolic relationship without this tracking
                     state_id = self._current_callback_state_id
                     if state_id is not None:
-                        self._state_md(state_id).hook_symbolic_memory[start] = (ast, size)
+                        try:
+                            self._rust_mgr.set_state_hook_symbolic_memory(
+                                state_id, start, ast, size)
+                        except Exception:
+                            pass
                         if _DBG:
                             l.debug(f"Preserved symbolic memory at 0x{start:x} for state {state_id}")
 
@@ -1460,29 +1464,27 @@ class RustStateSyncMixin:
             state_id: The state ID to look up cached symbolic pages.
         """
         # Try direct lookup, then ancestry chain for forked states
-        symbolic_pages = None
-        direct_md = self._state_metadata.get(state_id)
-        if direct_md is not None and direct_md.symbolic_pages:
-            symbolic_pages = direct_md.symbolic_pages
-        else:
+        symbolic_pages = self._rust_mgr.get_state_symbolic_pages(state_id) or None
+        if not symbolic_pages:
             # Try root state first (most likely to have cached pages)
             root_id = self._get_pending_root_state_id()
-            root_md = self._state_metadata.get(root_id) if root_id is not None else None
-            if root_md is not None and root_md.symbolic_pages:
-                symbolic_pages = root_md.symbolic_pages
-                if _DBG:
-                    l.debug(f"Using root {root_id} symbolic pages for state {state_id}")
-            else:
+            if root_id is not None:
+                root_pages = self._rust_mgr.get_state_symbolic_pages(root_id)
+                if root_pages:
+                    symbolic_pages = root_pages
+                    if _DBG:
+                        l.debug(f"Using root {root_id} symbolic pages for state {state_id}")
+            if not symbolic_pages:
                 # Walk full ancestry chain
                 for ancestor_id in self._get_pending_ancestry():
-                    ancestor_md = self._state_metadata.get(ancestor_id)
-                    if ancestor_md is not None and ancestor_md.symbolic_pages:
-                        symbolic_pages = ancestor_md.symbolic_pages
+                    ancestor_pages = self._rust_mgr.get_state_symbolic_pages(ancestor_id)
+                    if ancestor_pages:
+                        symbolic_pages = ancestor_pages
                         if _DBG:
                             l.debug(f"Using ancestor {ancestor_id} symbolic pages for state {state_id}")
                         break
 
-        if symbolic_pages is None:
+        if not symbolic_pages:
             if _DBG:
                 l.debug(f"No symbolic pages found for state {state_id} or ancestors")
             return
@@ -1544,29 +1546,27 @@ class RustStateSyncMixin:
             state_id: The state ID to look up tracked symbolic memory.
         """
         # Try direct lookup, then ancestry chain for forked states
-        hook_memory = None
-        direct_md = self._state_metadata.get(state_id)
-        if direct_md is not None and direct_md.hook_symbolic_memory:
-            hook_memory = direct_md.hook_symbolic_memory
-        else:
+        hook_memory = self._rust_mgr.get_state_hook_symbolic_memory(state_id) or None
+        if not hook_memory:
             # Try root state first (most likely to have hook memory)
             root_id = self._get_pending_root_state_id()
-            root_md = self._state_metadata.get(root_id) if root_id is not None else None
-            if root_md is not None and root_md.hook_symbolic_memory:
-                hook_memory = root_md.hook_symbolic_memory
-                if _DBG:
-                    l.debug(f"Using root {root_id} hook symbolic memory for state {state_id}")
-            else:
+            if root_id is not None:
+                root_hook = self._rust_mgr.get_state_hook_symbolic_memory(root_id)
+                if root_hook:
+                    hook_memory = root_hook
+                    if _DBG:
+                        l.debug(f"Using root {root_id} hook symbolic memory for state {state_id}")
+            if not hook_memory:
                 # Walk full ancestry chain
                 for ancestor_id in self._get_pending_ancestry():
-                    ancestor_md = self._state_metadata.get(ancestor_id)
-                    if ancestor_md is not None and ancestor_md.hook_symbolic_memory:
-                        hook_memory = ancestor_md.hook_symbolic_memory
+                    ancestor_hook = self._rust_mgr.get_state_hook_symbolic_memory(ancestor_id)
+                    if ancestor_hook:
+                        hook_memory = ancestor_hook
                         if _DBG:
                             l.debug(f"Using ancestor {ancestor_id} hook symbolic memory for state {state_id}")
                         break
 
-        if hook_memory is None:
+        if not hook_memory:
             return
         restored_count = 0
 

@@ -1,65 +1,85 @@
-# Loop session notes (2026-05-08, 139th loop session)
+# Loop session notes (2026-05-08, 140th loop session)
 
-## Task: angr-as3c — posix_brk Rust→Python sync (closed)
+## Task: angr-p8o3 — Move _state_metadata storage into Rust per-state struct (closed)
 
 ### Status: complete; closed
 
 ### Summary
-Mirrors angr-0cnm (mmap_base) but with an extra wrinkle: defaults
-between Python and Rust DON'T match for posix_brk. angr's SimUserland
-loader sets `state.posix.brk = binary_last_addr + page` (≈0x602000 for
-fauxware), while Rust hardcodes 0x1B00000. Naïve `max(rust, python)`
-sync would clobber Python's loader-set value with Rust's stale default
-on the very first export.
-
-Fix is **bidirectional**:
-- Init push (Python→Rust) in `_add_rust_state` so Rust's posix_brk
-  starts at the loader-set base.
-- Export sync (Rust→Python) on stash export.
+Migrated three per-state Python dicts (`symbolic_pages`,
+`hook_symbolic_memory`, `addr_to_ast`) from a Python-side
+`Dict[int, StateMetadata]` map into `RustSimState` itself. Storage and
+state lifetime are now unified — when Rust drops a state, its metadata
+maps drop with it. This was the prerequisite for angr-qm7w (lazy
+`_state_cache` populate/evict).
 
 ### Changes
-- **state.rs** — added `posix_brk` getter/setter on `PyRustSimState`
-  (`#[getter]/#[setter]`).
-- **rust_manager.py** — added init push of `angr_state.posix.brk` →
-  `rust_state.posix_brk` in `_add_rust_state` (right after PC). Skips
-  BV-valued brk (Python's set_brk wraps it after a grow).
-- **exploration/mod.rs** — added `get_state_posix_brk(state_id)` and
-  `set_state_posix_brk(state_id, addr)`, mirroring
-  `get_state_mmap_base/set_state_mmap_base`.
-- **rust_state_export.py** — added `_sync_rust_posix_brk_to_state`,
-  wired into all four export paths in `_get_stash_states`. Uses
-  `isinstance(py_brk, int)` to skip BV-valued brk; `max(rust, python)`
-  for the int case.
-- **test_rust_exploration.py** — `TestPosixBrkSync` (7 new tests):
-  default getter, setter round-trip, unknown-id error, init-push
-  alignment, end-to-end export sync, no-clobber direction, BV preserved.
+- **state.rs** — added three `HashMap<u64, Py<PyAny>>` fields to
+  `RustSimState`. Initialized in all 3 constructors. Added
+  `clone_py_metadata()` helper that uses `Python::attach + clone_ref`
+  to bump PyObject ref counts under GIL on every fork. Wired the helper
+  into all 5 fork sites (`fork`, `fork_true`, `fork_false`,
+  `fork_from_snapshot`, `merge`).
+- **exploration/mod.rs** — added 7 PyO3 methods on the manager:
+  `get_state_{symbolic_pages,hook_symbolic_memory,addr_to_ast}` (return
+  empty dict for missing state — preserves the old `dict.get()` falsy
+  semantics), `set_state_{symbolic_pages,hook_symbolic_memory,addr_to_ast}`
+  (whole-dict and single-entry setters), and `clear_state_metadata`.
+- **rust_manager.py** — deleted the `StateMetadata` import + the
+  `_state_metadata: Dict[int, StateMetadata]` dict. Updated 3 callback
+  sites: `_cb_memory_load` (~746), `_cb_sync_constraints`
+  addr_concretize/mem reconstructions (~875/895), and the two
+  `_extract_symbolic_pages` writes in `_add_rust_state` (~1870/1919) —
+  the addr-map iterations collapsed to `addr_map.get(addr)` because
+  they were already exact-match lookups.
+- **rust_state_cache.py** — deleted `_state_md()` helper and the
+  `StateMetadata` import. `_register_handle` now calls
+  `set_state_addr_to_ast`. `_cleanup_symbolic_pages_cache` is now a
+  no-op shim (Rust state lifetime handles eviction implicitly).
+  `_cleanup_state_cache`/`_cleanup_state_refs` call
+  `clear_state_metadata`.
+- **rust_state_sync.py** — `_restore_symbolic_pages` and
+  `_restore_hook_symbolic_memory` now call
+  `get_state_{symbolic_pages,hook_symbolic_memory}` for each of
+  direct/root/ancestor candidates. The ancestry walk pattern preserved.
+- **rust_state_export.py** — 4 read sites converted to
+  `get_state_addr_to_ast` / `get_state_hook_symbolic_memory`.
+- **_state_metadata.py** — deleted.
+- **test_rust_exploration.py** — `TestStateMetadataStorage` (9 new
+  tests): round-trip for all three maps, replace-whole-dict, unknown
+  state handling, setter raises, clear drops all maps, no-op for
+  unknown clear, safe stale clear, no-aliasing-after-fork.
 
 ### Verification
-- `cargo check --release` clean.
-- `pytest tests/engines/test_rust_exploration.py` — **276/276 passing**
-  (was 269 before; +7 new posix_brk tests).
-- Pre-fix: end-to-end test `test_export_path_syncs_rust_posix_brk_into_state_posix`
-  failed because Rust's default 0x1B00000 > fauxware's loader-set 0x602000;
-  max() returned the wrong direction.
+- `cargo build --release` clean.
+- `pytest tests/engines/test_rust_exploration.py` — **285/285 passing**
+  (was 276 before; +9 new metadata-storage tests).
+- fauxware benchmark: 0.31s (no regression).
 
 ### Memories saved
-- `invariant-rust-python-default-divergence` — Rust defaults aren't
-  always equal to angr loader defaults (mmap_base happened to align,
-  posix_brk doesn't).
-- `avoid-naive-max-merge-sync` — pattern for adding new field syncs:
-  always check whether the Python loader overrides the field, and if
-  so, also init-push.
-- `fragile-venv-recovery` — recipe for the recurring .venv corruption
-  (force-reinstall pip + setuptools<81 + semantic_version).
+- `invariant-rust-py-metadata-storage` — per-state Python AST refs now
+  live in `RustSimState`; access goes through the manager's
+  `get_state_*` / `set_state_*` PyO3 methods.
+- `pattern-pyobject-fork-clone-via-attach` — fork sites must call
+  `Python::attach + clone_ref` per entry; PyO3 `Clone` on `Py<T>`
+  requires the GIL.
 
 ### .venv side trip
-The .venv had stripped .py files in pip/_vendor and setuptools/_vendor
-(only .pyc left). `pip install -e .` failed with FileNotFoundError.
-Recovered with `pip install --force-reinstall --no-deps pip setuptools<81 semantic_version`.
+Same vendored-pip strip as last session — fixed with the recipe in
+`fragile-venv-recovery` memory: force-reinstall pip + setuptools<81 +
+semantic_version. After that, also had to `cargo build --release` and
+`cp` the `.so` because `pip install -e .` did not rebuild the Rust
+extension on its own (cached editable install).
 
 ### Files changed
-- native/angr/src/state.rs (+15)
-- native/angr/src/exploration/mod.rs (+29)
-- angr/exploration/rust_manager.py (+14)
-- angr/exploration/rust_state_export.py (+35)
-- tests/engines/test_rust_exploration.py (+148)
+- native/angr/src/state.rs (+114 −0)
+- native/angr/src/exploration/mod.rs (+122 −0)
+- angr/exploration/rust_manager.py (~30 modified)
+- angr/exploration/rust_state_cache.py (~25 modified)
+- angr/exploration/rust_state_export.py (~10 modified)
+- angr/exploration/rust_state_sync.py (~30 modified)
+- angr/exploration/_state_metadata.py (deleted)
+- tests/engines/test_rust_exploration.py (+155)
+
+### Unblocks
+- angr-qm7w (lazy `_state_cache` populate/evict) — was blocked on this
+  task for clean ownership semantics on the metadata side.

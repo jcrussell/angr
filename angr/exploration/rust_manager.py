@@ -25,7 +25,6 @@ from angr.errors import SimEngineError, SimError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
 from angr.exploration.rust_perf_tracker import PerformanceTracker
 from angr.exploration._constants import PAGE_SIZE, PAGE_MASK, STACK_SIZE, MAX_OVERLAY_SECTION_SIZE
-from angr.exploration._state_metadata import StateMetadata
 
 if TYPE_CHECKING:
     import angr
@@ -461,12 +460,12 @@ class RustExplorationManager(
         # reuse as register snapshot (avoids reading registers back from state)
         self._last_bundle_registers: Optional[dict] = None
 
-        # Per-state metadata: symbolic_pages / hook_symbolic_memory / addr_to_ast.
-        # See angr/exploration/_state_metadata.py for the schema.
-        # Bounded cache size to prevent memory leaks (Phase 3); eviction in
-        # _cleanup_symbolic_pages_cache.
-        self._state_metadata: Dict[int, StateMetadata] = {}
-        self._max_symbolic_pages_cache = 100  # Limit cache size
+        # Per-state metadata (symbolic_pages / hook_symbolic_memory /
+        # addr_to_ast) is now stored on the Rust side in `RustSimState`. Access
+        # goes through `self._rust_mgr.{get,set}_state_*` PyO3 methods so the
+        # storage and the state lifetime are unified — when Rust drops a state,
+        # its metadata is freed automatically.
+        self._max_symbolic_pages_cache = 100  # Retained for back-compat hooks.
 
         # Track the current callback state ID for memory tracking during callbacks
         self._current_callback_state_id: Optional[int] = None
@@ -743,9 +742,11 @@ class RustExplorationManager(
                 state_id = self._current_callback_state_id
                 effective_state_id = self._get_effective_state_id(state_id) if state_id is not None else None
                 lookup_id = effective_state_id if effective_state_id is not None else state_id
-                hook_md = self._state_metadata.get(lookup_id) if lookup_id is not None else None
-                if hook_md is not None and hook_md.hook_symbolic_memory:
-                    hook_mem = hook_md.hook_symbolic_memory
+                hook_mem = (
+                    self._rust_mgr.get_state_hook_symbolic_memory(lookup_id)
+                    if lookup_id is not None else {}
+                )
+                if hook_mem:
                     for mem_addr, (ast, mem_size) in hook_mem.items():
                         if mem_addr <= addr < mem_addr + mem_size:
                             offset = addr - mem_addr
@@ -872,16 +873,15 @@ class RustExplorationManager(
                         addr = int(addr_str, 16)
                         lookup_id = effective_id if effective_id is not None else state_id
                         if lookup_id is not None:
-                            md = self._state_metadata.get(lookup_id)
-                            addr_map = md.addr_to_ast if md is not None else {}
-                            for tracked_addr, (tracked_ast, _) in addr_map.items():
-                                if tracked_addr == addr:
-                                    constraint = tracked_ast == claripy.BVV(concrete_val, width)
-                                    state.solver.add(constraint)
-                                    added_constraints.append(constraint)
-                                    l.debug(f"Reconstructed addr_concretize constraint from desc: {desc}")
-                                    reconstructed = True
-                                    break
+                            addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
+                            entry = addr_map.get(addr)
+                            if entry is not None:
+                                tracked_ast, _ = entry
+                                constraint = tracked_ast == claripy.BVV(concrete_val, width)
+                                state.solver.add(constraint)
+                                added_constraints.append(constraint)
+                                l.debug(f"Reconstructed addr_concretize constraint from desc: {desc}")
+                                reconstructed = True
                     except ValueError:
                         pass
 
@@ -892,16 +892,15 @@ class RustExplorationManager(
                             addr = int(parts[1], 16)
                             lookup_id = effective_id if effective_id is not None else state_id
                             if lookup_id is not None:
-                                md = self._state_metadata.get(lookup_id)
-                                addr_map = md.addr_to_ast if md is not None else {}
-                                for tracked_addr, (tracked_ast, _) in addr_map.items():
-                                    if tracked_addr == addr:
-                                        constraint = tracked_ast == claripy.BVV(concrete_val, width)
-                                        state.solver.add(constraint)
-                                        added_constraints.append(constraint)
-                                        l.debug(f"Reconstructed mem constraint from desc: {desc}")
-                                        reconstructed = True
-                                        break
+                                addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
+                                entry = addr_map.get(addr)
+                                if entry is not None:
+                                    tracked_ast, _ = entry
+                                    constraint = tracked_ast == claripy.BVV(concrete_val, width)
+                                    state.solver.add(constraint)
+                                    added_constraints.append(constraint)
+                                    l.debug(f"Reconstructed mem constraint from desc: {desc}")
+                                    reconstructed = True
                         except ValueError:
                             pass
 
@@ -1867,8 +1866,7 @@ class RustExplorationManager(
             # This ensures symbolic values survive Rust<->Python transitions
             symbolic_pages = self._extract_symbolic_pages(angr_state)
             if symbolic_pages:
-                self._state_md(actual_state_id).symbolic_pages = symbolic_pages
-                self._cleanup_symbolic_pages_cache()  # Enforce cache limit
+                self._rust_mgr.set_state_symbolic_pages(actual_state_id, symbolic_pages)
                 l.debug(f"Cached {len(symbolic_pages)} symbolic pages for state {actual_state_id}")
                 # Also import symbolic regions to Rust's symbolic memory so the
                 # Rust engine can handle them natively without Python callbacks
@@ -1916,8 +1914,7 @@ class RustExplorationManager(
             self._state_roots[rust_state.state_id] = rust_state.state_id
             symbolic_pages = self._extract_symbolic_pages(angr_state)
             if symbolic_pages:
-                self._state_md(rust_state.state_id).symbolic_pages = symbolic_pages
-                self._cleanup_symbolic_pages_cache()  # Enforce cache limit
+                self._rust_mgr.set_state_symbolic_pages(rust_state.state_id, symbolic_pages)
                 # Import symbolic regions to Rust's symbolic memory
                 for addr, ast in symbolic_pages.items():
                     try:

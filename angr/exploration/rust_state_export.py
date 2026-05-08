@@ -183,7 +183,6 @@ class RustStateExportMixin:
     - self._project: The angr Project
     - self._state_cache: Dict[int, SimState]
     - self._state_roots: Dict[int, int]
-    - self._state_metadata: Dict[int, StateMetadata]
     - self._identity_tracker: SymbolicIdentityTracker
     """
 
@@ -647,10 +646,10 @@ class RustStateExportMixin:
             # Build substitution map: rust_sym_ADDR → original AST
             rust_sym_to_original = {}
             for lookup_id in [state_id, root_id]:
-                md = self._state_metadata.get(lookup_id)
-                if md is None:
+                if lookup_id is None:
                     continue
-                for addr, (ast, size) in md.addr_to_ast.items():
+                addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
+                for addr, (ast, size) in addr_map.items():
                     rust_name = f"rust_sym_{addr:x}"
                     rust_sym_to_original[rust_name] = ast
 
@@ -738,10 +737,10 @@ class RustStateExportMixin:
                     pass
 
             for lookup_id in [state_id, root_id]:
-                md = self._state_metadata.get(lookup_id)
-                if md is None:
+                if lookup_id is None:
                     continue
-                for addr, (ast, size) in md.addr_to_ast.items():
+                addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
+                for addr, (ast, size) in addr_map.items():
                     try:
                         concrete_bytes = self._rust_mgr.get_state_memory(
                             state_id, addr, size)
@@ -910,13 +909,15 @@ class RustStateExportMixin:
             candidate_ids.append(root_id)
 
         for sid in candidate_ids:
-            md = self._state_metadata.get(sid)
-            entry = md.addr_to_ast.get(sym_addr) if md is not None else None
+            if sid is None:
+                continue
+            addr_map = self._rust_mgr.get_state_addr_to_ast(sid)
+            entry = addr_map.get(sym_addr)
             if entry is not None and entry[1] == size:
                 return entry[0]
 
-        snapshot_md = self._state_metadata.get(snapshot.state_id)
-        hook_entry = snapshot_md.hook_symbolic_memory.get(sym_addr) if snapshot_md is not None else None
+        hook_map = self._rust_mgr.get_state_hook_symbolic_memory(snapshot.state_id)
+        hook_entry = hook_map.get(sym_addr)
         if hook_entry is not None and hook_entry[1] == size:
             return hook_entry[0]
         return None

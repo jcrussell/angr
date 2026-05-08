@@ -1715,6 +1715,128 @@ impl RustExplorationManager {
         Ok(())
     }
 
+    // ----- Per-state Python-AST metadata (symbolic_pages /
+    //       hook_symbolic_memory / addr_to_ast). Storage now lives in
+    //       RustSimState; these methods are the FFI surface that replaces the
+    //       old Python `_state_metadata: Dict[int, StateMetadata]` map.
+
+    /// Replace the whole `symbolic_pages` map for a state. Mirrors the
+    /// previous Python-side `_state_md(sid).symbolic_pages = pages` write.
+    pub fn set_state_symbolic_pages<'py>(
+        &mut self,
+        py: Python<'py>,
+        state_id: u64,
+        pages: &Bound<'py, PyDict>,
+    ) -> PyResult<()> {
+        let state = self.find_state_mut(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "set_state_symbolic_pages: state {} not found",
+                state_id
+            ))
+        })?;
+        let mut map: HashMap<u64, Py<PyAny>> = HashMap::with_capacity(pages.len());
+        for (key, value) in pages.iter() {
+            let addr: u64 = key.extract()?;
+            map.insert(addr, value.unbind());
+        }
+        let _ = py;
+        state.replace_symbolic_pages(map);
+        Ok(())
+    }
+
+    /// Snapshot the `symbolic_pages` map for a state as a Python dict.
+    /// Returns an empty dict if the state is unknown or has no entries — the
+    /// truthiness check at call sites already handles both cases.
+    pub fn get_state_symbolic_pages<'py>(
+        &self,
+        py: Python<'py>,
+        state_id: u64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        if let Some(state) = self.find_state(state_id) {
+            for (addr, ast) in state.symbolic_pages() {
+                dict.set_item(*addr, ast.clone_ref(py))?;
+            }
+        }
+        Ok(dict)
+    }
+
+    /// Insert/replace an entry in `hook_symbolic_memory` for a state.
+    pub fn set_state_hook_symbolic_memory(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        ast: Py<PyAny>,
+        size: u32,
+    ) -> PyResult<()> {
+        let state = self.find_state_mut(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "set_state_hook_symbolic_memory: state {} not found",
+                state_id
+            ))
+        })?;
+        state.set_hook_symbolic_memory(addr, ast, size);
+        Ok(())
+    }
+
+    /// Snapshot the `hook_symbolic_memory` map as a `dict[int, (ast, size)]`.
+    pub fn get_state_hook_symbolic_memory<'py>(
+        &self,
+        py: Python<'py>,
+        state_id: u64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        if let Some(state) = self.find_state(state_id) {
+            for (addr, (ast, size)) in state.hook_symbolic_memory() {
+                dict.set_item(*addr, (ast.clone_ref(py), *size))?;
+            }
+        }
+        Ok(dict)
+    }
+
+    /// Insert/replace an entry in `addr_to_ast` for a state.
+    pub fn set_state_addr_to_ast(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        ast: Py<PyAny>,
+        size: u32,
+    ) -> PyResult<()> {
+        let state = self.find_state_mut(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "set_state_addr_to_ast: state {} not found",
+                state_id
+            ))
+        })?;
+        state.set_addr_to_ast(addr, ast, size);
+        Ok(())
+    }
+
+    /// Snapshot the `addr_to_ast` map as a `dict[int, (ast, size)]`.
+    pub fn get_state_addr_to_ast<'py>(
+        &self,
+        py: Python<'py>,
+        state_id: u64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        if let Some(state) = self.find_state(state_id) {
+            for (addr, (ast, size)) in state.addr_to_ast() {
+                dict.set_item(*addr, (ast.clone_ref(py), *size))?;
+            }
+        }
+        Ok(dict)
+    }
+
+    /// Drop all per-state metadata (`symbolic_pages`, `hook_symbolic_memory`,
+    /// `addr_to_ast`) for a state. No-op if the state is unknown — matches the
+    /// `_state_metadata.pop(state_id, None)` semantics it replaces.
+    pub fn clear_state_metadata(&mut self, state_id: u64) -> PyResult<()> {
+        if let Some(state) = self.find_state_mut(state_id) {
+            state.clear_state_metadata();
+        }
+        Ok(())
+    }
+
     /// Fork the solver context of an arbitrary state (by ID).
     ///
     /// Returns a new RustSolverContext with all of the state's constraints,

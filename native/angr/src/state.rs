@@ -661,6 +661,21 @@ pub struct RustSimState {
     /// Wrapped in Arc for cheap fork — copy-on-write via Arc::make_mut on setenv.
     /// Most paths only read env vars, so the deep clone is rare.
     environment: Arc<HashMap<Vec<u8>, Vec<u8>>>,
+    /// Per-state symbolic page metadata: `addr -> claripy AST`. Holds whole-page
+    /// symbolic ASTs preserved across Python fallback so Rust can re-establish
+    /// symbolic memory. Migrated out of Python `_state_metadata` so storage is
+    /// owned alongside the rest of the state. Each PyObject is a strong ref to
+    /// a claripy AST; cleared automatically when the state is dropped.
+    /// Cloned on fork (Py refcounts incremented; cheap for a few entries).
+    symbolic_pages: HashMap<u64, Py<PyAny>>,
+    /// Per-state hook symbolic memory: `addr -> (claripy AST, byte size)`.
+    /// Tracks symbolic writes performed inside Python hooks so Rust can replay
+    /// them on resume. Cloned on fork.
+    hook_symbolic_memory: HashMap<u64, (Py<PyAny>, u32)>,
+    /// Per-state addr -> (AST, byte size) recorded by handle registration so
+    /// state export can recover the original symbol instead of a fresh BVS.
+    /// Cloned on fork.
+    addr_to_ast: HashMap<u64, (Py<PyAny>, u32)>,
 }
 
 impl RustSimState {
@@ -712,6 +727,9 @@ impl RustSimState {
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
             environment: Arc::new(HashMap::new()),
+            symbolic_pages: HashMap::new(),
+            hook_symbolic_memory: HashMap::new(),
+            addr_to_ast: HashMap::new(),
         })
     }
 
@@ -748,6 +766,9 @@ impl RustSimState {
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
             environment: Arc::new(HashMap::new()),
+            symbolic_pages: HashMap::new(),
+            hook_symbolic_memory: HashMap::new(),
+            addr_to_ast: HashMap::new(),
         }
     }
 
@@ -794,6 +815,9 @@ impl RustSimState {
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
             environment: Arc::new(HashMap::new()),
+            symbolic_pages: HashMap::new(),
+            hook_symbolic_memory: HashMap::new(),
+            addr_to_ast: HashMap::new(),
         })
     }
 
@@ -1311,6 +1335,76 @@ impl RustSimState {
     }
 
     // =========================================================================
+    // Per-state metadata (claripy AST refs) — see field docs above.
+    // =========================================================================
+
+    /// Clone the three Python-AST metadata maps. Each PyObject ref-count is
+    /// incremented under the GIL so the parent and fork share strong refs.
+    fn clone_py_metadata(
+        &self,
+    ) -> (
+        HashMap<u64, Py<PyAny>>,
+        HashMap<u64, (Py<PyAny>, u32)>,
+        HashMap<u64, (Py<PyAny>, u32)>,
+    ) {
+        Python::attach(|py| {
+            let pages = self
+                .symbolic_pages
+                .iter()
+                .map(|(k, v)| (*k, v.clone_ref(py)))
+                .collect();
+            let hook = self
+                .hook_symbolic_memory
+                .iter()
+                .map(|(k, (v, sz))| (*k, (v.clone_ref(py), *sz)))
+                .collect();
+            let addr_map = self
+                .addr_to_ast
+                .iter()
+                .map(|(k, (v, sz))| (*k, (v.clone_ref(py), *sz)))
+                .collect();
+            (pages, hook, addr_map)
+        })
+    }
+
+    /// Insert/replace a hook-symbolic-memory entry.
+    pub fn set_hook_symbolic_memory(&mut self, addr: u64, ast: Py<PyAny>, size: u32) {
+        self.hook_symbolic_memory.insert(addr, (ast, size));
+    }
+
+    /// Insert/replace an addr-to-AST entry.
+    pub fn set_addr_to_ast(&mut self, addr: u64, ast: Py<PyAny>, size: u32) {
+        self.addr_to_ast.insert(addr, (ast, size));
+    }
+
+    /// Read-only access to the symbolic-pages map.
+    pub fn symbolic_pages(&self) -> &HashMap<u64, Py<PyAny>> {
+        &self.symbolic_pages
+    }
+
+    /// Read-only access to the hook-symbolic-memory map.
+    pub fn hook_symbolic_memory(&self) -> &HashMap<u64, (Py<PyAny>, u32)> {
+        &self.hook_symbolic_memory
+    }
+
+    /// Read-only access to the addr-to-AST map.
+    pub fn addr_to_ast(&self) -> &HashMap<u64, (Py<PyAny>, u32)> {
+        &self.addr_to_ast
+    }
+
+    /// Replace the entire symbolic-pages map (used by full-page recovery flow).
+    pub fn replace_symbolic_pages(&mut self, pages: HashMap<u64, Py<PyAny>>) {
+        self.symbolic_pages = pages;
+    }
+
+    /// Drop all per-state metadata (called when a state is no longer needed).
+    pub fn clear_state_metadata(&mut self) {
+        self.symbolic_pages.clear();
+        self.hook_symbolic_memory.clear();
+        self.addr_to_ast.clear();
+    }
+
+    // =========================================================================
     // Forking
     // =========================================================================
 
@@ -1323,6 +1417,7 @@ impl RustSimState {
     /// A new state with the same register/memory/constraint state.
     pub fn fork(&self) -> Self {
         let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork()));
+        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
 
         RustSimState {
             arch: self.arch.clone(),
@@ -1348,12 +1443,16 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
+            symbolic_pages,
+            hook_symbolic_memory,
+            addr_to_ast,
         }
     }
 
     /// Fork with a constraint on the true branch.
     pub fn fork_true(&self, condition: &RustBV) -> Self {
         let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork_true(condition)));
+        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
 
         RustSimState {
             arch: self.arch.clone(),
@@ -1379,12 +1478,16 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
+            symbolic_pages,
+            hook_symbolic_memory,
+            addr_to_ast,
         }
     }
 
     /// Fork with a constraint on the false branch.
     pub fn fork_false(&self, condition: &RustBV) -> Self {
         let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork_false(condition)));
+        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
 
         RustSimState {
             arch: self.arch.clone(),
@@ -1410,6 +1513,9 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
+            symbolic_pages,
+            hook_symbolic_memory,
+            addr_to_ast,
         }
     }
 
@@ -1425,6 +1531,7 @@ impl RustSimState {
     /// the continuation of the taken path.
     pub fn fork_from_snapshot(&self, snapshot: crate::interpreter_cb::BranchSnapshot) -> Self {
         let forked_solver = Rc::new(RefCell::new(snapshot.solver));
+        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
         RustSimState {
             arch: self.arch.clone(),
             vex_arch: self.vex_arch,
@@ -1449,6 +1556,9 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
+            symbolic_pages,
+            hook_symbolic_memory,
+            addr_to_ast,
         }
     }
 
@@ -1509,6 +1619,7 @@ impl RustSimState {
             }
         }
 
+        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
         RustSimState {
             arch: self.arch.clone(),
             vex_arch: self.vex_arch,
@@ -1533,6 +1644,9 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
+            symbolic_pages,
+            hook_symbolic_memory,
+            addr_to_ast,
         }
     }
 
