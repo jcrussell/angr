@@ -1,25 +1,30 @@
-# Loop session notes (2026-05-08, 151st loop session)
+# Loop session notes (2026-05-08, 153rd loop session)
 
-## Task: angr-2usz — Z3 solver stats observability — CLOSED
+## Tasks closed in this session
 
-### Done
-1. Added Z3_SAT_COUNT, Z3_UNSAT_COUNT, Z3_TIMEOUT_COUNT atomic counters in
-   native/angr/src/symbolic/context.rs.
-2. Updated timed_check() to record SatResult variant into the new counters.
-3. Added them to get_solver_stats()/reset_solver_stats() output.
-4. Added Python instance methods mgr.get_solver_stats() and
-   mgr.reset_solver_stats() on RustExplorationManager (the static-method
-   path was already reachable through mgr.stats — instance methods make
-   reset usable from a measurement window).
-5. Added test_solver_stats_populated covering the dict and the
-   sat+unsat+timeout == check_count invariant.
-6. Documented full counter set under "Z3 Solver Profiling Counters" in
-   CLAUDE.md.
-7. Saved invariant-z3-solver-stats-keys memory: all solver.check() must go
-   through timed_check() or counters silently miss increments.
+### angr-x9bx — register_python_procedure edge cases — CLOSED
+Added 8 tests (5 methods, one parametrized 4-way) covering:
+- Symbolic argument falls back to Python (no callable invocation)
+- num_args=2 with 3 populated arg regs — only 2 reach the callable
+- num_args=0 — empty list to callable
+- Invalid return values (-1, >u64::MAX, str, float) → fallback
+- Re-registration overrides prior callable (HashMap.insert)
+Commit: 2becff7cf
 
-### Test result
-305/305 passing (one new test added).
+### angr-nsg9 — StateMetadata cleanup-lifecycle and fork tests — CLOSED
+Added 6 tests to TestStateMetadataStorage covering:
+- _cleanup_state_refs drops cache+metadata+predicate-cache, safe-on-unknown
+- _cleanup_state_cache (manager override) LRU evicts in insertion order,
+  drops dead states, skips pinned
+- Fork via dispatcher preserves parent metadata identity
+Commit: 09d912c4f
 
-### Commit
-671e842f4 feat(solver): expose Z3 sat/unsat/timeout counters via mgr.get_solver_stats() — angr-2usz
+### Test count
+305 → 319 (+14) passing. Build clean.
+
+### Memories saved
+- invariant-python-procedure-num-args
+- invariant-python-procedure-return-extract
+- test-pattern-python-procedure
+- invariant-cleanup-state-cache-override
+- invariant-fork-metadata-clone
