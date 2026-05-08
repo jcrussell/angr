@@ -1,5 +1,9 @@
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-Wl,-rpath,/home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/z3/lib", "-L", "native=/home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/z3/lib"]
+[build]
+# Z3 header and library discovery is handled by native/angr/build.rs.
+# It checks (in order): the python z3 package (if shipped with headers/libs),
+# Z3_SYS_Z3_HEADER override, /usr/include/z3.h (system z3-dev), and
+# /usr/local/include/z3.h. To force a specific header, set
+# Z3_SYS_Z3_HEADER=/path/to/z3.h before invoking cargo / pip install.
 
-[env]
-Z3_SYS_Z3_HEADER = "/home/ubuntu/repos/angr/.venv/lib/python3.12/site-packages/z3/include/z3.h"
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]

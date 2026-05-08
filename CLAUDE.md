@@ -7,6 +7,7 @@ This project uses **setuptools-rust** (not maturin) to build the Rust native ext
 ### Prerequisites
 - Python virtualenv at `.venv/`
 - Rust toolchain (rustup) at `~/.cargo/bin/`
+- Z3 development headers — `apt install libz3-dev` on Debian/Ubuntu, `dnf install z3-devel` on Fedora, `brew install z3` on macOS. The PyPI `z3-solver` wheel ships `libz3.so` but **not** the C headers; `z3-sys` needs the headers to generate bindings.
 
 ### Build Commands
 
@@ -21,11 +22,17 @@ source .venv/bin/activate
 pip install -e . --no-build-isolation --no-deps
 ```
 
+`native/angr/build.rs` auto-detects the Z3 shared library from the active venv's `z3-solver` install and sets the runpath so Python and Rust load the same `libz3.so` (required for AST passthrough). Header discovery is delegated to `z3-sys`, which probes `pkg-config` and falls back to system include paths.
+
 ### Common Issues
 
 **"can't find Rust compiler"**: Add `~/.cargo/bin` to PATH before running pip install.
 
 **Stale .so file**: Delete `angr/rustylib.*.so` and rebuild with `pip install -e .`
+
+**"Unable to generate bindings: NotExist ...z3.h"**: The Z3 C headers are missing. Install the system package (`libz3-dev` / `z3-devel` / `brew z3`). To override discovery, set `Z3_SYS_Z3_HEADER=/path/to/z3.h` before invoking `pip install` or `cargo`.
+
+**Linker can't find libz3** at runtime: build.rs sets the runpath to the venv's `z3/lib`, so an `import angr` from inside the venv works. Outside the venv, set `LD_LIBRARY_PATH` to that directory or override with `Z3_LIBRARY_PATH_OVERRIDE=/path/to/lib`.
 
 ## Running Tests
 

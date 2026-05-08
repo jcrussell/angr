@@ -1,51 +1,47 @@
-# Loop session notes (2026-05-08, 134th loop session)
+# Loop session notes (2026-05-08, 135th loop session)
 
-## Task: angr-03ej — Hook length parameter not respected (silent re-execution)
+## Task: angr-8fsl — Z3 header detection broken on fresh installs
 
-### Status: investigated; bd diagnosis was incorrect — closing as NOT-A-BUG with regression test
+### Status: complete; closed after commit
 
-### Bd's claim
-> proj.hook(addr, proc, length=N>0) silently re-executes the original N
-> bytes after the hook returns, causing wrong behavior or infinite loops.
+### Root cause
+`.cargo/config.toml` `[env]` section hardcoded `Z3_SYS_Z3_HEADER` to a
+path inside the venv that doesn't exist (PyPI `z3-solver` wheel ships
+`libz3.so` but no C headers). The hardcoded path also killed `z3-sys`'s
+own `pkg-config` fallback because the env var was always set.
 
-### What I found
-For the function-callable hook path (proj.hook(addr, my_func, length=N))
-the length IS honored. project.py wraps the function in
-`UserHook(user_func=hook, length=length)`. Inside UserHook.run(),
-`self.successors.add_successor(self.state, self.state.addr + length, ...)`
-sets the successor PC to hook_addr+length, which propagates through
-the dispatch as `new_pc = succ_state.addr` and into Rust via
-`resume_after_simprocedure(new_pc, ...)` → `state.set_pc(new_pc)`.
+`native/angr/build.rs` had its own header-detection logic but bailed
+early if `Z3_SYS_Z3_HEADER` was set (always, given config.toml).
+Worse: `cargo:rustc-env=Z3_SYS_Z3_HEADER=...` from our build.rs cannot
+propagate to z3-sys's build.rs — they run in independent processes;
+z3-sys runs first as a dependency. So our build.rs's header fix was
+structurally unable to take effect.
 
-Verified by adding instrumentation (eprintln in resume_after_simprocedure
-and run loop). For hook(0x8, fn, length=2), debug showed:
-  state 1 pc 0x8 -> 0xa     (resume sets PC correctly)
-  state 1 popped at pc=0xa  (next iter sees PC=0xa)
+### Changes
+1. `.cargo/config.toml`: removed broken `[env]` and venv-rpath
+   hardcoding. Kept `target-cpu=native`.
+2. `native/angr/build.rs`: removed dead header logic. Now only handles
+   Z3 *library* discovery (rpath + link-search) where build.rs's
+   output actually takes effect on linking. Header discovery delegated
+   to z3-sys's pkg-config probe + bundled `wrapper.h`.
+3. `CLAUDE.md`: documented `libz3-dev` system package as a build
+   prerequisite, plus `Z3_SYS_Z3_HEADER` and `Z3_LIBRARY_PATH_OVERRIDE`
+   override env vars.
 
-Also confirmed via new test test_hook_length_advances_pc_userhook
-(fauxware mov rsp,rbp at main+1, 3 bytes, length=3): hook fires once
-per path, not in a loop. **Test passes** without any code change.
+### Verification
+- Fresh build (cargo clean -p z3-sys) succeeds with no env vars set:
+  pkg-config picks up system `/usr/include/z3.h`.
+- `readelf -d angr/rustylib.*.so` confirms RUNPATH points at venv's
+  `z3/lib` (so Python z3 4.13 and Rust link the same libz3.so for AST
+  passthrough).
+- 262/262 tests pass.
 
-### Real bug exposed during investigation (separate)
-A simpler shellcode test (hook 0x8 with length=2, no second hook)
-DOES exhibit hook re-firing — but root cause is unrelated to
-hook_length plumbing. After the hook resumes at PC=0xa, the basic
-block runs through `ret` at 0x1a; the stack contains an unconstrained
-symbolic byte, and the Rust engine appears to concretize the popped
-PC to 0x0 and continues looping back through the hook. Python angr
-correctly recognizes the unconstrained PC and moves the state to the
-`unconstrained` stash. New bead filed for this.
+### Caveat
+System z3-dev is 4.8.12; venv libz3 is 4.13. Bindings generated from
+4.8 headers are a subset of the 4.13 ABI; works for the public Z3 API
+used by z3-sys (Z3 has stable C API across minor versions).
 
 ### Files changed
-- tests/engines/test_rust_exploration.py: added
-  test_hook_length_advances_pc_userhook (confirms the bug-as-described
-  does not exist for UserHook-wrapped function callbacks).
-
-### Build note
-Z3 header path in .cargo/config.toml is broken (PyPI z3-solver doesn't
-ship headers). Built with Z3_SYS_Z3_HEADER=/usr/include/z3.h (system
-package) and copied target/release/librustylib.so to angr/. This is
-the same issue tracked in angr-8fsl (P1).
-
-### Tests
-All 262/262 pass.
+- .cargo/config.toml
+- native/angr/build.rs
+- CLAUDE.md
