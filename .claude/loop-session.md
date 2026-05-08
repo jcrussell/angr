@@ -1,39 +1,25 @@
-# Loop session notes (2026-05-08, 150th loop session)
+# Loop session notes (2026-05-08, 151st loop session)
 
-## Task: angr-zcvu — Loop telemetry: bead_id and granular exit_reason in summary.jsonl
+## Task: angr-2usz — Z3 solver stats observability — CLOSED
 
-### Status: investigating → implementing
+### Done
+1. Added Z3_SAT_COUNT, Z3_UNSAT_COUNT, Z3_TIMEOUT_COUNT atomic counters in
+   native/angr/src/symbolic/context.rs.
+2. Updated timed_check() to record SatResult variant into the new counters.
+3. Added them to get_solver_stats()/reset_solver_stats() output.
+4. Added Python instance methods mgr.get_solver_stats() and
+   mgr.reset_solver_stats() on RustExplorationManager (the static-method
+   path was already reachable through mgr.stats — instance methods make
+   reset usable from a measurement window).
+5. Added test_solver_stats_populated covering the dict and the
+   sat+unsat+timeout == check_count invariant.
+6. Documented full counter set under "Z3 Solver Profiling Counters" in
+   CLAUDE.md.
+7. Saved invariant-z3-solver-stats-keys memory: all solver.check() must go
+   through timed_check() or counters silently miss increments.
 
-### Goal
-Update run_optimization_loop.py so that:
-1. summary.jsonl entries include `bead_id` (when known) and `exit_reason`
-2. `api_error_status: 429` with "monthly usage limit" text → exit_reason='budget_exhausted' (terminal)
-3. Other 429s → exit_reason='rate_limited' (recoverable)
-4. Orchestrator aborts on budget_exhausted (this already exists; just need correct classification)
+### Test result
+305/305 passing (one new test added).
 
-### Root cause of bug being fixed
-The Claude CLI returns:
-```json
-{"subtype":"success","is_error":true,"api_error_status":429,
- "result":"You've hit your org's monthly usage limit",...}
-```
-
-`detect_failure_mode` currently only inspects `subtype` + `errors[]`. The
-monthly-limit text lives in `result` (not `errors`), and `subtype` is "success"
-not "error_*". So the function falls through to `unknown_error`, which means
-the orchestrator does exponential backoff (10→20→40→80 min) instead of
-aborting. Iters 29/30/31 in summary.jsonl are exactly this — three
-back-to-back monthly-limit 429s misclassified as `unknown_error`.
-
-### Plan
-1. Update `detect_failure_mode` to also pull `result` and `api_error_status`
-   into the haystack. Add explicit branch: `api_error_status == 429`
-   AND ("monthly" in haystack) → `budget_exhausted`. Other `api_error_status
-   == 429` → `rate_limit`.
-2. Add `exit_reason` field to log entries (alongside `mode`, more granular).
-3. Add `bead_id` extraction: parse new HEAD commit message after session
-   for `angr-[a-z0-9]+` pattern (most reliable when commits made); fall
-   back to reading `.claude/loop-session.md` `## Task: <id>` line.
-
-### Files
-- run_optimization_loop.py
+### Commit
+671e842f4 feat(solver): expose Z3 sat/unsat/timeout counters via mgr.get_solver_stats() — angr-2usz
