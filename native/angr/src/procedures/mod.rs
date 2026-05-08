@@ -240,6 +240,9 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fileops::NativeOpen));
         registry.register(Arc::new(fileops::NativeClose));
         registry.register(Arc::new(fileops::NativeLseek));
+        registry.register(Arc::new(fileops::NativeDup));
+        registry.register(Arc::new(fileops::NativeDup2));
+        registry.register(Arc::new(fileops::NativePipe));
 
         registry
     }

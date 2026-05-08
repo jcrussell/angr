@@ -300,6 +300,61 @@ impl FileSystem {
     pub fn next_fd(&self) -> u32 {
         self.next_fd
     }
+
+    /// Duplicate an open file descriptor, allocating the lowest unused fd.
+    /// Returns the new fd, or None if `oldfd` is not open.
+    ///
+    /// Like POSIX `dup(2)`: the new fd refers to the same underlying state.
+    /// We model this by cloning the `FileDescriptor` (name/position/flags/content).
+    pub fn dup(&mut self, oldfd: u32) -> Option<u32> {
+        if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
+            return None;
+        }
+        let cloned = self.fds.get(&oldfd).cloned()?;
+        let newfd = self.next_fd;
+        self.next_fd += 1;
+        Arc::make_mut(&mut self.fds).insert(newfd, cloned);
+        Some(newfd)
+    }
+
+    /// Duplicate `oldfd` to `newfd`. If `newfd` was open, it is closed first.
+    /// If `oldfd == newfd` and `oldfd` is open, returns `newfd` unchanged.
+    /// Returns the new fd on success, or None if `oldfd` is not open.
+    ///
+    /// Like POSIX `dup2(2)`. Bumps `next_fd` past `newfd` if necessary so future
+    /// allocations don't collide.
+    pub fn dup2(&mut self, oldfd: u32, newfd: u32) -> Option<u32> {
+        if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
+            return None;
+        }
+        if oldfd == newfd {
+            return Some(newfd);
+        }
+        let cloned = self.fds.get(&oldfd).cloned()?;
+        Arc::make_mut(&mut self.fds).insert(newfd, cloned);
+        if newfd >= self.next_fd {
+            self.next_fd = newfd + 1;
+        }
+        Some(newfd)
+    }
+
+    /// Create a pipe: returns `(read_fd, write_fd)`, allocated as two
+    /// consecutive fds.
+    ///
+    /// Like POSIX `pipe(2)`. The read end is opened ReadOnly and the write end
+    /// WriteOnly. We do NOT model write→read data flow (each end has its own
+    /// content buffer); this matches angr's existing SimPacketsStream-light
+    /// modeling — the procedure exists so binaries that allocate fds via pipe()
+    /// don't fall through to Python on every fd op.
+    pub fn pipe(&mut self) -> (u32, u32) {
+        let read_fd = self.next_fd;
+        let write_fd = self.next_fd + 1;
+        self.next_fd += 2;
+        let map = Arc::make_mut(&mut self.fds);
+        map.insert(read_fd, FileDescriptor::new("<pipe:r>".to_string(), FdFlags::ReadOnly));
+        map.insert(write_fd, FileDescriptor::new("<pipe:w>".to_string(), FdFlags::WriteOnly));
+        (read_fd, write_fd)
+    }
 }
 
 /// Types of inspection events that can be tracked.
@@ -2507,6 +2562,43 @@ mod tests {
         fs.close(3);
         let open = fs.open_fds();
         assert_eq!(open, vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn test_filesystem_dup_dup2_pipe() {
+        let mut fs = FileSystem::default();
+        let fd = fs.open("a.txt".to_string(), FdFlags::ReadOnly);
+        assert_eq!(fd, 3);
+
+        // dup
+        let dup_fd = fs.dup(fd).unwrap();
+        assert_eq!(dup_fd, 4);
+        assert_eq!(fs.fd_info(dup_fd).unwrap().0, "a.txt");
+
+        // dup of closed fd returns None
+        fs.close(fd);
+        assert!(fs.dup(fd).is_none());
+
+        // dup2 with fresh state
+        let mut fs2 = FileSystem::default();
+        let src = fs2.open("src.txt".to_string(), FdFlags::ReadOnly);
+        let dst = fs2.dup2(src, 10).unwrap();
+        assert_eq!(dst, 10);
+        assert_eq!(fs2.fd_info(10).unwrap().0, "src.txt");
+        // next_fd advanced past 10
+        assert!(fs2.next_fd() > 10);
+
+        // dup2(self, self) returns self when open
+        assert_eq!(fs2.dup2(src, src), Some(src));
+
+        // pipe allocates two consecutive fds
+        let mut fs3 = FileSystem::default();
+        let (r, w) = fs3.pipe();
+        assert_eq!((r, w), (3, 4));
+        assert!(fs3.is_open(r));
+        assert!(fs3.is_open(w));
+        assert_eq!(fs3.fd_info(r).unwrap().2, 0); // ReadOnly
+        assert_eq!(fs3.fd_info(w).unwrap().2, 1); // WriteOnly
     }
 
     #[test]

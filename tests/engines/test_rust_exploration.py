@@ -4829,5 +4829,138 @@ class TestSymbolicLibcProcedures:
             proj.unhook(self.HOOK_ADDR)
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeFileDescriptorProcedures:
+    """Integration test for native pipe/dup/dup2 dispatched through the Rust manager.
+
+    Native open/close/lseek/dup/dup2/pipe are registered by default in
+    `NativeProcedureRegistry::new` and live in
+    `native/angr/src/procedures/fileops.rs`. Cargo unit tests in that module
+    cover concrete arg handling and error returns. This Python-level test
+    asserts the full integration path: the manager dispatches the native
+    procedure when a hook is set at an out-of-binary address (i.e. extern
+    object range, which is skipped by `_load_binary_regions`), the procedure
+    mutates the per-state `FileSystem`, and the FD layout observed via
+    `get_state_open_fds` matches POSIX semantics for `pipe(2) + dup2(2)`.
+    """
+
+    # Hook addrs must satisfy two things:
+    #   1. `find_object_containing(addr)` returns a real binary (not cle##*),
+    #      so `_run_python_init_if_needed` short-circuits and our state actually
+    #      starts at the hook (otherwise an extern/loader addr triggers Python
+    #      init from main first).
+    #   2. The addr is NOT in `binary_regions` — only executable sections of
+    #      real binaries are loaded there, so a hook in fauxware's `.ctors`
+    #      (non-executable, in-binary) qualifies. `handle_simprocedure` then
+    #      tries the native registry first and dispatches NativePipe / NativeDup2.
+    PIPE_ADDR = 0x600e30   # in fauxware's .ctors (non-executable)
+    DUP2_ADDR = 0x600e3c
+    # Bottom-of-call return target: any address that won't loop back into a
+    # hook. We run for max_steps that just covers the procedure dispatches —
+    # afterwards the state's PC lands here and we stop without lifting blocks.
+    DEAD_ADDR = 0x4008b0
+    BUF_ADDR = 0x601100  # past .bss, lazy-mapped
+
+    @staticmethod
+    def _all_fds(mgr):
+        """Collect FD info from any stash that holds states (the post-procedure
+        state may have deadended on a lift error at the bogus return target)."""
+        for stash in ("active", "deadended", "errored"):
+            ids = mgr._rust_mgr.get_state_ids(stash)
+            if ids:
+                sid = ids[0]
+                return sid, {
+                    fd: (name, flags, is_open)
+                    for fd, name, _pos, flags, _len, is_open
+                    in mgr._rust_mgr.get_state_open_fds(sid)
+                }
+        raise AssertionError(f"no state in any stash: {mgr.stash_counts()}")
+
+    def test_pipe_native_dispatch_creates_two_fds(self, fauxware_project):
+        """pipe(buf) dispatched through the native registry must allocate two
+        consecutive fds (read end at 3, write end at 4) with the correct flags."""
+        import claripy
+        proj = fauxware_project
+
+        class pipe(angr.SimProcedure):  # noqa: N801 — match native registry name
+            num_args = 1
+
+            def run(self, pipefd):  # pylint: disable=arguments-differ
+                return 0
+
+        proj.hook(self.PIPE_ADDR, pipe(), replace=True)
+        try:
+            from angr.exploration import RustExplorationManager
+            state = proj.factory.blank_state(
+                addr=self.PIPE_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = self.BUF_ADDR
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64),
+                               endness='Iend_LE')
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=1)
+
+            # Confirm native dispatch fired (not Python fallback).
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats['call_counts'].get('pipe', 0) == 1, \
+                f"expected native pipe dispatch, got stats={stats}"
+
+            # FD layout: pre-existing 0,1,2 + newly allocated 3 (read) and 4 (write).
+            _sid, fds = self._all_fds(mgr)
+            assert set(fds.keys()) == {0, 1, 2, 3, 4}, \
+                f"unexpected fd set after pipe: {sorted(fds)}"
+            # ReadOnly=0, WriteOnly=1 (FdFlags::to_posix).
+            assert fds[3][0] == "<pipe:r>" and fds[3][1] == 0 and fds[3][2]
+            assert fds[4][0] == "<pipe:w>" and fds[4][1] == 1 and fds[4][2]
+        finally:
+            proj.unhook(self.PIPE_ADDR)
+
+    def test_dup2_native_dispatch_redirects_stdin(self, fauxware_project):
+        """dup2(0, 7) dispatched natively must create fd 7 as a copy of fd 0
+        (stdin), with the original /dev/stdin name preserved."""
+        import claripy
+        proj = fauxware_project
+
+        class dup2(angr.SimProcedure):  # noqa: N801 — match native registry name
+            num_args = 2
+
+            def run(self, oldfd, newfd):  # pylint: disable=arguments-differ
+                return newfd
+
+        proj.hook(self.DUP2_ADDR, dup2(), replace=True)
+        try:
+            from angr.exploration import RustExplorationManager
+            state = proj.factory.blank_state(
+                addr=self.DUP2_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = 0     # oldfd = stdin
+            state.regs.rsi = 7     # newfd = 7
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64),
+                               endness='Iend_LE')
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats['call_counts'].get('dup2', 0) == 1, \
+                f"expected native dup2 dispatch, got stats={stats}"
+
+            _sid, fds = self._all_fds(mgr)
+            # Original three plus the new fd 7.
+            assert set(fds.keys()) == {0, 1, 2, 7}, \
+                f"unexpected fd set after dup2(0, 7): {sorted(fds)}"
+            # fd 7 is a clone of fd 0 (stdin).
+            assert fds[7][0] == "/dev/stdin" and fds[7][1] == 0 and fds[7][2]
+        finally:
+            proj.unhook(self.DUP2_ADDR)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
