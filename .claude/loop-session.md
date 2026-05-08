@@ -1,53 +1,81 @@
-## Session log: 2026-05-08, 165th loop session
+## Session log: 2026-05-08, 166th loop session
 
-### Task: angr-cihh (closed) — Log debug info from bare-except blocks in rust_state_cache.py
+### Task: angr-t3l3 (closed) — RustStateProxy missing state.options/globals/heap
 
-Quick housekeeping bead. The 11 bare `except Exception: pass` guards
-in `angr/exploration/rust_state_cache.py` silently swallowed every
-failure during state-cache lookups, predicate evaluation, and cleanup.
-Replaced each with
-`except Exception as e: l.debug("<context>: %s: %s", type(e).__name__, e)`
-so `--debug` runs surface the swallowed exception class plus message
-and the relevant identifiers (state ID, stash, address) without
-changing behavior.
+Read-only proxy gaps: state.options returned `set()`, state.globals returned
+`{}`, state.heap was completely absent. User code in find/avoid predicates
+and exploration techniques that read or mutated these plugins observed
+silent wrong behavior.
 
-### Sites updated
+### What changed
 
-- `_register_handle`: `set_state_addr_to_ast` best-effort link
-- `_evaluate_predicates_on_active`:
-  - `get_state_predicate_info` bulk fetch
-  - `get_state_stdout` proxy build
-  - `_find_predicate` + `_avoid_predicate` invocations
-  - outer state-setup wrapper
-  - `move_state` for found / avoid stash
-- `_create_state_for_predicate`: `get_state_root`, PC sync
-- `_cleanup_state_cache` + `_cleanup_state_refs`: `clear_state_metadata`
+**Storage (angr/exploration/rust_manager.py)**
+- Added `_py_state_options: Dict[int, set]` and `_py_state_globals: Dict[int, dict]`
+  to `RustExplorationManager.__init__`.
+- Seeded in `_add_rust_state` after `actual_state_id` resolves. Pull enabled
+  options via `{name for name, v in state.options._options.items() if v is True}`
+  — `set(state.options)` raises SimStateOptionsError (custom dict-backed type
+  iterates non-set-like).
+- New accessors `get_state_options_py(sid)` / `get_state_globals_py(sid)` with
+  parent-walk fallback via `_rust_mgr.get_state_root(sid)` so children forked
+  inside Rust inherit a shallow copy from the root on first access.
+- `_cleanup_state_cache` extended to drop entries for sids no longer in any
+  live stash (root entries pinned).
 
-### Why ready-list filtering ate most of the triage
+**Proxy (angr/exploration/rust_state_proxy.py)**
+- New `RustHeapProxy` exposing `mmap_base` (read/write via existing
+  `get_state_mmap_base` / `set_state_mmap_base` PyO3 accessors), `allocations`
+  and `freed` (via `get_state_heap_metadata`).
+- `RustStateProxy.__init__` now takes `python_mgr=None`; threaded through
+  `copy()` and `RustSimulationManagerProxy._wrap_state`.
+- `state.options` / `state.globals` delegate to `python_mgr.get_state_*_py()`
+  when wired; fall back to empty stand-ins for low-level unit-test paths
+  (e.g., the existing `RustStateProxy(mgr, sid)` pattern in TestSolverProxyTimeout).
+- `state.heap` lazily constructs `RustHeapProxy`.
 
-Three of the top-priority ready beads (`angr-4j5u.*` family and the
-`angr-wqao.*` family) were skipped: their parent decomposition tasks
-were deferred 2026-05-07 and the memos
-(`avoid-deferred-4j5u-rustexploration-decomposition`,
-`avoid-deferred-wqao-rust-manager-decomposition`) explicitly say "do not
-re-open without (a) a concrete bug showing field-coupling drift OR (b) a
-refactor that genuinely changes responsibilities — not just renames or
-rehoming." `angr-4j5u.1` is the textbook field-renaming refactor the
-memos warn against. `angr-lvem` (ARM/MIPS integration tests) is blocked
-upstream by `avoid-arm-rust-engine-mgr-run` which says ARM through the
-high-level `RustExplorationManager.run()` silently drops states.
-`angr-cihh` was a clean, low-risk, single-session housekeeping task.
+**Construction sites updated to pass python_mgr** (all 5 user-facing call sites):
+- `rust_manager.py:2944` (filter fallback) — `python_mgr=self`
+- `rust_manager.py:2778` (`RustSimulationManagerProxy` factory) — `python_mgr=self`
+- `rust_state_cache.py:264` (predicate eval) — `python_mgr=self`
+- `rust_callback_dispatch.py:1340, 1390` (find/avoid predicate callbacks) — `python_mgr=self`
+- `rust_techniques.py:243` (technique filter) — `python_mgr=mgr`
 
-### Verification
+### Why the first test run failed and what it taught
 
-- `python -m pytest tests/engines/test_rust_exploration.py --tb=short -q`
-  → **332/332 passing in 19.03s**.
-- No Rust changes; no rebuild needed.
+`set(state.options)` looks like the obvious extraction but raises on
+SimStateOptions because that class lazily validates every iterated key —
+including numeric internal keys like `'0'`. The seed code's `except` block
+swallowed it and `_py_state_options` stayed empty. DEBUG log surfaced
+`SimStateOptionsError: The state option '0' does not exist.` Saved as memory
+`avoid-set-of-simstateoptions`.
 
 ### Files changed
 
-- `angr/exploration/rust_state_cache.py` (+36, -23)
+- `angr/exploration/rust_manager.py` (+85)
+- `angr/exploration/rust_state_proxy.py` (+82)
+- `angr/exploration/rust_state_cache.py` (+1)
+- `angr/exploration/rust_callback_dispatch.py` (+2)
+- `angr/exploration/rust_techniques.py` (+1)
+- `tests/engines/test_rust_exploration.py` (+116, new `TestStatePluginsProxy`)
 
 ### Tests
 
-332/332 passing on `tests/engines/test_rust_exploration.py`.
+339/339 passing on `tests/engines/test_rust_exploration.py` (332 baseline + 7 new
+under `TestStatePluginsProxy`):
+- `test_options_seeded_from_source_state`
+- `test_options_writes_persist`
+- `test_globals_seeded_and_mutable`
+- `test_options_inherited_by_forked_states`
+- `test_heap_mmap_base_exposed`
+- `test_heap_allocations_and_freed_lists`
+- `test_options_globals_fallback_without_python_mgr`
+
+### Commit
+
+`832e81900` on rust-symex.
+
+### Memories saved
+
+- `avoid-set-of-simstateoptions` — extract via `_options.items()`, not `set()`
+- `invariant-rust-state-proxy-plugins` — what's exposed, what's still
+  unsupported (state.libc, state.scratch tracked in angr-jco0)
