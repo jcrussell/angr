@@ -119,7 +119,7 @@ impl RustExplorationManager {
         use std::collections::hash_map::DefaultHasher;
 
         let mut hasher = DefaultHasher::new();
-        for reg_name in &self.uniqueness_registers {
+        for reg_name in &self.constraint_tracker.uniqueness_registers {
             match state.get_register(reg_name) {
                 Some(bv) => {
                     if let Some(val) = bv.as_u64() {
@@ -145,7 +145,7 @@ impl RustExplorationManager {
     /// Moves states with duplicate register tuples to 'not_unique'.
     /// Called after each step in the run() loop.
     pub(crate) fn apply_uniqueness_filter(&mut self) {
-        if self.uniqueness_registers.is_empty() {
+        if self.constraint_tracker.uniqueness_registers.is_empty() {
             return;
         }
 
@@ -159,7 +159,7 @@ impl RustExplorationManager {
             let mut remove_indices = Vec::new();
             for (i, state) in active.iter().enumerate() {
                 let hash = self.compute_register_tuple_hash(state);
-                if !self.uniqueness_set.insert(hash) {
+                if !self.constraint_tracker.uniqueness_set.insert(hash) {
                     remove_indices.push(i);
                 }
             }

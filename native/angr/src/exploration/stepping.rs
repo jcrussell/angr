@@ -370,7 +370,7 @@ impl RustExplorationManager {
 
                 // P13: Check satisfiability before adding to successors
                 let sat_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
-                if self.lazy_solves || forked.satisfiable() {
+                if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     if let Some(start) = sat_start {
                         self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                         self.profiling.accumulated_stats.solver_sat_count += 1;
@@ -400,7 +400,7 @@ impl RustExplorationManager {
                 self.sm.set_root(forked.state_id(), root_state_id);
 
                 // P13: Still check satisfiability
-                if self.lazy_solves || forked.satisfiable() {
+                if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
                     log::debug!(
@@ -775,7 +775,7 @@ impl RustExplorationManager {
         );
 
         // Propagate lazy_solves to skip Z3 feasibility checks
-        interp.lazy_solves = self.lazy_solves;
+        interp.lazy_solves = self.constraint_solver.lazy_solves;
         interp.set_profiling(self.profiling.profiling_enabled);
         // Propagate concretization strategy config
         interp.set_concretizer(self.concretizer_config.clone());
@@ -935,7 +935,7 @@ impl RustExplorationManager {
 
                 self.sm.set_root(forked.state_id(), root_state_id);
 
-                if self.lazy_solves || forked.satisfiable() {
+                if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
                     self.push_or_drop_terminal(STASH_PRUNED, forked);
@@ -945,7 +945,7 @@ impl RustExplorationManager {
                 let mut forked = successors[0].fork();
                 forked.set_pc(fork.unexplored_target);
                 self.sm.set_root(forked.state_id(), root_state_id);
-                if self.lazy_solves || forked.satisfiable() {
+                if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
                     self.push_or_drop_terminal(STASH_PRUNED, forked);

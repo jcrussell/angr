@@ -38,7 +38,9 @@ use std::cell::Cell;
 mod stepping;
 mod helpers;
 mod profiling;
+mod constraints;
 
+use self::constraints::{ConstraintSolver, ConstraintTracker};
 use self::profiling::ProfilingCollector;
 use self::stepping::StepError;
 
@@ -399,31 +401,19 @@ pub struct RustExplorationManager {
     /// P9 fix: Use LIFO (stack) state selection instead of FIFO (queue).
     /// When true, states are popped from the back (DFS). Default is false (BFS).
     pub(crate) use_lifo: bool,
-    /// When true, skip satisfiability checks on forked states (LAZY_SOLVES).
-    /// This improves performance for binaries with many branches by deferring
-    /// constraint solving until values are actually needed.
-    pub(crate) lazy_solves: bool,
+    /// Solver configuration: lazy_solves flag and Z3 timeout.
+    pub(crate) constraint_solver: ConstraintSolver,
     /// When true, fill unconstrained memory reads with zero instead of symbolic values.
     pub(crate) zero_fill_unconstrained: bool,
-    /// Z3 solver timeout in milliseconds (default: 30000).
-    pub(crate) solver_timeout_ms: u32,
     /// Maximum number of states in the active stash. None = unlimited.
     pub(crate) max_active_states: Option<usize>,
     // drop_terminal_states, avoided_count, pruned_count, deadended_count
     // are now in self.sm (StashManager)
-    /// Native uniqueness filter: register names to check.
-    pub(crate) uniqueness_registers: Vec<String>,
-    /// Set of seen register tuple hashes for uniqueness checking.
-    pub(crate) uniqueness_set: HashSet<u64>,
     /// Native exploration techniques that run entirely in Rust.
     pub(crate) native_techniques: Vec<NativeTechnique>,
-    /// State IDs to skip find predicate check for on next pop.
-    /// Set after resume_find_predicate(false) to prevent infinite loop —
-    /// states are already checked and should continue to hook/step.
-    /// Cleared per-state after it advances (executes a VEX block).
-    pub(crate) skip_find_predicate_states: HashSet<u64>,
-    /// State IDs to skip avoid predicate check for on next pop.
-    pub(crate) skip_avoid_predicate_states: HashSet<u64>,
+    /// Constraint-related per-run tracking: uniqueness filter sets and
+    /// the find/avoid predicate skip lists.
+    pub(crate) constraint_tracker: ConstraintTracker,
     /// Profiling state: enable flag, per-step `ExecutionStats`, and
     /// `NativeProcStats` accumulator.
     pub(crate) profiling: ProfilingCollector,
@@ -486,15 +476,11 @@ impl RustExplorationManager {
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
             use_lifo: false,  // P9: Default to BFS (FIFO)
-            lazy_solves: false,
+            constraint_solver: ConstraintSolver::new(),
             zero_fill_unconstrained: false,
-            solver_timeout_ms: 30000,
             max_active_states: None,
-            uniqueness_registers: Vec::new(),
-            uniqueness_set: HashSet::new(),
             native_techniques: Vec::new(),
-            skip_find_predicate_states: HashSet::new(),
-            skip_avoid_predicate_states: HashSet::new(),
+            constraint_tracker: ConstraintTracker::default(),
             profiling: ProfilingCollector::default(),
             little_endian,
             concretizer_config: crate::concretize::AddressConcretizer::default(),
@@ -586,7 +572,7 @@ impl RustExplorationManager {
 
     /// Enable lazy solves mode (skip satisfiability checks on forks).
     pub fn set_lazy_solves(&mut self, enabled: bool) {
-        self.lazy_solves = enabled;
+        self.constraint_solver.lazy_solves = enabled;
     }
 
     /// Enable zero-fill for unconstrained memory reads.
@@ -597,7 +583,7 @@ impl RustExplorationManager {
 
     /// Set the Z3 solver timeout in milliseconds (default: 30000).
     pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
-        self.solver_timeout_ms = timeout_ms;
+        self.constraint_solver.solver_timeout_ms = timeout_ms;
     }
 
     /// Set the maximum number of states in the active stash.
@@ -815,8 +801,8 @@ impl RustExplorationManager {
         }
 
         // Propagate solver timeout
-        if self.solver_timeout_ms != 30000 {
-            state.solver().borrow().set_timeout(self.solver_timeout_ms);
+        if self.constraint_solver.solver_timeout_ms != 30000 {
+            state.solver().borrow().set_timeout(self.constraint_solver.solver_timeout_ms);
         }
 
         // Propagate per-state history cap
@@ -849,8 +835,8 @@ impl RustExplorationManager {
         }
 
         // Propagate solver timeout
-        if self.solver_timeout_ms != 30000 {
-            forked.solver().borrow().set_timeout(self.solver_timeout_ms);
+        if self.constraint_solver.solver_timeout_ms != 30000 {
+            forked.solver().borrow().set_timeout(self.constraint_solver.solver_timeout_ms);
         }
 
         // Propagate per-state history cap
@@ -2253,26 +2239,26 @@ impl RustExplorationManager {
     /// are moved to 'not_unique' stash. This replaces the Python
     /// CheckUniqueness technique with zero FFI overhead.
     pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) {
-        self.uniqueness_registers = register_names;
-        self.uniqueness_set.clear();
+        self.constraint_tracker.uniqueness_registers = register_names;
+        self.constraint_tracker.uniqueness_set.clear();
         // Ensure not_unique stash exists
         self.sm.stashes_mut().entry("not_unique".to_string()).or_insert_with(VecDeque::new);
     }
 
     /// Disable the native uniqueness filter.
     pub fn disable_uniqueness_filter(&mut self) {
-        self.uniqueness_registers.clear();
-        self.uniqueness_set.clear();
+        self.constraint_tracker.uniqueness_registers.clear();
+        self.constraint_tracker.uniqueness_set.clear();
     }
 
     /// Check if native uniqueness filter is enabled.
     pub fn uniqueness_filter_enabled(&self) -> bool {
-        !self.uniqueness_registers.is_empty()
+        !self.constraint_tracker.uniqueness_registers.is_empty()
     }
 
     /// Get the number of unique register tuples seen.
     pub fn uniqueness_set_size(&self) -> usize {
-        self.uniqueness_set.len()
+        self.constraint_tracker.uniqueness_set.len()
     }
 
     // =========================================================================
@@ -2742,7 +2728,7 @@ impl RustExplorationManager {
             // sets skip_avoid_predicate_states to prevent infinite loop).
             if self.avoid_needs_python {
                 let state_id = state.state_id();
-                if self.skip_avoid_predicate_states.remove(&state_id) {
+                if self.constraint_tracker.skip_avoid_predicate_states.remove(&state_id) {
                     // Fall through — predicate already checked at this PC
                 } else {
                 self.pending_callback = Some(PendingCallback::lightweight(
@@ -2782,7 +2768,7 @@ impl RustExplorationManager {
             // sets skip_find_predicate_state to avoid infinite loop).
             if self.find_needs_python {
                 let state_id = state.state_id();
-                if self.skip_find_predicate_states.remove(&state_id) {
+                if self.constraint_tracker.skip_find_predicate_states.remove(&state_id) {
                     // Fall through to hooks/stepping — predicate already checked
                 } else {
                 self.pending_callback = Some(PendingCallback::lightweight(
@@ -2813,7 +2799,7 @@ impl RustExplorationManager {
             if self.find_addrs.contains(&pc) {
                 // Only add to found if the state is satisfiable
                 // (UNSAT states reached the address via infeasible paths)
-                if self.lazy_solves || state.satisfiable() {
+                if self.constraint_solver.lazy_solves || state.satisfiable() {
                     self.sm.stashes_mut()
                         .entry(STASH_FOUND.to_string())
                         .or_insert_with(VecDeque::new)
@@ -2967,7 +2953,7 @@ impl RustExplorationManager {
                     for successor in successors {
                         let spc = successor.pc();
                         if self.find_addrs.contains(&spc) {
-                            if self.lazy_solves || successor.satisfiable() {
+                            if self.constraint_solver.lazy_solves || successor.satisfiable() {
                                 self.sm.stashes_mut().entry(STASH_FOUND.to_string())
                                     .or_insert_with(VecDeque::new).push_back(successor);
                             }
@@ -3045,7 +3031,7 @@ impl RustExplorationManager {
                                     }
                                     self.sm.set_root(forked.state_id(), root_state_id);
                                     let sat_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
-                                    if self.lazy_solves || forked.satisfiable() {
+                                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
                                         if let Some(start) = sat_start {
                                             self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                                             self.profiling.accumulated_stats.solver_sat_count += 1;
@@ -3064,7 +3050,7 @@ impl RustExplorationManager {
 
                             // Now handle the main state
                             if is_find {
-                                if self.lazy_solves || pending.state.satisfiable() {
+                                if self.constraint_solver.lazy_solves || pending.state.satisfiable() {
                                     self.sm.stashes_mut().entry(STASH_FOUND.to_string())
                                         .or_insert_with(VecDeque::new)
                                         .push_back(pending.state);
@@ -3371,7 +3357,7 @@ impl RustExplorationManager {
                 // Adding callback constraints would pollute unexplored branches.
 
                 // P13: Check satisfiability before adding to successors
-                if self.lazy_solves || forked.satisfiable() {
+                if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                     if reconstructed_condition.is_some() {
                         log::debug!(
@@ -3402,7 +3388,7 @@ impl RustExplorationManager {
                 self.sm.set_root(forked.state_id(), root_state_id);
 
                 // P13: Still check satisfiability
-                if self.lazy_solves || forked.satisfiable() {
+                if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     successors.push(forked);
                 } else {
                     log::debug!(
@@ -3419,7 +3405,7 @@ impl RustExplorationManager {
         // Note: We split the loops to avoid double mutable borrow of self.sm
         let mut final_successors = Vec::new();
         for successor in successors {
-            if self.lazy_solves || successor.satisfiable() {
+            if self.constraint_solver.lazy_solves || successor.satisfiable() {
                 final_successors.push(successor);
             } else {
                 log::debug!(
@@ -3536,7 +3522,7 @@ impl RustExplorationManager {
                         f
                     };
                     self.sm.set_root(forked.state_id(), root_state_id);
-                    if self.lazy_solves || forked.satisfiable() {
+                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
                         let spc = forked.pc();
                         if self.find_addrs.contains(&spc) {
                             self.sm.stashes_mut().entry(STASH_FOUND.to_string())
@@ -3696,7 +3682,7 @@ impl RustExplorationManager {
 
                     self.sm.set_root(forked.state_id(), root_state_id);
 
-                    if self.lazy_solves || forked.satisfiable() {
+                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
                         deferred_successors.push(forked);
                     } else {
                         log::debug!(
@@ -3714,7 +3700,7 @@ impl RustExplorationManager {
                     let mut forked = true_state.fork();
                     forked.set_pc(fork.unexplored_target);
                     self.sm.set_root(forked.state_id(), root_state_id);
-                    if self.lazy_solves || forked.satisfiable() {
+                    if self.constraint_solver.lazy_solves || forked.satisfiable() {
                         deferred_successors.push(forked);
                     } else {
                         deferred_pruned.push(forked);
@@ -3751,12 +3737,12 @@ impl RustExplorationManager {
             }
         } else {
             // Fallback: no stored condition, need actual sat checks
-            if self.lazy_solves || true_state.satisfiable() {
+            if self.constraint_solver.lazy_solves || true_state.satisfiable() {
                 active_states.push(true_state);
             } else {
                 pruned_states.push(true_state);
             }
-            if self.lazy_solves || false_state.satisfiable() {
+            if self.constraint_solver.lazy_solves || false_state.satisfiable() {
                 active_states.push(false_state);
             } else {
                 pruned_states.push(false_state);
@@ -3820,7 +3806,7 @@ impl RustExplorationManager {
             // Mark this state to skip the find predicate check on next pop,
             // preventing infinite loop (state was already checked at this PC).
             let state_id = pending.state.state_id();
-            self.skip_find_predicate_states.insert(state_id);
+            self.constraint_tracker.skip_find_predicate_states.insert(state_id);
             self.push_to_active_or_drop(pending.state);
         }
 
@@ -3842,7 +3828,7 @@ impl RustExplorationManager {
         } else {
             log::debug!("Avoid predicate did not match - continuing exploration");
             let state_id = pending.state.state_id();
-            self.skip_avoid_predicate_states.insert(state_id);
+            self.constraint_tracker.skip_avoid_predicate_states.insert(state_id);
             self.push_to_active_or_drop(pending.state);
         }
 
