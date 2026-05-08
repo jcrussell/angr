@@ -1,39 +1,51 @@
-# Loop session notes (2026-05-07, 133rd loop session)
+# Loop session notes (2026-05-08, 134th loop session)
 
-## Task: angr-q7r0 — sym-write regressed +660% (3.22s vs 0.42s baseline)
+## Task: angr-03ej — Hook length parameter not respected (silent re-execution)
 
-### Status: closed (fixed)
+### Status: investigated; bd diagnosis was incorrect — closing as NOT-A-BUG with regression test
 
-### Root cause
-sym-write regression bottleneck was NOT memory_*_symbolic_full callbacks
-(audit hypothesis). Only 3 memory_load callbacks fire during sym-write.
+### Bd's claim
+> proj.hook(addr, proc, length=N>0) silently re-executes the original N
+> bytes after the hook returns, causing wrong behavior or infinite loops.
 
-True bottleneck: callback-time register sync of `edx`. After main runs,
-`edx` contains a RustBV::Expression with 142,133 expanded nodes but only
-**25 unique Arc-shared subtrees** (DAG with heavy reuse).
-`rustbv_to_claripy` recursively walked the DAG without memoization,
-fanning it into a tree and creating ~142k Python claripy objects (~2.7s
-for one register).
+### What I found
+For the function-callable hook path (proj.hook(addr, my_func, length=N))
+the length IS honored. project.py wraps the function in
+`UserHook(user_func=hook, length=length)`. Inside UserHook.run(),
+`self.successors.add_successor(self.state, self.state.addr + length, ...)`
+sets the successor PC to hook_addr+length, which propagates through
+the dispatch as `new_pc = succ_state.addr` and into Rust via
+`resume_after_simprocedure(new_pc, ...)` → `state.set_pc(new_pc)`.
 
-### Fix
-commit c88947e65: memoize `rustbv_to_claripy` by RustBV pointer identity.
-Operands stored inline inside a shared `Arc<[RustBV]>` have stable
-addresses, so sibling references hit the cache. Per-call
-`HashMap<*const RustBV, Py<PyAny>>`. Memoization gated on Expression
-variant only.
+Verified by adding instrumentation (eprintln in resume_after_simprocedure
+and run loop). For hook(0x8, fn, length=2), debug showed:
+  state 1 pc 0x8 -> 0xa     (resume sets PC correctly)
+  state 1 popped at pc=0xa  (next iter sees PC=0xa)
 
-### Results
-- sym-write: **3.22s → 0.44s** (matches 0.42s baseline)
-- 261/261 tests pass
-- 12/12 regression-suite benchmarks pass (19.7s total)
+Also confirmed via new test test_hook_length_advances_pc_userhook
+(fauxware mov rsp,rbp at main+1, 3 bytes, length=3): hook fires once
+per path, not in a loop. **Test passes** without any code change.
 
-### Memories saved
-- rustbv-to-claripy-memoization
-- symwrite-regression-q7r0-root-cause
-- invariant-rustbv-arc-operands-shared
-- benchmark-q7r0-symwrite-recovered
+### Real bug exposed during investigation (separate)
+A simpler shellcode test (hook 0x8 with length=2, no second hook)
+DOES exhibit hook re-firing — but root cause is unrelated to
+hook_length plumbing. After the hook resumes at PC=0xa, the basic
+block runs through `ret` at 0x1a; the stack contains an unconstrained
+symbolic byte, and the Rust engine appears to concretize the popped
+PC to 0x0 and continues looping back through the hook. Python angr
+correctly recognizes the unconstrained PC and moves the state to the
+`unconstrained` stash. New bead filed for this.
 
-### Follow-on
-- angr-491g (concrete-addr fast path): premise no longer holds for
-  sym-write. Annotated bead with note. mma_howtouse motivation should be
-  re-profiled before that work is taken on.
+### Files changed
+- tests/engines/test_rust_exploration.py: added
+  test_hook_length_advances_pc_userhook (confirms the bug-as-described
+  does not exist for UserHook-wrapped function callbacks).
+
+### Build note
+Z3 header path in .cargo/config.toml is broken (PyPI z3-solver doesn't
+ship headers). Built with Z3_SYS_Z3_HEADER=/usr/include/z3.h (system
+package) and copied target/release/librustylib.so to angr/. This is
+the same issue tracked in angr-8fsl (P1).
+
+### Tests
+All 262/262 pass.
