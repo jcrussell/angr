@@ -1,80 +1,47 @@
-# Loop session notes (2026-05-08, 144th loop session)
+# Loop session notes (2026-05-08, 145th loop session)
 
-## Task: angr-qlcr — declare_proc macro: registration + arg extraction + num_args in lockstep (closed)
+## Task: angr-4e3q — Critical missing syscalls (closed)
 
-### Status: complete; closed
+### Status: complete; closed. Follow-up: angr-k2q7 (native time(201))
 
 ### Summary
-Added `declare_proc!` in `native/angr/src/procedures/macros.rs` that
-emits a unit struct + `NativeSimProcedure` impl from one declarative
-form. The procedure's `name()`, `num_args()`, and the per-argument
-extraction prelude are all derived from the same `args = [...]` list,
-so it is no longer possible to register a procedure whose declared
-arity disagrees with the actual extraction count.
+Added native amd64 handlers for 4 of 5 listed syscalls. Each lives in
+its own file under `native/angr/src/syscalls/`, follows the same
+fall-back-on-unsupported pattern as brk/mmap/mprotect, and is
+registered in `NativeSyscallRegistry::new()`.
 
-Migrated 16 procedures (target was ≥5):
-  - strlen.rs: strlen, strnlen
-  - strcmp.rs: strcmp, strncmp, strcasecmp
-  - memcmp.rs: memcmp
-  - strtol.rs: strtol, strtoul, atoi, atol  (also refactored
-    `run_strtol` to take direct nptr/endptr/base instead of a slice)
-  - ctype.rs:  isdigit, isalpha, isspace, isalnum, isupper, islower,
-               isxdigit, isprint, tolower, toupper  (helpers
-               refactored to take a single `&RustBV`)
-
-Net diff: -114 lines.
+  158 arch_prctl    — set/get fs_const/gs_const; EINVAL for unknown code
+   13 rt_sigaction  — no-op return 0; -EINVAL for signum=33
+   96 gettimeofday  — fresh symbolic timeval at *tv; -1 if tv==0
+  228 clock_gettime — fresh symbolic timespec at *ts; -1 if ts==0;
+                       non-REALTIME clocks fall back to Python's
+                       SimProcedureError path
 
 ### Verification
-- cargo test procedures::: 185/187 passing. The 2 failures
-  (`test_heap_metadata_cloned_on_fork`, `test_getenv_env_preserved_on_fork`)
-  fail identically on pristine HEAD (PyO3 not auto-initialized in
-  cargo test). Saved as memory `avoid-pyo3-init-test-failures`.
-- Python suite: 300/300 passing.
-- fauxware benchmark unchanged (~0.3s, found SOSNEAKY).
+- cargo test syscalls::*: 71/73 (2 pre-existing PyO3 init failures
+  documented in `avoid-pyo3-init-test-failures`)
+- Python suite: 300/300 passing
+- fauxware benchmark unchanged (0.32s, found SOSNEAKY)
+
+### time(201) deferred → angr-k2q7
+time() returns a SYMBOLIC value via rax (not concrete), which the
+current SyscallOutcome::Continue { ret: u64 } variant can't express.
+Implementing requires:
+  1. New `SyscallOutcome::ContinueSymbolic { ret: RustBV }` variant
+  2. Update dispatcher in stepping.rs:156-170 to write ret BV directly
+  3. last_time tracking via either RustSimState field or angr-t3l3
 
 ### Memories saved
-- `declare-proc-macro`: macro location, two arg kinds (concrete/bv),
-  no-return flag, manual registration still required, tests must
-  re-import the trait inside cfg(test) blocks.
-- `avoid-pyo3-init-test-failures`: pre-existing failures unrelated to
-  this work.
+- `invariant-syscall-outcome-concrete-only`: dispatcher contract
+- `invariant-syscall-arg-extraction`: extract_syscall_args (r10 not rcx)
+- `arch-prctl-fs-gs-register-name`: use fs_const/gs_const, not fs/gs
 
-### Files changed
-- native/angr/src/procedures/macros.rs (new, +95 lines)
-- native/angr/src/procedures/mod.rs (mod macros; #[macro_use])
-- native/angr/src/procedures/{strlen,strcmp,memcmp,strtol,ctype}.rs
-  (migrated to declare_proc!)
+### Files
+- native/angr/src/syscalls/arch_prctl.rs (new, 213 lines)
+- native/angr/src/syscalls/sigaction.rs  (new, 134 lines)
+- native/angr/src/syscalls/sim_time.rs   (new, 281 lines)
+- native/angr/src/syscalls/mod.rs        (registry + corrected ABI doc)
 
-### Original Plan
-1. Define `declare_proc!` in `procedures/mod.rs` (or new `macros.rs`).
-2. Macro form:
-   - `name = "..."` (procedure name string)
-   - `struct = NativeFoo` (unit struct identifier)
-   - `args = [name1: kind, name2: kind, ...]`
-     - `kind` ∈ `concrete` (extracts u64 via `extract_concrete_arg`) or
-       `bv` (clones the RustBV).
-   - optional `no_return` flag
-   - `call |state| { body }` — body uses bound names + `state` as
-     `&mut RustSimState`.
-3. Macro emits unit struct + impl NativeSimProcedure where
-   `name()`, `num_args()`, and the extraction prelude are all
-   derived from the same args list. Registration stays manual in
-   `mod.rs` (no inventory dep available).
-
-### Migration targets (≥5 to satisfy acceptance criteria)
-- strlen — args=[addr: concrete]
-- strncmp — args=[s1, s2, n: concrete]
-- strcmp — args=[s1, s2: concrete]
-- memcmp — args=[s1, s2, n: concrete]
-- atoi — args=[nptr: concrete]
-- isdigit (raw form via `bv`) — args=[c: bv] — needs ranges_predicate
-  refactored to take `arg: &RustBV` instead of `args: &[RustBV]`.
-
-### Files to touch
-- native/angr/src/procedures/mod.rs (define macro)
-- native/angr/src/procedures/{strlen,strcmp,memcmp,strtol,ctype}.rs (migrate)
-
-### Verification
-- cargo check --release
-- cargo test (procedures::*)
-- python -m pytest tests/engines/test_rust_exploration.py
+### Commit
+939646111 feat(rust_syscalls): native arch_prctl, rt_sigaction,
+          gettimeofday, clock_gettime — angr-4e3q
