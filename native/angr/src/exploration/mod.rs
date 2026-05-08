@@ -1686,6 +1686,35 @@ impl RustExplorationManager {
         Ok(())
     }
 
+    /// Get the per-state posix brk pointer (mirrors Python's
+    /// `state.posix.brk`). The native brk syscall handler bumps this on
+    /// concrete `brk(addr)` calls; Python imports it on stash export to keep
+    /// a Python-side `set_brk` fallback from handing out heap addresses that
+    /// overlap a Rust-allocated region.
+    pub fn get_state_posix_brk(&self, state_id: u64) -> PyResult<u64> {
+        let state = self.find_state(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "get_state_posix_brk: state {} not found",
+                state_id
+            ))
+        })?;
+        Ok(state.posix_brk())
+    }
+
+    /// Set the per-state posix brk pointer. Used by tests and by Python-side
+    /// fallbacks (symbolic `brk` argument, collision retry) that bump
+    /// `state.posix.brk` and need to push the advance back into Rust.
+    pub fn set_state_posix_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
+        let state = self.find_state_mut(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "set_state_posix_brk: state {} not found",
+                state_id
+            ))
+        })?;
+        state.set_posix_brk(addr);
+        Ok(())
+    }
+
     /// Fork the solver context of an arbitrary state (by ID).
     ///
     /// Returns a new RustSolverContext with all of the state's constraints,

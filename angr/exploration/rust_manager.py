@@ -1736,6 +1736,20 @@ class RustExplorationManager(
         # Set PC
         rust_state.pc = angr_state.addr
 
+        # Push posix.brk so Rust's NativeBrkSyscall starts from the correct
+        # base. The angr loader sets state.posix.brk to (binary last_addr +
+        # page) — distinct from Rust's hardcoded default 0x1B00000 — so
+        # without this push a brk syscall in Rust would compare against the
+        # wrong base and either overlap mapped memory or hand out an address
+        # the program can't use. Only push if it's still a plain int; once
+        # Python's set_brk has wrapped it as a BV, we don't try to flatten.
+        try:
+            py_brk = getattr(getattr(angr_state, 'posix', None), 'brk', None)
+            if isinstance(py_brk, int):
+                rust_state.posix_brk = py_brk
+        except Exception as e:
+            l.debug("posix.brk init push failed: %s", e)
+
         # Sync registers (use precomputed dict from disk cache when available)
         _t_reg = time.perf_counter_ns()
         precomputed = self._precomputed_regs

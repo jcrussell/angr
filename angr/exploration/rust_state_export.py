@@ -223,6 +223,7 @@ class RustStateExportMixin:
                 # the call/ret events that happened during Rust execution.
                 self._sync_rust_callstack_to_state(state, state_id)
                 self._sync_rust_mmap_base_to_state(state, state_id)
+                self._sync_rust_posix_brk_to_state(state, state_id)
                 states.append(state)
 
         # For states not in cache, try parent state or snapshot export
@@ -252,6 +253,7 @@ class RustStateExportMixin:
                     self._sync_rust_registers_to_state(state, sid)
                     self._sync_rust_callstack_to_state(state, sid)
                     self._sync_rust_mmap_base_to_state(state, sid)
+                    self._sync_rust_posix_brk_to_state(state, sid)
                     # Cache the copy so it stays alive (prevents weakref death
                     # during chained attribute access like sm.active[1].posix.dumps())
                     self._state_cache[sid] = state
@@ -276,6 +278,7 @@ class RustStateExportMixin:
                     self._sync_rust_registers_to_state(state, sid)
                     self._sync_rust_callstack_to_state(state, sid)
                     self._sync_rust_mmap_base_to_state(state, sid)
+                    self._sync_rust_posix_brk_to_state(state, sid)
                     self._state_cache[sid] = state
                     states.append(state)
                     cached_ids.add(sid)
@@ -302,6 +305,7 @@ class RustStateExportMixin:
                                 self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
+                                self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
                                 self._state_cache[snapshot.state_id] = angr_state
                                 states.append(angr_state)
                             except Exception as e:
@@ -406,6 +410,37 @@ class RustStateExportMixin:
             return
         if rust_base > heap.mmap_base:
             heap.mmap_base = rust_base
+
+    def _sync_rust_posix_brk_to_state(self, state: "angr.SimState", state_id: int):
+        """Push Rust's per-state posix_brk into Python's state.posix.brk.
+
+        Mirror of _sync_rust_mmap_base_to_state for the brk(2) heap pointer.
+        NativeBrkSyscall bumps Rust's posix_brk on concrete grow calls; without
+        this sync, a Python-side fallback (symbolic brk or set_brk collision
+        retry) reads a stale state.posix.brk and hands out heap addresses
+        overlapping a Rust-allocated region.
+
+        Only applied when state.posix.brk is a plain int — Python's set_brk
+        rewrites the field as a claripy BV (concrete BVV after a concrete
+        bump, an If(...) tree after a symbolic bump). In those cases Python
+        already advanced past the default and we leave the BV alone rather
+        than risk an int<->BV type mismatch in downstream Python code.
+
+        Take max(rust, python) to avoid clobbering a Python-side advance.
+        """
+        posix = getattr(state, "posix", None)
+        if posix is None or not hasattr(posix, "brk"):
+            return
+        py_brk = posix.brk
+        if not isinstance(py_brk, int):
+            return
+        try:
+            rust_brk = self._rust_mgr.get_state_posix_brk(state_id)
+        except Exception as e:
+            l.debug("get_state_posix_brk(%d) failed: %s", state_id, e)
+            return
+        if rust_brk > py_brk:
+            posix.brk = rust_brk
 
     def _sync_rust_callstack_to_state(self, state: "angr.SimState", state_id: int):
         """Sync Rust-tracked call frames into state.callstack.

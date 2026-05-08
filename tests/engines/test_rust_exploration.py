@@ -962,6 +962,154 @@ class TestMmapBaseSync:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestPosixBrkSync:
+    """Tests that the Rust per-state posix_brk mirrors back to Python's
+    state.posix.brk on stash export.
+
+    Regression for angr-as3c (mirrors angr-0cnm for mmap_base): NativeBrkSyscall
+    bumps Rust's posix_brk on a concrete grow, but nothing pushed that bump
+    back to the angr SimState — so a Python-side fallback (symbolic brk arg
+    or set_brk collision retry) would read a stale state.posix.brk and hand
+    out heap addresses overlapping a Rust-allocated region.
+    """
+
+    def test_get_state_posix_brk_default(self):
+        """Default posix_brk matches Python's posix.brk default (0x1B00000)."""
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        assert mgr.get_state_posix_brk(sid) == 0x1B0_0000
+
+    def test_set_state_posix_brk_round_trips(self):
+        """Setter advances the value and getter reads it back — proves the
+        FFI accessor pair is wired to the same RustSimState field that
+        NativeBrkSyscall mutates."""
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        mgr.set_state_posix_brk(sid, 0x1B0_5000)
+        assert mgr.get_state_posix_brk(sid) == 0x1B0_5000
+
+    def test_get_state_posix_brk_unknown_state_raises(self):
+        """Unknown state IDs surface a ValueError (matches the mmap_base API)."""
+        mgr = _RustExplorationManager("amd64")
+        with pytest.raises(ValueError, match="state .* not found"):
+            mgr.get_state_posix_brk(999_999)
+
+    def test_init_push_aligns_rust_posix_brk_with_python(self, fauxware_project):
+        """At state creation, the angr loader sets state.posix.brk to a value
+        derived from the binary's last address (e.g. 0x602000 for fauxware) —
+        distinct from Rust's hardcoded default 0x1B00000. _add_rust_state
+        pushes Python's brk into Rust so subsequent NativeBrkSyscall calls
+        compare against the correct base.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        py_brk = state.posix.brk
+        assert isinstance(py_brk, int)
+        # fauxware sits below 0x1B00000, so Rust's default would otherwise
+        # over-shoot Python's actual brk and break any sync semantics.
+        assert py_brk < 0x1B0_0000
+
+        mgr = RustExplorationManager(proj, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        assert mgr._rust_mgr.get_state_posix_brk(sid) == py_brk
+
+    def test_export_path_syncs_rust_posix_brk_into_state_posix(self, fauxware_project):
+        """End-to-end: a Rust-side posix_brk advance is visible on the angr
+        SimState returned by mgr.active.
+
+        Pre-fix this fails — state.posix.brk stays at the loader-set value
+        even though Rust bumped its internal counter, leading to the silent
+        heap-collision scenario in the bead description.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        starting = state.posix.brk
+        assert isinstance(starting, int)
+
+        mgr = RustExplorationManager(proj, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        assert len(active_ids) == 1
+        sid = active_ids[0]
+        # Init push aligned the two sides at the loader-set base.
+        assert mgr._rust_mgr.get_state_posix_brk(sid) == starting
+
+        # Simulate what NativeBrkSyscall does on a concrete brk(addr) grow:
+        # bump the per-state posix_brk by one page past the loader base.
+        bumped = starting + 0x1000
+        mgr._rust_mgr.set_state_posix_brk(sid, bumped)
+        assert mgr._rust_mgr.get_state_posix_brk(sid) == bumped
+
+        # Pull the state back via the public stash API. _get_stash_states
+        # is the path mgr.active / mgr.found go through.
+        states = mgr._get_stash_states("active")
+        assert len(states) == 1
+        synced = states[0]
+
+        assert synced.posix.brk == bumped, (
+            f"state.posix.brk = {synced.posix.brk!r} but Rust's posix_brk "
+            f"advanced to 0x{bumped:x} — sync did not run on stash export "
+            f"and a Python-side brk fallback would now overlap a "
+            f"Rust-allocated region."
+        )
+
+    def test_export_path_does_not_clobber_higher_python_posix_brk(self, fauxware_project):
+        """The sync takes max(rust, python) — a Python-side advance that
+        outpaced Rust must not be reverted.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        starting = state.posix.brk
+
+        mgr = RustExplorationManager(proj, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        sid = active_ids[0]
+
+        # Python advanced its posix.brk; Rust still at the loader-set base.
+        cached = mgr._state_cache[sid]
+        higher = starting + 0x6000
+        cached.posix.brk = higher
+        assert mgr._rust_mgr.get_state_posix_brk(sid) == starting
+
+        states = mgr._get_stash_states("active")
+        assert len(states) == 1
+        # Python's higher value wins — not clobbered by Rust's smaller value.
+        assert states[0].posix.brk == higher
+
+    def test_export_path_leaves_symbolic_python_posix_brk_alone(self, fauxware_project):
+        """If Python's set_brk has rewritten state.posix.brk as a claripy BV
+        (concrete BVV after a concrete grow, or symbolic If(...) after a
+        symbolic grow), the sync must not replace it with a raw int — that
+        would break downstream Python code that expects a BV.
+        """
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        sid = active_ids[0]
+
+        # Python's set_brk would have left a BVV here. Rust's int posix_brk
+        # is bigger but we still must not overwrite a BV with a raw int.
+        cached = mgr._state_cache[sid]
+        cached.posix.brk = claripy.BVV(state.posix.brk + 0x2000, proj.arch.bits)
+        mgr._rust_mgr.set_state_posix_brk(sid, state.posix.brk + 0x5000)
+
+        states = mgr._get_stash_states("active")
+        assert len(states) == 1
+        # BV is preserved — sync skipped because posix.brk is not an int.
+        assert isinstance(states[0].posix.brk, claripy.ast.BV)
+        assert states[0].posix.brk is cached.posix.brk
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStashOperations:
     """Tests for stash management operations."""
 

@@ -1664,6 +1664,21 @@ impl PyRustSimState {
         self.inner.arch().name()
     }
 
+    /// Get the POSIX brk pointer (mirrors Python's `state.posix.brk`).
+    #[getter]
+    pub fn posix_brk(&self) -> u64 {
+        self.inner.posix_brk()
+    }
+
+    /// Set the POSIX brk pointer. Used by the Python wrapper at state-creation
+    /// time to push `state.posix.brk` (which the angr loader sets based on the
+    /// binary's last address) into Rust so subsequent native brk syscalls
+    /// start from the correct base.
+    #[setter]
+    pub fn set_posix_brk(&mut self, addr: u64) {
+        self.inner.set_posix_brk(addr);
+    }
+
     /// Get the history (basic block addresses).
     pub fn history(&self) -> Vec<u64> {
         self.inner.history().to_vec()
