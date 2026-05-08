@@ -1,47 +1,52 @@
-# Loop session notes (2026-05-08, 145th loop session)
+# Loop session notes (2026-05-08, 146th loop session)
 
-## Task: angr-4e3q — Critical missing syscalls (closed)
+## Task: angr-k2q7 — Native time(201) syscall (closed)
 
-### Status: complete; closed. Follow-up: angr-k2q7 (native time(201))
+### Status: complete; closed.
 
 ### Summary
-Added native amd64 handlers for 4 of 5 listed syscalls. Each lives in
-its own file under `native/angr/src/syscalls/`, follows the same
-fall-back-on-unsupported pattern as brk/mmap/mprotect, and is
-registered in `NativeSyscallRegistry::new()`.
+Implemented amd64 syscall 201 (time) natively. Three pieces of plumbing
+needed enabling first:
 
-  158 arch_prctl    — set/get fs_const/gs_const; EINVAL for unknown code
-   13 rt_sigaction  — no-op return 0; -EINVAL for signum=33
-   96 gettimeofday  — fresh symbolic timeval at *tv; -1 if tv==0
-  228 clock_gettime — fresh symbolic timespec at *ts; -1 if ts==0;
-                       non-REALTIME clocks fall back to Python's
-                       SimProcedureError path
+1. **SyscallOutcome::ContinueSymbolic { ret: RustBV }** new variant
+   in `native/angr/src/syscalls/mod.rs` for syscalls returning a
+   symbolic value via the ABI return register.
+
+2. **Dispatcher** in `native/angr/src/exploration/stepping.rs` honors
+   the new variant by writing the BV directly via
+   `state.set_register_by_offset(ret_reg, ret)` — no concrete wrap.
+
+3. **RustSimState.last_time: Option<RustBV>** new field, mirrored
+   in all five fork/merge sites. Mirrors Python's
+   `state.globals['sys_last_time']`. Drift class same as
+   `posix_brk` / `mmap_base`.
+
+`NativeTimeSyscall` in `syscalls/sim_time.rs`:
+- 1 arg (pointer)
+- fresh `sys_time` BVS at `arch.bits()`
+- constrain `sys_time SGE last_time` (or `SGE 0` first call)
+- `state.set_last_time(sys_time)`
+- if `pointer != 0` (concrete): store at `*pointer`
+- symbolic pointer → fall back to Python (its conditional-store path)
+- return `ContinueSymbolic { ret: sys_time }`
 
 ### Verification
-- cargo test syscalls::*: 71/73 (2 pre-existing PyO3 init failures
-  documented in `avoid-pyo3-init-test-failures`)
+- cargo test syscalls::sim_time::: 16/16 (10 existing + 6 new time tests)
+- cargo test syscalls::: 77/79 (2 pre-existing PyO3 init failures)
 - Python suite: 300/300 passing
-- fauxware benchmark unchanged (0.32s, found SOSNEAKY)
-
-### time(201) deferred → angr-k2q7
-time() returns a SYMBOLIC value via rax (not concrete), which the
-current SyscallOutcome::Continue { ret: u64 } variant can't express.
-Implementing requires:
-  1. New `SyscallOutcome::ContinueSymbolic { ret: RustBV }` variant
-  2. Update dispatcher in stepping.rs:156-170 to write ret BV directly
-  3. last_time tracking via either RustSimState field or angr-t3l3
+- fauxware benchmark unchanged (finds SOSNEAKY)
 
 ### Memories saved
-- `invariant-syscall-outcome-concrete-only`: dispatcher contract
-- `invariant-syscall-arg-extraction`: extract_syscall_args (r10 not rcx)
-- `arch-prctl-fs-gs-register-name`: use fs_const/gs_const, not fs/gs
+- `invariant-syscall-outcome-symbolic`: new ContinueSymbolic dispatcher
+- `invariant-rust-last-time-drift`: drift class for last_time
+- `invariant-syscall-outcome-concrete-only`: updated — original
+  blocker resolved as of 2026-05-08
 
 ### Files
-- native/angr/src/syscalls/arch_prctl.rs (new, 213 lines)
-- native/angr/src/syscalls/sigaction.rs  (new, 134 lines)
-- native/angr/src/syscalls/sim_time.rs   (new, 281 lines)
-- native/angr/src/syscalls/mod.rs        (registry + corrected ABI doc)
+- native/angr/src/state.rs (last_time field + 5 fork/merge sites + accessors)
+- native/angr/src/syscalls/mod.rs (ContinueSymbolic + register 201)
+- native/angr/src/exploration/stepping.rs (dispatcher)
+- native/angr/src/syscalls/sim_time.rs (NativeTimeSyscall + 6 tests)
 
 ### Commit
-939646111 feat(rust_syscalls): native arch_prctl, rt_sigaction,
-          gettimeofday, clock_gettime — angr-4e3q
+470955c3e feat(rust_syscalls): native time(201) syscall — angr-k2q7
