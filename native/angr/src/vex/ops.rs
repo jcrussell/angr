@@ -55,6 +55,62 @@ macro_rules! width_binop {
     }};
 }
 
+/// Generate concrete float-to-float conversion stubs.
+/// Entry shape: `name: src_float_ty, src_uint_ty, dst_float_ty, src_prec, dst_prec;`
+macro_rules! define_float_to_float {
+    ($($name:ident: $src_ty:ty, $src_uty:ty, $dst_ty:ty, $src_prec:expr, $dst_prec:expr;)*) => {
+        $(
+            fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+                Self::float_to_float(arg, $src_prec, $dst_prec, |v| {
+                    (<$src_ty>::from_bits(v as $src_uty) as $dst_ty).to_bits() as u128
+                })
+            }
+        )*
+    };
+}
+
+/// Generate concrete int-to-float conversion stubs.
+/// Entry shape: `name: src_int_ty, src_width_bits, signed_flag, dst_float_ty, dst_prec;`
+macro_rules! define_int_to_float {
+    ($($name:ident: $src_int:ty, $src_width:expr, $signed:expr, $dst_ty:ty, $dst_prec:expr;)*) => {
+        $(
+            fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+                Self::int_to_float(arg, $src_width, $signed, $dst_prec, |v| {
+                    ((v as $src_int) as $dst_ty).to_bits() as u128
+                })
+            }
+        )*
+    };
+}
+
+/// Generate concrete float-to-signed-int conversion stubs (RNE round-ties-even).
+/// Entry shape: `name: src_float_ty, src_uint_ty, src_prec, round_fn, dst_signed_int_ty, dst_unsigned_int_ty, dst_width_bits;`
+macro_rules! define_float_to_int_signed {
+    ($($name:ident: $src_ty:ty, $src_uty:ty, $src_prec:expr, $round:ident, $dst_int:ty, $dst_uint:ty, $dst_width:expr;)*) => {
+        $(
+            fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+                Self::float_to_int(arg, $src_prec, $dst_width, true, |v| {
+                    (Self::$round(<$src_ty>::from_bits(v as $src_uty)) as $dst_int as $dst_uint) as u128
+                })
+            }
+        )*
+    };
+}
+
+/// Generate concrete float-to-unsigned-int conversion stubs (RNE round-ties-even).
+/// Entry shape: `name: src_float_ty, src_uint_ty, src_prec, round_fn, dst_unsigned_int_ty, dst_width_bits;`
+macro_rules! define_float_to_int_unsigned {
+    ($($name:ident: $src_ty:ty, $src_uty:ty, $src_prec:expr, $round:ident, $dst_uint:ty, $dst_width:expr;)*) => {
+        $(
+            fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
+                Self::float_to_int(arg, $src_prec, $dst_width, false, |v| {
+                    Self::$round(<$src_ty>::from_bits(v as $src_uty)) as $dst_uint as u128
+                })
+            }
+        )*
+    };
+}
+
 /// VEX operation executor.
 ///
 /// This struct provides methods to execute VEX operations on `RustBV` values.
@@ -2383,63 +2439,35 @@ impl VEXOps {
     }
 
     // --- Float-to-float conversions ---
-    fn f32_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_float(arg, FloatPrec::F32, FloatPrec::F64, |v| (f32::from_bits(v as u32) as f64).to_bits() as u128)
-    }
-    fn f64_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_float(arg, FloatPrec::F64, FloatPrec::F32, |v| (f64::from_bits(v as u64) as f32).to_bits() as u128)
+    define_float_to_float! {
+        f32_to_f64: f32, u32, f64, FloatPrec::F32, FloatPrec::F64;
+        f64_to_f32: f64, u64, f32, FloatPrec::F64, FloatPrec::F32;
     }
 
     // --- Int-to-float conversions ---
-    fn i32s_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 32, true, FloatPrec::F32, |v| ((v as i32) as f32).to_bits() as u128)
-    }
-    fn i32s_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 32, true, FloatPrec::F64, |v| ((v as i32) as f64).to_bits() as u128)
-    }
-    fn i64s_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 64, true, FloatPrec::F32, |v| ((v as i64) as f32).to_bits() as u128)
-    }
-    fn i64s_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 64, true, FloatPrec::F64, |v| ((v as i64) as f64).to_bits() as u128)
-    }
-    fn i32u_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 32, false, FloatPrec::F32, |v| ((v as u32) as f32).to_bits() as u128)
-    }
-    fn i32u_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 32, false, FloatPrec::F64, |v| ((v as u32) as f64).to_bits() as u128)
-    }
-    fn i64u_to_f32(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 64, false, FloatPrec::F32, |v| ((v as u64) as f32).to_bits() as u128)
-    }
-    fn i64u_to_f64(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::int_to_float(arg, 64, false, FloatPrec::F64, |v| ((v as u64) as f64).to_bits() as u128)
+    define_int_to_float! {
+        i32s_to_f32: i32, 32, true,  f32, FloatPrec::F32;
+        i32s_to_f64: i32, 32, true,  f64, FloatPrec::F64;
+        i64s_to_f32: i64, 64, true,  f32, FloatPrec::F32;
+        i64s_to_f64: i64, 64, true,  f64, FloatPrec::F64;
+        i32u_to_f32: u32, 32, false, f32, FloatPrec::F32;
+        i32u_to_f64: u32, 32, false, f64, FloatPrec::F64;
+        i64u_to_f32: u64, 64, false, f32, FloatPrec::F32;
+        i64u_to_f64: u64, 64, false, f64, FloatPrec::F64;
     }
 
     // --- Float-to-int conversions (round ties to even) ---
-    fn f32_to_i32s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F32, 32, true, |v| (Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as i32 as u32) as u128)
+    define_float_to_int_signed! {
+        f32_to_i32s: f32, u32, FloatPrec::F32, round_ties_to_even_f32, i32, u32, 32;
+        f64_to_i32s: f64, u64, FloatPrec::F64, round_ties_to_even_f64, i32, u32, 32;
+        f32_to_i64s: f32, u32, FloatPrec::F32, round_ties_to_even_f32, i64, u64, 64;
+        f64_to_i64s: f64, u64, FloatPrec::F64, round_ties_to_even_f64, i64, u64, 64;
     }
-    fn f64_to_i32s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F64, 32, true, |v| (Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as i32 as u32) as u128)
-    }
-    fn f32_to_i64s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F32, 64, true, |v| (Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as i64 as u64) as u128)
-    }
-    fn f64_to_i64s(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F64, 64, true, |v| (Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as i64 as u64) as u128)
-    }
-    fn f32_to_i32u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F32, 32, false, |v| Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as u32 as u128)
-    }
-    fn f64_to_i32u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F64, 32, false, |v| Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as u32 as u128)
-    }
-    fn f32_to_i64u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F32, 64, false, |v| Self::round_ties_to_even_f32(f32::from_bits(v as u32)) as u64 as u128)
-    }
-    fn f64_to_i64u(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int(arg, FloatPrec::F64, 64, false, |v| Self::round_ties_to_even_f64(f64::from_bits(v as u64)) as u64 as u128)
+    define_float_to_int_unsigned! {
+        f32_to_i32u: f32, u32, FloatPrec::F32, round_ties_to_even_f32, u32, 32;
+        f64_to_i32u: f64, u64, FloatPrec::F64, round_ties_to_even_f64, u32, 32;
+        f32_to_i64u: f32, u32, FloatPrec::F32, round_ties_to_even_f32, u64, 64;
+        f64_to_i64u: f64, u64, FloatPrec::F64, round_ties_to_even_f64, u64, 64;
     }
 
     /// Round F32 to integer using specified rounding mode (binop version).
