@@ -88,10 +88,11 @@ class RustStateCacheMixin:
                 actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, 'length') else 1)
                 try:
                     self._rust_mgr.set_state_addr_to_ast(effective_id, addr, ast, actual_size)
-                except Exception:
+                except Exception as e:
                     # State may have been dropped from Rust between fork and
                     # registration; the addr->AST link is best-effort.
-                    pass
+                    l.debug("set_state_addr_to_ast(sid=%d, addr=%#x) failed: %s: %s",
+                            effective_id, addr, type(e).__name__, e)
 
         # Limit cache size to prevent memory issues
         # Use smarter eviction that preserves active handles
@@ -226,8 +227,9 @@ class RustStateCacheMixin:
             try:
                 for sid, addr, stdout_len in self._rust_mgr.get_state_predicate_info(stash):
                     state_info[sid] = (addr, stdout_len)
-            except Exception:
-                pass
+            except Exception as e:
+                l.debug("get_state_predicate_info(stash=%s) failed: %s: %s",
+                        stash, type(e).__name__, e)
 
         # Also include cached states (may have been moved between stashes)
         all_state_ids = set(state_info.keys())
@@ -255,8 +257,9 @@ class RustStateCacheMixin:
                 stdout_data = b""
                 try:
                     stdout_data = bytes(self._rust_mgr.get_state_stdout(state_id))
-                except Exception:
-                    pass
+                except Exception as e:
+                    l.debug("get_state_stdout(sid=%d) failed: %s: %s",
+                            state_id, type(e).__name__, e)
                 state = RustStateProxy(
                     self._rust_mgr, state_id,
                     project=self._project,
@@ -277,17 +280,20 @@ class RustStateCacheMixin:
                             if not is_cached and current_info is not None:
                                 self._predicate_eval_cache[state_id] = current_info
                             continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        l.debug("find_predicate(sid=%d) raised: %s: %s",
+                                state_id, type(e).__name__, e)
 
                 if self._avoid_predicate is not None:
                     try:
                         if self._avoid_predicate(state):
                             avoid_sids.add(state_id)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        l.debug("avoid_predicate(sid=%d) raised: %s: %s",
+                                state_id, type(e).__name__, e)
+            except Exception as e:
+                l.debug("predicate eval setup for sid=%d failed: %s: %s",
+                        state_id, type(e).__name__, e)
 
             # Mark uncached state as evaluated at its current (addr, stdout_len)
             if not is_cached and current_info is not None:
@@ -300,8 +306,9 @@ class RustStateCacheMixin:
                 try:
                     if self._rust_mgr.move_state(sid, stash, 'found'):
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    l.debug("move_state(sid=%d, %s -> found) failed: %s: %s",
+                            sid, stash, type(e).__name__, e)
             # Record in Python-side found for predicate-matched states
             if not hasattr(self, '_predicate_found'):
                 self._predicate_found = []
@@ -315,8 +322,9 @@ class RustStateCacheMixin:
             for stash in ('active', 'deadended'):
                 try:
                     self._rust_mgr.move_state(sid, stash, 'avoid')
-                except Exception:
-                    pass
+                except Exception as e:
+                    l.debug("move_state(sid=%d, %s -> avoid) failed: %s: %s",
+                            sid, stash, type(e).__name__, e)
 
     def _create_state_for_predicate(self, state_id):
         """Create a lightweight Python state for predicate evaluation.
@@ -330,7 +338,9 @@ class RustStateCacheMixin:
         # Try to find the root state in cache
         try:
             root_id = self._rust_mgr.get_state_root(state_id)
-        except Exception:
+        except Exception as e:
+            l.debug("get_state_root(sid=%d) failed: %s: %s",
+                    state_id, type(e).__name__, e)
             root_id = None
 
         parent_state = None
@@ -356,8 +366,9 @@ class RustStateCacheMixin:
                         if pc is not None:
                             state.regs._ip = pc
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                l.debug("PC sync for predicate state sid=%d failed: %s: %s",
+                        state_id, type(e).__name__, e)
             # Attach Rust solver fallback so solver operations work
             self._attach_rust_solver_fallback(state, state_id)
             return state
@@ -372,8 +383,9 @@ class RustStateCacheMixin:
             del self._state_cache[state_id]
             try:
                 self._rust_mgr.clear_state_metadata(state_id)
-            except Exception:
-                pass
+            except Exception as e:
+                l.debug("clear_state_metadata(sid=%d) failed in cache cleanup: %s: %s",
+                        state_id, type(e).__name__, e)
             self._identity_tracker.mark_inactive(state_id)
         if to_remove:
             l.debug(f"Cleaned up {len(to_remove)} state cache entries")
@@ -388,8 +400,9 @@ class RustStateCacheMixin:
         # Drop per-state metadata held on the Rust side.
         try:
             self._rust_mgr.clear_state_metadata(state_id)
-        except Exception:
-            pass
+        except Exception as e:
+            l.debug("clear_state_metadata(sid=%d) failed in ref cleanup: %s: %s",
+                    state_id, type(e).__name__, e)
         # Remove from predicate evaluation cache
         if hasattr(self, '_predicate_eval_cache'):
             self._predicate_eval_cache.pop(state_id, None)
