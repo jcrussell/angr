@@ -37,7 +37,9 @@ use std::cell::Cell;
 
 mod stepping;
 mod helpers;
+mod profiling;
 
+use self::profiling::ProfilingCollector;
 use self::stepping::StepError;
 
 // Thread-local stepping state ID, accessible from callbacks without borrow conflicts.
@@ -315,27 +317,6 @@ pub(crate) enum NativeTechnique {
     },
 }
 
-/// Statistics for native procedure execution.
-#[derive(Debug, Clone)]
-pub(crate) struct NativeProcStats {
-    /// Number of native procedure executions.
-    pub(crate) native_calls: u64,
-    /// Number of fallbacks to Python.
-    pub(crate) python_fallbacks: u64,
-    /// Per-procedure call counts.
-    pub(crate) call_counts: HashMap<String, u64>,
-}
-
-impl Default for NativeProcStats {
-    fn default() -> Self {
-        NativeProcStats {
-            native_calls: 0,
-            python_fallbacks: 0,
-            call_counts: HashMap::new(),
-        }
-    }
-}
-
 /// Rust-native exploration manager.
 ///
 /// Manages states entirely in Rust with O(1) forking.
@@ -386,8 +367,6 @@ pub struct RustExplorationManager {
     pub(crate) native_syscalls: NativeSyscallRegistry,
     /// Calling convention for argument extraction.
     pub(crate) calling_convention: Box<dyn CallingConvention>,
-    /// Statistics for native procedure executions.
-    pub(crate) native_proc_stats: NativeProcStats,
     /// VEX fallback tracking: count and unique addresses.
     pub(crate) vex_fallback_count: u64,
     pub(crate) vex_fallback_addrs: HashMap<u64, String>,
@@ -445,10 +424,9 @@ pub struct RustExplorationManager {
     pub(crate) skip_find_predicate_states: HashSet<u64>,
     /// State IDs to skip avoid predicate check for on next pop.
     pub(crate) skip_avoid_predicate_states: HashSet<u64>,
-    /// Whether Rust-side profiling is enabled.
-    pub(crate) profiling_enabled: bool,
-    /// Accumulated execution statistics across all steps.
-    pub(crate) accumulated_stats: ExecutionStats,
+    /// Profiling state: enable flag, per-step `ExecutionStats`, and
+    /// `NativeProcStats` accumulator.
+    pub(crate) profiling: ProfilingCollector,
     // state_index is now in self.sm (StashManager)
     /// Endianness override: None = use arch default, Some(true) = little-endian.
     pub(crate) little_endian: Option<bool>,
@@ -500,7 +478,6 @@ impl RustExplorationManager {
             native_procedures: NativeProcedureRegistry::new(),
             native_syscalls: NativeSyscallRegistry::new(),
             calling_convention: default_cc_for_arch(arch),
-            native_proc_stats: NativeProcStats::default(),
             vex_fallback_count: 0,
             vex_fallback_addrs: HashMap::new(),
             dcas_unsupported_count: 0,
@@ -518,8 +495,7 @@ impl RustExplorationManager {
             native_techniques: Vec::new(),
             skip_find_predicate_states: HashSet::new(),
             skip_avoid_predicate_states: HashSet::new(),
-            profiling_enabled: false,
-            accumulated_stats: ExecutionStats::default(),
+            profiling: ProfilingCollector::default(),
             little_endian,
             concretizer_config: crate::concretize::AddressConcretizer::default(),
             vex_opt_level: None,
@@ -715,7 +691,7 @@ impl RustExplorationManager {
     /// Enable or disable Rust-side profiling.
     /// When enabled, per-step timing and counters are accumulated.
     pub fn set_profiling(&mut self, enabled: bool) {
-        self.profiling_enabled = enabled;
+        self.profiling.profiling_enabled = enabled;
     }
 
     /// Set the maximum length of each state's `history` / `detailed_history`
@@ -739,12 +715,12 @@ impl RustExplorationManager {
 
     /// Get accumulated execution statistics as a dict.
     pub fn get_execution_stats(&self) -> HashMap<String, u64> {
-        self.accumulated_stats.to_hashmap()
+        self.profiling.accumulated_stats.to_hashmap()
     }
 
     /// Reset accumulated execution statistics.
     pub fn reset_execution_stats(&mut self) {
-        self.accumulated_stats.reset();
+        self.profiling.accumulated_stats.reset();
     }
 
     /// Set Python callbacks for memory/lifting.
@@ -2126,8 +2102,8 @@ impl RustExplorationManager {
         dict.set_item("find_addrs", self.find_addrs.len())?;
         dict.set_item("avoid_addrs", self.avoid_addrs.len())?;
         dict.set_item("block_cache_size", self.block_cache.len())?;
-        dict.set_item("native_proc_calls", self.native_proc_stats.native_calls)?;
-        dict.set_item("native_proc_fallbacks", self.native_proc_stats.python_fallbacks)?;
+        dict.set_item("native_proc_calls", self.profiling.native_proc_stats.native_calls)?;
+        dict.set_item("native_proc_fallbacks", self.profiling.native_proc_stats.python_fallbacks)?;
         dict.set_item("avoided_count", self.sm.avoided_count)?;
         dict.set_item("pruned_count", self.sm.pruned_count)?;
         dict.set_item("deadended_count", self.sm.deadended_count)?;
@@ -2232,11 +2208,11 @@ impl RustExplorationManager {
     /// Get native procedure statistics.
     pub fn native_procedure_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-        dict.set_item("native_calls", self.native_proc_stats.native_calls)?;
-        dict.set_item("python_fallbacks", self.native_proc_stats.python_fallbacks)?;
+        dict.set_item("native_calls", self.profiling.native_proc_stats.native_calls)?;
+        dict.set_item("python_fallbacks", self.profiling.native_proc_stats.python_fallbacks)?;
 
         let call_counts = PyDict::new(py);
-        for (name, count) in &self.native_proc_stats.call_counts {
+        for (name, count) in &self.profiling.native_proc_stats.call_counts {
             call_counts.set_item(name, *count)?;
         }
         dict.set_item("call_counts", call_counts)?;
@@ -2712,7 +2688,7 @@ impl RustExplorationManager {
             return Err(PyRuntimeError::new_err("callbacks not ready"));
         }
 
-        let run_loop_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+        let run_loop_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
 
         for _ in 0..max_steps {
             // Check if we have enough solutions
@@ -2878,8 +2854,8 @@ impl RustExplorationManager {
                         match native_proc.call(&mut state, &args) {
                             Ok(ret_val) => {
                                 // Native execution succeeded
-                                self.native_proc_stats.native_calls += 1;
-                                *self.native_proc_stats.call_counts
+                                self.profiling.native_proc_stats.native_calls += 1;
+                                *self.profiling.native_proc_stats.call_counts
                                     .entry(name.clone())
                                     .or_insert(0) += 1;
 
@@ -2937,7 +2913,7 @@ impl RustExplorationManager {
                             }
                             Err(_e) => {
                                 // Native execution failed, fall back to Python
-                                self.native_proc_stats.python_fallbacks += 1;
+                                self.profiling.native_proc_stats.python_fallbacks += 1;
                             }
                         }
                     }
@@ -3021,7 +2997,7 @@ impl RustExplorationManager {
                             let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
 
                             let mut snapshots = pending.fork_snapshots;
-                            let cb_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                            let cb_fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                             let cb_fork_total = pending.deferred_forks.len() as u64;
                             for fork in pending.deferred_forks {
                                 let condition = pending.stored_conditions.get(&fork.condition_id);
@@ -3044,7 +3020,7 @@ impl RustExplorationManager {
                                     } else {
                                         pending.state.solver().borrow().assume_false(cond);
                                     }
-                                    let fork_op_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                                    let fork_op_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                                     let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
                                         let mut f = fork_base.fork_from_snapshot(snapshot);
                                         if fork.path_taken {
@@ -3064,26 +3040,26 @@ impl RustExplorationManager {
                                         f
                                     };
                                     if let Some(start) = fork_op_start {
-                                        self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
-                                        self.accumulated_stats.solver_fork_count += 1;
+                                        self.profiling.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                                        self.profiling.accumulated_stats.solver_fork_count += 1;
                                     }
                                     self.sm.set_root(forked.state_id(), root_state_id);
-                                    let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                                    let sat_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                                     if self.lazy_solves || forked.satisfiable() {
                                         if let Some(start) = sat_start {
-                                            self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
-                                            self.accumulated_stats.solver_sat_count += 1;
+                                            self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                            self.profiling.accumulated_stats.solver_sat_count += 1;
                                         }
                                         self.push_to_active_or_drop(forked);
                                     } else if let Some(start) = sat_start {
-                                        self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
-                                        self.accumulated_stats.solver_sat_count += 1;
+                                        self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                        self.profiling.accumulated_stats.solver_sat_count += 1;
                                     }
                                 }
                             }
                             if let Some(start) = cb_fork_start {
-                                self.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
-                                self.accumulated_stats.deferred_fork_count += cb_fork_total;
+                                self.profiling.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+                                self.profiling.accumulated_stats.deferred_fork_count += cb_fork_total;
                             }
 
                             // Now handle the main state
@@ -3210,8 +3186,8 @@ impl RustExplorationManager {
 
         // Record run loop timing and active state count
         if let Some(start) = run_loop_start {
-            self.accumulated_stats.run_loop_time_ns += start.elapsed().as_nanos() as u64;
-            self.accumulated_stats.active_states_count = self.active_count() as u64;
+            self.profiling.accumulated_stats.run_loop_time_ns += start.elapsed().as_nanos() as u64;
+            self.profiling.accumulated_stats.active_states_count = self.active_count() as u64;
         }
 
         // Max steps reached

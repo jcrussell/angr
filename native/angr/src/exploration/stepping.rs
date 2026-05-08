@@ -48,7 +48,7 @@ impl RustExplorationManager {
         mut state: RustSimState,
         skip_addr: Option<u64>,
     ) -> Result<Vec<RustSimState>, StepError> {
-        let setup_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+        let setup_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
         let initial_pc = state.pc();
 
         // Run the VEX interpreter to its next event.
@@ -58,10 +58,10 @@ impl RustExplorationManager {
         self.block_cache = step.updated_block_cache;
 
         // Accumulate profiling stats
-        if self.profiling_enabled {
+        if self.profiling.profiling_enabled {
             let mut stats = step.step_stats;
             stats.step_count = 1;
-            self.accumulated_stats.merge(&stats);
+            self.profiling.accumulated_stats.merge(&stats);
         }
 
         // Restore memory from interpreter back to state FIRST.
@@ -100,7 +100,7 @@ impl RustExplorationManager {
                 state.add_to_history(addr);
                 // Only create pre-callback snapshot if deferred forks need it.
                 // state.fork() clones the Z3 solver (~3-40ms), so skip when not needed.
-                let hook_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let hook_fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                 let pre_callback_snapshot = if !deferred_forks.is_empty() {
                     Some(state.fork())
                 } else {
@@ -111,8 +111,8 @@ impl RustExplorationManager {
                 let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
                 if let Some(start) = hook_fork_start {
                     let fork_count = if pre_callback_snapshot.is_some() { 1u64 } else { 0u64 };
-                    self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
-                    self.accumulated_stats.solver_fork_count += fork_count;
+                    self.profiling.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                    self.profiling.accumulated_stats.solver_fork_count += fork_count;
                 }
                 // Return to Python for hook - store deferred forks for later processing
                 Err(StepError::NeedCallback(PendingCallback::with_context(
@@ -322,7 +322,7 @@ impl RustExplorationManager {
         // P13: Track UNSAT states for pruning
         let mut successors = vec![state];
         let mut pruned_states = Vec::new();
-        let deferred_fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+        let deferred_fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
         let deferred_fork_total = deferred_forks.len() as u64;
 
         for fork in deferred_forks {
@@ -342,7 +342,7 @@ impl RustExplorationManager {
                 // Use solver snapshot (from before branch constraint) if available
                 // to avoid inheriting the taken-path constraint (which would make
                 // the opposite constraint UNSAT).
-                let fork_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                 let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
                     let mut f = successors[0].fork_from_snapshot(snapshot);
                     if fork.path_taken {
@@ -362,24 +362,24 @@ impl RustExplorationManager {
                     f
                 };
                 if let Some(start) = fork_start {
-                    self.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
-                    self.accumulated_stats.solver_fork_count += 1;
+                    self.profiling.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                    self.profiling.accumulated_stats.solver_fork_count += 1;
                 }
                 // Track root state ID for this forked state
                 self.sm.set_root(forked.state_id(), root_state_id);
 
                 // P13: Check satisfiability before adding to successors
-                let sat_start = if self.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let sat_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
                 if self.lazy_solves || forked.satisfiable() {
                     if let Some(start) = sat_start {
-                        self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
-                        self.accumulated_stats.solver_sat_count += 1;
+                        self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                        self.profiling.accumulated_stats.solver_sat_count += 1;
                     }
                     successors.push(forked);
                 } else {
                     if let Some(start) = sat_start {
-                        self.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
-                        self.accumulated_stats.solver_sat_count += 1;
+                        self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                        self.profiling.accumulated_stats.solver_sat_count += 1;
                     }
                     log::debug!(
                         "P13: Deferred fork at 0x{:x} is UNSAT, will be pruned",
@@ -412,8 +412,8 @@ impl RustExplorationManager {
             }
         }
         if let Some(start) = deferred_fork_start {
-            self.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
-            self.accumulated_stats.deferred_fork_count += deferred_fork_total;
+            self.profiling.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+            self.profiling.accumulated_stats.deferred_fork_count += deferred_fork_total;
         }
 
         // Add pruned states to pruned stash
@@ -453,8 +453,8 @@ impl RustExplorationManager {
                 let args = self.extract_procedure_args(&state, num_args);
                 match native_proc.call(&mut state, &args) {
                     Ok(ret_val) => {
-                        self.native_proc_stats.native_calls += 1;
-                        *self.native_proc_stats.call_counts
+                        self.profiling.native_proc_stats.native_calls += 1;
+                        *self.profiling.native_proc_stats.call_counts
                             .entry(name.clone())
                             .or_insert(0) += 1;
 
@@ -473,7 +473,7 @@ impl RustExplorationManager {
                         Some(proc_no_return)
                     }
                     Err(_) => {
-                        self.native_proc_stats.python_fallbacks += 1;
+                        self.profiling.native_proc_stats.python_fallbacks += 1;
                         None
                     }
                 }
@@ -776,7 +776,7 @@ impl RustExplorationManager {
 
         // Propagate lazy_solves to skip Z3 feasibility checks
         interp.lazy_solves = self.lazy_solves;
-        interp.set_profiling(self.profiling_enabled);
+        interp.set_profiling(self.profiling.profiling_enabled);
         // Propagate concretization strategy config
         interp.set_concretizer(self.concretizer_config.clone());
         // Propagate VEX optimization level settings
@@ -953,6 +953,6 @@ impl RustExplorationManager {
             }
         }
 
-        self.accumulated_stats.deferred_fork_count += deferred_forks.len() as u64;
+        self.profiling.accumulated_stats.deferred_fork_count += deferred_forks.len() as u64;
     }
 }
