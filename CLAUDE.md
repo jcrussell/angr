@@ -5,11 +5,38 @@
 This project uses **setuptools-rust** (not maturin) to build the Rust native extension.
 
 ### Prerequisites
-- Python virtualenv at `.venv/`
-- Rust toolchain (rustup) at `~/.cargo/bin/`
+- Python 3.10+ (3.12 verified)
+- Rust toolchain (rustup) at `~/.cargo/bin/` — pinned via `rust-toolchain.toml`
 - Z3 development headers — `apt install libz3-dev` on Debian/Ubuntu, `dnf install z3-devel` on Fedora, `brew install z3` on macOS. The PyPI `z3-solver` wheel ships `libz3.so` but **not** the C headers; `z3-sys` needs the headers to generate bindings.
+- `pkg-config` (used by `z3-sys` to locate the system Z3)
+- A `.venv/` virtualenv populated with the angr ecosystem deps (`claripy`, `pyvex`, `archinfo`, `cle`, etc.)
 
-### Build Commands
+### Bootstrap from a clean state
+
+If `.venv/` is missing, corrupted, or wiped (it has happened — see `tools/restore-venv.sh` and the `env-venv-corruption` bd memory), the recovery sequence is:
+
+```bash
+# Option A: restore from a recent tarball backup (fastest if available)
+#   Look in ~/repos/angr.tar.gz or similar; extract just the .venv subtree:
+#     cd /home/ubuntu/repos && tar -xzf angr.tar.gz angr/.venv
+#   Verify with: .venv/bin/python -c "import angr; print(angr.__file__)"
+
+# Option B: fresh install from scratch
+sudo apt install libz3-dev pkg-config rustup        # or distro equivalent
+rustup show                                          # picks up rust-toolchain.toml
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip setuptools setuptools-rust
+.venv/bin/pip install -e .                           # pulls deps into venv
+.venv/bin/pip install -e . --no-build-isolation --no-deps   # rebuild Rust .so
+
+# Verify
+.venv/bin/python -c "import angr; print(angr.__file__)"
+.venv/bin/python -m pytest tests/engines/test_rust_exploration.py --tb=short -q
+```
+
+**Caveat:** `pyproject.toml` pins `claripy==9.2.210.dev0` etc., but the `.dev0` versions don't exist on PyPI (PyPI jumps 9.2.209 → 9.2.211). Existing working venvs use `9.2.209` from cache and the editable install tolerates the version mismatch in practice. A fresh `pip install` with no cache may resolve to `9.2.213+` and fail the pin — in that case relax the pins or restore from tarball. See bd memory `env-venv-fully-wiped-2026-05-05` for the historical incident.
+
+### Build Commands (incremental)
 
 ```bash
 # Ensure Rust is in PATH
@@ -18,7 +45,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Activate virtualenv
 source .venv/bin/activate
 
-# Build and install (editable mode)
+# Rebuild Rust .so (editable mode, after changes in native/angr/src/)
 pip install -e . --no-build-isolation --no-deps
 ```
 
@@ -37,7 +64,7 @@ pip install -e . --no-build-isolation --no-deps
 ## Running Tests
 
 ```bash
-# Run RustExplorationManager tests (146/146 passing)
+# Run RustExplorationManager tests (332/332 passing as of 2026-05-08)
 python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 
 # Run benchmark regression tests (7 fast-tier benchmarks)
