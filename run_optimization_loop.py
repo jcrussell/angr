@@ -310,15 +310,26 @@ def detect_failure_mode(claude_json: Optional[dict],
     if not is_error:
         return "ok", None
 
-    # Build a haystack from subtype + errors[] for substring matching
+    # Build a haystack from subtype + errors[] + result for substring matching.
+    # The CLI puts monthly-limit messages in `result` (e.g. "You've hit your
+    # org's monthly usage limit") with subtype="success" + is_error=true, so
+    # the errors[] list is empty in that path.
     errors_list = claude_json.get("errors") or []
     errors_text = " ".join(str(e) for e in errors_list).lower()
-    haystack = f"{subtype} {errors_text}"
+    result_text = str(claude_json.get("result") or "").lower()
+    api_error_status = claude_json.get("api_error_status")
+    haystack = f"{subtype} {errors_text} {result_text}"
 
-    if "rate" in haystack or ("limit" in haystack and "budget" not in subtype):
-        return "rate_limit", _parse_reset_seconds(errors_text)
+    # Monthly usage limit comes back as api_error_status=429 with the text in
+    # `result`. Distinguish from burst rate-limit 429s, which are recoverable.
+    if "monthly" in haystack and "limit" in haystack:
+        return "budget_exhausted", None
     if subtype == "error_max_budget_usd" or "budget" in subtype:
         return "budget_exhausted", None
+    if api_error_status == 429:
+        return "rate_limit", _parse_reset_seconds(haystack)
+    if "rate" in haystack or ("limit" in haystack and "budget" not in subtype):
+        return "rate_limit", _parse_reset_seconds(haystack)
     if "auth" in haystack or "credential" in haystack:
         return "auth_error", None
     if "overload" in haystack:
@@ -326,6 +337,60 @@ def detect_failure_mode(claude_json: Optional[dict],
     if subtype.startswith("error_") or is_error:
         return "unknown_error", None
     return "ok", None
+
+
+def derive_exit_reason(session: dict) -> str:
+    """Granular outcome label for telemetry (alongside `mode`).
+
+    Distinguishes terminal vs recoverable 429s, OOM, timeout, dead-loop hangs,
+    and clean exits. Read from summary.jsonl to investigate loop behavior.
+    """
+    mode = session.get("mode", "unknown_error")
+    if mode == "ok":
+        return "ok"
+    if mode == "budget_exhausted":
+        return "budget_exhausted"
+    if mode == "rate_limit":
+        return "rate_limited"
+    if mode == "auth_error":
+        return "auth_error"
+    if mode == "model_overloaded":
+        return "model_overloaded"
+    if session.get("killed_by_oom"):
+        return "oom"
+    if session.get("killed_by_timeout"):
+        return "timeout"
+    return "unknown_error"
+
+
+_BEAD_ID_RE = re.compile(r"\bangr-[a-z0-9]+(?:\.\d+)?\b")
+
+
+def extract_bead_id(git_after: dict, git_before: dict) -> Optional[str]:
+    """Best-effort: pull the bead the session was working on.
+
+    Priority:
+    1. New HEAD commit message (only when commits were made this iteration).
+    2. `## Task: <bead_id>` line from .claude/loop-session.md (works even
+       without commits, since the prompt asks the agent to update it).
+    """
+    if git_before.get("head_sha") != git_after.get("head_sha"):
+        msg = git_after.get("head_msg") or ""
+        match = _BEAD_ID_RE.search(msg)
+        if match:
+            return match.group(0)
+
+    try:
+        text = SESSION_FILE.read_text(errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## Task:") or stripped.startswith("## Task "):
+            match = _BEAD_ID_RE.search(stripped)
+            if match:
+                return match.group(0)
+    return None
 
 
 def detect_oom(exit_code: int, stderr: str, scope_unit: Optional[str]) -> bool:
@@ -494,6 +559,7 @@ def run_claude_session(prompt: str, iteration: int, timeout: int,
         result["claude_output_tokens"] = usage.get("output_tokens") or claude_json.get("output_tokens")
         result["claude_num_turns"] = claude_json.get("num_turns")
         result["claude_subtype"] = claude_json.get("subtype")
+        result["claude_api_error_status"] = claude_json.get("api_error_status")
 
     return result
 
@@ -636,6 +702,8 @@ def log_iteration(iteration: int, git_before: dict, git_after: dict,
         "timestamp": ts,
         "duration_secs": session["duration_secs"],
         "prompt_type": prompt_type,
+        "bead_id": extract_bead_id(git_after, git_before),
+        "exit_reason": derive_exit_reason(session),
         "session": {
             "exit_code": session["exit_code"],
             "killed_by_oom": session["killed_by_oom"],
@@ -645,6 +713,7 @@ def log_iteration(iteration: int, git_before: dict, git_after: dict,
             "subtype": session.get("claude_subtype"),
             "cost_usd": session.get("claude_cost_usd"),
             "num_turns": session.get("claude_num_turns"),
+            "api_error_status": session.get("claude_api_error_status"),
         },
         "commits_made": git_before["head_sha"] != git_after["head_sha"],
         "git_head_before": git_before["head_sha"],

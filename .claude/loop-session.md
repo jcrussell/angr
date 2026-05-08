@@ -1,54 +1,39 @@
-# Loop session notes (2026-05-08, 149th loop session)
+# Loop session notes (2026-05-08, 150th loop session)
 
-## Task: angr-2q5k — LoadG symbolic-address fallback targeted test (closed)
+## Task: angr-zcvu — Loop telemetry: bead_id and granular exit_reason in summary.jsonl
 
-### Status: complete; closed.
+### Status: investigating → implementing
 
-### Summary
-Added two tests in `tests/engines/test_rust_exploration.py` that cover
-the LoadG → `resolve_loadg_load` → `fallback_load_symbolic_full` chain
-introduced by commit 0c90d4962.  Plain Load already had coverage via
-the `_cb_memory_load_symbolic_full` direct-invocation tests; LoadG was
-uncovered.
+### Goal
+Update run_optimization_loop.py so that:
+1. summary.jsonl entries include `bead_id` (when known) and `exit_reason`
+2. `api_error_status: 429` with "monthly usage limit" text → exit_reason='budget_exhausted' (terminal)
+3. Other 429s → exit_reason='rate_limited' (recoverable)
+4. Orchestrator aborts on budget_exhausted (this already exists; just need correct classification)
 
-### Tests added
-1. `test_loadg_symbolic_address_dispatches_through_resolve_loadg_load`
-   Hand-crafts an AMD64 IRSB JSON containing
-     - `tmp 0 = LDle:I64(Const(0x2000))`  (memory_load returns symbolic)
-     - `LoadG dst=tmp1 addr=tmp0 alt=Const(0) guard=Const(true)`
-   and runs it through `_RustExplorationManager` with custom
-   `PythonCallbacks`.  Asserts the LoadG dispatched: either
-   `memory_load_symbolic_full` fires (Strided/TooLarge/Failed branch)
-   OR `memory_load` fires for a non-0x2000 address (Single/Multiple
-   branch resolving the symbolic temp).  A regression to the old
-   `Unsupported` hard-error would fire neither.
+### Root cause of bug being fixed
+The Claude CLI returns:
+```json
+{"subtype":"success","is_error":true,"api_error_status":429,
+ "result":"You've hit your org's monthly usage limit",...}
+```
 
-2. `test_loadg_symbolic_full_callback_returned_value_flows_through`
-   Pins the symbolic-address AST that `fallback_load_symbolic_full`
-   hands the Python callback to a concrete address, stores a known
-   value there, and asserts the callback's return AST evaluates to
-   that value — locking down the return-path the LoadG fallback
-   relies on.
+`detect_failure_mode` currently only inspects `subtype` + `errors[]`. The
+monthly-limit text lives in `result` (not `errors`), and `subtype` is "success"
+not "error_*". So the function falls through to `unknown_error`, which means
+the orchestrator does exponential backoff (10→20→40→80 min) instead of
+aborting. Iters 29/30/31 in summary.jsonl are exactly this — three
+back-to-back monthly-limit 429s misclassified as `unknown_error`.
 
-### Verification
-- `tests/engines/test_rust_exploration.py`: 303/303 passed (was 301).
-- `cargo check --release`: clean.
+### Plan
+1. Update `detect_failure_mode` to also pull `result` and `api_error_status`
+   into the haystack. Add explicit branch: `api_error_status == 429`
+   AND ("monthly" in haystack) → `budget_exhausted`. Other `api_error_status
+   == 429` → `rate_limit`.
+2. Add `exit_reason` field to log entries (alongside `mode`, more granular).
+3. Add `bead_id` extraction: parse new HEAD commit message after session
+   for `angr-[a-z0-9]+` pattern (most reliable when commits made); fall
+   back to reading `.claude/loop-session.md` `## Task: <id>` line.
 
 ### Files
-- tests/engines/test_rust_exploration.py (+157 lines)
-
-### Commit
-b6db16134 test(rust_exploration): cover LoadG → fallback_load_symbolic_full — angr-2q5k
-
-### Notes & memories saved
-- `invariant-loadg-fallback-coverage`: hand-built IRSB JSON via the
-  `lift_block` callback is the cleanest way to test specific VEX
-  statement dispatch paths from Python.  Caveat: forcing a particular
-  ConcretizationResult shape (TooLarge / Failed) from outside is
-  finicky — fast-enum + stride detect can hijack the result to
-  Multiple.  Tests assert the dispatch *reached* resolve_loadg_load
-  rather than insisting on a specific sub-branch.
-- `avoid-arm-rust-engine-mgr-run`: ARM shellcode through the
-  high-level `RustExplorationManager.run()` silently drops states with
-  no callbacks fired.  Stick to AMD64 + hand-built IRSB JSON for
-  callback-coverage tests.
+- run_optimization_loop.py
