@@ -13,14 +13,18 @@
 //! Architecture note (amd64 syscall ABI):
 //! * args: rdi, rsi, rdx, r10, r8, r9
 //! * return: rax
-//! * `extract_procedure_args` (SystemV ABI: rdi, rsi, rdx, rcx, r8, r9)
-//!   matches for the first 3 args, which covers exit/exit_group.
+//! * The dispatcher uses `extract_syscall_args` (true syscall ABI), so
+//!   handlers see `r10` at index 3, not `rcx`. This matters for any
+//!   handler with ≥4 args (e.g. rt_sigaction).
 
+pub mod arch_prctl;
 pub mod brk;
 pub mod exit;
 pub mod mmap;
 pub mod mprotect;
 pub mod munmap;
+pub mod sigaction;
+pub mod sim_time;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -90,6 +94,16 @@ impl NativeSyscallRegistry {
         // amd64: mmap (9) — anonymous concrete-args fast path; falls back
         // to Python for symbolic / file-backed / collision cases.
         r.register("AMD64", 9, Arc::new(mmap::NativeMmapSyscall));
+        // amd64: rt_sigaction (13) — Python is essentially a no-op return 0
+        // (with -EINVAL for signum 33).
+        r.register("AMD64", 13, Arc::new(sigaction::NativeRtSigactionSyscall));
+        // amd64: gettimeofday (96) — writes fresh symbolic timeval; -1 on null.
+        r.register("AMD64", 96, Arc::new(sim_time::NativeGettimeofdaySyscall));
+        // amd64: arch_prctl (158) — fs_const/gs_const set/get.
+        r.register("AMD64", 158, Arc::new(arch_prctl::NativeArchPrctlSyscall));
+        // amd64: clock_gettime (228) — CLOCK_REALTIME-only; -1 on null;
+        // other clocks fall back to Python's SimProcedureError path.
+        r.register("AMD64", 228, Arc::new(sim_time::NativeClockGettimeSyscall));
         r
     }
 
@@ -151,6 +165,10 @@ mod tests {
         assert!(r.get("AMD64", 12).is_some(), "brk (12) should be registered");
         assert!(r.get("AMD64", 11).is_some(), "munmap (11) should be registered");
         assert!(r.get("AMD64", 9).is_some(), "mmap (9) should be registered");
+        assert!(r.get("AMD64", 13).is_some(), "rt_sigaction (13) should be registered");
+        assert!(r.get("AMD64", 96).is_some(), "gettimeofday (96) should be registered");
+        assert!(r.get("AMD64", 158).is_some(), "arch_prctl (158) should be registered");
+        assert!(r.get("AMD64", 228).is_some(), "clock_gettime (228) should be registered");
         assert!(r.get("AMD64", 0).is_none(), "read (0) is intentionally unregistered");
         assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");
     }
