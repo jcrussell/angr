@@ -3310,6 +3310,163 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected symbolic-address load bug"):
             mgr._cb_memory_load_symbolic_full(addr, 4)
 
+    # angr-2q5k: targeted coverage for LoadG with symbolic address.
+    # Commit 0c90d4962 added resolve_loadg_load (expressions.rs:546) which
+    # routes the three not-Single concretization shapes — Strided / TooLarge /
+    # Failed — through fallback_load_symbolic_full (mod.rs:929).  Plain Load
+    # tests already exist; LoadG was uncovered.
+    #
+    # The test below builds an IRSB by hand (LDle:I64 -> LoadG with
+    # always-true guard) and runs it through the low-level
+    # _RustExplorationManager.  The inner Load returns a fresh BVS via the
+    # memory_load callback, so the LoadG address is symbolic and the
+    # resolve_loadg_load dispatch must fire.
+
+    def test_loadg_symbolic_address_dispatches_through_resolve_loadg_load(self):
+        """A hand-built IRSB containing a LoadG with a symbolic address must
+        dispatch through `resolve_loadg_load` (interpreter_cb/expressions.rs:546).
+
+        The address comes from an inner `Iex_Load` whose `memory_load`
+        callback returns `(zeros, True, claripy_ast)` — Rust's bridge picks
+        up the AST and the LoadG sees a symbolic temp.  Whichever
+        ConcretizationResult shape the engine picks (Single / Multiple /
+        Strided / TooLarge / Failed) MUST result in either:
+
+          * `memory_load` firing for the resolved concrete address, OR
+          * `memory_load_symbolic_full` firing for the symbolic address.
+
+        Both paths route through `resolve_loadg_load`; failing to fire either
+        means the LoadG was dropped (the regression caught by 0c90d4962
+        before it returned `Unsupported`).
+        """
+        import json
+        import claripy
+
+        mgr = _RustExplorationManager("amd64")
+        callbacks = PythonCallbacks()
+
+        sym_addr = claripy.BVS("loadg_sym_addr", 64)
+        load_calls = []
+
+        def cb_load(addr, size):
+            load_calls.append((addr, size))
+            # The Load at 0x2000 returns the symbolic AST that becomes the
+            # LoadG's address.  Other reads (e.g. page prefetch) get zeros.
+            if addr == 0x2000 and size == 8:
+                return (b"\x00" * size, True, sym_addr)
+            return (b"\x00" * size, False, None)
+
+        callbacks.set_memory_load(cb_load)
+        callbacks.set_memory_store(lambda a, d: None)
+
+        full_calls = []
+
+        def cb_full(addr_ast, size):
+            full_calls.append((addr_ast, size))
+            return claripy.BVV(0xDEADBEEF, size * 8)
+
+        callbacks.set_memory_load_symbolic_full(cb_full)
+
+        # Hand-built IRSB:
+        #   tmp 0 (I64) = LDle:I64(Const(0x2000))   ; -> symbolic via cb_load
+        #   tmp 2 (I64) = Const(0)                   ; LoadG alt
+        #   tmp 3 (I1)  = Const(true)                ; LoadG always-true guard
+        #   LoadG dst=tmp1 addr=tmp0 alt=tmp2 guard=tmp3 cvt=Ident64 end=LE
+        irsb = {
+            "addr": 0x1000,
+            "arch": "AMD64",
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 0x1000, "len": 4, "delta": 0},
+                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                    "tag": "Iex_Load", "end": "Iend_LE", "ty": "Ity_I64",
+                    "addr": {"tag": "Iex_Const",
+                             "con": {"tag": "Ico_U64", "value": 0x2000}}}},
+                {"tag": "Ist_WrTmp", "tmp": 2, "data": {
+                    "tag": "Iex_Const",
+                    "con": {"tag": "Ico_U64", "value": 0}}},
+                {"tag": "Ist_WrTmp", "tmp": 3, "data": {
+                    "tag": "Iex_Const",
+                    "con": {"tag": "Ico_U1", "value": True}}},
+                {"tag": "Ist_LoadG",
+                 "dst": 1,
+                 "addr": {"tag": "Iex_RdTmp", "tmp": 0},
+                 "alt": {"tag": "Iex_RdTmp", "tmp": 2},
+                 "guard": {"tag": "Iex_RdTmp", "tmp": 3},
+                 "cvt": "ILGop_Ident64",
+                 "end": "Iend_LE"},
+            ],
+            "next": {"tag": "Iex_Const",
+                     "con": {"tag": "Ico_U64", "value": 0x1010}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": 184,  # AMD64 RIP register offset
+            "tyenv": {"types": ["Ity_I64", "Ity_I64", "Ity_I64", "Ity_I1"]},
+        }
+        irsb_json = json.dumps(irsb)
+
+        def cb_lift(addr):
+            return irsb_json if addr == 0x1000 else "{}"
+
+        callbacks.set_lift_block(cb_lift)
+        mgr.set_callbacks(callbacks)
+
+        state = RustSimState("amd64")
+        state.map_memory(0x1000, 0x1000, 7)  # IRSB region
+        state.pc = 0x1000
+        mgr.add_state("active", state)
+
+        mgr.run(2)
+
+        # The LoadG must have been dispatched through resolve_loadg_load.
+        # Either the Python full callback fires (Strided / TooLarge / Failed
+        # branch) or the concrete callback fires for a non-0x2000 address
+        # (Single / Multiple branch resolving the symbolic temp).
+        loadg_dispatched = (
+            len(full_calls) > 0
+            or any(addr != 0x2000 for addr, _ in load_calls)
+        )
+        assert loadg_dispatched, (
+            f"LoadG with symbolic address never reached resolve_loadg_load. "
+            f"memory_load_symbolic_full fired {len(full_calls)} times; "
+            f"memory_load fired {len(load_calls)} times: {load_calls}. "
+            f"Expected at least one cb_full call OR a cb_load call to a "
+            f"non-0x2000 address (the LoadG would resolve the symbolic "
+            f"temp and call back for the chosen concrete address)."
+        )
+
+    def test_loadg_symbolic_full_callback_returned_value_flows_through(self):
+        """When the LoadG fallback fires, the value the Python
+        `_cb_memory_load_symbolic_full` callback returns must flow back into
+        the LoadG dst temp via either the handle table or the claripy
+        bridge.  This test directly exercises the callback return-path used
+        by `fallback_load_symbolic_full` (interpreter_cb/mod.rs:947) by
+        invoking the manager-level callback the way Rust would.
+        """
+        import claripy
+        mgr, state = self._build_load_store_manager()
+        mgr._set_callback_state(state)
+
+        # Map a region and store a known value so the load returns it.
+        target = 0x4100
+        state.memory.map_region(target, 0x100, 7)
+        state.memory.store(target, claripy.BVV(0xCAFED00D, 32),
+                           endness=state.arch.memory_endness,
+                           inspect=False, disable_actions=True)
+
+        # Pin a symbolic address to `target` — the same shape the LoadG
+        # fallback feeds the callback (a symbolic AST that Python's
+        # concretization strategies can still resolve).
+        addr = claripy.BVS("loadg_full_addr", 64)
+        state.solver.add(addr == target)
+
+        result = mgr._cb_memory_load_symbolic_full(addr, 4)
+        assert result is not None, (
+            "memory_load_symbolic_full must return an AST when Python's "
+            "memory model can resolve the address; returning None would "
+            "force Rust to fabricate a fresh symbolic placeholder via the "
+            "sym_pyref_* fallback (interpreter_cb/mod.rs:972)."
+        )
+        assert state.solver.eval(result) == 0xCAFED00D
+
     def test_z3_solver_timeout_does_not_hang(self):
         """A tight Z3 timeout must bound `satisfiable()` wall-clock — even
         on a constraint set Z3 would otherwise grind on forever (factoring a
