@@ -1,47 +1,60 @@
-## Session log: 2026-05-08, 161st loop session
+## Session log: 2026-05-08, 162nd loop session
 
-### Task: angr-byev — Architecture support status matrix in CLAUDE.md (P1)
+### Tasks: angr-13ir + angr-j1nk (both closed) — CLAUDE.md docs additions
 
-**Outcome: closed.** Commit edeb2fb74 adds an "Architecture Support Matrix"
-section to CLAUDE.md with per-arch counts and Supported / Experimental /
-Skeleton labels.
+Two related docs tasks bundled because both touch CLAUDE.md and the second
+finished the first one's narrative arc (profiling -> debugging).
 
-### Findings
+### angr-13ir — Document profile_rust_bench.sh in CLAUDE.md (P3)
 
-Counted via grep on `tests/engines/test_rust_exploration.py` and file
-inspection of `native/angr/src/arch/`:
+**Outcome: closed.** Commit 247de1f0b adds a "Profiling Rust Benches"
+section to CLAUDE.md describing tests/benchmarks/profile_rust_bench.sh:
+auto-tool detection (cargo-flamegraph > perf > callgrind), --secs/--filter
+flags, output dir target/profile/<filter-or-all>/, tool prerequisites.
 
-| Arch        | Unit | Integration   | Benchmarks | Calling conv     | Status       |
-|-------------|------|---------------|------------|------------------|--------------|
-| AMD64       | ~110 | ~268 fauxware | 15/16      | SystemV + MS x64 | Supported    |
-| x86 32-bit  | 2    | 1 (Cdecl ret) | 1 (flareon2015_2) | Cdecl     | Experimental |
-| ARM         | 2    | 0             | 0          | ARMEABI          | Skeleton     |
-| ARM64       | 1    | 0             | 0          | AArch64          | Skeleton     |
-| MIPS32      | 4    | 0             | 0          | NONE (silent SystemV fallback) | Skeleton |
-| MIPS64      | 0    | 0             | 0          | NONE (silent SystemV fallback) | Skeleton |
+**Surprise finding (saved to bd memory invariant-profile-rust-bench-list-vs-criterion):**
+The script's `--list` output advertises group names like `rustbv_z3`,
+`symcontext_fork`, `symcontext_check_branch`, but the actual criterion
+benchmark_group / bench_function names in vex_engine.rs are
+`rustbv_build_z3_ast`, `symcontext` (group) / `fork_2constraints` (fn),
+`symcontext_check_branch_feasibility`. So `--filter rustbv_z3` matches
+nothing, and `--filter symcontext_fork` misses the symcontext group.
+Filed angr-k5mj (P3 bug) to sync names.
 
-### Surprising finding (saved to bd memory)
+The CLAUDE.md docs intentionally avoid republishing the misleading list —
+they tell users to run `--list` instead.
 
-`default_cc_for_arch` in `native/angr/src/arch/calling_conventions.rs:361`
-only matches amd64/x86/arm/arm64 — MIPS falls through the wildcard and
-gets `SystemVAMD64`, which uses x86_64 register offsets (RDI=72 etc.).
-Any MIPS SimProcedure arg extraction will read garbage. This is latent
-because no MIPS integration test runs through that path. Saved as
-`bd memory invariant-mips-no-calling-convention`.
+### angr-j1nk — ANGR_RUST_LOG env var + Debugging section (P3)
+
+**Outcome: closed.** Commit 1fa809945:
+- New section "Debugging Rust-side Logs" in CLAUDE.md
+- Code: `_apply_rust_log_env()` helper in rust_manager.py reads
+  `ANGR_RUST_LOG` once on first manager construction and calls
+  `set_rust_log_level()`
+- Verified end-to-end: `ANGR_RUST_LOG=debug` surfaces `[rust:DEBUG]`
+  z3::ast / z3::solver lines on stderr through fauxware
+
+**Key clarification (saved to bd memory invariant-rust-log-no-env-logger):**
+The engine uses a hand-rolled StderrLogger (engine.rs:1476-1516) via
+`log::set_logger` + `log::set_max_level` — NOT env_logger. Two consequences
+documented in CLAUDE.md:
+1. Standard `RUST_LOG` env var is **not** honored
+2. Per-module log filters are not supported, only a single global level
 
 ### Files changed
-- `CLAUDE.md` — added Architecture Support Matrix section
-- `.claude/projects/-home-ubuntu-repos-angr/memory/project_core_goal.md` —
-  qualified the multi-arch claim, refreshed test-suite section
+- `CLAUDE.md` — added "Profiling Rust Benches" + "Debugging Rust-side Logs"
+- `angr/exploration/rust_manager.py` — `_apply_rust_log_env()` and call
+  site in `RustExplorationManager.__init__`
 
 ### bd memories saved
-- `invariant-mips-no-calling-convention` — MIPS CC fallback bug
-- `arch-support-matrix-2026-05-08` — snapshot of per-arch coverage
+- `invariant-profile-rust-bench-list-vs-criterion` — script --list ≠ actual
+  criterion ids; filter prefixes that work vs. don't
+- `invariant-rust-log-no-env-logger` — engine uses custom StderrLogger,
+  RUST_LOG silently ignored, ANGR_RUST_LOG is the one to use
 
-### Followups
-None opened. Possible future beads if anyone wants to promote an arch:
-- Add MIPS32 calling convention (MIPSO32) — required before any MIPS
-  binary integration test will work correctly
-- Add an x86 pytest integration test using flareon2015_2 or similar
-  (currently the only end-to-end x86 coverage is the benchmark, not pytest)
-- Add ARM/ARM64 integration tests (would require small Linux binaries)
+### Followups filed
+- `angr-k5mj` (P3 bug) — Sync profile_rust_bench.sh --list with actual
+  criterion group names in vex_engine.rs
+
+### Tests
+332/332 passing on tests/engines/test_rust_exploration.py.
