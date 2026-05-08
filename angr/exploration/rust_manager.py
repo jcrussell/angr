@@ -100,6 +100,30 @@ def set_rust_log_level(level: str = "info") -> None:
     _set_level(level)
 
 
+_rust_log_env_applied = False
+
+def _apply_rust_log_env() -> None:
+    """Honor ANGR_RUST_LOG on first manager construction.
+
+    Set ANGR_RUST_LOG=debug (or error/warn/info/trace/off) to surface
+    Rust-side log::debug!/info! output. Applies once per process.
+    The Rust engine uses a custom StderrLogger plus log::set_max_level,
+    not env_logger, so the standard RUST_LOG env var is *not* honored
+    and per-module filters are not supported.
+    """
+    global _rust_log_env_applied
+    if _rust_log_env_applied:
+        return
+    _rust_log_env_applied = True
+    level = os.environ.get("ANGR_RUST_LOG")
+    if not level:
+        return
+    try:
+        set_rust_log_level(level)
+    except Exception as e:  # noqa: BLE001 — never fail manager construction
+        l.debug("Failed to set Rust log level from ANGR_RUST_LOG=%r: %s", level, e)
+
+
 from angr.exploration.rust_identity import SymbolicIdentityTracker, CallbackMemoryTracker
 
 
@@ -477,6 +501,7 @@ class RustExplorationManager(
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
+        _apply_rust_log_env()
 
         if not RUST_EXPLORATION_AVAILABLE:
             raise ImportError(

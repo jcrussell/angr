@@ -110,6 +110,39 @@ Tool prerequisites:
 If `Z3_SYS_Z3_HEADER` is unset and the venv's `z3/include/z3.h` is missing,
 the script falls back to `/usr/include/z3.h` so `bindgen` does not fail.
 
+## Debugging Rust-side Logs
+
+The Rust engine emits `log::debug!` / `log::info!` / etc. through a custom
+`StderrLogger` (defined at `native/angr/src/engine.rs:1476`). By default the
+log level is unset and nothing is printed.
+
+Two ways to turn it on:
+
+```python
+# From Python, programmatically
+from angr.exploration.rust_manager import set_rust_log_level
+set_rust_log_level("debug")    # or "error" / "warn" / "info" / "trace" / "off"
+
+mgr = angr.exploration.RustExplorationManager(proj, [state])
+mgr.run(max_steps=100)
+# stderr will carry lines like:  [rust:DEBUG] angr::exploration: ...
+```
+
+```bash
+# From the shell — applied on first RustExplorationManager construction
+ANGR_RUST_LOG=debug python tests/benchmarks/run_single.py fauxware --engine rust
+```
+
+Caveats:
+- The standard `RUST_LOG` env var is **not** honored. The engine uses
+  `log::set_max_level` plus a hand-rolled stderr logger, not `env_logger`.
+- Per-module filters (e.g. `RUST_LOG=angr::stepping=debug`) are not
+  supported — only a single global level.
+- `ANGR_RUST_LOG` is read once per process by `_apply_rust_log_env()`
+  (`angr/exploration/rust_manager.py`); changing it after the first
+  manager is constructed has no effect — call `set_rust_log_level()`
+  explicitly instead.
+
 ## Key Files
 
 - **Build config**: `pyproject.toml`, `native/angr/Cargo.toml`
