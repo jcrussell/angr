@@ -126,6 +126,41 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 - **Shared Z3 context**: Python and Rust share Z3 context for AST passthrough
 - **Feature flag**: `use_rust_engine=True` on `proj.factory.simulation_manager()`
 
+## Architecture Support Matrix
+
+Only AMD64 is exercised end-to-end. Other archs have register/state plumbing
+and (mostly) calling-convention definitions, but no binary-driven integration
+tests and no benchmarks. Treat them as experimental until that changes.
+
+| Arch        | Unit tests | Integration tests | Benchmarks | Calling conv      | Status       |
+|-------------|------------|-------------------|------------|-------------------|--------------|
+| AMD64       | ~110+      | ~268 (fauxware)   | 15/16      | SystemV, MS x64   | Supported    |
+| x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
+| ARM (32-bit)| 2          | 0                 | 0          | ARMEABI           | Skeleton     |
+| ARM64       | 1          | 0                 | 0          | AArch64           | Skeleton     |
+| MIPS32      | 4          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
+| MIPS64      | 0          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
+
+**What "Skeleton" means:** `RustSimState("arm")` etc. constructs successfully,
+register reads/writes round-trip, and `fork()` preserves isolation, but no
+test runs VEX through the interpreter on a real binary for these archs and
+no calling convention is actually exercised. The Cdecl x86 return-register
+bug (commit 5329d8222) was latent for months precisely because no end-to-end
+x86 test ran — assume the same risk for ARM/ARM64/MIPS until coverage lands.
+
+**What's wired up but unverified:**
+- Register offsets for all six arches in `native/angr/src/arch/*.rs`
+- Endianness flag (MIPS32 BE smoke-tested; ARM/ARM64/MIPS64 BE untested)
+- ARMEABI / AArch64 calling conventions defined in `calling_conventions.rs`
+- MIPS has **no** calling convention — `default_cc_for_arch("mips32")`
+  falls through to `SystemVAMD64`, which uses x86_64 register offsets and
+  will silently misbehave on any SimProcedure that takes args.
+
+To promote an arch from Skeleton → Experimental: add at least one
+integration test that loads a real binary, runs `mgr.run(...)`, and
+verifies a found-state result. To promote Experimental → Supported:
+add a benchmark and ensure it stays green in regression runs.
+
 ## Rust Symbolic Execution
 
 ```python
