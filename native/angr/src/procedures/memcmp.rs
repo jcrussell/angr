@@ -10,43 +10,25 @@
 //! - Symbolic bytes produce a 32-bit ITE chain via `compare_bytes` shared
 //!   with strcmp/strncmp (with stop_at_null=false).
 
-use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use super::strcmp::{compare_bytes, MAX_STRCMP_LEN};
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
+use super::ProcedureError;
 
-/// Native memcmp implementation.
-///
-/// ```c
-/// int memcmp(const void *s1, const void *s2, size_t n);
-/// ```
-///
-/// Returns:
-/// - < 0 if s1 < s2
-/// - 0 if s1 == s2
-/// - > 0 if s1 > s2
-pub struct NativeMemcmp;
-
-impl NativeSimProcedure for NativeMemcmp {
-    fn name(&self) -> &'static str { "memcmp" }
-    fn num_args(&self) -> usize { 3 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s1_addr = extract_concrete_arg(&args[0], "s1")?;
-        let s2_addr = extract_concrete_arg(&args[1], "s2")?;
-        let n = extract_concrete_arg(&args[2], "n")?;
-
+crate::declare_proc! {
+    /// Native memcmp: `int memcmp(const void *s1, const void *s2, size_t n)`.
+    ///
+    /// Returns < 0, 0, or > 0 per byte-wise comparison.
+    name = "memcmp",
+    struct = NativeMemcmp,
+    args = [s1: concrete, s2: concrete, n: concrete],
+    call |state| {
         if n == 0 {
             return Ok(Some(RustBV::zero(32)));
         }
         if n > MAX_STRCMP_LEN as u64 {
             return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
         }
-        compare_bytes(state, s1_addr, s2_addr, n,
+        compare_bytes(state, s1, s2, n,
                       /*stop_at_null=*/false, /*case_insensitive=*/false)
     }
 }
@@ -55,6 +37,8 @@ impl NativeSimProcedure for NativeMemcmp {
 mod tests {
     use super::*;
     use crate::memory::Permission;
+    use crate::procedures::NativeSimProcedure;
+    use crate::state::RustSimState;
 
     #[test]
     fn test_memcmp_equal() {

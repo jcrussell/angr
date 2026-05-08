@@ -14,7 +14,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
+use super::ProcedureError;
 
 const MAX_DIGITS: usize = 64;
 
@@ -225,25 +225,16 @@ fn build_symbolic_accumulator(
     accum
 }
 
-/// Common engine for atoi/atol/strtol/strtoul. `forced_base` is `Some(10)`
-/// for atoi/atol (which take no base argument) and `None` for strtol/strtoul.
+/// Common engine for atoi/atol/strtol/strtoul.
+///
+/// `endptr` is `Some(0)` for an explicit NULL pointer and `None` for callers
+/// that take no `endptr` argument (atoi/atol).
 fn run_strtol(
     state: &mut RustSimState,
-    args: &[RustBV],
-    forced_base: Option<i64>,
-    has_endptr: bool,
+    addr: u64,
+    endptr: Option<u64>,
+    base_arg: i64,
 ) -> Result<Option<RustBV>, ProcedureError> {
-    let addr = extract_concrete_arg(&args[0], "nptr")?;
-    let endptr = if has_endptr {
-        Some(extract_concrete_arg(&args[1], "endptr")?)
-    } else {
-        None
-    };
-    let base_arg = match forced_base {
-        Some(b) => b,
-        None => extract_concrete_arg(&args[2], "base")? as i64,
-    };
-
     let bytes = read_bytes_until_null(state, addr, MAX_DIGITS)?;
     let bits = state.arch().bits();
 
@@ -313,84 +304,44 @@ fn run_strtol(
     Ok(Some(result))
 }
 
-/// strtol: string to long integer.
-pub struct NativeStrtol;
-
-impl NativeSimProcedure for NativeStrtol {
-    fn name(&self) -> &'static str {
-        "strtol"
-    }
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        run_strtol(state, args, None, true)
+crate::declare_proc! {
+    /// Native strtol: `long strtol(const char *nptr, char **endptr, int base)`.
+    name = "strtol",
+    struct = NativeStrtol,
+    args = [nptr: concrete, endptr: concrete, base: concrete],
+    call |state| {
+        run_strtol(state, nptr, Some(endptr), base as i64)
     }
 }
 
-/// strtoul: string to unsigned long.
-pub struct NativeStrtoul;
-
-impl NativeSimProcedure for NativeStrtoul {
-    fn name(&self) -> &'static str {
-        "strtoul"
-    }
-    fn num_args(&self) -> usize {
-        3
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        // Same implementation — unsigned semantics handled by bit interpretation
-        run_strtol(state, args, None, true)
+crate::declare_proc! {
+    /// Native strtoul: same impl as strtol; unsigned semantics fall out of bit
+    /// interpretation.
+    name = "strtoul",
+    struct = NativeStrtoul,
+    args = [nptr: concrete, endptr: concrete, base: concrete],
+    call |state| {
+        run_strtol(state, nptr, Some(endptr), base as i64)
     }
 }
 
-/// atoi: string to integer (base 10).
-pub struct NativeAtoi;
-
-impl NativeSimProcedure for NativeAtoi {
-    fn name(&self) -> &'static str {
-        "atoi"
-    }
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        run_strtol(state, args, Some(10), false)
+crate::declare_proc! {
+    /// Native atoi: `int atoi(const char *nptr)` (base 10, no endptr).
+    name = "atoi",
+    struct = NativeAtoi,
+    args = [nptr: concrete],
+    call |state| {
+        run_strtol(state, nptr, None, 10)
     }
 }
 
-/// atol: string to long (base 10).
-pub struct NativeAtol;
-
-impl NativeSimProcedure for NativeAtol {
-    fn name(&self) -> &'static str {
-        "atol"
-    }
-    fn num_args(&self) -> usize {
-        1
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        run_strtol(state, args, Some(10), false)
+crate::declare_proc! {
+    /// Native atol: `long atol(const char *nptr)` (base 10, no endptr).
+    name = "atol",
+    struct = NativeAtol,
+    args = [nptr: concrete],
+    call |state| {
+        run_strtol(state, nptr, None, 10)
     }
 }
 
@@ -398,6 +349,7 @@ impl NativeSimProcedure for NativeAtol {
 mod tests {
     use super::*;
     use crate::memory::Permission;
+    use crate::procedures::NativeSimProcedure;
 
     fn setup_string(state: &mut RustSimState, addr: u64, s: &[u8]) {
         let mut data = s.to_vec();

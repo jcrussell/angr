@@ -19,7 +19,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
+use super::ProcedureError;
 
 /// Maximum string length before falling back to Python.
 pub(super) const MAX_STRCMP_LEN: usize = 4096;
@@ -142,80 +142,40 @@ pub(super) fn compare_bytes(
     Ok(Some(build_diff_chain(&pairs, stop_at_null, case_insensitive, &ctx)))
 }
 
-/// Native strcmp implementation.
-///
-/// ```c
-/// int strcmp(const char *s1, const char *s2);
-/// ```
-///
-/// Returns:
-/// - < 0 if s1 < s2
-/// - 0 if s1 == s2
-/// - > 0 if s1 > s2
-pub struct NativeStrcmp;
-
-impl NativeSimProcedure for NativeStrcmp {
-    fn name(&self) -> &'static str { "strcmp" }
-    fn num_args(&self) -> usize { 2 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s1_addr = extract_concrete_arg(&args[0], "s1")?;
-        let s2_addr = extract_concrete_arg(&args[1], "s2")?;
-        compare_bytes(state, s1_addr, s2_addr, MAX_STRCMP_LEN as u64,
+crate::declare_proc! {
+    /// Native strcmp: `int strcmp(const char *s1, const char *s2)`.
+    ///
+    /// Returns < 0, 0, or > 0 per lexicographic comparison.
+    name = "strcmp",
+    struct = NativeStrcmp,
+    args = [s1: concrete, s2: concrete],
+    call |state| {
+        compare_bytes(state, s1, s2, MAX_STRCMP_LEN as u64,
                       /*stop_at_null=*/true, /*case_insensitive=*/false)
     }
 }
 
-/// Native strncmp implementation.
-///
-/// ```c
-/// int strncmp(const char *s1, const char *s2, size_t n);
-/// ```
-///
-/// Like strcmp, but compares at most n characters.
-pub struct NativeStrncmp;
-
-impl NativeSimProcedure for NativeStrncmp {
-    fn name(&self) -> &'static str { "strncmp" }
-    fn num_args(&self) -> usize { 3 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s1_addr = extract_concrete_arg(&args[0], "s1")?;
-        let s2_addr = extract_concrete_arg(&args[1], "s2")?;
-        let n = extract_concrete_arg(&args[2], "n")?;
+crate::declare_proc! {
+    /// Native strncmp: `int strncmp(const char *s1, const char *s2, size_t n)`.
+    ///
+    /// Like strcmp, but compares at most `n` characters.
+    name = "strncmp",
+    struct = NativeStrncmp,
+    args = [s1: concrete, s2: concrete, n: concrete],
+    call |state| {
         let max_len = n.min(MAX_STRCMP_LEN as u64);
-        compare_bytes(state, s1_addr, s2_addr, max_len,
+        compare_bytes(state, s1, s2, max_len,
                       /*stop_at_null=*/true, /*case_insensitive=*/false)
     }
 }
 
-/// Native strcasecmp implementation (case-insensitive strcmp).
-///
-/// ```c
-/// int strcasecmp(const char *s1, const char *s2);
-/// ```
-pub struct NativeStrcasecmp;
-
-impl NativeSimProcedure for NativeStrcasecmp {
-    fn name(&self) -> &'static str { "strcasecmp" }
-    fn num_args(&self) -> usize { 2 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let s1_addr = extract_concrete_arg(&args[0], "s1")?;
-        let s2_addr = extract_concrete_arg(&args[1], "s2")?;
-        compare_bytes(state, s1_addr, s2_addr, MAX_STRCMP_LEN as u64,
+crate::declare_proc! {
+    /// Native strcasecmp (case-insensitive strcmp).
+    name = "strcasecmp",
+    struct = NativeStrcasecmp,
+    args = [s1: concrete, s2: concrete],
+    call |state| {
+        compare_bytes(state, s1, s2, MAX_STRCMP_LEN as u64,
                       /*stop_at_null=*/true, /*case_insensitive=*/true)
     }
 }
@@ -224,6 +184,7 @@ impl NativeSimProcedure for NativeStrcasecmp {
 mod tests {
     use super::*;
     use crate::memory::Permission;
+    use crate::procedures::NativeSimProcedure;
 
     #[test]
     fn test_strcmp_equal() {

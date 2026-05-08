@@ -18,7 +18,7 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
+use super::ProcedureError;
 
 /// Maximum string length before falling back to Python.
 const MAX_STRLEN: usize = 4096;
@@ -95,54 +95,30 @@ fn scan_for_null(
     Ok(Some(build_strlen_chain(&bytes, arch_bits, max_scan, &ctx)))
 }
 
-/// Native strlen implementation.
-///
-/// ```c
-/// size_t strlen(const char *s);
-/// ```
-///
-/// Returns the number of bytes before the first null byte.
-pub struct NativeStrlen;
-
-impl NativeSimProcedure for NativeStrlen {
-    fn name(&self) -> &'static str { "strlen" }
-    fn num_args(&self) -> usize { 1 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = extract_concrete_arg(&args[0], "addr")?;
+crate::declare_proc! {
+    /// Native strlen: `size_t strlen(const char *s)`.
+    ///
+    /// Returns the number of bytes before the first null byte.
+    name = "strlen",
+    struct = NativeStrlen,
+    args = [addr: concrete],
+    call |state| {
         scan_for_null(state, addr, MAX_STRLEN as u64)
     }
 }
 
-/// Native strnlen implementation.
-///
-/// ```c
-/// size_t strnlen(const char *s, size_t maxlen);
-/// ```
-///
-/// Returns the lesser of the string length and maxlen.
-pub struct NativeStrnlen;
-
-impl NativeSimProcedure for NativeStrnlen {
-    fn name(&self) -> &'static str { "strnlen" }
-    fn num_args(&self) -> usize { 2 }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let addr = extract_concrete_arg(&args[0], "s")?;
-        let maxlen = extract_concrete_arg(&args[1], "maxlen")?;
-
+crate::declare_proc! {
+    /// Native strnlen: `size_t strnlen(const char *s, size_t maxlen)`.
+    ///
+    /// Returns the lesser of the string length and maxlen.
+    name = "strnlen",
+    struct = NativeStrnlen,
+    args = [s: concrete, maxlen: concrete],
+    call |state| {
         if maxlen > MAX_STRLEN as u64 {
             return Err(ProcedureError::MaxIterations(maxlen as usize));
         }
-        scan_for_null(state, addr, maxlen)
+        scan_for_null(state, s, maxlen)
     }
 }
 
@@ -150,6 +126,7 @@ impl NativeSimProcedure for NativeStrnlen {
 mod tests {
     use super::*;
     use crate::memory::Permission;
+    use crate::procedures::NativeSimProcedure;
 
     #[test]
     fn test_strlen_basic() {

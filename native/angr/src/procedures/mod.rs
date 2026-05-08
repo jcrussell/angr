@@ -17,6 +17,9 @@
 //! - Direct memory access without serialization
 //! - Keeping state entirely in Rust
 
+#[macro_use]
+mod macros;
+
 pub mod strlen;
 pub mod memcpy;
 pub mod memset;

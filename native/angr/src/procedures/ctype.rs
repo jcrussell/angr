@@ -10,11 +10,11 @@
 
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::{NativeSimProcedure, ProcedureError};
+use super::ProcedureError;
 
 /// Truncate an argument to its low 8 bits, matching the concrete `as u8` path.
-fn arg_byte(args: &[RustBV], ctx: &SymContext) -> RustBV {
-    args[0].extract(7, 0, ctx)
+fn arg_byte(arg: &RustBV, ctx: &SymContext) -> RustBV {
+    arg.extract(7, 0, ctx)
 }
 
 /// Build `byte >= lo && byte <= hi` as a 1-bit BV.
@@ -33,13 +33,13 @@ fn lift_predicate(state: &RustSimState, pred: RustBV, ctx: &SymContext) -> RustB
 /// tolower/toupper share the same pattern: if byte is in [lo, hi], shift by `delta`.
 fn case_shift(
     state: &mut RustSimState,
-    args: &[RustBV],
+    arg: &RustBV,
     lo: u8,
     hi: u8,
     delta: i8,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let bits = state.arch().bits();
-    if let Some(c) = args[0].as_u64() {
+    if let Some(c) = arg.as_u64() {
         let b = c as u8;
         let result = if b >= lo && b <= hi {
             ((b as i16) + delta as i16) as u8
@@ -49,7 +49,7 @@ fn case_shift(
         return Ok(Some(RustBV::concrete(result as u128, bits)));
     }
     let ctx = state.solver().borrow();
-    let byte = arg_byte(args, &ctx);
+    let byte = arg_byte(arg, &ctx);
     let in_range = byte_in_range(&byte, lo, hi, &ctx);
     let delta_bv = RustBV::concrete(delta as u8 as u128, 8);
     let shifted = byte.add(&delta_bv, &ctx);
@@ -60,19 +60,19 @@ fn case_shift(
 /// Build a symbolic ctype predicate from a list of inclusive ranges.
 fn ranges_predicate(
     state: &mut RustSimState,
-    args: &[RustBV],
+    arg: &RustBV,
     ranges: &[(u8, u8)],
     concrete_check: fn(u8) -> bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let bits = state.arch().bits();
-    if let Some(c) = args[0].as_u64() {
+    if let Some(c) = arg.as_u64() {
         return Ok(Some(RustBV::concrete(
             if concrete_check(c as u8) { 1 } else { 0 },
             bits,
         )));
     }
     let ctx = state.solver().borrow();
-    let byte = arg_byte(args, &ctx);
+    let byte = arg_byte(arg, &ctx);
     let mut pred: Option<RustBV> = None;
     for &(lo, hi) in ranges {
         let r = byte_in_range(&byte, lo, hi, &ctx);
@@ -88,19 +88,19 @@ fn ranges_predicate(
 /// Build a symbolic ctype predicate from an explicit set of bytes.
 fn set_predicate(
     state: &mut RustSimState,
-    args: &[RustBV],
+    arg: &RustBV,
     members: &[u8],
     concrete_check: fn(u8) -> bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let bits = state.arch().bits();
-    if let Some(c) = args[0].as_u64() {
+    if let Some(c) = arg.as_u64() {
         return Ok(Some(RustBV::concrete(
             if concrete_check(c as u8) { 1 } else { 0 },
             bits,
         )));
     }
     let ctx = state.solver().borrow();
-    let byte = arg_byte(args, &ctx);
+    let byte = arg_byte(arg, &ctx);
     let mut pred: Option<RustBV> = None;
     for &m in members {
         let m_bv = RustBV::concrete(m as u128, 8);
@@ -114,104 +114,113 @@ fn set_predicate(
     Ok(Some(lift_predicate(state, pred, &ctx)))
 }
 
-pub struct NativeIsDigit;
-impl NativeSimProcedure for NativeIsDigit {
-    fn name(&self) -> &'static str { "isdigit" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        ranges_predicate(state, args, &[(b'0', b'9')], |c| c.is_ascii_digit())
+crate::declare_proc! {
+    /// `int isdigit(int c)` — returns nonzero if `c` is an ASCII digit.
+    name = "isdigit",
+    struct = NativeIsDigit,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(b'0', b'9')], |c| c.is_ascii_digit())
     }
 }
 
-pub struct NativeIsAlpha;
-impl NativeSimProcedure for NativeIsAlpha {
-    fn name(&self) -> &'static str { "isalpha" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        ranges_predicate(state, args, &[(b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphabetic())
+crate::declare_proc! {
+    /// `int isalpha(int c)`.
+    name = "isalpha",
+    struct = NativeIsAlpha,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphabetic())
     }
 }
 
-pub struct NativeIsSpace;
-impl NativeSimProcedure for NativeIsSpace {
-    fn name(&self) -> &'static str { "isspace" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        // ASCII whitespace per is_ascii_whitespace: ' ', '\t', '\n', '\x0c', '\r'.
-        // Note: matches Rust's definition (no '\x0b'); kept consistent with the
-        // pre-existing concrete path so symbolic and concrete agree.
-        set_predicate(state, args, &[b' ', b'\t', b'\n', 0x0c, b'\r'], |c| c.is_ascii_whitespace())
+crate::declare_proc! {
+    /// `int isspace(int c)`.
+    /// ASCII whitespace per is_ascii_whitespace: ' ', '\t', '\n', '\x0c', '\r'.
+    /// (No '\x0b' — matches Rust's definition; kept consistent with the
+    /// pre-existing concrete path so symbolic and concrete agree.)
+    name = "isspace",
+    struct = NativeIsSpace,
+    args = [c: bv],
+    call |state| {
+        set_predicate(state, &c, &[b' ', b'\t', b'\n', 0x0c, b'\r'], |c| c.is_ascii_whitespace())
     }
 }
 
-pub struct NativeIsAlnum;
-impl NativeSimProcedure for NativeIsAlnum {
-    fn name(&self) -> &'static str { "isalnum" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        ranges_predicate(state, args, &[(b'0', b'9'), (b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphanumeric())
+crate::declare_proc! {
+    /// `int isalnum(int c)`.
+    name = "isalnum",
+    struct = NativeIsAlnum,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphanumeric())
     }
 }
 
-pub struct NativeIsUpper;
-impl NativeSimProcedure for NativeIsUpper {
-    fn name(&self) -> &'static str { "isupper" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        ranges_predicate(state, args, &[(b'A', b'Z')], |c| c.is_ascii_uppercase())
+crate::declare_proc! {
+    /// `int isupper(int c)`.
+    name = "isupper",
+    struct = NativeIsUpper,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(b'A', b'Z')], |c| c.is_ascii_uppercase())
     }
 }
 
-pub struct NativeIsLower;
-impl NativeSimProcedure for NativeIsLower {
-    fn name(&self) -> &'static str { "islower" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        ranges_predicate(state, args, &[(b'a', b'z')], |c| c.is_ascii_lowercase())
+crate::declare_proc! {
+    /// `int islower(int c)`.
+    name = "islower",
+    struct = NativeIsLower,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(b'a', b'z')], |c| c.is_ascii_lowercase())
     }
 }
 
-pub struct NativeIsXdigit;
-impl NativeSimProcedure for NativeIsXdigit {
-    fn name(&self) -> &'static str { "isxdigit" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        ranges_predicate(state, args, &[(b'0', b'9'), (b'A', b'F'), (b'a', b'f')], |c| c.is_ascii_hexdigit())
+crate::declare_proc! {
+    /// `int isxdigit(int c)`.
+    name = "isxdigit",
+    struct = NativeIsXdigit,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'F'), (b'a', b'f')], |c| c.is_ascii_hexdigit())
     }
 }
 
-pub struct NativeIsPrint;
-impl NativeSimProcedure for NativeIsPrint {
-    fn name(&self) -> &'static str { "isprint" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        ranges_predicate(state, args, &[(0x20, 0x7e)], |c| (0x20..=0x7e).contains(&c))
+crate::declare_proc! {
+    /// `int isprint(int c)`.
+    name = "isprint",
+    struct = NativeIsPrint,
+    args = [c: bv],
+    call |state| {
+        ranges_predicate(state, &c, &[(0x20, 0x7e)], |c| (0x20..=0x7e).contains(&c))
     }
 }
 
-/// tolower: convert uppercase to lowercase.
-pub struct NativeToLower;
-impl NativeSimProcedure for NativeToLower {
-    fn name(&self) -> &'static str { "tolower" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        case_shift(state, args, b'A', b'Z', 32)
+crate::declare_proc! {
+    /// `int tolower(int c)` — convert uppercase to lowercase.
+    name = "tolower",
+    struct = NativeToLower,
+    args = [c: bv],
+    call |state| {
+        case_shift(state, &c, b'A', b'Z', 32)
     }
 }
 
-/// toupper: convert lowercase to uppercase.
-pub struct NativeToUpper;
-impl NativeSimProcedure for NativeToUpper {
-    fn name(&self) -> &'static str { "toupper" }
-    fn num_args(&self) -> usize { 1 }
-    fn call(&self, state: &mut RustSimState, args: &[RustBV]) -> Result<Option<RustBV>, ProcedureError> {
-        case_shift(state, args, b'a', b'z', -32)
+crate::declare_proc! {
+    /// `int toupper(int c)` — convert lowercase to uppercase.
+    name = "toupper",
+    struct = NativeToUpper,
+    args = [c: bv],
+    call |state| {
+        case_shift(state, &c, b'a', b'z', -32)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::procedures::NativeSimProcedure;
 
     fn make_state() -> RustSimState {
         RustSimState::new("amd64").unwrap()
