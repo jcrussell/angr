@@ -4582,5 +4582,252 @@ class TestVexOperationCoverage:
         assert ctx.eval(x) == 0xDEADBEEFCAFEBABE
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestSymbolicLibcProcedures:
+    """Integration tests for symbolic libc SimProcedures via RustExplorationManager.
+
+    Native Rust unit tests in `native/angr/src/procedures/*.rs` exercise each
+    procedure directly on a `RustSimState`. These Python-level tests cover the
+    surrounding integration path that the Rust tests do not: claripy↔Z3
+    bridging, ITE-chain construction across the FFI boundary, callback
+    dispatch + name-matching from `proj._sim_procedures`, Z3 timeout, and
+    final rax export back to the Python `SimState`.
+
+    Each test hooks fauxware's `.fini` area (a mapped-but-unused address) with
+    a Python angr SimProcedure, sets up registers + memory with symbolic
+    input, runs one step on the Rust manager, and verifies rax constraints.
+
+    The hook address is intentionally inside fauxware's loaded segment so the
+    Rust manager's `_run_python_init_if_needed` short-circuits — otherwise an
+    out-of-binary PC triggers Python init to main and the libc procedure
+    never runs.
+    """
+
+    HOOK_ADDR = 0x4008c0  # in fauxware's mapped .fini area, no normal exec
+    RET_ADDR = 0x4008b0   # mapped, used as bogus ret target after the hook
+    BUF_ADDR = 0x601100   # past .bss, lazy-mapped via filler mixin
+
+    def _make_state(self, proj, sim_proc):
+        import claripy
+        proj.hook(self.HOOK_ADDR, sim_proc, replace=True)
+        state = proj.factory.blank_state(
+            addr=self.HOOK_ADDR,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        state.memory.store(state.regs.rsp, claripy.BVV(self.RET_ADDR, 64),
+                           endness='Iend_LE')
+        return state
+
+    def _run_one_step(self, proj, state):
+        from angr.exploration import RustExplorationManager
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=1)
+        states = mgr.active + mgr.deadended + mgr.errored
+        assert len(states) == 1, (
+            f"expected exactly one post-call state, got {len(states)} "
+            f"(stash counts: {mgr.stash_counts()})"
+        )
+        return states[0]
+
+    def test_strlen_symbolic_constrained_min_max(self, fauxware_project):
+        """strlen on a 5-byte symbolic buffer (each byte constrained non-null,
+        terminator at offset 5) must produce min=max=5."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strlen']())
+            sym = claripy.BVS("strlen_input", 8 * 5)
+            state.memory.store(self.BUF_ADDR, sym)
+            state.memory.store(self.BUF_ADDR + 5, claripy.BVV(0, 8))
+            for i in range(5):
+                state.solver.add(sym.get_byte(i) != 0)
+            state.regs.rdi = self.BUF_ADDR
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 5
+            assert s.solver.max(s.regs.rax) == 5
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strcmp_symbolic_constrained_equal(self, fauxware_project):
+        """strcmp(s1, s2) where s1[0] is symbolic and s2 is "X\\0", with
+        s1[0] constrained to 'X', must return 0 (equal)."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strcmp']())
+            sym = claripy.BVS("strcmp_b", 8)
+            state.memory.store(self.BUF_ADDR, sym)
+            state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
+            state.memory.store(self.BUF_ADDR + 0x10, b"X\x00")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = self.BUF_ADDR + 0x10
+            state.solver.add(sym == ord('X'))
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 0
+            assert s.solver.max(s.regs.rax) == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strchr_symbolic_finds_target(self, fauxware_project):
+        """strchr("a?bX\\0", 'X') with '?' symbolic constrained to non-X,
+        non-null must return BUF_ADDR + 3 (the index of 'X')."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strchr']())
+            state.memory.store(self.BUF_ADDR, b'a')
+            sym = claripy.BVS("strchr_q", 8)
+            state.memory.store(self.BUF_ADDR + 1, sym)
+            state.memory.store(self.BUF_ADDR + 2, b'bX\x00')
+            state.solver.add(sym != ord('X'))
+            state.solver.add(sym != 0)
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = ord('X')
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 3
+            assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 3
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_memchr_symbolic_finds_target(self, fauxware_project):
+        """memchr(buf, 'X', 5) where buf[2] is symbolic constrained to 'X'
+        must return BUF_ADDR + 2."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['memchr']())
+            state.memory.store(self.BUF_ADDR, b'AB')
+            sym = claripy.BVS("memchr_q", 8)
+            state.memory.store(self.BUF_ADDR + 2, sym)
+            state.memory.store(self.BUF_ADDR + 3, b'CD')
+            state.solver.add(sym == ord('X'))
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = ord('X')
+            state.regs.rdx = 5
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 2
+            assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_memcmp_symbolic_constrained_equal(self, fauxware_project):
+        """memcmp(b1, b2, 4) where each buffer's middle byte is a distinct
+        symbolic, constrained equal — must return 0."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['memcmp']())
+            sym1 = claripy.BVS("memcmp_b1", 8)
+            sym2 = claripy.BVS("memcmp_b2", 8)
+            state.memory.store(self.BUF_ADDR, b'AB')
+            state.memory.store(self.BUF_ADDR + 2, sym1)
+            state.memory.store(self.BUF_ADDR + 3, b'D')
+            state.memory.store(self.BUF_ADDR + 0x10, b'AB')
+            state.memory.store(self.BUF_ADDR + 0x12, sym2)
+            state.memory.store(self.BUF_ADDR + 0x13, b'D')
+            state.solver.add(sym1 == sym2)
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = self.BUF_ADDR + 0x10
+            state.regs.rdx = 4
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 0
+            assert s.solver.max(s.regs.rax) == 0
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_atoi_symbolic_constrained_to_value(self, fauxware_project):
+        """atoi("7\\0") with '7' as a symbolic byte constrained to ASCII '7'
+        must produce min=max=7."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['atoi']())
+            sym = claripy.BVS("atoi_d", 8)
+            state.memory.store(self.BUF_ADDR, sym)
+            state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
+            state.solver.add(sym == ord('7'))
+            state.regs.rdi = self.BUF_ADDR
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 7
+            assert s.solver.max(s.regs.rax) == 7
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strtol_symbolic_hex_digit(self, fauxware_project):
+        """strtol("a\\0", NULL, 16) with 'a' as a symbolic byte constrained
+        to ASCII 'a' must produce min=max=10."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strtol']())
+            sym = claripy.BVS("strtol_d", 8)
+            state.memory.store(self.BUF_ADDR, sym)
+            state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
+            state.solver.add(sym == ord('a'))
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = 0
+            state.regs.rdx = 16
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 10
+            assert s.solver.max(s.regs.rax) == 10
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strtoul_symbolic_decimal_digit(self, fauxware_project):
+        """strtoul("5\\0", NULL, 10) with '5' as a symbolic byte constrained
+        to ASCII '5' must produce min=max=5."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['strtoul']())
+            sym = claripy.BVS("strtoul_d", 8)
+            state.memory.store(self.BUF_ADDR, sym)
+            state.memory.store(self.BUF_ADDR + 1, claripy.BVV(0, 8))
+            state.solver.add(sym == ord('5'))
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = 0
+            state.regs.rdx = 10
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 5
+            assert s.solver.max(s.regs.rax) == 5
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_isdigit_symbolic_returns_true_for_digit(self, fauxware_project):
+        """isdigit on a 32-bit symbolic int constrained to ASCII '5' must
+        return rax = 1."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['isdigit']())
+            sym = claripy.BVS("isdigit_x", 32)
+            state.solver.add(sym == ord('5'))
+            state.regs.rdi = sym.zero_extend(32)
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 1
+            assert s.solver.max(s.regs.rax) == 1
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_isalpha_symbolic_returns_true_for_letter(self, fauxware_project):
+        """isalpha on a 32-bit symbolic int constrained to ASCII 'a' must
+        return rax = 1."""
+        import claripy
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES['libc']['isalpha']())
+            sym = claripy.BVS("isalpha_x", 32)
+            state.solver.add(sym == ord('a'))
+            state.regs.rdi = sym.zero_extend(32)
+            s = self._run_one_step(proj, state)
+            assert s.solver.min(s.regs.rax) == 1
+            assert s.solver.max(s.regs.rax) == 1
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
