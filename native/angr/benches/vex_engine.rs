@@ -69,7 +69,7 @@ fn bench_rustbv_build_z3_ast(c: &mut Criterion) {
     let sum = concatenated.add(&z, &ctx);
     let expr = sum.reverse(&ctx);
 
-    c.bench_function("rustbv_build_z3_ast", |bench| {
+    c.bench_function("rustbv_z3", |bench| {
         bench.iter(|| {
             let mut cache = std::collections::HashMap::new();
             black_box(expr.to_z3_ast_cached(&mut cache))
@@ -92,8 +92,8 @@ fn bench_symcontext_fork(c: &mut Criterion) {
     ctx.assume_false(&gt); // x >= 10
     ctx.assume_true(&lt); // x < 100
 
-    let mut group = c.benchmark_group("symcontext");
-    group.bench_function("fork_2constraints", |bench| {
+    let mut group = c.benchmark_group("symcontext_fork");
+    group.bench_function("2_constraints", |bench| {
         bench.iter(|| black_box(ctx.fork()))
     });
     group.finish();
@@ -128,7 +128,7 @@ fn bench_symcontext_check_branch(c: &mut Criterion) {
     ctx.assume_false(&x.ult(&lo, &ctx));
     ctx.assume_true(&x.ult(&hi, &ctx));
 
-    c.bench_function("symcontext_check_branch_feasibility", |bench| {
+    c.bench_function("symcontext_check_branch", |bench| {
         bench.iter(|| {
             // Use push/pop so state doesn't accumulate
             ctx.push();
@@ -145,7 +145,7 @@ fn bench_symcontext_assume_true(c: &mut Criterion) {
     let bound = RustBV::concrete(42, 32);
     let cmp = x.ult(&bound, &ctx);
 
-    c.bench_function("symcontext_assume_true", |bench| {
+    c.bench_function("symcontext_assume", |bench| {
         bench.iter(|| {
             ctx.push();
             ctx.assume_true(black_box(&cmp));
@@ -216,7 +216,7 @@ fn bench_memory_symbolic_load(c: &mut Criterion) {
     // addr < base + 16
     ctx.assume_true(&addr_sym.ult(&hi, &ctx));
 
-    c.bench_function("memory_symbolic_load_16range", |bench| {
+    c.bench_function("memory_symbolic_load", |bench| {
         bench.iter(|| {
             ctx.push();
             let result = mem.load_symbolic_unified(
@@ -242,7 +242,7 @@ fn bench_memory_fork(c: &mut Criterion) {
         mem.store_concrete(base + page * 0x1000, v).unwrap();
     }
 
-    c.bench_function("memory_fork_16pages", |bench| {
+    c.bench_function("memory_fork", |bench| {
         bench.iter(|| black_box(mem.fork()))
     });
 }
