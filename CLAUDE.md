@@ -76,6 +76,40 @@ python tests/benchmarks/run_single.py fauxware --both
 # AVOID run_comparison_10.py on <16GB machines (OOM risk)
 ```
 
+## Profiling Rust Benches
+
+`tests/benchmarks/profile_rust_bench.sh` wraps the criterion bench in
+`native/angr/benches/vex_engine.rs` with whichever sampling profiler is
+available. It auto-detects the best tool (cargo-flamegraph > perf > callgrind),
+builds the bench in `--release` with frame pointers and full debuginfo
+(overriding the workspace `strip="symbols"`), and writes results under
+`target/profile/<filter-or-all>/` (gitignored).
+
+```bash
+# Profile everything for 10s with the best tool available
+tests/benchmarks/profile_rust_bench.sh
+
+# Scope to a single bench group (any prefix works), pick the tool
+tests/benchmarks/profile_rust_bench.sh --filter symcontext_fork --secs 30
+tests/benchmarks/profile_rust_bench.sh --tool callgrind --filter rustbv_
+
+# List bench groups (rustbv_*, symcontext_*, memory_*, state_fork)
+tests/benchmarks/profile_rust_bench.sh --list
+```
+
+Tool prerequisites:
+- **cargo-flamegraph** (preferred): `cargo install flamegraph`. Produces
+  `flamegraph.svg` directly.
+- **perf**: needs `kernel.perf_event_paranoid <= 2`
+  (`sudo sysctl -w kernel.perf_event_paranoid=2`). Writes `perf.data` plus a
+  `perf.txt` top-symbols report. To turn `perf.script` into an SVG:
+  `cat perf.script | inferno-collapse-perf | inferno-flamegraph > flamegraph.svg`.
+- **callgrind**: 10–50× slower but needs no kernel privileges. Writes
+  `callgrind.out` plus an annotated `callgrind.txt`.
+
+If `Z3_SYS_Z3_HEADER` is unset and the venv's `z3/include/z3.h` is missing,
+the script falls back to `/usr/include/z3.h` so `bindgen` does not fail.
+
 ## Key Files
 
 - **Build config**: `pyproject.toml`, `native/angr/Cargo.toml`
