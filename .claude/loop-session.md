@@ -1,45 +1,47 @@
-## Session log: 2026-05-08, 160th loop session
+## Session log: 2026-05-08, 161st loop session
 
-### Task: angr-491g — Concrete-address fast path before memory_*_symbolic_full callback
+### Task: angr-byev — Architecture support status matrix in CLAUDE.md (P1)
 
-**Outcome: closed as no-longer-motivated** (no code change).
+**Outcome: closed.** Commit edeb2fb74 adds an "Architecture Support Matrix"
+section to CLAUDE.md with per-arch counts and Supported / Experimental /
+Skeleton labels.
 
-### Verification (static analysis)
-The optimization "check if addr is concrete with one solver query before
-calling fallback_*_symbolic_full" is already implemented as the
-`read_fallback_any` / `write_fallback_max` defaults in
-`native/angr/src/concretize.rs`:
+### Findings
 
-- `read_fallback_any=true` (line 156) — `concretize_read` converts any
-  TooLarge into Single via `ctx.eval()`.
-- `write_fallback_max=true` (line 157) — `concretize_write` converts
-  any TooLarge into Single via `ctx.range()`/`ctx.eval()`.
-- `concretize_internal`'s Failed branch (line 358) only fires after
-  `eval()` ALREADY returned None.
+Counted via grep on `tests/engines/test_rust_exploration.py` and file
+inspection of `native/angr/src/arch/`:
 
-Both flags are always-on; there is no setter to disable them.
+| Arch        | Unit | Integration   | Benchmarks | Calling conv     | Status       |
+|-------------|------|---------------|------------|------------------|--------------|
+| AMD64       | ~110 | ~268 fauxware | 15/16      | SystemV + MS x64 | Supported    |
+| x86 32-bit  | 2    | 1 (Cdecl ret) | 1 (flareon2015_2) | Cdecl     | Experimental |
+| ARM         | 2    | 0             | 0          | ARMEABI          | Skeleton     |
+| ARM64       | 1    | 0             | 0          | AArch64          | Skeleton     |
+| MIPS32      | 4    | 0             | 0          | NONE (silent SystemV fallback) | Skeleton |
+| MIPS64      | 0    | 0             | 0          | NONE (silent SystemV fallback) | Skeleton |
 
-So `fallback_load_symbolic_full` / `fallback_store_symbolic_full` can
-only be reached when:
-1. The state is genuinely unsat (eval returned None upstream), or
-2. A LoadG Strided case (different concern, not in scope).
+### Surprising finding (saved to bd memory)
 
-Adding another `ctx.eval()` before the fallback would be a no-op.
+`default_cc_for_arch` in `native/angr/src/arch/calling_conventions.rs:361`
+only matches amd64/x86/arm/arm64 — MIPS falls through the wildcard and
+gets `SystemVAMD64`, which uses x86_64 register offsets (RDI=72 etc.).
+Any MIPS SimProcedure arg extraction will read garbage. This is latent
+because no MIPS integration test runs through that path. Saved as
+`bd memory invariant-mips-no-calling-convention`.
 
-### Independent verification
-Acceptance criteria already met:
-- sym-write 0.42s < 1s target (per benchmark-2026-05-05-sweep memory)
-- mma_howtouse 0.65x slowdown is dominated by Python UltraPage memory
-  leak (per mma-howtouse-leak-source memory), not these callbacks.
+### Files changed
+- `CLAUDE.md` — added Architecture Support Matrix section
+- `.claude/projects/-home-ubuntu-repos-angr/memory/project_core_goal.md` —
+  qualified the multi-arch claim, refreshed test-suite section
 
-### Memory saved
-- `avoid-491g-already-implemented` — full rationale for future audits
-
-### Status
-done — bead closed, memory saved, no commits needed (no code changed).
+### bd memories saved
+- `invariant-mips-no-calling-convention` — MIPS CC fallback bug
+- `arch-support-matrix-2026-05-08` — snapshot of per-arch coverage
 
 ### Followups
-None. The bead's "verify with profiling before pursuing" step was
-fulfilled via static analysis of the existing code paths, with
-benchmark/leak memories corroborating that the runtime hot path is
-elsewhere.
+None opened. Possible future beads if anyone wants to promote an arch:
+- Add MIPS32 calling convention (MIPSO32) — required before any MIPS
+  binary integration test will work correctly
+- Add an x86 pytest integration test using flareon2015_2 or similar
+  (currently the only end-to-end x86 coverage is the benchmark, not pytest)
+- Add ARM/ARM64 integration tests (would require small Linux binaries)
