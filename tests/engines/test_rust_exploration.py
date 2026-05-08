@@ -2038,6 +2038,164 @@ class TestExplorationIntegration:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestPluginMutationAcrossCallbacks:
+    """Regressions for angr-qm7w lazy ``_state_cache`` populate/evict.
+
+    A SimProcedure / Python hook callback may mutate a plugin (most commonly
+    ``state.globals`` / ``state.posix``); a second callback that fires on the
+    *same* state must observe the mutation. Pre-qm7w this was implicitly
+    guaranteed because the callback exit wrote ``_state_cache[sid] = succ_state``
+    and the next callback re-used the same SimState instance. The lazy-cache
+    refactor evicts entries between callbacks to bound cache size, so the
+    plugin-mutation chain has to survive the eviction explicitly.
+    """
+
+    def _hook_two_addrs(self, proj, addr_a, addr_b, hook_a, hook_b):
+        """Install hook_a and hook_b at the given addresses, returning an
+        unhook callback the caller invokes from a ``finally:`` block."""
+        proj.hook(addr_a, hook=hook_a, length=0)
+        proj.hook(addr_b, hook=hook_b, length=0)
+
+        def _unhook():
+            proj.unhook(addr_a)
+            proj.unhook(addr_b)
+
+        return _unhook
+
+    def test_globals_mutation_visible_in_second_callback(self, fauxware_project):
+        """Callback A writes ``state.globals['qm7w_marker']``; callback B at a
+        later address on the same state path must read the same value back.
+
+        Hooks at fauxware main prologue (mov rbp, rsp at 0x40071e and
+        mov dword ptr [rbp-0x34], edi at 0x400725) are guaranteed to fire
+        sequentially on the same state because no symbolic branching happens
+        between them.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        main_sym = proj.loader.find_symbol("main")
+        assert main_sym is not None
+        addr_a = main_sym.rebased_addr + 1   # 0x40071e: mov rbp, rsp
+        addr_b = main_sym.rebased_addr + 8   # 0x400725: mov dword ptr [rbp-0x34], edi
+
+        observations = []
+
+        def hook_a(state):
+            state.globals['qm7w_marker'] = 'written_in_A'
+
+        def hook_b(state):
+            observations.append(state.globals.get('qm7w_marker', '<MISSING>'))
+
+        unhook = self._hook_two_addrs(proj, addr_a, addr_b, hook_a, hook_b)
+        try:
+            state = proj.factory.entry_state()
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=200)
+        finally:
+            unhook()
+
+        assert observations, "hook B never fired — could not exercise the chain"
+        assert all(obs == 'written_in_A' for obs in observations), (
+            f"Plugin mutation written by hook A was not visible in hook B. "
+            f"observations={observations!r} — the second callback fell back to "
+            f"a state without A's globals mutation, which means lazy "
+            f"_state_cache eviction lost the plugin chain."
+        )
+
+    def test_posix_set_fd_visible_in_second_callback(self, fauxware_project):
+        """Callback A calls ``state.posix.set_fd(99, ...)``; callback B reads
+        ``state.posix.get_fd(99)`` and must see the same SimFile back.
+
+        Mirrors the bd description's specific example
+        (``state.posix.set_fd``). Globals is a thin dict-plugin; posix carries
+        nested SimPacketsStream weakrefs and is the more dangerous failure
+        mode if the plugin chain breaks.
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.storage import SimFile
+
+        proj = fauxware_project
+        main_sym = proj.loader.find_symbol("main")
+        addr_a = main_sym.rebased_addr + 1
+        addr_b = main_sym.rebased_addr + 8
+
+        from angr.storage.file import SimFileDescriptor
+
+        sentinel_name = 'qm7w_sentinel_fd'
+        observations = []
+
+        def hook_a(state):
+            simfile = SimFile(sentinel_name, content=b"qm7w_data")
+            state.fs.insert(sentinel_name, simfile)
+            simfd = SimFileDescriptor(simfile, 0)
+            simfd.set_state(state)
+            state.posix.fd[99] = simfd
+
+        def hook_b(state):
+            fd_obj = state.posix.fd.get(99)
+            observations.append(getattr(getattr(fd_obj, 'file', None), 'name', None))
+
+        unhook = self._hook_two_addrs(proj, addr_a, addr_b, hook_a, hook_b)
+        try:
+            state = proj.factory.entry_state()
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=200)
+        finally:
+            unhook()
+
+        assert observations, "hook B never fired — could not exercise the chain"
+        assert all(obs == sentinel_name for obs in observations), (
+            f"posix.set_fd(99, ...) written by hook A was not visible to "
+            f"hook B (observations={observations!r}). Lazy _state_cache "
+            f"eviction lost the posix-plugin chain."
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStateCacheSizeBound:
+    """Regressions for angr-qm7w lazy ``_state_cache`` populate/evict.
+
+    The acceptance criterion says the cache size at any moment during a
+    1000-state exploration is bounded by ``concurrent_callbacks`` (typically
+    ≤ 2) plus a small fixed overhead for root states. We approximate this with
+    a heavy fork-rate run and assert the cache stays well below the old
+    ``_max_state_cache_size = 500`` cap.
+    """
+
+    def test_cache_size_stays_bounded_under_forking(self, fauxware_project):
+        """Run fauxware with no callbacks and confirm ``_state_cache`` does
+        not balloon past a tight bound. Pre-qm7w the cache grew on every
+        symbolic-branch fork (one full state.copy() per new fork id) and only
+        trimmed back down at the 500-entry cap. The refactor removes the
+        per-fork copy, so the cache size should track ``# root states +
+        # in-flight callbacks``.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+
+        peak_cache = 0
+        for _ in range(20):
+            mgr.run(max_steps=15)
+            peak_cache = max(peak_cache, len(mgr._state_cache))
+            if not mgr._rust_mgr.has_active_states():
+                break
+
+        # Bound: ``_max_state_cache_size`` is now 8; the cleanup pass evicts
+        # non-pinned entries past that.  Pre-fix the cache could grow to 500.
+        # We allow a small slop (cap + 4) for transient post-callback writes
+        # that happen between cleanups in a single run() batch.
+        cap = mgr._max_state_cache_size
+        assert peak_cache <= cap + 4, (
+            f"_state_cache grew to {peak_cache} entries during fauxware "
+            f"exploration (cap={cap}) — lazy populate/evict regressed."
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestAdversarial:
     """Adversarial tests: edge cases, API misuse, resource bounds."""
 

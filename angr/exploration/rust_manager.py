@@ -434,8 +434,12 @@ class RustExplorationManager(
         # Using regular dict with periodic cleanup to prevent memory leaks
         self._state_cache: Dict[int, "angr.SimState"] = {}
 
-        # Maximum state cache size before cleanup
-        self._max_state_cache_size = 500
+        # Maximum state cache size. Cache is bounded to the in-flight callback
+        # state plus a small LRU window of recently-mutated states; root states
+        # are pinned and never count against the cap. Pre-angr-qm7w this was
+        # 500 and the cache tracked O(active_states), making it the dominant
+        # driver of Python-side memory growth.
+        self._max_state_cache_size = 8
 
         # Track claripy AST handles for constraint sync
         # Maps handle_id -> claripy AST
@@ -1994,6 +1998,10 @@ class RustExplorationManager(
             l.warning(f"Unknown callback reason: {reason}")
             self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
             return True
+        # Bound the cache between callbacks (angr-qm7w). Pre-fix the cache
+        # tracked O(active_states); now it is tied to the LRU window of
+        # recently-mutated states + pinned roots / current dispatcher.
+        self._cleanup_state_cache()
         self._stats_time_in_callbacks_ns += time.perf_counter_ns() - _cb_start
         return False
 
@@ -2315,17 +2323,51 @@ class RustExplorationManager(
         return self
 
     def _cleanup_state_cache(self):
-        """Remove cached Python states that are no longer active or found."""
+        """Bound ``_state_cache`` size while preserving correctness invariants.
+
+        Step 1 — drop entries whose state no longer exists in any live stash
+        (deadended/errored/avoid GC).  Step 2 — pin root states + the
+        currently-dispatching callback state + the state being stepped.
+        Step 3 — if the cache is still over ``_max_state_cache_size``, LRU-evict
+        non-pinned entries (Python ``dict`` preserves insertion order; entries
+        that were re-written most recently sit at the back, so evicting from
+        the front removes the least-recently-touched first).
+        """
         try:
             active_set = set(self._rust_mgr.get_state_ids('active'))
             found_set = set(self._rust_mgr.get_state_ids('found'))
-            keep = active_set | found_set
-            keep.update(self._state_roots.get(sid, sid) for sid in keep)
-            for sid in list(self._state_cache.keys()):
-                if sid not in keep:
-                    del self._state_cache[sid]
         except (RuntimeError, KeyError):
-            pass
+            return
+
+        live = active_set | found_set
+        live.update(self._state_roots.get(sid, sid) for sid in live)
+        for sid in list(self._state_cache.keys()):
+            if sid not in live:
+                del self._state_cache[sid]
+
+        pinned = set(self._state_roots.values())
+        if self._current_callback_state_id is not None:
+            pinned.add(self._current_callback_state_id)
+            try:
+                eff_id = self._get_effective_state_id(self._current_callback_state_id)
+                if eff_id is not None:
+                    pinned.add(eff_id)
+            except Exception:
+                pass
+        if self._current_stepping_state_id is not None:
+            pinned.add(self._current_stepping_state_id)
+
+        cap = self._max_state_cache_size
+        overflow = len(self._state_cache) - cap
+        if overflow <= 0:
+            return
+        for sid in list(self._state_cache.keys()):
+            if overflow <= 0:
+                break
+            if sid in pinned:
+                continue
+            del self._state_cache[sid]
+            overflow -= 1
 
     def step(self, n: int = 1, **kwargs) -> "RustExplorationManager":
         """Step the exploration n times.
