@@ -1664,10 +1664,11 @@ class RustExplorationManager(
         main_obj = self._project.loader.main_object
         addr = state.addr
         cache_key = getattr(main_obj, 'binary', None) or ''
+        mem_key = self._compute_mem_init_key(state, cache_key)
         disk_key = self._compute_disk_init_key(state, cache_key)
 
         if addr == self._project.entry:
-            cached = self._try_in_memory_init_cache(state, cache_key)
+            cached = self._try_in_memory_init_cache(state, mem_key)
             if cached is not None:
                 return cached
             cached = self._try_disk_init_cache(state, disk_key)
@@ -1687,7 +1688,7 @@ class RustExplorationManager(
 
         try:
             main_addr = self._resolve_main_address()
-            return self._step_python_to_main(state, main_addr, cache_key, disk_key, main_obj)
+            return self._step_python_to_main(state, main_addr, mem_key, disk_key, main_obj)
         except Exception as e:
             l.warning(f"Python init failed: {e}, using original state")
             return state
@@ -1729,6 +1730,21 @@ class RustExplorationManager(
             return ''
         arch_name = getattr(self._project.arch, 'name', '') or ''
         return self._disk_cache_key(cache_key, arch_name)
+
+    def _compute_mem_init_key(self, state: "angr.SimState", cache_key: str) -> str:
+        """In-memory init cache key. Returns '' (caching disabled) when the
+        state has user-created symbolic data, mirroring _compute_disk_init_key.
+        Without this gate, a user-symbolic store on the input state survives
+        through Python init and ends up in the cached post-init state. Later
+        callers that hit the cache via .copy() inherit those stores while
+        their own stores are silently lost — _apply_state_metadata copies
+        constraints/options but not memory pages.
+        """
+        if not cache_key:
+            return ''
+        if self._state_has_user_symbolic(state):
+            return ''
+        return cache_key
 
     def _try_in_memory_init_cache(self, state: "angr.SimState",
                                   cache_key: str) -> Optional["angr.SimState"]:
