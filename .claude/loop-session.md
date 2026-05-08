@@ -1,48 +1,65 @@
-# Loop session notes (2026-05-08, 138th loop session)
+# Loop session notes (2026-05-08, 139th loop session)
 
-## Task: angr-0cnm — mmap_base diverges between Rust and Python state
+## Task: angr-as3c — posix_brk Rust→Python sync (closed)
 
 ### Status: complete; closed
 
-### Change
-- Rust (`exploration/mod.rs`):
-  - `get_state_mmap_base(state_id)` — returns Rust's per-state mmap_base
-    (uses `find_state`, so works for stashes + pending callback state).
-  - `set_state_mmap_base(state_id, addr)` — useful for tests and for any
-    future Python→Rust sync (uses `find_state_mut` — stashes only).
-- Python (`rust_state_export.py`):
-  - `_sync_rust_mmap_base_to_state(state, state_id)` — pushes Rust value
-    into `state.heap.mmap_base` only if Rust > Python (max-merge avoids
-    clobbering a Python-side advance).
-  - Wired into all three export paths in `_get_stash_states`:
-    cached state, parent-state copy, stepping-state copy, and snapshot
-    fallback (4 sites total).
-- Tests (`test_rust_exploration.py`, new `TestMmapBaseSync` class):
-  - `test_get_state_mmap_base_default` — getter returns 0xC100_0000.
-  - `test_set_state_mmap_base_round_trips` — setter/getter round-trip.
-  - `test_get_state_mmap_base_unknown_state_raises` — error path.
-  - `test_export_path_syncs_rust_mmap_base_into_state_heap` — bumps Rust
-    mmap_base, calls `_get_stash_states('active')`, asserts the synced
-    state's `heap.mmap_base` matches. **Verified to fail pre-fix.**
-  - `test_export_path_does_not_clobber_higher_python_mmap_base` —
-    locks down the max-merge semantics.
+### Summary
+Mirrors angr-0cnm (mmap_base) but with an extra wrinkle: defaults
+between Python and Rust DON'T match for posix_brk. angr's SimUserland
+loader sets `state.posix.brk = binary_last_addr + page` (≈0x602000 for
+fauxware), while Rust hardcodes 0x1B00000. Naïve `max(rust, python)`
+sync would clobber Python's loader-set value with Rust's stale default
+on the very first export.
+
+Fix is **bidirectional**:
+- Init push (Python→Rust) in `_add_rust_state` so Rust's posix_brk
+  starts at the loader-set base.
+- Export sync (Rust→Python) on stash export.
+
+### Changes
+- **state.rs** — added `posix_brk` getter/setter on `PyRustSimState`
+  (`#[getter]/#[setter]`).
+- **rust_manager.py** — added init push of `angr_state.posix.brk` →
+  `rust_state.posix_brk` in `_add_rust_state` (right after PC). Skips
+  BV-valued brk (Python's set_brk wraps it after a grow).
+- **exploration/mod.rs** — added `get_state_posix_brk(state_id)` and
+  `set_state_posix_brk(state_id, addr)`, mirroring
+  `get_state_mmap_base/set_state_mmap_base`.
+- **rust_state_export.py** — added `_sync_rust_posix_brk_to_state`,
+  wired into all four export paths in `_get_stash_states`. Uses
+  `isinstance(py_brk, int)` to skip BV-valued brk; `max(rust, python)`
+  for the int case.
+- **test_rust_exploration.py** — `TestPosixBrkSync` (7 new tests):
+  default getter, setter round-trip, unknown-id error, init-push
+  alignment, end-to-end export sync, no-clobber direction, BV preserved.
 
 ### Verification
-- `cargo build --release` clean.
-- 269/269 tests passing in `tests/engines/test_rust_exploration.py` (was 264).
-- Pre-fix verification: stashed Python changes, ran the end-to-end test, it
-  failed with `state.heap.mmap_base = 0xc1000000` vs Rust's `0xc1001000`.
+- `cargo check --release` clean.
+- `pytest tests/engines/test_rust_exploration.py` — **276/276 passing**
+  (was 269 before; +7 new posix_brk tests).
+- Pre-fix: end-to-end test `test_export_path_syncs_rust_posix_brk_into_state_posix`
+  failed because Rust's default 0x1B00000 > fauxware's loader-set 0x602000;
+  max() returned the wrong direction.
 
 ### Memories saved
-- `invariant-rust-python-state-sync-direction` — use max(rust, python)
-  when syncing fields both sides can mutate.
-- `invariant-posix-brk-drift-mirrors-mmap-base` — posix_brk has the same
-  drift risk; same fix pattern applies.
+- `invariant-rust-python-default-divergence` — Rust defaults aren't
+  always equal to angr loader defaults (mmap_base happened to align,
+  posix_brk doesn't).
+- `avoid-naive-max-merge-sync` — pattern for adding new field syncs:
+  always check whether the Python loader overrides the field, and if
+  so, also init-push.
+- `fragile-venv-recovery` — recipe for the recurring .venv corruption
+  (force-reinstall pip + setuptools<81 + semantic_version).
 
-### Follow-up bead created
-- angr-as3c (P2 bug) — apply the same sync fix to posix_brk.
+### .venv side trip
+The .venv had stripped .py files in pip/_vendor and setuptools/_vendor
+(only .pyc left). `pip install -e .` failed with FileNotFoundError.
+Recovered with `pip install --force-reinstall --no-deps pip setuptools<81 semantic_version`.
 
 ### Files changed
-- native/angr/src/exploration/mod.rs
-- angr/exploration/rust_state_export.py
-- tests/engines/test_rust_exploration.py
+- native/angr/src/state.rs (+15)
+- native/angr/src/exploration/mod.rs (+29)
+- angr/exploration/rust_manager.py (+14)
+- angr/exploration/rust_state_export.py (+35)
+- tests/engines/test_rust_exploration.py (+148)
