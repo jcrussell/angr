@@ -1,61 +1,87 @@
-## Session log: 2026-05-08, 170th loop session
+## Session log: 2026-05-08, 171st loop session
 
-### Task: angr-4j5u.3 (closed) — Extract MemoryConfiguration struct
+### Task: angr-4j5u.4 (closed) — Extract ExecutionEnvironment struct
 
-Third child of the angr-4j5u decomposition epic. Group four memory/VEX
-configuration fields off `RustExplorationManager` into one new sub-struct.
+Fourth child of the angr-4j5u decomposition epic. Group seven manager-owned
+per-binary fields off `RustExplorationManager` into one new sub-struct.
 
 ### What changed
 
-**New: native/angr/src/exploration/memory_config.rs (~32 lines)**
+**New: native/angr/src/exploration/execution_env.rs (~55 lines)**
 
-`MemoryConfiguration`: memory and VEX-lifting knobs the manager
-propagates to per-state and per-interpreter contexts.
-- `zero_fill_unconstrained: bool`
-- `concretizer_config: crate::concretize::AddressConcretizer`
-- `vex_opt_level: Option<i32>`
-- `vex_opt_level_overrides: FxHashMap<u64, i32>`
-- `#[derive(Default)]` only.
+`ExecutionEnvironment` groups manager-owned per-binary fields handed to
+each interpreter on every step:
+- `arch_name: String`
+- `vex_arch: VexArch`
+- `binary_regions: Vec<(u64, Arc<Vec<u8>>)>`
+- `block_cache: LruCache<u64, Arc<IRSB>>`
+- `calling_convention: Box<dyn CallingConvention>`
+- `little_endian: Option<bool>`
+- `max_history: usize`
 
-`pub(crate)` direct fields. Same load-bearing-simplicity pattern
-as ProfilingCollector / ConstraintSolver — see memory
-`invariant-constraint-substructs-direct-fields`.
+`pub(crate)` direct fields. Same load-bearing-simplicity pattern as
+ProfilingCollector / ConstraintSolver / MemoryConfiguration.
+
+Has a constructor `new(arch_name, vex_arch, calling_convention,
+little_endian)` because `LruCache` requires a `NonZeroUsize` capacity
+and `block_cache` defaults to 4096 entries / `max_history` defaults to
+1000.
+
+Cannot `#[derive(Debug)]` because `Box<dyn CallingConvention>` doesn't
+implement Debug. Same as how the manager itself isn't Debug — see commit.
 
 **native/angr/src/exploration/mod.rs**
-- New `mod memory_config;` + `use self::memory_config::MemoryConfiguration;`.
-- Removed four standalone field declarations on `RustExplorationManager`,
-  replaced with one sub-struct field.
-- Constructor: four fields collapse to `memory_config: MemoryConfiguration::default()`.
-- ~14 callsites updated: `set_zero_fill_unconstrained`, `set_vex_opt_level`,
-  `get_vex_opt_level`, `set_vex_opt_level_override`, `remove_vex_opt_level_override`,
-  `clear_vex_opt_level_overrides` (×2), `resolve_vex_opt_level` (×2),
-  `configure_concretization_strategies`, `create_state` (zero_fill),
-  `add_state` (zero_fill).
+- New `mod execution_env;` + `use self::execution_env::ExecutionEnvironment;`.
+- Removed seven standalone field declarations on `RustExplorationManager`,
+  replaced with one `environment: ExecutionEnvironment` field.
+- Constructor: seven fields collapse to
+  `environment: ExecutionEnvironment::new(arch.to_string(), vex_arch,
+  default_cc_for_arch(arch), little_endian)`.
+- Pruned now-unused imports: `LruCache`, `NonZeroUsize`, `VexArch`, `IRSB`,
+  `CallingConvention` removed.
+- ~14 callsites updated: `arch()` getter, `set/get_max_history`,
+  `set_vex_opt_level{,_override}` (block_cache invalidation),
+  `clear_vex_opt_level_overrides`, `load_binary_regions`,
+  `create_state` (arch_name, little_endian, max_history),
+  `add_state` (max_history), `stats()` (block_cache_size),
+  native simprocedure dispatch in run loop (binary_regions,
+  calling_convention.return_register, arch_from_name, get_return_addr).
 
 **native/angr/src/exploration/stepping.rs**
-- 3 callsites: `self.concretizer_config` → `self.memory_config.concretizer_config`,
-  `self.vex_opt_level` → `self.memory_config.vex_opt_level`,
-  `self.vex_opt_level_overrides` → `self.memory_config.vex_opt_level_overrides`.
+- Added explicit imports for `LruCache`, `NonZeroUsize`, `IRSB` since
+  `super::*` no longer re-exports them from mod.rs.
+- ~9 callsites: `self.block_cache = step.updated_block_cache`,
+  vex_arch in `CallbackInterpreter::with_config`, four
+  `calling_convention.return_register()` callsites,
+  `binary_regions.iter()` (×2: native simprocedure, run_interpreter_step
+  region copy), `block_cache` swap in `run_interpreter_step`,
+  `calling_convention.pointer_size()` in unmodeled-call helper.
 
-### Field count on the manager: 36 → 33 (net -3)
+**native/angr/src/exploration/helpers.rs**
+- 6 callsites: bulk `self.calling_convention.<x>` →
+  `self.environment.calling_convention.<x>` via replace_all.
 
-Four fields collapsed to one sub-struct field.
+### Field count on the manager: 33 → 27 (net -6)
+
+Seven fields collapsed to one sub-struct field.
 
 ### Build/run
 
-- `cargo check --release` clean.
+- `cargo check --release` clean (after dropping `#[derive(Debug)]` on
+  ExecutionEnvironment — Box<dyn CallingConvention> isn't Debug).
 - `cargo build --release` then cp to `angr/rustylib.cpython-312-x86_64-linux-gnu.so`
-  (pip path still broken — same as 4j5u.1 and 4j5u.2; see
-  `avoid-broken-venv-pip-fallback-cargo-build`).
-- 342/342 tests passing on tests/engines/test_rust_exploration.py (19.4s).
-- fauxware: OK rust 0.36s peak_mem=188MB (matches 4j5u.2 baseline within noise).
+  (pip path still broken — see `avoid-broken-venv-pip-fallback-cargo-build`).
+- 342/342 tests passing on tests/engines/test_rust_exploration.py (19.3s).
+- fauxware: OK 0.35s peak_mem=188MB (matches 4j5u.3 baseline within noise).
+  Note: had to set `PYTHONPATH=/home/ubuntu/repos/angr` because
+  multiprocessing-spawn child doesn't inherit cwd-based angr resolution
+  in the half-broken venv. Tests don't have this issue (pytest CWD).
 
 ### Memories saved
 
-- `invariant-memory-config-direct-fields` — same direct-field pattern;
-  do not add helper methods as a separate cleanup.
+- `invariant-execution-env-direct-fields` — same direct-field pattern;
+  notes Box<dyn> => no Debug, plus the explicit constructor's purpose.
 
 ### Next children in the angr-4j5u sequence
 
-- 4j5u.4 — Extract ExecutionEnvironment struct
 - 4j5u.5 — Consolidate orchestrator (final pass)
