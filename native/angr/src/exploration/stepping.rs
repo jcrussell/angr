@@ -1,8 +1,11 @@
 use super::*;
+use std::num::NonZeroUsize;
+use lru::LruCache;
 use crate::arch::RegisterFile;
 use crate::interpreter_cb::BranchSnapshot;
 use crate::memory::SymbolicMemory;
 use crate::state::{CallStackEntry, HistoryEntry};
+use crate::vex::IRSB;
 
 /// Error during state stepping.
 pub(crate) enum StepError {
@@ -55,7 +58,7 @@ impl RustExplorationManager {
         let step = self.run_interpreter_step(py, callbacks, &mut state, initial_pc, skip_addr, setup_start);
 
         // Restore the shared block cache (now populated with any newly-lifted blocks)
-        self.block_cache = step.updated_block_cache;
+        self.environment.block_cache = step.updated_block_cache;
 
         // Accumulate profiling stats
         if self.profiling.profiling_enabled {
@@ -154,7 +157,7 @@ impl RustExplorationManager {
                     };
                     match handler.call(&mut state, &args) {
                         Ok(SyscallOutcome::Continue { ret }) => {
-                            let ret_reg = self.calling_convention.return_register();
+                            let ret_reg = self.environment.calling_convention.return_register();
                             let bits = state.arch().bits();
                             state.set_register_by_offset(
                                 ret_reg,
@@ -170,7 +173,7 @@ impl RustExplorationManager {
                             return Ok(successors);
                         }
                         Ok(SyscallOutcome::ContinueSymbolic { ret }) => {
-                            let ret_reg = self.calling_convention.return_register();
+                            let ret_reg = self.environment.calling_convention.return_register();
                             state.set_register_by_offset(ret_reg, ret);
                             let mut successors = vec![state];
                             self.process_deferred_forks_into(
@@ -442,7 +445,7 @@ impl RustExplorationManager {
         // Skip native for addresses inside the binary — these are user-placed
         // hooks where the Python SimProcedure should always run (the user hooked
         // a specific function for a reason, e.g., hooking strings_not_equal with strcmp).
-        let is_in_binary = self.binary_regions.iter().any(|(base, data)| {
+        let is_in_binary = self.environment.binary_regions.iter().any(|(base, data)| {
             addr >= *base && addr < *base + data.len() as u64
         });
         // Result of native execution: None = fall back to Python, Some(bool) =
@@ -460,7 +463,7 @@ impl RustExplorationManager {
 
                         if !proc_no_return {
                             if let Some(rv) = ret_val {
-                                let ret_reg = self.calling_convention.return_register();
+                                let ret_reg = self.environment.calling_convention.return_register();
                                 state.set_register_by_offset(ret_reg, rv);
                             }
 
@@ -730,8 +733,8 @@ impl RustExplorationManager {
 
         // Set return register to 0 (symbolic unconstrained would be better but
         // concrete 0 is simpler and often sufficient)
-        let ret_reg_offset = self.calling_convention.return_register();
-        let ptr_size = self.calling_convention.pointer_size();
+        let ret_reg_offset = self.environment.calling_convention.return_register();
+        let ptr_size = self.environment.calling_convention.pointer_size();
         let zero_val = RustBV::zero((ptr_size * 8) as u32);
         state.set_register_by_offset(ret_reg_offset, zero_val);
 
@@ -769,7 +772,7 @@ impl RustExplorationManager {
 
         // Create interpreter with the state's solver
         let mut interp = CallbackInterpreter::with_config(
-            self.vex_arch,
+            self.environment.vex_arch,
             &*solver_ref,
             self.exec_config.clone(),
         );
@@ -815,7 +818,7 @@ impl RustExplorationManager {
         }
 
         // Copy binary regions for code lifting (O(1) Arc clone per region)
-        for (base, data) in &self.binary_regions {
+        for (base, data) in &self.environment.binary_regions {
             interp.add_concrete_memory_shared(*base, Arc::clone(data));
         }
 
@@ -829,9 +832,9 @@ impl RustExplorationManager {
         // so lifted blocks persist across steps (avoids re-lifting).
         // Swap exploration's populated cache into interp, stash interp's empty one.
         let interp_empty_cache = interp.swap_block_cache(
-            std::mem::replace(&mut self.block_cache, LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")))
+            std::mem::replace(&mut self.environment.block_cache, LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")))
         );
-        // interp now has the exploration's cache; self.block_cache is a temporary empty placeholder
+        // interp now has the exploration's cache; self.environment.block_cache is a temporary empty placeholder
         let _ = interp_empty_cache; // drop the empty cache
 
         // Record setup time before execution

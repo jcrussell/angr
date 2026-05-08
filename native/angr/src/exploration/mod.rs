@@ -12,16 +12,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use rustc_hash::FxHashMap;
 use crate::stash::{StashManager, STASH_ACTIVE, STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_PRUNED, STASH_UNCONSTRAINED};
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use lru::LruCache;
 use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::types::PyDict;
 
-use crate::arch::{arch_from_name, default_cc_for_arch, CallingConvention};
+use crate::arch::{arch_from_name, default_cc_for_arch};
 use crate::callbacks::{ExecutionConfig, PythonCallbacks, RunResult, DeferredFork};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter_cb::{CallbackInterpreter, ExecutionStats, DCAS_UNSUPPORTED_REASON};
@@ -31,7 +29,6 @@ use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
 use crate::symbolic::{RustBV, SymContext};
-use crate::vex::{VexArch, IRSB};
 
 use std::cell::Cell;
 
@@ -40,8 +37,10 @@ mod helpers;
 mod profiling;
 mod constraints;
 mod memory_config;
+mod execution_env;
 
 use self::constraints::{ConstraintSolver, ConstraintTracker};
+use self::execution_env::ExecutionEnvironment;
 use self::memory_config::MemoryConfiguration;
 use self::profiling::ProfilingCollector;
 use self::stepping::StepError;
@@ -327,10 +326,9 @@ pub(crate) enum NativeTechnique {
 /// Returns to Python only for SimProcedures, syscalls, and predicates.
 #[pyclass(unsendable)]
 pub struct RustExplorationManager {
-    /// Architecture name.
-    pub(crate) arch_name: String,
-    /// VEX architecture enum.
-    pub(crate) vex_arch: VexArch,
+    /// Per-binary execution environment: arch metadata, calling convention,
+    /// binary regions, block cache, endianness, history cap.
+    pub(crate) environment: ExecutionEnvironment,
     /// Stash system (mirrors Python's).
     pub(crate) sm: StashManager,
     /// Find addresses.
@@ -349,10 +347,6 @@ pub struct RustExplorationManager {
     pub(crate) hooks: HashSet<u64>,
     /// SimProcedures: address -> (name, num_args, no_return).
     pub(crate) simprocedures: HashMap<u64, (String, usize, bool)>,
-    /// Binary code regions for native lifting.
-    pub(crate) binary_regions: Vec<(u64, Arc<Vec<u8>>)>,
-    /// Block cache (shared across states, passed to each interpreter).
-    pub(crate) block_cache: LruCache<u64, Arc<IRSB>>,
     /// Pending state waiting for Python callback result.
     pub(crate) pending_callback: Option<PendingCallback>,
     /// ID of the state currently being stepped (for Python callbacks to identify)
@@ -369,8 +363,6 @@ pub struct RustExplorationManager {
     pub(crate) native_procedures: NativeProcedureRegistry,
     /// Native syscall registry (skip Python `_handle_syscall_callback` round-trip).
     pub(crate) native_syscalls: NativeSyscallRegistry,
-    /// Calling convention for argument extraction.
-    pub(crate) calling_convention: Box<dyn CallingConvention>,
     /// VEX fallback tracking: count and unique addresses.
     pub(crate) vex_fallback_count: u64,
     pub(crate) vex_fallback_addrs: HashMap<u64, String>,
@@ -420,13 +412,6 @@ pub struct RustExplorationManager {
     /// `NativeProcStats` accumulator.
     pub(crate) profiling: ProfilingCollector,
     // state_index is now in self.sm (StashManager)
-    /// Endianness override: None = use arch default, Some(true) = little-endian.
-    pub(crate) little_endian: Option<bool>,
-    /// Maximum length of per-state `history` / `detailed_history` ring buffers.
-    /// 0 = unlimited (legacy, can OOM on long runs). Default 1000 keeps each
-    /// state's history bounded at ~8KB (history) + ~24KB (detailed_history).
-    /// Propagated to every state created or added via this manager.
-    pub(crate) max_history: usize,
 }
 
 #[pymethods]
@@ -442,8 +427,12 @@ impl RustExplorationManager {
         let vex_arch = arch_info.vex_arch();
 
         Ok(RustExplorationManager {
-            arch_name: arch.to_string(),
-            vex_arch,
+            environment: ExecutionEnvironment::new(
+                arch.to_string(),
+                vex_arch,
+                default_cc_for_arch(arch),
+                little_endian,
+            ),
             sm: StashManager::new(),
             find_addrs: HashSet::new(),
             avoid_addrs: HashSet::new(),
@@ -453,8 +442,6 @@ impl RustExplorationManager {
             callbacks: None,
             hooks: HashSet::new(),
             simprocedures: HashMap::new(),
-            binary_regions: Vec::new(),
-            block_cache: LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
             pending_callback: None,
             current_stepping_state_id: None,
             steps: 0,
@@ -463,7 +450,6 @@ impl RustExplorationManager {
             max_steps_per_run: 5000,
             native_procedures: NativeProcedureRegistry::new(),
             native_syscalls: NativeSyscallRegistry::new(),
-            calling_convention: default_cc_for_arch(arch),
             vex_fallback_count: 0,
             vex_fallback_addrs: HashMap::new(),
             dcas_unsupported_count: 0,
@@ -478,8 +464,6 @@ impl RustExplorationManager {
             native_techniques: Vec::new(),
             constraint_tracker: ConstraintTracker::default(),
             profiling: ProfilingCollector::default(),
-            little_endian,
-            max_history: 1000,
         })
     }
 
@@ -491,7 +475,7 @@ impl RustExplorationManager {
     /// Get the architecture name.
     #[getter]
     pub fn arch(&self) -> &str {
-        &self.arch_name
+        &self.environment.arch_name
     }
 
     /// Get the total number of steps executed.
@@ -599,7 +583,7 @@ impl RustExplorationManager {
     pub fn set_vex_opt_level(&mut self, level: Option<i32>) {
         self.memory_config.vex_opt_level = level;
         // Invalidate block cache since opt_level affects IR output
-        self.block_cache.clear();
+        self.environment.block_cache.clear();
     }
 
     /// Get the current VEX optimization level.
@@ -612,13 +596,13 @@ impl RustExplorationManager {
     pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {
         self.memory_config.vex_opt_level_overrides.insert(addr, level);
         // Remove this address from block cache since opt_level changed
-        self.block_cache.pop(&addr);
+        self.environment.block_cache.pop(&addr);
     }
 
     /// Remove a per-address VEX optimization level override.
     pub fn remove_vex_opt_level_override(&mut self, addr: u64) {
         self.memory_config.vex_opt_level_overrides.remove(&addr);
-        self.block_cache.pop(&addr);
+        self.environment.block_cache.pop(&addr);
     }
 
     /// Clear all per-address VEX optimization level overrides.
@@ -626,7 +610,7 @@ impl RustExplorationManager {
         let addrs: Vec<u64> = self.memory_config.vex_opt_level_overrides.keys().copied().collect();
         self.memory_config.vex_opt_level_overrides.clear();
         for addr in addrs {
-            self.block_cache.pop(&addr);
+            self.environment.block_cache.pop(&addr);
         }
     }
 
@@ -679,7 +663,7 @@ impl RustExplorationManager {
     /// state already in any stash, plus any future state created via this
     /// manager.
     pub fn set_max_history(&mut self, max: usize) {
-        self.max_history = max;
+        self.environment.max_history = max;
         for stash in self.sm.stashes_mut().values_mut() {
             for state in stash.iter_mut() {
                 state.set_max_history(max);
@@ -689,7 +673,7 @@ impl RustExplorationManager {
 
     /// Get the current per-state max_history value. 0 = unlimited.
     pub fn get_max_history(&self) -> usize {
-        self.max_history
+        self.environment.max_history
     }
 
     /// Get accumulated execution statistics as a dict.
@@ -776,7 +760,7 @@ impl RustExplorationManager {
 
     /// Load binary code regions.
     pub fn load_binary_regions(&mut self, regions: Vec<(u64, Vec<u8>)>) {
-        self.binary_regions = regions.into_iter()
+        self.environment.binary_regions = regions.into_iter()
             .map(|(base, data)| (base, Arc::new(data)))
             .collect();
     }
@@ -784,7 +768,7 @@ impl RustExplorationManager {
     /// Create a new RustSimState and add it to a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn create_state(&mut self, stash: &str) -> PyResult<u64> {
-        let mut state = RustSimState::new_with_endian(&self.arch_name, self.little_endian)
+        let mut state = RustSimState::new_with_endian(&self.environment.arch_name, self.environment.little_endian)
             .map_err(|e| PyValueError::new_err(e))?;
         let state_id = state.state_id();
 
@@ -799,7 +783,7 @@ impl RustExplorationManager {
         }
 
         // Propagate per-state history cap
-        state.set_max_history(self.max_history);
+        state.set_max_history(self.environment.max_history);
 
         // Copy hooks to state
         for &_addr in &self.hooks {
@@ -833,7 +817,7 @@ impl RustExplorationManager {
         }
 
         // Propagate per-state history cap
-        forked.set_max_history(self.max_history);
+        forked.set_max_history(self.environment.max_history);
 
         // Track this state as its own root (it was added via Python)
         self.sm.set_root(state_id, state_id);
@@ -2080,7 +2064,7 @@ impl RustExplorationManager {
         dict.set_item("simprocedures", self.simprocedures.len())?;
         dict.set_item("find_addrs", self.find_addrs.len())?;
         dict.set_item("avoid_addrs", self.avoid_addrs.len())?;
-        dict.set_item("block_cache_size", self.block_cache.len())?;
+        dict.set_item("block_cache_size", self.environment.block_cache.len())?;
         dict.set_item("native_proc_calls", self.profiling.native_proc_stats.native_calls)?;
         dict.set_item("native_proc_fallbacks", self.profiling.native_proc_stats.python_fallbacks)?;
         dict.set_item("avoided_count", self.sm.avoided_count)?;
@@ -2820,7 +2804,7 @@ impl RustExplorationManager {
                 // Check if this is a registered SimProcedure
                 if let Some((name, num_args, no_return)) = self.simprocedures.get(&pc).cloned() {
                     // Skip native for addresses inside the binary (user-placed hooks)
-                    let is_in_binary = self.binary_regions.iter().any(|(base, data)| {
+                    let is_in_binary = self.environment.binary_regions.iter().any(|(base, data)| {
                         pc >= *base && pc < *base + data.len() as u64
                     });
                     // Try native procedure first (only for external/library hooks)
@@ -2852,15 +2836,15 @@ impl RustExplorationManager {
 
                                 // Set return value if present
                                 if let Some(rv) = ret_val {
-                                    let ret_reg = self.calling_convention.return_register();
+                                    let ret_reg = self.environment.calling_convention.return_register();
                                     state.set_register_by_offset(ret_reg, rv);
                                 }
 
                                 // Get return address and set PC
                                 let ctx = state.solver().borrow();
-                                let ret_addr_opt = crate::arch::arch_from_name(&self.arch_name)
+                                let ret_addr_opt = crate::arch::arch_from_name(&self.environment.arch_name)
                                     .and_then(|arch| {
-                                        self.calling_convention.get_return_addr(
+                                        self.environment.calling_convention.get_return_addr(
                                             &crate::arch::RegisterFile::new(arch),
                                             None,
                                             &ctx,

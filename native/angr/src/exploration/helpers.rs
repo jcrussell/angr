@@ -534,8 +534,8 @@ impl RustExplorationManager {
 
     /// Extract procedure arguments from state registers.
     pub(crate) fn extract_procedure_args(&self, state: &RustSimState, num_args: usize) -> Vec<RustBV> {
-        let arg_regs = self.calling_convention.arg_registers();
-        let ptr_size = self.calling_convention.pointer_size();
+        let arg_regs = self.environment.calling_convention.arg_registers();
+        let ptr_size = self.environment.calling_convention.pointer_size();
         let mut args = Vec::with_capacity(num_args);
 
         let ctx = state.solver().borrow();
@@ -549,7 +549,7 @@ impl RustExplorationManager {
         // If we need more args from stack, get them
         if args.len() < num_args {
             if let Some(sp) = state.get_sp().as_u64() {
-                let stack_start = sp + self.calling_convention.stack_arg_offset();
+                let stack_start = sp + self.environment.calling_convention.stack_arg_offset();
                 for i in 0..(num_args - args.len()) {
                     let addr = stack_start + (i as u64 * ptr_size as u64);
                     if let Ok(value) = state.memory_load(addr, ptr_size) {
@@ -574,8 +574,8 @@ impl RustExplorationManager {
     /// exceeds the available register count, the extra slots are zero —
     /// callers should treat that as a misconfiguration.
     pub(crate) fn extract_syscall_args(&self, state: &RustSimState, num_args: usize) -> Vec<RustBV> {
-        let arg_regs = self.calling_convention.syscall_arg_registers();
-        let ptr_size = self.calling_convention.pointer_size();
+        let arg_regs = self.environment.calling_convention.syscall_arg_registers();
+        let ptr_size = self.environment.calling_convention.pointer_size();
         let mut args = Vec::with_capacity(num_args);
 
         for &offset in arg_regs.iter().take(num_args) {
@@ -591,7 +591,7 @@ impl RustExplorationManager {
     /// Get return address from stack.
     pub(crate) fn get_return_addr(&self, state: &RustSimState) -> Option<u64> {
         let sp = state.get_sp().as_u64()?;
-        let ptr_size = self.calling_convention.pointer_size();
+        let ptr_size = self.environment.calling_convention.pointer_size();
 
         // On x86/AMD64, return address is at [rsp] after call
         state.memory_load(sp, ptr_size).ok()?.as_u64()
