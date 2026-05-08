@@ -1,33 +1,45 @@
-## Session log: 2026-05-08, 159th loop session
+## Session log: 2026-05-08, 160th loop session
 
-### Task: angr-5yxf — Tighten _init_cache user-symbolic guard (parity with disk cache)
+### Task: angr-491g — Concrete-address fast path before memory_*_symbolic_full callback
 
-Mirrored the disk-cache user-symbolic guard in the in-memory init cache
-path. Changes in `angr/exploration/rust_manager.py`:
+**Outcome: closed as no-longer-motivated** (no code change).
 
-1. Added `_compute_mem_init_key(state, cache_key)` next to
-   `_compute_disk_init_key`. Returns `''` when cache_key is empty OR when
-   `_state_has_user_symbolic(state)` is True.
-2. In `_run_python_init_if_needed`, compute `mem_key` and pass it to
-   `_try_in_memory_init_cache` and `_step_python_to_main` (the latter
-   forwards to `_save_init_state_to_caches`). This gates BOTH read and
-   write paths.
+### Verification (static analysis)
+The optimization "check if addr is concrete with one solver query before
+calling fallback_*_symbolic_full" is already implemented as the
+`read_fallback_any` / `write_fallback_max` defaults in
+`native/angr/src/concretize.rs`:
 
-Did NOT rename downstream `cache_key` parameter to `mem_key` — semantics
-unchanged, just the source value is now gated. Less diff = less risk.
-Did NOT remove the `_isolate_class_caches` test fixture — it remains as
-defense-in-depth.
+- `read_fallback_any=true` (line 156) — `concretize_read` converts any
+  TooLarge into Single via `ctx.eval()`.
+- `write_fallback_max=true` (line 157) — `concretize_write` converts
+  any TooLarge into Single via `ctx.range()`/`ctx.eval()`.
+- `concretize_internal`'s Failed branch (line 358) only fires after
+  `eval()` ALREADY returned None.
 
-### Verification
-- All 8 TestEdgeCases pass (production fix is in; test fixture is now
-  redundant but kept).
-- Smoke: state with BVS .data store → in-mem cache stays at 0 (was: 1, polluted)
-- Smoke: clean state, fresh disk cache → in-mem cache populates to 1
-  (regression check — no behavior change for the common path)
-- Full suite: 332/332 in tests/engines/test_rust_exploration.py
+Both flags are always-on; there is no setter to disable them.
+
+So `fallback_load_symbolic_full` / `fallback_store_symbolic_full` can
+only be reached when:
+1. The state is genuinely unsat (eval returned None upstream), or
+2. A LoadG Strided case (different concern, not in scope).
+
+Adding another `ctx.eval()` before the fallback would be a no-op.
+
+### Independent verification
+Acceptance criteria already met:
+- sym-write 0.42s < 1s target (per benchmark-2026-05-05-sweep memory)
+- mma_howtouse 0.65x slowdown is dominated by Python UltraPage memory
+  leak (per mma-howtouse-leak-source memory), not these callbacks.
+
+### Memory saved
+- `avoid-491g-already-implemented` — full rationale for future audits
 
 ### Status
-done — to be committed and bead closed next.
+done — bead closed, memory saved, no commits needed (no code changed).
 
 ### Followups
-None. The fix is self-contained.
+None. The bead's "verify with profiling before pursuing" step was
+fulfilled via static analysis of the existing code paths, with
+benchmark/leak memories corroborating that the runtime hot path is
+elsewhere.
