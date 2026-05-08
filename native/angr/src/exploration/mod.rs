@@ -1632,6 +1632,32 @@ impl RustExplorationManager {
         })
     }
 
+    /// Set the Z3 solver timeout (ms) on a specific state's solver context.
+    ///
+    /// Future forks of this state inherit the new timeout.  Used by
+    /// RustSolverProxy to honor `state.solver.timeout = N` assignments.
+    pub fn set_state_solver_timeout(&self, state_id: u64, timeout_ms: u32) -> PyResult<()> {
+        let state = self.find_state(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "set_state_solver_timeout: state {} not found",
+                state_id
+            ))
+        })?;
+        state.solver().borrow().set_timeout(timeout_ms);
+        Ok(())
+    }
+
+    /// Get the Z3 solver timeout (ms) on a specific state's solver context.
+    pub fn get_state_solver_timeout(&self, state_id: u64) -> PyResult<u32> {
+        let state = self.find_state(state_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "get_state_solver_timeout: state {} not found",
+                state_id
+            ))
+        })?;
+        Ok(state.solver().borrow().timeout_ms())
+    }
+
     /// Fork the solver context of an arbitrary state (by ID).
     ///
     /// Returns a new RustSolverContext with all of the state's constraints,

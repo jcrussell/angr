@@ -179,6 +179,11 @@ impl RustSolverContext {
         self.inner.ctx().set_timeout(timeout_ms);
     }
 
+    /// Get the Z3 solver timeout in milliseconds.
+    pub fn timeout_ms(&self) -> u32 {
+        self.inner.ctx().timeout_ms()
+    }
+
     /// Evaluate a claripy AST to a single concrete value.
     ///
     /// Returns None if unsatisfiable or the expression cannot be evaluated.

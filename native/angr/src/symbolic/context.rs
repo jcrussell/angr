@@ -1741,6 +1741,11 @@ impl SymContext {
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn timeout_ms(&self) -> u32 {
+        0
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
     pub fn unsat_core(&self) -> Vec<usize> {
         // Without Z3, no unsat core available
         vec![]

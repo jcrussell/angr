@@ -208,6 +208,30 @@ class RustSolverProxy:
         """Get all constraints as claripy ASTs."""
         return self._mgr.export_state_constraints(self._state_id)
 
+    @property
+    def timeout(self):
+        """Z3 solver timeout in milliseconds for this state's solver context."""
+        try:
+            return self._mgr.get_state_solver_timeout(self._state_id)
+        except Exception:
+            # State may have been GC'd or backend lacks Z3 — return 0 as default.
+            return 0
+
+    @timeout.setter
+    def timeout(self, value):
+        """Forward `state.solver.timeout = N` to the Rust solver context.
+
+        Updates the underlying state's SymContext so future forks inherit
+        the timeout, and also propagates to the proxy's already-forked
+        solver (if any) so the next satisfiable()/eval() honors it.
+        """
+        if value is None:
+            return
+        timeout_ms = int(value)
+        self._mgr.set_state_solver_timeout(self._state_id, timeout_ms)
+        if self._solver_ctx is not None:
+            self._solver_ctx.set_timeout(timeout_ms)
+
 
 class RustRegisterProxy:
     """

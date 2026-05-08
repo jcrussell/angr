@@ -804,6 +804,63 @@ class TestInspectProxy:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestSolverProxyTimeout:
+    """Tests that state.solver.timeout = N propagates to the Rust solver.
+
+    Regression for angr-cmfn: previously the assignment landed on the proxy
+    and silently disappeared — Rust kept the default 30s timeout.
+    """
+
+    def test_timeout_setter_propagates_to_state_solver(self):
+        """Assignment updates the underlying RustSimState's solver context,
+        not just a proxy field, so future forks inherit the value."""
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        proxy = RustStateProxy(mgr, sid)
+
+        proxy.solver.timeout = 1234
+        # Read back via the manager (verifies state-level propagation)
+        assert mgr.get_state_solver_timeout(sid) == 1234
+        # Read back via the proxy (verifies getter shape)
+        assert proxy.solver.timeout == 1234
+
+    def test_timeout_setter_bounds_satisfiable_walltime(self):
+        """A tight per-state timeout must bound `state.solver.satisfiable()`
+        wall-clock — the path users actually hit when they write
+        `state.solver.timeout = N` before evaluating.
+        """
+        import time
+        import claripy
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        proxy = RustStateProxy(mgr, sid)
+
+        proxy.solver.timeout = 50  # ms
+
+        x = claripy.BVS("x_factor", 128)
+        y = claripy.BVS("y_factor", 128)
+        n = 0xC0DEBABE_DEADBEEF_FEEDFACE_CAFEF00D
+        proxy.solver.add(x * y == n)
+        proxy.solver.add(x > (1 << 60))
+        proxy.solver.add(y > (1 << 60))
+        proxy.solver.add(x < (1 << 100))
+        proxy.solver.add(y < (1 << 100))
+
+        start = time.monotonic()
+        _ = proxy.solver.satisfiable()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, (
+            f"satisfiable() took {elapsed:.2f}s with a 50ms per-state timeout "
+            f"— state.solver.timeout did not flow to the Rust solver."
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStashOperations:
     """Tests for stash management operations."""
 
