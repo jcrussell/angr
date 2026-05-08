@@ -1,54 +1,52 @@
-## Session log: 2026-05-08, 164th loop session
+## Session log: 2026-05-08, 165th loop session
 
-### Task: angr-qrhl.1 (closed) — Float-conversion macro for the 18 stubs in vex/ops.rs
+### Task: angr-cihh (closed) — Log debug info from bare-except blocks in rust_state_cache.py
 
-First child of angr-qrhl. The 18 hand-written conversion functions at
-`native/angr/src/vex/ops.rs:2386-2443` (f32_to_f64, i64u_to_f64,
-f64_to_i32s, etc.) were near-identical 3-line stubs that delegated to
-`Self::float_to_float / int_to_float / float_to_int` and differed only
-in the source/destination width, signedness, precision, and concrete
-lambda. Replaced with four declarative macros (one per kind) plus
-table-form invocations. No behavior change — the macros expand to the
-same fn definitions.
+Quick housekeeping bead. The 11 bare `except Exception: pass` guards
+in `angr/exploration/rust_state_cache.py` silently swallowed every
+failure during state-cache lookups, predicate evaluation, and cleanup.
+Replaced each with
+`except Exception as e: l.debug("<context>: %s: %s", type(e).__name__, e)`
+so `--debug` runs surface the swallowed exception class plus message
+and the relevant identifiers (state ID, stash, address) without
+changing behavior.
 
-### What changed
+### Sites updated
 
-`native/angr/src/vex/ops.rs`:
+- `_register_handle`: `set_state_addr_to_ast` best-effort link
+- `_evaluate_predicates_on_active`:
+  - `get_state_predicate_info` bulk fetch
+  - `get_state_stdout` proxy build
+  - `_find_predicate` + `_avoid_predicate` invocations
+  - outer state-setup wrapper
+  - `move_state` for found / avoid stash
+- `_create_state_for_predicate`: `get_state_root`, PC sync
+- `_cleanup_state_cache` + `_cleanup_state_refs`: `clear_state_metadata`
 
-- Added 4 module-level macros next to the existing `width_unop!` /
-  `width_binop!` (lines 58-117):
-  - `define_float_to_float!` — 2 conversions
-  - `define_int_to_float!` — 8 conversions (signed/unsigned × 32/64 ×
-    f32/f64)
-  - `define_float_to_int_signed!` — 4 conversions (signed dst path
-    needs `as iN as uN` cast pair)
-  - `define_float_to_int_unsigned!` — 4 conversions
-- Replaced the 58-line stub region (2386-2443) with 30 lines of
-  table-form invocations.
+### Why ready-list filtering ate most of the triage
 
-### Why two float-to-int macros, not one
-
-Signed and unsigned float-to-int closures differ in cast width: signed
-needs `... as i32 as u32 as u128` (intermediate signed cast preserves
-sign-extend semantics through the u128 widen), unsigned needs
-`... as u32 as u128`. Could be unified with a tt-muncher arm, but two
-short macros are simpler and the locks-the-pattern win is the same.
+Three of the top-priority ready beads (`angr-4j5u.*` family and the
+`angr-wqao.*` family) were skipped: their parent decomposition tasks
+were deferred 2026-05-07 and the memos
+(`avoid-deferred-4j5u-rustexploration-decomposition`,
+`avoid-deferred-wqao-rust-manager-decomposition`) explicitly say "do not
+re-open without (a) a concrete bug showing field-coupling drift OR (b) a
+refactor that genuinely changes responsibilities — not just renames or
+rehoming." `angr-4j5u.1` is the textbook field-renaming refactor the
+memos warn against. `angr-lvem` (ARM/MIPS integration tests) is blocked
+upstream by `avoid-arm-rust-engine-mgr-run` which says ARM through the
+high-level `RustExplorationManager.run()` silently drops states.
+`angr-cihh` was a clean, low-risk, single-session housekeeping task.
 
 ### Verification
 
-- `cargo check --manifest-path native/angr/Cargo.toml --release` clean
-- `cargo test --manifest-path native/angr/Cargo.toml --release --lib
-  vex::ops` → 87/87 passing (includes test_f32_to_i32s_nan,
-  test_f32_to_i32s_pos_infinity, test_f32_to_i32s_neg_infinity,
-  test_f32_to_i32s_overflow, test_i32s_to_f32_int_min,
-  test_f64_to_f32_overflow, test_f64_to_f32_nan,
-  test_f64_to_f32_neg_infinity).
-- `python -m pytest tests/engines/test_rust_exploration.py` →
-  **332/332 passing**.
+- `python -m pytest tests/engines/test_rust_exploration.py --tb=short -q`
+  → **332/332 passing in 19.03s**.
+- No Rust changes; no rebuild needed.
 
 ### Files changed
 
-- `native/angr/src/vex/ops.rs` (+79, -51)
+- `angr/exploration/rust_state_cache.py` (+36, -23)
 
 ### Tests
 
