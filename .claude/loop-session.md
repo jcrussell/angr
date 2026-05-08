@@ -17,4 +17,8 @@ errored-stash plumbing already preserves `(addr, message, state_id)` and the
 state proxy exposes regs/history/solver.constraints.
 
 ### Status
-implementing
+done — committed (030c55007) and closed.
+
+- Added 6 unit tests; 322/322 tests pass.
+- Saved invariant-error-class-taxonomy memory linking taxonomy to
+  CbExecutionError prefixes so future variant additions update both sides.
