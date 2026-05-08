@@ -342,6 +342,245 @@ class TestRustExplorationManagerUnit:
             f"Native procedure return register is bleeding into the wrong slot."
         )
 
+    # ------------------------------------------------------------------
+    # Edge-case tests for register_python_procedure (angr-x9bx).
+    # The PyO3 API exposes registration but invocation is dispatcher-driven,
+    # so each test stands up an amd64 state at a hook PC and runs mgr.run().
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _setup_amd64_python_proc_test(
+        mgr,
+        hook_addr,
+        proc_name,
+        num_args,
+        no_return,
+        callable_,
+        arg_values=None,
+        return_addr=0xDEADC0DE,
+    ):
+        """Common amd64 fixture: callbacks, hook binding, stack/regs setup.
+
+        Registers `callable_` as a native procedure under `proc_name`, binds
+        `hook_addr` to it, and produces a `RustSimState` with PC=hook_addr
+        and SystemV arg registers (RDI, RSI, RDX, RCX, R8, R9) populated
+        from `arg_values`. Returns the state — caller adds it to the stash.
+        """
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: '{}')
+        mgr.set_callbacks(callbacks)
+
+        mgr.register_python_procedure(
+            proc_name, num_args=num_args, no_return=no_return, callable=callable_
+        )
+        mgr.register_simprocedure(hook_addr, proc_name, num_args=num_args, no_return=no_return)
+
+        STACK_BASE = 0x7FFF0000
+        state = RustSimState("amd64")
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        # SystemV: return addr at [rsp].
+        state.memory_store(STACK_BASE, return_addr.to_bytes(8, "little"))
+        state.set_register("rsp", STACK_BASE)
+
+        SYSV_ARG_REGS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
+        for reg, val in zip(SYSV_ARG_REGS, arg_values or ()):
+            state.set_register(reg, val)
+        state.pc = hook_addr
+        return state
+
+    def test_python_procedure_symbolic_arg_falls_back_to_python(self, fauxware_project):
+        """A symbolic argument must trigger the Python SimProcedure fallback,
+        not invoke the registered native callable.
+
+        extract_concrete_arg (procedures/mod.rs) returns ProcedureError::
+        SymbolicArgument when the BV is symbolic; the dispatcher catches
+        the Err, increments native_proc_stats.python_fallbacks, and emits
+        a need_simprocedure event so Python can handle it.
+        """
+        import claripy
+
+        mgr = _RustExplorationManager("amd64")
+        invocations = []
+
+        def proc(args):
+            invocations.append(tuple(args))
+            return 0
+
+        HOOK = 0x500000
+        state = self._setup_amd64_python_proc_test(
+            mgr, HOOK, "sym_proc", num_args=1, no_return=False, callable_=proc,
+        )
+
+        # Replace RDI with a fresh symbolic BV via the shared Z3 context.
+        sym = claripy.BVS("sym_arg0", 64)
+        ast_ptr = claripy.backends.z3.convert(sym).as_ast().value
+        state.set_register_symbolic("rdi", ast_ptr, 64)
+
+        mgr.add_state("active", state)
+        event = mgr.run(5)
+
+        # Native call attempted then errored → python_fallbacks bumped, event
+        # emitted asking Python to take over the SimProcedure.
+        stats = mgr.native_procedure_stats()
+        assert stats["python_fallbacks"] >= 1, (
+            f"expected python_fallbacks>=1 after symbolic arg, got stats={stats}"
+        )
+        assert stats["native_calls"] == 0
+        assert invocations == [], (
+            f"python callable must NOT run for symbolic args; invocations={invocations}"
+        )
+        assert event.event_type == "need_callback", (
+            f"expected need_callback (SimProcedure fallback); got {event.event_type}"
+        )
+        assert event.callback_reason == "simprocedure"
+
+    def test_python_procedure_num_args_truncates_at_registered_count(self):
+        """The dispatcher extracts exactly `num_args` values from the calling
+        convention. Extra args sitting in unused registers (e.g. RDX when
+        num_args=2) must not leak into the callable.
+        """
+        mgr = _RustExplorationManager("amd64")
+        invocations = []
+
+        def proc(args):
+            invocations.append(tuple(args))
+            return 0
+
+        HOOK = 0x500100
+        EXIT_HOOK = 0x600100
+        # Two-arg procedure, but populate three arg regs.
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        state = self._setup_amd64_python_proc_test(
+            mgr, HOOK, "two_arg_proc", num_args=2, no_return=False, callable_=proc,
+            arg_values=(0xAAAA, 0xBBBB, 0xCCCC),  # rdi, rsi, rdx
+            return_addr=EXIT_HOOK,
+        )
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        assert len(invocations) == 1, f"expected one invocation, got {invocations}"
+        assert invocations[0] == (0xAAAA, 0xBBBB), (
+            f"only the first num_args=2 values should reach the callable; "
+            f"got {invocations[0]} (RDX={hex(0xCCCC)} should not appear)"
+        )
+
+    def test_python_procedure_zero_args_passes_empty_list(self):
+        """num_args=0 must result in the callable receiving an empty list,
+        regardless of what's sitting in the arg registers.
+        """
+        mgr = _RustExplorationManager("amd64")
+        invocations = []
+
+        def proc(args):
+            invocations.append(tuple(args))
+            return 7
+
+        HOOK = 0x500200
+        EXIT_HOOK = 0x600200
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        state = self._setup_amd64_python_proc_test(
+            mgr, HOOK, "no_arg_proc", num_args=0, no_return=False, callable_=proc,
+            arg_values=(0xDEAD, 0xBEEF),  # ignored
+            return_addr=EXIT_HOOK,
+        )
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        assert invocations == [()]
+
+    @pytest.mark.parametrize(
+        "bad_return,label",
+        [
+            (-1, "negative int (signed → u64 extract fails)"),
+            (1 << 70, "value larger than u64::MAX"),
+            ("not_an_int", "non-integer return"),
+            (3.14, "float return"),
+        ],
+    )
+    def test_python_procedure_invalid_return_falls_back(self, bad_return, label):
+        """Returning a value that won't fit u64 (negative, too large, or
+        non-int) must surface as a Python fallback rather than corrupting
+        RAX. The dispatcher's match arm catches ProcedureError::Other and
+        bumps python_fallbacks.
+        """
+        mgr = _RustExplorationManager("amd64")
+        invocations = []
+
+        def proc(args):
+            invocations.append(tuple(args))
+            return bad_return
+
+        HOOK = 0x500300
+        state = self._setup_amd64_python_proc_test(
+            mgr, HOOK, "bad_ret_proc", num_args=0, no_return=False, callable_=proc,
+        )
+
+        mgr.add_state("active", state)
+        event = mgr.run(5)
+
+        # The callable did run (extract_concrete_arg passed), but the return
+        # extraction failed, so the dispatcher fell back.
+        assert invocations == [()], f"({label}) expected one invocation, got {invocations}"
+        stats = mgr.native_procedure_stats()
+        assert stats["python_fallbacks"] >= 1, (
+            f"({label}) expected python_fallbacks>=1, got stats={stats}"
+        )
+        assert stats["native_calls"] == 0, (
+            f"({label}) failed return must not count as a successful native call"
+        )
+        assert event.event_type == "need_callback", (
+            f"({label}) expected need_callback fallback; got {event.event_type}"
+        )
+
+    def test_python_procedure_re_registration_overrides_prior(self):
+        """Registering a procedure under an existing name must replace the
+        prior callable (HashMap.insert semantics). The dispatcher should
+        invoke the most recently registered one.
+        """
+        mgr = _RustExplorationManager("amd64")
+
+        first_calls = []
+        second_calls = []
+
+        def first(args):
+            first_calls.append(tuple(args))
+            return 0x1111
+
+        def second(args):
+            second_calls.append(tuple(args))
+            return 0x2222
+
+        HOOK = 0x500400
+        EXIT_HOOK = 0x600400
+        # First registration via the helper, then override.
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        state = self._setup_amd64_python_proc_test(
+            mgr, HOOK, "swap_proc", num_args=0, no_return=False, callable_=first,
+            return_addr=EXIT_HOOK,
+        )
+        # Re-register same name with a different callable.
+        mgr.register_python_procedure(
+            "swap_proc", num_args=0, no_return=False, callable=second,
+        )
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        assert first_calls == [], f"prior callable must not run; got {first_calls}"
+        assert second_calls == [()], f"override callable must run once; got {second_calls}"
+
+        # RAX should hold the override's return value (0x2222), not 0x1111.
+        deadended = mgr.get_state_ids("deadended")
+        assert len(deadended) == 1, f"stashes={mgr.stash_counts()}"
+        rax = mgr.get_state_register(deadended[0], "rax")
+        assert rax == 0x2222, (
+            f"expected RAX=0x2222 from override callable; got {rax:#x}"
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustSimStateIntegration:
