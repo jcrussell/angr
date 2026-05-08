@@ -1,41 +1,52 @@
-## Session log: 2026-05-08, 157th loop session
+## Session log: 2026-05-08, 158th loop session
 
-### Task: angr-ykdq — Claripy annotations dropped across Rust↔Python FFI boundary
+### Task: angr-32ky — Improve test coverage for edge cases
 
-Goal: Preserve claripy annotations on RustBV::Expression nodes when
-converted back to Python. BVS-leaf annotations already survived via
-SymbolicIdentityRegistry; Expression-level annotations were dropped
-because rustbv_to_claripy_memo() rebuilt the AST from BVOp+operands.
+Added a new TestEdgeCases class in tests/engines/test_rust_exploration.py
+with 8 tests covering the 7 scenarios listed in the bead:
 
-### Changes
-1. native/angr/src/claripy_bridge.rs
-   - Added thread-local `EXPRESSION_BY_OPERANDS_PTR: LruCache<usize, (RustBV, Py<PyAny>)>`
-   - Populated in claripy_to_rustbv after non-BVV result. Key: Arc::as_ptr of
-     operands. Value: (BV clone, original AST). The BV clone pins the operands
-     Arc alive — pointer reuse is structurally impossible while entry is live.
-   - rustbv_to_claripy_memo consults the cache for Expression nodes BEFORE
-     rebuilding, returning the imported AST verbatim on hit.
-   - Cleared by clear_ast_cache().
-2. tests/engines/test_rust_exploration.py
-   - Added TestClaripyAnnotationRoundtrip class with 2 tests:
-     - test_uninitialized_annotation_on_bvs_in_memory (passes pre- and post-fix;
-       guards against regression of leaf-level preservation)
-     - test_annotation_on_expression_via_export_constraints (FAILS pre-fix,
-       PASSES post-fix; demonstrates the bug is fixed). Filters exported
-       constraints by op pattern to avoid pre-existing test-isolation leaks
-       through the shared Z3 context.
+1. test_no_branches_single_basic_block_expression_store — Expression
+   ((x+0x100) ^ 0xDEADBEEF) stored to memory, single-step run, load+eval.
+2. test_wide_symbolic_value_in_memory_256bit — 256-bit BVS roundtrip.
+3. test_wide_symbolic_value_in_memory_512bit — 512-bit BVS roundtrip,
+   constraints on both ends.
+4. test_explore_with_zero_find_addresses — explore() with no find drains
+   active without populating found.
+5. test_only_avoid_addresses_no_find — avoid=0x4006fd alone routes states
+   into mgr.avoid stash.
+6. test_lazy_solves_option_explore — LAZY_SOLVES option still finds the
+   target and produces a satisfiable state.
+7. test_multiple_explores_on_same_manager — re-entrant explore() doesn't
+   reset stashes; total step counter is monotonic.
+8. test_symbolic_store_then_load_same_address — store BVS at addr, load,
+   constrain after run, eval matches.
+
+### Surprise finding (saved as invariant-rust-init-cache-user-store-leak)
+
+Tests 2/3/7 failed initially because RustExplorationManager._init_cache
+(class-level dict at rust_manager.py:432) caches the post-Python-init
+state at main, INCLUDING user-state stores that survived _step_python_to_main.
+Subsequent tests cache-hit and call _apply_state_metadata, which copies
+constraints/globals/options but NOT memory pages — so user stores from
+the cached state silently overwrite the new test's user stores. Loaded
+values come back as <BV W 0x0>.
+
+Disk-cache path is guarded by _state_has_user_symbolic (rust_manager.py:1728)
+but the in-memory path (rust_manager.py:1670) is NOT. Filed angr-5yxf
+(P3) to mirror the guard.
+
+Tests use an autouse `_isolate_class_caches` fixture that clears
+_init_cache before+after each test to break the bleed.
 
 ### Verification
-- Pre-fix (claripy_bridge.rs reverted via git stash): expression test FAILS
-  on `<Bool ann_expr_test_x_..._32 + 0x64 > 0xc8>` with no annotation.
-- Post-fix: both tests pass. Full 324/324 suite green.
-- Benchmarks: 11/12 pass (csgames2018 timeout is pre-existing — also times
-  out without the fix).
+- 332/332 in tests/engines/test_rust_exploration.py (was 324; +8)
+- No build needed (test-only change)
 
 ### Status
-done — committed (9d2981d50) and bead closed.
+done — committed (34acce8db) and bead closed.
 
 Memories saved:
-- invariant-claripy-annotation-preservation (two-layer roundtrip mechanism)
-- invariant-rust-test-export-constraints-leak (cross-test leak workaround)
-- avoid-rustbv-enum-field-add (67 callsites — prefer side-tables)
+- invariant-rust-init-cache-user-store-leak (the cache asymmetry mechanism)
+
+Followups created:
+- angr-5yxf (P3) — tighten _init_cache user-symbolic guard
