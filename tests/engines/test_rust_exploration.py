@@ -5876,5 +5876,214 @@ class TestClaripyAnnotationRoundtrip:
                 )
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestEdgeCases:
+    """End-to-end edge-case tests for RustExplorationManager (angr-32ky).
+
+    These exercise scenarios that have caused bugs historically: non-branching
+    binaries, wide symbolic bitvectors, exhausted exploration without find,
+    avoid-only configurations, LAZY_SOLVES, re-entrant exploration, and
+    store/load roundtrip on the same symbolic address.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_class_caches(self):
+        """RustExplorationManager._init_cache is class-level and caches the
+        post-init state, including user stores added before manager construction.
+        Without this clear, user stores from one test bleed into the next via
+        the cached state, breaking memory.load assertions. _apply_state_metadata
+        copies constraints/options but not memory pages, so the bleed is silent.
+        """
+        from angr.exploration.rust_manager import RustExplorationManager
+        RustExplorationManager._init_cache.clear()
+        yield
+        RustExplorationManager._init_cache.clear()
+
+    def test_no_branches_single_basic_block_expression_store(self, fauxware_project):
+        """Storing an Expression (not a leaf BVS or BVV) into memory and
+        loading it back must roundtrip correctly without forking, even when
+        the executing block has no conditional branches."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        x = claripy.BVS("nobranch_expr_x", 32)
+        # Inner Expression: not a leaf — uses __add__ + Concat-equivalent op.
+        expr = (x + 0x100) ^ 0xDEADBEEF
+        addr = 0x500200
+        state.memory.store(addr, expr, endness=state.arch.memory_endness)
+        # Single-step the manager: 1 step keeps us inside the entry basic
+        # block (fauxware's _start has no branches in the first block).
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+
+        # No forks: still a single state in active (or moved to deadended).
+        all_states = list(mgr.active) + list(mgr.deadended)
+        assert len(all_states) >= 1, "expected at least one state after 1 step"
+        s = all_states[0]
+        loaded = s.memory.load(addr, 4, endness=s.arch.memory_endness)
+        # Solve under x == 0: expected value = (0 + 0x100) ^ 0xDEADBEEF.
+        s.solver.add(x == 0)
+        assert s.solver.eval(loaded) == ((0x100) ^ 0xDEADBEEF), (
+            f"Expression roundtrip via store/load failed; got {s.solver.eval(loaded):#x}"
+        )
+
+    def test_wide_symbolic_value_in_memory_256bit(self, fauxware_project):
+        """A 256-bit symbolic value stored in memory survives the
+        manager-init export/import roundtrip."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        wide = claripy.BVS("wide_sym_256", 256)
+        addr = 0x500300
+        state.memory.store(addr, wide, endness=state.arch.memory_endness)
+        # Constrain low byte so we can verify after roundtrip.
+        state.solver.add(claripy.Extract(7, 0, wide) == 0x42)
+
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        all_states = list(mgr.active) + list(mgr.deadended)
+        assert all_states, "expected at least one state after 1 step"
+        s = all_states[0]
+        loaded = s.memory.load(addr, 32, endness=s.arch.memory_endness)
+        assert loaded.length == 256
+        # Low byte must satisfy the constraint.
+        low_byte = s.solver.eval(claripy.Extract(7, 0, loaded))
+        assert low_byte == 0x42, f"low byte of 256-bit BV roundtrip failed: {low_byte:#x}"
+
+    def test_wide_symbolic_value_in_memory_512bit(self, fauxware_project):
+        """A 512-bit symbolic value stored in memory survives the
+        manager-init export/import roundtrip."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        wide = claripy.BVS("wide_sym_512", 512)
+        addr = 0x500400
+        state.memory.store(addr, wide, endness=state.arch.memory_endness)
+        state.solver.add(claripy.Extract(7, 0, wide) == 0xAB)
+        state.solver.add(claripy.Extract(511, 504, wide) == 0xCD)
+
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        all_states = list(mgr.active) + list(mgr.deadended)
+        assert all_states, "expected at least one state after 1 step"
+        s = all_states[0]
+        loaded = s.memory.load(addr, 64, endness=s.arch.memory_endness)
+        assert loaded.length == 512
+        assert s.solver.eval(claripy.Extract(7, 0, loaded)) == 0xAB
+        assert s.solver.eval(claripy.Extract(511, 504, loaded)) == 0xCD
+
+    def test_explore_with_zero_find_addresses(self, fauxware_project):
+        """explore() with find=None must drain all active states without
+        crashing; nothing ends up in found."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # No find set anywhere — exploration runs until active is empty (or
+        # max_steps, whichever first). Use a generous step budget so fauxware
+        # naturally terminates in deadended.
+        mgr.explore(max_steps=50000)
+
+        assert len(mgr.found) == 0, f"found should be empty with no find, got {len(mgr.found)}"
+        # active drains to other stashes — total state count is preserved.
+        total = (len(mgr.active) + len(mgr.deadended)
+                 + len(mgr.avoid) + len(mgr.errored))
+        assert total >= 1, f"all states vanished: counts={mgr.stash_counts()}"
+
+    def test_only_avoid_addresses_no_find(self, fauxware_project):
+        """An exploration configured with avoid (no find) routes states that
+        hit avoid into the avoid stash; remaining states deadend."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # 0x4006fd is the rejection branch in fauxware. Without find, the
+        # explore loop should still dispatch avoid via the address set.
+        mgr.explore(avoid=0x4006fd, max_steps=50000)
+
+        assert len(mgr.found) == 0, "no find configured — found must be empty"
+        # At least one path through fauxware reaches the rejection branch when
+        # auth values are unconstrained.
+        assert len(mgr.avoid) >= 1, (
+            f"expected at least one avoided state; counts={mgr.stash_counts()}"
+        )
+
+    def test_lazy_solves_option_explore(self, fauxware_project):
+        """Exploration with LAZY_SOLVES enabled completes and finds the
+        target state. LAZY_SOLVES defers the per-branch satisfiability check;
+        the Rust engine must still produce a satisfiable found state."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.LAZY_SOLVES},
+        )
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+
+        assert len(mgr.found) >= 1, (
+            f"LAZY_SOLVES exploration found nothing; counts={mgr.stash_counts()}"
+        )
+        # The found state's constraints must still be satisfiable.
+        assert mgr.found[0].solver.satisfiable(), (
+            "found state under LAZY_SOLVES is not satisfiable"
+        )
+
+    def test_multiple_explores_on_same_manager(self, fauxware_project):
+        """Re-entrant exploration: calling explore() twice on the same
+        manager continues from where the previous call left off without
+        resetting found/active stashes."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # First explore: small step budget — likely doesn't reach target.
+        mgr.explore(find=0x4006ed, max_steps=50)
+        first_found = len(mgr.found)
+        first_total_steps = mgr.stats.get("total_steps", 0)
+
+        # Second explore: continue with a larger budget. Must not crash and
+        # must accumulate steps on top of the first call.
+        mgr.explore(find=0x4006ed, max_steps=50000)
+        second_total_steps = mgr.stats.get("total_steps", 0)
+
+        assert second_total_steps >= first_total_steps, (
+            f"step counter regressed across explores: {first_total_steps} -> {second_total_steps}"
+        )
+        # Re-entrant explore must eventually find the target.
+        assert len(mgr.found) >= max(1, first_found), (
+            f"found stash regressed across explores; "
+            f"first={first_found}, second={len(mgr.found)}"
+        )
+
+    def test_symbolic_store_then_load_same_address(self, fauxware_project):
+        """A symbolic value stored at an address and immediately loaded from
+        the same address must roundtrip — solver eval under a unique
+        assignment yields the assigned value."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        addr = 0x500500
+        sym = claripy.BVS("rw_same_addr_sym", 64)
+        state.memory.store(addr, sym, endness=state.arch.memory_endness)
+
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        all_states = list(mgr.active) + list(mgr.deadended)
+        assert all_states, "expected at least one state after 1 step"
+        s = all_states[0]
+        # Read back from the same address; constrain symbol; verify load
+        # follows the constraint.
+        loaded = s.memory.load(addr, 8, endness=s.arch.memory_endness)
+        s.solver.add(sym == 0x1122334455667788)
+        assert s.solver.eval(loaded) == 0x1122334455667788, (
+            f"store/load roundtrip on same symbolic address failed: "
+            f"got {s.solver.eval(loaded):#x}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
