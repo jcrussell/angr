@@ -17,6 +17,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use lru::LruCache;
 use pyo3::prelude::*;
@@ -54,6 +55,31 @@ thread_local! {
 thread_local! {
     static EXPRESSION_CACHE: RefCell<LruCache<u64, Py<PyAny>>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression cache capacity is a non-zero constant")));
+}
+
+// Thread-local Arc-pointer-keyed Expression cache.
+//
+// Maps the operands `Arc<[RustBV]>` raw pointer of a freshly-imported
+// claripy Expression to (1) the original `RustBV::Expression` (held to
+// keep the operands Arc alive, ruling out pointer reuse) and (2) the
+// original claripy AST. Used by `rustbv_to_claripy_memo` to return the
+// imported AST verbatim instead of rebuilding from BVOp+operands. This
+// preserves claripy annotations (and any other AST metadata) attached
+// to the Expression itself — without it, annotations on intermediate
+// expression nodes are dropped on the Rust→Python return trip even
+// when the leaves carry annotations that would otherwise propagate.
+// See angr-ykdq.
+//
+// Why Arc::as_ptr keys: the operands Arc is created fresh by each
+// builder call (`add_into`, `mul_into`, ...) and is stable across
+// `RustBV::clone()` (refcount bump), so a cloned Expression shares its
+// parent's cache entry. Two distinct claripy Expressions get distinct
+// Arcs. Holding the BV clone in the value pins the Arc alive so the
+// allocator cannot reuse the pointer for an unrelated Expression while
+// the entry is in cache. Cleared by `clear_ast_cache`.
+thread_local! {
+    static EXPRESSION_BY_OPERANDS_PTR: RefCell<LruCache<usize, (RustBV, Py<PyAny>)>> =
+        RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression-by-ptr cache capacity is a non-zero constant")));
 }
 
 /// Store a claripy AST for later retrieval.
@@ -146,6 +172,23 @@ pub fn get_expression_ast(expr_hash: u64) -> Option<Py<PyAny>> {
     })
 }
 
+/// Store the original claripy AST keyed by an imported Expression's
+/// operands Arc pointer. The BV clone is held alongside to pin the
+/// operands Arc alive (preventing pointer reuse on free).
+pub fn store_expression_ast_by_operands(operands_ptr: usize, bv: RustBV, ast: Py<PyAny>) {
+    EXPRESSION_BY_OPERANDS_PTR.with(|cache| {
+        cache.borrow_mut().put(operands_ptr, (bv, ast));
+    });
+}
+
+/// Retrieve a previously stored claripy AST by an Expression's operands
+/// Arc pointer. Returns None on miss.
+pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Option<Py<PyAny>> {
+    EXPRESSION_BY_OPERANDS_PTR.with(|cache| {
+        cache.borrow_mut().get(&operands_ptr).map(|(_, ast)| ast.clone_ref(py))
+    })
+}
+
 /// Clear all AST conversion caches.
 /// Call this at block boundaries or when the constraint set changes significantly.
 ///
@@ -159,6 +202,9 @@ pub fn clear_ast_cache() {
         cache.borrow_mut().clear();
     });
     EXPRESSION_CACHE.with(|cache| {
+        cache.borrow_mut().clear();
+    });
+    EXPRESSION_BY_OPERANDS_PTR.with(|cache| {
         cache.borrow_mut().clear();
     });
 }
@@ -810,6 +856,14 @@ pub fn claripy_to_rustbv(
             // Use the ast_hash as a positive u64 key
             let expr_key = ast_hash as u64;
             store_expression_ast(expr_key, ast.clone().unbind());
+
+            // For Expression results, also key by the operands Arc pointer so
+            // `rustbv_to_claripy_memo` can return the original AST verbatim
+            // (preserving annotations attached at the Expression level).
+            if let RustBV::Expression { operands, .. } = bv {
+                let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
+                store_expression_ast_by_operands(operands_ptr, bv.clone(), ast.clone().unbind());
+            }
         }
     }
 
@@ -927,6 +981,18 @@ fn rustbv_to_claripy_memo(
             // Validate cached value is a claripy AST, not an int
             let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;
             return Ok(cached_valid);
+        }
+    }
+
+    // For Expression variants imported via claripy_to_rustbv, look up the
+    // original AST keyed by the operands Arc pointer. This returns the
+    // Python-side AST verbatim, preserving any annotations attached at the
+    // Expression level (which are otherwise dropped when we rebuild from
+    // BVOp+operands). See angr-ykdq.
+    if let RustBV::Expression { operands, .. } = bv {
+        let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
+        if let Some(cached) = get_expression_ast_by_operands(py, operands_ptr) {
+            return Ok(cached);
         }
     }
 

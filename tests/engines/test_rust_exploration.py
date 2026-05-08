@@ -5767,5 +5767,114 @@ class TestNativeFileDescriptorProcedures:
             proj.unhook(self.DUP2_ADDR)
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestClaripyAnnotationRoundtrip:
+    """Annotations attached to claripy ASTs must survive a Rust→Python
+    roundtrip (constraint export, memory load, eval). See angr-ykdq."""
+
+    def test_uninitialized_annotation_on_bvs_in_memory(self, fauxware_project):
+        """A UninitializedAnnotation on a BVS stored in symbolic memory
+        must still be present after a full RustExplorationManager run."""
+        import claripy
+        from claripy.annotation import UninitializedAnnotation
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={
+                angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+                angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+
+        x = claripy.BVS("uninit_x", 32).annotate(UninitializedAnnotation())
+        addr = 0x500000
+        state.memory.store(addr, x, endness=state.arch.memory_endness)
+        state.solver.add(x == 42)
+
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=200)
+
+        all_states = list(mgr.found) + list(mgr.active) + list(mgr.deadended)
+        assert all_states, "expected at least one state after run"
+        s = all_states[0]
+        loaded = s.memory.load(addr, 4)
+        assert loaded.has_annotation_type(UninitializedAnnotation), (
+            f"UninitializedAnnotation lost on roundtripped BVS in memory; "
+            f"loaded={loaded!r}, annotations={loaded.annotations}"
+        )
+
+    def test_annotation_on_expression_via_export_constraints(self, fauxware_project):
+        """An annotation attached to an Expression node (not on a leaf BVS)
+        must survive when constraints are exported from the Rust solver back
+        to Python via export_state_constraints. Pre-fix, rustbv_to_claripy
+        rebuilt the Expression from BVOp+operands, dropping annotations
+        attached at the Expression level. The Arc-keyed expression cache in
+        claripy_bridge.rs preserves them."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        class _ExprTaint(claripy.Annotation):
+            def __init__(self, tag):
+                self.tag = tag
+            @property
+            def relocatable(self):
+                return True
+            @property
+            def eliminatable(self):
+                return False
+            def __hash__(self):
+                return hash(("_ExprTaint", self.tag))
+            def __eq__(self, other):
+                return isinstance(other, _ExprTaint) and self.tag == other.tag
+
+        state = fauxware_project.factory.entry_state()
+        # Use a unique BVS name so the assertion can filter to constraints
+        # produced by this test (the Rust thread-local cache and global
+        # registry persist across tests in the module-scoped fixture).
+        bvs_name = "ann_expr_test_x"
+        x = claripy.BVS(bvs_name, 32)
+        # Annotate the (x + 100) Expression node specifically. Leaves carry
+        # no annotations; only the inner Expression does.
+        expr_ann = (x + 100).annotate(_ExprTaint("expr-level"))
+        state.solver.add(expr_ann > 200)
+        state.solver.add(expr_ann < 1000)
+
+        mgr = RustExplorationManager(fauxware_project, [state])
+        active_ids = mgr._rust_mgr.get_state_ids("active")
+        assert active_ids, "expected active state after manager init"
+        sid = active_ids[0]
+
+        exported = mgr._rust_mgr.export_state_constraints(sid)
+        exported = [c for c in exported if c is not None]
+        # Filter to constraints produced by this test. The fauxware_project
+        # fixture is module-scoped and the Rust thread-local Z3 context may
+        # carry leaked constraints from earlier tests. Match on op (only this
+        # test introduces __gt__/__lt__ on a __add__ subexpression) and on
+        # the unique BVS name.
+        our_constraints = [
+            c for c in exported
+            if bvs_name in str(c)
+            and getattr(c, "op", None) in ("__gt__", "__lt__", "ULT", "ULE", "UGT", "UGE", "SLT", "SGT", "SLE", "SGE")
+            and any(getattr(a, "op", None) == "__add__" for a in getattr(c, "args", ()))
+        ]
+        assert our_constraints, (
+            f"no exported constraints match this test's pattern: "
+            f"got {[str(c) for c in exported]}"
+        )
+
+        for c in our_constraints:
+            assert c.has_annotation_type(_ExprTaint), (
+                f"top-level constraint dropped Expression annotation: {c!r}"
+            )
+            inner_exprs = [a for a in c.args
+                           if hasattr(a, "op") and a.op == "__add__"]
+            assert inner_exprs, f"expected inner __add__ Expression in {c!r}"
+            for inner in inner_exprs:
+                assert inner.has_annotation_type(_ExprTaint), (
+                    f"inner Expression dropped annotation on roundtrip: "
+                    f"{inner!r}, annotations={inner.annotations}"
+                )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
