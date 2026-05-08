@@ -1,49 +1,73 @@
-## Session log: 2026-05-08, 167th loop session
+## Session log: 2026-05-08, 168th loop session
 
-### Task: angr-4c20 (closed) — RustStateProxy __repr__ enrichment
+### Task: angr-4j5u.1 (closed) — Extract ProfilingCollector struct
 
-Old format: `<RustStateProxy id=42 addr=0x401000>`.
-New format: `<RustStateProxy id=42 addr=0x401000 stash=active constraints=5>`.
+First child of the angr-4j5u decomposition epic. Move three profiling-related
+fields off `RustExplorationManager` and into a single `ProfilingCollector`
+struct so the manager can track an enable flag + per-step stats + native-proc
+counters via one delegated field.
 
 ### What changed
 
-**Native (native/angr/src/exploration/mod.rs)**
-- `state_stash(state_id) -> Option<String>` — wraps existing
-  `StashManager::stash_of()` (HashMap O(1) lookup)
-- `state_constraint_count(state_id) -> Option<usize>` — uses
-  `find_state(...).solver().borrow().num_constraints()`. The inner counter
-  is an AtomicU64 in SymContext, no Z3 traversal.
+**New: native/angr/src/exploration/profiling.rs (34 lines)**
+- `ProfilingCollector` struct with three pub(crate) fields:
+  `profiling_enabled: bool`, `accumulated_stats: ExecutionStats`,
+  `native_proc_stats: NativeProcStats`. `#[derive(Default)]`.
+- `NativeProcStats` moved here from mod.rs; the inline `impl Default`
+  collapsed to a derive (HashMap::default == HashMap::new for the
+  `call_counts` field).
 
-**Python (angr/exploration/rust_state_proxy.py:859)**
-- `__repr__` now optionally includes `stash=` and `constraints=` fields,
-  swallowing FFI errors (e.g., GC'd state) so repr never raises.
+**native/angr/src/exploration/mod.rs**
+- New `mod profiling;` + `use self::profiling::ProfilingCollector;`.
+- Removed inline `NativeProcStats` definition (~17 lines).
+- Removed the three field declarations on `RustExplorationManager`,
+  replaced with a single `pub(crate) profiling: ProfilingCollector`.
+- Constructor: three `field: default()` lines collapse to
+  `profiling: ProfilingCollector::default()`.
+- All ~25 callsites updated mechanically:
+  `self.profiling_enabled` → `self.profiling.profiling_enabled`,
+  `self.accumulated_stats.<x>` → `self.profiling.accumulated_stats.<x>`,
+  `self.native_proc_stats.<x>` → `self.profiling.native_proc_stats.<x>`.
 
-**Tests (tests/engines/test_rust_exploration.py)**
-- `TestStateProxyRepr` class — 3 tests, all green:
-  - happy path covers stash/constraints fields
-  - seeded SimState with 2 pre-added constraints round-trips into
-    constraints>=2 (note: must seed via the source SimState, not
-    proxy.solver.add — see invariant memory below)
-  - cleared stash → repr still valid, fields just omitted
+**native/angr/src/exploration/stepping.rs**
+- Same mechanical replacement for the ~20 callsites here.
+- No structural changes; uses `super::*` so it picks up `ProfilingCollector`
+  via the parent module.
 
-### Build hiccup worth knowing
+### Field count on the manager: 42 → 40 (net -2)
 
-`pip install -e . --no-build-isolation --no-deps` blew up — pip 24.0 in this
-venv has a broken `pip._vendor.resolvelib` (`ImportError: cannot import name
-'RequirementInformation'`) AND setuptools is missing `Lorem ipsum.txt`. Worked
-around: created the empty file, then ran cargo build manually and copied
-target/release/librustylib.so -> angr/rustylib.cpython-312-x86_64-linux-gnu.so.
-Saved to memory `avoid-broken-venv-pip-fallback-cargo-build`.
+The bead description said "95-field god struct" but the actual count is in
+the low 40s (per `avoid-deferred-4j5u` memory). Three fields collapsed to
+one means 42 → 40.
 
-### Memories saved
+### Build hiccup (recurring)
 
-- `avoid-broken-venv-pip-fallback-cargo-build` — cargo + cp fallback when pip
-  is broken
-- `invariant-rust-state-proxy-solver-add-fork-only` — proxy.solver.add lands
-  on a fork, never the underlying state; designs constraint-count tests
-  around this
+The CLAUDE.md `pip install -e . --no-build-isolation --no-deps` path is still
+broken — `.venv/bin/pip` is missing entirely (just `python` + `python3.12`).
+Used the cargo + cp fallback per `avoid-broken-venv-pip-fallback-cargo-build`:
+1. `cargo build --manifest-path native/angr/Cargo.toml --release`
+2. `cp -f target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`
 
 ### Final state
 
-- 342/342 tests passing on tests/engines/test_rust_exploration.py
-- Commit: `4eabb9e7d` on rust-symex
+- 342/342 tests passing on tests/engines/test_rust_exploration.py (19.6s)
+- fauxware: OK rust 0.34s peak_mem=188MB
+- ais3_crackme: OK rust 0.96s peak_mem=387MB
+- Profiling counters in benchmark output unchanged (block_exec, lift,
+  z3 stats, etc. — all populated as before)
+- Commit: `c3af9aa80` on rust-symex
+
+### Memories saved
+
+- `invariant-profiling-collector-direct-fields` — pub(crate) direct field
+  access by design; do not "improve" it with methods as a separate cleanup
+  (parent angr-4j5u was deferred multiple times for cosmetic gain)
+
+### Next children in the angr-4j5u sequence
+
+- 4j5u.2 — Extract ConstraintTracker + ConstraintSolver fields
+- 4j5u.3 — Extract MemoryConfiguration struct
+- 4j5u.4 — Extract ExecutionEnvironment struct
+- 4j5u.5 — Consolidate orchestrator (final pass)
+
+Each is sized to one session per the round-3 audit notes on the parent.
