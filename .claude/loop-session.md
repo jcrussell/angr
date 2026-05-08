@@ -1,35 +1,38 @@
-# Loop session notes (2026-05-08, 136th loop session)
+# Loop session notes (2026-05-08, 137th loop session)
 
-## Task: angr-osuu — state.inspect.b silently no-ops — break API loudly
+## Task: angr-cmfn — state.solver.timeout silently does not propagate to Rust solver
 
-### Status: complete; closed after commit ee97a1810
+### Status: complete; tests passing (pre-commit)
 
 ### Change
-Replaced _NoOpInspectProxy silent no-ops at angr/exploration/rust_state_proxy.py:555
-with NotImplementedError carrying a clear "angr-osuu" pointer message.
-b / make_breakpoint / add_breakpoint / remove_breakpoint / action all raise.
-Removed the catch-all __getattr__ that returned no-op callables for arbitrary
-attrs — unsupported paths now surface as AttributeError or NotImplementedError.
-
-Updated TestInspectProxy regression (test_inspect_breakpoint_calls_succeed →
-test_inspect_breakpoint_calls_raise) to assert the loud behaviour.
+- Rust:
+  - `solver.rs`: added `RustSolverContext::timeout_ms()` getter (alongside existing `set_timeout`).
+  - `symbolic/context.rs`: added non-Z3 stub `timeout_ms()` so the feature flag matrix builds.
+  - `exploration/mod.rs`: added per-state `set_state_solver_timeout(state_id, ms)` and
+    `get_state_solver_timeout(state_id)` on the manager — these go through `find_state` so
+    they cover both the live SM stashes and the pending callback state.
+- Python (`rust_state_proxy.py`):
+  - Added `RustSolverProxy.timeout` property (read) + setter (write).
+  - Setter writes to the underlying state's SymContext via the new manager method
+    so future forks inherit, AND propagates to the proxy's already-forked solver
+    (if any) so the next satisfiable()/eval() honors it without a fresh fork.
+  - Setter no-ops on `None` (matches claripy ergonomics).
+- Tests (`test_rust_exploration.py`, new `TestSolverProxyTimeout` class):
+  - `test_timeout_setter_propagates_to_state_solver`: round-trip via mgr getter.
+  - `test_timeout_setter_bounds_satisfiable_walltime`: 50ms timeout bounds
+    `state.solver.satisfiable()` wall-clock on a 128-bit semiprime — locks down
+    the actual user-facing code path.
 
 ### Verification
-262/262 tests passing (pure Python change; no Rust rebuild needed).
-
-### Memory saved
-- invariant-rust-engine-loud-failures: prefer NotImplementedError over silent
-  no-ops when a Python feature is unsupported by the Rust symex engine,
-  citing the breakpoint dispatch bug as motivation.
+- `cargo check` clean.
+- `cargo build --release` succeeded; copied `librustylib.so` to
+  `angr/rustylib.cpython-312-x86_64-linux-gnu.so` (venv pip is broken — see
+  memory `avoid-venv-pip-resolvelib-broken`).
+- 264/264 tests passing in `tests/engines/test_rust_exploration.py`.
 
 ### Files changed
-- angr/exploration/rust_state_proxy.py (+15 -19 logical)
-- tests/engines/test_rust_exploration.py (+18 -10 logical)
-
-### Caveat for future work
-Inspection events ARE supported in Rust (see InspectionManager in state.rs,
-memory `inspection-system`) — bitmask + ring buffer of records — but events
-are NOT auto-fired from the interpreter loop, and the dispatcher is not
-wired through to Python BP callbacks. Implementing real breakpoint dispatch
-(option (a) in angr-osuu) is the next step if real demand emerges; track
-in a separate bead when needed.
+- native/angr/src/solver.rs
+- native/angr/src/symbolic/context.rs
+- native/angr/src/exploration/mod.rs
+- angr/exploration/rust_state_proxy.py
+- tests/engines/test_rust_exploration.py (new TestSolverProxyTimeout class)
