@@ -1429,6 +1429,60 @@ class TestExplorationIntegration:
         finally:
             proj.unhook(hook_addr)
 
+    def test_hook_length_advances_pc_userhook(self, fauxware_project):
+        """proj.hook(addr, fn, length=N>0) on a UserHook must skip N bytes.
+
+        Regression for angr-03ej. Confirms the Rust dispatch honors
+        the new_pc that UserHook sets via ``state.addr + length`` so
+        the hooked N-byte instruction is replaced (not re-executed)
+        and the hook does not re-fire in a loop.
+
+        The hook is placed at ``mov rsp, rbp`` (3 bytes) inside main.
+        With length=3 control resumes at hook_addr+3; if the dispatch
+        somehow stayed at hook_addr the hook would re-fire and the
+        test would see an unbounded number of fires.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        main_sym = proj.loader.find_symbol("main")
+        assert main_sym is not None
+        hook_addr = main_sym.rebased_addr + 1  # second instruction in main
+        hook_length = 3
+
+        # Sanity-check the disassembly so the test fails clearly if the
+        # binary changes shape.
+        block = proj.factory.block(hook_addr)
+        first_insn_size = block.capstone.insns[0].size
+        assert first_insn_size == hook_length, (
+            f"Expected a {hook_length}-byte instruction at {hook_addr:#x}, "
+            f"got {first_insn_size}-byte"
+        )
+
+        fire_addrs = []
+
+        def my_hook(state):
+            fire_addrs.append(state.addr)
+
+        proj.hook(hook_addr, hook=my_hook, length=hook_length)
+        try:
+            state = proj.factory.entry_state()
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=300)
+        finally:
+            proj.unhook(hook_addr)
+
+        assert fire_addrs, "hook never fired"
+        # Without the fix, the hook re-executes in an infinite loop
+        # because new_pc stays at hook_addr. With the fix, it fires
+        # at most once per state path through main (fauxware has a
+        # small number of paths).
+        assert len(fire_addrs) < 50, (
+            f"Hook fired {len(fire_addrs)} times — likely re-executing "
+            f"because hook_length was not honored. First addrs: "
+            f"{[hex(a) for a in fire_addrs[:5]]}"
+        )
+
     def test_vex_fallback_forks_multi_successors(self, fauxware_project):
         """Multi-successor Python VEX fallback must fork extras instead of dropping them.
 
