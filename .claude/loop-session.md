@@ -1,48 +1,54 @@
-## Session log: 2026-05-08, 163rd loop session
+## Session log: 2026-05-08, 164th loop session
 
-### Task: angr-k5mj (closed) — Sync profile_rust_bench.sh --list with vex_engine.rs criterion ids
+### Task: angr-qrhl.1 (closed) — Float-conversion macro for the 18 stubs in vex/ops.rs
 
-P3 bug filed in the previous session. Fixed by renaming criterion ids
-in `native/angr/benches/vex_engine.rs` so that every name advertised by
-`tests/benchmarks/profile_rust_bench.sh --list` resolves to a real
-bench id under criterion's regex/substring `--filter`.
+First child of angr-qrhl. The 18 hand-written conversion functions at
+`native/angr/src/vex/ops.rs:2386-2443` (f32_to_f64, i64u_to_f64,
+f64_to_i32s, etc.) were near-identical 3-line stubs that delegated to
+`Self::float_to_float / int_to_float / float_to_int` and differed only
+in the source/destination width, signedness, precision, and concrete
+lambda. Replaced with four declarative macros (one per kind) plus
+table-form invocations. No behavior change — the macros expand to the
+same fn definitions.
 
 ### What changed
 
-Commit ee08a03d4 — `bench(rust): rename criterion ids to match
-profile_rust_bench.sh --list`:
+`native/angr/src/vex/ops.rs`:
 
-- `rustbv_build_z3_ast` → `rustbv_z3`
-- benchmark_group `symcontext` / fn `fork_2constraints` →
-  benchmark_group `symcontext_fork` / fn `2_constraints`
-- `symcontext_check_branch_feasibility` → `symcontext_check_branch`
-- `symcontext_assume_true` → `symcontext_assume`
-- `memory_symbolic_load_16range` → `memory_symbolic_load`
-- `memory_fork_16pages` → `memory_fork`
+- Added 4 module-level macros next to the existing `width_unop!` /
+  `width_binop!` (lines 58-117):
+  - `define_float_to_float!` — 2 conversions
+  - `define_int_to_float!` — 8 conversions (signed/unsigned × 32/64 ×
+    f32/f64)
+  - `define_float_to_int_signed!` — 4 conversions (signed dst path
+    needs `as iN as uN` cast pair)
+  - `define_float_to_int_unsigned!` — 4 conversions
+- Replaced the 58-line stub region (2386-2443) with 30 lines of
+  table-form invocations.
+
+### Why two float-to-int macros, not one
+
+Signed and unsigned float-to-int closures differ in cast width: signed
+needs `... as i32 as u32 as u128` (intermediate signed cast preserves
+sign-extend semantics through the u128 widen), unsigned needs
+`... as u32 as u128`. Could be unified with a tt-muncher arm, but two
+short macros are simpler and the locks-the-pattern win is the same.
 
 ### Verification
 
-Built the bench (`cargo bench --bench vex_engine --no-run`) and
-listed ids via `target/release/deps/vex_engine-* --bench --list`.
-Confirmed each --list-advertised name now appears as a real bench
-id, and `--list <name>` filters resolve to the expected entries.
-
-`python -m pytest tests/engines/test_rust_exploration.py` →
-**332/332 passing**.
-
-### Disambiguation gotcha (saved to bd memory)
-
-`--filter symcontext_fork` is a substring match — it now matches both
-`symcontext_fork/2_constraints` AND `symcontext_fork_scaling/*`. The
-same applies to any name that is a prefix of another. Anchor with
-`--filter '^symcontext_fork$'` or `--filter symcontext_fork/` to
-isolate the simple fork bench. Memory
-`invariant-profile-rust-bench-list-vs-criterion` updated with the
-post-fix list and this gotcha.
+- `cargo check --manifest-path native/angr/Cargo.toml --release` clean
+- `cargo test --manifest-path native/angr/Cargo.toml --release --lib
+  vex::ops` → 87/87 passing (includes test_f32_to_i32s_nan,
+  test_f32_to_i32s_pos_infinity, test_f32_to_i32s_neg_infinity,
+  test_f32_to_i32s_overflow, test_i32s_to_f32_int_min,
+  test_f64_to_f32_overflow, test_f64_to_f32_nan,
+  test_f64_to_f32_neg_infinity).
+- `python -m pytest tests/engines/test_rust_exploration.py` →
+  **332/332 passing**.
 
 ### Files changed
 
-- `native/angr/benches/vex_engine.rs` (7 lines)
+- `native/angr/src/vex/ops.rs` (+79, -51)
 
 ### Tests
 
