@@ -876,6 +876,19 @@ def main():
         log.info("STRESS TEST MODE: timeout=%ds, memory=%s, iterations=%d, benchmarks=off",
                  args.timeout, args.memory_limit, args.max_iterations)
 
+    # Dry run mode — exercises module import, argparse, logging, signal handler
+    # setup, git state detection, and prompt template without requiring
+    # claude/bd/systemd-run binaries or pidfile/cgroup state. This is the CI
+    # smoke-test entry point (see .github/workflows/ci.yml orchestrator_smoke).
+    if args.dry_run:
+        git_state = detect_git_state()
+        prompt = build_prompt(git_state)
+        prompt_type = "dirty" if git_state["is_dirty"] else "clean"
+        print(f"--- Prompt type: {prompt_type} ---")
+        print(f"--- Git state: dirty={git_state['is_dirty']}, HEAD={git_state['head_sha']} ---")
+        print(prompt)
+        return
+
     # Verify prerequisites
     for cmd_name in ["claude", "bd", "git", "systemd-run"]:
         rc, _, _ = _run_cmd(["which", cmd_name])
@@ -896,16 +909,6 @@ def main():
 
     # Clean up stale scopes from previous crashes (F4)
     _cleanup_stale_scopes()
-
-    # Dry run mode
-    if args.dry_run:
-        git_state = detect_git_state()
-        prompt = build_prompt(git_state)
-        prompt_type = "dirty" if git_state["is_dirty"] else "clean"
-        print(f"--- Prompt type: {prompt_type} ---")
-        print(f"--- Git state: dirty={git_state['is_dirty']}, HEAD={git_state['head_sha']} ---")
-        print(prompt)
-        return
 
     startup_source_hash = _orchestrator_source_hash()
     log.info(f"Starting optimization loop: max_iterations={args.max_iterations}, "
