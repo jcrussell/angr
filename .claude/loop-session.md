@@ -1,87 +1,75 @@
-## Session log: 2026-05-08, 171st loop session
+## Session log: 2026-05-08, 172nd loop session
 
-### Task: angr-4j5u.4 (closed) — Extract ExecutionEnvironment struct
+### Task: angr-4j5u.5.1 (closed) — Extract run() into run_loop.rs
 
-Fourth child of the angr-4j5u decomposition epic. Group seven manager-owned
-per-binary fields off `RustExplorationManager` into one new sub-struct.
+First child of a 4-way split of angr-4j5u.5. Discovered the parent's
+goal (mod.rs<800 lines) is ~3000 lines of work — too large for one
+session. Created four siblings:
+
+- 4j5u.5.1 — Extract run() (~520 lines) into run_loop.rs  ✓ THIS SESSION
+- 4j5u.5.2 — Extract resume_after_* (~640 lines) into resume.rs (open)
+- 4j5u.5.3 — Extract pending callback API (~960 lines) into pending_api.rs (open)
+- 4j5u.5.4 — Extract state inspection API (~1060 lines) into state_api.rs (open)
+
+All four block 4j5u.5; the parent stays open until they all complete.
 
 ### What changed
 
-**New: native/angr/src/exploration/execution_env.rs (~55 lines)**
+**New: native/angr/src/exploration/run_loop.rs (544 lines)**
 
-`ExecutionEnvironment` groups manager-owned per-binary fields handed to
-each interpreter on every step:
-- `arch_name: String`
-- `vex_arch: VexArch`
-- `binary_regions: Vec<(u64, Arc<Vec<u8>>)>`
-- `block_cache: LruCache<u64, Arc<IRSB>>`
-- `calling_convention: Box<dyn CallingConvention>`
-- `little_endian: Option<bool>`
-- `max_history: usize`
+Holds the body of `RustExplorationManager::run` as
+`pub(crate) fn run_loop(&mut self, py, n) -> PyResult<ExplorationEvent>`.
 
-`pub(crate)` direct fields. Same load-bearing-simplicity pattern as
-ProfilingCollector / ConstraintSolver / MemoryConfiguration.
+Pattern: plain `impl RustExplorationManager` (no `#[pymethods]`),
+matching helpers.rs / stepping.rs. PyO3 0.27.2 is configured WITHOUT
+the `multiple-pymethods` feature (`pyo3 = { ..., features = ["py-clone"] }`
+in Cargo.toml), so each pyclass is limited to ONE `#[pymethods]` impl
+block. The pyclass-facing pub fn run keeps its `#[pyo3(signature)]`
+attribute in mod.rs and is now a 1-line forwarding wrapper:
 
-Has a constructor `new(arch_name, vex_arch, calling_convention,
-little_endian)` because `LruCache` requires a `NonZeroUsize` capacity
-and `block_cache` defaults to 4096 entries / `max_history` defaults to
-1000.
+```rust
+#[pyo3(signature = (n=None))]
+pub fn run(&mut self, py: Python<'_>, n: Option<u32>) -> PyResult<ExplorationEvent> {
+    self.run_loop(py, n)
+}
+```
 
-Cannot `#[derive(Debug)]` because `Box<dyn CallingConvention>` doesn't
-implement Debug. Same as how the manager itself isn't Debug — see commit.
+`STEPPING_STATE_ID` is a private thread_local in mod.rs but is still
+accessible from the run_loop child module — Rust private items are
+visible to descendant modules.
 
 **native/angr/src/exploration/mod.rs**
-- New `mod execution_env;` + `use self::execution_env::ExecutionEnvironment;`.
-- Removed seven standalone field declarations on `RustExplorationManager`,
-  replaced with one `environment: ExecutionEnvironment` field.
-- Constructor: seven fields collapse to
-  `environment: ExecutionEnvironment::new(arch.to_string(), vex_arch,
-  default_cc_for_arch(arch), little_endian)`.
-- Pruned now-unused imports: `LruCache`, `NonZeroUsize`, `VexArch`, `IRSB`,
-  `CallingConvention` removed.
-- ~14 callsites updated: `arch()` getter, `set/get_max_history`,
-  `set_vex_opt_level{,_override}` (block_cache invalidation),
-  `clear_vex_opt_level_overrides`, `load_binary_regions`,
-  `create_state` (arch_name, little_endian, max_history),
-  `add_state` (max_history), `stats()` (block_cache_size),
-  native simprocedure dispatch in run loop (binary_regions,
-  calling_convention.return_register, arch_from_name, get_return_addr).
+- New `mod run_loop;` declaration alongside existing children.
+- run() body (lines 2647-3155 in old file) replaced by 1-line forward.
+- File shrank 3889 → 3372 lines (-517).
 
-**native/angr/src/exploration/stepping.rs**
-- Added explicit imports for `LruCache`, `NonZeroUsize`, `IRSB` since
-  `super::*` no longer re-exports them from mod.rs.
-- ~9 callsites: `self.block_cache = step.updated_block_cache`,
-  vex_arch in `CallbackInterpreter::with_config`, four
-  `calling_convention.return_register()` callsites,
-  `binary_regions.iter()` (×2: native simprocedure, run_interpreter_step
-  region copy), `block_cache` swap in `run_interpreter_step`,
-  `calling_convention.pointer_size()` in unmodeled-call helper.
+### Build/test
 
-**native/angr/src/exploration/helpers.rs**
-- 6 callsites: bulk `self.calling_convention.<x>` →
-  `self.environment.calling_convention.<x>` via replace_all.
-
-### Field count on the manager: 33 → 27 (net -6)
-
-Seven fields collapsed to one sub-struct field.
-
-### Build/run
-
-- `cargo check --release` clean (after dropping `#[derive(Debug)]` on
-  ExecutionEnvironment — Box<dyn CallingConvention> isn't Debug).
-- `cargo build --release` then cp to `angr/rustylib.cpython-312-x86_64-linux-gnu.so`
-  (pip path still broken — see `avoid-broken-venv-pip-fallback-cargo-build`).
-- 342/342 tests passing on tests/engines/test_rust_exploration.py (19.3s).
-- fauxware: OK 0.35s peak_mem=188MB (matches 4j5u.3 baseline within noise).
-  Note: had to set `PYTHONPATH=/home/ubuntu/repos/angr` because
-  multiprocessing-spawn child doesn't inherit cwd-based angr resolution
-  in the half-broken venv. Tests don't have this issue (pytest CWD).
+- `cargo check --release` clean (no warnings about unused imports —
+  super::* in run_loop.rs covers everything).
+- Build via `cargo build --release` (venv pip is broken — see
+  `avoid-broken-venv-pip-fallback-cargo-build`); copy
+  `target/release/librustylib.so` →
+  `angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
+- 342/342 tests passing on tests/engines/test_rust_exploration.py (19.5s).
+- fauxware: OK 0.35s peak_mem=188MB (matches prior baseline).
 
 ### Memories saved
 
-- `invariant-execution-env-direct-fields` — same direct-field pattern;
-  notes Box<dyn> => no Debug, plus the explicit constructor's purpose.
+- `invariant-pyo3-single-pymethods-impl` — explains why we use the
+  thin-wrapper pattern instead of multiple #[pymethods] blocks.
+- `invariant-run-loop-extension-impl` — points readers at run_loop.rs
+  for run-loop semantics changes.
 
-### Next children in the angr-4j5u sequence
+### Next session
 
-- 4j5u.5 — Consolidate orchestrator (final pass)
+Pick up `angr-4j5u.5.2` (Extract resume_after_*). Same pattern:
+- Create native/angr/src/exploration/resume.rs with `use super::*;`
+  and a plain `impl RustExplorationManager { ... }` block.
+- Move bodies of resume_after_simprocedure / resume_after_syscall /
+  resume_after_hook / resume_after_error / resume_after_symbolic_branch /
+  resume_find_predicate / resume_avoid_predicate / deadend_pending_callback
+  into pub(crate) fn _resume_after_* in resume.rs.
+- Replace each #[pymethods] body in mod.rs with a 1-line forward.
+- Add `mod resume;` to mod.rs.
+- Expected: mod.rs 3372 → ~2740 lines.
