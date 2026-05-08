@@ -1,72 +1,80 @@
-# Loop session notes (2026-05-08, 143rd loop session)
+# Loop session notes (2026-05-08, 144th loop session)
 
-## Task: angr-xg0o — Native file-descriptor SimProcedures: dup, dup2, pipe (closed)
+## Task: angr-qlcr — declare_proc macro: registration + arg extraction + num_args in lockstep (closed)
 
 ### Status: complete; closed
 
 ### Summary
-Added native dup, dup2, pipe SimProcedures alongside the pre-existing
-open/close/lseek in `native/angr/src/procedures/fileops.rs`, with new
-`FileSystem::dup`, `dup2`, `pipe` methods in `state.rs`. Registered all
-three in `NativeProcedureRegistry::new`. Coverage: 9 new cargo unit
-tests on the SimProcedures + 1 on FileSystem methods + 2 Python-level
-integration tests (pipe, dup2) verifying native dispatch through the
-Rust manager.
+Added `declare_proc!` in `native/angr/src/procedures/macros.rs` that
+emits a unit struct + `NativeSimProcedure` impl from one declarative
+form. The procedure's `name()`, `num_args()`, and the per-argument
+extraction prelude are all derived from the same `args = [...]` list,
+so it is no longer possible to register a procedure whose declared
+arity disagrees with the actual extraction count.
 
-### FileSystem semantics
-- `dup(oldfd)`: clones FileDescriptor (name/position/flags/content) to
-  next available fd; returns None if oldfd not open.
-- `dup2(oldfd, newfd)`: clones to newfd, bumping `next_fd` past it.
-  Same-fd no-op when open.
-- `pipe()`: allocates two consecutive fds — read end (`<pipe:r>`,
-  ReadOnly) and write end (`<pipe:w>`, WriteOnly). Does NOT model
-  write→read data flow (each end has its own content buffer).
+Migrated 16 procedures (target was ≥5):
+  - strlen.rs: strlen, strnlen
+  - strcmp.rs: strcmp, strncmp, strcasecmp
+  - memcmp.rs: memcmp
+  - strtol.rs: strtol, strtoul, atoi, atol  (also refactored
+    `run_strtol` to take direct nptr/endptr/base instead of a slice)
+  - ctype.rs:  isdigit, isalpha, isspace, isalnum, isupper, islower,
+               isxdigit, isprint, tolower, toupper  (helpers
+               refactored to take a single `&RustBV`)
 
-### Pipe SimProcedure detail
-NativePipe writes the two 32-bit fds out byte-by-byte to pipefd[0..4]
-and pipefd[4..8] with arch endianness (`is_little_endian()` on
-RustSimState's arch). Returns 0 on success, like POSIX `pipe(2)`.
-
-### Integration test design constraints (key learning)
-Two architectural constraints make chained pipe→dup2 in a single
-mgr.run hard to test from Python:
- 1. Native dispatch only fires when hook addr is NOT in
-    `binary_regions` (i.e. not in an executable section of a real
-    binary). Python `_load_binary_regions` skips externs, so an
-    in-fauxware non-executable section like `.ctors` (0x600e30)
-    qualifies — the addr is recognized as a real-binary address (so
-    `_run_python_init_if_needed` short-circuits) but native dispatch
-    still fires.
- 2. There is no public Python API to update an active state's
-    registers between mgr.run calls. So we cannot set RDI/RSI for the
-    second native procedure call after the first one returns.
- 3. After native pipe returns at PIPE_ADDR, the dispatch reads
-    return_addr from rust_memory at SP. The Python state's
-    `state.memory.store(rsp, RET_ADDR, ...)` does NOT reliably make
-    those bytes visible in rust_memory on first run, so the post-call
-    state lift errors at PC=0. `active_states_map_memory` after the
-    manager is created DOES populate Rust memory correctly.
-
-We split the integration coverage:
- - Cargo: `test_pipe_then_dup2_to_stdin` exercises the full chained
-   pipe+dup2 sequence at the FileSystem level (no register state).
- - Python: two separate tests for pipe (creates fds 3,4) and dup2(0, 7)
-   (clones stdin to fd 7) — each verifies native dispatch fires
-   (`native_procedure_stats`) and the resulting FD layout.
+Net diff: -114 lines.
 
 ### Verification
-- Cargo tests: 16/16 in `procedures::fileops`, 1/1 new
-  `state::tests::test_filesystem_dup_dup2_pipe`.
-- Python tests: 300/300 passing (was 298; +2 new integration tests).
+- cargo test procedures::: 185/187 passing. The 2 failures
+  (`test_heap_metadata_cloned_on_fork`, `test_getenv_env_preserved_on_fork`)
+  fail identically on pristine HEAD (PyO3 not auto-initialized in
+  cargo test). Saved as memory `avoid-pyo3-init-test-failures`.
+- Python suite: 300/300 passing.
+- fauxware benchmark unchanged (~0.3s, found SOSNEAKY).
 
 ### Memories saved
-None (the Rust dispatch constraints documented above are mostly
-captured in the test docstring; the behavior of native procs on
-in-binary non-exec hook addrs is reusable knowledge for future libc
-procedure tests).
+- `declare-proc-macro`: macro location, two arg kinds (concrete/bv),
+  no-return flag, manual registration still required, tests must
+  re-import the trait inside cfg(test) blocks.
+- `avoid-pyo3-init-test-failures`: pre-existing failures unrelated to
+  this work.
 
 ### Files changed
-- native/angr/src/state.rs (+92 lines: FileSystem::dup/dup2/pipe + tests)
-- native/angr/src/procedures/fileops.rs (+296 lines: 3 procs + 9 tests)
-- native/angr/src/procedures/mod.rs (+3 lines: register the 3 new procs)
-- tests/engines/test_rust_exploration.py (+133 lines: 2 integration tests)
+- native/angr/src/procedures/macros.rs (new, +95 lines)
+- native/angr/src/procedures/mod.rs (mod macros; #[macro_use])
+- native/angr/src/procedures/{strlen,strcmp,memcmp,strtol,ctype}.rs
+  (migrated to declare_proc!)
+
+### Original Plan
+1. Define `declare_proc!` in `procedures/mod.rs` (or new `macros.rs`).
+2. Macro form:
+   - `name = "..."` (procedure name string)
+   - `struct = NativeFoo` (unit struct identifier)
+   - `args = [name1: kind, name2: kind, ...]`
+     - `kind` ∈ `concrete` (extracts u64 via `extract_concrete_arg`) or
+       `bv` (clones the RustBV).
+   - optional `no_return` flag
+   - `call |state| { body }` — body uses bound names + `state` as
+     `&mut RustSimState`.
+3. Macro emits unit struct + impl NativeSimProcedure where
+   `name()`, `num_args()`, and the extraction prelude are all
+   derived from the same args list. Registration stays manual in
+   `mod.rs` (no inventory dep available).
+
+### Migration targets (≥5 to satisfy acceptance criteria)
+- strlen — args=[addr: concrete]
+- strncmp — args=[s1, s2, n: concrete]
+- strcmp — args=[s1, s2: concrete]
+- memcmp — args=[s1, s2, n: concrete]
+- atoi — args=[nptr: concrete]
+- isdigit (raw form via `bv`) — args=[c: bv] — needs ranges_predicate
+  refactored to take `arg: &RustBV` instead of `args: &[RustBV]`.
+
+### Files to touch
+- native/angr/src/procedures/mod.rs (define macro)
+- native/angr/src/procedures/{strlen,strcmp,memcmp,strtol,ctype}.rs (migrate)
+
+### Verification
+- cargo check --release
+- cargo test (procedures::*)
+- python -m pytest tests/engines/test_rust_exploration.py
