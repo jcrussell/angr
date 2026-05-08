@@ -266,25 +266,139 @@ def _extract_callstack_snapshot(state):
     return callstack_frames, continuation_addrs
 
 
+# Per-arch GPR snapshot lists for RustErrorRecord.registers. Conservative: PC,
+# SP, BP/FP, and standard GPRs. Vector/floating-point registers are excluded.
+_ARCH_REG_SNAPSHOT: Dict[str, Tuple[str, ...]] = {
+    'AMD64': ('rip', 'rsp', 'rbp', 'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
+              'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15'),
+    'X86':   ('eip', 'esp', 'ebp', 'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi'),
+    'ARM':     ('pc', 'sp', 'lr', 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6',
+                'r7', 'r8', 'r9', 'r10', 'r11', 'r12'),
+    'ARMEL':   ('pc', 'sp', 'lr', 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6',
+                'r7', 'r8', 'r9', 'r10', 'r11', 'r12'),
+    'ARMHF':   ('pc', 'sp', 'lr', 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6',
+                'r7', 'r8', 'r9', 'r10', 'r11', 'r12'),
+    'AARCH64': ('pc', 'sp', 'lr', 'x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6',
+                'x7', 'x8', 'x29', 'x30'),
+    'MIPS32':  ('pc', 'sp', 'ra', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3'),
+    'MIPS64':  ('pc', 'sp', 'ra', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3'),
+}
+
+
 class RustErrorRecord:
     """Container for an errored state, matching angr's ErrorRecord interface.
 
     Attributes:
-        state:  The SimState at the point of error.
-        error:  An Exception describing what went wrong.
-        addr:   The instruction address where the error occurred.
+        state:             The SimState at the point of error.
+        error:             An Exception describing what went wrong.
+        addr:              The instruction address where the error occurred.
+        error_class:       Stable taxonomy string for the error
+                           (e.g. 'unsupported', 'memory', 'lift', 'callback').
+                           Derived from the message prefix; matches the
+                           CbExecutionError variants in
+                           native/angr/src/interpreter_cb/mod.rs.
+        constraint_count:  Number of solver constraints on the state at error
+                           time. 0 if state is None or the count cannot be read.
+        registers:         dict mapping register name -> int (concrete) or str
+                           (symbolic AST repr). Empty dict if state is None or
+                           arch isn't in the snapshot table.
+        last_statements:   Last few basic-block addresses leading up to the
+                           error. Per-VEX-statement granularity isn't tracked
+                           today; this is the closest available history.
     """
+
+    # Stable error-class taxonomy. Prefixes match the Display impls of
+    # CbExecutionError variants in native/angr/src/interpreter_cb/mod.rs and
+    # the formatted error strings in native/angr/src/exploration/stepping.rs.
+    _ERROR_CLASS_PREFIXES = (
+        ('memory error',           'memory'),
+        ('operation error',        'operation'),
+        ('invalid vex ir',         'invalid_ir'),
+        ('unsupported',            'unsupported'),
+        ('type mismatch',          'type_mismatch'),
+        ('unknown temporary',      'unknown_temp'),
+        ('callback error',         'callback'),
+        ('lift error',             'lift'),
+        ('need lift at',           'need_lift'),
+        ('need python fallback',   'need_python_fallback'),
+        ('resolve_function error', 'resolve_function'),
+    )
 
     def __init__(self, state, message: str, addr: int = 0):
         self.state = state
         self.error = RuntimeError(message)
         self.addr = addr
+        self.error_class = self._classify(message)
+        self.constraint_count = self._count_constraints(state)
+        self.registers = self._snapshot_registers(state)
+        self.last_statements = self._tail_history(state)
+
+    @classmethod
+    def _classify(cls, message: str) -> str:
+        msg = message.lower()
+        for prefix, klass in cls._ERROR_CLASS_PREFIXES:
+            if msg.startswith(prefix):
+                return klass
+        # Substring fallbacks for nested/wrapped error messages.
+        if 'timeout' in msg:
+            return 'timeout'
+        if 'unmapped' in msg:
+            return 'unmapped'
+        if 'panic' in msg:
+            return 'rust_panic'
+        return 'unknown'
+
+    @staticmethod
+    def _count_constraints(state) -> int:
+        if state is None:
+            return 0
+        try:
+            return len(state.solver.constraints)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _snapshot_registers(state) -> dict:
+        if state is None:
+            return {}
+        try:
+            arch_name = state.arch.name
+        except Exception:
+            return {}
+        names = _ARCH_REG_SNAPSHOT.get(arch_name, ())
+        snap: dict = {}
+        for name in names:
+            try:
+                val = getattr(state.regs, name)
+            except Exception:
+                continue
+            try:
+                if val.concrete:
+                    snap[name] = val.concrete_value
+                else:
+                    snap[name] = str(val)
+            except Exception:
+                snap[name] = str(val)
+        return snap
+
+    @staticmethod
+    def _tail_history(state, n: int = 5) -> list:
+        if state is None:
+            return []
+        try:
+            bbls = list(state.history.recent_bbl_addrs)
+        except Exception:
+            return []
+        return bbls[-n:]
 
     def reraise(self):
         raise self.error
 
     def __repr__(self):
-        return f'<State errored at {hex(self.addr)} with "{self.error}">'
+        return (
+            f'<State errored at {hex(self.addr)} '
+            f'class={self.error_class} with "{self.error}">'
+        )
 
 
 class RustExplorationManager(

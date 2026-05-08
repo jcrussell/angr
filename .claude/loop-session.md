@@ -1,15 +1,20 @@
-## Session log: 2026-05-08, 154th loop session
+## Session log: 2026-05-08, 155th loop session
 
-### Task: angr-df57 — verify cargo config portability fix
-Bead description claimed `.cargo/config.toml` lines 2,5 hardcode `/home/ubuntu/...` Z3 paths.
-Current file inspection shows the `[env]` block was removed in commit e2f9d921 (angr-8fsl, May 8 2026):
+### Task: angr-dc87 — RustErrorRecord enrichment
 
-- `.cargo/config.toml` now only has comment + `[target.x86_64-unknown-linux-gnu] rustflags = [-C target-cpu=native]`
-- `native/angr/.cargo/config.toml` shows commented template — no active overrides
-- `cargo check --release` succeeds in 0.16s
-- No `/home/ubuntu` references anywhere under `.cargo/`
+Goal: extend `RustErrorRecord` (angr/exploration/rust_manager.py:269) so it exposes:
+- `error_class` (str): taxonomy from CbExecutionError variants in
+  native/angr/src/interpreter_cb/mod.rs (memory/operation/invalid_ir/unsupported/
+  type_mismatch/unknown_temp/callback/lift/need_lift/need_python_fallback/
+  resolve_function/timeout/unmapped/rust_panic/unknown).
+- `constraint_count` (int): from state.solver.constraints.
+- `registers` (dict): per-arch GPR snapshot from state.regs.
+- `last_statements` (list): last 5 BBL addresses from state.history.recent_bbl_addrs
+  (per-VEX-statement granularity not available; documented limitation).
 
-Acceptance criteria (`build.rs` is sole path-resolution authority) is satisfied per the commit message. Closing as already-resolved.
+Approach: pure Python in `RustErrorRecord.__init__`. No Rust changes. Existing
+errored-stash plumbing already preserves `(addr, message, state_id)` and the
+state proxy exposes regs/history/solver.constraints.
 
 ### Status
-investigating → closing
+implementing

@@ -3121,7 +3121,15 @@ class TestErroredStash:
             assert hasattr(record, 'state')
             assert hasattr(record, 'error')
             assert hasattr(record, 'addr')
+            assert hasattr(record, 'error_class')
+            assert hasattr(record, 'registers')
+            assert hasattr(record, 'last_statements')
+            assert hasattr(record, 'constraint_count')
             assert isinstance(record.error, Exception)
+            assert isinstance(record.error_class, str)
+            assert isinstance(record.registers, dict)
+            assert isinstance(record.last_statements, list)
+            assert isinstance(record.constraint_count, int)
             assert repr(record).startswith('<State errored')
 
     def test_error_record_has_state(self):
@@ -3142,6 +3150,47 @@ class TestErroredStash:
         record = RustErrorRecord(None, "test error", 0x401000)
         with pytest.raises(RuntimeError, match="test error"):
             record.reraise()
+
+    def test_error_record_classifies_message(self):
+        """error_class taxonomy matches CbExecutionError variant prefixes."""
+        from angr.exploration import RustErrorRecord
+
+        cases = {
+            'memory error: unmapped 0xdead': 'memory',
+            'operation error: shift overflow': 'operation',
+            'invalid VEX IR: bogus': 'invalid_ir',
+            'unsupported: CAS instruction': 'unsupported',
+            'type mismatch: expected I64, got I32': 'type_mismatch',
+            'unknown temporary t42': 'unknown_temp',
+            'callback error: python raised': 'callback',
+            'lift error: bytes': 'lift',
+            'need lift at 0x401000': 'need_lift',
+            'need Python fallback: VECRET': 'need_python_fallback',
+            'resolve_function error: bad addr': 'resolve_function',
+            'something with timeout in it': 'timeout',
+            'page is unmapped at 0x0': 'unmapped',
+            'rust panic in interpreter': 'rust_panic',
+            'totally novel error': 'unknown',
+        }
+        for msg, expected in cases.items():
+            record = RustErrorRecord(None, msg, 0x400000)
+            assert record.error_class == expected, (msg, record.error_class)
+
+    def test_error_record_repr_includes_class(self):
+        """repr() includes the classified error class for grep-friendliness."""
+        from angr.exploration import RustErrorRecord
+
+        record = RustErrorRecord(None, "unsupported: CAS", 0x400000)
+        assert 'class=unsupported' in repr(record)
+
+    def test_error_record_defaults_when_state_none(self):
+        """Snapshot/history/constraint-count default cleanly when state is None."""
+        from angr.exploration import RustErrorRecord
+
+        record = RustErrorRecord(None, "lift error: x", 0x400000)
+        assert record.constraint_count == 0
+        assert record.registers == {}
+        assert record.last_statements == []
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
