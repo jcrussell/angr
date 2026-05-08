@@ -366,6 +366,56 @@ class RustMemoryProxy:
         )
 
 
+class RustHeapProxy:
+    """Proxy for state.heap — exposes mmap_base and allocation metadata
+    backed by RustSimState.
+
+    The Rust state owns mmap_base (used by the native mmap syscall handler)
+    and a HeapMetadata struct tracking malloc/free regions. Reads/writes go
+    through PyO3 accessors so Python user code sees the live Rust value.
+    """
+
+    def __init__(self, rust_mgr, state_id):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+
+    @property
+    def mmap_base(self):
+        """Current mmap base pointer (mirrors `state.heap.mmap_base`)."""
+        try:
+            return self._mgr.get_state_mmap_base(self._state_id)
+        except Exception as e:
+            l.debug("get_state_mmap_base(sid=%d) failed: %s: %s",
+                    self._state_id, type(e).__name__, e)
+            return None
+
+    @mmap_base.setter
+    def mmap_base(self, value):
+        self._mgr.set_state_mmap_base(self._state_id, int(value))
+
+    @property
+    def allocations(self):
+        """List of (addr, size) for currently-live heap allocations."""
+        try:
+            allocated, _freed = self._mgr.get_state_heap_metadata(self._state_id)
+            return list(allocated)
+        except Exception as e:
+            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s",
+                    self._state_id, type(e).__name__, e)
+            return []
+
+    @property
+    def freed(self):
+        """List of freed addresses in free-call order."""
+        try:
+            _allocated, freed = self._mgr.get_state_heap_metadata(self._state_id)
+            return list(freed)
+        except Exception as e:
+            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s",
+                    self._state_id, type(e).__name__, e)
+            return []
+
+
 class RustHistoryProxy:
     """Provides state.history.recent_bbl_addrs and similar."""
 
@@ -623,12 +673,16 @@ class RustStateProxy:
     """
 
     def __init__(self, rust_mgr, state_id, project=None, stdin_vars=None,
-                 stdout_data=None):
+                 stdout_data=None, python_mgr=None):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._project = project
         self._stdin_vars = stdin_vars
         self._stdout_data = stdout_data or b""
+        # High-level RustExplorationManager — used for options/globals lookup.
+        # None when constructed standalone (e.g., low-level unit tests); in
+        # that case options/globals fall back to empty stand-ins.
+        self._python_mgr = python_mgr
         # Lazy-initialized sub-proxies
         self._solver_proxy = None
         self._regs_proxy = None
@@ -637,6 +691,7 @@ class RustStateProxy:
         self._posix_proxy = None
         self._callstack_proxy = None
         self._inspect_proxy = None
+        self._heap_proxy = None
 
     @property
     def state_id(self):
@@ -757,13 +812,30 @@ class RustStateProxy:
         return self._inspect_proxy
 
     @property
+    def heap(self):
+        """Heap proxy — exposes mmap_base and allocation tracking."""
+        if self._heap_proxy is None:
+            self._heap_proxy = RustHeapProxy(self._mgr, self._state_id)
+        return self._heap_proxy
+
+    @property
     def options(self):
-        """Return empty set — options are managed by the Rust engine."""
+        """Per-state options set, backed by the high-level manager.
+
+        The Rust engine doesn't honor SimOptions (LAZY_SOLVES /
+        STRICT_PAGE_ACCESS are mirrored separately on the Rust state), but
+        user code reads `X in state.options` and writes `state.options.add(X)`.
+        Returns a live set; mutations persist for this state_id.
+        """
+        if self._python_mgr is not None:
+            return self._python_mgr.get_state_options_py(self._state_id)
         return set()
 
     @property
     def globals(self):
-        """Return empty dict — globals not tracked in Rust proxy."""
+        """Per-state globals dict, backed by the high-level manager."""
+        if self._python_mgr is not None:
+            return self._python_mgr.get_state_globals_py(self._state_id)
         return {}
 
     def add_constraints(self, *constraints):
@@ -781,6 +853,7 @@ class RustStateProxy:
             project=self._project,
             stdin_vars=self._stdin_vars,
             stdout_data=self._stdout_data,
+            python_mgr=self._python_mgr,
         )
 
     def __repr__(self):
@@ -796,11 +869,12 @@ class RustSimulationManagerProxy:
     """
 
     def __init__(self, rust_mgr, project=None, stdin_vars=None,
-                 stdout_tracker=None):
+                 stdout_tracker=None, python_mgr=None):
         self._mgr = rust_mgr
         self._project = project
         self._stdin_vars = stdin_vars
         self._stdout_tracker = stdout_tracker or {}  # state_id -> bytes
+        self._python_mgr = python_mgr
         self._errored = []
 
     def _wrap_state(self, state_id):
@@ -810,6 +884,7 @@ class RustSimulationManagerProxy:
             project=self._project,
             stdin_vars=self._stdin_vars,
             stdout_data=self._stdout_tracker.get(state_id, b""),
+            python_mgr=self._python_mgr,
         )
 
     def _get_stash(self, name):

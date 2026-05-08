@@ -1182,6 +1182,122 @@ class TestInspectProxy:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStatePluginsProxy:
+    """Tests for state.options, state.globals, and state.heap on RustStateProxy.
+
+    Regression for angr-t3l3: prior implementation returned an empty set/dict
+    that silently dropped writes (e.g., state.options.add(LAZY_SOLVES)).
+    state.heap.mmap_base was completely unsupported via the proxy.
+    """
+
+    def test_options_seeded_from_source_state(self, fauxware_project):
+        """options copied from the SimState passed to RustExplorationManager
+        are visible through the proxy."""
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        state = fauxware_project.factory.entry_state()
+        state.options.add(o.LAZY_SOLVES)
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # First active state's proxy should show LAZY_SOLVES.
+        proxies = mgr.proxy.active
+        assert len(proxies) >= 1
+        assert o.LAZY_SOLVES in proxies[0].options
+
+    def test_options_writes_persist(self, fauxware_project):
+        """state.options.add(X) on a proxy persists for the same state_id.
+
+        The Rust engine doesn't honor most SimOptions, but Python user code
+        treats state.options as a live set; writes must round-trip.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        proxy.options.add("MY_FLAG")
+        # Re-fetch the proxy — should see the same underlying set.
+        proxy2 = mgr.proxy.active[0]
+        assert "MY_FLAG" in proxy2.options
+
+    def test_globals_seeded_and_mutable(self, fauxware_project):
+        """state.globals copied from the source SimState; writes persist."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        state.globals['init_key'] = 'init_value'
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        assert proxy.globals.get('init_key') == 'init_value'
+        proxy.globals['new_key'] = 42
+        # Re-fetch
+        proxy2 = mgr.proxy.active[0]
+        assert proxy2.globals.get('new_key') == 42
+
+    def test_options_inherited_by_forked_states(self, fauxware_project):
+        """Children forked in Rust inherit options from their root state on
+        first access."""
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        state = fauxware_project.factory.entry_state()
+        state.options.add(o.LAZY_SOLVES)
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Step a few times to trigger forks.
+        mgr.run(max_steps=20)
+
+        # Every state in any stash should see LAZY_SOLVES via parent walk.
+        for stash in ('active', 'deadended', 'found'):
+            for sid in mgr._rust_mgr.get_state_ids(stash):
+                opts = mgr.get_state_options_py(sid)
+                assert o.LAZY_SOLVES in opts, \
+                    f"state {sid} in {stash} missing inherited LAZY_SOLVES"
+
+    def test_heap_mmap_base_exposed(self, fauxware_project):
+        """state.heap.mmap_base reads/writes through to the Rust state."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        # Default mmap_base is set on RustSimState construction (0xC100_0000).
+        assert proxy.heap.mmap_base == 0xC100_0000
+        # Writes round-trip.
+        proxy.heap.mmap_base = 0xD000_0000
+        proxy2 = mgr.proxy.active[0]
+        assert proxy2.heap.mmap_base == 0xD000_0000
+
+    def test_heap_allocations_and_freed_lists(self, fauxware_project):
+        """state.heap.allocations / .freed return lists of (addr, size) and
+        addresses respectively. Empty for a fresh state."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        assert proxy.heap.allocations == []
+        assert proxy.heap.freed == []
+
+    def test_options_globals_fallback_without_python_mgr(self):
+        """When constructed without python_mgr, options/globals fall back to
+        empty stand-ins (low-level unit-test path)."""
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        proxy = RustStateProxy(mgr, sid)
+        # No python_mgr -> empty fallback (does not raise).
+        assert proxy.options == set()
+        assert proxy.globals == {}
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverProxyTimeout:
     """Tests that state.solver.timeout = N propagates to the Rust solver.
 

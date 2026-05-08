@@ -632,6 +632,18 @@ class RustExplorationManager(
         # When Rust forks states, this allows finding the original state for plugin copying.
         self._state_roots: Dict[int, int] = {}
 
+        # Per-state-id Python-side stand-ins for state.options and state.globals.
+        # The Rust engine doesn't honor SimOptions (LAZY_SOLVES / STRICT_PAGE_ACCESS
+        # are mirrored separately on the Rust state itself), but user-facing code
+        # — predicates, exploration techniques, callbacks — frequently reads
+        # state.options.add(X) and state.globals[k] = v. Storing the set/dict
+        # Python-side keyed by state_id lets RustStateProxy expose live mutable
+        # views without round-tripping through Rust. Children inherit a deep
+        # copy from their root on first access (see get_state_options_py /
+        # get_state_globals_py).
+        self._py_state_options: Dict[int, set] = {}
+        self._py_state_globals: Dict[int, dict] = {}
+
         # Track active exploration techniques (applied during exploration steps).
         self._active_techniques: list = []
 
@@ -2041,6 +2053,28 @@ class RustExplorationManager(
             self._state_cache[actual_state_id] = angr_state
             # Track this as a root state for plugin restoration
             self._state_roots[actual_state_id] = actual_state_id
+            # Seed Python-side options/globals from the source SimState so the
+            # proxy returns the user-supplied values rather than empty stand-ins.
+            # SimStateOptions is a dict-backed custom mapping that doesn't iterate
+            # like a set (set(state.options) raises SimStateOptionsError on
+            # numeric keys); pull names whose boolean switch is True directly
+            # from the underlying _options dict.
+            try:
+                src_opts = getattr(angr_state, 'options', None)
+                inner = getattr(src_opts, '_options', None)
+                if isinstance(inner, dict):
+                    self._py_state_options[actual_state_id] = {
+                        name for name, value in inner.items() if value is True
+                    }
+            except Exception as e:
+                l.debug("seed py_state_options(sid=%d) failed: %s: %s",
+                        actual_state_id, type(e).__name__, e)
+            try:
+                if 'globals' in getattr(angr_state, 'plugins', {}):
+                    self._py_state_globals[actual_state_id] = dict(angr_state.globals)
+            except Exception as e:
+                l.debug("seed py_state_globals(sid=%d) failed: %s: %s",
+                        actual_state_id, type(e).__name__, e)
             # Extract and cache symbolic memory regions for preservation
             # This ensures symbolic values survive Rust<->Python transitions
             symbolic_pages = self._extract_symbolic_pages(angr_state)
@@ -2497,6 +2531,56 @@ class RustExplorationManager(
 
         return self
 
+    def get_state_options_py(self, state_id: int) -> set:
+        """Return the Python-side options set for a Rust state.
+
+        The Rust engine doesn't honor SimOptions (only LAZY_SOLVES /
+        STRICT_PAGE_ACCESS are mirrored onto the Rust state separately), so
+        this set lives Python-side. On first access for a forked state, copy
+        from the root state's options so children inherit a snapshot.
+
+        Returns a live set — mutations propagate to subsequent accesses.
+        """
+        opts = self._py_state_options.get(state_id)
+        if opts is not None:
+            return opts
+        try:
+            root_id = self._rust_mgr.get_state_root(state_id)
+        except Exception:
+            root_id = None
+        if root_id is not None and root_id != state_id:
+            parent_opts = self._py_state_options.get(root_id)
+            if parent_opts is not None:
+                opts = set(parent_opts)
+                self._py_state_options[state_id] = opts
+                return opts
+        opts = set()
+        self._py_state_options[state_id] = opts
+        return opts
+
+    def get_state_globals_py(self, state_id: int) -> dict:
+        """Return the Python-side globals dict for a Rust state.
+
+        Children inherit a shallow copy of the root state's globals on first
+        access. Returns a live dict — mutations propagate.
+        """
+        glb = self._py_state_globals.get(state_id)
+        if glb is not None:
+            return glb
+        try:
+            root_id = self._rust_mgr.get_state_root(state_id)
+        except Exception:
+            root_id = None
+        if root_id is not None and root_id != state_id:
+            parent_glb = self._py_state_globals.get(root_id)
+            if parent_glb is not None:
+                glb = dict(parent_glb)
+                self._py_state_globals[state_id] = glb
+                return glb
+        glb = {}
+        self._py_state_globals[state_id] = glb
+        return glb
+
     def _cleanup_state_cache(self):
         """Bound ``_state_cache`` size while preserving correctness invariants.
 
@@ -2519,6 +2603,16 @@ class RustExplorationManager(
         for sid in list(self._state_cache.keys()):
             if sid not in live:
                 del self._state_cache[sid]
+        # Drop options/globals for state IDs that no longer exist in any stash.
+        # Keep root entries pinned (they back the parent-walk on lazy init for
+        # any future child accesses).
+        live_with_roots = live | set(self._state_roots.values())
+        for sid in list(self._py_state_options.keys()):
+            if sid not in live_with_roots:
+                del self._py_state_options[sid]
+        for sid in list(self._py_state_globals.keys()):
+            if sid not in live_with_roots:
+                del self._py_state_globals[sid]
 
         pinned = set(self._state_roots.values())
         if self._current_callback_state_id is not None:
@@ -2688,6 +2782,7 @@ class RustExplorationManager(
             project=self._project,
             stdin_vars=getattr(self, '_stdin_vars', None),
             stdout_tracker=getattr(self, '_stdout_tracker', {}),
+            python_mgr=self,
         )
 
     # State export methods (_get_stash_states, _snapshot_to_angr, etc.)
@@ -2939,7 +3034,8 @@ class RustExplorationManager(
                 # Falls back to full export if the filter accesses something
                 # the proxy doesn't support.
                 from angr.exploration.rust_state_proxy import RustStateProxy
-                proxy = RustStateProxy(self._rust_mgr, state_id, self._project)
+                proxy = RustStateProxy(self._rust_mgr, state_id, self._project,
+                                        python_mgr=self)
                 try:
                     if filter_func(proxy):
                         keep_ids.append(state_id)

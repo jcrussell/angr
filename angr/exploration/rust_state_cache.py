@@ -265,6 +265,7 @@ class RustStateCacheMixin:
                     project=self._project,
                     stdin_vars=getattr(self, '_stdin_vars', None),
                     stdout_data=stdout_data,
+                    python_mgr=self,
                 )
                 _proxy_states[state_id] = state
 

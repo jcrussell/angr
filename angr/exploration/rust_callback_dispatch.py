@@ -1339,6 +1339,7 @@ class RustCallbackDispatchMixin:
                 self._rust_mgr, state_id,
                 project=self._project,
                 stdin_vars=getattr(self, '_stdin_vars', None),
+                python_mgr=self,
             )
             # Override IP to use the callback address (the PLT/hook address),
             # since the pending state may not be in the state index yet.
@@ -1387,6 +1388,7 @@ class RustCallbackDispatchMixin:
                 self._rust_mgr, state_id,
                 project=self._project,
                 stdin_vars=getattr(self, '_stdin_vars', None),
+                python_mgr=self,
             )
             proxy._override_addr = addr
 

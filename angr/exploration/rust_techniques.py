@@ -240,6 +240,7 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
 
             state_proxy = RustStateProxy(
                 mgr._rust_mgr, sid, project=mgr._project,
+                python_mgr=mgr,
             )
             # Prefetch common registers in one FFI call for technique filter efficiency
             arch = mgr._project.arch if mgr._project else None
