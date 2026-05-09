@@ -1,44 +1,43 @@
-## Session log: 2026-05-09 — angr-kwwd SMC Python-lift bytes sync (204th loop session, COMPLETE)
+## Session log: 2026-05-09 — angr-ony8 run_single.py spawn PYTHONPATH self-heal (205th loop session, COMPLETE)
 
 ### Task
-angr-kwwd (P4): SMC: sync Rust-side stores to Python state.memory for lift_block.
-Followup to angr-k67f. Picked option (a): pass dirty bytes from rust_memory
-through call_lift_block so _cb_lift_block can lift via byte_string=, avoiding
-the stale-cle-binary read.
+angr-ony8 (P2): tests/benchmarks/run_single.py spawn-child failed with
+'No module named angr' unless PYTHONPATH was set. Workaround was
+documented in memory `venv-rebuild-cargo-only-2026-05-09` but never
+codified into the script.
 
-### What landed (commit 3b0e7690d)
-1. `CallbackInterpreter::get_or_lift_block` (execution.rs): before falling
-   back to the Python lift callback, if `is_code_range_dirtied(addr, 4096)`
-   and rust_memory is present, read up to 4096 bytes via
-   `read_concrete_bytes_for_lift` (with hook_addrs clamping) and pass them
-   to `call_lift_block` as `dirty_bytes`.
-2. `PythonCallbacks::call_lift_block` (callbacks.rs): now takes
-   `Option<&[u8]>`. When Some, calls Python with `(addr, opt_level_or_None,
-   PyBytes)` so the Python signature stays positional-compatible.
-3. `_cb_lift_block` (rust_manager.py): accepts `dirty_bytes: bytes = None`
-   kwarg; when set, threads into `factory.block(addr, byte_string=...)`.
-4. Three new tests in `TestErrorRecovery`:
-   - test_cb_lift_block_uses_dirty_bytes_when_provided — Python contract
-   - test_cb_lift_block_static_binary_when_no_dirty_bytes — back-compat
-   - test_smc_rust_passes_dirty_bytes_to_python_lift — full Rust→Python e2e
-     using the wrap-and-reinstall callback pattern (set_callbacks clones)
+### Root cause
+multiprocessing.get_context('spawn') children get sys.path[0] = the
+directory of the executed module (`tests/benchmarks/`), NOT the parent's
+cwd. The editable angr install ships no .pth file (only the
+`__editable___angr_*finder.pyc` finder, with nothing to register it via
+site.py). The parent works because it runs from repo root with '' on
+sys.path; the child does not.
 
-### Tests
-- 369/369 Python tests pass (was 366; added 3).
-- 611/611 cargo unit tests pass.
+### What landed (commit 99901512d)
+In `_run_in_child` (tests/benchmarks/run_single.py:81), prepend
+`os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))`
+(three levels up = repo root) to sys.path before `import angr`. 7 lines
+added.
+
+### Verification
+- `python tests/benchmarks/run_single.py fauxware --engine rust` works
+  without PYTHONPATH (was the reported failure case).
+- `python tests/benchmarks/run_single.py fauxware --both` works.
+- `python tests/benchmarks/run_regression.py` reuses _run_in_child, so it
+  is fixed too: 12/13 SLA pass (the 1 failure is google2016_unbreakable_1
+  bimodal-variance, unrelated to this fix).
+- `pytest tests/engines/test_rust_exploration.py`: 369/369 pass.
 
 ### Findings saved (bd remember)
-- smc-python-lift-bytes-channel — both halves of SMC support (k67f + kwwd)
-- invariant-shellcode-binary-regions-test — load_shellcode + is_in_binary
-- invariant-set-callbacks-clones — PythonCallbacks Clone semantics
+- `invariant-spawn-child-pythonpath` — new invariant; future spawn entry
+  points must self-heal sys.path.
+- `venv-rebuild-cargo-only-2026-05-09` — updated to note PYTHONPATH is no
+  longer required after this fix.
 
 ### Files modified
-- native/angr/src/callbacks.rs — call_lift_block signature
-- native/angr/src/interpreter_cb/execution.rs — dirty-bytes resolve before Python lift
-- angr/exploration/rust_manager.py — _cb_lift_block dirty_bytes kwarg
-- tests/engines/test_rust_exploration.py — 3 new tests
+- `tests/benchmarks/run_single.py` — 7 lines, _run_in_child only.
 
 ### Status
-COMPLETE. SMC binaries on default builds now execute post-store
-instructions correctly. Native-lift builds were already covered by
-angr-k67f; this closes the parity gap.
+COMPLETE. Bead closed with commit reference. Run benchmarks no longer
+need PYTHONPATH set.
