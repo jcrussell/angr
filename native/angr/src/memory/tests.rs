@@ -1032,6 +1032,113 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     );
 }
 
+/// angr-5zbe: a pending write registered with `add_pending_write`
+/// must NOT be visible to a subsequent load until
+/// `flush_pending_writes` materializes it. This documents the
+/// current "defer-then-flush" semantics: the load-time overlay
+/// (`apply_pending_writes_concrete`/`_symbolic`) is intentionally
+/// stubbed out (see the `lazy-memory-load-overlay-fails` memory),
+/// so loads see only what is committed to pages. After flush the
+/// concrete-addr pending write must be observable on a re-load.
+#[test]
+fn test_pending_write_visible_after_flush() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // Establish a baseline value at 0x1000.
+    let baseline = RustBV::concrete(0xAAAA, 16);
+    mem.store_concrete(0x1000, baseline.clone()).unwrap();
+    let pre = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    assert_eq!(pre.as_u64(), Some(0xAAAA));
+
+    // Defer a new value at the same concrete address.
+    let new_val = RustBV::concrete(0xBBBB, 16);
+    mem.add_pending_write(PendingWrite {
+        addr: RustBV::concrete(0x1000, 64),
+        value: new_val.clone(),
+        size: 2,
+        condition: None,
+        page_hint: Some((1, 1)),
+    });
+    assert_eq!(mem.pending_writes_count(), 1);
+
+    // Pre-flush: load must return the baseline (overlay is disabled).
+    let mid = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    assert_eq!(
+        mid.as_u64(),
+        Some(0xAAAA),
+        "load before flush must NOT see deferred pending write \
+         (overlay is intentionally disabled, see lazy-memory-load-overlay-fails)"
+    );
+
+    // Flush, then load: the pending value must now be present and the
+    // pending list must be empty.
+    mem.flush_pending_writes(&ctx, &concretizer).unwrap();
+    assert_eq!(mem.pending_writes_count(), 0);
+    let post = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    assert_eq!(
+        post.as_u64(),
+        Some(0xBBBB),
+        "load after flush must see materialized pending write"
+    );
+}
+
+/// angr-5zbe: a pending write registered before `fork()` is inherited
+/// by both halves and must be observable in BOTH after each calls
+/// `flush_pending_writes` independently. Regression guard against
+/// drift in the fork pending_writes clone path
+/// (memory/mod.rs:298) and the flush pipeline.
+#[test]
+fn test_fork_pending_writes_visible_in_both_after_flush() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut parent = SymbolicMemory::new(Endness::Little);
+    parent.map(0x1000, 0x1000, Permission::RWX);
+    parent
+        .store_concrete(0x1000, RustBV::concrete(0xAAAA, 16))
+        .unwrap();
+
+    parent.add_pending_write(PendingWrite {
+        addr: RustBV::concrete(0x1000, 64),
+        value: RustBV::concrete(0xBBBB, 16),
+        size: 2,
+        condition: None,
+        page_hint: Some((1, 1)),
+    });
+
+    let mut child = parent.fork();
+    assert_eq!(parent.pending_writes_count(), 1);
+    assert_eq!(child.pending_writes_count(), 1);
+
+    // Each half flushes independently and the materialized value must
+    // be observable on a subsequent load.
+    parent.flush_pending_writes(&ctx, &concretizer).unwrap();
+    let p_loaded = parent.load_concrete(0x1000, 2, &ctx).unwrap();
+    assert_eq!(
+        p_loaded.as_u64(),
+        Some(0xBBBB),
+        "parent load after its own flush must see the pending write"
+    );
+
+    // The child still has its own copy of the pending write — flushing
+    // the parent must not drain the child's queue.
+    assert_eq!(
+        child.pending_writes_count(),
+        1,
+        "parent flush leaked into child's pending queue"
+    );
+
+    child.flush_pending_writes(&ctx, &concretizer).unwrap();
+    let c_loaded = child.load_concrete(0x1000, 2, &ctx).unwrap();
+    assert_eq!(
+        c_loaded.as_u64(),
+        Some(0xBBBB),
+        "child load after its own flush must see the inherited pending write"
+    );
+}
+
 /// angr-xok8: dual of the wide-store test for loads. With a W-only
 /// middle page, a 3-page load must surface a Permission error on
 /// the middle page (R required, W actual).
