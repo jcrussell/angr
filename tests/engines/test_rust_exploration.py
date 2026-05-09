@@ -2286,6 +2286,112 @@ class TestSolverOperations:
         val = ctx1.eval(x)
         assert 0 <= val <= 100
 
+    def test_fork_constraint_bidirectional_isolation(self):
+        """Bidirectional fork isolation: parent and sibling constraints
+        added after fork() must not leak across.
+
+        Locks the freeze-in-place fork invariant (commit 589b814e9,
+        SymContext::fork at native/angr/src/symbolic/context.rs:1823):
+        when push_level==0, fork drains the local assumed/z3 vecs into
+        a shared Arc — but each side's post-fork additions go into its
+        own fresh local vec and must remain isolated. Regression for
+        angr-agvl.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx_a = RustSolverContext()
+        x = claripy.BVS("x_iso", 32)
+        y = claripy.BVS("y_iso", 32)
+        z = claripy.BVS("z_iso", 32)
+
+        # A asserts X=5 — this becomes the frozen prefix at fork time.
+        ctx_a.add_constraint_ast(x == 5)
+
+        # Fork: B inherits the X=5 prefix as a shared Arc.
+        ctx_b = ctx_a.fork()
+
+        # Each side adds an independent post-fork constraint.
+        ctx_a.add_constraint_ast(y == 10)
+        ctx_b.add_constraint_ast(z == 20)
+
+        # Both contexts remain satisfiable (no cross-contamination forces
+        # a contradiction).
+        assert ctx_a.satisfiable()
+        assert ctx_b.satisfiable()
+
+        # Frozen prefix (X=5) is visible to both.
+        assert ctx_a.eval(x) == 5
+        assert ctx_b.eval(x) == 5
+
+        # Each side sees its own post-fork constraint.
+        assert ctx_a.eval(y) == 10
+        assert ctx_b.eval(z) == 20
+
+        # The proof of isolation: if B's Z=20 had leaked into A, adding
+        # Z!=20 to A would make it UNSAT. It must remain SAT.
+        ctx_a.add_constraint_ast(z != 20)
+        assert ctx_a.satisfiable()
+
+        # Symmetric check: A's Y=10 must not have leaked into B.
+        ctx_b.add_constraint_ast(y != 10)
+        assert ctx_b.satisfiable()
+
+    def test_fork_inside_push_isolation(self):
+        """Fork while inside a push() frame: the in-transaction freeze
+        path (freeze_z3_assertions, context.rs:2060) takes a different
+        branch — it must allocate a fresh merged Vec rather than draining
+        the parent's local in place, because rollback expects local intact.
+
+        Sibling state must still be isolated from the parent's post-fork
+        constraints. Regression for angr-agvl.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx_a = RustSolverContext()
+        x = claripy.BVS("x_push_iso", 32)
+        y = claripy.BVS("y_push_iso", 32)
+        z = claripy.BVS("z_push_iso", 32)
+
+        # Frozen prefix at level 0.
+        ctx_a.add_constraint_ast(x == 5)
+
+        # Enter a push frame, then add another constraint and fork.
+        ctx_a.push()
+        ctx_a.add_constraint_ast(y == 10)
+        ctx_b = ctx_a.fork()  # B inherits {x==5, y==10}
+
+        # A still inside push — add Z constraint.
+        ctx_a.add_constraint_ast(z == 20)
+
+        # B is at push_level==0 (fork resets it) — add a different Z.
+        ctx_b.add_constraint_ast(z == 99)
+
+        # Both contexts independently satisfiable.
+        assert ctx_a.satisfiable()
+        assert ctx_b.satisfiable()
+
+        # A sees its post-fork Z=20.
+        assert ctx_a.eval(z) == 20
+        # B sees its own Z=99 — A's Z=20 must NOT have leaked.
+        assert ctx_b.eval(z) == 99
+
+        # Both still see the shared frozen prefix and the in-frame Y=10.
+        assert ctx_a.eval(x) == 5
+        assert ctx_b.eval(x) == 5
+        assert ctx_a.eval(y) == 10
+        assert ctx_b.eval(y) == 10
+
+        # Pop A back: Z=20 should disappear from solver (push/pop is
+        # solver-frame-scoped). Locks the existing
+        # invariant-symcontext-push-not-cache-aware: pop unwinds the
+        # solver but the cache keeps the assertion. Just verify solver
+        # behaviour here — adding z!=20 must remain SAT after pop.
+        ctx_a.pop()
+        ctx_a.add_constraint_ast(z != 20)
+        assert ctx_a.satisfiable()
+
     def test_solver_multiple_variables(self):
         """Solver handles multiple independent symbolic variables."""
         from angr.rustylib.vex_engine import RustSolverContext

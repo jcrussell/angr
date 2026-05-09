@@ -1,52 +1,46 @@
-## Session log: 2026-05-09, 180th loop session
+## Session log: 2026-05-09, 181st loop session
 
-### Task: angr-f58x — Synthetic DCAS test that increments dcas_unsupported_count — CLOSED
+### Task: angr-agvl — Constraint-freshness fork mutex audit / regression test — CLOSED
 
-The `dcas_unsupported_count` metric (commit baf34e689) was previously only
-checked at zero (`test_dcas_unsupported_metric_exposed`). No test
-exercised the DCAS path end-to-end, so a regression that changed the
-reason string or broke fallback dispatch would have gone unnoticed.
+The Rust SymContext::fork() (native/angr/src/symbolic/context.rs:1823)
+freezes assumed_constraints_local + z3_assertions_local into shared Arc
+when push_level==0, with an in-place drain via `Arc::get_mut` when
+uniquely owned (commit 589b814e9). No regression test asserted that
+post-fork constraints stay isolated between parent and sibling.
 
 ### Implementation
 
-Added `test_dcas_increments_unsupported_counter` in the
-`TestErrorRecovery` class. Uses `angr.load_shellcode` to assemble a
-single `cmpxchg16b [rdi]` (`48 0f c7 0f`) followed by `ret` (`c3`),
-maps writable memory at `0x2000`, sets rdi to it (16-byte aligned to
-avoid the VEX `Ijk_SigSEGV` alignment trap), and runs
-`RustExplorationManager` for 2 steps. Verifies:
+Added two regression tests to `TestSolverOperations` in
+tests/engines/test_rust_exploration.py:
 
-1. `mgr.stats["dcas_unsupported_count"] >= 1` after run
-2. `mgr._rust_mgr.get_fallback_stats()["dcas_unsupported_count"] >= 1`
-3. The `addresses` map contains a reason matching
-   `"double compare-and-swap"`
+1. `test_fork_constraint_bidirectional_isolation` (level-0 freeze path):
+   - ctx_a asserts X=5 → fork into ctx_b → A asserts Y=10, B asserts Z=20
+   - Both sat; X visible to both (frozen prefix); A.eval(y)==10, B.eval(z)==20
+   - Negative proof: adding z!=20 to A and y!=10 to B must remain SAT
+     (UNSAT would prove leakage)
 
-`rsp` is concretized to avoid exploration explosion from the trailing
-`ret` popping a symbolic return address.
+2. `test_fork_inside_push_isolation` (in-transaction freeze path):
+   - ctx_a asserts X=5; ctx_a.push(); ctx_a asserts Y=10; fork into B
+   - A then asserts Z=20 (still in push frame); B asserts Z=99 (level 0)
+   - Both sat with their own Z; A.pop() then z!=20 still SAT
+   - Exercises the `in_transaction` branch of freeze_z3_assertions
+     (context.rs:2060) — must allocate fresh merged Vec, not drain local
+   - Locks `invariant-symcontext-push-not-cache-aware`: pop unwinds the
+     solver but cache keeps the assertion; we test solver behaviour only
 
 ### Verification
 
-- pyvex confirmed the lift produces `t(5,4) = CASle(t11 :: (t10,t9)->(t3,t2))`
-  — DCAS form with `_hi`/`_lo` populated.
-- Test passes in 1.23s.
-- Full suite: 346/346 pass in 18.71s.
+- Both new tests pass in 1.22s
+- Full suite: 348/348 pass in 18.64s (was 346 — added 2 isolation tests)
 
 ### Files modified
 
-- tests/engines/test_rust_exploration.py (+48 lines)
+- tests/engines/test_rust_exploration.py (+62 lines, two new tests)
 
-### Gotchas captured for memory
+### Outcome
 
-- `mgr.stats` on `RustExplorationManager` is a property, not a method
-  (the inner `mgr._rust_mgr.stats()` IS a method) — `()` raised
-  `TypeError: 'dict' object is not callable`.
-- `get_fallback_stats` lives on the inner Rust manager only — Python
-  wrapper does not re-export it. Tests must reach in via
-  `mgr._rust_mgr.get_fallback_stats()`.
-
-### Next session
-
-`bd ready` shows P3 follow-ups still: angr-w6ry callstack proxy fork
-tests, angr-orc9 ARM/AArch64/MIPS proc round-trip. Larger P2 items
-remain (angr-wqao split rust_manager.py, angr-4j5u decompose god struct)
-but auto-defer policy still applies.
+Tests passed first try. Fork constraint isolation invariant is now
+locked. No code change to context.rs needed — the existing freeze logic
+correctly isolates parent and sibling constraint vectors in both the
+level-0 (drain via Arc::get_mut) and in-transaction (allocate fresh
+merged Vec) freeze paths.
