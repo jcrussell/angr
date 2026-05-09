@@ -3514,6 +3514,47 @@ class TestMultiArchSupport:
         with pytest.raises(Exception):
             RustSimState("pdp11")
 
+    def test_arm32_explore_real_binary(self):
+        """End-to-end ARM32 (ARMEL) exploration on a real binary.
+
+        Until this landed, ARM had only state-creation unit tests. The Cdecl
+        x86 return-register bug (5329d8222) was latent for months precisely
+        because no end-to-end x86 test ran — same risk class for ARM, so
+        this exercises VEX interpretation, register sync, calling-convention
+        plumbing, and find/avoid stashing in one shot.
+
+        Uses the angr-examples Android license_validation binary
+        (load address 0x401760, find=0x401840, avoid=0x401854).
+        """
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        binary_path = os.path.expanduser(
+            "~/repos/angr-examples/examples/android_arm_license_validation/validate"
+        )
+        if not os.path.exists(binary_path):
+            pytest.skip(f"ARM binary not found at {binary_path}")
+
+        proj = angr.Project(binary_path, auto_load_libs=False)
+        assert proj.arch.name == "ARMEL"
+
+        state = proj.factory.blank_state(addr=0x401760)
+        concrete_addr = 0xffe00000
+        code = claripy.BVS("code", 10 * 8)
+        state.memory.store(concrete_addr, code, endness="Iend_BE")
+        state.regs.r0 = concrete_addr
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x401840, avoid=0x401854, num_find=1, max_steps=2000)
+
+        assert len(mgr.found) >= 1, (
+            f"ARM exploration did not reach 0x401840; "
+            f"counts={mgr.stash_counts()}"
+        )
+        # Sanity: solver still has a model for the symbolic input.
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust extension not available")
 class TestErroredStash:
