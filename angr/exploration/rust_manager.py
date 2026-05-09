@@ -1193,13 +1193,19 @@ class RustExplorationManager(
             # Claripy error — subsequent loads see stale data. Already warns.
             l.warning(f"Memory store error at 0x{addr:x}: {e}")
 
-    def _cb_lift_block(self, addr: int, opt_level: int = None) -> str:
+    def _cb_lift_block(self, addr: int, opt_level: int = None, dirty_bytes: bytes = None) -> str:
         _lb_start = time.perf_counter_ns()
         try:
             try:
                 kwargs = {}
                 if opt_level is not None:
                     kwargs['opt_level'] = opt_level
+                if dirty_bytes is not None:
+                    # SMC: Rust signaled that this lift range is on a page that
+                    # has been overwritten via state.memory. The cle static
+                    # binary buffer is stale; lift the fresh bytes Rust sent
+                    # instead.
+                    kwargs['byte_string'] = dirty_bytes
                 block = self._project.factory.block(addr, **kwargs)
                 irsb = block.vex
                 return self._serialize_irsb(irsb)

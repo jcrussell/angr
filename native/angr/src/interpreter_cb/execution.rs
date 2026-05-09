@@ -442,8 +442,31 @@ impl<'a> CallbackInterpreter<'a> {
         // Resolve VEX opt_level: per-address override > global > None (pyvex default)
         let opt_level = self.vex_opt_level_overrides.get(&addr).copied()
             .or(self.vex_opt_level);
+
+        // SMC: when this lift range overlaps a dirtied page, the cle binary
+        // bytes that the Python lifter would normally read are stale. Try
+        // to read fresh bytes from rust_memory and pass them via byte_string=
+        // so the Python lift sees the post-store program.
+        let dirty_bytes: Option<Vec<u8>> =
+            if self.is_code_range_dirtied(addr, 4096) {
+                self.rust_memory.as_ref().and_then(|rust_mem| {
+                    let mut max_bytes = 4096usize;
+                    for &hook_addr in self.hook_addrs.iter() {
+                        if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
+                            let limit = (hook_addr - addr) as usize;
+                            if limit > 0 && limit < max_bytes {
+                                max_bytes = limit;
+                            }
+                        }
+                    }
+                    rust_mem.read_concrete_bytes_for_lift(addr, max_bytes)
+                })
+            } else {
+                None
+            };
+
         let irsb_json = callbacks
-            .call_lift_block(py, addr, opt_level)
+            .call_lift_block(py, addr, opt_level, dirty_bytes.as_deref())
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {}", e)))?;
         if let Some(start) = callback_start {
             self.stats.python_callback_count += 1;

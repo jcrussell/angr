@@ -4491,6 +4491,125 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected lift bug"):
             mgr._cb_lift_block(0x1000)
 
+    # angr-kwwd: SMC support — when Rust signals dirty_bytes, _cb_lift_block
+    # must lift those bytes (via byte_string=) instead of the cle static
+    # buffer. Without this, the engine executes stale instructions after a
+    # store overwrites in-binary code.
+    def test_cb_lift_block_uses_dirty_bytes_when_provided(self):
+        """dirty_bytes lifts the supplied buffer, not the project's static binary."""
+        import json
+        import angr
+        from angr.exploration import RustExplorationManager
+        # Project's static binary at 0x1000 is "ret" (0xc3, 1 byte).
+        proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        mgr = RustExplorationManager(proj, [state])
+
+        # dirty_bytes is "nop; ret" (0x90 0xc3); the lift must reflect the
+        # extra nop, proving cle's stale buffer was bypassed.
+        result = mgr._cb_lift_block(0x1000, dirty_bytes=b"\x90\xc3")
+        assert result and result != '{}', f"expected non-empty IRSB, got {result!r}"
+        irsb = json.loads(result)
+        imarks = [s for s in irsb['statements'] if s.get('tag') == 'Ist_IMark']
+        # Two IMarks (nop at 0x1000, ret at 0x1001) prove both bytes were lifted.
+        assert len(imarks) == 2, f"expected 2 IMarks (nop+ret), got {len(imarks)}: {imarks}"
+        assert imarks[0]['addr'] == 0x1000
+        assert imarks[1]['addr'] == 0x1001
+
+    def test_cb_lift_block_static_binary_when_no_dirty_bytes(self):
+        """Without dirty_bytes the lift comes from the project's static binary."""
+        import json
+        import angr
+        from angr.exploration import RustExplorationManager
+        proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        mgr = RustExplorationManager(proj, [state])
+
+        result = mgr._cb_lift_block(0x1000)
+        assert result and result != '{}'
+        irsb = json.loads(result)
+        imarks = [s for s in irsb['statements'] if s.get('tag') == 'Ist_IMark']
+        # Static binary is just 0xc3 (1 byte ret) — exactly one IMark.
+        assert len(imarks) == 1, f"expected 1 IMark (ret only), got {len(imarks)}"
+        assert imarks[0]['addr'] == 0x1000
+
+    def test_smc_rust_passes_dirty_bytes_to_python_lift(self):
+        """End-to-end SMC: a Rust-side store to in-binary code marks the page
+        dirty; the next lift must call _cb_lift_block with dirty_bytes from
+        rust_memory (not None / not the cle static buffer).
+
+        This locks down the angr-kwwd contract: without the fix, _cb_lift_block
+        is called with dirty_bytes=None and lifts cle's stale binary buffer,
+        causing the engine to execute the pre-store instructions.
+        """
+        import angr
+        import angr.sim_options as o
+        from angr.exploration import RustExplorationManager
+
+        # Layout at 0x1000:
+        #   0x1000: 48 b8 10 10 00 00 00 00 00 00  mov rax, 0x1010
+        #   0x100a: c6 00 c3                       mov byte [rax], 0xc3
+        #   0x100d: ff e0                          jmp rax            (PC -> 0x1010)
+        #   0x100f: 00                             padding
+        #   0x1010: 90 c3                          nop ; ret  (static)
+        #   After the store: 0x1010 = c3 c3 (ret ; ret)
+        shellcode = (
+            bytes.fromhex("48b81010000000000000")  # mov rax, 0x1010
+            + bytes.fromhex("c600c3")              # mov byte [rax], 0xc3
+            + bytes.fromhex("ffe0")                # jmp rax
+            + b"\x00"                              # padding to align 0x1010
+            + bytes.fromhex("90c3")                # nop ; ret (static at 0x1010)
+        )
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        state.regs.rsp = 0x7ffff0000
+        state.memory.store(0x7ffff0000, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state])
+        # load_shellcode's cle Blob has obj.binary == None, so the default
+        # _load_binary_regions skips it and `is_in_binary` returns False
+        # everywhere — the engine then treats the jmp at 0x100d as an
+        # UnmodeledCall and never lifts 0x1010. Register the shellcode
+        # bytes manually so 0x1000-0x1011 counts as "in binary".
+        # See bd memory load-shellcode-blob-binary-none.
+        mgr._rust_mgr.load_binary_regions([(0x1000, shellcode)])
+
+        # Wrap _cb_lift_block to record (addr, dirty_bytes) for each call,
+        # then re-install on the Rust side (set_callbacks takes a clone, so
+        # we must push the updated PythonCallbacks back).
+        recorded: list[tuple[int, bytes | None]] = []
+        original = mgr._cb_lift_block
+
+        def wrapper(addr, opt_level=None, dirty_bytes=None):
+            recorded.append((addr, dirty_bytes))
+            return original(addr, opt_level, dirty_bytes)
+
+        mgr._callbacks.set_lift_block(wrapper)
+        mgr._rust_mgr.set_callbacks(mgr._callbacks)
+
+        mgr.run(max_steps=10)
+
+        smc_lifts = [(a, b) for (a, b) in recorded if a == 0x1010]
+        assert smc_lifts, (
+            f"expected at least one lift at 0x1010 after SMC store; "
+            f"all lifts: {[(hex(a), b is not None) for a, b in recorded]}"
+        )
+        last_addr, last_bytes = smc_lifts[-1]
+        assert last_bytes is not None, (
+            "Rust failed to pass dirty_bytes for SMC lift at 0x1010; "
+            f"all lifts: {[(hex(a), b is not None) for a, b in recorded]}"
+        )
+        assert last_bytes[0] == 0xc3, (
+            f"dirty_bytes[0] should be 0xc3 (the byte just stored), got "
+            f"0x{last_bytes[0]:02x} (full: {last_bytes[:8].hex()})"
+        )
+
     def test_cb_fetch_page_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.load() must keep returning empty page."""
         from angr.errors import SimMemoryError
