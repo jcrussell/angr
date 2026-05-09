@@ -61,6 +61,15 @@ otherwise.
 These options *would* change Python-engine behavior. Under Rust they are
 silently dropped, which can produce different found/avoided sets vs. Python.
 
+> **Implementation note (angr-1bqa, 2026-05-09):** The (b) classified
+> options are warn-once'd via `_REJECTED_OPTION_NAMES` in
+> `angr/exploration/rust_manager.py`. Two entries from the (b) category —
+> `TRACK_CONSTRAINT_ACTIONS` and `TRACK_MEMORY_MAPPING` — are intentionally
+> *excluded* from the warn set because they ship in the default `symbolic`
+> mode bundle (`sim_options.py:391`, `:374`); warning every default-options
+> `entry_state()` would generate noise the user did not consent to. They
+> remain divergence-risk in this matrix, just not warn-on-add.
+
 | Option | What Python does | Suggested fix |
 |--------|------------------|---------------|
 | `KEEP_IP_SYMBOLIC` | Allows IP to remain symbolic across blocks. | **(a) implement** — Rust always concretizes IP at block boundaries; symbolic-IP support is a real gap. |

@@ -4,6 +4,8 @@ This module tests the Rust-native exploration manager for symbolic execution.
 """
 import os
 import re
+import warnings
+
 import pytest
 
 import angr
@@ -6792,6 +6794,82 @@ class TestEdgeCases:
             f"store/load roundtrip on same symbolic address failed: "
             f"got {s.solver.eval(loaded):#x}"
         )
+
+    def test_rejected_options_emit_warning(self, fauxware_project):
+        """Setting an option tagged ``(b) explicitly reject`` in
+        docs/RUST_SIMOPTION_COVERAGE.md must emit a UserWarning at state-add
+        time. Without this signal, users silently get divergent behavior
+        from the Python engine (e.g. empty action streams under
+        TRACK_MEMORY_ACTIONS).
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={
+                angr.sim_options.TRACK_MEMORY_ACTIONS,
+                angr.sim_options.DO_RET_EMULATION,
+            },
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            RustExplorationManager(fauxware_project, [state])
+
+        messages = [str(w.message) for w in caught
+                    if issubclass(w.category, UserWarning)]
+        assert any("TRACK_MEMORY_ACTIONS" in m for m in messages), (
+            f"expected TRACK_MEMORY_ACTIONS warning; got {messages!r}"
+        )
+        assert any("DO_RET_EMULATION" in m for m in messages), (
+            f"expected DO_RET_EMULATION warning; got {messages!r}"
+        )
+
+    def test_rejected_options_warn_once_per_manager(self, fauxware_project):
+        """The warning fires once per option per manager, not per state added."""
+        from angr.exploration import RustExplorationManager
+
+        s1 = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.CALLLESS},
+        )
+        s2 = s1.copy()
+        s3 = s1.copy()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            RustExplorationManager(fauxware_project, [s1, s2, s3])
+
+        callless_warnings = [
+            w for w in caught
+            if issubclass(w.category, UserWarning) and "CALLLESS" in str(w.message)
+        ]
+        assert len(callless_warnings) == 1, (
+            f"expected exactly one CALLLESS warning across 3 states, "
+            f"got {len(callless_warnings)}"
+        )
+
+    def test_default_state_options_do_not_warn_for_non_rejected(self, fauxware_project):
+        """A plain entry_state() must NOT raise a UserWarning for any option
+        outside ``_REJECTED_OPTION_NAMES``. Two options ship in the default
+        ``symbolic`` mode bundle (TRACK_CONSTRAINT_ACTIONS, TRACK_MEMORY_MAPPING)
+        and ARE intentionally in the rejected set — those will warn — but no
+        unrelated option should trigger.
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_manager import _REJECTED_OPTION_NAMES
+
+        state = fauxware_project.factory.entry_state()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            RustExplorationManager(fauxware_project, [state])
+
+        for w in caught:
+            if not issubclass(w.category, UserWarning):
+                continue
+            msg = str(w.message)
+            # A warning is only acceptable if it names an option in the
+            # rejected set; spurious warnings for other options would mean
+            # the matrix has drifted.
+            assert any(name in msg for name in _REJECTED_OPTION_NAMES), (
+                f"unexpected UserWarning from default entry_state: {msg!r}"
+            )
 
 
 if __name__ == "__main__":

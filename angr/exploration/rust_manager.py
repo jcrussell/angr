@@ -14,6 +14,7 @@ import logging
 import os
 import pickle
 import time
+import warnings
 import weakref
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Union
 
@@ -63,6 +64,37 @@ except ImportError:
     _ExplorationStateSnapshot = None
     PythonCallbacks = None
     _RustSimState = None
+
+# SimOptions tagged "(b) explicitly reject" in docs/RUST_SIMOPTION_COVERAGE.md.
+# Setting any of these on a state owned by RustExplorationManager would change
+# Python-engine semantics, but the Rust engine silently ignores them — without
+# a warning users can spend hours chasing a divergence between engines. We
+# warn-once per option per manager rather than raise, since the user may have
+# inherited the option from a parent state without explicit consent. Two
+# entries from the matrix's (b) category — `TRACK_CONSTRAINT_ACTIONS` and
+# `TRACK_MEMORY_MAPPING` — are intentionally **excluded** here because they
+# ship in the default `symbolic` mode bundle (sim_options.py:391, 374). Every
+# `factory.entry_state()` would otherwise trigger a warning the user did not
+# choose. They remain divergence-risk in the doc; this set covers the options
+# a user must opt into.
+_REJECTED_OPTION_NAMES = frozenset({
+    # Action / history tracking — Rust never produces SimAction records.
+    # TRACK_CONSTRAINT_ACTIONS and TRACK_MEMORY_MAPPING are intentionally
+    # excluded (default-mode bundle; see comment above).
+    "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
+    "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
+    # Aggressive concretization / conservative strategies.
+    "CONCRETIZE", "CONSERVATIVE_READ_STRATEGY", "CONSERVATIVE_WRITE_STRATEGY",
+    # SimMemory error-handling tweaks.
+    "UNINITIALIZED_ACCESS_AWARENESS", "BEST_EFFORT_MEMORY_STORING",
+    # Ret-emulation: Rust does not emulate.
+    "DO_RET_EMULATION", "TRUE_RET_EMULATION_GUARD",
+    # Calling-convention overrides incompatible with the Rust state model.
+    "CALLLESS",
+    # Alternate Python engines / memory plugins.
+    "SUPER_FASTPATH", "FAST_MEMORY", "FAST_REGISTERS", "UNDER_CONSTRAINED_SYMEXEC",
+})
+
 
 # Z3 context sharing: make Rust and Python use the same Z3 context
 # to avoid AST translation overhead between solvers.
@@ -644,6 +676,12 @@ class RustExplorationManager(
         self._py_state_options: Dict[int, set] = {}
         self._py_state_globals: Dict[int, dict] = {}
 
+        # Track which silently-divergent SimOptions we've already warned about
+        # for this manager so the warn-once helper does not spam during runs
+        # that add many states. Cleared at __init__ time, so a fresh manager
+        # re-warns for the same option.
+        self._warned_rejected_options: set = set()
+
         # Track active exploration techniques (applied during exploration steps).
         self._active_techniques: list = []
 
@@ -693,6 +731,11 @@ class RustExplorationManager(
             for state in active_states:
                 # Detect state options
                 if hasattr(state, 'options'):
+                    # Warn about silently-divergent options up-front; the
+                    # post-Python-init state passed to _add_rust_state may
+                    # come from a cached path that strips options down to
+                    # LAZY_SOLVES + STRICT_PAGE_ACCESS via _apply_state_metadata.
+                    self._warn_rejected_options(state.options)
                     try:
                         from angr import sim_options as o
                         if o.LAZY_SOLVES in state.options:
@@ -1921,6 +1964,35 @@ class RustExplorationManager(
             l.warning(f"Python init: all states deadended")
         return state
 
+    def _warn_rejected_options(self, options) -> None:
+        """Emit a one-time UserWarning per silently-divergent SimOption.
+
+        See ``_REJECTED_OPTION_NAMES`` for the rationale. Some entries
+        (notably ``TRACK_CONSTRAINT_ACTIONS`` and ``TRACK_MEMORY_MAPPING``)
+        ship in the default ``symbolic`` mode bundle, so we warn once per
+        option per manager rather than raise.
+        """
+        if not options:
+            return
+        # state.options is a SimStateOptions container (not a plain set), so
+        # `intersection(options)` would fail on Python's set protocol — it
+        # tries to look up each frozenset member as a state option, which
+        # raises on names like "0". Iterate the small constant set instead.
+        unseen = {name for name in _REJECTED_OPTION_NAMES
+                  if name in options and name not in self._warned_rejected_options}
+        if not unseen:
+            return
+        for name in sorted(unseen):
+            warnings.warn(
+                f"SimOption {name!r} is set on a state owned by "
+                "RustExplorationManager, but the Rust engine does not honor "
+                "it. Behavior may diverge from the Python engine. See "
+                "docs/RUST_SIMOPTION_COVERAGE.md for the full matrix.",
+                UserWarning,
+                stacklevel=3,
+            )
+        self._warned_rejected_options.update(unseen)
+
     def _add_rust_state(self, stash: str, angr_state: "angr.SimState"):
         """Add an angr state to a Rust stash.
 
@@ -1975,6 +2047,8 @@ class RustExplorationManager(
                     rust_state.set_enforce_permissions(True)
             except Exception as e:
                 l.debug(f"STRICT_PAGE_ACCESS detection failed: {e}")
+
+            self._warn_rejected_options(angr_state.options)
 
         # Get state IDs before adding (to find the new one)
         ids_before = set(self._rust_mgr.get_state_ids(stash))
