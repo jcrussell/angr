@@ -42,6 +42,8 @@ mod run_loop;
 mod resume;
 mod pending_api;
 mod state_api;
+mod state_lifecycle;
+mod stats_api;
 
 use self::constraints::{ConstraintSolver, ConstraintTracker};
 use self::execution_env::ExecutionEnvironment;
@@ -770,67 +772,17 @@ impl RustExplorationManager {
     }
 
     /// Create a new RustSimState and add it to a stash.
+    /// See [`state_lifecycle::_create_state`] for the body.
     #[pyo3(signature = (stash="active"))]
     pub fn create_state(&mut self, stash: &str) -> PyResult<u64> {
-        let mut state = RustSimState::new_with_endian(&self.environment.arch_name, self.environment.little_endian)
-            .map_err(|e| PyValueError::new_err(e))?;
-        let state_id = state.state_id();
-
-        // Propagate memory options
-        if self.memory_config.zero_fill_unconstrained {
-            state.memory_mut().set_zero_fill_unconstrained(true);
-        }
-
-        // Propagate solver timeout
-        if self.constraint_solver.solver_timeout_ms != 30000 {
-            state.solver().borrow().set_timeout(self.constraint_solver.solver_timeout_ms);
-        }
-
-        // Propagate per-state history cap
-        state.set_max_history(self.environment.max_history);
-
-        // Copy hooks to state
-        for &_addr in &self.hooks {
-            // State hooks are checked during execution
-        }
-
-        self.index_state(state_id, stash);
-        self.sm.stashes_mut()
-            .entry(stash.to_string())
-            .or_insert_with(VecDeque::new)
-            .push_back(state);
-
-        Ok(state_id)
+        self._create_state(stash)
     }
 
     /// Add an existing RustSimState to a stash.
+    /// See [`state_lifecycle::_add_state`] for the body.
     #[pyo3(signature = (stash, state))]
     pub fn add_state(&mut self, stash: &str, state: &crate::state::PyRustSimState) {
-        // Fork the state to get our own copy
-        let mut forked = state.inner().fork();
-        let state_id = forked.state_id();
-
-        // Propagate memory options
-        if self.memory_config.zero_fill_unconstrained {
-            forked.memory_mut().set_zero_fill_unconstrained(true);
-        }
-
-        // Propagate solver timeout
-        if self.constraint_solver.solver_timeout_ms != 30000 {
-            forked.solver().borrow().set_timeout(self.constraint_solver.solver_timeout_ms);
-        }
-
-        // Propagate per-state history cap
-        forked.set_max_history(self.environment.max_history);
-
-        // Track this state as its own root (it was added via Python)
-        self.sm.set_root(state_id, state_id);
-
-        self.index_state(state_id, stash);
-        self.sm.stashes_mut()
-            .entry(stash.to_string())
-            .or_insert_with(VecDeque::new)
-            .push_back(forked);
+        self._add_state(stash, state)
     }
 
     /// Merge multiple states into one using symbolic merge conditions.
@@ -840,56 +792,10 @@ impl RustExplorationManager {
     /// The merged state is placed into `dest_stash`.
     ///
     /// Returns the merged state's ID.
+    /// See [`state_lifecycle::_merge_states`] for the body.
     #[pyo3(signature = (state_ids, dest_stash="active"))]
     pub fn merge_states(&mut self, state_ids: Vec<u64>, dest_stash: &str) -> PyResult<u64> {
-        use crate::symbolic::RustBV;
-
-        if state_ids.len() < 2 {
-            return Err(PyValueError::new_err("merge_states requires at least 2 state IDs"));
-        }
-
-        // Look up all states by ID across all stashes
-        let mut states: Vec<RustSimState> = Vec::new();
-        for &sid in &state_ids {
-            let mut found = false;
-            for (_stash_name, stash) in self.sm.stashes() {
-                for state in stash.iter() {
-                    if state.state_id() == sid {
-                        states.push(state.fork());
-                        found = true;
-                        break;
-                    }
-                }
-                if found { break; }
-            }
-            if !found {
-                return Err(PyValueError::new_err(format!("state {} not found", sid)));
-            }
-        }
-
-        // Create merge conditions: one 1-bit BVS per state
-        let solver = states[0].solver();
-        let merge_conditions: Vec<RustBV> = (0..states.len())
-            .map(|i| {
-                let name = format!("merge_flag_{}", i);
-                solver.borrow().new_bv(&name, 1)
-            })
-            .collect();
-
-        // Perform the merge
-        let others: Vec<&RustSimState> = states[1..].iter().collect();
-        let merged = states[0].merge(&others, &merge_conditions);
-        let merged_id = merged.state_id();
-
-        // Track state root
-        self.sm.set_root(merged_id, merged_id);
-        self.index_state(merged_id, dest_stash);
-        self.sm.stashes_mut()
-            .entry(dest_stash.to_string())
-            .or_insert_with(VecDeque::new)
-            .push_back(merged);
-
-        Ok(merged_id)
+        self._merge_states(state_ids, dest_stash)
     }
 
     /// Get the PC of a state in a stash by index.
@@ -1472,93 +1378,15 @@ impl RustExplorationManager {
     }
 
     /// Move states between stashes.
+    /// See [`state_lifecycle::_move_states`] for the body.
     pub fn move_states(&mut self, from_stash: &str, to_stash: &str, filter_fn: Option<Py<PyAny>>) -> PyResult<usize> {
-        // If no filter, move all
-        if filter_fn.is_none() {
-            if let Some(mut from) = self.sm.remove(from_stash) {
-                let count = from.len();
-                // Update index for all moved states
-                for state in from.iter() {
-                    self.sm.index(state.state_id(), to_stash);
-                }
-                let to = self.sm.stashes_mut().entry(to_stash.to_string()).or_insert_with(VecDeque::new);
-                to.append(&mut from);
-                self.sm.insert(from_stash, VecDeque::new());
-                return Ok(count);
-            }
-            return Ok(0);
-        }
-
-        // With filter - evaluate Python filter_fn per state
-        let filter_fn = filter_fn.expect("filter_fn checked before call");
-        let from = match self.sm.stashes().get(from_stash) {
-            Some(s) if !s.is_empty() => s,
-            _ => return Ok(0),
-        };
-
-        // First pass: determine which states pass the filter (immutable borrow)
-        let mut move_indices = Vec::new();
-        Python::attach(|py| -> PyResult<()> {
-            for (i, state) in from.iter().enumerate() {
-                let result = filter_fn.call1(py, (state.state_id(),))?;
-                if result.extract::<bool>(py).unwrap_or(false) {
-                    move_indices.push(i);
-                }
-            }
-            Ok(())
-        })?;
-
-        if move_indices.is_empty() {
-            return Ok(0);
-        }
-
-        // Second pass: move matching states (mutable borrow)
-        let mut moved = Vec::new();
-        if let Some(from) = self.sm.get_mut(from_stash) {
-            for &idx in move_indices.iter().rev() {
-                if let Some(state) = from.remove(idx) {
-                    moved.push(state);
-                }
-            }
-        }
-        // Update index and destination stash after releasing from-stash borrow
-        for state in &moved {
-            self.sm.index(state.state_id(), to_stash);
-        }
-        let count = moved.len();
-        let to = self.sm.stashes_mut().entry(to_stash.to_string()).or_insert_with(VecDeque::new);
-        for state in moved.into_iter().rev() {
-            to.push_back(state);
-        }
-        Ok(count)
+        self._move_states(from_stash, to_stash, filter_fn)
     }
 
     /// P8 fix: Move a single state by ID between stashes.
+    /// See [`state_lifecycle::_move_state`] for the body.
     pub fn move_state(&mut self, state_id: u64, from_stash: &str, to_stash: &str) -> PyResult<bool> {
-        // Find and remove the state from the source stash
-        let mut found_state = None;
-        if let Some(stash) = self.sm.get_mut(from_stash) {
-            let mut idx = None;
-            for (i, state) in stash.iter().enumerate() {
-                if state.state_id() == state_id {
-                    idx = Some(i);
-                    break;
-                }
-            }
-            if let Some(i) = idx {
-                found_state = stash.remove(i);
-            }
-        }
-
-        // Add to destination stash if found
-        if let Some(state) = found_state {
-            self.index_state(state_id, to_stash);
-            let to = self.sm.stashes_mut().entry(to_stash.to_string()).or_insert_with(VecDeque::new);
-            to.push_back(state);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        self._move_state(state_id, from_stash, to_stash)
     }
 
     /// P8 fix: Clear all states from a stash.
@@ -1569,58 +1397,15 @@ impl RustExplorationManager {
     /// Prepare for a new exploration stage: move a specific found state
     /// to active and clear all other stashes. Returns the state ID of the
     /// moved state. This avoids constraint transfer between managers.
+    /// See [`state_lifecycle::_reset_for_stage`] for the body.
     pub fn reset_for_stage(&mut self, found_state_id: u64) -> PyResult<u64> {
-        // Move the found state from 'found' to 'active'
-        let moved = self.move_state(found_state_id, "found", "active")?;
-        if !moved {
-            return Err(PyValueError::new_err(format!(
-                "state {} not found in 'found' stash", found_state_id)));
-        }
-
-        // Clear all other stashes
-        for stash in &[STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_UNCONSTRAINED] {
-            self.sm.clear(stash);
-        }
-
-        // Remove all other active states (keep only the moved one)
-        if let Some(active) = self.sm.get_mut("active") {
-            active.retain(|s| s.state_id() == found_state_id);
-        }
-
-        Ok(found_state_id)
+        self._reset_for_stage(found_state_id)
     }
 
     /// Get statistics.
+    /// See [`stats_api::_stats`] for the body.
     pub fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new(py);
-        dict.set_item("steps", self.steps)?;
-        dict.set_item("active", self.active_count())?;
-        dict.set_item("found", self.found_count())?;
-        dict.set_item("errors", self.errors.len())?;
-        dict.set_item("hooks", self.hooks.len())?;
-        dict.set_item("simprocedures", self.simprocedures.len())?;
-        dict.set_item("find_addrs", self.find_addrs.len())?;
-        dict.set_item("avoid_addrs", self.avoid_addrs.len())?;
-        dict.set_item("block_cache_size", self.environment.block_cache.len())?;
-        dict.set_item("native_proc_calls", self.profiling.native_proc_stats.native_calls)?;
-        dict.set_item("native_proc_fallbacks", self.profiling.native_proc_stats.python_fallbacks)?;
-        dict.set_item("avoided_count", self.sm.avoided_count)?;
-        dict.set_item("pruned_count", self.sm.pruned_count)?;
-        dict.set_item("deadended_count", self.sm.deadended_count)?;
-        dict.set_item("drop_terminal_states", self.sm.drop_terminal_states())?;
-        dict.set_item("state_roots_size", self.sm.roots().len())?;
-        dict.set_item("vex_fallback_count", self.vex_fallback_count)?;
-        dict.set_item("vex_fallback_unique_addrs", self.vex_fallback_addrs.len())?;
-        dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
-        dict.set_item(
-            "simprocedure_python_fallback_count",
-            self.simprocedure_python_fallback_count,
-        )?;
-        dict.set_item(
-            "syscall_python_fallback_count",
-            self.syscall_python_fallback_count,
-        )?;
-        Ok(dict)
+        self._stats(py)
     }
 
     /// Get VEX fallback statistics: total count and per-address reasons.
@@ -1631,24 +1416,9 @@ impl RustExplorationManager {
     ///   "dcas_unsupported_count": subset of fallbacks driven by double-CAS
     ///   "simprocedure_python_fallback_count": SimProcedures dispatched to Python
     ///   "syscall_python_fallback_count": syscalls dispatched to Python
+    /// See [`stats_api::_get_fallback_stats`] for the body.
     pub fn get_fallback_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new(py);
-        dict.set_item("count", self.vex_fallback_count)?;
-        let addrs = PyDict::new(py);
-        for (&addr, reason) in &self.vex_fallback_addrs {
-            addrs.set_item(format!("0x{:x}", addr), reason)?;
-        }
-        dict.set_item("addresses", addrs)?;
-        dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
-        dict.set_item(
-            "simprocedure_python_fallback_count",
-            self.simprocedure_python_fallback_count,
-        )?;
-        dict.set_item(
-            "syscall_python_fallback_count",
-            self.syscall_python_fallback_count,
-        )?;
-        Ok(dict)
+        self._get_fallback_stats(py)
     }
 
     // =========================================================================
@@ -1706,18 +1476,9 @@ impl RustExplorationManager {
     }
 
     /// Get native procedure statistics.
+    /// See [`stats_api::_native_procedure_stats`] for the body.
     pub fn native_procedure_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new(py);
-        dict.set_item("native_calls", self.profiling.native_proc_stats.native_calls)?;
-        dict.set_item("python_fallbacks", self.profiling.native_proc_stats.python_fallbacks)?;
-
-        let call_counts = PyDict::new(py);
-        for (name, count) in &self.profiling.native_proc_stats.call_counts {
-            call_counts.set_item(name, *count)?;
-        }
-        dict.set_item("call_counts", call_counts)?;
-
-        Ok(dict)
+        self._native_procedure_stats(py)
     }
 
     /// Register a Python callable as a native procedure.
@@ -2196,6 +1957,80 @@ mod tests {
             assert!(mgr.find_addrs.contains(&0x1000));
             assert!(mgr.find_addrs.contains(&0x2000));
             assert!(mgr.avoid_addrs.contains(&0x3000));
+        });
+    }
+
+    /// Orchestrator semantics: pyclass setters mutate the sub-struct, not a
+    /// shadow field on the manager. This test asserts the delegation pattern
+    /// established by the angr-4j5u decomposition — `set_*` and `get_*` round
+    /// through `constraint_solver`, `memory_config`, `environment`, and
+    /// `profiling` respectively.
+    #[test]
+    fn test_orchestrator_delegation() {
+        pyo3::prepare_freethreaded_python();
+        Python::attach(|_py| {
+            let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+
+            // ConstraintSolver: lazy_solves + solver_timeout_ms
+            mgr.set_lazy_solves(true);
+            assert!(mgr.constraint_solver.lazy_solves);
+            mgr.set_solver_timeout(7777);
+            assert_eq!(mgr.constraint_solver.solver_timeout_ms, 7777);
+
+            // MemoryConfiguration: zero_fill + vex_opt_level (global + override)
+            mgr.set_zero_fill_unconstrained(true);
+            assert!(mgr.memory_config.zero_fill_unconstrained);
+            mgr.set_vex_opt_level(Some(2));
+            assert_eq!(mgr.get_vex_opt_level(), Some(2));
+            mgr.set_vex_opt_level_override(0xdead, 0);
+            assert_eq!(mgr.resolve_vex_opt_level(0xdead), Some(0));
+            assert_eq!(mgr.resolve_vex_opt_level(0xbeef), Some(2));
+
+            // ExecutionEnvironment: max_history applies to existing states
+            mgr.set_max_history(42);
+            assert_eq!(mgr.environment.max_history, 42);
+            assert_eq!(mgr.get_max_history(), 42);
+
+            // ProfilingCollector: enable flag flips
+            mgr.set_profiling(true);
+            assert!(mgr.profiling.profiling_enabled);
+
+            // ConstraintTracker: uniqueness filter reaches the sub-struct
+            mgr.register_uniqueness_filter(vec!["rax".into(), "rbx".into()]);
+            assert!(mgr.uniqueness_filter_enabled());
+            assert_eq!(mgr.constraint_tracker.uniqueness_registers.len(), 2);
+            mgr.disable_uniqueness_filter();
+            assert!(!mgr.uniqueness_filter_enabled());
+        });
+    }
+
+    /// State lifecycle: create + move + reset_for_stage round-trip through the
+    /// extracted bodies in `state_lifecycle.rs`. Verifies that the StashManager
+    /// remains the canonical state-storage and the index is kept in sync.
+    #[test]
+    fn test_state_lifecycle_orchestration() {
+        pyo3::prepare_freethreaded_python();
+        Python::attach(|_py| {
+            let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+
+            let s1 = mgr.create_state("active").unwrap();
+            let s2 = mgr.create_state("active").unwrap();
+            assert_eq!(mgr.active_count(), 2);
+            assert_eq!(mgr.state_stash(s1).as_deref(), Some("active"));
+
+            // Move s1 to a custom stash; index follows.
+            assert!(mgr.move_state(s1, "active", "found").unwrap());
+            assert_eq!(mgr.state_stash(s1).as_deref(), Some("found"));
+            assert_eq!(mgr.active_count(), 1);
+            assert_eq!(mgr.found_count(), 1);
+
+            // reset_for_stage: keep s1, drop everything else.
+            let kept = mgr.reset_for_stage(s1).unwrap();
+            assert_eq!(kept, s1);
+            assert_eq!(mgr.active_count(), 1);
+            assert_eq!(mgr.found_count(), 0);
+            let active_ids = mgr.get_state_ids("active");
+            assert_eq!(active_ids, vec![s1]);
         });
     }
 }
