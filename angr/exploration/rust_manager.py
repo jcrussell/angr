@@ -58,6 +58,8 @@ try:
     )
     RUST_EXPLORATION_AVAILABLE = True
 except ImportError:
+    # cat-(b) FALLBACK WITH LOSS: Rust extension not built; the manager
+    # is import-safe but constructing one will raise from __init__.
     RUST_EXPLORATION_AVAILABLE = False
     _RustExplorationManager = None
     _ExplorationEvent = None
@@ -119,6 +121,9 @@ def _setup_shared_z3_context():
         # at process exit, causing a segfault.
         atexit.register(reset_shared_z3_context)
     except (ImportError, AttributeError, Exception) as e:
+        # cat-(b) FALLBACK WITH LOSS: shared Z3 context unavailable; AST
+        # round-tripping pays a translation hop on each Rust<->Python move.
+        # Already debug-logs the cause.
         l.debug("Z3 context sharing not available: %s", e)
 
 
@@ -153,6 +158,9 @@ def _apply_rust_log_env() -> None:
     try:
         set_rust_log_level(level)
     except Exception as e:  # noqa: BLE001 — never fail manager construction
+        # cat-(b) FALLBACK WITH LOSS: ANGR_RUST_LOG could not be applied;
+        # manager construction proceeds, but Rust-side log output stays at
+        # whatever level was set previously (typically off).
         l.debug("Failed to set Rust log level from ANGR_RUST_LOG=%r: %s", level, e)
 
 
@@ -178,6 +186,8 @@ def _extract_register_snapshot(state, arch) -> Dict[str, int]:
             if not val.symbolic:
                 registers[reg_name] = state.solver.eval(val)
         except (AttributeError, KeyError, TypeError, ValueError):
+            # cat-(a) EXPECTED CONTROL FLOW: arch lists a register the SimState
+            # doesn't expose, or the read errors on a symbolic value — skip.
             pass
     return registers
 
@@ -200,6 +210,9 @@ def _extract_stack_page(state, page_size: int):
         stack_start = stack_base - STACK_SIZE
         return (sp_page, concrete), (stack_start, STACK_SIZE)
     except (AttributeError, TypeError, ValueError):
+        # cat-(a) EXPECTED CONTROL FLOW: SP is symbolic or stack page can't
+        # be loaded; caller treats (None, None) as 'no eager extraction' and
+        # falls back to the lazy stack region.
         return None, None
 
 
@@ -233,12 +246,17 @@ def _extract_loader_pages(loader, page_size: int):
                             batch_pages.append((page_addr, bytes(page_data), 7))
                             mapped_page_addrs.add(page_addr)
                     except (KeyError, TypeError, ValueError):
+                        # cat-(a) EXPECTED CONTROL FLOW: per-page loader read failed (e.g.
+                        # unmapped gap inside the segment range); skip and continue.
                         pass
             region_start = obj.min_addr & ~(page_size - 1)
             region_end = (obj.max_addr + page_size) & ~(page_size - 1)
             if region_end - region_start > 0:
                 lazy_regions.append((region_start, region_end - region_start))
         except (AttributeError, KeyError, TypeError):
+            # cat-(b) FALLBACK WITH LOSS: per-object iteration failed (loader
+            # object lacks expected attributes); that object's pages won't be
+            # eagerly mapped — Rust will fetch them on demand via fetch_page.
             pass
     return batch_pages, lazy_regions, mapped_page_addrs
 
@@ -264,6 +282,9 @@ def _extract_section_patches(state, loader) -> list:
                             (section.min_addr,
                              state.solver.eval(val).to_bytes(section.memsize, 'big')))
                 except (AttributeError, TypeError, ValueError):
+                    # cat-(b) FALLBACK WITH LOSS: section overlay extraction failed;
+                    # Rust sees raw loader bytes for this section without the post-init
+                    # concrete patches (e.g. GOT relocations).
                     pass
     return section_patches
 
@@ -292,6 +313,9 @@ def _extract_extra_pages(state, page_size: int, mapped_page_addrs: set,
                 if any(page_data):
                     extra_pages.append((page_addr, bytes(page_data)))
             except (AttributeError, TypeError, ValueError):
+                # cat-(b) FALLBACK WITH LOSS: extra (non-loader) page extraction
+                # failed (e.g., concrete_load on a symbolic page). Rust will fetch
+                # the page lazily via the fetch_page callback if it is accessed.
                 pass
     return extra_pages
 
@@ -316,6 +340,9 @@ def _extract_callstack_snapshot(state):
             try:
                 continuation_addrs.append(int(pdata[4]))
             except (TypeError, ValueError):
+                # cat-(a) EXPECTED CONTROL FLOW: continuation addr in procedure_data
+                # is not int-castable (symbolic). Skip — saves no continuation, the
+                # normal procedure-data restore path handles it later.
                 pass
         callstack_frames.append(frame_data)
         frame = getattr(frame, 'next', None)
@@ -411,6 +438,8 @@ class RustErrorRecord:
         try:
             return len(state.solver.constraints)
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; constraint
+            # count of 0 on read failure is fine — RustErrorRecord is diagnostic.
             return 0
 
     @staticmethod
@@ -420,6 +449,8 @@ class RustErrorRecord:
         try:
             arch_name = state.arch.name
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; if arch
+            # is unreadable, return empty registers dict.
             return {}
         names = _ARCH_REG_SNAPSHOT.get(arch_name, ())
         snap: dict = {}
@@ -427,6 +458,8 @@ class RustErrorRecord:
             try:
                 val = getattr(state.regs, name)
             except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; skip a
+                # register that fails to read.
                 continue
             try:
                 if val.concrete:
@@ -434,6 +467,8 @@ class RustErrorRecord:
                 else:
                     snap[name] = str(val)
             except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; .concrete
+                # probe failed — fall through to str() repr.
                 snap[name] = str(val)
         return snap
 
@@ -444,6 +479,8 @@ class RustErrorRecord:
         try:
             bbls = list(state.history.recent_bbl_addrs)
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; missing
+            # history attribute is fine — return empty list.
             return []
         return bbls[-n:]
 
@@ -721,6 +758,9 @@ class RustExplorationManager(
                     self._perf_stats.set_init_phase('total', time.perf_counter_ns() - _init_start)
                     return
                 except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: multi-stage manager reuse failed;
+                    # falls back to building a fresh Rust manager from this state.
+                    # Already debug-logs the cause.
                     l.debug(f"Multi-stage reuse failed, falling back to normal init: {e}")
 
         # Add initial states
@@ -774,6 +814,8 @@ class RustExplorationManager(
                             use_approx, read_limit, write_limit, sym_write,
                         )
                     except ImportError:
+                        # cat-(a) EXPECTED CONTROL FLOW: optional sim_options import.
+                        # If absent, skip option-driven Rust configuration.
                         pass
 
                 # Hybrid init: if the state starts at a loader/init address
@@ -827,6 +869,8 @@ class RustExplorationManager(
         try:
             fb = self.stats
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: stats unavailable; the perf report
+            # omits the fallback-counter section but still prints other phases.
             fb = {}
         if fb:
             lines.append("Fallback counters:")
@@ -868,6 +912,8 @@ class RustExplorationManager(
             n_avoided = len(self._rust_mgr.get_state_ids('avoided'))
             lines.append(f"States: {n_found} found, {n_active} active, {n_avoided} avoided, {n_deadended} deadended")
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: state-count snapshot failed;
+            # the summary skips the per-stash count line.
             pass
 
         # Callback breakdown
@@ -907,6 +953,9 @@ class RustExplorationManager(
             from angr.rustylib.vex_engine import get_stepping_state_id
             self._get_stepping_state_id = get_stepping_state_id
         except ImportError:
+            # cat-(b) FALLBACK WITH LOSS: older Rust build without
+            # get_stepping_state_id; dispatcher uses a None-returning lambda,
+            # so per-fork state lookup falls back to the default state.
             self._get_stepping_state_id = lambda: None
 
         callbacks = PythonCallbacks()
@@ -989,6 +1038,9 @@ class RustExplorationManager(
                         val = val()
                         coerce_attempts += 1
                     except Exception:
+                        # cat-(b) FALLBACK WITH LOSS: thunk in memory failed to resolve;
+                        # replace with a fresh BVS so the load proceeds. Caller pays a
+                        # downstream symbolic constraint instead of a hard error.
                         if _DBG:
                             l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
                         val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
@@ -1008,6 +1060,9 @@ class RustExplorationManager(
                     concrete = state.solver.eval(val).to_bytes(size, 'little')
                     return (concrete, False, None)
             except (SimError, ClaripyError) as e:
+                # cat-(c) WRONG-ANSWER RISK: memory load returned zero bytes after
+                # Sim/Claripy error — Rust sees concrete zero where the program
+                # might have stored real data. Already warns.
                 l.warning(f"Memory load error at 0x{addr:x}: {e}")
                 return (bytes(size), False, None)
         finally:
@@ -1021,6 +1076,8 @@ class RustExplorationManager(
             val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
             state.memory.store(addr, val, endness=state.arch.memory_endness)
         except (SimError, ClaripyError) as e:
+            # cat-(c) WRONG-ANSWER RISK: memory store silently dropped on Sim/
+            # Claripy error — subsequent loads see stale data. Already warns.
             l.warning(f"Memory store error at 0x{addr:x}: {e}")
 
     def _cb_lift_block(self, addr: int, opt_level: int = None) -> str:
@@ -1034,6 +1091,8 @@ class RustExplorationManager(
                 irsb = block.vex
                 return self._serialize_irsb(irsb)
             except (SimEngineError, ClaripyError, PyVEXError) as e:
+                # cat-(c) WRONG-ANSWER RISK: lift returned empty IRSB; Rust will
+                # treat the block as a no-op step. Already warns.
                 l.warning(f"Lift error at 0x{addr:x}: {e}")
                 return '{}'
         finally:
@@ -1055,6 +1114,9 @@ class RustExplorationManager(
                 concrete = state.solver.eval(data).to_bytes(4096, 'little')
                 return (concrete, 7, True)
             except (SimError, ClaripyError):
+                # cat-(b) FALLBACK WITH LOSS: page fetch failed; return empty page
+                # with perms=0 so Rust marks it inaccessible (a load there will
+                # error rather than silently succeed). Already debug-logs.
                 l.debug("fetch_page 0x%x: failed to load/eval, returning empty", page_addr, exc_info=True)
                 return (bytes(4096), 0, False)
         finally:
@@ -1101,6 +1163,9 @@ class RustExplorationManager(
                                 l.debug(f"Reconstructed addr_concretize constraint from desc: {desc}")
                                 reconstructed = True
                     except ValueError:
+                        # cat-(a) EXPECTED CONTROL FLOW: addr_concretize_<hex> desc had
+                        # malformed hex suffix. Falls through to the warn at the bottom
+                        # of the loop where 'reconstructed' stays False.
                         pass
 
                 elif desc.startswith("mem_") and "_" in desc:
@@ -1120,6 +1185,8 @@ class RustExplorationManager(
                                     l.debug(f"Reconstructed mem constraint from desc: {desc}")
                                     reconstructed = True
                         except ValueError:
+                            # cat-(a) EXPECTED CONTROL FLOW: mem_<hex> desc had malformed hex
+                            # suffix. Same path as the addr_concretize fallback above.
                             pass
 
                 if not reconstructed:
@@ -1127,6 +1194,9 @@ class RustExplorationManager(
                     sync_failed = True
 
             except (SimError, ClaripyError) as e:
+                # cat-(c) WRONG-ANSWER RISK: per-constraint sync failed; sync_failed
+                # is set so the caller treats the whole batch as failed. Already
+                # warns.
                 l.warning(f"Error syncing constraint '{desc}': {e}")
                 sync_failed = True
 
@@ -1137,6 +1207,8 @@ class RustExplorationManager(
                     state.solver._stored_solver = None
                     sync_failed = True
             except (SimError, ClaripyError) as e:
+                # cat-(c) WRONG-ANSWER RISK: post-sync satisfiability check raised;
+                # treated as sync failure. Already warns.
                 l.warning(f"Error validating constraint sync: {e}")
                 sync_failed = True
 
@@ -1160,6 +1232,9 @@ class RustExplorationManager(
                 return (concrete, True, val)
             return (concrete, False, None)
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: register read failed — Rust receives
+            # zero bytes where the SimState may have a real value. Already
+            # warns.
             l.warning(f"get_register error at offset {offset}: {e}")
             return (bytes(size), False, None)
 
@@ -1171,6 +1246,8 @@ class RustExplorationManager(
             val = claripy.BVV(int.from_bytes(data, 'little'), len(data) * 8)
             state.registers.store(offset, val, endness=state.arch.register_endness)
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: register write failed — Python state
+            # diverges from Rust on this register. Already warns.
             l.warning(f"put_register error at offset {offset}: {e}")
 
     def _cb_dirty_call(self, name: str, args: list, ret_ty_bits: int) -> Tuple[bytes, bool, Optional[object]]:
@@ -1206,6 +1283,8 @@ class RustExplorationManager(
             return (concrete_bytes, False, None)
 
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: dirty call handler raised; Rust sees
+            # zero bytes for the result. Already warns.
             l.warning(f"dirty_call {name} error: {e}")
             return (bytes(ret_ty_bits // 8), False, None)
 
@@ -1267,6 +1346,9 @@ class RustExplorationManager(
                                                 l.debug(f"Resolved PLT at 0x{addr:x} to {proc_name} via GOT value")
                                                 return (proc_name, num_args, no_ret)
                     except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: PLT block lift / capstone parse
+                        # failed; falls through to the next resolution heuristic (symbol
+                        # name match). Already debug-logs.
                         l.debug(f"PLT resolution failed for 0x{addr:x}: {e}")
 
         if name:
@@ -1280,6 +1362,8 @@ class RustExplorationManager(
                         l.debug(f"Resolved {name} to {lib_name}:{name}")
                         return (name, num_args, no_ret)
             except ImportError:
+                # cat-(a) EXPECTED CONTROL FLOW: optional SIM_PROCEDURES import;
+                # if absent, skip name-based resolution.
                 pass
 
         if hasattr(self._project, 'loader'):
@@ -1295,6 +1379,8 @@ class RustExplorationManager(
                             l.debug(f"Resolved symbol {sym.name} to {lib_name}:{sym.name}")
                             return (sym.name, num_args, no_ret)
                 except ImportError:
+                    # cat-(a) EXPECTED CONTROL FLOW: optional SIM_PROCEDURES import
+                    # (symbol name path); same as above.
                     pass
 
         if hasattr(self._project, 'loader'):
@@ -1322,6 +1408,9 @@ class RustExplorationManager(
                     val = claripy.BVV(data, 64)
                 state.memory.store(addr, val, endness='Iend_LE')
             except (SimError, ClaripyError) as e:
+                # cat-(c) WRONG-ANSWER RISK: batch memory store partially failed;
+                # some addresses keep stale data. Logs at debug; promote upstream
+                # if a divergence is observed.
                 l.debug(f"Batch memory store failed at 0x{addr:x}: {e}")
 
     def _cb_memory_load_batch(self, loads: list) -> list:
@@ -1341,6 +1430,9 @@ class RustExplorationManager(
                 else:
                     results.append((concrete, False, None))
             except (SimError, ClaripyError) as e:
+                # cat-(c) WRONG-ANSWER RISK: batch memory load partial failure;
+                # returns zero bytes for that entry — Rust sees concrete zero.
+                # Logs at debug; promote upstream if a divergence is observed.
                 l.debug(f"Batch memory load failed at 0x{addr:x}: {e}")
                 results.append((bytes(size), False, None))
         return results
@@ -1361,6 +1453,8 @@ class RustExplorationManager(
                     concrete = state.solver.eval(data).to_bytes(4096, 'little')
                     results.append((concrete, 7, True))
             except (SimError, ClaripyError) as e:
+                # cat-(c) WRONG-ANSWER RISK: batch page fetch partial failure;
+                # returns zero page — Rust sees concrete zero. Debug-logs.
                 l.debug(f"Batch page fetch failed at 0x{page_addr:x}: {e}")
                 results.append((bytes(4096), 0, True))
         return results
@@ -1377,6 +1471,9 @@ class RustExplorationManager(
                                    inspect=False, disable_actions=True)
                 self._register_handle(id(ast), ast, addr=addr, size=size)
         except (SimError, ClaripyError) as e:
+            # cat-(c) WRONG-ANSWER RISK: symbolic store at concrete addr failed;
+            # Rust may serve stale concrete bytes from a prior store. Debug-
+            # logs.
             l.debug(f"Symbolic store at 0x{addr:x} failed: {e}")
 
     def _cb_memory_store_symbolic_full(self, addr_ast, data_ast):
@@ -1396,6 +1493,8 @@ class RustExplorationManager(
                                inspect=False, disable_actions=True)
             self._register_handle(id(data_ast), data_ast)
         except (SimError, ClaripyError) as e:
+            # cat-(c) WRONG-ANSWER RISK: symbolic-address store failed; Python
+            # memory model could not apply the symbolic write. Debug-logs.
             l.debug(f"Symbolic-address store failed: {e}")
 
     def _cb_memory_load_symbolic_full(self, addr_ast, size: int):
@@ -1418,6 +1517,9 @@ class RustExplorationManager(
                 self._register_handle(id(ast), ast, size=size)
             return ast
         except (SimError, ClaripyError) as e:
+            # cat-(c) WRONG-ANSWER RISK: symbolic-address load failed; returns
+            # a fresh BVS that has no relationship to the actual symbolic value
+            # in memory — downstream constraint sync will diverge. Debug-logs.
             l.debug(f"Symbolic-address load failed: {e}")
             return claripy.BVS(f"sym_load_full_fail_{size}", size * 8, explicit_name=False)
 
@@ -1450,6 +1552,9 @@ class RustExplorationManager(
                     )
                     regions.append((region.min_addr, bytes(data)))
                 except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: executable region not loaded into Rust;
+                    # attempts to lift a block in this region will fall through to
+                    # Python via lift_block. Debug-logs.
                     name = getattr(region, 'name', repr(region))
                     l.debug(f"Could not load region {name}: {e}")
 
@@ -1503,6 +1608,8 @@ class RustExplorationManager(
                     if not name.startswith(_user_prefixes):
                         return True
         except (AttributeError, KeyError, TypeError):
+            # cat-(a) EXPECTED CONTROL FLOW: stack-page probe for user symbolic
+            # data failed; fall through to the per-page bitmap scan below.
             pass
         # Also check non-stack pages with symbolic_data (e.g., user stores
         # a BVS into .data/.bss segment via state.memory.store()).
@@ -1519,6 +1626,8 @@ class RustExplorationManager(
                             if not name.startswith(_user_prefixes):
                                 return True
         except (AttributeError, KeyError, TypeError):
+            # cat-(a) EXPECTED CONTROL FLOW: per-page symbolic-data scan hit
+            # missing attribute; conclude no user symbolic data, return False.
             pass
         return False
 
@@ -1551,6 +1660,8 @@ class RustExplorationManager(
             cls._disk_key_cache[memo_key] = result
             return result
         except OSError:
+            # cat-(b) FALLBACK WITH LOSS: cannot read binary for hash; disk
+            # cache disabled for this binary (empty key returns ''-keyed nothing).
             return ""
 
     def _save_init_to_disk_cache(self, cache_key: str, state: "angr.SimState"):
@@ -1598,6 +1709,8 @@ class RustExplorationManager(
                     f"({os.path.getsize(cache_path)} bytes, "
                     f"{len(batch_pages)} pages)")
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: disk cache write failed (e.g., OOM,
+            # permission, ENOSPC). Run continues without persistent caching.
             l.debug(f"Failed to save disk cache: {e}")
 
     def _get_cached_blank_state(self, addr: int) -> "angr.SimState":
@@ -1626,6 +1739,8 @@ class RustExplorationManager(
             with open(cache_path, 'rb') as f:
                 return pickle.load(f)
         except (OSError, pickle.UnpicklingError, EOFError) as e:
+            # cat-(b) FALLBACK WITH LOSS: disk cache read failed / corrupt;
+            # treated as a cache miss. Caller pays full Python init.
             l.debug(f"Disk cache read failed: {e}")
             return None
 
@@ -1639,6 +1754,9 @@ class RustExplorationManager(
             try:
                 setattr(state.regs, reg_name, val)
             except (AttributeError, TypeError, ValueError):
+                # cat-(b) FALLBACK WITH LOSS: per-register restore failed; that
+                # register stays at the blank-state default — may diverge from the
+                # pre-cached value.
                 pass
         if data.get('stack_page'):
             sp_page, page_bytes = data['stack_page']
@@ -1654,6 +1772,8 @@ class RustExplorationManager(
                     page_addr, claripy.BVV(page_bytes), endness='Iend_BE',
                     inspect=False, disable_actions=True)
             except (TypeError, ValueError):
+                # cat-(b) FALLBACK WITH LOSS: extra page restore failed; that page
+                # stays blank and Rust sees concrete zeros there.
                 pass
 
         # Restore callstack frames
@@ -1675,6 +1795,9 @@ class RustExplorationManager(
                         stack_pointer=frame_data['stack_ptr'],
                     )
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: callstack restoration failed; the
+                # state has a top-of-stack frame but ret-chain may be incomplete.
+                # Debug-logs.
                 l.debug(f"Failed to restore callstack: {e}")
 
         mem_cache = None
@@ -1715,6 +1838,8 @@ class RustExplorationManager(
         try:
             state, mem_cache = self._deserialize_init_state(data)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: pickle deserialization succeeded but
+            # state construction failed; treat as cache miss. Debug-logs.
             l.debug(f"Disk cache deserialization failed: {e}")
             return None, None
         self._apply_init_side_effects(data)
@@ -1737,6 +1862,8 @@ class RustExplorationManager(
                 try:
                     cont_addr_int = int(cont_addr)
                 except (TypeError, ValueError):
+                    # cat-(a) EXPECTED CONTROL FLOW: continuation addr is symbolic /
+                    # non-castable; walk to the next frame.
                     frame = getattr(frame, 'next', None)
                     continue
                 if cont_addr_int > 0:
@@ -1781,6 +1908,9 @@ class RustExplorationManager(
             main_addr = self._resolve_main_address()
             return self._step_python_to_main(state, main_addr, mem_key, disk_key, main_obj)
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: Python init step failed; original
+            # state is used unmodified, so init-side-effects (constructors,
+            # .init_array) may not have run. Already warns.
             l.warning(f"Python init failed: {e}, using original state")
             return state
 
@@ -1809,6 +1939,8 @@ class RustExplorationManager(
                 else:
                     dst_state.options.discard(opt)
         except (ImportError, Exception):
+            # cat-(a) EXPECTED CONTROL FLOW: sim_options optional import;
+            # without it the option-mirror step is skipped.
             pass
 
     def _compute_disk_init_key(self, state: "angr.SimState", cache_key: str) -> str:
@@ -1892,6 +2024,9 @@ class RustExplorationManager(
                             return candidate
                     break
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: main address extraction from _start
+            # disassembly failed; caller resolves None and uses the post-init
+            # state at whatever PC step_python_to_main lands on. Debug-logs.
             l.debug(f"Could not extract main from _start: {e}")
         return None
 
@@ -2021,6 +2156,9 @@ class RustExplorationManager(
             if isinstance(py_brk, int):
                 rust_state.posix_brk = py_brk
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: posix.brk push to Rust failed; Rust's
+            # brk syscall will base-from its hardcoded default and may overlap
+            # mapped memory. Debug-logs.
             l.debug("posix.brk init push failed: %s", e)
 
         # Sync registers (use precomputed dict from disk cache when available)
@@ -2046,6 +2184,9 @@ class RustExplorationManager(
                 if o.STRICT_PAGE_ACCESS in angr_state.options:
                     rust_state.set_enforce_permissions(True)
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: STRICT_PAGE_ACCESS detection failed;
+                # Rust permission enforcement stays off — accesses that Python
+                # would reject are silently allowed. Debug-logs.
                 l.debug(f"STRICT_PAGE_ACCESS detection failed: {e}")
 
             self._warn_rejected_options(angr_state.options)
@@ -2084,6 +2225,8 @@ class RustExplorationManager(
                             old_info = old_rust_mgr.debug_solver_info(old_state_id)
                             l.debug(f"OLD solver ({old_state_id}): {old_info[:300]}")
                         except Exception as e:
+                            # cat-(a) EXPECTED CONTROL FLOW: debug-only solver-info dump;
+                            # failure is informational only.
                             l.debug(f"OLD solver debug failed: {e}")
 
                         sat = self._rust_mgr.import_z3_constraint_ptrs(
@@ -2093,12 +2236,16 @@ class RustExplorationManager(
                             new_info = self._rust_mgr.debug_solver_info(actual_state_id)
                             l.debug(f"NEW solver ({actual_state_id}): {new_info[:300]}")
                         except Exception as e:
+                            # cat-(a) EXPECTED CONTROL FLOW: debug-only solver-info dump;
+                            # same as above.
                             l.debug(f"NEW solver debug failed: {e}")
 
                         l.debug(f"Transferred {len(z3_ptrs)} Z3 constraints from previous "
                                 f"Rust manager (state {old_state_id}), sat={sat}")
                         z3_transferred = True
                 except (AttributeError, Exception) as e:
+                    # cat-(b) FALLBACK WITH LOSS: Z3 pointer transfer from old manager
+                    # failed; falls back to lossy claripy round-trip below. Debug-logs.
                     l.debug(f"Z3 pointer transfer failed, falling back to claripy: {e}")
 
             if not z3_transferred:
@@ -2114,6 +2261,9 @@ class RustExplorationManager(
                                     f"Rust manager (state {old_state_id})")
                             constraints = exported + constraints
                     except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: legacy export from old Rust manager
+                        # failed; constraints from the old run are not transferred.
+                        # Debug-logs.
                         l.debug(f"Could not export constraints from old Rust manager: {e}")
                 if constraints:
                     try:
@@ -2122,6 +2272,10 @@ class RustExplorationManager(
                         l.debug(f"Synced {len(constraints)} initial constraints to Rust state "
                                 f"{actual_state_id}, sat={sat}")
                     except Exception as e:
+                        # cat-(c) WRONG-ANSWER RISK: claripy-fallback constraint sync to
+                        # Rust failed; the new state has fewer constraints than the source
+                        # state — eval/satisfiable on it may produce wrong values.
+                        # Already warns.
                         l.warning(f"Failed to sync initial constraints: {e}")
 
             # Also sync any Python-side constraints (user-added post-exploration)
@@ -2133,6 +2287,9 @@ class RustExplorationManager(
                             actual_state_id, py_constraints)
                         l.debug(f"Synced {len(py_constraints)} additional Python constraints")
                     except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: post-Z3-transfer sync of additional
+                        # Python constraints failed; primary Z3 ptr transfer already
+                        # carries the bulk. Debug-logs.
                         l.debug(f"Could not sync Python constraints: {e}")
 
             self._state_cache[actual_state_id] = angr_state
@@ -2152,12 +2309,18 @@ class RustExplorationManager(
                         name for name, value in inner.items() if value is True
                     }
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: seeding _py_state_options from source
+                # state failed; child uses an empty options set on first access.
+                # Debug-logs.
                 l.debug("seed py_state_options(sid=%d) failed: %s: %s",
                         actual_state_id, type(e).__name__, e)
             try:
                 if 'globals' in getattr(angr_state, 'plugins', {}):
                     self._py_state_globals[actual_state_id] = dict(angr_state.globals)
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: seeding _py_state_globals from source
+                # state failed; child sees an empty globals dict on first access.
+                # Debug-logs.
                 l.debug("seed py_state_globals(sid=%d) failed: %s: %s",
                         actual_state_id, type(e).__name__, e)
             # Extract and cache symbolic memory regions for preservation
@@ -2178,6 +2341,9 @@ class RustExplorationManager(
                                               size=ast.length // 8 if hasattr(ast, 'length') else 1,
                                               state_id=actual_state_id)
                     except Exception as e:
+                        # cat-(c) WRONG-ANSWER RISK: symbolic page import to Rust failed;
+                        # Rust sees only the concrete-witness bytes for this page, losing
+                        # the symbolic relationship. Debug-logs.
                         l.debug(f"Symbolic page import at 0x{addr:x} failed: {e}")
                 if imported_sym:
                     l.debug(f"Imported {imported_sym} symbolic page entries to Rust state {actual_state_id}")
@@ -2197,6 +2363,9 @@ class RustExplorationManager(
                         self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8,
                                               state_id=actual_state_id)
                     except Exception as e:
+                        # cat-(c) WRONG-ANSWER RISK: pending symbolic import to Rust failed;
+                        # the symbolic value is not visible to Rust — downstream loads see
+                        # concrete witnesses only. Debug-logs.
                         l.debug(f"Symbolic import at 0x{addr:x} failed: {e}")
                 if imported:
                     l.debug(f"Imported {imported} symbolic values to Rust state {actual_state_id}")
@@ -2222,6 +2391,9 @@ class RustExplorationManager(
                                               size=ast.length // 8 if hasattr(ast, 'length') else 1,
                                               state_id=rust_state.state_id)
                     except (TypeError, ValueError, RuntimeError):
+                        # cat-(c) WRONG-ANSWER RISK: same as 2199 but on the fallback path
+                        # where actual_state_id was not determined; Python-side state ID is
+                        # used. Debug-logs (with exc_info).
                         l.debug("Failed to import symbolic region at 0x%x", addr, exc_info=True)
             # Enforce state cache limit
             self._cleanup_state_cache()
@@ -2318,6 +2490,9 @@ class RustExplorationManager(
                         'elapsed_seconds': time.time() - start_time,
                     })
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: progress callback raised; suppress so
+                    # user code can't break exploration. The callback's view skips this
+                    # tick.
                     pass
 
         if timeout is not None and (time.time() - start_time) > timeout:
@@ -2409,6 +2584,8 @@ class RustExplorationManager(
                     l.debug("Enabled lazy_solves from cached state options at explore() time")
                     break
         except (ImportError, Exception):
+            # cat-(a) EXPECTED CONTROL FLOW: optional sim_options import; if
+            # absent, lazy_solves stays at the value set during construction.
             pass
 
         # Reset solver profiling stats for this exploration run
@@ -2416,6 +2593,9 @@ class RustExplorationManager(
             from angr.rustylib.vex_engine import RustExplorationManager as _REM
             _REM.reset_solver_stats()
         except (ImportError, RuntimeError, AttributeError):
+            # cat-(b) FALLBACK WITH LOSS: solver-stats reset failed (e.g., the
+            # Rust extension was built without Z3); the run accumulates over
+            # whatever counters survived the previous explore().
             pass
 
         # Route to appropriate exploration strategy
@@ -2482,6 +2662,9 @@ class RustExplorationManager(
                     if until(self):
                         break
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: until predicate raised; we keep
+                    # exploring and let the user fix their predicate. Debug-logs with
+                    # exc_info.
                     l.debug("until predicate raised exception", exc_info=True)
 
         # Final predicate check on deadended/remaining states
@@ -2567,6 +2750,9 @@ class RustExplorationManager(
                 try:
                     self._rust_mgr.clear_stash('unconstrained')
                 except (RuntimeError, KeyError):
+                    # cat-(b) FALLBACK WITH LOSS: clear_stash on the unconstrained
+                    # stash failed (no such stash, race with Rust); states may persist
+                    # in 'unconstrained' even though save_unconstrained=False.
                     pass
 
             # Periodically clean Python state cache to prevent memory leaks
@@ -2612,6 +2798,8 @@ class RustExplorationManager(
                         l.debug("until predicate returned True, stopping exploration")
                         break
                 except Exception as e:
+                    # cat-(c) WRONG-ANSWER RISK: until predicate raised; exploration
+                    # continues past the user's intended stop. Already warns.
                     l.warning(f"until predicate error: {e}")
 
         return self
@@ -2632,6 +2820,8 @@ class RustExplorationManager(
         try:
             root_id = self._rust_mgr.get_state_root(state_id)
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;
+            # treat as no parent and start from a fresh empty options set.
             root_id = None
         if root_id is not None and root_id != state_id:
             parent_opts = self._py_state_options.get(root_id)
@@ -2655,6 +2845,8 @@ class RustExplorationManager(
         try:
             root_id = self._rust_mgr.get_state_root(state_id)
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;
+            # treat as no parent and start from a fresh empty globals dict.
             root_id = None
         if root_id is not None and root_id != state_id:
             parent_glb = self._py_state_globals.get(root_id)
@@ -2681,6 +2873,8 @@ class RustExplorationManager(
             active_set = set(self._rust_mgr.get_state_ids('active'))
             found_set = set(self._rust_mgr.get_state_ids('found'))
         except (RuntimeError, KeyError):
+            # cat-(b) FALLBACK WITH LOSS: cannot read live state IDs; skip this
+            # cleanup tick. Cache may temporarily exceed cap until next call.
             return
 
         live = active_set | found_set
@@ -2711,6 +2905,10 @@ class RustExplorationManager(
                 if eff_id is not None:
                     pinned.add(eff_id)
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: effective-state lookup failed; only
+                # the direct callback id is pinned, so an in-flight forked state
+                # could be evicted. Tolerated — eviction is recoverable via re-
+                # fetch on next access.
                 pass
         if self._current_stepping_state_id is not None:
             pinned.add(self._current_stepping_state_id)
@@ -2821,6 +3019,9 @@ class RustExplorationManager(
             for addr, message, state_id in self._rust_mgr.get_errors():
                 error_lookup[state_id] = (addr, message)
         except (RuntimeError, IndexError):
+            # cat-(b) FALLBACK WITH LOSS: get_errors() failed; error records
+            # are built with default (addr=0, message='unknown error') rather
+            # than skipped, so callers still see the right number of states.
             pass
 
         # Map states to error records using state_ids from the stash
@@ -2947,6 +3148,8 @@ class RustExplorationManager(
             for k, v in rust_exec_stats.items():
                 result[f'rust_{k}'] = v
         except (RuntimeError, AttributeError):
+            # cat-(b) FALLBACK WITH LOSS: Rust execution stats unavailable;
+            # the stats dict still has Python-side counters.
             pass
         # Include Z3 solver profiling stats
         try:
@@ -2955,6 +3158,8 @@ class RustExplorationManager(
             for k, v in solver_stats.items():
                 result[k] = v
         except (ImportError, RuntimeError, AttributeError):
+            # cat-(b) FALLBACK WITH LOSS: Z3 solver stats unavailable (built
+            # without Z3); the stats dict omits z3_* keys.
             pass
         return result
 
@@ -2980,6 +3185,8 @@ class RustExplorationManager(
             from angr.rustylib.vex_engine import RustExplorationManager as _REM
             return dict(_REM.get_solver_stats())
         except (ImportError, RuntimeError, AttributeError):
+            # cat-(b) FALLBACK WITH LOSS: Z3 solver stats unavailable on the
+            # public getter; return an empty dict.
             return {}
 
     def reset_solver_stats(self):
@@ -2988,6 +3195,9 @@ class RustExplorationManager(
             from angr.rustylib.vex_engine import RustExplorationManager as _REM
             _REM.reset_solver_stats()
         except (ImportError, RuntimeError, AttributeError):
+            # cat-(b) FALLBACK WITH LOSS: solver-stats reset failed on public
+            # resetter; counters keep accumulating from whatever state they
+            # were in.
             pass
 
     # Compatibility methods for SimulationManager API
@@ -3077,6 +3287,8 @@ class RustExplorationManager(
                     else:
                         keep_ids.append(state_id)
                 except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: move filter raised on a state; keep
+                    # the state in the source stash rather than dropping it. Debug-logs.
                     if _DBG:
                         l.debug(f"move filter error for state {state_id}: {e}")
                     keep_ids.append(state_id)  # Keep on error
@@ -3086,6 +3298,8 @@ class RustExplorationManager(
                 try:
                     self._rust_mgr.move_state(state_id, from_stash, to_stash)
                 except (RuntimeError, KeyError):
+                    # cat-(a) EXPECTED CONTROL FLOW: state may already have moved
+                    # (e.g., another technique deadended it). Suppress.
                     pass  # State may have already been moved
 
         return self
@@ -3132,6 +3346,8 @@ class RustExplorationManager(
                         prune_ids.append(state_id)
                     continue  # Proxy worked, skip full export
                 except (AttributeError, TypeError, NotImplementedError):
+                    # cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an attribute
+                    # the predicate accessed; fall back to full export below.
                     pass  # Proxy didn't support something, fall back
 
                 snapshot = self._rust_mgr.export_state(state_id)
@@ -3145,6 +3361,8 @@ class RustExplorationManager(
                 else:
                     prune_ids.append(state_id)
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: filter raised; keep the state in the
+                # source stash. Debug-logs.
                 if _DBG:
                     l.debug(f"filter error for state {state_id}: {e}")
                 keep_ids.append(state_id)  # Keep on error
@@ -3154,6 +3372,7 @@ class RustExplorationManager(
             try:
                 self._rust_mgr.move_state(state_id, stash, 'pruned')
             except (RuntimeError, KeyError):
+                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
                 pass
 
         return self
@@ -3181,11 +3400,14 @@ class RustExplorationManager(
                     if not self._rust_mgr.state_satisfiable(state_id):
                         prune_ids.append(state_id)
                 except (RuntimeError, KeyError):
+                    # cat-(b) FALLBACK WITH LOSS: state_satisfiable() raised; keep the
+                    # state — if it's actually unsat, downstream solver use will catch.
                     pass  # Keep on error
             for state_id in prune_ids:
                 try:
                     self._rust_mgr.move_state(state_id, stash, 'pruned')
                 except (RuntimeError, KeyError):
+                    # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
                     pass
             return self
 
@@ -3209,6 +3431,8 @@ class RustExplorationManager(
             try:
                 self._rust_mgr.clear_stash(stash)
             except AttributeError:
+                # cat-(a) EXPECTED CONTROL FLOW: probing for the optional
+                # clear_stash API on older Rust builds; fall back to move_states.
                 # Fallback: move all to deadended
                 self._rust_mgr.move_states(stash, 'deadended', None)
         else:
@@ -3224,8 +3448,11 @@ class RustExplorationManager(
                         try:
                             self._rust_mgr.move_state(state_id, stash, 'deadended')
                         except (RuntimeError, KeyError):
+                            # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
                             pass
                 except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: drop filter raised; that state is
+                    # left in the source stash. Debug-logs.
                     if _DBG:
                         l.debug(f"drop filter error for state {state_id}: {e}")
 
@@ -3257,6 +3484,7 @@ class RustExplorationManager(
             try:
                 self._rust_mgr.move_state(state_id, stash_from, stash_to)
             except (RuntimeError, KeyError):
+                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
                 pass
 
         return self
@@ -3274,6 +3502,8 @@ class RustExplorationManager(
                 state_ids = list(self._rust_mgr.get_state_ids(stash_name))
                 result[stash_name] = state_ids
             except (RuntimeError, KeyError):
+                # cat-(a) EXPECTED CONTROL FLOW: stash name unknown to Rust;
+                # return an empty list for that stash key.
                 result[stash_name] = []
         return result
 
@@ -3342,6 +3572,8 @@ class RustExplorationManager(
                     try:
                         merged.append(merge_func(*group))
                     except (TypeError, ValueError, RuntimeError):
+                        # cat-(b) FALLBACK WITH LOSS: user merge_func failed for this
+                        # group; keep the group's states unmerged. Already warns.
                         l.warning("merge_func failed for group at %s, keeping unmerged", key)
                         merged.extend(group)
                 else:
@@ -3351,6 +3583,8 @@ class RustExplorationManager(
                         m, _, _ = base.merge(*others)
                         merged.append(m)
                     except (AttributeError, TypeError, ValueError):
+                        # cat-(b) FALLBACK WITH LOSS: built-in state.merge() failed;
+                        # keep the group unmerged. Already warns.
                         l.warning("State merge failed for group at %s, keeping unmerged", key)
                         merged.extend(group)
 
@@ -3359,10 +3593,13 @@ class RustExplorationManager(
                 try:
                     self._rust_mgr.move_state(sid, stash, '_merge_drop')
                 except (RuntimeError, KeyError):
+                    # cat-(a) EXPECTED CONTROL FLOW: source stash entry already moved.
                     pass
             try:
                 self._rust_mgr.clear_stash('_merge_drop')
             except (RuntimeError, KeyError):
+                # cat-(a) EXPECTED CONTROL FLOW: clear of intermediate _merge_drop
+                # stash failed (already empty / never created).
                 pass
 
             # Re-add merged states
@@ -3371,9 +3608,15 @@ class RustExplorationManager(
                     self._add_rust_state(stash, ms)
                     l.debug("Added merged state to %s at 0x%x", stash, ms.addr)
                 except Exception as e:
+                    # cat-(c) WRONG-ANSWER RISK: failed to re-add merged state; the
+                    # merge result is lost — caller sees fewer states than expected.
+                    # Already warns.
                     l.warning("Failed to re-add merged state: %s", e)
 
         except Exception:
+            # cat-(c) WRONG-ANSWER RISK: outer merge raised; states are left
+            # unmerged (some already moved to _merge_drop and cleared above).
+            # Already warns with exc_info.
             l.warning("State merge failed entirely, keeping states unmerged", exc_info=True)
 
         return self
@@ -3397,4 +3640,6 @@ class RustExplorationManager(
         try:
             return self._rust_mgr.get_state_ids(name)
         except (RuntimeError, KeyError):
+            # cat-(a) EXPECTED CONTROL FLOW: stash name unknown to Rust;
+            # raise AttributeError so getattr-style probes return the default.
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")

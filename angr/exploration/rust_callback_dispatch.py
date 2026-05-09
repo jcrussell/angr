@@ -42,6 +42,10 @@ class RustCallbackDispatchMixin:
                 rust_history = self._rust_mgr.get_pending_history()
                 rust_jumpkind = self._rust_mgr.get_pending_jumpkind()
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: pending Rust history unavailable;
+                # fall back to a single-element history. State.history may be
+                # shorter than truth — affects detailed_history-based predicates.
+                # Debug-logs.
                 if _DBG:
                     l.debug(f"Could not get Rust history: {e}")
                 rust_history = []
@@ -69,6 +73,9 @@ class RustCallbackDispatchMixin:
         try:
             state.history.jumpkind = rust_jumpkind
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: jumpkind assignment failed (e.g.,
+            # state.history is read-only); callstack._manage may push an
+            # extra frame on the next step.
             pass
 
         if _DBG:
@@ -107,6 +114,9 @@ class RustCallbackDispatchMixin:
                             f"args={len(stored_data[1]) if len(stored_data) > 1 else 0}")
                     return
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: procedure_data restore failed;
+                # continuation runs without the saved args/locals — likely
+                # triggers the TypeError handler upstream. Debug-logs.
                 l.debug(f"Could not restore procedure_data: {e}")
 
         # Fallback: Get SP from Rust for saved state
@@ -116,6 +126,9 @@ class RustCallbackDispatchMixin:
                 sp_val = self._rust_mgr.get_pending_register('esp')
             saved_sp = sp_val or 0
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: pending SP read failed;
+            # fall back to saved_sp=0. Procedures that index off saved_sp
+            # will see a wrong base.
             saved_sp = 0
 
         # Initialize procedure_data for continuations
@@ -132,6 +145,9 @@ class RustCallbackDispatchMixin:
                 )
                 l.debug(f"Initialized callstack procedure_data at 0x{addr:x}")
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: callstack procedure_data init
+            # failed; future self.call() inside this procedure may crash on
+            # missing fields. Debug-logs.
             l.debug(f"Could not initialize callstack procedure_data: {e}")
 
     def _install_rust_solver_on_callback_state(self, state: "angr.SimState"):
@@ -198,8 +214,13 @@ class RustCallbackDispatchMixin:
                     return result.to_bytes(nbytes, 'big')
                 return result
             except claripy.errors.UnsatError:
+                # cat-(a) EXPECTED CONTROL FLOW: claripy UnsatError must propagate
+                # so the caller sees the constraint conflict — re-raise.
                 raise
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: Rust solver eval failed; fall back
+                # to Python's claripy solver. The two solvers may diverge on
+                # satisfying value selection.
                 return original_eval(expr, cast_to=cast_to, **kwargs)
 
         def _rust_satisfiable(**kwargs):
@@ -209,6 +230,9 @@ class RustCallbackDispatchMixin:
             try:
                 return _with_extra_constraints(_ctx, _ctx.satisfiable, extra=extra)
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: Rust solver satisfiable() raised;
+                # fall back to Python claripy. May report sat/unsat differently
+                # from Rust.
                 return original_satisfiable(**kwargs)
 
         def _rust_min(expr, **kwargs):
@@ -218,6 +242,9 @@ class RustCallbackDispatchMixin:
             try:
                 return ctx_ref[0].min(expr, signed=False)
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: Rust solver min() raised; fall back
+                # to Python claripy. Concretization strategies may pick a different
+                # minimum than Rust would.
                 return original_min(expr, **kwargs)
 
         def _rust_max(expr, **kwargs):
@@ -227,6 +254,8 @@ class RustCallbackDispatchMixin:
             try:
                 return ctx_ref[0].max(expr, signed=False)
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: Rust solver max() raised; fall back
+                # to Python claripy. Same divergence risk as min().
                 return original_max(expr, **kwargs)
 
         def _rust_eval_upto(expr, n, cast_to=None, **kwargs):
@@ -239,6 +268,8 @@ class RustCallbackDispatchMixin:
                     results = tuple(cast_to(r) for r in results)
                 return results
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: Rust solver eval_upto() raised; fall
+                # back to Python claripy. Returned solution sets may differ.
                 return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
 
         def _rust_add(*constraints):
@@ -248,6 +279,10 @@ class RustCallbackDispatchMixin:
                 try:
                     _ctx.add_constraint_ast(c)
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: forwarding constraint to Rust solver
+                    # failed; the Python solver still has it (added below), but Rust
+                    # may produce different sat/values until the constraint is re-
+                    # synced via _cb_sync_constraints.
                     pass
             original_add(*constraints)
 
@@ -271,6 +306,8 @@ class RustCallbackDispatchMixin:
         try:
             rust_stdout = self._rust_mgr.get_state_stdout(state_id)
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: Rust stdout fetch failed; posix.dumps(1)
+            # will not include any native-side puts/printf output for this state.
             return
         if not rust_stdout:
             return
@@ -283,6 +320,8 @@ class RustCallbackDispatchMixin:
         try:
             stdout.write(None, claripy.BVV(bytes(rust_stdout)), events=False)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust stdout write to posix failed;
+            # posix.dumps(1) misses the native output. Debug-logs.
             l.debug("Failed to inject Rust stdout into posix: %s", e)
 
     def _inject_rust_stdin(self, state, state_id):
@@ -321,6 +360,10 @@ class RustCallbackDispatchMixin:
                 size = claripy.BVV(len(concrete_bytes), state.arch.bits)
                 stdin_stream.content.append((data, size))
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust stdin injection raised; posix.
+            # dumps(0) will not show the symbolic-stdin bytes that Rust read.
+            # Debug-logs. Note: must catch ALL exceptions including AttributeError
+            # to avoid @property-descriptor propagation triggering __getattr__.
             l.debug("Failed to inject Rust stdin data into posix: %s", e)
 
     _SIMPROC_NO_RET_TERMINAL = {'exit', '_exit', 'abort', '__stack_chk_fail'}
@@ -471,6 +514,10 @@ class RustCallbackDispatchMixin:
                 )
 
         except TypeError as e:
+            # cat-(c) WRONG-ANSWER RISK: continuation procedure missing args
+            # (e.g., after_main run without procedure_data). Treated as a
+            # graceful deadend. Already warns. Other TypeErrors fall through
+            # to the generic handler below.
             # Continuation procedure missing local_vars (e.g., after_main without args).
             # This happens when the init phase's procedure_data wasn't captured.
             # Treat as a graceful exit (deadend) rather than a hard error.
@@ -479,9 +526,14 @@ class RustCallbackDispatchMixin:
                 try:
                     self._rust_mgr.resume_after_simprocedure(0, None, None, None)
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: resume_after_simprocedure failed in
+                    # the missing-args path; try resume_after_error next.
                     try:
                         self._rust_mgr.resume_after_error(str(e))
                     except Exception:
+                        # cat-(b) FALLBACK WITH LOSS: resume_after_error also failed; the
+                        # pending state stays pending and the next run() iteration will
+                        # notice / hang. Tolerated — better than throwing through PyO3.
                         pass
                 self._set_callback_state(None)
                 self._current_callback_state_id = None
@@ -490,6 +542,10 @@ class RustCallbackDispatchMixin:
             # Other TypeErrors fall through to generic handler
             raise
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: SimProcedure execution raised; we
+            # move the state to errored stash. Already warns. Without this
+            # path, the state would resume in Rust with corrupted post-
+            # callback state.
             # On exception, move state to errored stash instead of resuming with corrupted state
             l.warning(f"SimProcedure execution error at 0x{addr:x}: {e}")
             import traceback
@@ -498,6 +554,8 @@ class RustCallbackDispatchMixin:
             try:
                 self._rust_mgr.resume_after_error(str(e))
             except Exception as resume_err:
+                # cat-(b) FALLBACK WITH LOSS: resume_after_error itself raised;
+                # the pending state stays pending. Already warns.
                 l.warning(f"Could not signal error to Rust: {resume_err}")
             # Clear callback state since we've handled the error
             self._set_callback_state(None)
@@ -605,6 +663,10 @@ class RustCallbackDispatchMixin:
                 # All successors share stdin — only need one
                 break
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: per-successor stdin probe failed;
+                # we still try the remaining successors. If all fail, _stdin_content
+                # stays at its previous value — found-state stdin restoration may
+                # miss the latest packet.
                 pass
 
     def _capture_continuation_data(self, all_succs, addr: int) -> None:
@@ -663,6 +725,10 @@ class RustCallbackDispatchMixin:
                     if _DBG:
                         l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}: {cont_name}")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: continuation-data capture / hook
+                # pre-registration raised on this successor; the continuation
+                # may fail to register before Rust hits it (errors as 'Cannot
+                # execute external address'). Debug-logs.
                 if _DBG:
                     l.debug(f"Could not capture procedure_data: {e}")
 
@@ -767,6 +833,8 @@ class RustCallbackDispatchMixin:
                             cont_addr = ca_int
                             break
             except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: callstack walk for continuation
+                # addr failed; fall through to the _pending_procedure_data lookup.
                 pass
 
             # Fallback: search _pending_procedure_data if callstack didn't have it
@@ -788,6 +856,9 @@ class RustCallbackDispatchMixin:
             if _DBG:
                 l.debug(f"Pushed continuation addr 0x{cont_addr:x} to stack at 0x{new_sp:x}")
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: continuation-address push to stack
+            # failed; Rust's ret will use whatever the stack already holds —
+            # may end up at a wrong address. Debug-logs.
             if _DBG:
                 l.debug(f"Could not push continuation addr: {e}")
 
@@ -818,6 +889,9 @@ class RustCallbackDispatchMixin:
                 try:
                     self._rust_mgr.set_skip_hook_addr(addr)
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed for terminal
+                    # zero-length hook; resume_after_simprocedure may re-trigger the
+                    # hook on next step.
                     pass
                 self._rust_mgr.resume_after_simprocedure(addr, None, None)
             else:
@@ -845,6 +919,9 @@ class RustCallbackDispatchMixin:
             try:
                 self._rust_mgr.import_symbolic_memory(sym_addr, ast)
             except Exception:
+                # cat-(c) WRONG-ANSWER RISK: tracked symbolic write not imported
+                # to Rust; subsequent loads at sym_addr will see concrete bytes
+                # instead of the symbolic value.
                 pass
         self._rust_mgr.resume_after_simprocedure(ret_addr, None, tracked_writes or None)
 
@@ -879,6 +956,8 @@ class RustCallbackDispatchMixin:
             try:
                 new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: eval_one on symbolic IP raised (>1
+                # solution); fall back to eval to pick any concrete value.
                 # Multiple solutions or other error - pick any valid one
                 new_pc = succ_state.solver.eval(succ_state.regs._ip)
         else:
@@ -940,6 +1019,8 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"Set skip_hook_addr to 0x{skip_hook_addr:x}")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed; the next
+                # step may re-trigger the zero-length hook. Debug-logs.
                 if _DBG:
                     l.debug(f"Could not set skip_hook_addr: {e}")
 
@@ -971,6 +1052,9 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"Imported symbolic memory at 0x{addr:x} to state {state_id}")
             except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: import_symbolic_to_state failed; Rust
+                # loses the symbolic relationship at this address — downstream
+                # loads see concrete witnesses only. Debug-logs.
                 if _DBG:
                     l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
 
@@ -1011,6 +1095,8 @@ class RustCallbackDispatchMixin:
             if _DBG:
                 l.debug(f"Set skip_hook_addr to 0x{addr:x}")
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed; same as
+            # 942 — next step may re-trigger the hook. Debug-logs.
             if _DBG:
                 l.debug(f"Could not set skip_hook_addr: {e}")
 
@@ -1020,9 +1106,13 @@ class RustCallbackDispatchMixin:
             try:
                 new_pc = state.solver.eval_one(state.regs._ip)
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: eval_one on symbolic IP raised; try
+                # eval next.
                 try:
                     new_pc = state.solver.eval(state.regs._ip)
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: eval also raised; fall back to the
+                    # original hook address rather than letting the resume blow up.
                     new_pc = addr  # Fallback to original address
         else:
             new_pc = state.addr
@@ -1088,6 +1178,8 @@ class RustCallbackDispatchMixin:
                         if _DBG:
                             l.debug(f"Extracted {len(new_constraints)} constraints from hook")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: constraint extraction raised; new
+                # constraints from the hook are not synced to Rust. Debug-logs.
                 if _DBG:
                     l.debug(f"Could not extract constraints: {e}")
 
@@ -1115,6 +1207,8 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to state {state_id}")
             except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: import_symbolic_to_state failed in the
+                # zero-length-hook path; same divergence as 973. Debug-logs.
                 if _DBG:
                     l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
 
@@ -1179,6 +1273,8 @@ class RustCallbackDispatchMixin:
                         l.debug(f"Callback added {len(python_added)} new Python constraints")
                     new_constraints.extend(python_added)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: constraint set diff raised; treat as
+            # 'no new constraints' rather than crashing. Debug-logs.
             if _DBG:
                 l.debug(f"Could not extract Python constraints: {e}")
 
@@ -1208,6 +1304,9 @@ class RustCallbackDispatchMixin:
                 l.debug(f"Forked solver context for additional successor "
                         f"({forked_solver.num_constraints()} constraints)")
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: solver-context fork for additional
+            # successor failed; the forked state inherits no Rust constraints.
+            # Debug-logs.
             if _DBG:
                 l.debug(f"Could not fork solver for additional successor: {e}")
 
@@ -1220,6 +1319,8 @@ class RustCallbackDispatchMixin:
                 if hasattr(succ_state.solver, 'constraints'):
                     fork_constraints = list(succ_state.solver.constraints)
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: per-fork constraint extraction failed;
+                # the forked state syncs no path-specific constraints to Rust.
                 pass
 
         # Create a new Rust state for this successor
@@ -1233,6 +1334,9 @@ class RustCallbackDispatchMixin:
                 if _DBG:
                     l.debug(f"Synced {len(fork_constraints)} fork constraints to Rust state")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: add_constraints_to_pending failed
+                # for the forked state; constraints stay only on the Python side.
+                # Debug-logs.
                 if _DBG:
                     l.debug(f"Could not sync fork constraints: {e}")
 
@@ -1278,6 +1382,8 @@ class RustCallbackDispatchMixin:
                     try:
                         new_pc = succ_state.solver.eval_one(succ_state.regs._ip)
                     except claripy.errors.ClaripyError:
+                        # cat-(a) EXPECTED CONTROL FLOW: eval_one raised due to multiple
+                        # solutions; pick any solution via eval.
                         new_pc = succ_state.solver.eval(succ_state.regs._ip)
                 else:
                     new_pc = succ_state.addr
@@ -1303,6 +1409,8 @@ class RustCallbackDispatchMixin:
                 self._rust_mgr.resume_after_syscall(pc, None, None)
 
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: syscall execution raised; we resume
+            # at PC+1 rather than re-running the syscall. Already warns.
             l.warning(f"Syscall execution error: {e}")
             pc = state.addr + 1
             self._rust_mgr.resume_after_syscall(pc, None, None)
@@ -1349,6 +1457,8 @@ class RustCallbackDispatchMixin:
                 result = self._find_predicate(proxy)
                 matched = bool(result) if result is not None else False
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: find predicate raised on this state;
+                # treated as not-matched. Debug-logs.
                 if _DBG:
                     l.debug(f"Find predicate at 0x{addr:x}: {e}")
                 matched = False
@@ -1362,6 +1472,9 @@ class RustCallbackDispatchMixin:
                 self._predicate_found.append(proxy)
 
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: outer find-predicate handler raised;
+            # state is reported as not-matched even if it would have been.
+            # Already warns.
             l.warning(f"Find predicate callback error: {e}")
             self._rust_mgr.resume_find_predicate(False)
 
@@ -1396,6 +1509,8 @@ class RustCallbackDispatchMixin:
                 result = self._avoid_predicate(proxy)
                 matched = bool(result) if result is not None else False
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: avoid predicate raised on this state;
+                # treated as not-matched (state stays in active). Debug-logs.
                 if _DBG:
                     l.debug(f"Avoid predicate at 0x{addr:x}: {e}")
                 matched = False
@@ -1403,6 +1518,9 @@ class RustCallbackDispatchMixin:
             self._rust_mgr.resume_avoid_predicate(matched)
 
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: outer avoid-predicate handler raised;
+            # state is reported as not-matched even if it would have been
+            # avoided. Already warns.
             l.warning(f"Avoid predicate callback error: {e}")
             self._rust_mgr.resume_avoid_predicate(False)
 
@@ -1482,6 +1600,9 @@ class RustCallbackDispatchMixin:
                 l.debug(f"Resumed after symbolic branch with {len(new_ids)} forked states")
 
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: symbolic branch handler raised; we
+            # still try the no-constraint fallback below, but until that runs
+            # constraints are dropped. Already warns.
             l.warning(f"Symbolic branch handling error: {e}")
             import traceback
             l.warning(traceback.format_exc())
@@ -1497,6 +1618,9 @@ class RustCallbackDispatchMixin:
                 )
                 l.warning("Resumed after symbolic branch with fallback (no constraints)")
             except Exception as e2:
+                # cat-(c) WRONG-ANSWER RISK: fallback resume_after_symbolic_branch
+                # (without constraints) failed; try moving to errored next.
+                # Already warns.
                 l.error(f"Failed to resume after symbolic branch: {e2}")
                 # Recovery: Move the pending state to errored stash to avoid hanging.
                 # Uses the same error handling as other callback failures.
@@ -1504,6 +1628,8 @@ class RustCallbackDispatchMixin:
                     self._rust_mgr.resume_after_error(f"symbolic_branch_error: {e2}")
                     l.warning("Moved state to errored stash after symbolic branch failure")
                 except Exception as e3:
+                    # cat-(b) FALLBACK WITH LOSS: even errored-stash recovery failed;
+                    # the pending state hangs the next step. Already warns.
                     l.error(f"Failed to move state to errored stash: {e3}")
 
     def _get_pending_parent_id(self) -> Optional[int]:
@@ -1521,6 +1647,8 @@ class RustCallbackDispatchMixin:
             snapshot = self._rust_mgr.export_pending_state()
             return snapshot.parent_id
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: parent_id lookup failed; the cache
+            # fallback to root/ancestry is the next line.
             return None
 
     def _get_pending_root_state_id(self) -> Optional[int]:
@@ -1536,6 +1664,8 @@ class RustCallbackDispatchMixin:
         try:
             return self._rust_mgr.get_pending_root_state_id()
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: root_id lookup failed; ancestry walk
+            # below picks up.
             return None
 
     def _get_effective_state_id(self, state_id: Optional[int]) -> Optional[int]:
@@ -1564,6 +1694,8 @@ class RustCallbackDispatchMixin:
             if root_id is not None and root_id in self._state_cache:
                 return root_id
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: root_id lookup raised; fall through
+            # to ancestry walk.
             pass
 
         # Walk full ancestry chain from pending callback
@@ -1573,6 +1705,8 @@ class RustCallbackDispatchMixin:
                 if ancestor_id in self._state_cache:
                     return ancestor_id
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: ancestry walk raised; fall back to
+            # original state_id.
             pass
 
         # No cached ancestor found, return original
@@ -1590,6 +1724,8 @@ class RustCallbackDispatchMixin:
         try:
             return self._rust_mgr.get_pending_ancestry()
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: get_pending_ancestry failed; fall
+            # back to single parent_id lookup.
             # Fallback to single parent lookup
             parent_id = self._get_pending_parent_id()
             return [parent_id] if parent_id is not None else []
@@ -1692,14 +1828,21 @@ class RustCallbackDispatchMixin:
                                 if ast is not None:
                                     setattr(state.regs, reg_name, ast)
                             except Exception:
+                                # cat-(b) FALLBACK WITH LOSS: symbolic register AST fetch failed;
+                                # the register stays at the blank-state default rather than the
+                                # pending Rust value.
                                 pass
                     except Exception:
+                        # cat-(b) FALLBACK WITH LOSS: per-register apply failed; that
+                        # register may diverge from the pending Rust state.
                         pass
 
                 # Cache history and jumpkind from bundle for later use
                 state.scratch._rust_bundle_history = bundle.get('history', [])
                 state.scratch._rust_bundle_jumpkind = bundle.get('jumpkind', 'Ijk_Boring')
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: callback bundle API failed; falls
+                # back to the slower individual-call path below. Debug-logs.
                 if _DBG:
                     l.debug(f"Bundle API failed, falling back to individual calls: {e}")
                 self._last_bundle_registers = None  # Clear on fallback
@@ -1708,10 +1851,16 @@ class RustCallbackDispatchMixin:
                     shared_solver = self._rust_mgr.borrow_pending_solver()
                     state.scratch.rust_solver_ctx = shared_solver
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: borrow_pending_solver failed; try
+                    # fork_pending_solver next.
                     try:
                         forked_solver = self._rust_mgr.fork_pending_solver()
                         state.scratch.rust_solver_ctx = forked_solver
                     except Exception as e2:
+                        # cat-(c) WRONG-ANSWER RISK: even fork_pending_solver failed;
+                        # the callback state has no Rust solver context — eval/satisfiable
+                        # fall back to the (potentially out-of-date) Python solver.
+                        # Already warns.
                         l.warning(f"Could not fork solver context: {e2}")
                 self._sync_registers_from_rust_pending(state)
 
@@ -1808,6 +1957,10 @@ class RustCallbackDispatchMixin:
                         if _DBG:
                             l.debug(f"Phase 3: Restored {plugin_name} plugin")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: critical plugin restoration failed
+                # for this plugin (e.g., template plugin lacks copy()). The state
+                # proceeds without it; SimProcedures that touch it may crash.
+                # Debug-logs.
                 if _DBG:
                     l.debug(f"Phase 3: Could not restore {plugin_name}: {e}")
 
@@ -1825,6 +1978,9 @@ class RustCallbackDispatchMixin:
                     l.debug(f"Forked Rust solver for blank fallback state "
                             f"({forked_solver.num_constraints()} constraints)")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: solver fork on blank state failed;
+                # the blank fallback proceeds without Rust solver context.
+                # Debug-logs.
                 if _DBG:
                     l.debug(f"Could not fork solver for blank state: {e}")
 
@@ -1834,6 +1990,9 @@ class RustCallbackDispatchMixin:
             return state
 
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: blank state creation raised; caller
+            # treats None as 'no callback state' and may resume with corrupted
+            # Rust state. Already warns.
             l.warning(f"Error creating blank state for callback: {e}")
             return None
 
@@ -1863,10 +2022,14 @@ class RustCallbackDispatchMixin:
             try:
                 succs_obj = self._project.factory.successors(state, num_inst=99)
             except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: Python VEX engine failed; we try
+                # resume_after_error to errored-stash the state. Already warns.
                 l.warning(f"Python VEX engine failed at 0x{addr:x}: {e}")
                 try:
                     self._rust_mgr.resume_after_error(f"python_vex_fallback_error: {e}")
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: resume_after_error itself failed;
+                    # the pending state hangs the next step. Tolerated.
                     pass
                 return
 
@@ -1903,15 +2066,21 @@ class RustCallbackDispatchMixin:
                 try:
                     self._add_forked_state(extra_succ, event)
                 except Exception as fork_err:
+                    # cat-(b) FALLBACK WITH LOSS: forking an additional VEX-fallback
+                    # successor failed; that branch is silently dropped. Already warns.
                     l.warning(f"VEX fallback at 0x{addr:x}: failed to fork "
                               f"successor at 0x{extra_succ.addr:x}: {fork_err}")
 
             self._perf_stats.increment_simprocedure_count()
 
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: outer VEX fallback handler raised;
+            # we try resume_after_error. Already warns.
             l.warning(f"Python VEX fallback error at 0x{addr:x}: {e}")
             try:
                 self._rust_mgr.resume_after_error(f"python_vex_fallback_error: {e}")
             except Exception:
+                # cat-(b) FALLBACK WITH LOSS: resume_after_error in the outer
+                # handler also failed; pending state hangs. Tolerated.
                 pass
 
