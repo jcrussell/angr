@@ -1796,8 +1796,25 @@ impl RustSimState {
     }
 
     /// Set maximum history length.
+    ///
+    /// Applied retroactively: if the existing `history` or `detailed_history`
+    /// buffers already exceed the new cap, oldest entries are evicted (FIFO)
+    /// down to `max`. Without this trim, lowering the cap on a state with a
+    /// long buffer would leave it stuck — `add_to_history` removes only one
+    /// entry per push, so the buffer never converges to the new cap.
+    /// `max = 0` disables the cap (legacy unlimited behavior).
     pub fn set_max_history(&mut self, max: usize) {
         self.max_history = max;
+        if max > 0 {
+            if self.history.len() > max {
+                let drop = self.history.len() - max;
+                self.history.drain(0..drop);
+            }
+            if self.detailed_history.len() > max {
+                let drop = self.detailed_history.len() - max;
+                self.detailed_history.drain(0..drop);
+            }
+        }
     }
 }
 
@@ -2097,6 +2114,32 @@ impl PyRustSimState {
     /// Set maximum history length.
     pub fn set_max_history(&mut self, max: usize) {
         self.inner.set_max_history(max);
+    }
+
+    /// Get the current maximum history length (0 = unlimited).
+    pub fn get_max_history(&self) -> usize {
+        self.inner.max_history
+    }
+
+    /// Get the detailed execution history as `(addr, jumpkind, jump_target)` tuples.
+    pub fn detailed_history(&self) -> Vec<(u64, u8, u64)> {
+        self.inner
+            .detailed_history()
+            .iter()
+            .map(|h| (h.addr, h.jumpkind, h.jump_target))
+            .collect()
+    }
+
+    /// Append a basic-block address to `history` (honors the cap).
+    /// Test/debug helper — production paths go through the interpreter.
+    pub fn add_history(&mut self, addr: u64) {
+        self.inner.add_to_history(addr);
+    }
+
+    /// Append a detailed history entry (honors the cap).
+    /// Test/debug helper — production paths go through the interpreter.
+    pub fn add_detailed_history(&mut self, addr: u64, jumpkind: u8, jump_target: u64) {
+        self.inner.add_history_entry(addr, jumpkind, jump_target);
     }
 
     /// Export the complete state as a snapshot.
@@ -2447,6 +2490,44 @@ mod tests {
         // FIFO eviction: should retain the most-recent 3 entries.
         assert_eq!(kept[0].addr, 0x1007);
         assert_eq!(kept[2].addr, 0x1009);
+    }
+
+    #[test]
+    fn test_set_max_history_trims_retroactively() {
+        // Lowering max_history on a state that already exceeds the new cap
+        // must FIFO-evict the oldest entries down to the cap immediately.
+        // Without this, add_to_history (which only removes one entry per
+        // push when over cap) never converges and the buffer stays bloated.
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.set_max_history(0); // unlimited
+        for i in 0..20u64 {
+            state.add_to_history(0x3000 + i);
+            state.add_history_entry(0x3000 + i, 0, 0);
+        }
+        assert_eq!(state.history().len(), 20);
+        assert_eq!(state.detailed_history().len(), 20);
+
+        // Retroactively cap to 4 — both buffers shrink to the most-recent 4.
+        state.set_max_history(4);
+        let kept = state.history();
+        assert_eq!(kept.len(), 4);
+        assert_eq!(kept, &[0x3010, 0x3011, 0x3012, 0x3013]);
+        let kept_detailed = state.detailed_history();
+        assert_eq!(kept_detailed.len(), 4);
+        assert_eq!(kept_detailed[0].addr, 0x3010);
+        assert_eq!(kept_detailed[3].addr, 0x3013);
+    }
+
+    #[test]
+    fn test_set_max_history_zero_no_trim() {
+        // Switching to max=0 (unlimited) must NOT trim — existing entries stay.
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.set_max_history(5);
+        for i in 0..5u64 {
+            state.add_to_history(0x4000 + i);
+        }
+        state.set_max_history(0);
+        assert_eq!(state.history().len(), 5);
     }
 
     #[test]

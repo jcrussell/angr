@@ -4800,6 +4800,91 @@ class TestDetailedHistory:
             # Default cap is 1000 — must hold for any long-running exploration.
             assert len(history) <= 1000
 
+    def test_max_history_retroactive_trim(self):
+        """Lowering max_history below the current buffer length trims FIFO.
+
+        Without the retroactive trim, `add_to_history` only removes one
+        entry per push when over cap, so a state with 100 entries would
+        never converge to a smaller cap; the buffer would stay bloated
+        until enough new pushes happened to drain it. Verifies both
+        the basic `history` (Vec<u64>) and `detailed_history` paths.
+        """
+        state = RustSimState("amd64")
+        # Disable cap and load up the buffers.
+        state.set_max_history(0)
+        for i in range(20):
+            state.add_history(0x1000 + i)
+            state.add_detailed_history(0x1000 + i, 0, 0)
+        assert len(state.history()) == 20
+        assert len(state.detailed_history()) == 20
+
+        # Retroactively shrink the cap; both buffers must be FIFO-trimmed
+        # to the most-recent 4 entries immediately.
+        state.set_max_history(4)
+        assert state.get_max_history() == 4
+        kept_history = state.history()
+        assert kept_history == [0x1010, 0x1011, 0x1012, 0x1013]
+        kept_detailed = state.detailed_history()
+        assert len(kept_detailed) == 4
+        assert kept_detailed[0][0] == 0x1010  # oldest kept entry
+        assert kept_detailed[3][0] == 0x1013  # newest entry
+
+    def test_max_history_fifo_eviction_via_add(self):
+        """add_detailed_history evicts the oldest entry first when over cap.
+
+        Pushing past the cap one entry at a time must drop the head of
+        the buffer, not the tail or a random index. Without FIFO order
+        the kept window would not be the most-recent N entries.
+        """
+        state = RustSimState("amd64")
+        state.set_max_history(3)
+        for i in range(8):
+            state.add_detailed_history(0x2000 + i, i & 0xFF, 0)
+        kept = state.detailed_history()
+        assert len(kept) == 3
+        # The most-recent 3 entries (0x2005, 0x2006, 0x2007) survive.
+        assert [entry[0] for entry in kept] == [0x2005, 0x2006, 0x2007]
+        # Jumpkind/jump_target travel with the address through eviction.
+        assert kept[0][1] == 5
+        assert kept[2][1] == 7
+
+    def test_max_history_inherited_through_fork(self):
+        """Forking a state copies max_history (and the existing buffer).
+
+        Lowering the cap on the parent post-fork must not touch the
+        child's cap — they're independent fields after the clone.
+        Conversely, the child must not silently revert to the default
+        (1000) on fork.
+        """
+        parent = RustSimState("amd64")
+        parent.set_max_history(7)
+        for i in range(3):
+            parent.add_detailed_history(0x3000 + i, 0, 0)
+
+        child = parent.fork()
+        # Cap propagates and the existing buffer is copied.
+        assert child.get_max_history() == 7
+        assert len(child.detailed_history()) == 3
+
+        # Caps are independent post-fork: changing one must not affect
+        # the other (separate fields, not shared state).
+        parent.set_max_history(2)
+        assert child.get_max_history() == 7
+        # Parent buffer trimmed to 2 by the retroactive cap.
+        assert len(parent.detailed_history()) == 2
+
+        # Push past the inherited cap on the child only; FIFO eviction
+        # kicks in at 7 entries.
+        for i in range(10):
+            child.add_detailed_history(0x4000 + i, 0, 0)
+        kept = child.detailed_history()
+        assert len(kept) == 7
+        # Oldest 3 (0x3000-0x3002) and the first 3 of 0x4000-0x4009
+        # are evicted; the tail 0x4003-0x4009 survives.
+        assert [entry[0] for entry in kept] == [
+            0x4003, 0x4004, 0x4005, 0x4006, 0x4007, 0x4008, 0x4009,
+        ]
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeTechniques:
