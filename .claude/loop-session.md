@@ -1,35 +1,43 @@
-## Session log: 2026-05-09 — angr-vt0t.1 (194th loop session, CLOSED)
+## Session log: 2026-05-09 — angr-c3zm (195th loop session, CLOSED)
 
 ### Task
-angr-vt0t.1 — Categorize except blocks: rust_manager.py + rust_callback_dispatch.py.
-Add `cat-(a|b|c)` classifier comments per the bridge-except categorization
-invariant (cat-a expected control flow / cat-b fallback with loss / cat-c
-wrong-answer risk).
+angr-c3zm — Re-evaluate full RustPosixState migration after prerequisites land.
+Checkpoint/decision bead. Acceptance: written GO/DEFER-AGAIN/ABANDON decision
+saved as a bd memory.
 
-### Approach
-Wrote a one-shot Python script (/tmp/classify_excepts.py) that takes a
-{lineno: [comment lines]} mapping per file and inserts the comments at
-the indent of each except body's first line. Processed line numbers in
-reverse so insertion does not shift later indices. Handled trailing
-`# noqa` comments on except lines (regex allows trailing # ...).
+### Verdict
+**DEFER-AGAIN.** Memory key: `decision-c3zm-rustposixstate-defer-2026-05-09`.
 
-### Stats
-- rust_manager.py:           102 blocks (cat-a:32, cat-b:48, cat-c:22)
-- rust_callback_dispatch.py:  65 blocks (cat-a: 3, cat-b:48, cat-c:14)
-- combined total:            167 (cat-a:35, cat-b:96, cat-c:36)
+### Reasoning
+- Prereqs not all closed: angr-xg0o ✅, angr-qm7w ✅, angr-nnov ✅, but
+  angr-0z34 (P4 open) and angr-3tek (auto-deferred 3x) still open and gated
+  on the same Rust↔Python state-sync correctness gap that would dominate any
+  RustPosixState migration.
+- posix.py is 702 lines; already-Rust ops (fd lifecycle, env getters,
+  posix_brk, stdin_symbols, environment) capture most callback frequency.
+  Remaining Python surface is high-complexity: SimFileDescriptor/SimFile,
+  streams, sockets, fstat, sigmask, merge() (58 lines walking claripy ASTs),
+  copy() (31 lines).
+- Net trade: remove ~700 Python LoC, add ~2000 Rust LoC. +1300 LoC net.
+- No bug class motivates the work — bug memories all point elsewhere.
 
-### Verification
-- cargo check: clean
-- pytest tests/engines/test_rust_exploration.py: 357/357 passed
+### Actions
+- Saved decision memory.
+- Closed angr-c3zm with rationale.
+- Deferred downstream angr-6zxx (Full RustPosixState ownership) — its
+  description explicitly says "do not auto-reactivate when prereqs close;
+  the checkpoint drives GO/DEFER/ABANDON." Added notes documenting the
+  three re-evaluation triggers.
 
-### Closures
-- angr-vt0t.1 closed (commit 78dce7781)
-- angr-vt0t (parent) closed — all three children done
-- Memories updated:
-  - invariant-bridge-except-categorization (mark completion)
-  - bulk-classifier-script-pattern (NEW — capture the
-    walk-and-insert script approach for future bulk edits)
+### Re-evaluation triggers (flip DEFER → GO)
+1. angr-0z34 + angr-3tek both close, proving state-sync gap is solved.
+2. A benchmark regression traces to posix-plugin Python overhead.
+3. merge/widen for posix becomes a correctness blocker on a real example.
 
 ### Files modified
-- angr/exploration/rust_manager.py (+245 lines: comments only)
-- angr/exploration/rust_callback_dispatch.py (+169 lines: comments only)
+- .claude/loop-session.md (this file)
+
+No code changes — pure decision/research session.
+
+### Verification
+- 357/357 tests still passing (last run from 194th session, no code changed).
