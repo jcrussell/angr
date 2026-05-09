@@ -1,36 +1,28 @@
-## Session log: 2026-05-09 — angr-is4x (190th loop session, COMMITTING)
+## Session log: 2026-05-09 — angr-qrhl.2 (191st loop session, IMPLEMENTING)
 
 ### Task
-Reduce per-constraint lock acquisitions in Z3 context.
+Define a FloatLaneOp trait + dispatcher to dedupe vector lane operations
+in `native/angr/src/vex/ops.rs`. Three near-identical functions today:
+- `vec_float_op` (binop Add/Sub/Mul/Div, 1815-1881)
+- `vec_float_unop` (unop Sqrt/Abs, 1884-1940)
+- `vec_float_minmax` (Min/Max, 1945-2014)
 
-### Change
-Combined `z3_assertions_local` and `assumed_constraints_local` (previously
-two separate `Mutex<Vec<...>>`) into a single `Mutex<LocalConstraints>` field.
-The hot path (assume_true / assume_false / add_constraint_raw / merge / fork)
-now acquires one lock for both vectors instead of two.
+Each: concrete fast path (extract lanes via shift+mask, do f32/f64 op,
+repack), then symbolic per-lane (extract via .extract(hi,lo), build Z3
+expression, concat).
 
-Also collapsed the `freeze_z3_assertions` and `freeze_assumed_constraints`
-helpers into a single generic `freeze_into_shared<T: Clone>` that operates
-on a pre-locked `&mut Vec<T>`.
+### Plan
+1. Define a `FloatLaneOp` private trait with:
+   - `arity()`
+   - `concrete_f32(args)`, `concrete_f64(args)`
+   - `symbolic(args, prec, ctx)`
+2. Implement unit structs: `FAdd, FSub, FMul, FDiv, FSqrt, FAbs, FMin, FMax`
+3. Add a single `vec_float_lane_op(args, elem, count, op, ctx)` dispatcher
+   that handles the lane loop for both concrete and symbolic paths.
+4. Replace `vec_float_op`, `vec_float_unop`, `vec_float_minmax` with calls
+   to the dispatcher.
+5. Verify: cargo test, pytest tests/engines/test_rust_exploration.py.
+   FP-heavy: securityfest_fairlight should stay correct.
 
-### Files modified
-- native/angr/src/symbolic/context.rs
-
-### Verification
-- cargo check (z3 feature ON): clean
-- cargo check --no-default-features: clean (4 pre-existing warnings unchanged)
-- cargo test --release: 603 native tests pass
-- pytest tests/engines/test_rust_exploration.py: 357/357 pass
-- fauxware + csaw_wyvern benchmarks: run cleanly via run_single.py
-
-### Behavior preserved
-- assume_true/assume_false fast-path (concrete tautology) still records
-  the assumed pair before returning; UNSAT fast-path falls through to the
-  symbolic path which records both vectors atomically.
-- transaction_begin captures both lengths under one lock; transaction_rollback
-  truncates both under one lock.
-- fork() acquires the local lock once and freezes both vectors with two
-  calls to the generic helper.
-- merge (z3 path): one lock per per-input-context for assumed, plus per-
-  iteration locks for z3_assertions push. Per-iteration lock pattern preserved
-  for now to avoid changing add_constraint reentrancy assumptions.
+### Files modified (so far)
+- (none yet)

@@ -38,6 +38,127 @@ fn build_float_expr(
     }
 }
 
+/// Maximum arity supported by `FloatLaneOp`. Sized for the current set of
+/// per-lane FP ops (unary Sqrt/Abs and binary Add/Sub/Mul/Div/Min/Max). Sized
+/// to 2 today; bump if a ternary lane op is added (e.g. fused multiply-add).
+const FLOAT_LANE_OP_MAX_ARITY: usize = 2;
+
+/// Per-lane FP op contract used by `VEXOps::vec_float_lane_op`.
+///
+/// Each impl must provide BOTH a concrete fast path (for f32/f64 lanes) and
+/// a symbolic Z3 expression builder, so adding a new op cannot accidentally
+/// drop one of the two branches — the previous duplicated functions
+/// (`vec_float_op`, `vec_float_unop`, `vec_float_minmax`) made the symbolic
+/// fallback easy to forget when extending.
+trait FloatLaneOp {
+    /// Number of operand lanes consumed (1 for unary, 2 for binary).
+    fn arity(&self) -> usize;
+    /// Apply to a single concrete f32 lane. `args.len() == self.arity()`.
+    fn concrete_f32(&self, args: &[f32]) -> f32;
+    /// Apply to a single concrete f64 lane. `args.len() == self.arity()`.
+    fn concrete_f64(&self, args: &[f64]) -> f64;
+    /// Build the symbolic per-lane expression. `args.len() == self.arity()`.
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV;
+}
+
+struct FAdd;
+struct FSub;
+struct FMul;
+struct FDiv;
+struct FSqrt;
+struct FAbs;
+/// FP min: matches Rust `<` semantics (NaN passes through right).
+struct FMin;
+/// FP max: matches Rust `>` semantics (NaN passes through right).
+struct FMax;
+
+impl FloatLaneOp for FAdd {
+    fn arity(&self) -> usize { 2 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] + a[1] }
+    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] + a[1] }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+        build_float_expr(FloatOpKind::Add, prec, args)
+    }
+}
+impl FloatLaneOp for FSub {
+    fn arity(&self) -> usize { 2 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] - a[1] }
+    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] - a[1] }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+        build_float_expr(FloatOpKind::Sub, prec, args)
+    }
+}
+impl FloatLaneOp for FMul {
+    fn arity(&self) -> usize { 2 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] * a[1] }
+    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] * a[1] }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+        build_float_expr(FloatOpKind::Mul, prec, args)
+    }
+}
+impl FloatLaneOp for FDiv {
+    fn arity(&self) -> usize { 2 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] / a[1] }
+    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] / a[1] }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+        build_float_expr(FloatOpKind::Div, prec, args)
+    }
+}
+impl FloatLaneOp for FSqrt {
+    fn arity(&self) -> usize { 1 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0].sqrt() }
+    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0].sqrt() }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+        build_float_expr(FloatOpKind::Sqrt, prec, args)
+    }
+}
+impl FloatLaneOp for FAbs {
+    fn arity(&self) -> usize { 1 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0].abs() }
+    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0].abs() }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+        build_float_expr(FloatOpKind::Abs, prec, args)
+    }
+}
+impl FloatLaneOp for FMin {
+    fn arity(&self) -> usize { 2 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        if a[0] < a[1] { a[0] } else { a[1] }
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        if a[0] < a[1] { a[0] } else { a[1] }
+    }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV {
+        // min(l, r) = if l < r then l else r ⟺ ITE(l < r, l, r)
+        let mut iter = args.into_iter();
+        let l_lane = iter.next().expect("FMin arity 2");
+        let r_lane = iter.next().expect("FMin arity 2");
+        let cond = build_float_expr(
+            FloatOpKind::CmpLt, prec, vec![l_lane.clone(), r_lane.clone()],
+        );
+        cond.ite_into(l_lane, r_lane, ctx)
+    }
+}
+impl FloatLaneOp for FMax {
+    fn arity(&self) -> usize { 2 }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        if a[0] > a[1] { a[0] } else { a[1] }
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        if a[0] > a[1] { a[0] } else { a[1] }
+    }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV {
+        // max(l, r) = if l > r then l else r ⟺ ITE(r < l, l, r)
+        let mut iter = args.into_iter();
+        let l_lane = iter.next().expect("FMax arity 2");
+        let r_lane = iter.next().expect("FMax arity 2");
+        let cond = build_float_expr(
+            FloatOpKind::CmpLt, prec, vec![r_lane.clone(), l_lane.clone()],
+        );
+        cond.ite_into(l_lane, r_lane, ctx)
+    }
+}
+
 /// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
 macro_rules! width_unop {
     ($arg:ident, $ty:expr, $method:ident, $ctx:expr) => {{
@@ -207,8 +328,8 @@ impl VEXOps {
             IROp::VAbs { elem, count } => Self::vec_int_abs(arg, elem, count, ctx),
 
             // Packed float sqrt / abs (whole vector)
-            IROp::VFSqrt { elem, count } => Self::vec_float_unop(arg, elem, count, FloatOpKind::Sqrt, ctx),
-            IROp::VFAbs { elem, count } => Self::vec_float_unop(arg, elem, count, FloatOpKind::Abs, ctx),
+            IROp::VFSqrt { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FSqrt, ctx),
+            IROp::VFAbs { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FAbs, ctx),
 
             _ => Err(OpError::NotUnary(op)),
         }
@@ -352,14 +473,14 @@ impl VEXOps {
             }
 
             // Packed FP arithmetic
-            IROp::VFAdd { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Add, ctx),
-            IROp::VFSub { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Sub, ctx),
-            IROp::VFMul { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Mul, ctx),
-            IROp::VFDiv { elem, count } => Self::vec_float_op(left, right, elem, count, FloatOpKind::Div, ctx),
+            IROp::VFAdd { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FAdd, ctx),
+            IROp::VFSub { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FSub, ctx),
+            IROp::VFMul { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FMul, ctx),
+            IROp::VFDiv { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FDiv, ctx),
 
             // Packed FP min/max
-            IROp::VFMin { elem, count } => Self::vec_float_minmax(left, right, elem, count, /*is_max=*/ false, ctx),
-            IROp::VFMax { elem, count } => Self::vec_float_minmax(left, right, elem, count, /*is_max=*/ true, ctx),
+            IROp::VFMin { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FMin, ctx),
+            IROp::VFMax { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FMax, ctx),
 
             // Raw opcode — try concrete x87 transcendental fast path first
             // (Iop_SinF64, Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_RecpExp*).
@@ -1811,115 +1932,54 @@ impl VEXOps {
     // Packed FP arithmetic / unary / min-max
     // =========================================================================
 
-    /// Apply a binary FP `kind` (Add/Sub/Mul/Div) to each lane of `left`/`right`.
-    fn vec_float_op(
-        left: RustBV,
-        right: RustBV,
+    /// Generic per-lane FP dispatcher. Handles the lane loop for both the
+    /// concrete (extract via shift+mask, run f32/f64 op, repack) and the
+    /// symbolic (extract via .extract(hi,lo), build per-lane Z3 expression,
+    /// concat) paths. The trait `FloatLaneOp` provides the per-op specifics,
+    /// forcing each impl to define both branches in lockstep.
+    fn vec_float_lane_op(
+        args: &[RustBV],
         elem: IRType,
         count: u8,
-        kind: FloatOpKind,
+        op: &dyn FloatLaneOp,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
+        debug_assert_eq!(args.len(), op.arity());
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
+        for a in args {
+            debug_assert_eq!(a.width(), total_width);
+        }
 
-        // Concrete fast path: extract each lane, run the Rust f32/f64 op, repack.
+        // Concrete fast path: every operand must fit in u128.
         if total_width <= 128 {
-            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = (1u128 << elem_width) - 1;
-                for i in 0..count {
-                    let shift = (i as u32) * elem_width;
-                    let l_bits = (l >> shift) & elem_mask;
-                    let r_bits = (r >> shift) & elem_mask;
-                    let lane_bits = match elem {
-                        IRType::F32 => {
-                            let lf = f32::from_bits(l_bits as u32);
-                            let rf = f32::from_bits(r_bits as u32);
-                            let res = match kind {
-                                FloatOpKind::Add => lf + rf,
-                                FloatOpKind::Sub => lf - rf,
-                                FloatOpKind::Mul => lf * rf,
-                                FloatOpKind::Div => lf / rf,
-                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_op:{:?}", kind))),
-                            };
-                            res.to_bits() as u128
-                        }
-                        IRType::F64 => {
-                            let lf = f64::from_bits(l_bits as u64);
-                            let rf = f64::from_bits(r_bits as u64);
-                            let res = match kind {
-                                FloatOpKind::Add => lf + rf,
-                                FloatOpKind::Sub => lf - rf,
-                                FloatOpKind::Mul => lf * rf,
-                                FloatOpKind::Div => lf / rf,
-                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_op:{:?}", kind))),
-                            };
-                            res.to_bits() as u128
-                        }
-                        _ => return Err(OpError::InvalidFloatType(elem)),
-                    };
-                    result |= lane_bits << shift;
+            let concrete: Option<Vec<u128>> = args.iter().map(|a| a.as_u128()).collect();
+            if let Some(concrete) = concrete {
+                if !matches!(elem, IRType::F32 | IRType::F64) {
+                    return Err(OpError::InvalidFloatType(elem));
                 }
-                return Ok(RustBV::concrete(result, total_width));
-            }
-        }
-
-        // Symbolic per-lane fallback: build an FP expression for each lane.
-        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let lo = (i as u32) * elem_width;
-            let hi = lo + elem_width - 1;
-            let l_lane = left.extract(hi, lo, ctx);
-            let r_lane = right.extract(hi, lo, ctx);
-            elements.push(build_float_expr(kind, prec, vec![l_lane, r_lane]));
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
-    }
-
-    /// Apply a unary FP `kind` (Sqrt/Abs) to each lane of `arg`.
-    fn vec_float_unop(
-        arg: RustBV,
-        elem: IRType,
-        count: u8,
-        kind: FloatOpKind,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = elem_width * count as u32;
-        debug_assert_eq!(arg.width(), total_width);
-
-        // Concrete fast path.
-        if total_width <= 128 {
-            if let Some(v) = arg.as_u128() {
+                let arity = concrete.len();
                 let mut result: u128 = 0;
                 let elem_mask: u128 = (1u128 << elem_width) - 1;
+                let mut buf32 = [0f32; FLOAT_LANE_OP_MAX_ARITY];
+                let mut buf64 = [0f64; FLOAT_LANE_OP_MAX_ARITY];
+                debug_assert!(arity <= FLOAT_LANE_OP_MAX_ARITY);
                 for i in 0..count {
                     let shift = (i as u32) * elem_width;
-                    let lane_in = (v >> shift) & elem_mask;
                     let lane_bits = match elem {
                         IRType::F32 => {
-                            let f = f32::from_bits(lane_in as u32);
-                            let res = match kind {
-                                FloatOpKind::Sqrt => f.sqrt(),
-                                FloatOpKind::Abs => f.abs(),
-                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_unop:{:?}", kind))),
-                            };
-                            res.to_bits() as u128
+                            for (idx, raw) in concrete.iter().enumerate() {
+                                buf32[idx] = f32::from_bits(((raw >> shift) & elem_mask) as u32);
+                            }
+                            op.concrete_f32(&buf32[..arity]).to_bits() as u128
                         }
                         IRType::F64 => {
-                            let f = f64::from_bits(lane_in as u64);
-                            let res = match kind {
-                                FloatOpKind::Sqrt => f.sqrt(),
-                                FloatOpKind::Abs => f.abs(),
-                                _ => return Err(OpError::UnsupportedVectorOp(format!("vec_float_unop:{:?}", kind))),
-                            };
-                            res.to_bits() as u128
+                            for (idx, raw) in concrete.iter().enumerate() {
+                                buf64[idx] = f64::from_bits(((raw >> shift) & elem_mask) as u64);
+                            }
+                            op.concrete_f64(&buf64[..arity]).to_bits() as u128
                         }
-                        _ => return Err(OpError::InvalidFloatType(elem)),
+                        _ => unreachable!(),
                     };
                     result |= lane_bits << shift;
                 }
@@ -1933,82 +1993,8 @@ impl VEXOps {
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
-            let lane = arg.extract(hi, lo, ctx);
-            elements.push(build_float_expr(kind, prec, vec![lane]));
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
-    }
-
-    /// Per-lane FP min or max. Matches the Rust `>`/`<` semantics used by
-    /// the SSE scalar variants (NaN passes through right operand) so the
-    /// symbolic fallback stays consistent with the concrete branch.
-    fn vec_float_minmax(
-        left: RustBV,
-        right: RustBV,
-        elem: IRType,
-        count: u8,
-        is_max: bool,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
-
-        // Concrete fast path.
-        if total_width <= 128 {
-            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-                let mut result: u128 = 0;
-                let elem_mask: u128 = (1u128 << elem_width) - 1;
-                for i in 0..count {
-                    let shift = (i as u32) * elem_width;
-                    let l_bits = (l >> shift) & elem_mask;
-                    let r_bits = (r >> shift) & elem_mask;
-                    let lane_bits = match elem {
-                        IRType::F32 => {
-                            let lf = f32::from_bits(l_bits as u32);
-                            let rf = f32::from_bits(r_bits as u32);
-                            let chosen = if is_max {
-                                if lf > rf { lf } else { rf }
-                            } else {
-                                if lf < rf { lf } else { rf }
-                            };
-                            chosen.to_bits() as u128
-                        }
-                        IRType::F64 => {
-                            let lf = f64::from_bits(l_bits as u64);
-                            let rf = f64::from_bits(r_bits as u64);
-                            let chosen = if is_max {
-                                if lf > rf { lf } else { rf }
-                            } else {
-                                if lf < rf { lf } else { rf }
-                            };
-                            chosen.to_bits() as u128
-                        }
-                        _ => return Err(OpError::InvalidFloatType(elem)),
-                    };
-                    result |= lane_bits << shift;
-                }
-                return Ok(RustBV::concrete(result, total_width));
-            }
-        }
-
-        // Symbolic per-lane fallback: ITE(FCmpLt(...), l, r).
-        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let lo = (i as u32) * elem_width;
-            let hi = lo + elem_width - 1;
-            let l_lane = left.extract(hi, lo, ctx);
-            let r_lane = right.extract(hi, lo, ctx);
-            // max: ITE(r < l, l, r); min: ITE(l < r, l, r)
-            let (cmp_l, cmp_r) = if is_max {
-                (r_lane.clone(), l_lane.clone())
-            } else {
-                (l_lane.clone(), r_lane.clone())
-            };
-            let cond = build_float_expr(FloatOpKind::CmpLt, prec, vec![cmp_l, cmp_r]);
-            elements.push(cond.ite_into(l_lane, r_lane, ctx));
+            let lane_args: Vec<RustBV> = args.iter().map(|a| a.extract(hi, lo, ctx)).collect();
+            elements.push(op.symbolic(lane_args, prec, ctx));
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }
