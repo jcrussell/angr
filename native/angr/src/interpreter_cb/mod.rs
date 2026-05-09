@@ -21,7 +21,7 @@ use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{BVOp, RustBV, RustSymbolTable, SymContext};
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;
-use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
+use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IROp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
 use crate::vex::ops::{OpError, VEXOps};
 use crate::vex::{deserialize_irsb, Endness};
 

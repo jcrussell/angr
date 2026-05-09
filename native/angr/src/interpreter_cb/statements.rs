@@ -584,107 +584,10 @@ impl<'a> CallbackInterpreter<'a> {
                 dataHi,
                 dataLo,
                 endness,
-            } => {
-                // Single CAS only — defer double-CAS to Python.
-                if old_hi.is_some() || expdHi.is_some() || dataHi.is_some() {
-                    return Err(CbExecutionError::Unsupported(
-                        super::DCAS_UNSUPPORTED_REASON.to_string(),
-                    ));
-                }
-
-                // Type comes from expdLo — must match what is being CAS'd.
-                let expd_ty = expdLo.get_type(&irsb.tyenv).ok_or_else(|| {
-                    CbExecutionError::InvalidIR("CAS expdLo has no type".to_string())
-                })?;
-
-                // Load current value at addr using existing Load handling.
-                let load_expr = IRExpr::Load {
-                    addr: addr.clone(),
-                    ty: expd_ty,
-                    endness: *endness,
-                };
-                let current = self.eval_expr_with_callbacks(py, callbacks, &load_expr, &irsb.tyenv)?;
-                let expd_val = self.eval_expr_with_callbacks(py, callbacks, expdLo, &irsb.tyenv)?;
-                let data_val = self.eval_expr_with_callbacks(py, callbacks, dataLo, &irsb.tyenv)?;
-
-                let cmp = current.eq(&expd_val, self.ctx);
-
-                // Decide what to write back into memory based on cmp.
-                // - cmp concrete true:  write data
-                // - cmp concrete false: skip store
-                // - cmp symbolic:       write ITE(cmp, data, current) (mirrors StoreG)
-                let do_store = match cmp.as_u64() {
-                    Some(0) => None,
-                    Some(_) => Some(data_val.clone()),
-                    None => Some(cmp.ite(&data_val, &current, self.ctx)),
-                };
-
-                if let Some(value_to_store) = do_store {
-                    // Synthesize a Store statement and reuse the existing
-                    // Store machinery (page fetch, ITE chain, callback paths).
-                    // The Store handler re-evaluates addr/data; for a Const
-                    // we'd want to bypass that, but CAS is rare so the extra
-                    // eval is acceptable. We pass the precomputed value via
-                    // a temporary by using a Const wrapper only when concrete;
-                    // otherwise we inline the store directly here.
-                    if value_to_store.is_symbolic() {
-                        // Symbolic data — perform store directly. Only support
-                        // concrete addresses; defer symbolic addr to Python.
-                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                        let data_size = ((value_to_store.width() + 7) / 8) as usize;
-                        if let Some(addr_concrete) = addr_val.as_u64() {
-                            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
-                            if callbacks.has_memory_store_symbolic_value() {
-                                self.flush_stores(py, callbacks)?;
-                                callbacks
-                                    .call_memory_store_symbolic_value(py, addr_concrete, &value_to_store)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                self.pending_symbolic_stores.insert(addr_concrete, value_to_store.clone());
-                                let data_bytes = bv_to_bytes(&value_to_store);
-                                self.pending_stores.push(addr_concrete, data_bytes);
-                                if self.pending_stores.len() >= self.max_pending_stores {
-                                    self.flush_stores(py, callbacks)?;
-                                }
-                            }
-                        } else {
-                            // Symbolic address + symbolic data CAS: delegate to Python's
-                            // full symbolic store callback when available so the address
-                            // can be resolved by angr's concretization strategies.
-                            self.flush_stores(py, callbacks)?;
-                            if callbacks.has_memory_store_symbolic_full() {
-                                callbacks
-                                    .call_memory_store_symbolic_full(py, &addr_val, &value_to_store)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                return Err(CbExecutionError::Unsupported(
-                                    "CAS with symbolic address: \
-                                     no memory_store_symbolic_full callback".to_string(),
-                                ));
-                            }
-                        }
-                    } else {
-                        // Concrete data — synthesize Store and reuse the full
-                        // Store path (handles use_rust_memory, prefetch cache,
-                        // etc.). We pass dataLo unchanged since cmp was true.
-                        let store_stmt = IRStmt::Store {
-                            addr: (**addr).clone(),
-                            data: (**dataLo).clone(),
-                            endness: *endness,
-                        };
-                        self.execute_stmt_with_callbacks(py, callbacks, &store_stmt, irsb)?;
-                    }
-                }
-
-                // Write the loaded current value to oldLo.
-                if (*old_lo as usize) < self.temps.len() {
-                    self.temps[*old_lo as usize] = Some(current);
-                } else {
-                    return Err(CbExecutionError::UnknownTemp(*old_lo));
-                }
-
-                Ok(StmtResult::Continue)
-            }
+            } => self.execute_cas_stmt(
+                py, callbacks, *old_hi, *old_lo, addr, expdHi.as_deref(), expdLo,
+                dataHi.as_deref(), dataLo, *endness, irsb,
+            ),
 
             IRStmt::LLSC { storedata, result, addr, endness } => {
                 match storedata {
@@ -1142,6 +1045,251 @@ impl<'a> CallbackInterpreter<'a> {
                         py, callbacks, addr_val, &data_val, "store", &descr,
                     )?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// CAS handler — supports both single CAS and DCAS (double compare-and-swap,
+    /// e.g. x86-64 cmpxchg16b). DCAS = oldHi/expdHi/dataHi all Some, single = all None.
+    ///
+    /// DCAS semantics (mirroring `_perform_vex_stmt_CAS` in
+    /// angr/engines/vex/light/light.py): load both halves at `addr` and
+    /// `addr + sizeof(expd_ty)`; compare both vs `(expd_hi, expd_lo)`; on match,
+    /// write `(data_hi, data_lo)` back. Only little-endian is supported — the
+    /// only real DCAS users (x86-64, ARM64) are LE; BE is rejected explicitly.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_cas_stmt(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        old_hi: Option<u32>,
+        old_lo: u32,
+        addr: &IRExpr,
+        expd_hi: Option<&IRExpr>,
+        expd_lo: &IRExpr,
+        data_hi: Option<&IRExpr>,
+        data_lo: &IRExpr,
+        endness: Endness,
+        irsb: &IRSB,
+    ) -> Result<StmtResult, CbExecutionError> {
+        let is_dcas = match (old_hi, expd_hi, data_hi) {
+            (Some(_), Some(_), Some(_)) => true,
+            (None, None, None) => false,
+            _ => {
+                return Err(CbExecutionError::InvalidIR(
+                    "CAS: oldHi/expdHi/dataHi must be all-Some (DCAS) or all-None (single)"
+                        .to_string(),
+                ));
+            }
+        };
+
+        // Half type comes from expdLo — both halves share it.
+        let half_ty = expd_lo.get_type(&irsb.tyenv).ok_or_else(|| {
+            CbExecutionError::InvalidIR("CAS expdLo has no type".to_string())
+        })?;
+
+        if is_dcas && endness == Endness::Big {
+            // No real arch (x86-64 cmpxchg16b, ARM64 LDXP) is BE; if BE DCAS
+            // ever shows up, defer to Python's full-CAS implementation rather
+            // than guessing the address-of-Hi vs address-of-Lo convention.
+            return Err(CbExecutionError::Unsupported(
+                "DCAS with big-endian memory not supported".to_string(),
+            ));
+        }
+
+        // Load current_lo at addr.
+        let load_lo_expr = IRExpr::Load {
+            addr: Box::new(addr.clone()),
+            ty: half_ty,
+            endness,
+        };
+        let current_lo =
+            self.eval_expr_with_callbacks(py, callbacks, &load_lo_expr, &irsb.tyenv)?;
+        let expd_lo_val =
+            self.eval_expr_with_callbacks(py, callbacks, expd_lo, &irsb.tyenv)?;
+        let data_lo_val =
+            self.eval_expr_with_callbacks(py, callbacks, data_lo, &irsb.tyenv)?;
+
+        // For DCAS, also load the high half at addr + sizeof(half).
+        let (current_hi, expd_hi_val, data_hi_val, addr_hi_expr) = if is_dcas {
+            let addr_ty = addr.get_type(&irsb.tyenv).ok_or_else(|| {
+                CbExecutionError::InvalidIR("CAS addr has no type".to_string())
+            })?;
+            let half_bytes = half_ty.bytes() as u64;
+            let offset_const = match addr_ty {
+                IRType::I32 => IRExpr::Const(IRConst::U32(half_bytes as u32)),
+                IRType::I64 => IRExpr::Const(IRConst::U64(half_bytes)),
+                _ => {
+                    return Err(CbExecutionError::InvalidIR(
+                        "CAS addr must be I32 or I64".to_string(),
+                    ));
+                }
+            };
+            let addr_hi_expr = IRExpr::Binop {
+                op: IROp::Add(addr_ty),
+                left: Box::new(addr.clone()),
+                right: Box::new(offset_const),
+            };
+            let load_hi_expr = IRExpr::Load {
+                addr: Box::new(addr_hi_expr.clone()),
+                ty: half_ty,
+                endness,
+            };
+            let current_hi =
+                self.eval_expr_with_callbacks(py, callbacks, &load_hi_expr, &irsb.tyenv)?;
+            let expd_hi_val = self.eval_expr_with_callbacks(
+                py, callbacks, expd_hi.unwrap(), &irsb.tyenv,
+            )?;
+            let data_hi_val = self.eval_expr_with_callbacks(
+                py, callbacks, data_hi.unwrap(), &irsb.tyenv,
+            )?;
+            (Some(current_hi), Some(expd_hi_val), Some(data_hi_val), Some(addr_hi_expr))
+        } else {
+            (None, None, None, None)
+        };
+
+        // Combined cmp = (current_lo == expd_lo) & (current_hi == expd_hi)?
+        let cmp_lo = current_lo.eq(&expd_lo_val, self.ctx);
+        let cmp = if is_dcas {
+            let cmp_hi = current_hi
+                .as_ref()
+                .unwrap()
+                .eq(expd_hi_val.as_ref().unwrap(), self.ctx);
+            cmp_lo.and(&cmp_hi, self.ctx)
+        } else {
+            cmp_lo
+        };
+
+        // Decide what to write back:
+        //   cmp concrete true  → write data (use original IRExpr when possible)
+        //   cmp concrete false → skip store
+        //   cmp symbolic       → write ITE(cmp, data, current) (always symbolic)
+        match cmp.as_u64() {
+            Some(0) => { /* no store */ }
+            Some(_) => {
+                // Concrete-true: store data_lo (and data_hi for DCAS).
+                self.cas_dispatch_store(
+                    py, callbacks, addr, data_lo, &data_lo_val, endness, irsb,
+                )?;
+                if is_dcas {
+                    self.cas_dispatch_store(
+                        py,
+                        callbacks,
+                        addr_hi_expr.as_ref().unwrap(),
+                        data_hi.unwrap(),
+                        data_hi_val.as_ref().unwrap(),
+                        endness,
+                        irsb,
+                    )?;
+                }
+            }
+            None => {
+                // Symbolic cmp: store ITE(cmp, data, current) for each half.
+                let store_lo = cmp.ite(&data_lo_val, &current_lo, self.ctx);
+                self.cas_store_symbolic_data(py, callbacks, addr, &store_lo, irsb)?;
+                if is_dcas {
+                    let store_hi = cmp.ite(
+                        data_hi_val.as_ref().unwrap(),
+                        current_hi.as_ref().unwrap(),
+                        self.ctx,
+                    );
+                    self.cas_store_symbolic_data(
+                        py,
+                        callbacks,
+                        addr_hi_expr.as_ref().unwrap(),
+                        &store_hi,
+                        irsb,
+                    )?;
+                }
+            }
+        }
+
+        // Write current values to oldLo (and oldHi for DCAS).
+        if (old_lo as usize) >= self.temps.len() {
+            return Err(CbExecutionError::UnknownTemp(old_lo));
+        }
+        self.temps[old_lo as usize] = Some(current_lo);
+        if is_dcas {
+            let old_hi_idx = old_hi.unwrap();
+            if (old_hi_idx as usize) >= self.temps.len() {
+                return Err(CbExecutionError::UnknownTemp(old_hi_idx));
+            }
+            self.temps[old_hi_idx as usize] = Some(current_hi.unwrap());
+        }
+
+        Ok(StmtResult::Continue)
+    }
+
+    /// Dispatch a CAS store: if the precomputed RustBV is concrete, synthesize
+    /// an IRStmt::Store that reuses the full Store path (which re-evaluates the
+    /// data IRExpr); if symbolic, route through `cas_store_symbolic_data`.
+    #[allow(clippy::too_many_arguments)]
+    fn cas_dispatch_store(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_expr: &IRExpr,
+        data_expr: &IRExpr,
+        data_bv: &RustBV,
+        endness: Endness,
+        irsb: &IRSB,
+    ) -> Result<(), CbExecutionError> {
+        if data_bv.is_symbolic() {
+            self.cas_store_symbolic_data(py, callbacks, addr_expr, data_bv, irsb)
+        } else {
+            let store_stmt = IRStmt::Store {
+                addr: addr_expr.clone(),
+                data: data_expr.clone(),
+                endness,
+            };
+            self.execute_stmt_with_callbacks(py, callbacks, &store_stmt, irsb)?;
+            Ok(())
+        }
+    }
+
+    /// Store a symbolic data value at an address. Used by CAS when the value
+    /// to store is a computed RustBV (e.g. ITE) that cannot be wrapped back
+    /// into an IRExpr — see the `cas-llsc-recursion-limit` invariant.
+    /// Routes through `memory_store_symbolic_value` for concrete addresses
+    /// and `memory_store_symbolic_full` for symbolic addresses.
+    fn cas_store_symbolic_data(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_expr: &IRExpr,
+        data_bv: &RustBV,
+        irsb: &IRSB,
+    ) -> Result<(), CbExecutionError> {
+        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr_expr, &irsb.tyenv)?;
+        let data_size = ((data_bv.width() + 7) / 8) as usize;
+        if let Some(addr_concrete) = addr_val.as_u64() {
+            self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+            if callbacks.has_memory_store_symbolic_value() {
+                self.flush_stores(py, callbacks)?;
+                callbacks
+                    .call_memory_store_symbolic_value(py, addr_concrete, data_bv)
+                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+            } else {
+                self.pending_symbolic_stores.insert(addr_concrete, data_bv.clone());
+                let data_bytes = bv_to_bytes(data_bv);
+                self.pending_stores.push(addr_concrete, data_bytes);
+                if self.pending_stores.len() >= self.max_pending_stores {
+                    self.flush_stores(py, callbacks)?;
+                }
+            }
+        } else {
+            self.flush_stores(py, callbacks)?;
+            if callbacks.has_memory_store_symbolic_full() {
+                callbacks
+                    .call_memory_store_symbolic_full(py, &addr_val, data_bv)
+                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+            } else {
+                return Err(CbExecutionError::Unsupported(
+                    "CAS with symbolic address: \
+                     no memory_store_symbolic_full callback"
+                        .to_string(),
+                ));
             }
         }
         Ok(())

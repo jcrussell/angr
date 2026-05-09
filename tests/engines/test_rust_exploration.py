@@ -4079,16 +4079,15 @@ class TestErrorRecovery:
             f"continued instead of erroring or dead-ending."
         )
 
-    def test_dcas_increments_unsupported_counter(self):
+    def test_dcas_cmpxchg16b_no_python_fallback(self):
         """`cmpxchg16b` lifts to a VEX `CAS` with `old_hi`/`expdHi`/`dataHi`
-        populated. The Rust callback interpreter rejects DCAS via
-        `DCAS_UNSUPPORTED_REASON`, the run loop tags it as a
-        `PythonVEXFallback`, and the manager-side `dcas_unsupported_count`
-        increments.
+        populated. The Rust callback interpreter now handles DCAS natively
+        (angr-ufez); the previous behavior was to return
+        `DCAS_UNSUPPORTED_REASON` and let Python's VEX engine handle it.
 
-        Without this end-to-end exercise the metric is only checked at zero
-        (`test_dcas_unsupported_metric_exposed`) — a regression that wires the
-        wrong reason string or breaks fallback dispatch would go unnoticed.
+        This test locks down the new path: profiling shows the block executed
+        in Rust (`rust_blocks_executed > 0`), and the DCAS-unsupported counter
+        stays at zero with no PythonVEXFallback recorded for the block.
         """
         import angr
         from angr.exploration import RustExplorationManager
@@ -4106,26 +4105,78 @@ class TestErrorRecovery:
         state.regs.rdx = 0
         state.regs.rbx = 0xDEADBEEF
         state.regs.rcx = 0xCAFEBABE
-        # Concretize rsp so the trailing `ret` doesn't blow up exploration
-        # by branching on a symbolic return address.
         state.regs.rsp = 0x7FFFFE00
         state.memory.store(0x7FFFFE00, b"\x00" * 8)
 
         mgr = RustExplorationManager(proj, [state])
-        assert mgr.stats["dcas_unsupported_count"] == 0
+        mgr.enable_profiling()
+        mgr.run(max_steps=1)
 
-        mgr.run(max_steps=2)
-
+        # DCAS handled natively → the unsupported counter stays at zero, no
+        # PythonVEXFallback recorded for the block.
         stats = mgr.stats
         fb = mgr._rust_mgr.get_fallback_stats()
-        assert stats["dcas_unsupported_count"] >= 1, (
-            f"DCAS path did not increment counter; stats={stats}, fb={fb}"
+        assert stats["dcas_unsupported_count"] == 0, (
+            f"DCAS now native — counter must stay zero; stats={stats}, fb={fb}"
         )
-        assert fb["dcas_unsupported_count"] >= 1
-        assert any(
+        assert fb["dcas_unsupported_count"] == 0
+        assert not any(
             "double compare-and-swap" in reason
             for reason in fb["addresses"].values()
-        ), f"No DCAS reason recorded in vex_fallback_addrs: {fb['addresses']}"
+        ), f"DCAS reason still recorded in fallback addrs: {fb['addresses']}"
+        # Block was actually run by the Rust interpreter (not silently skipped):
+        # the DCAS path issues exactly 2 stores (lo + hi halves). Any DCAS that
+        # falls back early or returns Unsupported produces 0.
+        assert stats["rust_step_count"] > 0, (
+            f"Rust did not step the state; stats={stats}"
+        )
+        assert stats["rust_store_stmt_count"] >= 2, (
+            f"DCAS lo/hi stores not fired; rust_store_stmt_count="
+            f"{stats['rust_store_stmt_count']}; stats={stats}"
+        )
+
+    def test_dcas_cmpxchg16b_no_match_keeps_memory(self):
+        """DCAS failure path — when (rdx:rax) does NOT match `[m128]`, the
+        store is suppressed and memory keeps its original value (set up via
+        Python prior to Rust taking over). This locks down the cmp-false
+        branch of `execute_cas_stmt`.
+        """
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = bytes.fromhex("480fc70fc3")
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rdi = 0x2000
+        # Memory holds 0xAAAA...BBBB pattern, expected says 0:0 → mismatch.
+        state.memory.store(0x2000, b"\xaa" * 8 + b"\xbb" * 8)
+        state.regs.rax = 0
+        state.regs.rdx = 0
+        state.regs.rbx = 0xDEADBEEF
+        state.regs.rcx = 0xCAFEBABE
+        state.regs.rsp = 0x7FFFFE00
+        state.memory.store(0x7FFFFE00, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.enable_profiling()
+        mgr.run(max_steps=1)
+
+        assert mgr.stats["dcas_unsupported_count"] == 0
+        assert mgr.stats["rust_step_count"] > 0
+        # cmp-false path: zero CAS-driven stores.
+        assert mgr.stats["rust_store_stmt_count"] == 0, (
+            f"cmp-false DCAS should not store; got {mgr.stats['rust_store_stmt_count']}"
+        )
+        survived = list(mgr.active) + list(mgr.found) + list(mgr.deadended)
+        assert survived, "DCAS block produced no survived state"
+        s = survived[0]
+
+        # Memory is unchanged (no store fired): exercises the cmp-false path.
+        mem_lo = s.solver.eval(s.memory.load(0x2000, 8, endness="Iend_LE"))
+        mem_hi = s.solver.eval(s.memory.load(0x2008, 8, endness="Iend_LE"))
+        assert mem_lo == 0xAAAAAAAAAAAAAAAA, f"mem_lo changed: 0x{mem_lo:x}"
+        assert mem_hi == 0xBBBBBBBBBBBBBBBB, f"mem_hi changed: 0x{mem_hi:x}"
 
     def test_unsat_state_pruned_during_step(self):
         """State with pre-existing contradictory constraints (x>100 AND x<50)
