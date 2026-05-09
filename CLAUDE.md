@@ -233,6 +233,15 @@ integration test that loads a real binary, runs `mgr.run(...)`, and
 verifies a found-state result. To promote Experimental → Supported:
 add a benchmark and ensure it stays green in regression runs.
 
+## SimOption Coverage
+
+The Rust engine honors only a handful of `angr.sim_options` flags
+(`LAZY_SOLVES`, `ZERO_FILL_UNCONSTRAINED_MEMORY`, `APPROXIMATE_MEMORY_INDICES`,
+`SYMBOLIC_WRITE_ADDRESSES`, `STRICT_PAGE_ACCESS`). Most other options are
+silent no-ops. See [`docs/RUST_SIMOPTION_COVERAGE.md`](docs/RUST_SIMOPTION_COVERAGE.md)
+for the per-option matrix (honored / inherited / ignored — divergence-risk /
+ignored — no-op).
+
 ## Rust Symbolic Execution
 
 ```python
