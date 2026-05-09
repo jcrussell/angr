@@ -6,6 +6,119 @@ to the Rust exploration loop that achieves ~3x speedup by:
 - Processing symbolic branches with deferred forks
 - Only calling Python for SimProcedures and syscalls
 - Implementing find/avoid address checking in Rust
+
+Cross-mixin invariants
+======================
+
+The manager class composes several mixins (RustStateCacheMixin,
+RustStateExportMixin, RustStateSyncMixin, RustCallbackDispatchMixin) plus
+helpers in this module. The invariants below cut across those boundaries —
+breaking any one of them tends to produce silent correctness bugs (cache
+poisoning, lost state, infinite loops) rather than loud failures, so they
+are documented here and pinned by the named regression tests.
+
+I1. Disk-cache key axes
+    `_disk_cache_key` mixes (binary path, `_RUST_CACHE_VERSION`,
+    `_PYTHON_METADATA_VERSION`, arch name) into the filename hash and
+    memoizes on `(binary_path, arch_name)` in `_disk_key_cache`. When you
+    add a new dimension that affects the serialized init state, you must
+    bump the matching version constant AND extend the memo tuple — all
+    three (constant, hash, memo key) move together. Old-format pkls are
+    silently rejected by the outer `try/except Exception` in
+    `_load_init_pickle`.
+
+I2. Init pipeline phases (post angr-khth split)
+    `_run_python_init_if_needed` is the single orchestrator:
+    in-memory cache → disk cache → full Python init. The disk-load path
+    is split so each phase owns a single concern:
+      * `_load_init_pickle`        — pure I/O.
+      * `_deserialize_init_state`  — pure SimState construction; no
+                                     manager-owned mutation.
+      * `_apply_init_side_effects` — populates `_pending_procedure_data`
+                                     and `_precomputed_regs` on self.
+      * `_load_init_from_disk_cache` — thin wrapper over the three.
+    When you save a NEW field to the disk cache, decide whether the pure
+    deserialization or the side-effect phase owns it. Don't mix the two —
+    that is the whole point of the split.
+
+I3. Init-cache user-symbolic gate
+    Disk and in-memory init caches are BOTH gated on
+    `_state_has_user_symbolic(state)`. `blank_state` round-trips lose
+    user-created BVS identity (e.g. `argv` symbols), so `_compute_disk_init_key`
+    and `_compute_mem_init_key` return `''` to suppress load AND save when
+    the input state holds user-symbolic data. Tests rely on this so user
+    stores from one test do not bleed into the next via the class-level
+    `_init_cache`. See the `_isolate_class_caches` autouse fixture in
+    `TestEdgeCases` (tests/engines/test_rust_exploration.py:6601) which
+    clears the cache between tests as defense-in-depth.
+
+I4. `_apply_state_metadata` is an allow-list
+    On a cached/disk-loaded init state, `_apply_state_metadata` copies
+    constraints, globals, and only the `LAZY_SOLVES` + `STRICT_PAGE_ACCESS`
+    SimOptions from the source. Every other option (`TRACK_*`,
+    `CONCRETIZE`, `DO_RET_EMULATION`, ...) is silently dropped on the
+    cache-hit path. To check user-set options reliably, do it on the user-
+    supplied state in `__init__` BEFORE `_run_python_init_if_needed` runs,
+    not on the post-init state in `_add_rust_state`.
+
+I5. Register filter at the FFI boundary
+    The disk init cache pickles ALL archinfo registers (cr0..8, ymm0..15,
+    fs_seg, ds_seg, cmstart, cmlen, fpreg, ...) via
+    `arch.register_names.values()`. The Rust engine only models a subset
+    (rax-r15+rip on amd64). When passing the cached dict to Rust via
+    `set_registers_bulk`, you MUST filter to `_supported_register_names`
+    in rust_state_sync.py, otherwise PyValueError 'unknown register: cr0'.
+    Do not "fix" by adding cr0 etc. to amd64.rs unless the interpreter
+    actually consumes them — it doesn't, and the slow path skips them too.
+
+I6. State-cache pinning + manager-vs-mixin override
+    `_cleanup_state_cache` (manager override; takes precedence over the
+    mixin version) runs three steps: (1) drop entries whose state is no
+    longer in active/found, (2) pin every root in `_state_roots`, plus
+    `_current_callback_state_id` (and its effective id via
+    `_get_effective_state_id`) and `_current_stepping_state_id`, (3)
+    LRU-evict non-pinned entries past `_max_state_cache_size`. Without
+    those pins, a freshly-mutated state can race-evict between callbacks
+    on the same state. Regression tests:
+    `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
+    `..._drops_dead_states`, `..._skips_pinned` (lines 2017, 2064, 2096).
+    Note: the manager path does NOT call `clear_state_metadata` on
+    eviction — it relies on `RustSimState`'s own drop. The mixin version
+    of `_cleanup_state_cache` (rust_state_cache.py) DOES clear metadata.
+
+I7. Rust ↔ Python field sync uses max(), not overwrite
+    Fields that both sides can mutate (`mmap_base`, `posix_brk`, ...) sync
+    on stash export by taking `max(rust_value, python_value)`. A Python-
+    side advance (user-set `state.heap.mmap_base` before re-entering
+    exploration, or a fallback SimProcedure mutation) must not be reverted
+    to a smaller Rust value. Tests:
+    `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`
+    (line 1629), `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`.
+
+I8. Exploration-loop termination conditions
+    `_explore_with_predicates` and `_explore_with_addresses` must terminate
+    on EITHER (a) Python predicate match, OR (b) Rust-native find_addr hit
+    (`event_type == 'found'`), OR (c) all paths exhausted
+    (`active_empty` / `has_active_states == false`). Earlier code only
+    checked Python predicate flags, which infinite-looped when `find=int`
+    was combined with a non-predicate technique like DFS (technique made
+    `_active_techniques` non-empty, routing through the predicate path).
+    Fixed by switching the check to `_found_count()` which covers both
+    Rust-native and Python-predicate finds.
+
+I9. `max_active_states` is enforced via a helper, not raw `push_back`
+    Every site that pushes into the active stash must go through
+    `push_to_active_or_drop` (in native/angr/src/exploration/helpers.rs).
+    The helper uses `sm.push()` which respects the cap; raw
+    `stashes_mut().entry(STASH_ACTIVE).push_back()` bypasses it and the
+    limit silently breaks again.
+
+I10. RustExplorationManager exposes `stats` as a @property
+     `mgr.stats()` raises TypeError — it is not callable. The inner
+     `mgr._rust_mgr` (PyO3 object) does expose `stats()` as a method, and
+     `get_fallback_stats()` exists ONLY on `_rust_mgr` (the Python wrapper
+     does not re-export it). Tests that need full fallback details must
+     reach in via `mgr._rust_mgr.get_fallback_stats()`.
 """
 from __future__ import annotations
 
