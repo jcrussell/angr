@@ -55,7 +55,12 @@ pip install -e . --no-build-isolation --no-deps
 
 **"can't find Rust compiler"**: Add `~/.cargo/bin` to PATH before running pip install.
 
-**Stale .so file**: Delete `angr/rustylib.*.so` and rebuild with `pip install -e .`
+**Stale .so file**: Run `tools/rebuild-rust.sh`. The script wipes
+`angr/rustylib*.so` and `build/`, runs `cargo clean`, then re-runs the editable
+pip install. Pass `--keep-cargo-cache` to skip `cargo clean` (faster), or
+`--cargo-only` to skip pip and build via `cargo build --release` + copy
+(recovery path when the venv's pip/setuptools is corrupt — see
+`venv-rebuild-cargo-direct-copy` memory).
 
 **"Unable to generate bindings: NotExist ...z3.h"**: The Z3 C headers are missing. Install the system package (`libz3-dev` / `z3-devel` / `brew z3`). To override discovery, set `Z3_SYS_Z3_HEADER=/path/to/z3.h` before invoking `pip install` or `cargo`.
 
