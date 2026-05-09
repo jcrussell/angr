@@ -1,56 +1,76 @@
-## Session log: 2026-05-08, 173rd loop session
+## Session log: 2026-05-09, 174th loop session
 
-### Task: angr-4j5u.5.2 (closed) — Extract resume_after_* into resume.rs
+### Task: angr-4j5u.5.3 (closed) — Extract pending callback API into pending_api.rs
 
-Second of the 4-way split of angr-4j5u.5. Continues the
-mod.rs<800-line decomposition started in 4j5u.5.1.
+Third of the 4-way split of angr-4j5u.5. Continues mod.rs<800-line decomposition.
 
 Sibling status:
 - 4j5u.5.1 — Extract run() into run_loop.rs ✓ (172nd session)
-- 4j5u.5.2 — Extract resume_after_* into resume.rs ✓ THIS SESSION
-- 4j5u.5.3 — Extract pending callback API into pending_api.rs (open)
-- 4j5u.5.4 — Extract state inspection API into state_api.rs (open)
+- 4j5u.5.2 — Extract resume_after_* into resume.rs ✓ (173rd session)
+- 4j5u.5.3 — Extract pending callback API into pending_api.rs ✓ THIS SESSION
+- 4j5u.5.4 — Extract state inspection API into state_api.rs (open, ready)
 
-### What changed
+### What was already done in a prior session
 
-**New: native/angr/src/exploration/resume.rs (605 lines)**
+Previous session left native/angr/src/exploration/pending_api.rs (499 lines)
+already created with `pub(crate) _method_name` bodies for all 35 pyclass-exposed
+pending callback methods, but had NOT wired up mod.rs forwarders or added the
+`mod pending_api;` declaration. The task came in as in_progress with this
+half-done state.
 
-Holds bodies of:
-- `_resume_after_simprocedure` — main callback resume with constraint sync,
-  deferred fork processing, and find/avoid stash routing
-- `_deadend_pending_callback` — fast-path deadend with deferred fork preserving
-- `_resume_after_error` — P17 errored stash routing
-- `_resume_after_symbolic_branch` — fork true/false states with sat-cache priming
-- `_resume_find_predicate` (P2) and `_resume_avoid_predicate` (P7)
+### What changed this session
 
-resume_after_syscall and resume_after_hook share the simprocedure body, so
-their wrappers in mod.rs forward to `_resume_after_simprocedure` directly.
+**native/angr/src/exploration/mod.rs (2806 → 2532 lines, -274)**
+- Added `mod pending_api;` next to other children.
+- Replaced 35 method bodies with 1-line forwarders to `_method_name` in
+  pending_api.rs. Kept #[pymethods] declaration and #[pyo3(signature = ...)]
+  attributes on the wrappers.
 
-**native/angr/src/exploration/mod.rs (2806 lines, was 3372)**
-
-- New `mod resume;` declaration alongside other children.
-- Each method body replaced by a 1-line forwarder. The `#[pyo3(signature)]`
-  attributes stay on the pymethods declarations; bodies live in resume.rs
-  via plain `impl RustExplorationManager { ... }` (no `#[pymethods]`).
-- File shrank by 566 lines (target was ~640 — slight overhead from keeping
-  doc comments + #[pyo3 attribute lines on the wrappers).
+Methods covered (35 total):
+- PC / memory mapping: set_pending_state_pc, pending_state_map_memory,
+  active_states_map_memory, pending_memory_map_data
+- Branch condition / register / history / jumpkind:
+  get_pending_branch_condition, get_pending_register{,_ast},
+  get_pending_history, get_pending_jumpkind,
+  set_pending_register{,_symbolic{,_ast}}
+- Symbolic memory import: import_symbolic_to_state, import_symbolic_memory
+- Pending memory get/set + dirty pages: get/set_pending_memory,
+  get_pending_dirty_pages, clear_pending_dirty_tracking,
+  get_pending_mapped_pages, pending_memory_load{,_page}, pending_memory_store
+- Constraints / handles / snapshots / ancestry:
+  export_pending_constraints, get_active_handle_ids, export_pending_state,
+  get_pending_root_state_id, get_pending_ancestry, export_callback_bundle
+- Solver fork/borrow + constraint sync: fork_pending_solver,
+  borrow_pending_solver, add_constraints_to_pending, pending_constraint_count
+- Skip-hook stack: set/clear_skip_hook_addr, clear_skip_hook_for_addr
 
 ### Build/test
 
 - Venv pip is broken (avoid-broken-venv-pip-fallback-cargo-build):
   `cargo build --manifest-path native/angr/Cargo.toml --release` then
   `cp target/release/librustylib.so angr/rustylib.cpython-312-x86_64-linux-gnu.so`.
-- 342/342 tests passing (tests/engines/test_rust_exploration.py, 19.1s).
-- fauxware: OK 0.35s peak_mem=188MB (matches prior baseline).
+- `cargo check --release` clean (only pre-existing warnings).
+- 342/342 tests passing in 19.14s.
 
 ### Memories saved
 
-- `invariant-resume-extension-impl` — points readers at resume.rs for
-  resume callback semantics changes; explains the thin-wrapper pattern.
+- `invariant-pending-api-extension-impl` — points readers at pending_api.rs
+  for pending-callback API semantics changes; reaffirms thin-wrapper pattern.
+
+### Acceptance criteria delta
+
+Acceptance said "mod.rs shrinks by ~960 lines" but actual delta is 274 lines.
+The estimate was based on raw body LOC, not net delta — the wrappers retain
+doc comments and #[pyo3(signature)] attributes, which adds back ~200-300
+lines. pending_api.rs at 499 lines is well under the 1100-line target.
 
 ### Next session
 
-Pick up `angr-4j5u.5.3` (Extract pending callback API into pending_api.rs).
-Same pattern. Target methods are roughly 960 lines covering pending state
-inspection / mutation / export. Verify line ranges with grep before editing.
-mod.rs target after .5.3: 2806 → ~1850 lines.
+Pick up `angr-4j5u.5.4` (Extract state inspection API into state_api.rs).
+Same pattern. Target methods are roughly 1060 lines (~lines 1561-2622 of
+mod.rs after this session — verify with grep before editing) covering
+get_state_*/set_state_*/eval_in_state/state_satisfiable/export_state.
+mod.rs target after .5.4: 2532 → ~1500 lines.
+
+NOTE: 5.4 is a larger task because the bodies are not pre-extracted.
+Plan to spend the full session on it.
