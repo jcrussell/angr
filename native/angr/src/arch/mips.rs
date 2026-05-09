@@ -3,7 +3,7 @@
 //! This module provides the register layout and architecture-specific
 //! information for MIPS32 and MIPS64.
 
-use super::Arch;
+use super::{Arch, RegEntry, impl_arch_registers};
 use crate::vex::VexArch;
 
 /// MIPS32 architecture.
@@ -180,6 +180,314 @@ mod offsets64 {
     pub const GUEST_STATE_SIZE: usize = 592;
 }
 
+// MIPS32 canonical: ABI mnemonics drive register_name reverse lookup.
+const CANONICAL_MIPS32: &[RegEntry] = &[
+    ("zero", offsets32::R0, 4),
+    ("at", offsets32::R1, 4),
+    ("v0", offsets32::R2, 4),
+    ("v1", offsets32::R3, 4),
+    ("a0", offsets32::R4, 4),
+    ("a1", offsets32::R5, 4),
+    ("a2", offsets32::R6, 4),
+    ("a3", offsets32::R7, 4),
+    ("t0", offsets32::R8, 4),
+    ("t1", offsets32::R9, 4),
+    ("t2", offsets32::R10, 4),
+    ("t3", offsets32::R11, 4),
+    ("t4", offsets32::R12, 4),
+    ("t5", offsets32::R13, 4),
+    ("t6", offsets32::R14, 4),
+    ("t7", offsets32::R15, 4),
+    ("s0", offsets32::R16, 4),
+    ("s1", offsets32::R17, 4),
+    ("s2", offsets32::R18, 4),
+    ("s3", offsets32::R19, 4),
+    ("s4", offsets32::R20, 4),
+    ("s5", offsets32::R21, 4),
+    ("s6", offsets32::R22, 4),
+    ("s7", offsets32::R23, 4),
+    ("t8", offsets32::R24, 4),
+    ("t9", offsets32::R25, 4),
+    ("k0", offsets32::R26, 4),
+    ("k1", offsets32::R27, 4),
+    ("gp", offsets32::R28, 4),
+    ("sp", offsets32::R29, 4),
+    ("fp", offsets32::R30, 4),
+    ("ra", offsets32::R31, 4),
+    ("pc", offsets32::PC, 4),
+    ("hi", offsets32::HI, 4),
+    ("lo", offsets32::LO, 4),
+];
+
+const ALIASES_MIPS32: &[RegEntry] = &[
+    // Numeric rN aliases
+    ("r0", offsets32::R0, 4),
+    ("r1", offsets32::R1, 4),
+    ("r2", offsets32::R2, 4),
+    ("r3", offsets32::R3, 4),
+    ("r4", offsets32::R4, 4),
+    ("r5", offsets32::R5, 4),
+    ("r6", offsets32::R6, 4),
+    ("r7", offsets32::R7, 4),
+    ("r8", offsets32::R8, 4),
+    ("r9", offsets32::R9, 4),
+    ("r10", offsets32::R10, 4),
+    ("r11", offsets32::R11, 4),
+    ("r12", offsets32::R12, 4),
+    ("r13", offsets32::R13, 4),
+    ("r14", offsets32::R14, 4),
+    ("r15", offsets32::R15, 4),
+    ("r16", offsets32::R16, 4),
+    ("r17", offsets32::R17, 4),
+    ("r18", offsets32::R18, 4),
+    ("r19", offsets32::R19, 4),
+    ("r20", offsets32::R20, 4),
+    ("r21", offsets32::R21, 4),
+    ("r22", offsets32::R22, 4),
+    ("r23", offsets32::R23, 4),
+    ("r24", offsets32::R24, 4),
+    ("r25", offsets32::R25, 4),
+    ("r26", offsets32::R26, 4),
+    ("r27", offsets32::R27, 4),
+    ("r28", offsets32::R28, 4),
+    ("r29", offsets32::R29, 4),
+    ("r30", offsets32::R30, 4),
+    ("r31", offsets32::R31, 4),
+    // $N aliases
+    ("$0", offsets32::R0, 4),
+    ("$1", offsets32::R1, 4),
+    ("$2", offsets32::R2, 4),
+    ("$3", offsets32::R3, 4),
+    ("$4", offsets32::R4, 4),
+    ("$5", offsets32::R5, 4),
+    ("$6", offsets32::R6, 4),
+    ("$7", offsets32::R7, 4),
+    ("$8", offsets32::R8, 4),
+    ("$9", offsets32::R9, 4),
+    ("$10", offsets32::R10, 4),
+    ("$11", offsets32::R11, 4),
+    ("$12", offsets32::R12, 4),
+    ("$13", offsets32::R13, 4),
+    ("$14", offsets32::R14, 4),
+    ("$15", offsets32::R15, 4),
+    ("$16", offsets32::R16, 4),
+    ("$17", offsets32::R17, 4),
+    ("$18", offsets32::R18, 4),
+    ("$19", offsets32::R19, 4),
+    ("$20", offsets32::R20, 4),
+    ("$21", offsets32::R21, 4),
+    ("$22", offsets32::R22, 4),
+    ("$23", offsets32::R23, 4),
+    ("$24", offsets32::R24, 4),
+    ("$25", offsets32::R25, 4),
+    ("$26", offsets32::R26, 4),
+    ("$27", offsets32::R27, 4),
+    ("$28", offsets32::R28, 4),
+    ("$29", offsets32::R29, 4),
+    ("$30", offsets32::R30, 4),
+    ("$31", offsets32::R31, 4),
+    // R30 alias s8 (same offset as fp)
+    ("s8", offsets32::R30, 4),
+    // FPU registers (64-bit on MIPS32 VEX state)
+    ("f0", offsets32::F0, 8),
+    ("f1", offsets32::F1, 8),
+    ("f2", offsets32::F2, 8),
+    ("f3", offsets32::F3, 8),
+    ("f4", offsets32::F4, 8),
+    ("f5", offsets32::F5, 8),
+    ("f6", offsets32::F6, 8),
+    ("f7", offsets32::F7, 8),
+    ("f8", offsets32::F8, 8),
+    ("f9", offsets32::F9, 8),
+    ("f10", offsets32::F10, 8),
+    ("f11", offsets32::F11, 8),
+    ("f12", offsets32::F12, 8),
+    ("f13", offsets32::F13, 8),
+    ("f14", offsets32::F14, 8),
+    ("f15", offsets32::F15, 8),
+    ("f16", offsets32::F16, 8),
+    ("f17", offsets32::F17, 8),
+    ("f18", offsets32::F18, 8),
+    ("f19", offsets32::F19, 8),
+    ("f20", offsets32::F20, 8),
+    ("f21", offsets32::F21, 8),
+    ("f22", offsets32::F22, 8),
+    ("f23", offsets32::F23, 8),
+    ("f24", offsets32::F24, 8),
+    ("f25", offsets32::F25, 8),
+    ("f26", offsets32::F26, 8),
+    ("f27", offsets32::F27, 8),
+    ("f28", offsets32::F28, 8),
+    ("f29", offsets32::F29, 8),
+    ("f30", offsets32::F30, 8),
+    ("f31", offsets32::F31, 8),
+    ("$f0", offsets32::F0, 8),
+    ("$f1", offsets32::F1, 8),
+    ("$f2", offsets32::F2, 8),
+    ("$f3", offsets32::F3, 8),
+    ("$f4", offsets32::F4, 8),
+    ("$f5", offsets32::F5, 8),
+    ("$f6", offsets32::F6, 8),
+    ("$f7", offsets32::F7, 8),
+    ("$f8", offsets32::F8, 8),
+    ("$f9", offsets32::F9, 8),
+    ("$f10", offsets32::F10, 8),
+    ("$f11", offsets32::F11, 8),
+    ("$f12", offsets32::F12, 8),
+    ("$f13", offsets32::F13, 8),
+    ("$f14", offsets32::F14, 8),
+    ("$f15", offsets32::F15, 8),
+    ("$f16", offsets32::F16, 8),
+    ("$f17", offsets32::F17, 8),
+    ("$f18", offsets32::F18, 8),
+    ("$f19", offsets32::F19, 8),
+    ("$f20", offsets32::F20, 8),
+    ("$f21", offsets32::F21, 8),
+    ("$f22", offsets32::F22, 8),
+    ("$f23", offsets32::F23, 8),
+    ("$f24", offsets32::F24, 8),
+    ("$f25", offsets32::F25, 8),
+    ("$f26", offsets32::F26, 8),
+    ("$f27", offsets32::F27, 8),
+    ("$f28", offsets32::F28, 8),
+    ("$f29", offsets32::F29, 8),
+    ("$f30", offsets32::F30, 8),
+    ("$f31", offsets32::F31, 8),
+    // FPU control registers (32-bit)
+    ("fir", offsets32::FIR, 4),
+    ("fccr", offsets32::FCCR, 4),
+    ("fexr", offsets32::FEXR, 4),
+    ("fenr", offsets32::FENR, 4),
+    ("fcsr", offsets32::FCSR, 4),
+];
+
+const REGISTER_NAMES_MIPS32: &[&str] = &[
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4",
+    "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
+    "k0", "k1", "gp", "sp", "fp", "ra", "pc", "hi", "lo",
+];
+
+// MIPS64 canonical: preserves the original (intentionally narrow) reverse
+// lookup behavior — only zero/v0/a0/sp/fp/ra/pc are reverse-mapped, matching
+// the prior register_name match arms. Other GPR mnemonics live in ALIASES.
+const CANONICAL_MIPS64: &[RegEntry] = &[
+    ("zero", offsets64::R0, 8),
+    ("v0", offsets64::R2, 8),
+    ("a0", offsets64::R4, 8),
+    ("sp", offsets64::R29, 8),
+    ("fp", offsets64::R30, 8),
+    ("ra", offsets64::R31, 8),
+    ("pc", offsets64::PC, 8),
+];
+
+const ALIASES_MIPS64: &[RegEntry] = &[
+    ("at", offsets64::R1, 8),
+    ("v1", offsets64::R3, 8),
+    ("a1", offsets64::R5, 8),
+    ("a2", offsets64::R6, 8),
+    ("a3", offsets64::R7, 8),
+    ("a4", offsets64::R8, 8),
+    ("a5", offsets64::R9, 8),
+    ("a6", offsets64::R10, 8),
+    ("a7", offsets64::R11, 8),
+    ("t0", offsets64::R8, 8),
+    ("t1", offsets64::R9, 8),
+    ("t2", offsets64::R10, 8),
+    ("t3", offsets64::R11, 8),
+    ("t4", offsets64::R12, 8),
+    ("t5", offsets64::R13, 8),
+    ("t6", offsets64::R14, 8),
+    ("t7", offsets64::R15, 8),
+    ("s0", offsets64::R16, 8),
+    ("s1", offsets64::R17, 8),
+    ("s2", offsets64::R18, 8),
+    ("s3", offsets64::R19, 8),
+    ("s4", offsets64::R20, 8),
+    ("s5", offsets64::R21, 8),
+    ("s6", offsets64::R22, 8),
+    ("s7", offsets64::R23, 8),
+    ("t8", offsets64::R24, 8),
+    ("t9", offsets64::R25, 8),
+    ("k0", offsets64::R26, 8),
+    ("k1", offsets64::R27, 8),
+    ("gp", offsets64::R28, 8),
+    ("s8", offsets64::R30, 8),
+    ("hi", offsets64::HI, 8),
+    ("lo", offsets64::LO, 8),
+    // Numeric rN aliases
+    ("r0", offsets64::R0, 8),
+    ("r1", offsets64::R1, 8),
+    ("r2", offsets64::R2, 8),
+    ("r3", offsets64::R3, 8),
+    ("r4", offsets64::R4, 8),
+    ("r5", offsets64::R5, 8),
+    ("r6", offsets64::R6, 8),
+    ("r7", offsets64::R7, 8),
+    ("r8", offsets64::R8, 8),
+    ("r9", offsets64::R9, 8),
+    ("r10", offsets64::R10, 8),
+    ("r11", offsets64::R11, 8),
+    ("r12", offsets64::R12, 8),
+    ("r13", offsets64::R13, 8),
+    ("r14", offsets64::R14, 8),
+    ("r15", offsets64::R15, 8),
+    ("r16", offsets64::R16, 8),
+    ("r17", offsets64::R17, 8),
+    ("r18", offsets64::R18, 8),
+    ("r19", offsets64::R19, 8),
+    ("r20", offsets64::R20, 8),
+    ("r21", offsets64::R21, 8),
+    ("r22", offsets64::R22, 8),
+    ("r23", offsets64::R23, 8),
+    ("r24", offsets64::R24, 8),
+    ("r25", offsets64::R25, 8),
+    ("r26", offsets64::R26, 8),
+    ("r27", offsets64::R27, 8),
+    ("r28", offsets64::R28, 8),
+    ("r29", offsets64::R29, 8),
+    ("r30", offsets64::R30, 8),
+    ("r31", offsets64::R31, 8),
+    // $N aliases
+    ("$0", offsets64::R0, 8),
+    ("$1", offsets64::R1, 8),
+    ("$2", offsets64::R2, 8),
+    ("$3", offsets64::R3, 8),
+    ("$4", offsets64::R4, 8),
+    ("$5", offsets64::R5, 8),
+    ("$6", offsets64::R6, 8),
+    ("$7", offsets64::R7, 8),
+    ("$8", offsets64::R8, 8),
+    ("$9", offsets64::R9, 8),
+    ("$10", offsets64::R10, 8),
+    ("$11", offsets64::R11, 8),
+    ("$12", offsets64::R12, 8),
+    ("$13", offsets64::R13, 8),
+    ("$14", offsets64::R14, 8),
+    ("$15", offsets64::R15, 8),
+    ("$16", offsets64::R16, 8),
+    ("$17", offsets64::R17, 8),
+    ("$18", offsets64::R18, 8),
+    ("$19", offsets64::R19, 8),
+    ("$20", offsets64::R20, 8),
+    ("$21", offsets64::R21, 8),
+    ("$22", offsets64::R22, 8),
+    ("$23", offsets64::R23, 8),
+    ("$24", offsets64::R24, 8),
+    ("$25", offsets64::R25, 8),
+    ("$26", offsets64::R26, 8),
+    ("$27", offsets64::R27, 8),
+    ("$28", offsets64::R28, 8),
+    ("$29", offsets64::R29, 8),
+    ("$30", offsets64::R30, 8),
+    ("$31", offsets64::R31, 8),
+];
+
+const REGISTER_NAMES_MIPS64: &[&str] = &[
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t4",
+    "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
+    "k0", "k1", "gp", "sp", "fp", "ra", "pc", "hi", "lo",
+];
+
 impl Arch for MIPS32 {
     fn vex_arch(&self) -> VexArch {
         VexArch::MIPS32
@@ -209,169 +517,7 @@ impl Arch for MIPS32 {
         Some(offsets32::R30) // fp/s8
     }
 
-    fn register_offset(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // Numeric names
-            "r0" | "zero" | "$0" => Some(offsets32::R0),
-            "r1" | "at" | "$1" => Some(offsets32::R1),
-            "r2" | "v0" | "$2" => Some(offsets32::R2),
-            "r3" | "v1" | "$3" => Some(offsets32::R3),
-            "r4" | "a0" | "$4" => Some(offsets32::R4),
-            "r5" | "a1" | "$5" => Some(offsets32::R5),
-            "r6" | "a2" | "$6" => Some(offsets32::R6),
-            "r7" | "a3" | "$7" => Some(offsets32::R7),
-            "r8" | "t0" | "$8" => Some(offsets32::R8),
-            "r9" | "t1" | "$9" => Some(offsets32::R9),
-            "r10" | "t2" | "$10" => Some(offsets32::R10),
-            "r11" | "t3" | "$11" => Some(offsets32::R11),
-            "r12" | "t4" | "$12" => Some(offsets32::R12),
-            "r13" | "t5" | "$13" => Some(offsets32::R13),
-            "r14" | "t6" | "$14" => Some(offsets32::R14),
-            "r15" | "t7" | "$15" => Some(offsets32::R15),
-            "r16" | "s0" | "$16" => Some(offsets32::R16),
-            "r17" | "s1" | "$17" => Some(offsets32::R17),
-            "r18" | "s2" | "$18" => Some(offsets32::R18),
-            "r19" | "s3" | "$19" => Some(offsets32::R19),
-            "r20" | "s4" | "$20" => Some(offsets32::R20),
-            "r21" | "s5" | "$21" => Some(offsets32::R21),
-            "r22" | "s6" | "$22" => Some(offsets32::R22),
-            "r23" | "s7" | "$23" => Some(offsets32::R23),
-            "r24" | "t8" | "$24" => Some(offsets32::R24),
-            "r25" | "t9" | "$25" => Some(offsets32::R25),
-            "r26" | "k0" | "$26" => Some(offsets32::R26),
-            "r27" | "k1" | "$27" => Some(offsets32::R27),
-            "r28" | "gp" | "$28" => Some(offsets32::R28),
-            "r29" | "sp" | "$29" => Some(offsets32::R29),
-            "r30" | "fp" | "s8" | "$30" => Some(offsets32::R30),
-            "r31" | "ra" | "$31" => Some(offsets32::R31),
-
-            "pc" => Some(offsets32::PC),
-            "hi" => Some(offsets32::HI),
-            "lo" => Some(offsets32::LO),
-
-            // FPU registers
-            "f0" | "$f0" => Some(offsets32::F0),
-            "f1" | "$f1" => Some(offsets32::F1),
-            "f2" | "$f2" => Some(offsets32::F2),
-            "f3" | "$f3" => Some(offsets32::F3),
-            "f4" | "$f4" => Some(offsets32::F4),
-            "f5" | "$f5" => Some(offsets32::F5),
-            "f6" | "$f6" => Some(offsets32::F6),
-            "f7" | "$f7" => Some(offsets32::F7),
-            "f8" | "$f8" => Some(offsets32::F8),
-            "f9" | "$f9" => Some(offsets32::F9),
-            "f10" | "$f10" => Some(offsets32::F10),
-            "f11" | "$f11" => Some(offsets32::F11),
-            "f12" | "$f12" => Some(offsets32::F12),
-            "f13" | "$f13" => Some(offsets32::F13),
-            "f14" | "$f14" => Some(offsets32::F14),
-            "f15" | "$f15" => Some(offsets32::F15),
-            "f16" | "$f16" => Some(offsets32::F16),
-            "f17" | "$f17" => Some(offsets32::F17),
-            "f18" | "$f18" => Some(offsets32::F18),
-            "f19" | "$f19" => Some(offsets32::F19),
-            "f20" | "$f20" => Some(offsets32::F20),
-            "f21" | "$f21" => Some(offsets32::F21),
-            "f22" | "$f22" => Some(offsets32::F22),
-            "f23" | "$f23" => Some(offsets32::F23),
-            "f24" | "$f24" => Some(offsets32::F24),
-            "f25" | "$f25" => Some(offsets32::F25),
-            "f26" | "$f26" => Some(offsets32::F26),
-            "f27" | "$f27" => Some(offsets32::F27),
-            "f28" | "$f28" => Some(offsets32::F28),
-            "f29" | "$f29" => Some(offsets32::F29),
-            "f30" | "$f30" => Some(offsets32::F30),
-            "f31" | "$f31" => Some(offsets32::F31),
-
-            "fir" => Some(offsets32::FIR),
-            "fccr" => Some(offsets32::FCCR),
-            "fexr" => Some(offsets32::FEXR),
-            "fenr" => Some(offsets32::FENR),
-            "fcsr" => Some(offsets32::FCSR),
-
-            _ => None,
-        }
-    }
-
-    fn register_size(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // All GPRs are 32-bit
-            "r0" | "zero" | "$0" | "r1" | "at" | "$1" | "r2" | "v0" | "$2" | "r3" | "v1"
-            | "$3" | "r4" | "a0" | "$4" | "r5" | "a1" | "$5" | "r6" | "a2" | "$6" | "r7"
-            | "a3" | "$7" | "r8" | "t0" | "$8" | "r9" | "t1" | "$9" | "r10" | "t2" | "$10"
-            | "r11" | "t3" | "$11" | "r12" | "t4" | "$12" | "r13" | "t5" | "$13" | "r14"
-            | "t6" | "$14" | "r15" | "t7" | "$15" | "r16" | "s0" | "$16" | "r17" | "s1"
-            | "$17" | "r18" | "s2" | "$18" | "r19" | "s3" | "$19" | "r20" | "s4" | "$20"
-            | "r21" | "s5" | "$21" | "r22" | "s6" | "$22" | "r23" | "s7" | "$23" | "r24"
-            | "t8" | "$24" | "r25" | "t9" | "$25" | "r26" | "k0" | "$26" | "r27" | "k1"
-            | "$27" | "r28" | "gp" | "$28" | "r29" | "sp" | "$29" | "r30" | "fp" | "s8"
-            | "$30" | "r31" | "ra" | "$31" | "pc" | "hi" | "lo" => Some(4),
-
-            // FPU registers are 64-bit
-            "f0" | "$f0" | "f1" | "$f1" | "f2" | "$f2" | "f3" | "$f3" | "f4" | "$f4" | "f5"
-            | "$f5" | "f6" | "$f6" | "f7" | "$f7" | "f8" | "$f8" | "f9" | "$f9" | "f10"
-            | "$f10" | "f11" | "$f11" | "f12" | "$f12" | "f13" | "$f13" | "f14" | "$f14"
-            | "f15" | "$f15" | "f16" | "$f16" | "f17" | "$f17" | "f18" | "$f18" | "f19"
-            | "$f19" | "f20" | "$f20" | "f21" | "$f21" | "f22" | "$f22" | "f23" | "$f23"
-            | "f24" | "$f24" | "f25" | "$f25" | "f26" | "$f26" | "f27" | "$f27" | "f28"
-            | "$f28" | "f29" | "$f29" | "f30" | "$f30" | "f31" | "$f31" => Some(8),
-
-            "fir" | "fccr" | "fexr" | "fenr" | "fcsr" => Some(4),
-
-            _ => None,
-        }
-    }
-
-    fn register_name(&self, offset: u32) -> Option<&'static str> {
-        match offset {
-            offsets32::R0 => Some("zero"),
-            offsets32::R1 => Some("at"),
-            offsets32::R2 => Some("v0"),
-            offsets32::R3 => Some("v1"),
-            offsets32::R4 => Some("a0"),
-            offsets32::R5 => Some("a1"),
-            offsets32::R6 => Some("a2"),
-            offsets32::R7 => Some("a3"),
-            offsets32::R8 => Some("t0"),
-            offsets32::R9 => Some("t1"),
-            offsets32::R10 => Some("t2"),
-            offsets32::R11 => Some("t3"),
-            offsets32::R12 => Some("t4"),
-            offsets32::R13 => Some("t5"),
-            offsets32::R14 => Some("t6"),
-            offsets32::R15 => Some("t7"),
-            offsets32::R16 => Some("s0"),
-            offsets32::R17 => Some("s1"),
-            offsets32::R18 => Some("s2"),
-            offsets32::R19 => Some("s3"),
-            offsets32::R20 => Some("s4"),
-            offsets32::R21 => Some("s5"),
-            offsets32::R22 => Some("s6"),
-            offsets32::R23 => Some("s7"),
-            offsets32::R24 => Some("t8"),
-            offsets32::R25 => Some("t9"),
-            offsets32::R26 => Some("k0"),
-            offsets32::R27 => Some("k1"),
-            offsets32::R28 => Some("gp"),
-            offsets32::R29 => Some("sp"),
-            offsets32::R30 => Some("fp"),
-            offsets32::R31 => Some("ra"),
-            offsets32::PC => Some("pc"),
-            offsets32::HI => Some("hi"),
-            offsets32::LO => Some("lo"),
-            _ => None,
-        }
-    }
-
-    fn register_names(&self) -> &[&'static str] {
-        &[
-            "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4",
-            "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
-            "k0", "k1", "gp", "sp", "fp", "ra", "pc", "hi", "lo",
-        ]
-    }
+    impl_arch_registers!(CANONICAL_MIPS32, ALIASES_MIPS32, REGISTER_NAMES_MIPS32);
 
     fn argument_registers(&self) -> &[u32] {
         // O32 ABI: a0-a3
@@ -426,90 +572,7 @@ impl Arch for MIPS64 {
         Some(offsets64::R30)
     }
 
-    fn register_offset(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            "r0" | "zero" | "$0" => Some(offsets64::R0),
-            "r1" | "at" | "$1" => Some(offsets64::R1),
-            "r2" | "v0" | "$2" => Some(offsets64::R2),
-            "r3" | "v1" | "$3" => Some(offsets64::R3),
-            "r4" | "a0" | "$4" => Some(offsets64::R4),
-            "r5" | "a1" | "$5" => Some(offsets64::R5),
-            "r6" | "a2" | "$6" => Some(offsets64::R6),
-            "r7" | "a3" | "$7" => Some(offsets64::R7),
-            "r8" | "a4" | "t0" | "$8" => Some(offsets64::R8),
-            "r9" | "a5" | "t1" | "$9" => Some(offsets64::R9),
-            "r10" | "a6" | "t2" | "$10" => Some(offsets64::R10),
-            "r11" | "a7" | "t3" | "$11" => Some(offsets64::R11),
-            "r12" | "t4" | "$12" => Some(offsets64::R12),
-            "r13" | "t5" | "$13" => Some(offsets64::R13),
-            "r14" | "t6" | "$14" => Some(offsets64::R14),
-            "r15" | "t7" | "$15" => Some(offsets64::R15),
-            "r16" | "s0" | "$16" => Some(offsets64::R16),
-            "r17" | "s1" | "$17" => Some(offsets64::R17),
-            "r18" | "s2" | "$18" => Some(offsets64::R18),
-            "r19" | "s3" | "$19" => Some(offsets64::R19),
-            "r20" | "s4" | "$20" => Some(offsets64::R20),
-            "r21" | "s5" | "$21" => Some(offsets64::R21),
-            "r22" | "s6" | "$22" => Some(offsets64::R22),
-            "r23" | "s7" | "$23" => Some(offsets64::R23),
-            "r24" | "t8" | "$24" => Some(offsets64::R24),
-            "r25" | "t9" | "$25" => Some(offsets64::R25),
-            "r26" | "k0" | "$26" => Some(offsets64::R26),
-            "r27" | "k1" | "$27" => Some(offsets64::R27),
-            "r28" | "gp" | "$28" => Some(offsets64::R28),
-            "r29" | "sp" | "$29" => Some(offsets64::R29),
-            "r30" | "fp" | "s8" | "$30" => Some(offsets64::R30),
-            "r31" | "ra" | "$31" => Some(offsets64::R31),
-
-            "pc" => Some(offsets64::PC),
-            "hi" => Some(offsets64::HI),
-            "lo" => Some(offsets64::LO),
-
-            _ => None,
-        }
-    }
-
-    fn register_size(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // All GPRs are 64-bit
-            "r0" | "zero" | "$0" | "r1" | "at" | "$1" | "r2" | "v0" | "$2" | "r3" | "v1"
-            | "$3" | "r4" | "a0" | "$4" | "r5" | "a1" | "$5" | "r6" | "a2" | "$6" | "r7"
-            | "a3" | "$7" | "r8" | "a4" | "t0" | "$8" | "r9" | "a5" | "t1" | "$9" | "r10"
-            | "a6" | "t2" | "$10" | "r11" | "a7" | "t3" | "$11" | "r12" | "t4" | "$12"
-            | "r13" | "t5" | "$13" | "r14" | "t6" | "$14" | "r15" | "t7" | "$15" | "r16"
-            | "s0" | "$16" | "r17" | "s1" | "$17" | "r18" | "s2" | "$18" | "r19" | "s3"
-            | "$19" | "r20" | "s4" | "$20" | "r21" | "s5" | "$21" | "r22" | "s6" | "$22"
-            | "r23" | "s7" | "$23" | "r24" | "t8" | "$24" | "r25" | "t9" | "$25" | "r26"
-            | "k0" | "$26" | "r27" | "k1" | "$27" | "r28" | "gp" | "$28" | "r29" | "sp"
-            | "$29" | "r30" | "fp" | "s8" | "$30" | "r31" | "ra" | "$31" | "pc" | "hi"
-            | "lo" => Some(8),
-
-            _ => None,
-        }
-    }
-
-    fn register_name(&self, offset: u32) -> Option<&'static str> {
-        match offset {
-            offsets64::R0 => Some("zero"),
-            offsets64::R2 => Some("v0"),
-            offsets64::R4 => Some("a0"),
-            offsets64::R29 => Some("sp"),
-            offsets64::R30 => Some("fp"),
-            offsets64::R31 => Some("ra"),
-            offsets64::PC => Some("pc"),
-            _ => None,
-        }
-    }
-
-    fn register_names(&self) -> &[&'static str] {
-        &[
-            "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t4",
-            "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
-            "k0", "k1", "gp", "sp", "fp", "ra", "pc", "hi", "lo",
-        ]
-    }
+    impl_arch_registers!(CANONICAL_MIPS64, ALIASES_MIPS64, REGISTER_NAMES_MIPS64);
 
     fn argument_registers(&self) -> &[u32] {
         // N64 ABI: a0-a7

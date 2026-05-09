@@ -3,7 +3,7 @@
 //! This module provides the register layout and architecture-specific
 //! information for 32-bit ARM.
 
-use super::Arch;
+use super::{Arch, RegEntry, impl_arch_registers};
 use crate::vex::VexArch;
 
 /// ARM (32-bit) architecture.
@@ -91,6 +91,107 @@ mod offsets {
     pub const GUEST_STATE_SIZE: usize = 380;
 }
 
+// Canonical registers: drive `register_name(offset)` reverse lookups.
+// ARM's register_name returns the rN form for r0..r12 and the conventional
+// "sp"/"lr"/"pc" names for r13..r15t — the table mirrors that.
+const CANONICAL: &[RegEntry] = &[
+    ("r0", offsets::R0, 4),
+    ("r1", offsets::R1, 4),
+    ("r2", offsets::R2, 4),
+    ("r3", offsets::R3, 4),
+    ("r4", offsets::R4, 4),
+    ("r5", offsets::R5, 4),
+    ("r6", offsets::R6, 4),
+    ("r7", offsets::R7, 4),
+    ("r8", offsets::R8, 4),
+    ("r9", offsets::R9, 4),
+    ("r10", offsets::R10, 4),
+    ("r11", offsets::R11, 4),
+    ("r12", offsets::R12, 4),
+    ("sp", offsets::R13, 4),
+    ("lr", offsets::R14, 4),
+    ("pc", offsets::R15T, 4),
+    ("cc_op", offsets::CC_OP, 4),
+    ("cc_dep1", offsets::CC_DEP1, 4),
+    ("cc_dep2", offsets::CC_DEP2, 4),
+    ("cc_ndep", offsets::CC_NDEP, 4),
+];
+
+const ALIASES: &[RegEntry] = &[
+    // r11/r12/r13/r14/r15 alternate names
+    ("fp", offsets::R11, 4),
+    ("ip", offsets::R12, 4),
+    ("r13", offsets::R13, 4),
+    ("r14", offsets::R14, 4),
+    ("r15", offsets::R15T, 4),
+    ("r15t", offsets::R15T, 4),
+    // Flags
+    ("qflag32", offsets::QFLAG32, 4),
+    ("geflag0", offsets::GEFLAG0, 4),
+    ("geflag1", offsets::GEFLAG1, 4),
+    ("geflag2", offsets::GEFLAG2, 4),
+    ("geflag3", offsets::GEFLAG3, 4),
+    // VFP/NEON D registers (64-bit)
+    ("d0", offsets::D0, 8),
+    ("d1", offsets::D1, 8),
+    ("d2", offsets::D2, 8),
+    ("d3", offsets::D3, 8),
+    ("d4", offsets::D4, 8),
+    ("d5", offsets::D5, 8),
+    ("d6", offsets::D6, 8),
+    ("d7", offsets::D7, 8),
+    ("d8", offsets::D8, 8),
+    ("d9", offsets::D9, 8),
+    ("d10", offsets::D10, 8),
+    ("d11", offsets::D11, 8),
+    ("d12", offsets::D12, 8),
+    ("d13", offsets::D13, 8),
+    ("d14", offsets::D14, 8),
+    ("d15", offsets::D15, 8),
+    ("d16", offsets::D16, 8),
+    ("d17", offsets::D17, 8),
+    ("d18", offsets::D18, 8),
+    ("d19", offsets::D19, 8),
+    ("d20", offsets::D20, 8),
+    ("d21", offsets::D21, 8),
+    ("d22", offsets::D22, 8),
+    ("d23", offsets::D23, 8),
+    ("d24", offsets::D24, 8),
+    ("d25", offsets::D25, 8),
+    ("d26", offsets::D26, 8),
+    ("d27", offsets::D27, 8),
+    ("d28", offsets::D28, 8),
+    ("d29", offsets::D29, 8),
+    ("d30", offsets::D30, 8),
+    ("d31", offsets::D31, 8),
+    // Q registers (128-bit, overlap pairs of D registers)
+    ("q0", offsets::D0, 16),
+    ("q1", offsets::D2, 16),
+    ("q2", offsets::D4, 16),
+    ("q3", offsets::D6, 16),
+    ("q4", offsets::D8, 16),
+    ("q5", offsets::D10, 16),
+    ("q6", offsets::D12, 16),
+    ("q7", offsets::D14, 16),
+    ("q8", offsets::D16, 16),
+    ("q9", offsets::D18, 16),
+    ("q10", offsets::D20, 16),
+    ("q11", offsets::D22, 16),
+    ("q12", offsets::D24, 16),
+    ("q13", offsets::D26, 16),
+    ("q14", offsets::D28, 16),
+    ("q15", offsets::D30, 16),
+    // Other
+    ("fpscr", offsets::FPSCR, 4),
+    ("tpidruro", offsets::TPIDRURO, 4),
+    ("itstate", offsets::ITSTATE, 4),
+];
+
+const REGISTER_NAMES: &[&str] = &[
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+    "sp", "lr", "pc", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep",
+];
+
 impl Arch for ARM {
     fn vex_arch(&self) -> VexArch {
         VexArch::ARM
@@ -120,164 +221,7 @@ impl Arch for ARM {
         Some(offsets::R11) // R11 is typically FP on ARM
     }
 
-    fn register_offset(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // General purpose registers
-            "r0" => Some(offsets::R0),
-            "r1" => Some(offsets::R1),
-            "r2" => Some(offsets::R2),
-            "r3" => Some(offsets::R3),
-            "r4" => Some(offsets::R4),
-            "r5" => Some(offsets::R5),
-            "r6" => Some(offsets::R6),
-            "r7" => Some(offsets::R7),
-            "r8" => Some(offsets::R8),
-            "r9" => Some(offsets::R9),
-            "r10" => Some(offsets::R10),
-            "r11" | "fp" => Some(offsets::R11),
-            "r12" | "ip" => Some(offsets::R12),
-            "r13" | "sp" => Some(offsets::R13),
-            "r14" | "lr" => Some(offsets::R14),
-            "r15" | "pc" | "r15t" => Some(offsets::R15T),
-
-            // Condition code thunks
-            "cc_op" => Some(offsets::CC_OP),
-            "cc_dep1" => Some(offsets::CC_DEP1),
-            "cc_dep2" => Some(offsets::CC_DEP2),
-            "cc_ndep" => Some(offsets::CC_NDEP),
-
-            // Flags
-            "qflag32" => Some(offsets::QFLAG32),
-            "geflag0" => Some(offsets::GEFLAG0),
-            "geflag1" => Some(offsets::GEFLAG1),
-            "geflag2" => Some(offsets::GEFLAG2),
-            "geflag3" => Some(offsets::GEFLAG3),
-
-            // VFP/NEON D registers
-            "d0" => Some(offsets::D0),
-            "d1" => Some(offsets::D1),
-            "d2" => Some(offsets::D2),
-            "d3" => Some(offsets::D3),
-            "d4" => Some(offsets::D4),
-            "d5" => Some(offsets::D5),
-            "d6" => Some(offsets::D6),
-            "d7" => Some(offsets::D7),
-            "d8" => Some(offsets::D8),
-            "d9" => Some(offsets::D9),
-            "d10" => Some(offsets::D10),
-            "d11" => Some(offsets::D11),
-            "d12" => Some(offsets::D12),
-            "d13" => Some(offsets::D13),
-            "d14" => Some(offsets::D14),
-            "d15" => Some(offsets::D15),
-            "d16" => Some(offsets::D16),
-            "d17" => Some(offsets::D17),
-            "d18" => Some(offsets::D18),
-            "d19" => Some(offsets::D19),
-            "d20" => Some(offsets::D20),
-            "d21" => Some(offsets::D21),
-            "d22" => Some(offsets::D22),
-            "d23" => Some(offsets::D23),
-            "d24" => Some(offsets::D24),
-            "d25" => Some(offsets::D25),
-            "d26" => Some(offsets::D26),
-            "d27" => Some(offsets::D27),
-            "d28" => Some(offsets::D28),
-            "d29" => Some(offsets::D29),
-            "d30" => Some(offsets::D30),
-            "d31" => Some(offsets::D31),
-
-            // Q registers (128-bit, overlapping D registers)
-            "q0" => Some(offsets::D0),
-            "q1" => Some(offsets::D2),
-            "q2" => Some(offsets::D4),
-            "q3" => Some(offsets::D6),
-            "q4" => Some(offsets::D8),
-            "q5" => Some(offsets::D10),
-            "q6" => Some(offsets::D12),
-            "q7" => Some(offsets::D14),
-            "q8" => Some(offsets::D16),
-            "q9" => Some(offsets::D18),
-            "q10" => Some(offsets::D20),
-            "q11" => Some(offsets::D22),
-            "q12" => Some(offsets::D24),
-            "q13" => Some(offsets::D26),
-            "q14" => Some(offsets::D28),
-            "q15" => Some(offsets::D30),
-
-            // Other
-            "fpscr" => Some(offsets::FPSCR),
-            "tpidruro" => Some(offsets::TPIDRURO),
-            "itstate" => Some(offsets::ITSTATE),
-
-            _ => None,
-        }
-    }
-
-    fn register_size(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // 32-bit general purpose registers
-            "r0" | "r1" | "r2" | "r3" | "r4" | "r5" | "r6" | "r7" | "r8" | "r9" | "r10"
-            | "r11" | "fp" | "r12" | "ip" | "r13" | "sp" | "r14" | "lr" | "r15" | "pc"
-            | "r15t" => Some(4),
-
-            // CC thunks (32-bit)
-            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" => Some(4),
-
-            // Flags (32-bit)
-            "qflag32" | "geflag0" | "geflag1" | "geflag2" | "geflag3" => Some(4),
-
-            // D registers (64-bit)
-            "d0" | "d1" | "d2" | "d3" | "d4" | "d5" | "d6" | "d7" | "d8" | "d9" | "d10"
-            | "d11" | "d12" | "d13" | "d14" | "d15" | "d16" | "d17" | "d18" | "d19" | "d20"
-            | "d21" | "d22" | "d23" | "d24" | "d25" | "d26" | "d27" | "d28" | "d29" | "d30"
-            | "d31" => Some(8),
-
-            // Q registers (128-bit)
-            "q0" | "q1" | "q2" | "q3" | "q4" | "q5" | "q6" | "q7" | "q8" | "q9" | "q10"
-            | "q11" | "q12" | "q13" | "q14" | "q15" => Some(16),
-
-            // Other (32-bit)
-            "fpscr" | "tpidruro" | "itstate" => Some(4),
-
-            _ => None,
-        }
-    }
-
-    fn register_name(&self, offset: u32) -> Option<&'static str> {
-        match offset {
-            offsets::R0 => Some("r0"),
-            offsets::R1 => Some("r1"),
-            offsets::R2 => Some("r2"),
-            offsets::R3 => Some("r3"),
-            offsets::R4 => Some("r4"),
-            offsets::R5 => Some("r5"),
-            offsets::R6 => Some("r6"),
-            offsets::R7 => Some("r7"),
-            offsets::R8 => Some("r8"),
-            offsets::R9 => Some("r9"),
-            offsets::R10 => Some("r10"),
-            offsets::R11 => Some("r11"),
-            offsets::R12 => Some("r12"),
-            offsets::R13 => Some("sp"),
-            offsets::R14 => Some("lr"),
-            offsets::R15T => Some("pc"),
-            offsets::CC_OP => Some("cc_op"),
-            offsets::CC_DEP1 => Some("cc_dep1"),
-            offsets::CC_DEP2 => Some("cc_dep2"),
-            offsets::CC_NDEP => Some("cc_ndep"),
-            _ => None,
-        }
-    }
-
-    fn register_names(&self) -> &[&'static str] {
-        &[
-            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
-            "sp", "lr", "pc", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep",
-        ]
-    }
+    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
 
     fn argument_registers(&self) -> &[u32] {
         // AAPCS: r0-r3

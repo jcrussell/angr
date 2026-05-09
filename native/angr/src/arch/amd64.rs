@@ -3,7 +3,7 @@
 //! This module provides the register layout and architecture-specific
 //! information for AMD64.
 
-use super::Arch;
+use super::{Arch, RegEntry, impl_arch_registers};
 use crate::vex::VexArch;
 
 /// AMD64 architecture.
@@ -78,6 +78,136 @@ mod offsets {
     pub const GUEST_STATE_SIZE: usize = 992;
 }
 
+// Canonical registers: each entry is `(name, offset, size_bytes)`. These
+// drive `register_name(offset)` reverse lookups. SSEROUND is intentionally
+// omitted because its offset (216) collides with GS_CONST.
+const CANONICAL: &[RegEntry] = &[
+    // 64-bit GPRs
+    ("rax", offsets::RAX, 8),
+    ("rcx", offsets::RCX, 8),
+    ("rdx", offsets::RDX, 8),
+    ("rbx", offsets::RBX, 8),
+    ("rsp", offsets::RSP, 8),
+    ("rbp", offsets::RBP, 8),
+    ("rsi", offsets::RSI, 8),
+    ("rdi", offsets::RDI, 8),
+    ("r8", offsets::R8, 8),
+    ("r9", offsets::R9, 8),
+    ("r10", offsets::R10, 8),
+    ("r11", offsets::R11, 8),
+    ("r12", offsets::R12, 8),
+    ("r13", offsets::R13, 8),
+    ("r14", offsets::R14, 8),
+    ("r15", offsets::R15, 8),
+    ("rip", offsets::RIP, 8),
+    // Flags thunks (64-bit)
+    ("cc_op", offsets::CC_OP, 8),
+    ("cc_dep1", offsets::CC_DEP1, 8),
+    ("cc_dep2", offsets::CC_DEP2, 8),
+    ("cc_ndep", offsets::CC_NDEP, 8),
+    ("dflag", offsets::DFLAG, 8),
+    ("acflag", offsets::ACFLAG, 8),
+    ("idflag", offsets::IDFLAG, 8),
+    // Segments
+    ("fs_const", offsets::FS_CONST, 8),
+    ("gs_const", offsets::GS_CONST, 8),
+    // XMM registers (128-bit)
+    ("xmm0", offsets::XMM0, 16),
+    ("xmm1", offsets::XMM1, 16),
+    ("xmm2", offsets::XMM2, 16),
+    ("xmm3", offsets::XMM3, 16),
+    ("xmm4", offsets::XMM4, 16),
+    ("xmm5", offsets::XMM5, 16),
+    ("xmm6", offsets::XMM6, 16),
+    ("xmm7", offsets::XMM7, 16),
+    ("xmm8", offsets::XMM8, 16),
+    ("xmm9", offsets::XMM9, 16),
+    ("xmm10", offsets::XMM10, 16),
+    ("xmm11", offsets::XMM11, 16),
+    ("xmm12", offsets::XMM12, 16),
+    ("xmm13", offsets::XMM13, 16),
+    ("xmm14", offsets::XMM14, 16),
+    ("xmm15", offsets::XMM15, 16),
+    // FPU
+    ("fpreg", offsets::FPREG, 64),
+    ("fptag", offsets::FPTAG, 8),
+    ("fpround", offsets::FPROUND, 8),
+    ("fc3210", offsets::FC3210, 8),
+    ("ftop", offsets::FTOP, 8),
+];
+
+// Aliases: alternate names or sub-registers sharing a canonical offset.
+// `register_offset` and `register_size` consult these as a fallback;
+// `register_name` does not.
+const ALIASES: &[RegEntry] = &[
+    // 32-bit sub-registers (low 32 of RAX etc.)
+    ("eax", offsets::RAX, 4),
+    ("ecx", offsets::RCX, 4),
+    ("edx", offsets::RDX, 4),
+    ("ebx", offsets::RBX, 4),
+    ("esp", offsets::RSP, 4),
+    ("ebp", offsets::RBP, 4),
+    ("esi", offsets::RSI, 4),
+    ("edi", offsets::RDI, 4),
+    ("r8d", offsets::R8, 4),
+    ("r9d", offsets::R9, 4),
+    ("r10d", offsets::R10, 4),
+    ("r11d", offsets::R11, 4),
+    ("r12d", offsets::R12, 4),
+    ("r13d", offsets::R13, 4),
+    ("r14d", offsets::R14, 4),
+    ("r15d", offsets::R15, 4),
+    ("eip", offsets::RIP, 4),
+    // 16-bit
+    ("ax", offsets::RAX, 2),
+    ("cx", offsets::RCX, 2),
+    ("dx", offsets::RDX, 2),
+    ("bx", offsets::RBX, 2),
+    ("sp", offsets::RSP, 2),
+    ("bp", offsets::RBP, 2),
+    ("si", offsets::RSI, 2),
+    ("di", offsets::RDI, 2),
+    // 8-bit low
+    ("al", offsets::RAX, 1),
+    ("cl", offsets::RCX, 1),
+    ("dl", offsets::RDX, 1),
+    ("bl", offsets::RBX, 1),
+    ("spl", offsets::RSP, 1),
+    ("bpl", offsets::RBP, 1),
+    ("sil", offsets::RSI, 1),
+    ("dil", offsets::RDI, 1),
+    ("r8b", offsets::R8, 1),
+    ("r9b", offsets::R9, 1),
+    ("r10b", offsets::R10, 1),
+    ("r11b", offsets::R11, 1),
+    ("r12b", offsets::R12, 1),
+    ("r13b", offsets::R13, 1),
+    ("r14b", offsets::R14, 1),
+    ("r15b", offsets::R15, 1),
+    // 8-bit high (offset+1)
+    ("ah", offsets::RAX + 1, 1),
+    ("ch", offsets::RCX + 1, 1),
+    ("dh", offsets::RDX + 1, 1),
+    ("bh", offsets::RBX + 1, 1),
+    // Flag aliases
+    ("d", offsets::DFLAG, 8),
+    ("ac", offsets::ACFLAG, 8),
+    ("id", offsets::IDFLAG, 8),
+    // Segment aliases (the base registers, not the 16-bit selectors)
+    ("fs", offsets::FS_CONST, 8),
+    ("gs", offsets::GS_CONST, 8),
+    // SSE rounding (collides with GS_CONST; lookup by name returns 216)
+    ("sseround", offsets::SSEROUND, 8),
+];
+
+const REGISTER_NAMES: &[&str] = &[
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
+    "r12", "r13", "r14", "r15", "rip", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag",
+    "acflag", "idflag", "fs_const", "gs_const", "sseround", "xmm0", "xmm1", "xmm2",
+    "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12",
+    "xmm13", "xmm14", "xmm15",
+];
+
 impl Arch for AMD64 {
     fn vex_arch(&self) -> VexArch {
         VexArch::AMD64
@@ -107,219 +237,7 @@ impl Arch for AMD64 {
         Some(offsets::RBP)
     }
 
-    fn register_offset(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // 64-bit registers
-            "rax" => Some(offsets::RAX),
-            "rcx" => Some(offsets::RCX),
-            "rdx" => Some(offsets::RDX),
-            "rbx" => Some(offsets::RBX),
-            "rsp" => Some(offsets::RSP),
-            "rbp" => Some(offsets::RBP),
-            "rsi" => Some(offsets::RSI),
-            "rdi" => Some(offsets::RDI),
-            "r8" => Some(offsets::R8),
-            "r9" => Some(offsets::R9),
-            "r10" => Some(offsets::R10),
-            "r11" => Some(offsets::R11),
-            "r12" => Some(offsets::R12),
-            "r13" => Some(offsets::R13),
-            "r14" => Some(offsets::R14),
-            "r15" => Some(offsets::R15),
-            "rip" => Some(offsets::RIP),
-
-            // 32-bit registers (same offsets, smaller size)
-            "eax" => Some(offsets::RAX),
-            "ecx" => Some(offsets::RCX),
-            "edx" => Some(offsets::RDX),
-            "ebx" => Some(offsets::RBX),
-            "esp" => Some(offsets::RSP),
-            "ebp" => Some(offsets::RBP),
-            "esi" => Some(offsets::RSI),
-            "edi" => Some(offsets::RDI),
-            "r8d" => Some(offsets::R8),
-            "r9d" => Some(offsets::R9),
-            "r10d" => Some(offsets::R10),
-            "r11d" => Some(offsets::R11),
-            "r12d" => Some(offsets::R12),
-            "r13d" => Some(offsets::R13),
-            "r14d" => Some(offsets::R14),
-            "r15d" => Some(offsets::R15),
-            "eip" => Some(offsets::RIP),
-
-            // 16-bit registers
-            "ax" => Some(offsets::RAX),
-            "cx" => Some(offsets::RCX),
-            "dx" => Some(offsets::RDX),
-            "bx" => Some(offsets::RBX),
-            "sp" => Some(offsets::RSP),
-            "bp" => Some(offsets::RBP),
-            "si" => Some(offsets::RSI),
-            "di" => Some(offsets::RDI),
-
-            // 8-bit registers
-            "al" => Some(offsets::RAX),
-            "cl" => Some(offsets::RCX),
-            "dl" => Some(offsets::RDX),
-            "bl" => Some(offsets::RBX),
-            "ah" => Some(offsets::RAX + 1),
-            "ch" => Some(offsets::RCX + 1),
-            "dh" => Some(offsets::RDX + 1),
-            "bh" => Some(offsets::RBX + 1),
-            "spl" => Some(offsets::RSP),
-            "bpl" => Some(offsets::RBP),
-            "sil" => Some(offsets::RSI),
-            "dil" => Some(offsets::RDI),
-            "r8b" => Some(offsets::R8),
-            "r9b" => Some(offsets::R9),
-            "r10b" => Some(offsets::R10),
-            "r11b" => Some(offsets::R11),
-            "r12b" => Some(offsets::R12),
-            "r13b" => Some(offsets::R13),
-            "r14b" => Some(offsets::R14),
-            "r15b" => Some(offsets::R15),
-
-            // Flags thunks
-            "cc_op" => Some(offsets::CC_OP),
-            "cc_dep1" => Some(offsets::CC_DEP1),
-            "cc_dep2" => Some(offsets::CC_DEP2),
-            "cc_ndep" => Some(offsets::CC_NDEP),
-            "d" | "dflag" => Some(offsets::DFLAG),
-            "ac" | "acflag" => Some(offsets::ACFLAG),
-            "id" | "idflag" => Some(offsets::IDFLAG),
-
-            // Segments
-            "fs" | "fs_const" => Some(offsets::FS_CONST),
-            "gs" | "gs_const" => Some(offsets::GS_CONST),
-
-            // SSE
-            "sseround" => Some(offsets::SSEROUND),
-            "xmm0" => Some(offsets::XMM0),
-            "xmm1" => Some(offsets::XMM1),
-            "xmm2" => Some(offsets::XMM2),
-            "xmm3" => Some(offsets::XMM3),
-            "xmm4" => Some(offsets::XMM4),
-            "xmm5" => Some(offsets::XMM5),
-            "xmm6" => Some(offsets::XMM6),
-            "xmm7" => Some(offsets::XMM7),
-            "xmm8" => Some(offsets::XMM8),
-            "xmm9" => Some(offsets::XMM9),
-            "xmm10" => Some(offsets::XMM10),
-            "xmm11" => Some(offsets::XMM11),
-            "xmm12" => Some(offsets::XMM12),
-            "xmm13" => Some(offsets::XMM13),
-            "xmm14" => Some(offsets::XMM14),
-            "xmm15" => Some(offsets::XMM15),
-
-            // FPU
-            "fpreg" => Some(offsets::FPREG),
-            "fptag" => Some(offsets::FPTAG),
-            "fpround" => Some(offsets::FPROUND),
-            "fc3210" => Some(offsets::FC3210),
-            "ftop" => Some(offsets::FTOP),
-
-            _ => None,
-        }
-    }
-
-    fn register_size(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // 64-bit registers
-            "rax" | "rcx" | "rdx" | "rbx" | "rsp" | "rbp" | "rsi" | "rdi" | "r8" | "r9"
-            | "r10" | "r11" | "r12" | "r13" | "r14" | "r15" | "rip" => Some(8),
-
-            // 32-bit registers
-            "eax" | "ecx" | "edx" | "ebx" | "esp" | "ebp" | "esi" | "edi" | "r8d" | "r9d"
-            | "r10d" | "r11d" | "r12d" | "r13d" | "r14d" | "r15d" | "eip" => Some(4),
-
-            // 16-bit registers
-            "ax" | "cx" | "dx" | "bx" | "sp" | "bp" | "si" | "di" => Some(2),
-
-            // 8-bit registers
-            "al" | "cl" | "dl" | "bl" | "ah" | "ch" | "dh" | "bh" | "spl" | "bpl" | "sil"
-            | "dil" | "r8b" | "r9b" | "r10b" | "r11b" | "r12b" | "r13b" | "r14b" | "r15b" => {
-                Some(1)
-            }
-
-            // Flags thunks (64-bit)
-            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" | "d" | "dflag" | "ac" | "acflag" | "id" | "idflag" => Some(8),
-
-            // Segments (64-bit)
-            "fs" | "fs_const" | "gs" | "gs_const" => Some(8),
-
-            // SSE (64-bit for rounding, 128-bit for XMM)
-            "sseround" => Some(8),
-            "xmm0" | "xmm1" | "xmm2" | "xmm3" | "xmm4" | "xmm5" | "xmm6" | "xmm7" | "xmm8"
-            | "xmm9" | "xmm10" | "xmm11" | "xmm12" | "xmm13" | "xmm14" | "xmm15" => Some(16),
-
-            // FPU
-            "fpreg" => Some(64), // 8 x 64-bit (simplified)
-            "fptag" | "fpround" | "fc3210" | "ftop" => Some(8),
-
-            _ => None,
-        }
-    }
-
-    fn register_name(&self, offset: u32) -> Option<&'static str> {
-        match offset {
-            offsets::RAX => Some("rax"),
-            offsets::RCX => Some("rcx"),
-            offsets::RDX => Some("rdx"),
-            offsets::RBX => Some("rbx"),
-            offsets::RSP => Some("rsp"),
-            offsets::RBP => Some("rbp"),
-            offsets::RSI => Some("rsi"),
-            offsets::RDI => Some("rdi"),
-            offsets::R8 => Some("r8"),
-            offsets::R9 => Some("r9"),
-            offsets::R10 => Some("r10"),
-            offsets::R11 => Some("r11"),
-            offsets::R12 => Some("r12"),
-            offsets::R13 => Some("r13"),
-            offsets::R14 => Some("r14"),
-            offsets::R15 => Some("r15"),
-            offsets::RIP => Some("rip"),
-            offsets::CC_OP => Some("cc_op"),
-            offsets::CC_DEP1 => Some("cc_dep1"),
-            offsets::CC_DEP2 => Some("cc_dep2"),
-            offsets::CC_NDEP => Some("cc_ndep"),
-            offsets::DFLAG => Some("dflag"),
-            offsets::ACFLAG => Some("acflag"),
-            offsets::IDFLAG => Some("idflag"),
-            offsets::FS_CONST => Some("fs_const"),
-            offsets::GS_CONST => Some("gs_const"),
-            // offsets::SSEROUND => Some("sseround"),  // same value as GS_CONST (216), unreachable
-            offsets::XMM0 => Some("xmm0"),
-            offsets::XMM1 => Some("xmm1"),
-            offsets::XMM2 => Some("xmm2"),
-            offsets::XMM3 => Some("xmm3"),
-            offsets::XMM4 => Some("xmm4"),
-            offsets::XMM5 => Some("xmm5"),
-            offsets::XMM6 => Some("xmm6"),
-            offsets::XMM7 => Some("xmm7"),
-            offsets::XMM8 => Some("xmm8"),
-            offsets::XMM9 => Some("xmm9"),
-            offsets::XMM10 => Some("xmm10"),
-            offsets::XMM11 => Some("xmm11"),
-            offsets::XMM12 => Some("xmm12"),
-            offsets::XMM13 => Some("xmm13"),
-            offsets::XMM14 => Some("xmm14"),
-            offsets::XMM15 => Some("xmm15"),
-            _ => None,
-        }
-    }
-
-    fn register_names(&self) -> &[&'static str] {
-        &[
-            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
-            "r12", "r13", "r14", "r15", "rip", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag",
-            "acflag", "idflag", "fs_const", "gs_const", "sseround", "xmm0", "xmm1", "xmm2",
-            "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12",
-            "xmm13", "xmm14", "xmm15",
-        ]
-    }
+    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
 
     fn argument_registers(&self) -> &[u32] {
         // System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9

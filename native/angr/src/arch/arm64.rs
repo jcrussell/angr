@@ -3,7 +3,7 @@
 //! This module provides the register layout and architecture-specific
 //! information for 64-bit ARM.
 
-use super::Arch;
+use super::{Arch, RegEntry, impl_arch_registers};
 use crate::vex::VexArch;
 
 /// ARM64 (AArch64) architecture.
@@ -103,6 +103,198 @@ mod offsets {
     pub const GUEST_STATE_SIZE: usize = 848;
 }
 
+// Canonical registers: drive `register_name(offset)` reverse lookups.
+// X29/X30/XSP use their conventional aliases (fp/lr/sp) as the canonical
+// reverse-lookup name, matching the prior register_name behavior.
+const CANONICAL: &[RegEntry] = &[
+    ("x0", offsets::X0, 8),
+    ("x1", offsets::X1, 8),
+    ("x2", offsets::X2, 8),
+    ("x3", offsets::X3, 8),
+    ("x4", offsets::X4, 8),
+    ("x5", offsets::X5, 8),
+    ("x6", offsets::X6, 8),
+    ("x7", offsets::X7, 8),
+    ("x8", offsets::X8, 8),
+    ("x9", offsets::X9, 8),
+    ("x10", offsets::X10, 8),
+    ("x11", offsets::X11, 8),
+    ("x12", offsets::X12, 8),
+    ("x13", offsets::X13, 8),
+    ("x14", offsets::X14, 8),
+    ("x15", offsets::X15, 8),
+    ("x16", offsets::X16, 8),
+    ("x17", offsets::X17, 8),
+    ("x18", offsets::X18, 8),
+    ("x19", offsets::X19, 8),
+    ("x20", offsets::X20, 8),
+    ("x21", offsets::X21, 8),
+    ("x22", offsets::X22, 8),
+    ("x23", offsets::X23, 8),
+    ("x24", offsets::X24, 8),
+    ("x25", offsets::X25, 8),
+    ("x26", offsets::X26, 8),
+    ("x27", offsets::X27, 8),
+    ("x28", offsets::X28, 8),
+    ("fp", offsets::X29, 8),
+    ("lr", offsets::X30, 8),
+    ("sp", offsets::XSP, 8),
+    ("pc", offsets::PC, 8),
+];
+
+const ALIASES: &[RegEntry] = &[
+    // X29/X30/XSP alternate names
+    ("x29", offsets::X29, 8),
+    ("x30", offsets::X30, 8),
+    ("xsp", offsets::XSP, 8),
+    // 32-bit W registers (lower 32 bits of X registers)
+    ("w0", offsets::X0, 4),
+    ("w1", offsets::X1, 4),
+    ("w2", offsets::X2, 4),
+    ("w3", offsets::X3, 4),
+    ("w4", offsets::X4, 4),
+    ("w5", offsets::X5, 4),
+    ("w6", offsets::X6, 4),
+    ("w7", offsets::X7, 4),
+    ("w8", offsets::X8, 4),
+    ("w9", offsets::X9, 4),
+    ("w10", offsets::X10, 4),
+    ("w11", offsets::X11, 4),
+    ("w12", offsets::X12, 4),
+    ("w13", offsets::X13, 4),
+    ("w14", offsets::X14, 4),
+    ("w15", offsets::X15, 4),
+    ("w16", offsets::X16, 4),
+    ("w17", offsets::X17, 4),
+    ("w18", offsets::X18, 4),
+    ("w19", offsets::X19, 4),
+    ("w20", offsets::X20, 4),
+    ("w21", offsets::X21, 4),
+    ("w22", offsets::X22, 4),
+    ("w23", offsets::X23, 4),
+    ("w24", offsets::X24, 4),
+    ("w25", offsets::X25, 4),
+    ("w26", offsets::X26, 4),
+    ("w27", offsets::X27, 4),
+    ("w28", offsets::X28, 4),
+    ("w29", offsets::X29, 4),
+    ("w30", offsets::X30, 4),
+    // CC thunks
+    ("cc_op", offsets::CC_OP, 8),
+    ("cc_dep1", offsets::CC_DEP1, 8),
+    ("cc_dep2", offsets::CC_DEP2, 8),
+    ("cc_ndep", offsets::CC_NDEP, 8),
+    // Thread pointer
+    ("tpidr_el0", offsets::TPIDR_EL0, 8),
+    // SIMD/NEON Q/V registers (128-bit)
+    ("q0", offsets::Q0, 16),
+    ("v0", offsets::Q0, 16),
+    ("q1", offsets::Q1, 16),
+    ("v1", offsets::Q1, 16),
+    ("q2", offsets::Q2, 16),
+    ("v2", offsets::Q2, 16),
+    ("q3", offsets::Q3, 16),
+    ("v3", offsets::Q3, 16),
+    ("q4", offsets::Q4, 16),
+    ("v4", offsets::Q4, 16),
+    ("q5", offsets::Q5, 16),
+    ("v5", offsets::Q5, 16),
+    ("q6", offsets::Q6, 16),
+    ("v6", offsets::Q6, 16),
+    ("q7", offsets::Q7, 16),
+    ("v7", offsets::Q7, 16),
+    ("q8", offsets::Q8, 16),
+    ("v8", offsets::Q8, 16),
+    ("q9", offsets::Q9, 16),
+    ("v9", offsets::Q9, 16),
+    ("q10", offsets::Q10, 16),
+    ("v10", offsets::Q10, 16),
+    ("q11", offsets::Q11, 16),
+    ("v11", offsets::Q11, 16),
+    ("q12", offsets::Q12, 16),
+    ("v12", offsets::Q12, 16),
+    ("q13", offsets::Q13, 16),
+    ("v13", offsets::Q13, 16),
+    ("q14", offsets::Q14, 16),
+    ("v14", offsets::Q14, 16),
+    ("q15", offsets::Q15, 16),
+    ("v15", offsets::Q15, 16),
+    ("q16", offsets::Q16, 16),
+    ("v16", offsets::Q16, 16),
+    ("q17", offsets::Q17, 16),
+    ("v17", offsets::Q17, 16),
+    ("q18", offsets::Q18, 16),
+    ("v18", offsets::Q18, 16),
+    ("q19", offsets::Q19, 16),
+    ("v19", offsets::Q19, 16),
+    ("q20", offsets::Q20, 16),
+    ("v20", offsets::Q20, 16),
+    ("q21", offsets::Q21, 16),
+    ("v21", offsets::Q21, 16),
+    ("q22", offsets::Q22, 16),
+    ("v22", offsets::Q22, 16),
+    ("q23", offsets::Q23, 16),
+    ("v23", offsets::Q23, 16),
+    ("q24", offsets::Q24, 16),
+    ("v24", offsets::Q24, 16),
+    ("q25", offsets::Q25, 16),
+    ("v25", offsets::Q25, 16),
+    ("q26", offsets::Q26, 16),
+    ("v26", offsets::Q26, 16),
+    ("q27", offsets::Q27, 16),
+    ("v27", offsets::Q27, 16),
+    ("q28", offsets::Q28, 16),
+    ("v28", offsets::Q28, 16),
+    ("q29", offsets::Q29, 16),
+    ("v29", offsets::Q29, 16),
+    ("q30", offsets::Q30, 16),
+    ("v30", offsets::Q30, 16),
+    ("q31", offsets::Q31, 16),
+    ("v31", offsets::Q31, 16),
+    // D registers (lower 64-bit of Q registers)
+    ("d0", offsets::Q0, 8),
+    ("d1", offsets::Q1, 8),
+    ("d2", offsets::Q2, 8),
+    ("d3", offsets::Q3, 8),
+    ("d4", offsets::Q4, 8),
+    ("d5", offsets::Q5, 8),
+    ("d6", offsets::Q6, 8),
+    ("d7", offsets::Q7, 8),
+    ("d8", offsets::Q8, 8),
+    ("d9", offsets::Q9, 8),
+    ("d10", offsets::Q10, 8),
+    ("d11", offsets::Q11, 8),
+    ("d12", offsets::Q12, 8),
+    ("d13", offsets::Q13, 8),
+    ("d14", offsets::Q14, 8),
+    ("d15", offsets::Q15, 8),
+    ("d16", offsets::Q16, 8),
+    ("d17", offsets::Q17, 8),
+    ("d18", offsets::Q18, 8),
+    ("d19", offsets::Q19, 8),
+    ("d20", offsets::Q20, 8),
+    ("d21", offsets::Q21, 8),
+    ("d22", offsets::Q22, 8),
+    ("d23", offsets::Q23, 8),
+    ("d24", offsets::Q24, 8),
+    ("d25", offsets::Q25, 8),
+    ("d26", offsets::Q26, 8),
+    ("d27", offsets::Q27, 8),
+    ("d28", offsets::Q28, 8),
+    ("d29", offsets::Q29, 8),
+    ("d30", offsets::Q30, 8),
+    ("d31", offsets::Q31, 8),
+    // FPCR
+    ("qcflag", offsets::QCFLAG, 4),
+    ("fpcr", offsets::FPCR, 4),
+];
+
+const REGISTER_NAMES: &[&str] = &[
+    "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12",
+    "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24",
+    "x25", "x26", "x27", "x28", "fp", "lr", "sp", "pc",
+];
+
 impl Arch for ARM64 {
     fn vex_arch(&self) -> VexArch {
         VexArch::ARM64
@@ -132,251 +324,7 @@ impl Arch for ARM64 {
         Some(offsets::X29) // X29 is FP on ARM64
     }
 
-    fn register_offset(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // 64-bit X registers
-            "x0" => Some(offsets::X0),
-            "x1" => Some(offsets::X1),
-            "x2" => Some(offsets::X2),
-            "x3" => Some(offsets::X3),
-            "x4" => Some(offsets::X4),
-            "x5" => Some(offsets::X5),
-            "x6" => Some(offsets::X6),
-            "x7" => Some(offsets::X7),
-            "x8" => Some(offsets::X8),
-            "x9" => Some(offsets::X9),
-            "x10" => Some(offsets::X10),
-            "x11" => Some(offsets::X11),
-            "x12" => Some(offsets::X12),
-            "x13" => Some(offsets::X13),
-            "x14" => Some(offsets::X14),
-            "x15" => Some(offsets::X15),
-            "x16" => Some(offsets::X16),
-            "x17" => Some(offsets::X17),
-            "x18" => Some(offsets::X18),
-            "x19" => Some(offsets::X19),
-            "x20" => Some(offsets::X20),
-            "x21" => Some(offsets::X21),
-            "x22" => Some(offsets::X22),
-            "x23" => Some(offsets::X23),
-            "x24" => Some(offsets::X24),
-            "x25" => Some(offsets::X25),
-            "x26" => Some(offsets::X26),
-            "x27" => Some(offsets::X27),
-            "x28" => Some(offsets::X28),
-            "x29" | "fp" => Some(offsets::X29),
-            "x30" | "lr" => Some(offsets::X30),
-
-            // 32-bit W registers (lower 32 bits of X registers)
-            "w0" => Some(offsets::X0),
-            "w1" => Some(offsets::X1),
-            "w2" => Some(offsets::X2),
-            "w3" => Some(offsets::X3),
-            "w4" => Some(offsets::X4),
-            "w5" => Some(offsets::X5),
-            "w6" => Some(offsets::X6),
-            "w7" => Some(offsets::X7),
-            "w8" => Some(offsets::X8),
-            "w9" => Some(offsets::X9),
-            "w10" => Some(offsets::X10),
-            "w11" => Some(offsets::X11),
-            "w12" => Some(offsets::X12),
-            "w13" => Some(offsets::X13),
-            "w14" => Some(offsets::X14),
-            "w15" => Some(offsets::X15),
-            "w16" => Some(offsets::X16),
-            "w17" => Some(offsets::X17),
-            "w18" => Some(offsets::X18),
-            "w19" => Some(offsets::X19),
-            "w20" => Some(offsets::X20),
-            "w21" => Some(offsets::X21),
-            "w22" => Some(offsets::X22),
-            "w23" => Some(offsets::X23),
-            "w24" => Some(offsets::X24),
-            "w25" => Some(offsets::X25),
-            "w26" => Some(offsets::X26),
-            "w27" => Some(offsets::X27),
-            "w28" => Some(offsets::X28),
-            "w29" => Some(offsets::X29),
-            "w30" => Some(offsets::X30),
-
-            // Stack pointer and PC
-            "sp" | "xsp" => Some(offsets::XSP),
-            "pc" => Some(offsets::PC),
-
-            // Condition code thunks
-            "cc_op" => Some(offsets::CC_OP),
-            "cc_dep1" => Some(offsets::CC_DEP1),
-            "cc_dep2" => Some(offsets::CC_DEP2),
-            "cc_ndep" => Some(offsets::CC_NDEP),
-
-            // Thread pointer
-            "tpidr_el0" => Some(offsets::TPIDR_EL0),
-
-            // SIMD/NEON Q registers (128-bit)
-            "q0" | "v0" => Some(offsets::Q0),
-            "q1" | "v1" => Some(offsets::Q1),
-            "q2" | "v2" => Some(offsets::Q2),
-            "q3" | "v3" => Some(offsets::Q3),
-            "q4" | "v4" => Some(offsets::Q4),
-            "q5" | "v5" => Some(offsets::Q5),
-            "q6" | "v6" => Some(offsets::Q6),
-            "q7" | "v7" => Some(offsets::Q7),
-            "q8" | "v8" => Some(offsets::Q8),
-            "q9" | "v9" => Some(offsets::Q9),
-            "q10" | "v10" => Some(offsets::Q10),
-            "q11" | "v11" => Some(offsets::Q11),
-            "q12" | "v12" => Some(offsets::Q12),
-            "q13" | "v13" => Some(offsets::Q13),
-            "q14" | "v14" => Some(offsets::Q14),
-            "q15" | "v15" => Some(offsets::Q15),
-            "q16" | "v16" => Some(offsets::Q16),
-            "q17" | "v17" => Some(offsets::Q17),
-            "q18" | "v18" => Some(offsets::Q18),
-            "q19" | "v19" => Some(offsets::Q19),
-            "q20" | "v20" => Some(offsets::Q20),
-            "q21" | "v21" => Some(offsets::Q21),
-            "q22" | "v22" => Some(offsets::Q22),
-            "q23" | "v23" => Some(offsets::Q23),
-            "q24" | "v24" => Some(offsets::Q24),
-            "q25" | "v25" => Some(offsets::Q25),
-            "q26" | "v26" => Some(offsets::Q26),
-            "q27" | "v27" => Some(offsets::Q27),
-            "q28" | "v28" => Some(offsets::Q28),
-            "q29" | "v29" => Some(offsets::Q29),
-            "q30" | "v30" => Some(offsets::Q30),
-            "q31" | "v31" => Some(offsets::Q31),
-
-            // D registers (lower 64-bit of Q registers)
-            "d0" => Some(offsets::Q0),
-            "d1" => Some(offsets::Q1),
-            "d2" => Some(offsets::Q2),
-            "d3" => Some(offsets::Q3),
-            "d4" => Some(offsets::Q4),
-            "d5" => Some(offsets::Q5),
-            "d6" => Some(offsets::Q6),
-            "d7" => Some(offsets::Q7),
-            "d8" => Some(offsets::Q8),
-            "d9" => Some(offsets::Q9),
-            "d10" => Some(offsets::Q10),
-            "d11" => Some(offsets::Q11),
-            "d12" => Some(offsets::Q12),
-            "d13" => Some(offsets::Q13),
-            "d14" => Some(offsets::Q14),
-            "d15" => Some(offsets::Q15),
-            "d16" => Some(offsets::Q16),
-            "d17" => Some(offsets::Q17),
-            "d18" => Some(offsets::Q18),
-            "d19" => Some(offsets::Q19),
-            "d20" => Some(offsets::Q20),
-            "d21" => Some(offsets::Q21),
-            "d22" => Some(offsets::Q22),
-            "d23" => Some(offsets::Q23),
-            "d24" => Some(offsets::Q24),
-            "d25" => Some(offsets::Q25),
-            "d26" => Some(offsets::Q26),
-            "d27" => Some(offsets::Q27),
-            "d28" => Some(offsets::Q28),
-            "d29" => Some(offsets::Q29),
-            "d30" => Some(offsets::Q30),
-            "d31" => Some(offsets::Q31),
-
-            // FPCR
-            "qcflag" => Some(offsets::QCFLAG),
-            "fpcr" => Some(offsets::FPCR),
-
-            _ => None,
-        }
-    }
-
-    fn register_size(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // 64-bit X registers
-            "x0" | "x1" | "x2" | "x3" | "x4" | "x5" | "x6" | "x7" | "x8" | "x9" | "x10"
-            | "x11" | "x12" | "x13" | "x14" | "x15" | "x16" | "x17" | "x18" | "x19" | "x20"
-            | "x21" | "x22" | "x23" | "x24" | "x25" | "x26" | "x27" | "x28" | "x29" | "fp"
-            | "x30" | "lr" | "sp" | "xsp" | "pc" => Some(8),
-
-            // 32-bit W registers
-            "w0" | "w1" | "w2" | "w3" | "w4" | "w5" | "w6" | "w7" | "w8" | "w9" | "w10"
-            | "w11" | "w12" | "w13" | "w14" | "w15" | "w16" | "w17" | "w18" | "w19" | "w20"
-            | "w21" | "w22" | "w23" | "w24" | "w25" | "w26" | "w27" | "w28" | "w29" | "w30" => {
-                Some(4)
-            }
-
-            // CC thunks (64-bit)
-            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" | "tpidr_el0" => Some(8),
-
-            // Q/V registers (128-bit)
-            "q0" | "v0" | "q1" | "v1" | "q2" | "v2" | "q3" | "v3" | "q4" | "v4" | "q5" | "v5"
-            | "q6" | "v6" | "q7" | "v7" | "q8" | "v8" | "q9" | "v9" | "q10" | "v10" | "q11"
-            | "v11" | "q12" | "v12" | "q13" | "v13" | "q14" | "v14" | "q15" | "v15" | "q16"
-            | "v16" | "q17" | "v17" | "q18" | "v18" | "q19" | "v19" | "q20" | "v20" | "q21"
-            | "v21" | "q22" | "v22" | "q23" | "v23" | "q24" | "v24" | "q25" | "v25" | "q26"
-            | "v26" | "q27" | "v27" | "q28" | "v28" | "q29" | "v29" | "q30" | "v30" | "q31"
-            | "v31" => Some(16),
-
-            // D registers (64-bit)
-            "d0" | "d1" | "d2" | "d3" | "d4" | "d5" | "d6" | "d7" | "d8" | "d9" | "d10"
-            | "d11" | "d12" | "d13" | "d14" | "d15" | "d16" | "d17" | "d18" | "d19" | "d20"
-            | "d21" | "d22" | "d23" | "d24" | "d25" | "d26" | "d27" | "d28" | "d29" | "d30"
-            | "d31" => Some(8),
-
-            // FPCR (32-bit)
-            "qcflag" | "fpcr" => Some(4),
-
-            _ => None,
-        }
-    }
-
-    fn register_name(&self, offset: u32) -> Option<&'static str> {
-        match offset {
-            offsets::X0 => Some("x0"),
-            offsets::X1 => Some("x1"),
-            offsets::X2 => Some("x2"),
-            offsets::X3 => Some("x3"),
-            offsets::X4 => Some("x4"),
-            offsets::X5 => Some("x5"),
-            offsets::X6 => Some("x6"),
-            offsets::X7 => Some("x7"),
-            offsets::X8 => Some("x8"),
-            offsets::X9 => Some("x9"),
-            offsets::X10 => Some("x10"),
-            offsets::X11 => Some("x11"),
-            offsets::X12 => Some("x12"),
-            offsets::X13 => Some("x13"),
-            offsets::X14 => Some("x14"),
-            offsets::X15 => Some("x15"),
-            offsets::X16 => Some("x16"),
-            offsets::X17 => Some("x17"),
-            offsets::X18 => Some("x18"),
-            offsets::X19 => Some("x19"),
-            offsets::X20 => Some("x20"),
-            offsets::X21 => Some("x21"),
-            offsets::X22 => Some("x22"),
-            offsets::X23 => Some("x23"),
-            offsets::X24 => Some("x24"),
-            offsets::X25 => Some("x25"),
-            offsets::X26 => Some("x26"),
-            offsets::X27 => Some("x27"),
-            offsets::X28 => Some("x28"),
-            offsets::X29 => Some("fp"),
-            offsets::X30 => Some("lr"),
-            offsets::XSP => Some("sp"),
-            offsets::PC => Some("pc"),
-            _ => None,
-        }
-    }
-
-    fn register_names(&self) -> &[&'static str] {
-        &[
-            "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12",
-            "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24",
-            "x25", "x26", "x27", "x28", "fp", "lr", "sp", "pc",
-        ]
-    }
+    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
 
     fn argument_registers(&self) -> &[u32] {
         // AAPCS64: x0-x7

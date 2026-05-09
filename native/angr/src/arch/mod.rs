@@ -88,6 +88,82 @@ pub trait Arch: Send + Sync {
     fn is_little_endian(&self) -> bool;
 }
 
+/// Register table entry: `(name, byte offset, size in bytes)`.
+///
+/// Used by per-arch `CANONICAL` and `ALIASES` const slices that drive
+/// `register_offset` / `register_size` / `register_name` via the
+/// `lookup_register_*` helpers below. Each register is listed once per
+/// (name, size) combination instead of being duplicated across three
+/// separate match statements.
+pub(crate) type RegEntry = (&'static str, u32, u32);
+
+/// Look up a register's byte offset by name in the canonical or alias table.
+///
+/// Names are matched case-insensitively. The canonical table is searched
+/// first; aliases (sub-register names sharing an offset) are searched as a
+/// fallback.
+pub(crate) fn lookup_register_offset(
+    name: &str,
+    canonical: &[RegEntry],
+    aliases: &[RegEntry],
+) -> Option<u32> {
+    let lc = name.to_lowercase();
+    canonical
+        .iter()
+        .chain(aliases.iter())
+        .find(|(n, _, _)| *n == lc.as_str())
+        .map(|(_, off, _)| *off)
+}
+
+/// Look up a register's size in bytes by name in the canonical or alias table.
+pub(crate) fn lookup_register_size(
+    name: &str,
+    canonical: &[RegEntry],
+    aliases: &[RegEntry],
+) -> Option<u32> {
+    let lc = name.to_lowercase();
+    canonical
+        .iter()
+        .chain(aliases.iter())
+        .find(|(n, _, _)| *n == lc.as_str())
+        .map(|(_, _, sz)| *sz)
+}
+
+/// Look up a canonical register name by byte offset.
+///
+/// Only the canonical table is searched — aliases (e.g. "eax" sharing
+/// offset 16 with "rax") never appear here.
+pub(crate) fn lookup_register_name(offset: u32, canonical: &[RegEntry]) -> Option<&'static str> {
+    canonical
+        .iter()
+        .find(|(_, off, _)| *off == offset)
+        .map(|(n, _, _)| *n)
+}
+
+/// Generate the four name/offset/size trait methods of `Arch` from a
+/// per-arch `(canonical, aliases, register_names)` triple. Place inside
+/// `impl Arch for $Arch { ... }` blocks alongside the other arch fields.
+macro_rules! impl_arch_registers {
+    ($canonical:expr, $aliases:expr, $names:expr) => {
+        fn register_offset(&self, name: &str) -> Option<u32> {
+            super::lookup_register_offset(name, $canonical, $aliases)
+        }
+
+        fn register_size(&self, name: &str) -> Option<u32> {
+            super::lookup_register_size(name, $canonical, $aliases)
+        }
+
+        fn register_name(&self, offset: u32) -> Option<&'static str> {
+            super::lookup_register_name(offset, $canonical)
+        }
+
+        fn register_names(&self) -> &[&'static str] {
+            $names
+        }
+    };
+}
+pub(crate) use impl_arch_registers;
+
 /// Register file for storing register values.
 pub struct RegisterFile {
     /// Raw storage (byte-addressable).

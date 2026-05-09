@@ -3,7 +3,7 @@
 //! This module provides the register layout and architecture-specific
 //! information for 32-bit x86.
 
-use super::Arch;
+use super::{Arch, RegEntry, impl_arch_registers};
 use crate::vex::VexArch;
 
 /// x86 (32-bit) architecture.
@@ -73,6 +73,88 @@ mod offsets {
     pub const GUEST_STATE_SIZE: usize = 344;
 }
 
+// Canonical registers: drive `register_name(offset)` reverse lookups.
+const CANONICAL: &[RegEntry] = &[
+    // 32-bit GPRs
+    ("eax", offsets::EAX, 4),
+    ("ecx", offsets::ECX, 4),
+    ("edx", offsets::EDX, 4),
+    ("ebx", offsets::EBX, 4),
+    ("esp", offsets::ESP, 4),
+    ("ebp", offsets::EBP, 4),
+    ("esi", offsets::ESI, 4),
+    ("edi", offsets::EDI, 4),
+    ("eip", offsets::EIP, 4),
+    // Flags thunks
+    ("cc_op", offsets::CC_OP, 4),
+    ("cc_dep1", offsets::CC_DEP1, 4),
+    ("cc_dep2", offsets::CC_DEP2, 4),
+    ("cc_ndep", offsets::CC_NDEP, 4),
+    ("dflag", offsets::DFLAG, 4),
+    ("idflag", offsets::IDFLAG, 4),
+    ("acflag", offsets::ACFLAG, 4),
+];
+
+// Aliases: alternate names, sub-registers, segments, and SIMD registers.
+// `register_offset` and `register_size` consult these as a fallback;
+// `register_name` does not.
+const ALIASES: &[RegEntry] = &[
+    // 16-bit
+    ("ax", offsets::EAX, 2),
+    ("cx", offsets::ECX, 2),
+    ("dx", offsets::EDX, 2),
+    ("bx", offsets::EBX, 2),
+    ("sp", offsets::ESP, 2),
+    ("bp", offsets::EBP, 2),
+    ("si", offsets::ESI, 2),
+    ("di", offsets::EDI, 2),
+    // 8-bit low
+    ("al", offsets::EAX, 1),
+    ("cl", offsets::ECX, 1),
+    ("dl", offsets::EDX, 1),
+    ("bl", offsets::EBX, 1),
+    // 8-bit high (offset+1)
+    ("ah", offsets::EAX + 1, 1),
+    ("ch", offsets::ECX + 1, 1),
+    ("dh", offsets::EDX + 1, 1),
+    ("bh", offsets::EBX + 1, 1),
+    // Flag aliases
+    ("d", offsets::DFLAG, 4),
+    ("id", offsets::IDFLAG, 4),
+    ("ac", offsets::ACFLAG, 4),
+    // Segments (16-bit selectors)
+    ("cs", offsets::CS, 2),
+    ("ds", offsets::DS, 2),
+    ("es", offsets::ES, 2),
+    ("fs", offsets::FS, 2),
+    ("gs", offsets::GS, 2),
+    ("ss", offsets::SS, 2),
+    ("fs_const", offsets::FS_CONST, 4),
+    ("gs_const", offsets::GS_CONST, 4),
+    // SSE
+    ("sseround", offsets::SSEROUND, 4),
+    ("xmm0", offsets::XMM0, 16),
+    ("xmm1", offsets::XMM1, 16),
+    ("xmm2", offsets::XMM2, 16),
+    ("xmm3", offsets::XMM3, 16),
+    ("xmm4", offsets::XMM4, 16),
+    ("xmm5", offsets::XMM5, 16),
+    ("xmm6", offsets::XMM6, 16),
+    ("xmm7", offsets::XMM7, 16),
+    // FPU
+    ("fpreg", offsets::FPREG, 64),
+    ("fptag", offsets::FPTAG, 4),
+    ("fpround", offsets::FPROUND, 4),
+    ("fc3210", offsets::FC3210, 4),
+    ("ftop", offsets::FTOP, 4),
+];
+
+const REGISTER_NAMES: &[&str] = &[
+    "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip",
+    "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag", "idflag", "acflag",
+    "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
+];
+
 impl Arch for X86 {
     fn vex_arch(&self) -> VexArch {
         VexArch::X86
@@ -102,141 +184,7 @@ impl Arch for X86 {
         Some(offsets::EBP)
     }
 
-    fn register_offset(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // 32-bit registers
-            "eax" => Some(offsets::EAX),
-            "ecx" => Some(offsets::ECX),
-            "edx" => Some(offsets::EDX),
-            "ebx" => Some(offsets::EBX),
-            "esp" => Some(offsets::ESP),
-            "ebp" => Some(offsets::EBP),
-            "esi" => Some(offsets::ESI),
-            "edi" => Some(offsets::EDI),
-            "eip" => Some(offsets::EIP),
-
-            // 16-bit registers
-            "ax" => Some(offsets::EAX),
-            "cx" => Some(offsets::ECX),
-            "dx" => Some(offsets::EDX),
-            "bx" => Some(offsets::EBX),
-            "sp" => Some(offsets::ESP),
-            "bp" => Some(offsets::EBP),
-            "si" => Some(offsets::ESI),
-            "di" => Some(offsets::EDI),
-
-            // 8-bit registers
-            "al" => Some(offsets::EAX),
-            "cl" => Some(offsets::ECX),
-            "dl" => Some(offsets::EDX),
-            "bl" => Some(offsets::EBX),
-            "ah" => Some(offsets::EAX + 1),
-            "ch" => Some(offsets::ECX + 1),
-            "dh" => Some(offsets::EDX + 1),
-            "bh" => Some(offsets::EBX + 1),
-
-            // Flags thunks
-            "cc_op" => Some(offsets::CC_OP),
-            "cc_dep1" => Some(offsets::CC_DEP1),
-            "cc_dep2" => Some(offsets::CC_DEP2),
-            "cc_ndep" => Some(offsets::CC_NDEP),
-            "d" | "dflag" => Some(offsets::DFLAG),
-            "id" | "idflag" => Some(offsets::IDFLAG),
-            "ac" | "acflag" => Some(offsets::ACFLAG),
-
-            // Segments
-            "cs" => Some(offsets::CS),
-            "ds" => Some(offsets::DS),
-            "es" => Some(offsets::ES),
-            "fs" => Some(offsets::FS),
-            "gs" => Some(offsets::GS),
-            "ss" => Some(offsets::SS),
-            "fs_const" => Some(offsets::FS_CONST),
-            "gs_const" => Some(offsets::GS_CONST),
-
-            // SSE
-            "sseround" => Some(offsets::SSEROUND),
-            "xmm0" => Some(offsets::XMM0),
-            "xmm1" => Some(offsets::XMM1),
-            "xmm2" => Some(offsets::XMM2),
-            "xmm3" => Some(offsets::XMM3),
-            "xmm4" => Some(offsets::XMM4),
-            "xmm5" => Some(offsets::XMM5),
-            "xmm6" => Some(offsets::XMM6),
-            "xmm7" => Some(offsets::XMM7),
-
-            // FPU
-            "fpreg" => Some(offsets::FPREG),
-            "fptag" => Some(offsets::FPTAG),
-            "fpround" => Some(offsets::FPROUND),
-            "fc3210" => Some(offsets::FC3210),
-            "ftop" => Some(offsets::FTOP),
-
-            _ => None,
-        }
-    }
-
-    fn register_size(&self, name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        match name_lower.as_str() {
-            // 32-bit registers
-            "eax" | "ecx" | "edx" | "ebx" | "esp" | "ebp" | "esi" | "edi" | "eip" => Some(4),
-
-            // 16-bit registers
-            "ax" | "cx" | "dx" | "bx" | "sp" | "bp" | "si" | "di" => Some(2),
-
-            // 8-bit registers
-            "al" | "cl" | "dl" | "bl" | "ah" | "ch" | "dh" | "bh" => Some(1),
-
-            // Flags thunks (32-bit)
-            "cc_op" | "cc_dep1" | "cc_dep2" | "cc_ndep" | "d" | "dflag" | "id" | "idflag" | "ac" | "acflag" => Some(4),
-
-            // Segments (16-bit selectors, 32-bit bases)
-            "cs" | "ds" | "es" | "fs" | "gs" | "ss" => Some(2),
-            "fs_const" | "gs_const" => Some(4),
-
-            // SSE
-            "sseround" => Some(4),
-            "xmm0" | "xmm1" | "xmm2" | "xmm3" | "xmm4" | "xmm5" | "xmm6" | "xmm7" => Some(16),
-
-            // FPU
-            "fpreg" => Some(64),
-            "fptag" | "fpround" | "fc3210" | "ftop" => Some(4),
-
-            _ => None,
-        }
-    }
-
-    fn register_name(&self, offset: u32) -> Option<&'static str> {
-        match offset {
-            offsets::EAX => Some("eax"),
-            offsets::ECX => Some("ecx"),
-            offsets::EDX => Some("edx"),
-            offsets::EBX => Some("ebx"),
-            offsets::ESP => Some("esp"),
-            offsets::EBP => Some("ebp"),
-            offsets::ESI => Some("esi"),
-            offsets::EDI => Some("edi"),
-            offsets::EIP => Some("eip"),
-            offsets::CC_OP => Some("cc_op"),
-            offsets::CC_DEP1 => Some("cc_dep1"),
-            offsets::CC_DEP2 => Some("cc_dep2"),
-            offsets::CC_NDEP => Some("cc_ndep"),
-            offsets::DFLAG => Some("dflag"),
-            offsets::IDFLAG => Some("idflag"),
-            offsets::ACFLAG => Some("acflag"),
-            _ => None,
-        }
-    }
-
-    fn register_names(&self) -> &[&'static str] {
-        &[
-            "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip",
-            "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag", "idflag", "acflag",
-            "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
-        ]
-    }
+    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
 
     fn argument_registers(&self) -> &[u32] {
         // cdecl: arguments on stack, but we list potential register args
