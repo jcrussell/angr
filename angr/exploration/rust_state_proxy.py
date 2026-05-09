@@ -433,6 +433,103 @@ class RustHeapProxy:
             return []
 
 
+class RustScratchProxy:
+    """Read-only proxy for `state.scratch` over a Rust state.
+
+    Python's SimStateScratch carries per-block transient values used by the
+    Python VEX engine (irsb, bbl_addr, ins_addr, stmt_idx, jumpkind, temps,
+    tyenv, ...). The Rust engine doesn't store most of those because they
+    belong to the in-flight CallbackInterpreter, not the persistent state.
+
+    This proxy exposes the subset that *is* recoverable from the Rust state:
+    the most recently entered block address (mirrors `state.pc`) and the
+    jumpkind that led to the current state (last detailed-history entry).
+    The rest (irsb, temps, tyenv, stmt_idx) are exposed as None — the Rust
+    interpreter clears its per-block buffers between blocks, so there are no
+    stable post-block values to read.
+    """
+
+    # Mirrors angr's Ijk_* string convention. Indices match the u8 values
+    # produced by RustSimState::detailed_history (see exploration/mod.rs:1726).
+    _JUMPKIND_NAMES = (
+        "Ijk_Boring",
+        "Ijk_Call",
+        "Ijk_Ret",
+        "Ijk_Sys_syscall",
+        "Ijk_Other",
+    )
+
+    def __init__(self, rust_mgr, state_id):
+        self._mgr = rust_mgr
+        self._state_id = state_id
+
+    @property
+    def bbl_addr(self):
+        """Address of the most recently entered block (mirrors state.pc)."""
+        try:
+            return self._mgr.get_state_pc_by_id(self._state_id)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: best-effort read; None mirrors
+            # SimStateScratch's pre-block default.
+            l.debug("get_state_pc_by_id(sid=%d) failed: %s: %s",
+                    self._state_id, type(e).__name__, e)
+            return None
+
+    @property
+    def ins_addr(self):
+        """Address of the most recently executed instruction.
+
+        The Rust interpreter tracks this in CallbackInterpreter.current_insn_addr
+        but doesn't persist it on the state — once the block finishes, the
+        interpreter is dropped. We surface state.pc as a best-effort proxy:
+        for a found state, pc is the find address (the last IMark seen).
+        """
+        return self.bbl_addr
+
+    @property
+    def jumpkind(self):
+        """Jumpkind that led to the current state, e.g. "Ijk_Boring".
+
+        Pulled from the last entry of detailed_history. Returns None for a
+        freshly-created state with no recorded transitions.
+        """
+        try:
+            history = self._mgr.get_state_detailed_history(self._state_id)
+        except Exception as e:
+            l.debug("get_state_detailed_history(sid=%d) failed: %s: %s",
+                    self._state_id, type(e).__name__, e)
+            return None
+        if not history:
+            return None
+        _addr, kind_u8, _target = history[-1]
+        if 0 <= kind_u8 < len(self._JUMPKIND_NAMES):
+            return self._JUMPKIND_NAMES[kind_u8]
+        return "Ijk_Other"
+
+    # SimStateScratch attributes the Rust engine doesn't persist between
+    # blocks. Returning None matches how Python's plugin reads them before
+    # the first block executes.
+    @property
+    def irsb(self):
+        return None
+
+    @property
+    def stmt_idx(self):
+        return None
+
+    @property
+    def temps(self):
+        return []
+
+    @property
+    def tyenv(self):
+        return None
+
+    @property
+    def sim_procedure(self):
+        return None
+
+
 class RustHistoryProxy:
     """Provides state.history.recent_bbl_addrs and similar."""
 
@@ -722,6 +819,7 @@ class RustStateProxy:
         self._callstack_proxy = None
         self._inspect_proxy = None
         self._heap_proxy = None
+        self._scratch_proxy = None
 
     @property
     def state_id(self):
@@ -852,6 +950,20 @@ class RustStateProxy:
         if self._heap_proxy is None:
             self._heap_proxy = RustHeapProxy(self._mgr, self._state_id)
         return self._heap_proxy
+
+    @property
+    def scratch(self):
+        """Read-only scratch proxy — exposes bbl_addr / ins_addr / jumpkind.
+
+        The Rust engine doesn't store the per-block VEX-temp/tyenv/stmt_idx
+        values that the Python SimStateScratch plugin maintains, so those
+        attributes return None / empty. The values that survive between
+        blocks (block address and last jumpkind) read live from the Rust
+        state.
+        """
+        if self._scratch_proxy is None:
+            self._scratch_proxy = RustScratchProxy(self._mgr, self._state_id)
+        return self._scratch_proxy
 
     @property
     def options(self):

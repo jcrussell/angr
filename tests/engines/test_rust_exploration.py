@@ -1426,6 +1426,70 @@ class TestStatePluginsProxy:
         assert proxy.options == set()
         assert proxy.globals == {}
 
+    def test_scratch_bbl_addr_mirrors_pc(self, fauxware_project):
+        """proxy.scratch.bbl_addr matches state.pc (most recently entered
+        block)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+        assert proxy.scratch.bbl_addr == proxy.addr
+        assert proxy.scratch.ins_addr == proxy.addr
+
+    def test_scratch_jumpkind_after_step(self, fauxware_project):
+        """proxy.scratch.jumpkind reflects the last detailed-history entry."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Step a few blocks so detailed history accumulates.
+        mgr.run(max_steps=5)
+        for proxy in mgr.proxy.active:
+            jk = proxy.scratch.jumpkind
+            # Either no transitions yet (None) or a known Ijk_*.
+            assert jk is None or jk.startswith("Ijk_"), (
+                f"unexpected jumpkind {jk!r}"
+            )
+
+    def test_scratch_unsupported_attrs_are_none(self, fauxware_project):
+        """SimStateScratch attributes the Rust engine doesn't persist
+        (irsb, stmt_idx, tyenv, sim_procedure) read as None / empty."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+        s = proxy.scratch
+        assert s.irsb is None
+        assert s.stmt_idx is None
+        assert s.tyenv is None
+        assert s.sim_procedure is None
+        assert s.temps == []
+
+    def test_scratch_proxy_cached_on_state_proxy(self, fauxware_project):
+        """proxy.scratch returns the same RustScratchProxy on repeated reads
+        (consistent with other lazy sub-proxies)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+        assert proxy.scratch is proxy.scratch
+
+    def test_scratch_jumpkind_empty_history(self):
+        """A state with no recorded transitions reports jumpkind=None."""
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid = mgr.create_state("active")
+        proxy = RustStateProxy(mgr, sid)
+        # Brand-new state — no history yet.
+        assert proxy.scratch.jumpkind is None
+        # bbl_addr defaults to 0 (initial pc); ins_addr mirrors it.
+        assert proxy.scratch.bbl_addr == 0
+        assert proxy.scratch.ins_addr == 0
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateProxyRepr:
