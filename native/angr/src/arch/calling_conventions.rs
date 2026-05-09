@@ -125,6 +125,10 @@ pub trait CallingConvention: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemVAMD64;
 
+impl SystemVAMD64 {
+    pub const ARCH_ALIASES: &'static [&'static str] = &["amd64", "x86_64", "x64"];
+}
+
 impl CallingConvention for SystemVAMD64 {
     fn name(&self) -> &'static str {
         "SystemV_AMD64"
@@ -173,6 +177,13 @@ impl CallingConvention for SystemVAMD64 {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MicrosoftX64;
 
+impl MicrosoftX64 {
+    /// MicrosoftX64 is not the default for any arch in `default_cc_for_arch`;
+    /// callers select it explicitly when they know they're dealing with a
+    /// Windows binary.
+    pub const ARCH_ALIASES: &'static [&'static str] = &[];
+}
+
 impl CallingConvention for MicrosoftX64 {
     fn name(&self) -> &'static str {
         "Microsoft_x64"
@@ -216,6 +227,10 @@ impl CallingConvention for MicrosoftX64 {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Cdecl;
 
+impl Cdecl {
+    pub const ARCH_ALIASES: &'static [&'static str] = &["x86", "i386", "i686"];
+}
+
 impl CallingConvention for Cdecl {
     fn name(&self) -> &'static str {
         "cdecl"
@@ -257,6 +272,10 @@ impl CallingConvention for Cdecl {
 /// Return address: LR (R14) — ARM uses BL which stores return addr in LR, not stack.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ARMEABI;
+
+impl ARMEABI {
+    pub const ARCH_ALIASES: &'static [&'static str] = &["arm", "armel", "armhf"];
+}
 
 impl CallingConvention for ARMEABI {
     fn name(&self) -> &'static str {
@@ -313,6 +332,10 @@ impl CallingConvention for ARMEABI {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AArch64CC;
 
+impl AArch64CC {
+    pub const ARCH_ALIASES: &'static [&'static str] = &["arm64", "aarch64"];
+}
+
 impl CallingConvention for AArch64CC {
     fn name(&self) -> &'static str {
         "AArch64"
@@ -358,13 +381,24 @@ impl CallingConvention for AArch64CC {
 }
 
 /// Get the default calling convention for an architecture.
+///
+/// Driven by each CC's inherent `ARCH_ALIASES` constant — adding a new
+/// alias only requires updating the relevant impl block. Unknown arch
+/// names fall back to `SystemVAMD64`.
 pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
-    match arch_name.to_lowercase().as_str() {
-        "amd64" | "x86_64" | "x64" => Box::new(SystemVAMD64),
-        "x86" | "i386" | "i686" => Box::new(Cdecl),
-        "arm" | "armel" | "armhf" => Box::new(ARMEABI),
-        "arm64" | "aarch64" => Box::new(AArch64CC),
-        _ => Box::new(SystemVAMD64), // Default to System V AMD64
+    let lower = arch_name.to_lowercase();
+    let lower_str = lower.as_str();
+
+    if SystemVAMD64::ARCH_ALIASES.contains(&lower_str) {
+        Box::new(SystemVAMD64)
+    } else if Cdecl::ARCH_ALIASES.contains(&lower_str) {
+        Box::new(Cdecl)
+    } else if ARMEABI::ARCH_ALIASES.contains(&lower_str) {
+        Box::new(ARMEABI)
+    } else if AArch64CC::ARCH_ALIASES.contains(&lower_str) {
+        Box::new(AArch64CC)
+    } else {
+        Box::new(SystemVAMD64)
     }
 }
 
@@ -426,6 +460,59 @@ mod tests {
         // RAX in amd64 VEX guest state = offset 16.
         assert_eq!(SystemVAMD64.return_register(), 16);
         assert_eq!(MicrosoftX64.return_register(), 16);
+    }
+
+    #[test]
+    fn test_default_cc_for_arch_registry() {
+        // Each arch alias must resolve to the documented CC. If you add a new
+        // alias, extend the relevant ARCH_ALIASES constant and add a row here.
+        let cases: &[(&str, &str)] = &[
+            ("amd64", "SystemV_AMD64"),
+            ("x86_64", "SystemV_AMD64"),
+            ("x64", "SystemV_AMD64"),
+            ("AMD64", "SystemV_AMD64"), // case-insensitive
+            ("x86", "cdecl"),
+            ("i386", "cdecl"),
+            ("i686", "cdecl"),
+            ("arm", "ARM_EABI"),
+            ("armel", "ARM_EABI"),
+            ("armhf", "ARM_EABI"),
+            ("arm64", "AArch64"),
+            ("aarch64", "AArch64"),
+            // Unknown falls back to SystemV_AMD64.
+            ("mips", "SystemV_AMD64"),
+            ("ppc", "SystemV_AMD64"),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                default_cc_for_arch(arch).name(),
+                *expected,
+                "default_cc_for_arch({arch:?}) should resolve to {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_arch_aliases_disjoint() {
+        // No alias may belong to more than one CC, otherwise default_cc_for_arch
+        // becomes order-dependent.
+        let groups: &[(&str, &[&str])] = &[
+            ("SystemV_AMD64", SystemVAMD64::ARCH_ALIASES),
+            ("Microsoft_x64", MicrosoftX64::ARCH_ALIASES),
+            ("cdecl", Cdecl::ARCH_ALIASES),
+            ("ARM_EABI", ARMEABI::ARCH_ALIASES),
+            ("AArch64", AArch64CC::ARCH_ALIASES),
+        ];
+        for (i, (name_a, aliases_a)) in groups.iter().enumerate() {
+            for (name_b, aliases_b) in &groups[i + 1..] {
+                for a in *aliases_a {
+                    assert!(
+                        !aliases_b.contains(a),
+                        "alias {a:?} appears in both {name_a} and {name_b}",
+                    );
+                }
+            }
+        }
     }
 
     #[test]
