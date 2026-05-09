@@ -334,6 +334,54 @@ impl<'a> CallbackInterpreter<'a> {
         #[cfg(feature = "native-lift")]
         {
             if crate::vex::libpyvex_ffi::is_vex_initialized() {
+                // SMC fast path: when the page has been overwritten via a
+                // store, `concrete_memory` is stale. Try to read fresh bytes
+                // from `rust_memory` (which carries the post-write state)
+                // and lift those instead. Falls through to the Python lift
+                // path only if rust_memory has no concrete bytes available.
+                if self.is_code_range_dirtied(addr, 4096) {
+                    if let Some(rust_mem) = self.rust_memory.as_ref() {
+                        let mut max_bytes = 4096usize;
+                        for &hook_addr in self.hook_addrs.iter() {
+                            if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
+                                let limit = (hook_addr - addr) as usize;
+                                if limit > 0 && limit < max_bytes {
+                                    max_bytes = limit;
+                                }
+                            }
+                        }
+                        if let Some(bytes) = rust_mem.read_concrete_bytes_for_lift(addr, max_bytes) {
+                            let native_opt_level = self.vex_opt_level_overrides.get(&addr).copied()
+                                .or(self.vex_opt_level)
+                                .unwrap_or(1);
+                            match crate::vex::libpyvex_ffi::lift_native(
+                                &bytes,
+                                addr,
+                                self.arch,
+                                99,
+                                bytes.len() as u32,
+                                native_opt_level,
+                            ) {
+                                Ok(irsb) => {
+                                    log::trace!("Native lift from rust_memory (SMC) at 0x{:x}", addr);
+                                    if let Some(start) = lift_start {
+                                        self.stats.lift_time_ns += start.elapsed().as_nanos() as u64;
+                                    }
+                                    let arc_irsb = Arc::new(irsb);
+                                    self.block_cache.put(addr, Arc::clone(&arc_irsb));
+                                    return Ok(arc_irsb);
+                                }
+                                Err(_e) => {
+                                    // Fall through to Python lift.
+                                }
+                            }
+                        }
+                    }
+                    log::trace!(
+                        "Native lift skipped at 0x{:x}: page dirtied by SMC, falling back to Python",
+                        addr
+                    );
+                } else {
                 // Try to get bytes from concrete memory for native lifting
                 // Look for a region containing this address with enough bytes
                 for region in self.concrete_memory.iter() {
@@ -384,6 +432,7 @@ impl<'a> CallbackInterpreter<'a> {
                         }
                         break;
                     }
+                }
                 }
             }
         }

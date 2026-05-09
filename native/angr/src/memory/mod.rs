@@ -277,6 +277,56 @@ impl SymbolicMemory {
         self.pages.contains_key(&page_num)
     }
 
+    /// Read up to `max_size` concrete bytes starting at `addr` for native
+    /// lifting. Returns the concrete prefix found before the first symbolic
+    /// or unmapped byte. `None` is returned only if the very first byte is
+    /// unmapped or symbolic. The lifter accepts a partial buffer and stops
+    /// at the byte boundary, so a short read is still useful.
+    pub fn read_concrete_bytes_for_lift(
+        &self,
+        addr: u64,
+        max_size: usize,
+    ) -> Option<Vec<u8>> {
+        if max_size == 0 {
+            return Some(Vec::new());
+        }
+        let mut result = Vec::with_capacity(max_size);
+        let mut current = addr;
+        while result.len() < max_size {
+            let page_num = current >> 12;
+            let page = match self.pages.get(&page_num) {
+                Some(p) => p,
+                None => break,
+            };
+            let offset_in_page = (current & PAGE_MASK) as u16;
+            let remaining = max_size - result.len();
+            let to_read = remaining
+                .min((PAGE_SIZE - (current & PAGE_MASK)) as usize);
+            // Stop at the first symbolic byte; native lift can't use it.
+            let mut concrete_run = 0usize;
+            for i in 0..to_read {
+                if page.is_symbolic(offset_in_page + i as u16) {
+                    break;
+                }
+                concrete_run += 1;
+            }
+            if concrete_run == 0 {
+                break;
+            }
+            let bytes = page.load_concrete(offset_in_page, concrete_run as u16);
+            result.extend(bytes);
+            current = current.saturating_add(concrete_run as u64);
+            if concrete_run < to_read {
+                break; // hit a symbolic byte
+            }
+        }
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
     // ==================== UNIFIED SYMBOLIC MEMORY OPERATIONS ====================
     // These methods handle all symbolic memory operations entirely in Rust,
     // eliminating the need for Python callbacks that were previously broken.

@@ -882,6 +882,8 @@ impl<'a> CallbackInterpreter<'a> {
     /// Update load-prefetch cache and concretization-constraint tracking after
     /// a successful Rust-native store. Single-address writes invalidate that
     /// (addr, size) entry; otherwise the entire prefetch cache is dropped.
+    /// Also invalidates cached IRSBs when the store hits a loaded binary
+    /// region (self-modifying code support).
     fn update_prefetch_on_store(
         &mut self,
         addr_val: &RustBV,
@@ -892,9 +894,70 @@ impl<'a> CallbackInterpreter<'a> {
             ConcretizationResult::Single(addr_concrete) => {
                 self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
                 self.track_concretization_constraint(addr_val, *addr_concrete);
+                if self.is_in_binary(*addr_concrete) {
+                    self.invalidate_code_at(*addr_concrete, data_size);
+                }
             }
             _ => {
                 self.load_prefetch_cache.clear();
+                self.invalidate_code_for_concretization(conc_result, data_size);
+            }
+        }
+    }
+
+    /// Invalidate cached IRSBs for a multi-address concretization result whose
+    /// solutions hit loaded binary regions. Conservative: any in-binary
+    /// solution triggers a per-address invalidation; ranges/Any clear the
+    /// cache outright since the affected bytes are unbounded.
+    fn invalidate_code_for_concretization(
+        &mut self,
+        conc_result: &ConcretizationResult,
+        data_size: usize,
+    ) {
+        match conc_result {
+            ConcretizationResult::Single(_) => {} // handled by caller
+            ConcretizationResult::Multiple(addrs) => {
+                for &addr in addrs.iter() {
+                    if self.is_in_binary(addr) {
+                        self.invalidate_code_at(addr, data_size);
+                    }
+                }
+            }
+            ConcretizationResult::Strided { base, stride, count } => {
+                for i in 0..*count {
+                    let addr = base.saturating_add(i.saturating_mul(*stride));
+                    if self.is_in_binary(addr) {
+                        self.invalidate_code_at(addr, data_size);
+                    }
+                }
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                // Range too large to enumerate. If the [min, max] range
+                // intersects any loaded binary region, drop the entire
+                // block cache to be safe.
+                let intersects_binary = self.concrete_memory.iter().any(|region| {
+                    let region_end = region.base + region.size;
+                    *min < region_end && *max >= region.base
+                });
+                if intersects_binary {
+                    self.block_cache.clear();
+                    // Mark all binary pages as dirtied so native lift skips
+                    // them until they're re-lifted via Python.
+                    let pages: Vec<u64> = self.concrete_memory.iter()
+                        .flat_map(|region| {
+                            let first = region.base >> 12;
+                            let last = (region.base + region.size - 1) >> 12;
+                            first..=last
+                        })
+                        .collect();
+                    for page in pages {
+                        self.dirtied_code_pages.insert(page);
+                    }
+                }
+            }
+            ConcretizationResult::Failed(_) => {
+                // Concretization failed; addresses are unknown. Be safe.
+                self.block_cache.clear();
             }
         }
     }
@@ -913,6 +976,9 @@ impl<'a> CallbackInterpreter<'a> {
             if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {
             }
             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+            if self.is_in_binary(addr_concrete) {
+                self.invalidate_code_at(addr_concrete, data_size);
+            }
 
             // Check if data is symbolic - use symbolic store callback.
             // Only for 32-bit architectures where it's needed (e.g., flareon2015_5).
@@ -977,6 +1043,9 @@ impl<'a> CallbackInterpreter<'a> {
                     let addr_concrete = *addr_concrete;
                     // Track concretization constraint for Python sync
                     self.track_concretization_constraint(addr_val, addr_concrete);
+                    if self.is_in_binary(addr_concrete) {
+                        self.invalidate_code_at(addr_concrete, data_size);
+                    }
                     // Use symbolic store for symbolic values to preserve expression trees
                     if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                         callbacks

@@ -650,6 +650,11 @@ pub struct CallbackInterpreter<'a> {
     /// Per-address VEX optimization level overrides.
     /// Arc-shared on fork (O(1) clone). Setters replace the Arc wholesale.
     pub vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
+    /// Page numbers (addr >> 12) inside loaded binary regions that have
+    /// been overwritten by a store. Used to invalidate cached IRSBs and
+    /// skip the native-lift fast path (which reads from immutable
+    /// `concrete_memory` and would otherwise use stale bytes).
+    dirtied_code_pages: FxHashSet<u64>,
 }
 impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
@@ -716,6 +721,7 @@ impl<'a> CallbackInterpreter<'a> {
             detailed_history: Vec::new(),
             vex_opt_level: None,
             vex_opt_level_overrides: Arc::new(FxHashMap::default()),
+            dirtied_code_pages: FxHashSet::default(),
         }
     }
 
@@ -1293,6 +1299,56 @@ impl<'a> CallbackInterpreter<'a> {
         })
     }
 
+    /// Whether the page containing `addr` has been overwritten via a store.
+    /// Native-lift callers must avoid this page since they read from the
+    /// immutable `concrete_memory` buffer that does not see the new bytes.
+    pub fn is_code_page_dirtied(&self, addr: u64) -> bool {
+        self.dirtied_code_pages.contains(&(addr >> 12))
+    }
+
+    /// Whether any page intersecting `[addr, addr + len)` has been written.
+    pub fn is_code_range_dirtied(&self, addr: u64, len: u64) -> bool {
+        if self.dirtied_code_pages.is_empty() || len == 0 {
+            return false;
+        }
+        let first_page = addr >> 12;
+        let last_page = (addr.saturating_add(len - 1)) >> 12;
+        for page_num in first_page..=last_page {
+            if self.dirtied_code_pages.contains(&page_num) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Mark code pages overlapping `[addr, addr + size)` as dirtied and
+    /// invalidate cached IRSBs whose byte ranges cover any of those bytes.
+    /// Caller must verify the address is in a binary region first.
+    pub fn invalidate_code_at(&mut self, addr: u64, size: usize) {
+        if size == 0 {
+            return;
+        }
+        let end = addr.saturating_add(size as u64 - 1);
+        let first_page = addr >> 12;
+        let last_page = end >> 12;
+        for page_num in first_page..=last_page {
+            self.dirtied_code_pages.insert(page_num);
+        }
+        // Find cached IRSBs whose [start, start + irsb.size()) overlaps the
+        // write. LruCache::iter is O(N) but N <= 4096 and this fires only
+        // on rare in-binary stores, so the cost is bounded.
+        let mut to_remove: Vec<u64> = Vec::new();
+        for (block_addr, irsb) in self.block_cache.iter() {
+            let block_end = block_addr.saturating_add(irsb.size() as u64);
+            if *block_addr <= end && block_end > addr {
+                to_remove.push(*block_addr);
+            }
+        }
+        for block_addr in to_remove {
+            self.block_cache.pop(&block_addr);
+        }
+    }
+
     /// Register a SimProcedure at an address.
     ///
     /// This allows the interpreter to pre-extract arguments when the hook is hit,
@@ -1501,6 +1557,7 @@ impl<'a> CallbackInterpreter<'a> {
             detailed_history: self.detailed_history.clone(), // Clone history for fork
             vex_opt_level: self.vex_opt_level, // Inherit VEX opt level
             vex_opt_level_overrides: Arc::clone(&self.vex_opt_level_overrides), // Inherit overrides
+            dirtied_code_pages: self.dirtied_code_pages.clone(), // Inherit SMC tracking
         }
     }
 
@@ -1553,4 +1610,79 @@ impl<'a> CallbackInterpreter<'a> {
         })
     }
 
+}
+
+#[cfg(test)]
+mod smc_tests {
+    use super::*;
+
+    fn make_irsb(addr: u64, len_bytes: u32) -> IRSB {
+        let mut irsb = IRSB::new(addr, VexArch::AMD64);
+        irsb.statements.push(IRStmt::IMark { addr, len: len_bytes, delta: 0 });
+        irsb
+    }
+
+    #[test]
+    fn invalidate_removes_overlapping_block_and_marks_page_dirty() {
+        let ctx = SymContext::new_mock();
+        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+        // Block at 0x1010 covering 8 bytes -> [0x1010, 0x1018).
+        interp.cache_block(0x1010, make_irsb(0x1010, 8));
+        assert!(interp.has_cached_block(0x1010));
+        // Write a single byte at 0x1014 (inside the block range).
+        interp.invalidate_code_at(0x1014, 1);
+        assert!(!interp.has_cached_block(0x1010));
+        assert!(interp.is_code_page_dirtied(0x1014));
+        assert!(interp.is_code_page_dirtied(0x1010));
+    }
+
+    #[test]
+    fn invalidate_skips_non_overlapping_blocks() {
+        let ctx = SymContext::new_mock();
+        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        interp.add_concrete_memory(0x1000, vec![0u8; 0x2000]);
+        interp.cache_block(0x1010, make_irsb(0x1010, 8));
+        // Write a byte at 0x1100 — different bytes, but same page (0x1).
+        interp.invalidate_code_at(0x1100, 1);
+        // The block at 0x1010 doesn't overlap the write range, so it stays.
+        assert!(interp.has_cached_block(0x1010));
+        // But the page is now marked dirty (0x1100 >> 12 == 0x1).
+        assert!(interp.is_code_page_dirtied(0x1100));
+        assert!(interp.is_code_page_dirtied(0x1010));
+    }
+
+    #[test]
+    fn invalidate_handles_multi_page_writes() {
+        let ctx = SymContext::new_mock();
+        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        interp.add_concrete_memory(0x1000, vec![0u8; 0x4000]);
+        // 16-byte write straddles 0x1ff8..0x2008 — pages 0x1 and 0x2.
+        interp.invalidate_code_at(0x1ff8, 16);
+        assert!(interp.is_code_page_dirtied(0x1ff8));
+        assert!(interp.is_code_page_dirtied(0x2000));
+    }
+
+    #[test]
+    fn is_code_range_dirtied_spans_pages() {
+        let ctx = SymContext::new_mock();
+        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        interp.add_concrete_memory(0x1000, vec![0u8; 0x4000]);
+        // Dirty just page 0x2.
+        interp.invalidate_code_at(0x2000, 1);
+        // A lift window at 0x1ff0 size 32 crosses pages 0x1 and 0x2.
+        assert!(interp.is_code_range_dirtied(0x1ff0, 32));
+        // A lift window at 0x1000 size 16 stays within page 0x1.
+        assert!(!interp.is_code_range_dirtied(0x1000, 16));
+    }
+
+    #[test]
+    fn fork_inherits_dirtied_pages() {
+        let ctx = SymContext::new_mock();
+        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+        interp.invalidate_code_at(0x1500, 1);
+        let child = interp.fork();
+        assert!(child.is_code_page_dirtied(0x1500));
+    }
 }
