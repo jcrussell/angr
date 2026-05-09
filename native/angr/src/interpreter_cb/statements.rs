@@ -356,6 +356,8 @@ impl<'a> CallbackInterpreter<'a> {
                                         .call_memory_store(py, addr_concrete, &ite_bytes)
                                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                                 }
+                                // Invalidate any prefetched value at this address.
+                                self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                             }
                             _ => {
                                 // Symbolic guard + non-Single address solutions
@@ -375,6 +377,8 @@ impl<'a> CallbackInterpreter<'a> {
                                          no memory_store_symbolic_full callback".to_string()
                                     ));
                                 }
+                                // Touched addresses are unknown, drop the whole cache.
+                                self.load_prefetch_cache.clear();
                             }
                         }
                     }
@@ -418,6 +422,7 @@ impl<'a> CallbackInterpreter<'a> {
                                         callbacks
                                             .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
                                             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                        self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                                     }
                                     ConcretizationResult::Multiple(addrs) => {
                                         // Symbolic data + multiple address solutions: prefer the full
@@ -438,6 +443,8 @@ impl<'a> CallbackInterpreter<'a> {
                                                  no memory_store_symbolic_full callback and ITE chain unavailable".to_string()
                                             ));
                                         }
+                                        // Multiple candidate addresses written; drop the whole cache.
+                                        self.load_prefetch_cache.clear();
                                     }
                                     _ => {
                                         // TooLarge or Failed - delegate to Python's full symbolic callback
@@ -450,6 +457,8 @@ impl<'a> CallbackInterpreter<'a> {
                                                 "symbolic store with unconcretizable address".to_string()
                                             ));
                                         }
+                                        // Touched addresses are unknown, drop the whole cache.
+                                        self.load_prefetch_cache.clear();
                                     }
                                 }
                             } else {
