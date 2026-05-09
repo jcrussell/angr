@@ -1,56 +1,44 @@
-## Session log: 2026-05-09 — bd-ready queue hygiene (202nd loop session, COMPLETE)
+## Session log: 2026-05-09 — angr-kwwd SMC Python-lift bytes sync (204th loop session, COMPLETE)
 
 ### Task
-No `in_progress` work; nothing claimed by a prior session. `bd ready` listed 12
-issues but on inspection many had explicit deferral memories from prior audits
-that had not been propagated to bd state — they kept reappearing in `bd ready`
-and consuming triage time. This session does the hygiene step.
+angr-kwwd (P4): SMC: sync Rust-side stores to Python state.memory for lift_block.
+Followup to angr-k67f. Picked option (a): pass dirty bytes from rust_memory
+through call_lift_block so _cb_lift_block can lift via byte_string=, avoiding
+the stale-cle-binary read.
 
-### What landed
-1. Claimed angr-wqao.4 (P2, top of `bd ready`) and audited it. Findings:
-   - Description proposes renaming `_step_N` helpers to `phase_<name>_*`, but
-     no such methods exist in rust_manager.py — only `_step_python_to_main`
-     (line 2155, multi-stage handler — different concern).
-   - Three init phases already exist as well-named methods: `_setup_callbacks`
-     (line 1053), `_load_binary_regions` (line 1639), `_register_simprocedures`
-     (line 1676). `_perf_stats.set_init_phase` calls track them at lines
-     738/743/748.
-   - Acceptance criterion "rust_manager.py under 1000 lines" is unachievable
-     by renaming alone (file is 3758 lines); requires the parent angr-wqao
-     extractions which were explicitly deferred.
-   - Sibling angr-wqao.1/.2 (named as preconditions in the description) are
-     also deferred per memory.
-2. Saved memory `avoid-deferred-wqao4-init-pipeline-phases` capturing the
-   audit and reopen-criteria.
-3. Deferred 8 tasks total whose deferral was documented in memory but whose
-   bd state was still `open`:
-   - angr-wqao (parent) and angr-wqao.1/.2/.4 (rust_manager decomposition)
-   - angr-qrhl (VEX trait dispatcher) — `avoid-deferred-qrhl-vex-trait-dispatcher`
-   - angr-m2hf (unified error trait) — `avoid-deferred-m2hf-error-trait`
-   - angr-34w.12 (grub OOM / z3-rs library bug) — notes say "deferred"
-   - angr-3tek (native read/write enable) — notes say "auto-deferred"; gated
-     on the symbolic_objects stale-cache sync issue (`avoid-enabling-native-read`)
-4. Saved memory `avoid-deferred-wqao2-disk-cache-load-extract` for symmetry
-   with the existing `avoid-deferred-wqao1-...` memory.
+### What landed (commit 3b0e7690d)
+1. `CallbackInterpreter::get_or_lift_block` (execution.rs): before falling
+   back to the Python lift callback, if `is_code_range_dirtied(addr, 4096)`
+   and rust_memory is present, read up to 4096 bytes via
+   `read_concrete_bytes_for_lift` (with hook_addrs clamping) and pass them
+   to `call_lift_block` as `dirty_bytes`.
+2. `PythonCallbacks::call_lift_block` (callbacks.rs): now takes
+   `Option<&[u8]>`. When Some, calls Python with `(addr, opt_level_or_None,
+   PyBytes)` so the Python signature stays positional-compatible.
+3. `_cb_lift_block` (rust_manager.py): accepts `dirty_bytes: bytes = None`
+   kwarg; when set, threads into `factory.block(addr, byte_string=...)`.
+4. Three new tests in `TestErrorRecovery`:
+   - test_cb_lift_block_uses_dirty_bytes_when_provided — Python contract
+   - test_cb_lift_block_static_binary_when_no_dirty_bytes — back-compat
+   - test_smc_rust_passes_dirty_bytes_to_python_lift — full Rust→Python e2e
+     using the wrap-and-reinstall callback pattern (set_callbacks clones)
 
-### `bd ready` before/after
-- Before: 12 issues (most with explicit deferral memories already)
-- After: 4 issues, all legitimate open work:
-  * angr-qh5u (P3) Lazy symbolic STORE — big design effort
-  * angr-czph (P3) Lazy symbolic LOAD — big design effort
-  * angr-0z34 (P4) Native amd64 read/write syscall handlers
-  * angr-k67f (P4) Invalidate cached VEX blocks for self-modifying code
+### Tests
+- 369/369 Python tests pass (was 366; added 3).
+- 611/611 cargo unit tests pass.
+
+### Findings saved (bd remember)
+- smc-python-lift-bytes-channel — both halves of SMC support (k67f + kwwd)
+- invariant-shellcode-binary-regions-test — load_shellcode + is_in_binary
+- invariant-set-callbacks-clones — PythonCallbacks Clone semantics
 
 ### Files modified
-None. Pure bd metadata changes.
-
-### Test status
-N/A — no code changed.
-
-### Memories saved
-1. `avoid-deferred-wqao4-init-pipeline-phases` — full audit + reopen criteria.
-2. `avoid-deferred-wqao2-disk-cache-load-extract` — sibling deferral memory.
+- native/angr/src/callbacks.rs — call_lift_block signature
+- native/angr/src/interpreter_cb/execution.rs — dirty-bytes resolve before Python lift
+- angr/exploration/rust_manager.py — _cb_lift_block dirty_bytes kwarg
+- tests/engines/test_rust_exploration.py — 3 new tests
 
 ### Status
-COMPLETE. The `bd ready` queue is now an honest list of un-deferred work.
-Future sessions won't re-evaluate the eight already-audited deferred tasks.
+COMPLETE. SMC binaries on default builds now execute post-store
+instructions correctly. Native-lift builds were already covered by
+angr-k67f; this closes the parity gap.
