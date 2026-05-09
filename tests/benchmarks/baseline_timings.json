@@ -2,7 +2,7 @@
   "ais3_crackme": {
     "callback_count": 47,
     "peak_memory_mb": 366.8,
-    "python_time": null,
+    "python_time": 2.476,
     "rust_time": 0.84,
     "state_creations": 0,
     "steps": 47
@@ -10,7 +10,7 @@
   "codegate_2017-angrybird": {
     "callback_count": 0,
     "peak_memory_mb": 1864.7,
-    "python_time": null,
+    "python_time": 6.782,
     "rust_time": 2.84,
     "state_creations": 0,
     "steps": 844
@@ -18,7 +18,7 @@
   "csaw_wyvern": {
     "callback_count": 30,
     "peak_memory_mb": 182.9,
-    "python_time": null,
+    "python_time": 15.902,
     "rust_time": 0.94,
     "state_creations": 0,
     "steps": 3
@@ -26,7 +26,7 @@
   "csgames2018": {
     "callback_count": 208,
     "peak_memory_mb": 292.3,
-    "python_time": null,
+    "python_time": 1.567,
     "rust_time": 0.958,
     "state_creations": 23,
     "steps": 162
@@ -34,7 +34,7 @@
   "defcamp_r100": {
     "callback_count": 0,
     "peak_memory_mb": 209.9,
-    "python_time": null,
+    "python_time": 1.006,
     "rust_time": 0.229,
     "state_creations": 0,
     "steps": 2
@@ -42,7 +42,7 @@
   "defcamp_r100__dfs": {
     "callback_count": 0,
     "peak_memory_mb": 209.7,
-    "python_time": null,
+    "python_time": 1.024,
     "rust_time": 0.227,
     "state_creations": 0,
     "steps": 2
@@ -50,7 +50,7 @@
   "defcon2016quals_baby-re": {
     "callback_count": 26,
     "peak_memory_mb": 282.8,
-    "python_time": null,
+    "python_time": 1.455,
     "rust_time": 0.722,
     "state_creations": 0,
     "steps": 27
@@ -58,7 +58,7 @@
   "ekopartyctf2016_rev250": {
     "callback_count": 5,
     "peak_memory_mb": 546.4,
-    "python_time": null,
+    "python_time": 31.65,
     "rust_time": 2.023,
     "state_creations": 0,
     "steps": 3
@@ -66,7 +66,7 @@
   "ekopartyctf2016_sokohashv2": {
     "callback_count": 9,
     "peak_memory_mb": 358.7,
-    "python_time": null,
+    "python_time": 5.833,
     "rust_time": 16.0,
     "state_creations": 0,
     "steps": 0
@@ -74,7 +74,7 @@
   "fauxware": {
     "callback_count": 5,
     "peak_memory_mb": 188.1,
-    "python_time": null,
+    "python_time": 0.379,
     "rust_time": 0.385,
     "state_creations": 0,
     "steps": 3
@@ -90,7 +90,7 @@
   "flareon2015_2": {
     "callback_count": 0,
     "peak_memory_mb": 420.7,
-    "python_time": null,
+    "python_time": 4.033,
     "rust_time": 3.62,
     "state_creations": 0,
     "steps": 0
@@ -98,7 +98,7 @@
   "flareon2015_5": {
     "callback_count": 3,
     "peak_memory_mb": 351.7,
-    "python_time": null,
+    "python_time": 57.156,
     "rust_time": 5.567,
     "state_creations": 0,
     "steps": 0
@@ -106,7 +106,7 @@
   "google2016_unbreakable_0": {
     "callback_count": 1,
     "peak_memory_mb": 428.2,
-    "python_time": null,
+    "python_time": 1.338,
     "rust_time": 0.882,
     "state_creations": 0,
     "steps": 0
@@ -114,7 +114,7 @@
   "google2016_unbreakable_1": {
     "callback_count": 0,
     "peak_memory_mb": 625.0,
-    "python_time": null,
+    "python_time": 1.602,
     "rust_time": 3.5,
     "state_creations": 0,
     "steps": 0
@@ -122,7 +122,7 @@
   "hackcon2016_angry-reverser": {
     "callback_count": 0,
     "peak_memory_mb": 629.9,
-    "python_time": null,
+    "python_time": 10.151,
     "rust_time": 11.722,
     "state_creations": 0,
     "steps": 0
@@ -138,7 +138,7 @@
   "securityfest_fairlight": {
     "callback_count": 1,
     "peak_memory_mb": 334.6,
-    "python_time": null,
+    "python_time": 15.756,
     "rust_time": 16.0,
     "state_creations": 0,
     "steps": 57
@@ -146,7 +146,7 @@
   "strcpy_find": {
     "callback_count": 97,
     "peak_memory_mb": 202.4,
-    "python_time": null,
+    "python_time": 0.89,
     "rust_time": 0.387,
     "state_creations": 0,
     "steps": 95
@@ -154,7 +154,7 @@
   "sym-write": {
     "callback_count": 22,
     "peak_memory_mb": 195.5,
-    "python_time": null,
+    "python_time": 1.0,
     "rust_time": 0.436,
     "state_creations": 1,
     "steps": 18
@@ -162,7 +162,7 @@
   "unmapped_analysis": {
     "callback_count": 3,
     "peak_memory_mb": 269.8,
-    "python_time": null,
+    "python_time": 0.958,
     "rust_time": 0.789,
     "state_creations": 0,
     "steps": 19
@@ -170,7 +170,7 @@
   "whitehatvn2015_re400": {
     "callback_count": 2,
     "peak_memory_mb": 478.3,
-    "python_time": null,
+    "python_time": 3.145,
     "rust_time": 1.228,
     "state_creations": 0,
     "steps": 0

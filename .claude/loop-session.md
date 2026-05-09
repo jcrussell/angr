@@ -1,35 +1,48 @@
-## Session log: 2026-05-09 — angr-6a7u (187th loop session)
+## Session log: 2026-05-09 — angr-gfyl (188th loop session, closed)
 
-Closed: refresh stale benchmark baselines after recent perf wins.
+### Task
+Backfill python_time in tests/benchmarks/baseline_timings.json. Previously
+only 2/22 entries had non-null python_time (flareon2015_10 and mma_howtouse).
+Acceptance: every entry either has python_time or a documented null reason;
+run_regression.py prints speedup-vs-Python for every dual-engine entry.
 
 ### Approach
-Ran `tests/benchmarks/run_regression.py --full --rust-only --no-sla --update`
-once to capture current Rust timings, then ran several verification rounds
-without --update to validate stability.
+Wrote tests/benchmarks/backfill_python_time.py — a one-off CLI that walks
+baseline_timings.json, runs the Python engine through run_regression.run_one
+(re-using the existing 4GB-RLIMIT_AS subprocess runner), and writes the
+elapsed time back into the JSON. On timeout/OOM/crash, records
+python_skip_reason. Saves incrementally per-entry so a crash mid-run doesn't
+lose progress.
 
-### Real wins (baseline shrinks reflect actual perf gains)
-- google2016_unbreakable_1: 3.523 → ~1.7s typical (but bimodal up to ~3.3s)
-- unmapped_analysis: 2.148 → 0.789s (much faster after recent FxHash work)
-- csaw_wyvern: 1.257 → 0.94s
-- ekopartyctf2016_sokohashv2: 12.091 → ~9.5s typical (bimodal, can hit 15s+)
-- flareon2015_5: 6.563 → 5.567s
-- securityfest_fairlight: bimodal — runs ~7.8s OR ~15.0s
+### Result
+All 20 missing entries populated in a single ~5-minute run. No timeouts/skips;
+default 90s + per-entry overrides (120s for flareon2015_5/csaw_wyvern/etc.)
+were all sufficient. Notable speedups:
 
-### Conservative bumps for high-variance Z3-nondeterministic benches
-Three benchmarks have bimodal/noisy distributions due to Z3 model
-nondeterminism affecting executed paths. Set baselines at the slow mode +
-some margin so the 15% regression threshold absorbs noise rather than
-flagging false positives:
+- csaw_wyvern: 16.92x (Py 15.9s / Rust 0.94s) — best case
+- ekopartyctf2016_rev250: 15.65x
+- flareon2015_5: 10.27x
+- defcamp_r100__dfs: 4.51x
+- ais3_crackme: 2.95x
 
-- google2016_unbreakable_1: --update wrote 1.683 → bumped to 3.5
-  (max observed across 8 runs: 3.26s; 3.5*1.15=4.0s budget)
-- securityfest_fairlight: --update wrote 15.096 → bumped to 16.0
-  (max observed: 15.10s; 16.0*1.15=18.4s budget)
-- ekopartyctf2016_sokohashv2: --update wrote 10.083 → bumped to 16.0
-  (max observed: 15.36s; 16.0*1.15=18.4s budget)
+Known Rust-slower benches now exposed via SLA WARN (not FAIL):
+- google2016_unbreakable_1: 0.56x (bimodal; rust_time baseline bumped to 3.5)
+- ekopartyctf2016_sokohashv2: 0.58x
+- mma_howtouse: 0.65x
+- hackcon2016_angry-reverser: 0.88x
+- fauxware: 0.99x
 
 ### Verification
-5+ consecutive `--full --rust-only --no-sla` runs all green after bumps.
+- 5 consecutive `run_regression.py --rust-only` (fast tier) green
+- 1 `run_regression.py --rust-only --full` (all 22) green
+- 357/357 unit tests in tests/engines/test_rust_exploration.py pass
+
+### Caveat
+Bimodal benches (unbreakable_1) can occasionally hit slow-mode and trip
+SLA fail (saw 0.48x once during validation). This was already latent — the
+backfill just exposes it via SLA. Future work could add an `sla_exempt`
+flag for known-bimodal entries.
 
 ### Files modified
-- tests/benchmarks/baseline_timings.json
+- tests/benchmarks/baseline_timings.json (20 python_time entries populated)
+- tests/benchmarks/backfill_python_time.py (new, reusable for future drift)
