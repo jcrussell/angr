@@ -40,6 +40,7 @@ mod memory_config;
 mod execution_env;
 mod run_loop;
 mod resume;
+mod pending_api;
 
 use self::constraints::{ConstraintSolver, ConstraintTracker};
 use self::execution_env::ExecutionEnvironment;
@@ -961,14 +962,13 @@ impl RustExplorationManager {
     }
 
     /// Set the PC of the pending callback state (for external initialization).
+    /// See [`pending_api::_set_pending_state_pc`] for the body.
     pub fn set_pending_state_pc(&mut self, pc: u64) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            pending.state.set_pc(pc);
-            Ok(())
-        })
+        self._set_pending_state_pc(pc)
     }
 
     /// Map memory in the pending state.
+    /// See [`pending_api::_pending_state_map_memory`] for the body.
     #[pyo3(signature = (addr, data, permissions=7))]
     pub fn pending_state_map_memory(
         &mut self,
@@ -976,150 +976,81 @@ impl RustExplorationManager {
         data: &[u8],
         permissions: u8,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            pending.state.map_memory_data(addr, data, Permission::from_bits(permissions));
-            Ok(())
-        })
+        self._pending_state_map_memory(addr, data, permissions)
     }
 
     /// Map memory in active states.
+    /// See [`pending_api::_active_states_map_memory`] for the body.
     #[pyo3(signature = (addr, data, permissions=7))]
     pub fn active_states_map_memory(&mut self, addr: u64, data: &[u8], permissions: u8) {
-        if let Some(stash) = self.sm.get_mut(STASH_ACTIVE) {
-            for state in stash.iter_mut() {
-                state.map_memory_data(addr, data, Permission::from_bits(permissions));
-            }
-        }
+        self._active_states_map_memory(addr, data, permissions)
     }
 
     /// Get the branch condition from the pending symbolic branch callback.
     ///
     /// Returns the condition as a claripy AST that Python can use for forking.
+    /// See [`pending_api::_get_pending_branch_condition`] for the body.
     pub fn get_pending_branch_condition(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.with_pending(|pending| {
-            // Get the condition ID from the callback reason
-            let condition_id = match &pending.reason {
-                CallbackReason::SymbolicBranch { condition_id, .. } => *condition_id,
-                _ => return Err(PyValueError::new_err("pending callback is not a symbolic branch")),
-            };
-
-            // Look up the condition in stored_conditions
-            let condition = pending.stored_conditions.get(&condition_id)
-                .ok_or_else(|| PyValueError::new_err(
-                    format!("condition {} not found in stored_conditions", condition_id)
-                ))?;
-
-            // Convert to claripy AST
-            let claripy = py.import("claripy")?;
-            rustbv_to_claripy(py, condition, claripy.as_any())
-                .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {}", e)))
-        })
+        self._get_pending_branch_condition(py)
     }
 
     /// Get register value from pending state (concrete only).
+    /// See [`pending_api::_get_pending_register`] for the body.
     pub fn get_pending_register(&self, name: &str) -> PyResult<Option<u128>> {
-        self.with_pending(|pending| {
-            pending.state.get_register(name)
-                .map(|bv| bv.as_u128())
-                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))
-        })
+        self._get_pending_register(name)
     }
 
     /// Get register as claripy AST from pending state (handles symbolic).
+    /// See [`pending_api::_get_pending_register_ast`] for the body.
     pub fn get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-        self.with_pending(|pending| {
-            let bv = pending.state.get_register(name)
-                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
-            let claripy = py.import("claripy")?;
-            rustbv_to_claripy(py, &bv, claripy.as_any())
-                .map_err(|e| PyRuntimeError::new_err(format!("register conversion: {}", e)))
-        })
+        self._get_pending_register_ast(py, name)
     }
 
     /// Get history (BBL addresses) from pending callback state.
     ///
     /// This is used by Python to initialize history on callback states,
     /// preventing IndexError when hooks access `state.history.recent_bbl_addrs[-1]`.
+    /// See [`pending_api::_get_pending_history`] for the body.
     pub fn get_pending_history(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| Ok(pending.state.history().to_vec()))
+        self._get_pending_history()
     }
 
     /// Get jumpkind for pending callback.
     ///
     /// Returns the jumpkind that led to this callback (e.g., "Ijk_Call", "Ijk_Boring").
     /// This is used by Python to properly initialize callstack management.
+    /// See [`pending_api::_get_pending_jumpkind`] for the body.
     pub fn get_pending_jumpkind(&self) -> PyResult<String> {
-        self.with_pending(|pending| {
-            Ok(pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))
-        })
+        self._get_pending_jumpkind()
     }
 
     /// Set register value in pending state.
+    /// See [`pending_api::_set_pending_register`] for the body.
     pub fn set_pending_register(&mut self, name: &str, value: u128) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            let size = pending.state.arch().register_size(name)
-                .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
-            let bv = crate::symbolic::RustBV::concrete(value, size * 8);
-            if pending.state.set_register(name, bv) {
-                Ok(())
-            } else {
-                Err(PyValueError::new_err(format!("failed to set register: {}", name)))
-            }
-        })
+        self._set_pending_register(name, value)
     }
 
     /// Set register to a symbolic value from a handle ID.
     ///
     /// Used for syncing symbolic return values from SimProcedures.
     /// The handle_id should reference a RustBV in the solver's symbol table.
+    /// See [`pending_api::_set_pending_register_symbolic`] for the body.
     pub fn set_pending_register_symbolic(&mut self, name: &str, handle_id: u64) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            // Look up the RustBV from the symbol table
-            let bv = if let Some(ref solver) = pending.solver_ctx {
-                solver.symbol_table().get(handle_id)
-                    .ok_or_else(|| PyValueError::new_err(format!(
-                        "invalid handle id: {}", handle_id
-                    )))?
-            } else {
-                return Err(PyRuntimeError::new_err("no solver context in pending state"));
-            };
-
-            if pending.state.set_register(name, bv) {
-                Ok(())
-            } else {
-                Err(PyValueError::new_err(format!("failed to set register: {}", name)))
-            }
-        })
+        self._set_pending_register_symbolic(name, handle_id)
     }
 
     /// Set a symbolic register value in the pending state from claripy AST.
     ///
     /// This allows direct sync of symbolic register values from Python callbacks.
     /// The claripy AST is converted to RustBV and stored in the pending state.
+    /// See [`pending_api::_set_pending_register_symbolic_ast`] for the body.
     pub fn set_pending_register_symbolic_ast(
         &mut self,
         py: Python<'_>,
         reg_name: &str,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            let solver_ref = pending.state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &*sym_ctx;
-
-            // Convert claripy AST to RustBV
-            let bv = claripy_to_rustbv(py, ast, ctx_ref)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
-
-            drop(sym_ctx);
-
-            if pending.state.set_register(reg_name, bv) {
-                log::debug!("Set symbolic register {} from claripy AST", reg_name);
-                Ok(())
-            } else {
-                Err(PyValueError::new_err(format!("failed to set register: {}", reg_name)))
-            }
-        })
+        self._set_pending_register_symbolic_ast(py, reg_name, ast)
     }
 
     /// Import symbolic memory from Python hook into Rust's symbolic_objects.
@@ -1127,6 +1058,7 @@ impl RustExplorationManager {
     /// Called after a hook writes symbolic memory. Converts the claripy AST
     /// to RustBV and imports it into the pending state's SymbolicMemory.
     /// Import symbolic memory into a state by ID (for init-time symbolic data).
+    /// See [`pending_api::_import_symbolic_to_state`] for the body.
     #[pyo3(signature = (state_id, addr, ast))]
     pub fn import_symbolic_to_state(
         &mut self,
@@ -1135,136 +1067,71 @@ impl RustExplorationManager {
         addr: u64,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self.with_state_mut(state_id, |state| {
-            let solver_ref = state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion: {}", e)))?;
-            drop(sym_ctx);
-            state.memory_mut().import_symbolic_value(addr, bv, None);
-            Ok(())
-        })
+        self._import_symbolic_to_state(py, state_id, addr, ast)
     }
 
+    /// See [`pending_api::_import_symbolic_memory`] for the body.
     pub fn import_symbolic_memory(
         &mut self,
         py: Python<'_>,
         addr: u64,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            // Convert claripy AST to RustBV (caches original AST for round-trip)
-            let solver_ref = pending.state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let bv = claripy_to_rustbv(py, ast, &*sym_ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
-            drop(sym_ctx);
-
-            // Import into symbolic memory via existing infrastructure
-            // Symbol ID is not used by import_symbolic_value, so pass None
-            pending.state.memory_mut().import_symbolic_value(addr, bv, None);
-            log::debug!("Imported symbolic memory at 0x{:x}", addr);
-            Ok(())
-        })
+        self._import_symbolic_memory(py, addr, ast)
     }
 
     /// Get memory from pending state.
+    /// See [`pending_api::_get_pending_memory`] for the body.
     pub fn get_pending_memory(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        self.with_pending(|pending| {
-            let bv = pending.state.memory_load(addr, size)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-            let value = bv.to_u128();
-            let bytes: Vec<u8> = (0..size as usize)
-                .map(|i| (value >> (i * 8)) as u8)
-                .collect();
-            Ok(bytes)
-        })
+        self._get_pending_memory(addr, size)
     }
 
     /// Store memory in pending state.
+    /// See [`pending_api::_set_pending_memory`] for the body.
     pub fn set_pending_memory(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            let width = (data.len() * 8) as u32;
-            let mut value: u128 = 0;
-            for (i, &b) in data.iter().enumerate() {
-                value |= (b as u128) << (i * 8);
-            }
-            let bv = crate::symbolic::RustBV::concrete(value, width);
-            pending.state.memory_store(addr, bv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
-        })
+        self._set_pending_memory(addr, data)
     }
 
     /// Get dirty page addresses from pending state.
     ///
     /// This returns the list of page-aligned addresses that have been
     /// modified in the pending callback state.
+    /// See [`pending_api::_get_pending_dirty_pages`] for the body.
     pub fn get_pending_dirty_pages(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| Ok(pending.state.get_dirty_pages()))
+        self._get_pending_dirty_pages()
     }
 
     /// Clear dirty page tracking in pending state.
+    /// See [`pending_api::_clear_pending_dirty_tracking`] for the body.
     pub fn clear_pending_dirty_tracking(&mut self) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            pending.state.clear_dirty_pages();
-            Ok(())
-        })
+        self._clear_pending_dirty_tracking()
     }
 
     /// Export pending constraints as a list of claripy ASTs.
     ///
     /// Returns constraints that can be added to Python state.solver.
     /// This exports stored branch conditions accumulated during Rust execution.
+    /// See [`pending_api::_export_pending_constraints`] for the body.
     pub fn export_pending_constraints(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        self.with_pending(|pending| {
-            let mut result = Vec::new();
-
-            // Import claripy for AST conversion
-            let claripy_mod = py.import("claripy")?;
-
-            // Export stored branch conditions as claripy ASTs
-            for (_condition_id, rustbv) in &pending.stored_conditions {
-                match rustbv_to_claripy(py, rustbv, &claripy_mod) {
-                    Ok(ast) => {
-                        result.push(ast);
-                    }
-                    Err(e) => {
-                        log::debug!("Could not convert stored condition to claripy: {}", e);
-                    }
-                }
-            }
-
-            log::debug!("Exported {} pending constraints", result.len());
-            Ok(result)
-        })
+        self._export_pending_constraints(py)
     }
 
     /// Get handle IDs that are actively referenced in the pending state.
     ///
     /// Returns handle IDs used in stored conditions and deferred forks.
     /// These should not be evicted from the AST handle cache.
+    /// See [`pending_api::_get_active_handle_ids`] for the body.
     pub fn get_active_handle_ids(&self) -> Vec<u64> {
-        let mut ids = Vec::new();
-        if let Some(ref pending) = self.pending_callback {
-            // Add condition IDs from stored_conditions
-            for (id, _) in &pending.stored_conditions {
-                ids.push(*id);
-            }
-            // Add condition IDs from deferred forks
-            for fork in &pending.deferred_forks {
-                ids.push(fork.condition_id);
-            }
-        }
-        ids
+        self._get_active_handle_ids()
     }
 
     /// Export the pending state as a full snapshot.
     ///
     /// This allows Python to get a complete snapshot of the pending state
     /// including all registers, memory pages, and metadata.
+    /// See [`pending_api::_export_pending_state`] for the body.
     pub fn export_pending_state(&self) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        self.with_pending(|pending| Ok(pending.state.export_full()))
+        self._export_pending_state()
     }
 
     /// Get the root state ID for the pending callback state.
@@ -1275,11 +1142,9 @@ impl RustExplorationManager {
     ///
     /// Returns:
     ///     The root state ID if available, or None if the state has no tracked root.
+    /// See [`pending_api::_get_pending_root_state_id`] for the body.
     pub fn get_pending_root_state_id(&self) -> PyResult<Option<u64>> {
-        self.with_pending(|pending| {
-            let state_id = pending.state.state_id();
-            Ok(self.sm.roots().get(&state_id).copied())
-        })
+        self._get_pending_root_state_id()
     }
 
     /// Get the full ancestry chain for the pending callback state.
@@ -1289,29 +1154,9 @@ impl RustExplorationManager {
     ///
     /// This is used by Python to find cached state data when the current state
     /// is a multi-level fork of an original state.
+    /// See [`pending_api::_get_pending_ancestry`] for the body.
     pub fn get_pending_ancestry(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| {
-            let mut ancestry = vec![pending.state.state_id()];
-
-            // Walk the parent chain
-            let current_parent = pending.state.parent_id();
-            while let Some(parent_id) = current_parent {
-                ancestry.push(parent_id);
-                // We can't traverse further without access to parent state objects,
-                // but we can include the root state if known
-                break;
-            }
-
-            // Add root state if not already in ancestry
-            let state_id = pending.state.state_id();
-            if let Some(&root_id) = self.sm.roots().get(&state_id) {
-                if !ancestry.contains(&root_id) {
-                    ancestry.push(root_id);
-                }
-            }
-
-            Ok(ancestry)
-        })
+        self._get_pending_ancestry()
     }
 
     /// Fork the pending state's solver context for Python callbacks.
@@ -1334,6 +1179,7 @@ impl RustExplorationManager {
     /// - "jumpkind": string
     /// - "constraint_count": u64
     /// - "stdout": bytes (accumulated stdout buffer)
+    /// See [`pending_api::_export_callback_bundle`] for the body.
     #[pyo3(signature = (register_names, shared_solver=true))]
     pub fn export_callback_bundle<'py>(
         &self,
@@ -1341,65 +1187,12 @@ impl RustExplorationManager {
         register_names: Vec<String>,
         shared_solver: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        self.with_pending(|pending| {
-            let dict = PyDict::new(py);
-
-            // Registers: batch export all requested registers
-            let reg_dict = PyDict::new(py);
-            for name in &register_names {
-                match pending.state.get_register(name) {
-                    Some(bv) => {
-                        if let Some(val) = bv.as_u128() {
-                            reg_dict.set_item(name, val)?;
-                        } else {
-                            // Symbolic — set to None, Python will fetch AST if needed
-                            reg_dict.set_item(name, py.None())?;
-                        }
-                    }
-                    None => {
-                        reg_dict.set_item(name, py.None())?;
-                    }
-                }
-            }
-            dict.set_item("registers", reg_dict)?;
-
-            // Solver context: shared (O(1) Rc clone) or forked (~3ms Z3 clone)
-            let solver_ref = pending.state.solver();
-            if shared_solver {
-                let rust_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
-                let constraint_count = rust_ctx.num_constraints();
-                dict.set_item("solver", Py::new(py, rust_ctx)?)?;
-                dict.set_item("constraint_count", constraint_count)?;
-            } else {
-                let forked_ctx = solver_ref.borrow().fork();
-                let rust_ctx = RustSolverContext::from_sym_context(forked_ctx);
-                let constraint_count = rust_ctx.num_constraints();
-                dict.set_item("solver", Py::new(py, rust_ctx)?)?;
-                dict.set_item("constraint_count", constraint_count)?;
-            }
-
-            // History
-            dict.set_item("history", pending.state.history().to_vec())?;
-
-            // Jumpkind
-            dict.set_item("jumpkind",
-                pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))?;
-
-            // Stdout buffer
-            dict.set_item("stdout", pending.state.stdout_buffer().to_vec())?;
-
-            Ok(dict)
-        })
+        self._export_callback_bundle(py, register_names, shared_solver)
     }
 
+    /// See [`pending_api::_fork_pending_solver`] for the body.
     pub fn fork_pending_solver(&self) -> PyResult<RustSolverContext> {
-        self.with_pending(|pending| {
-            // Fork the pending state's solver context
-            let solver_ref = pending.state.solver();
-            let forked_ctx = solver_ref.borrow().fork();
-            // Create a new RustSolverContext wrapping the forked SymContext
-            Ok(RustSolverContext::from_sym_context(forked_ctx))
-        })
+        self._fork_pending_solver()
     }
 
     /// Borrow the pending state's solver context without forking.
@@ -1411,11 +1204,9 @@ impl RustExplorationManager {
     /// Constraints added through this solver go directly to the pending state,
     /// so post-callback constraint sync via add_constraints_to_pending() should
     /// be skipped to avoid double-adding.
+    /// See [`pending_api::_borrow_pending_solver`] for the body.
     pub fn borrow_pending_solver(&self) -> PyResult<RustSolverContext> {
-        self.with_pending(|pending| {
-            let solver_rc = pending.state.solver().clone();
-            Ok(RustSolverContext::from_shared_sym_context(solver_rc))
-        })
+        self._borrow_pending_solver()
     }
 
     /// Add constraints from Python callbacks back to the pending state.
@@ -1426,43 +1217,13 @@ impl RustExplorationManager {
     ///
     /// Args:
     ///     constraints: List of claripy AST constraints to add
+    /// See [`pending_api::_add_constraints_to_pending`] for the body.
     pub fn add_constraints_to_pending(
         &mut self,
         py: Python<'_>,
         constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<()> {
-        use pyo3::types::PyListMethods;
-
-        self.with_pending_mut(|pending| {
-            let solver_ref = pending.state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &*sym_ctx;
-
-            let len = constraints.len();
-            for i in 0..len {
-                // Use get_item with usize index
-                if let Ok(constraint) = constraints.get_item(i) {
-                    // Convert claripy AST to RustBV
-                    if let Ok(bv) = claripy_to_rustbv(py, &constraint, ctx_ref) {
-                        // Add constraint to solver
-                        #[cfg(feature = "vex-engine-z3")]
-                        {
-                            if bv.width() == 1 {
-                                sym_ctx.assume_true(&bv);
-                            } else {
-                                // For wider values, interpret as "value != 0"
-                                let zero = RustBV::concrete(0, bv.width());
-                                let neq = bv.ne(&zero, ctx_ref);
-                                sym_ctx.assume_true(&neq);
-                            }
-                        }
-                    } else {
-                        log::debug!("Could not convert constraint {} from Python", i);
-                    }
-                }
-            }
-            Ok(())
-        })
+        self._add_constraints_to_pending(py, constraints)
     }
 
     /// Add constraints from Python to a state in a stash by state ID.
@@ -1825,11 +1586,9 @@ impl RustExplorationManager {
     }
 
     /// Get the number of constraints in the pending state's solver.
+    /// See [`pending_api::_pending_constraint_count`] for the body.
     pub fn pending_constraint_count(&self) -> PyResult<usize> {
-        self.with_pending(|pending| {
-            let solver_ref = pending.state.solver();
-            Ok(solver_ref.borrow().num_constraints())
-        })
+        self._pending_constraint_count()
     }
 
     /// Get the ID of the state currently being stepped.
@@ -1840,64 +1599,32 @@ impl RustExplorationManager {
     /// Load from pending callback state's Rust memory.
     /// Used by SimProcedure callbacks to read the correct per-state memory.
     /// Get all mapped page addresses from pending callback state's memory.
+    /// See [`pending_api::_get_pending_mapped_pages`] for the body.
     pub fn get_pending_mapped_pages(&self) -> PyResult<Vec<u64>> {
-        self.with_pending(|pending| {
-            Ok(pending.state.memory().pages().keys().map(|&pn| pn << 12).collect())
-        })
+        self._get_pending_mapped_pages()
     }
 
     /// Load an entire page (4096 bytes) from pending callback state's memory.
+    /// See [`pending_api::_pending_memory_load_page`] for the body.
     pub fn pending_memory_load_page(&self, page_addr: u64) -> PyResult<Vec<u8>> {
-        self.with_pending(|pending| {
-            pending.state.memory().load_page_concrete(page_addr)
-                .map_err(|e| PyValueError::new_err(format!("page load failed: {}", e)))
-        })
+        self._pending_memory_load_page(page_addr)
     }
 
+    /// See [`pending_api::_pending_memory_load`] for the body.
     pub fn pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        self.with_pending(|pending| {
-            let solver_ref = pending.state.solver();
-            let ctx = solver_ref.borrow();
-            match pending.state.memory().load_concrete(addr, size, &*ctx) {
-                Ok(bv) => {
-                    if let Some(val) = bv.as_u128() {
-                        let byte_count = (size as usize).min(16);
-                        Ok(val.to_le_bytes()[..byte_count].to_vec())
-                    } else {
-                        let solver = pending.state.solver();
-                        let ctx = solver.borrow();
-                        if let Some(val) = ctx.eval(&bv) {
-                            let byte_count = (size as usize).min(16);
-                            Ok(val.to_le_bytes()[..byte_count].to_vec())
-                        } else {
-                            Ok(vec![0u8; size as usize])
-                        }
-                    }
-                }
-                Err(_) => Ok(vec![0u8; size as usize]),
-            }
-        })
+        self._pending_memory_load(addr, size)
     }
 
     /// Store to pending callback state's Rust memory.
+    /// See [`pending_api::_pending_memory_store`] for the body.
     pub fn pending_memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            let mut value: u128 = 0;
-            for (i, &byte) in data.iter().enumerate() {
-                if i < 16 { value |= (byte as u128) << (i * 8); }
-            }
-            let bv = RustBV::concrete(value, (data.len() * 8) as u32);
-            pending.state.memory_mut().store_concrete(addr, bv)
-                .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
-        })
+        self._pending_memory_store(addr, data)
     }
 
     /// Map memory with data in pending callback state.
+    /// See [`pending_api::_pending_memory_map_data`] for the body.
     pub fn pending_memory_map_data(&mut self, addr: u64, data: &[u8], perm: u8) -> PyResult<()> {
-        self.with_pending_mut(|pending| {
-            pending.state.map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));
-            Ok(())
-        })
+        self._pending_memory_map_data(addr, data, perm)
     }
 
     /// Set address to skip hook check for on next step.
@@ -1908,22 +1635,21 @@ impl RustExplorationManager {
     ///
     /// The skip is automatically cleared after one step or when the address is used.
     /// GAP 6: Stack-based tracking allows for nested zero-length hooks.
+    /// See [`pending_api::_set_skip_hook_addr`] for the body.
     pub fn set_skip_hook_addr(&mut self, addr: u64) {
-        // Set expiry to current_step + 2 to account for step increment
-        // This ensures the skip persists through the next step
-        let expiry = self.steps + 2;
-        self.skip_hook_stack.push((addr, expiry));
-        log::debug!("Added skip hook 0x{:x} with expiry step {}", addr, expiry);
+        self._set_skip_hook_addr(addr)
     }
 
     /// Clear all pending skip_hook entries.
+    /// See [`pending_api::_clear_skip_hook_addr`] for the body.
     pub fn clear_skip_hook_addr(&mut self) {
-        self.skip_hook_stack.clear();
+        self._clear_skip_hook_addr()
     }
 
     /// Clear skip entry for a specific address.
+    /// See [`pending_api::_clear_skip_hook_for_addr`] for the body.
     pub fn clear_skip_hook_for_addr(&mut self, addr: u64) {
-        self.skip_hook_stack.retain(|&(a, _)| a != addr);
+        self._clear_skip_hook_for_addr(addr)
     }
 
     /// Get errors encountered during exploration.
