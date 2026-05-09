@@ -1,56 +1,43 @@
-## Session log: 2026-05-09, 177th loop session
+## Session log: 2026-05-09, 178th loop session
 
-### Task: angr-rte6 — clean Rust rebuild script — CLOSED
+### Task: angr-5zbe — pending writes load-after-pending tests — CLOSED
 
-Added `tools/rebuild-rust.sh` matching the style of the existing
-`tools/restore-venv.sh`. Deterministic clean rebuild of the Rust
-extension.
+Added two Rust unit tests in `native/angr/src/memory/tests.rs`:
+1. `test_pending_write_visible_after_flush` — concrete-addr pending
+   write covered by `add_pending_write`, then `flush_pending_writes`,
+   then load returns the new value.
+2. `test_fork_pending_writes_visible_in_both_after_flush` — add a
+   pending write before `fork()`; both parent and child flush; both
+   load the new value (independent of each other).
 
-**What it does (default mode):**
-1. Remove `angr/rustylib*.so` (so a missed rebuild surfaces as
-   ImportError instead of silent stale-symbol behavior)
-2. Remove `build/` (setuptools intermediate)
-3. `cargo clean --manifest-path Cargo.toml` (workspace-wide)
-4. `.venv/bin/python -m pip install -e . --no-build-isolation --no-deps`
+The bd description assumed pending_writes overlay is active during
+execution ("load returns the pending V") but the actual overlay path
+returns base_value unchanged — the lazy overlay was disabled because
+it didn't work for sym-write (per `lazy-memory-load-overlay-fails`
+memory). So the tests target the "defer-then-flush" semantics that
+the code actually implements: pending writes are invisible to loads
+until `flush_pending_writes` materializes them.
 
-**Optional modes:**
-- `--keep-cargo-cache` skips step 3 (faster, when only the Python
-  wrapper / setuptools-rust state is suspect)
-- `--cargo-only` skips pip; uses `cargo build --release` then copies
-  `target/release/librustylib.so` → `angr/rustylib<EXT_SUFFIX>.so`.
-  Recovery path when the venv's pip/setuptools is corrupt — the PyO3
-  .so exports the same module so `import angr.rustylib` works.
-  Honors `Z3_SYS_Z3_HEADER`, falls back to `/usr/include/z3.h` when the
-  venv-shipped `z3/include/z3.h` is missing.
+### Files modified
 
-**Surprises hit during impl:**
-- This `.venv/` has NO `pip` executable script in `bin/` (only
-  `python*`). Initial draft used `$VENV/bin/pip` and failed with
-  "No such file or directory". Switched to `python -m pip`. Saved
-  as memory `venv-no-pip-executable`.
-- The default pip-based mode on this venv hits the
-  `pip._vendor.resolvelib` ImportError described in
-  `avoid-broken-venv-pip-fallback-cargo-build`. So I verified the
-  script via `--cargo-only` instead. The pip path is still the
-  documented default for healthy venvs.
+- native/angr/src/memory/tests.rs (+107 lines, 2 tests at EOF)
 
 ### Verification
 
-- `--cargo-only --keep-cargo-cache`: rebuilt .so in ~2s (incremental),
-  342/342 rust exploration tests pass.
-- `--cargo-only` (full cargo clean + rebuild): 41.8s rebuild from
-  scratch, .so loads, smoke tests pass.
-- CLAUDE.md "Stale .so file" entry now points at the new script.
+- `cargo test --release --lib memory::` → 34/34 pass
+- `pytest tests/engines/test_rust_exploration.py` → 342/342 pass
+- Commit: `686e9f398`
 
-### Memories saved
+### Memory saved
 
-- `tool-rebuild-rust-script` — what the script does and how to invoke
-  each mode.
-- `venv-no-pip-executable` — current loop venv lacks `bin/pip`; always
-  use `python -m pip`.
+- `invariant-pending-writes-defer-then-flush` — pinning the
+  three semantic invariants (visibility-only-after-flush,
+  fork inheritance, fork isolation) and where in the code
+  the overlay is intentionally stubbed.
 
 ### Next session
 
-`bd ready` — many P2/P3 tasks. Several P2 items (angr-is4x, angr-8s4b,
-angr-3tek) are auto-deferred after 3 dirty iterations — handle with
-care, prefer smaller scoped tasks first.
+`bd ready` → many P3 test/docs tasks (angr-w6ry callstack proxy
+fork tests, angr-orc9 ARM/AArch64/MIPS proc round-trip, angr-f58x
+DCAS counter test). Larger P2 items remain auto-deferred — keep
+preferring smaller scoped tasks.
