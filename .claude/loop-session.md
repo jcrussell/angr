@@ -1,55 +1,58 @@
-## Session log: 2026-05-09 — angr-wqao.3 (196th loop session, CLOSED)
+## Session log: 2026-05-09 — angr-orc9 (198th loop session, CLOSED)
 
 ### Task
-angr-wqao.3 — Document rust_manager.py invariants. Pure docs task, sibling
-of deferred refactor tasks (.1, .2, .4) which propose mechanical extraction
-with no motivating bug. wqao.3 was different: documenting existing
-cross-mixin invariants for future contributors.
+angr-orc9 (P3) — "ARM / AArch64 / MIPS procedure round-trip tests".
+Closed via commit 5f9eb0cf5.
 
-### Outcome
-**CLOSED** in commit 30e682208.
+### What landed
+Three new tests in TestMultiArchSupport (one per non-amd64 arch):
+- test_arm_native_procedure_round_trip
+- test_aarch64_native_procedure_round_trip
+- test_mips32_native_procedure_round_trip
 
-### What was done
-Added a 95-line docstring block at the top of `angr/exploration/rust_manager.py`
-listing 10 cross-mixin invariants. Implemented as docstring (not a separate
-INVARIANTS.md) per CLAUDE.md "no .md files" preference; the bead description
-explicitly allowed either location.
+Each test sets up a hooked address, drops a 5-byte string at a fixed
+buffer, sets the arg register (r0/x0/$a0) and link register
+(LR/X30/$ra=EXIT_HOOK), then runs the dispatcher. After native strlen
+returns the dispatcher hands back to the exit hook and the state
+deadends. Asserts: return value lands in r0/x0/$v0; SP is left
+untouched (since BL/JAL store the return address in a register).
 
-The 10 invariants:
-  I1  Disk-cache key axes (_RUST_CACHE_VERSION/_PYTHON_METADATA_VERSION + memo)
-  I2  Init pipeline phases (post angr-khth split: pickle / deserialize /
-      side-effects / orchestrator)
-  I3  Init-cache user-symbolic gate (_state_has_user_symbolic must gate)
-  I4  _apply_state_metadata is an allow-list (only LAZY_SOLVES + STRICT_PAGE_ACCESS)
-  I5  Register filter at FFI boundary (_supported_register_names in
-      rust_state_sync.py)
-  I6  State-cache pinning + manager-vs-mixin override of _cleanup_state_cache
-  I7  Rust↔Python field sync uses max(), not overwrite
-  I8  Exploration-loop termination must check Rust-native + predicate finds
-      via _found_count()
-  I9  push_to_active_or_drop helper enforces max_active_states
-  I10 mgr.stats is a @property; mgr._rust_mgr.stats() is a method
+### Bugs surfaced and fixed
+1. run_loop.rs::run_loop passed a *blank* RegisterFile when calling
+   calling_convention.get_return_addr after a successful native
+   SimProcedure. Default impl (SystemVAMD64) returned None due to
+   None memory and fell through to a stack-load fallback — but
+   ARMEABI/AArch64CC override get_return_addr to read LR/X30 from
+   the RegisterFile, so the blank RF returned Some(0) and the
+   dispatcher set PC=0. Fix: pass state.registers().
 
-### Decisions
-- Cited test file lines (stable) but not rust_manager.py self-references
-  (would rot — adding 95 lines already shifted everything below).
-- Acceptance criteria asked for ≥4 invariants; delivered 10 to make the
-  document genuinely useful as an entry point.
+2. The post-success path always incremented SP by ptr_size,
+   matching x86/AMD64 stack-pop semantics. Wrong for ARM/ARM64/MIPS.
+   Added CallingConvention::pops_return_addr() (default true; false
+   on ARMEABI/AArch64CC/MipsO32) and gated SP adjustment on it.
+
+3. MIPS32 had no calling convention — fell through to SystemVAMD64
+   which uses x86_64 register offsets. Added MipsO32 (args
+   $a0-$a3 at offsets 24/28/32/36; return $v0 at 16; return addr
+   $ra at 132; pops_return_addr=false). Registered in
+   default_cc_for_arch for mips/mips32/mipsel/mipsbe.
 
 ### Files modified
-- angr/exploration/rust_manager.py (+113 lines, docstring only)
+- native/angr/src/arch/calling_conventions.rs (MipsO32 + trait method)
+- native/angr/src/exploration/run_loop.rs (use state.registers, gate SP pop)
+- tests/engines/test_rust_exploration.py (3 new tests)
+- CLAUDE.md (arch matrix update — MipsO32 now in place)
 
-### Verification
-- 357/357 tests passing (`pytest tests/engines/test_rust_exploration.py`)
-- Docstring imports cleanly
+### Test status
+- Python: 365/365 passing (+3 new)
+- Cargo calling_conv: 9/9 passing (+1 test_pops_return_addr_per_arch)
 
-### Memory saved
-- invariant-rust-manager-docstring-canonical (pointer to the docstring
-  as canonical source)
+### Memories saved
+- invariant-cc-pops-return-addr — when adding a CC, override
+  pops_return_addr() if the ABI uses a link register
+- cc-blank-register-file-bug — root cause / regression class
+- invariant-mips-no-calling-convention — UPDATED to OBSOLETE,
+  MIPS64 still falls through to SystemVAMD64
 
-### Bead status
-- angr-wqao.3 CLOSED with rationale.
-- Parent angr-wqao still open. Three siblings (.1 .2 .4) still open with
-  their parent's deferral memory applying. None of them block on this docs
-  task — they were independent refactor proposals that the deferral
-  audit found unjustified.
+### Status
+CLOSED. Next session: pick a fresh task from `bd ready`.
