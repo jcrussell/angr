@@ -221,26 +221,34 @@ impl RustExplorationManager {
                                     state.set_register_by_offset(ret_reg, rv);
                                 }
 
-                                // Get return address and set PC
+                                // Get return address and set PC. Use the
+                                // state's real register file so that LR/X30/$ra
+                                // overrides see actual values; passing a blank
+                                // RegisterFile here used to make ARM/ARM64/MIPS
+                                // read LR=0 and set PC to 0.
                                 let ctx = state.solver().borrow();
-                                let ret_addr_opt = crate::arch::arch_from_name(&self.environment.arch_name)
-                                    .and_then(|arch| {
-                                        self.environment.calling_convention.get_return_addr(
-                                            &crate::arch::RegisterFile::new(arch),
-                                            None,
-                                            &ctx,
-                                        )
-                                    });
+                                let ret_addr_opt = self.environment.calling_convention.get_return_addr(
+                                    state.registers(),
+                                    None,
+                                    &ctx,
+                                );
+                                let pops_return_addr = self.environment.calling_convention.pops_return_addr();
+                                drop(ctx);
                                 if let Some(ret_addr) = ret_addr_opt {
-                                    drop(ctx);
-                                    // Pop return address from stack
-                                    let sp = state.get_sp().as_u64().unwrap_or(0);
-                                    let ptr_size = state.arch().bytes() as u64;
-                                    state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
+                                    // Only adjust SP for stack-based ABIs
+                                    // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
+                                    // in a register and leave SP untouched.
+                                    if pops_return_addr {
+                                        let sp = state.get_sp().as_u64().unwrap_or(0);
+                                        let ptr_size = state.arch().bytes() as u64;
+                                        state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
+                                    }
                                     state.set_pc(ret_addr);
-                                } else {
-                                    drop(ctx);
-                                    // Fallback: try to get return address from stack
+                                } else if pops_return_addr {
+                                    // Fallback: read ret addr from [sp] for
+                                    // stack-based ABIs (only useful when the
+                                    // calling convention's get_return_addr
+                                    // declined to read memory itself).
                                     if let Some(sp) = state.get_sp().as_u64() {
                                         if let Ok(ret_bv) = state.memory_load(sp, state.arch().bytes()) {
                                             if let Some(ret_addr) = ret_bv.as_u64() {

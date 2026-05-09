@@ -3737,6 +3737,182 @@ class TestMultiArchSupport:
             f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
         )
 
+    # ------------------------------------------------------------------
+    # SimProcedure round-trip tests (angr-orc9). One per non-amd64 arch:
+    # exercise the calling-convention path through the dispatcher
+    # (arg extraction → native procedure → return-value placement →
+    # return-address handoff). Same regression-class as the latent
+    # Cdecl x86 EAX/EDX bug (commit 5329d8222) — without these tests,
+    # a register-offset or return-addr error stays silent until end-to-end
+    # binary work happens to depend on it.
+    # ------------------------------------------------------------------
+
+    def test_arm_native_procedure_round_trip(self):
+        """ARMEABI: native strlen runs, return lands in r0, PC = LR.
+
+        ARM uses BL which stores the return address in LR (R14, offset 64),
+        not on the stack. The dispatcher must read LR after a native
+        procedure returns, not pop a stack frame.
+        """
+        mgr = _RustExplorationManager("arm")
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: '{}')
+        mgr.set_callbacks(callbacks)
+
+        STRLEN_HOOK = 0x500000
+        EXIT_HOOK = 0x600000
+        STRING_ADDR = 0x2000
+        STACK_BASE = 0x7FFF0000
+
+        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+
+        state = RustSimState("arm")
+        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STRING_ADDR, b"hello\x00")
+
+        # ARMEABI: r0 = arg0; LR = return addr.
+        state.set_register("r0", STRING_ADDR)
+        state.set_register("lr", EXIT_HOOK)
+        state.set_register("sp", STACK_BASE)
+        state.pc = STRLEN_HOOK
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        deadended_ids = mgr.get_state_ids("deadended")
+        assert len(deadended_ids) == 1, (
+            f"expected exactly one deadended state after exit hook fired; "
+            f"stashes={mgr.stash_counts()}"
+        )
+        sid = deadended_ids[0]
+        r0 = mgr.get_state_register(sid, "r0")
+        assert r0 == 5, (
+            f"strlen('hello') should return 5 in r0, got {r0!r}. "
+            f"native_calls={mgr.native_procedure_stats()}"
+        )
+        # SP must be untouched: ARM doesn't push the return address.
+        sp = mgr.get_state_register(sid, "sp")
+        assert sp == STACK_BASE, (
+            f"ARM SP changed from {STACK_BASE:#x} to {sp:#x}; "
+            f"the dispatcher should NOT pop a return address from the stack "
+            f"because BL stores it in LR."
+        )
+
+    def test_aarch64_native_procedure_round_trip(self):
+        """AArch64: native strlen runs, return lands in x0, PC = X30 (LR).
+
+        AArch64 uses BL which stores the return address in X30 (offset 256),
+        not on the stack. Mirrors the ARM round-trip test.
+        """
+        mgr = _RustExplorationManager("aarch64")
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: '{}')
+        mgr.set_callbacks(callbacks)
+
+        STRLEN_HOOK = 0x500000
+        EXIT_HOOK = 0x600000
+        STRING_ADDR = 0x2000
+        STACK_BASE = 0x7FFFFFFFE000
+
+        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+
+        state = RustSimState("aarch64")
+        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STRING_ADDR, b"hello\x00")
+
+        # AArch64: x0 = arg0; X30 (LR) = return addr.
+        state.set_register("x0", STRING_ADDR)
+        state.set_register("x30", EXIT_HOOK)
+        state.set_register("sp", STACK_BASE)
+        state.pc = STRLEN_HOOK
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        deadended_ids = mgr.get_state_ids("deadended")
+        assert len(deadended_ids) == 1, (
+            f"expected exactly one deadended state after exit hook fired; "
+            f"stashes={mgr.stash_counts()}"
+        )
+        sid = deadended_ids[0]
+        x0 = mgr.get_state_register(sid, "x0")
+        assert x0 == 5, (
+            f"strlen('hello') should return 5 in x0, got {x0!r}. "
+            f"native_calls={mgr.native_procedure_stats()}"
+        )
+        sp = mgr.get_state_register(sid, "sp")
+        assert sp == STACK_BASE, (
+            f"AArch64 SP changed from {STACK_BASE:#x} to {sp:#x}; "
+            f"the dispatcher should NOT pop a return address from the stack."
+        )
+
+    def test_mips32_native_procedure_round_trip(self):
+        """MIPS32 (O32): native strlen runs, return lands in $v0, PC = $ra.
+
+        MIPS uses JAL which stores the return address in $ra (R31, offset 132),
+        not on the stack. Args are passed in $a0-$a3 (R4-R7). Return value
+        in $v0 (R2, offset 16). Locks the calling-convention bug class — if
+        MIPS falls back to SystemVAMD64 (the default before this lands), the
+        dispatcher would read RDI=72 = MIPS R12 instead of $a0=24, and the
+        native procedure would see garbage args.
+        """
+        mgr = _RustExplorationManager("mips32")
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: '{}')
+        mgr.set_callbacks(callbacks)
+
+        STRLEN_HOOK = 0x500000
+        EXIT_HOOK = 0x600000
+        STRING_ADDR = 0x2000
+        STACK_BASE = 0x7FFF0000
+
+        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+
+        state = RustSimState("mips32")
+        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STRING_ADDR, b"hello\x00")
+
+        # MIPS O32: $a0 = arg0; $ra = return addr.
+        state.set_register("a0", STRING_ADDR)
+        state.set_register("ra", EXIT_HOOK)
+        state.set_register("sp", STACK_BASE)
+        state.pc = STRLEN_HOOK
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        deadended_ids = mgr.get_state_ids("deadended")
+        assert len(deadended_ids) == 1, (
+            f"expected exactly one deadended state after exit hook fired; "
+            f"stashes={mgr.stash_counts()}"
+        )
+        sid = deadended_ids[0]
+        v0 = mgr.get_state_register(sid, "v0")
+        assert v0 == 5, (
+            f"strlen('hello') should return 5 in $v0, got {v0!r}. "
+            f"native_calls={mgr.native_procedure_stats()}"
+        )
+        sp = mgr.get_state_register(sid, "sp")
+        assert sp == STACK_BASE, (
+            f"MIPS SP changed from {STACK_BASE:#x} to {sp:#x}; "
+            f"the dispatcher should NOT pop a return address from the stack."
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust extension not available")
 class TestErroredStash:

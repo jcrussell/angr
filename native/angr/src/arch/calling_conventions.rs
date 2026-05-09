@@ -41,6 +41,19 @@ pub trait CallingConvention: Send + Sync {
     /// Get the return value register offset.
     fn return_register(&self) -> u32;
 
+    /// Whether a `call`-style instruction pushes the return address onto the
+    /// stack (true) or stores it in a link/return register (false).
+    ///
+    /// x86/AMD64 use stack-based return-addr semantics — `call` pushes
+    /// `ret_addr` to `[sp]` and `ret` pops it, so when a native SimProcedure
+    /// finishes, the dispatcher must increment SP by `pointer_size`.
+    /// ARM/ARM64 use BL which writes the return address into LR (R14/X30) and
+    /// MIPS uses JAL which writes it to $ra (R31); for these architectures
+    /// the dispatcher must NOT adjust SP after a native SimProcedure returns.
+    fn pops_return_addr(&self) -> bool {
+        true
+    }
+
     /// Extract up to N arguments from registers and memory.
     ///
     /// Arguments are extracted in order: first from registers, then from stack.
@@ -321,6 +334,10 @@ impl CallingConvention for ARMEABI {
         let lr = regs.get(64, 4, ctx);
         lr.as_u64()
     }
+
+    fn pops_return_addr(&self) -> bool {
+        false
+    }
 }
 
 /// AArch64 (ARM64) calling convention.
@@ -378,6 +395,75 @@ impl CallingConvention for AArch64CC {
         let lr = regs.get(256, 8, ctx);
         lr.as_u64()
     }
+
+    fn pops_return_addr(&self) -> bool {
+        false
+    }
+}
+
+/// MIPS O32 calling convention (32-bit MIPS, the default Linux ABI).
+///
+/// Integer/pointer arguments: $a0-$a3 (R4-R7)
+/// Return value: $v0 (R2). $v1 (R3) holds the upper half for 64-bit returns.
+/// Return address: $ra (R31) — JAL writes the return address into $ra, not
+/// the stack. Note that O32 reserves 16 bytes of stack space for the four
+/// register-passed args; additional args land at [sp + 16].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MipsO32;
+
+impl MipsO32 {
+    pub const ARCH_ALIASES: &'static [&'static str] = &["mips", "mips32", "mipsel", "mipsbe"];
+}
+
+impl CallingConvention for MipsO32 {
+    fn name(&self) -> &'static str {
+        "MIPS_O32"
+    }
+
+    fn arg_registers(&self) -> &[u32] {
+        // $a0-$a3 (MIPS32 VEX offsets: R4=24, R5=28, R6=32, R7=36)
+        &[24, 28, 32, 36]
+    }
+
+    fn fp_arg_registers(&self) -> &[u32] {
+        &[]
+    }
+
+    fn pointer_size(&self) -> u32 {
+        4
+    }
+
+    fn stack_arg_offset(&self) -> u64 {
+        // O32 reserves 16 bytes for $a0-$a3 in the caller's frame.
+        // Stack-passed args (5+) start at [sp + 16].
+        16
+    }
+
+    fn endness(&self) -> Endness {
+        // MIPS may be either-endian; default to little. The arch's own
+        // `is_little_endian()` is the authoritative endianness for memory
+        // access on a given state.
+        Endness::Little
+    }
+
+    fn return_register(&self) -> u32 {
+        16 // $v0 (R2)
+    }
+
+    fn get_return_addr(
+        &self,
+        regs: &RegisterFile,
+        _memory: Option<&SymbolicMemory>,
+        ctx: &SymContext,
+    ) -> Option<u64> {
+        // $ra (R31) offset = 132 in MIPS32 VEX guest state
+        let ra = regs.get(132, 4, ctx);
+        ra.as_u64()
+    }
+
+    fn pops_return_addr(&self) -> bool {
+        false
+    }
 }
 
 /// Get the default calling convention for an architecture.
@@ -397,6 +483,8 @@ pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
         Box::new(ARMEABI)
     } else if AArch64CC::ARCH_ALIASES.contains(&lower_str) {
         Box::new(AArch64CC)
+    } else if MipsO32::ARCH_ALIASES.contains(&lower_str) {
+        Box::new(MipsO32)
     } else {
         Box::new(SystemVAMD64)
     }
@@ -460,6 +548,26 @@ mod tests {
         // RAX in amd64 VEX guest state = offset 16.
         assert_eq!(SystemVAMD64.return_register(), 16);
         assert_eq!(MicrosoftX64.return_register(), 16);
+        // ARM r0 = offset 8 (R0 in ARM VEX guest state).
+        assert_eq!(ARMEABI.return_register(), 8);
+        // AArch64 X0 = offset 16 (X0 in ARM64 VEX guest state).
+        assert_eq!(AArch64CC.return_register(), 16);
+        // MIPS32 $v0 (R2) = offset 16 (R2 in MIPS32 VEX guest state).
+        assert_eq!(MipsO32.return_register(), 16);
+    }
+
+    #[test]
+    fn test_pops_return_addr_per_arch() {
+        // Stack-based ABIs (x86/AMD64): return addr lives at [sp], so the
+        // dispatcher must increment SP after a native procedure returns.
+        assert!(SystemVAMD64.pops_return_addr());
+        assert!(MicrosoftX64.pops_return_addr());
+        assert!(Cdecl.pops_return_addr());
+        // Register-based ABIs (ARM/ARM64/MIPS): return addr lives in
+        // LR/X30/$ra, and SP must be left untouched.
+        assert!(!ARMEABI.pops_return_addr());
+        assert!(!AArch64CC.pops_return_addr());
+        assert!(!MipsO32.pops_return_addr());
     }
 
     #[test]
@@ -479,8 +587,11 @@ mod tests {
             ("armhf", "ARM_EABI"),
             ("arm64", "AArch64"),
             ("aarch64", "AArch64"),
+            ("mips", "MIPS_O32"),
+            ("mips32", "MIPS_O32"),
+            ("mipsel", "MIPS_O32"),
+            ("mipsbe", "MIPS_O32"),
             // Unknown falls back to SystemV_AMD64.
-            ("mips", "SystemV_AMD64"),
             ("ppc", "SystemV_AMD64"),
         ];
         for (arch, expected) in cases {
@@ -502,6 +613,7 @@ mod tests {
             ("cdecl", Cdecl::ARCH_ALIASES),
             ("ARM_EABI", ARMEABI::ARCH_ALIASES),
             ("AArch64", AArch64CC::ARCH_ALIASES),
+            ("MIPS_O32", MipsO32::ARCH_ALIASES),
         ];
         for (i, (name_a, aliases_a)) in groups.iter().enumerate() {
             for (name_b, aliases_b) in &groups[i + 1..] {

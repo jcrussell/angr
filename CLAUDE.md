@@ -208,9 +208,9 @@ tests and no benchmarks. Treat them as experimental until that changes.
 |-------------|------------|-------------------|------------|-------------------|--------------|
 | AMD64       | ~110+      | ~268 (fauxware)   | 15/16      | SystemV, MS x64   | Supported    |
 | x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
-| ARM (32-bit)| 2          | 1 (validate)      | 0          | ARMEABI           | Experimental |
-| ARM64       | 1          | 1 (blob branch)   | 0          | AArch64           | Experimental |
-| MIPS32      | 4          | 1 (blob branch)   | 0          | none (falls back to SystemV) | Experimental |
+| ARM (32-bit)| 2          | 2 (validate, native-proc) | 0  | ARMEABI           | Experimental |
+| ARM64       | 1          | 2 (blob branch, native-proc) | 0 | AArch64        | Experimental |
+| MIPS32      | 4          | 2 (blob branch, native-proc) | 0 | MipsO32        | Experimental |
 | MIPS64      | 0          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
 
 **What "Skeleton" means:** `RustSimState("arm64")` etc. constructs successfully,
@@ -223,10 +223,9 @@ x86 test ran — assume the same risk for ARM64/MIPS until coverage lands.
 **What's wired up but unverified:**
 - Register offsets for all six arches in `native/angr/src/arch/*.rs`
 - Endianness flag (MIPS32 BE smoke-tested; ARM/ARM64/MIPS64 BE untested)
-- ARMEABI / AArch64 calling conventions defined in `calling_conventions.rs`
-- MIPS has **no** calling convention — `default_cc_for_arch("mips32")`
-  falls through to `SystemVAMD64`, which uses x86_64 register offsets and
-  will silently misbehave on any SimProcedure that takes args.
+- ARMEABI / AArch64 / MipsO32 calling conventions defined in
+  `calling_conventions.rs`. MIPS64 still falls back to `SystemVAMD64`,
+  which will silently misbehave on any SimProcedure that takes args.
 
 To promote an arch from Skeleton → Experimental: add at least one
 integration test that loads a real binary, runs `mgr.run(...)`, and
