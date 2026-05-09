@@ -2600,13 +2600,17 @@ class RustExplorationManager(
 
         live = active_set | found_set
         live.update(self._state_roots.get(sid, sid) for sid in live)
+        # Always keep root state cache entries: a forked state can fire its
+        # first Python callback without itself or its (Rust-only) ancestors
+        # being in cache; the only way to avoid the blank-state fallback is
+        # to fall back to the root, so the root must survive eviction even
+        # when it is no longer in active/found.
+        live |= set(self._state_roots.values())
         for sid in list(self._state_cache.keys()):
             if sid not in live:
                 del self._state_cache[sid]
         # Drop options/globals for state IDs that no longer exist in any stash.
-        # Keep root entries pinned (they back the parent-walk on lazy init for
-        # any future child accesses).
-        live_with_roots = live | set(self._state_roots.values())
+        live_with_roots = live
         for sid in list(self._py_state_options.keys()):
             if sid not in live_with_roots:
                 del self._py_state_options[sid]
