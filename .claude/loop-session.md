@@ -1,76 +1,35 @@
-## Session log: 2026-05-09 — angr-800o + angr-1bqa (186th loop session)
+## Session log: 2026-05-09 — angr-6a7u (187th loop session)
 
-Closed two related tasks: arch coverage promotion and SimOption rejection.
+Closed: refresh stale benchmark baselines after recent perf wins.
 
-### angr-800o — AArch64 + MIPS32 real-binary integration tests
+### Approach
+Ran `tests/benchmarks/run_regression.py --full --rust-only --no-sla --update`
+once to capture current Rust timings, then ran several verification rounds
+without --update to validate stability.
 
-Sibling/follow-up of angr-lvem (ARM landed in 32328959f). Added end-to-end
-.explore() tests for both arches using cle's Blob backend with hand-assembled
-instructions (7 each). Each test asserts a symbolic input is constrained
-to 42 in the found state, exercising VEX lifting, register sync, branch
-handling, and PC propagation end-to-end.
+### Real wins (baseline shrinks reflect actual perf gains)
+- google2016_unbreakable_1: 3.523 → ~1.7s typical (but bimodal up to ~3.3s)
+- unmapped_analysis: 2.148 → 0.789s (much faster after recent FxHash work)
+- csaw_wyvern: 1.257 → 0.94s
+- ekopartyctf2016_sokohashv2: 12.091 → ~9.5s typical (bimodal, can hit 15s+)
+- flareon2015_5: 6.563 → 5.567s
+- securityfest_fairlight: bimodal — runs ~7.8s OR ~15.0s
 
-Resolved the dirty state from the prior session:
-- Inadvertent regression in TestCallableStepFunc::test_callable_with_rust_engine.
-  Original `_load_binary_regions` skipped externs/tls/kernel via
-  `if obj.binary is None` — but those pseudo-objects actually have a
-  synthetic `obj.binary='cle##externs'` (str, not None). They were "safely"
-  skipped only because they have no executable *sections*. Adding the
-  Blob-needed segments fallback exposed an executable segment at
-  0x700000-0x700030 in cle##externs, which the Rust interpreter then
-  tried to lift as code, splitting Callable on a symbolic condition.
-  Fix: explicit `obj.binary.startswith("cle##")` skip before
-  section/segment walk.
+### Conservative bumps for high-variance Z3-nondeterministic benches
+Three benchmarks have bimodal/noisy distributions due to Z3 model
+nondeterminism affecting executed paths. Set baselines at the slow mode +
+some margin so the 15% regression threshold absorbs noise rather than
+flagging false positives:
 
-Promoted ARM64 + MIPS32 from Skeleton to Experimental in the support
-matrix (CLAUDE.md).
+- google2016_unbreakable_1: --update wrote 1.683 → bumped to 3.5
+  (max observed across 8 runs: 3.26s; 3.5*1.15=4.0s budget)
+- securityfest_fairlight: --update wrote 15.096 → bumped to 16.0
+  (max observed: 15.10s; 16.0*1.15=18.4s budget)
+- ekopartyctf2016_sokohashv2: --update wrote 10.083 → bumped to 16.0
+  (max observed: 15.36s; 16.0*1.15=18.4s budget)
 
-Commit 0ceebfc8a.
+### Verification
+5+ consecutive `--full --rust-only --no-sla` runs all green after bumps.
 
-### angr-1bqa — Warn-once for divergence-risk SimOptions
-
-Follow-up of angr-pe5t's docs/RUST_SIMOPTION_COVERAGE.md. The matrix
-classifies many SimOptions as `(b) explicitly reject` — they would
-change Python-engine semantics but the Rust engine silently ignores
-them. Implemented `_REJECTED_OPTION_NAMES` + `_warn_rejected_options()`
-that emits a UserWarning the first time each option is seen on a state.
-
-Key implementation choices:
-- Warn-once per option per manager (using a per-instance set), not per
-  state added. Three states with CALLLESS yield exactly one warning.
-- Check fires from `__init__` on user-supplied states. Cannot fire from
-  `_add_rust_state` alone because `_apply_state_metadata` strips options
-  to {LAZY_SOLVES, STRICT_PAGE_ACCESS} on the cached-init-state path,
-  losing user-set options before they reach `_add_rust_state`.
-- Excluded `TRACK_CONSTRAINT_ACTIONS` and `TRACK_MEMORY_MAPPING` from
-  the warn set even though doc-tagged (b): they ship in the default
-  `symbolic` mode bundle (sim_options.py:391, 374), so every plain
-  `entry_state()` would otherwise emit warnings the user did not opt
-  into. Documented the exclusion in
-  docs/RUST_SIMOPTION_COVERAGE.md.
-
-3 new tests cover positive (TRACK_MEMORY_ACTIONS + DO_RET_EMULATION),
-dedup (3x CALLLESS = 1 warning), and no-false-positive (default
-entry_state emits no spurious warnings).
-
-Commit 0293ea03d.
-
-### Test status
-
-357/357 passing (was 354). 354 → +3 from arch tests. 354 → +3 from
-SimOption tests. Final 357 because removing the cle## pseudo-object
-fix could otherwise have broken the existing Callable test.
-
-### Memories saved this session
-
-- `cle-pseudo-objects-binary-not-none` — pseudo-objects have synthetic
-  `obj.binary='cle##externs'`, not None.
-- `blob-loader-segment-fallback` — Blob loader exposes only segments,
-  not sections; segments fallback is required.
-- `invariant-apply-state-metadata-strips-options` — disk-cache hit
-  path drops user-set SimOptions except LAZY_SOLVES + STRICT_PAGE_ACCESS.
-- `avoid-frozenset-intersection-on-simstateoptions` — set protocol
-  fails on SimStateOptions; iterate the smaller set instead.
-- `invariant-default-symbolic-mode-tracks` — TRACK_CONSTRAINT_ACTIONS
-  and TRACK_MEMORY_MAPPING ship in default symbolic mode; cannot be
-  warned/rejected without spam.
+### Files modified
+- tests/benchmarks/baseline_timings.json
