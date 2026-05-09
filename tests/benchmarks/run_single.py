@@ -79,6 +79,13 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
     except ValueError:
         pass  # Can't set limit higher than hard limit
 
+    # multiprocessing spawn children inherit sys.path[0] = script dir, not cwd,
+    # and the editable angr install ships no .pth file — so without PYTHONPATH
+    # the import below fails. Prepend the repo root explicitly.
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+
     import angr
 
     solve_script = os.path.join(examples_dir, example_name, "solve.py")
