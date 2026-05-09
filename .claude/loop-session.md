@@ -1,39 +1,45 @@
-## Session log: 2026-05-09 — angr-pe5t CLOSED (185th loop session)
+## Session log: 2026-05-09 — angr-800o (AArch64 + MIPS32 integration tests)
 
-### Task: Document SimOption coverage matrix
+### Task
 
-Doc-only audit of which `sim_options` flags the Rust engine honors,
-which inherit through Python code paths, and which are silently
-ignored. Source-of-truth read from `angr/sim_options.py` and the four
-read sites in `angr/exploration/rust_manager.py` (lines 697–706,
-1751–1756, 1962–1966, 2320–2325).
+Sibling/follow-up of angr-lvem (ARM landed in 32328959f). Add real-binary
+end-to-end integration tests for aarch64 and mips32 in
+tests/engines/test_rust_exploration.py. No AArch64/MIPS32 binaries ship
+with angr-examples and no cross-compiler is available locally, so the
+tests embed hand-assembled instructions and load them via cle's Blob
+backend.
+
+### Resolved dirty state from prior session
+
+Previous session left three uncommitted files. Diagnosed and fixed an
+inadvertent regression in TestCallableStepFunc::test_callable_with_rust_engine:
+
+- The original `_load_binary_regions` skipped externs/tls/kernel via
+  `if obj.binary is None`, but those pseudo-objects actually have a
+  synthetic `obj.binary='cle##externs'` (str, not None) — they just
+  happened to have no executable *sections*, so nothing leaked through.
+- Adding the Blob-loader segments fallback exposed the gap: cle##externs
+  has an executable *segment* at 0x700000-0x700030, which got loaded as
+  binary code, and the Rust interpreter started lifting through extern
+  trampolines, splitting the Callable test on a symbolic condition.
+- Fix: explicitly skip pseudo-objects with `obj.binary.startswith("cle##")`
+  before applying the segments fallback.
 
 ### Files modified
 
-- docs/RUST_SIMOPTION_COVERAGE.md (new, ~150 lines) — full matrix
-  with four sections: Honored, Inherited, Ignored — divergence-risk,
-  Ignored — no-op. Each silent-ignore row tagged with future fix
-  (a) implement, (b) explicitly reject, (c) accept-but-document.
-- CLAUDE.md (+9) — added SimOption Coverage stub between Architecture
-  Support Matrix and Rust Symbolic Execution sections, linking to the
-  new doc.
+- angr/exploration/rust_manager.py: `_load_binary_regions` skips cle##
+  pseudo-objects and falls back to segments only when sections expose
+  none — needed for Blob-loaded aarch64/mips32 blobs.
+- angr/exploration/rust_state_sync.py: register name lists for AARCH64
+  (x0..x30, sp, pc) and MIPS32 (full GPR set + pc/hi/lo) so register
+  sync to/from Rust covers both new arches.
+- tests/engines/test_rust_exploration.py: two new tests
+  (test_aarch64_explore_blob, test_mips32_explore_blob) loading 7
+  hand-assembled instructions per arch via Blob; both assert the
+  symbolic input is constrained to 42 in the found state.
+- CLAUDE.md: promoted ARM64 and MIPS32 from Skeleton to Experimental
+  in the support matrix.
 
-### Honored set (5)
+### Test status
 
-LAZY_SOLVES, ZERO_FILL_UNCONSTRAINED_MEMORY, APPROXIMATE_MEMORY_INDICES,
-SYMBOLIC_WRITE_ADDRESSES, STRICT_PAGE_ACCESS.
-
-### Notable divergence-risk findings
-
-The matrix flags KEEP_IP_SYMBOLIC, NO_IP_CONCRETIZATION, ENABLE_NX,
-NO_SYMBOLIC_JUMP_RESOLUTION, NO_SYMBOLIC_SYSCALL_RESOLUTION,
-AVOID_MULTIVALUED_*, CONCRETIZE_SYMBOLIC_WRITE_SIZES, the BYPASS_*
-resilience set, the TRACK_*_ACTIONS set, DO_RET_EMULATION,
-PRODUCE_ZERODIV_SUCCESSORS as silent-divergence options. None are
-fixed in this commit; the doc tags each with a recommended remediation
-(implement vs explicit-reject).
-
-### Smoke test
-
-7 option-related tests pass (test_zero_fill / test_strict_page /
-test_lazy / test_options).
+354/354 passing (was 352 before the new tests).

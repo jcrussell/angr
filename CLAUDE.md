@@ -209,8 +209,8 @@ tests and no benchmarks. Treat them as experimental until that changes.
 | AMD64       | ~110+      | ~268 (fauxware)   | 15/16      | SystemV, MS x64   | Supported    |
 | x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
 | ARM (32-bit)| 2          | 1 (validate)      | 0          | ARMEABI           | Experimental |
-| ARM64       | 1          | 0                 | 0          | AArch64           | Skeleton     |
-| MIPS32      | 4          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
+| ARM64       | 1          | 1 (blob branch)   | 0          | AArch64           | Experimental |
+| MIPS32      | 4          | 1 (blob branch)   | 0          | none (falls back to SystemV) | Experimental |
 | MIPS64      | 0          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
 
 **What "Skeleton" means:** `RustSimState("arm64")` etc. constructs successfully,

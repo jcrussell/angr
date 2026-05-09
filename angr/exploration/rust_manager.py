@@ -1382,22 +1382,33 @@ class RustExplorationManager(
         """Load binary code regions for native lifting."""
         regions = []
 
-        # Get object sections
         for obj in self._project.loader.all_objects:
-            # Skip external objects
+            # Skip cle pseudo-objects (externs/tls/kernel) — their `binary`
+            # is a synthetic string like 'cle##externs', not None, so the
+            # plain None check below is not enough.
             if obj.binary is None:
                 continue
+            if isinstance(obj.binary, str) and obj.binary.startswith("cle##"):
+                continue
 
-            for section in obj.sections:
-                if section.is_executable:
-                    try:
-                        data = self._project.loader.memory.load(
-                            section.min_addr,
-                            section.max_addr - section.min_addr
-                        )
-                        regions.append((section.min_addr, bytes(data)))
-                    except Exception as e:
-                        l.debug(f"Could not load section {section.name}: {e}")
+            # Prefer sections; fall back to segments for loaders (e.g. Blob)
+            # that don't expose sections. Without the segment fallback,
+            # `is_in_binary` returns false for in-bounds branches and the
+            # interpreter mistakes them for unmodeled calls.
+            executable_ranges = [s for s in obj.sections if s.is_executable]
+            if not executable_ranges:
+                executable_ranges = [s for s in obj.segments if s.is_executable]
+
+            for region in executable_ranges:
+                try:
+                    data = self._project.loader.memory.load(
+                        region.min_addr,
+                        region.max_addr - region.min_addr
+                    )
+                    regions.append((region.min_addr, bytes(data)))
+                except Exception as e:
+                    name = getattr(region, 'name', repr(region))
+                    l.debug(f"Could not load region {name}: {e}")
 
         self._rust_mgr.load_binary_regions(regions)
 

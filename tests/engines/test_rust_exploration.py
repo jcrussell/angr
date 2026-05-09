@@ -3555,6 +3555,122 @@ class TestMultiArchSupport:
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
 
+    def test_aarch64_explore_blob(self, tmp_path):
+        """End-to-end AArch64 exploration on a hand-assembled blob.
+
+        No AArch64 binaries ship with angr-examples and no cross-compiler
+        is available locally, so this test ships seven AArch64 instructions
+        as raw bytes and loads them via cle's Blob backend. The program
+        compares ``w0`` against 42 and branches to either ``found`` or
+        ``avoid``. Symbolic execution must drive ``w0`` to 42 to reach
+        the find address.
+
+        Promotes AArch64 from Skeleton to Experimental in the support
+        matrix; same risk class as the latent Cdecl x86 bug
+        (5329d8222) — without an end-to-end test, register-offset or
+        calling-convention bugs hide for months.
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # AArch64 little-endian:
+        #   0x00: MOV w1, #42         52800541
+        #   0x04: CMP w0, w1          6b01001f  (SUBS wzr, w0, w1)
+        #   0x08: B.EQ +8 -> 0x10     54000040
+        #   0x0c: B  +12 -> 0x18      14000003
+        #   0x10: NOP  (found)        d503201f
+        #   0x14: NOP                 d503201f
+        #   0x18: NOP  (avoid)        d503201f
+        code = struct.pack(
+            "<IIIIIII",
+            0x52800541, 0x6B01001F, 0x54000040, 0x14000003,
+            0xD503201F, 0xD503201F, 0xD503201F,
+        )
+        blob_path = tmp_path / "aarch64_branch.bin"
+        blob_path.write_bytes(code)
+
+        proj = angr.Project(
+            str(blob_path),
+            main_opts={"backend": "blob", "arch": "aarch64", "base_addr": 0x400000},
+        )
+        assert proj.arch.name == "AARCH64"
+
+        state = proj.factory.blank_state(addr=0x400000)
+        x0 = claripy.BVS("x0", 64)
+        state.regs.x0 = x0
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=50)
+
+        assert len(mgr.found) >= 1, (
+            f"AArch64 exploration did not reach 0x400010; "
+            f"counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+        assert found.solver.eval(x0) == 42, (
+            f"Expected x0==42 to reach found, got {found.solver.eval(x0)}"
+        )
+
+    def test_mips32_explore_blob(self, tmp_path):
+        """End-to-end MIPS32 (big-endian) exploration on a hand-assembled blob.
+
+        MIPS32 has no calling convention defined in the Rust engine
+        (default_cc_for_arch falls through to SystemVAMD64 — see the
+        ``invariant-mips-no-calling-convention`` memory), but the VEX
+        interpreter, register sync, and branch handling can still be
+        exercised without a SimProcedure call. This test loads seven
+        MIPS instructions as a blob and asserts that the engine drives
+        ``a0`` to 42 to reach the find address.
+
+        Promotes MIPS32 from Skeleton to Experimental in the support
+        matrix.
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # MIPS32 big-endian, with delay slots:
+        #   0x00: ADDIU t0, zero, 42     2408002A
+        #   0x04: BEQ a0, t0, +3         10880003   -> on equal, target 0x14
+        #   0x08: NOP (delay slot)       00000000
+        #   0x0c: B +2 (BEQ zero,zero)   10000002   -> target 0x18 (avoid)
+        #   0x10: NOP (delay slot)       00000000
+        #   0x14: NOP (found)            00000000
+        #   0x18: NOP (avoid)            00000000
+        code = struct.pack(
+            ">IIIIIII",
+            0x2408002A, 0x10880003, 0x00000000, 0x10000002,
+            0x00000000, 0x00000000, 0x00000000,
+        )
+        blob_path = tmp_path / "mips32_branch.bin"
+        blob_path.write_bytes(code)
+
+        proj = angr.Project(
+            str(blob_path),
+            main_opts={"backend": "blob", "arch": "mips", "base_addr": 0x400000},
+        )
+        assert proj.arch.name == "MIPS32"
+        assert proj.arch.memory_endness == "Iend_BE"
+
+        state = proj.factory.blank_state(addr=0x400000)
+        a0 = claripy.BVS("a0", 32)
+        state.regs.a0 = a0
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x400014, avoid=0x400018, num_find=1, max_steps=50)
+
+        assert len(mgr.found) >= 1, (
+            f"MIPS32 exploration did not reach 0x400014; "
+            f"counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+        assert found.solver.eval(a0) == 42, (
+            f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust extension not available")
 class TestErroredStash:

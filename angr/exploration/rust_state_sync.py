@@ -111,9 +111,21 @@ class RustStateSyncMixin:
                     'ebp', 'esp', 'eip',
                     'dflag', 'idflag', 'acflag',
                     'cc_op', 'cc_dep1', 'cc_dep2', 'cc_ndep']
+        if arch.name == 'AARCH64':
+            return ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7',
+                    'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15',
+                    'x16', 'x17', 'x18', 'x19', 'x20', 'x21', 'x22', 'x23',
+                    'x24', 'x25', 'x26', 'x27', 'x28', 'x29', 'x30',
+                    'sp', 'pc']
         if arch.name.startswith('ARM'):
             return ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
                     'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
+        if arch.name == 'MIPS32':
+            return ['zero', 'at', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3',
+                    't0', 't1', 't2', 't3', 't4', 't5', 't6', 't7',
+                    's0', 's1', 's2', 's3', 's4', 's5', 's6', 's7',
+                    't8', 't9', 'k0', 'k1', 'gp', 'sp', 'fp', 'ra',
+                    'pc', 'hi', 'lo']
         return []
 
     def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState",
