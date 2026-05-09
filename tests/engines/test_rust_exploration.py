@@ -1156,6 +1156,133 @@ class TestCallStackProxy:
         assert found_state.callstack.ret_addr == top_ret
         assert found_state.callstack.stack_ptr == top_sp
 
+    def test_simstate_fork_isolates_call_stack(self):
+        """RustSimState.fork() must clone the call stack so that pushes
+        on one side do not appear on the other.
+
+        The Rust fork (state.rs:1496) clones `Vec<CallStackEntry>` on the
+        new state. Regression guard: if a future refactor wraps the stack
+        in `Arc` or otherwise shares storage without CoW-on-write, this
+        test will catch the leak in either direction."""
+        parent = RustSimState("amd64")
+        # outermost → innermost
+        parent.push_call_frame(0x1000, 0x2000, 0x1005, 0x7000)
+        parent.push_call_frame(0x2008, 0x3000, 0x200d, 0x6f00)
+        assert parent.get_call_stack() == [
+            (0x1000, 0x2000, 0x1005, 0x7000),
+            (0x2008, 0x3000, 0x200d, 0x6f00),
+        ]
+
+        child = parent.fork()
+        # Child inherits the prefix.
+        assert child.get_call_stack() == parent.get_call_stack()
+
+        # Diverge: parent pushes one more, child pushes a different frame.
+        parent.push_call_frame(0xaaaa, 0xbbbb, 0xaaaf, 0x6e00)
+        child.push_call_frame(0xcccc, 0xdddd, 0xccd1, 0x6e00)
+
+        # Each side sees only its own divergence.
+        assert parent.get_call_stack() == [
+            (0x1000, 0x2000, 0x1005, 0x7000),
+            (0x2008, 0x3000, 0x200d, 0x6f00),
+            (0xaaaa, 0xbbbb, 0xaaaf, 0x6e00),
+        ]
+        assert child.get_call_stack() == [
+            (0x1000, 0x2000, 0x1005, 0x7000),
+            (0x2008, 0x3000, 0x200d, 0x6f00),
+            (0xcccc, 0xdddd, 0xccd1, 0x6e00),
+        ]
+
+    def test_callstack_proxy_reverses_after_fork(self):
+        """After a Rust-level fork that produces divergent call stacks,
+        the proxy's reverse-iteration semantics (innermost-frame-first)
+        must hold independently for each state.
+
+        Risk this guards against: drift in `_frames` reversal logic
+        (rust_state_proxy.py:566) — a regression that returned frames in
+        push order would silently report wrong top-frame data on every
+        forked sibling."""
+        from angr.exploration.rust_state_proxy import RustCallStackProxy
+
+        # Build a manager and add two RustSimStates with divergent stacks
+        # to its `active` stash. The proxy is keyed off (mgr, state_id),
+        # so registering both states lets us read them via the proxy.
+        mgr = _RustExplorationManager("amd64")
+        parent = RustSimState("amd64")
+        parent.push_call_frame(0x100, 0x200, 0x105, 0x7000)
+        parent.push_call_frame(0x208, 0x300, 0x20d, 0x6ff0)
+        child = parent.fork()
+        # Diverge at the top of the stack (post-fork divergence).
+        parent.push_call_frame(0x310, 0x400, 0x315, 0x6fe0)
+        child.push_call_frame(0x310, 0x500, 0x315, 0x6fe0)
+        mgr.add_state("active", parent)
+        mgr.add_state("active", child)
+        # add_state forks internally; recover the assigned ids in order.
+        ids = mgr.get_state_ids("active")
+        assert len(ids) == 2
+        parent_id, child_id = ids
+
+        parent_proxy = RustCallStackProxy(mgr, parent_id)
+        child_proxy = RustCallStackProxy(mgr, child_id)
+
+        # Reverse-iteration: index 0 must be the innermost frame.
+        assert parent_proxy[0].func_addr == 0x400
+        assert parent_proxy[-1].func_addr == 0x200  # outermost
+        assert child_proxy[0].func_addr == 0x500
+        assert child_proxy[-1].func_addr == 0x200
+
+        # Walk via .next from the top — depth and order match push history.
+        parent_walk = []
+        f = parent_proxy.top
+        while f is not None:
+            parent_walk.append(f.func_addr)
+            f = f.next
+        assert parent_walk == [0x400, 0x300, 0x200]
+
+        child_walk = []
+        f = child_proxy.top
+        while f is not None:
+            child_walk.append(f.func_addr)
+            f = f.next
+        assert child_walk == [0x500, 0x300, 0x200]
+
+    def test_callstack_proxy_independent_caches_across_states(self):
+        """Two proxies on sibling states have independent `_frames_cache`.
+
+        Each `RustCallStackProxy` constructs its own reversed list lazily
+        via `mgr.get_state_call_stack(state_id)`. If a refactor ever moved
+        the cache up to a manager-level dict keyed only by state_id, a
+        forked sibling could silently pick up the parent's frames before
+        its own divergent push got picked up. This pins the per-instance
+        caching guarantee."""
+        from angr.exploration.rust_state_proxy import RustCallStackProxy
+
+        mgr = _RustExplorationManager("amd64")
+        a = RustSimState("amd64")
+        a.push_call_frame(0x10, 0x20, 0x15, 0x7000)
+        b = a.fork()
+        b.push_call_frame(0x30, 0x40, 0x35, 0x6ff0)
+        mgr.add_state("active", a)
+        mgr.add_state("active", b)
+        ids = mgr.get_state_ids("active")
+        assert len(ids) == 2
+        a_id, b_id = ids
+
+        proxy_a = RustCallStackProxy(mgr, a_id)
+        proxy_b = RustCallStackProxy(mgr, b_id)
+
+        # Realize both caches.
+        list(proxy_a)
+        list(proxy_b)
+
+        assert len(proxy_a) == 1
+        assert len(proxy_b) == 2
+        assert proxy_a._frames_cache is not proxy_b._frames_cache
+        # Independent reverse views — divergence does not leak.
+        assert proxy_a[0].func_addr == 0x20
+        assert proxy_b[0].func_addr == 0x40
+        assert proxy_b[-1].func_addr == 0x20
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestInspectProxy:

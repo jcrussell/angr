@@ -2142,6 +2142,24 @@ impl PyRustSimState {
         self.inner.add_history_entry(addr, jumpkind, jump_target);
     }
 
+    /// Push a call frame onto the call stack (Ijk_Call simulation).
+    /// Test/debug helper — production paths go through the interpreter.
+    pub fn push_call_frame(&mut self, call_site: u64, callee: u64, ret_addr: u64, sp: u64) {
+        self.inner.push_call(call_site, callee, ret_addr, sp);
+    }
+
+    /// Get the call stack as a list of (call_site, callee, ret_addr, sp) tuples,
+    /// in push order (outermost first, innermost last). Mirrors
+    /// `ExplorationStateSnapshot.get_call_stack()` for direct PyRustSimState
+    /// inspection without an export round-trip.
+    pub fn get_call_stack(&self) -> Vec<(u64, u64, u64, u64)> {
+        self.inner
+            .call_stack()
+            .iter()
+            .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
+            .collect()
+    }
+
     /// Export the complete state as a snapshot.
     pub fn export_full(&self) -> ExplorationStateSnapshot {
         self.inner.export_full()
