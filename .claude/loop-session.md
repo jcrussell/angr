@@ -1,60 +1,56 @@
-## Session log: 2026-05-09, 176th loop session
+## Session log: 2026-05-09, 177th loop session
 
-### Dirty-state resolution
+### Task: angr-rte6 — clean Rust rebuild script — CLOSED
 
-Inherited a 1-line dirty change in `angr/exploration/rust_manager.py`:
-`_max_state_cache_size = 500` (reverting the angr-qm7w optimization
-from 8 back to 500). Likely the previous (timed-out, iter 3) session
-trying to test whether qm7w caused csgames2018 regression.
+Added `tools/rebuild-rust.sh` matching the style of the existing
+`tools/restore-venv.sh`. Deterministic clean rebuild of the Rust
+extension.
 
-Verified the dirty change does NOT fix the regression:
-- With cache=500 (dirty): csgames2018 timed out >90s
-- With cache=8 (clean):   csgames2018 timed out >90s
-Both fail identically. Cache size is NOT causal. Reverted (git stash drop).
+**What it does (default mode):**
+1. Remove `angr/rustylib*.so` (so a missed rebuild surfaces as
+   ImportError instead of silent stale-symbol behavior)
+2. Remove `build/` (setuptools intermediate)
+3. `cargo clean --manifest-path Cargo.toml` (workspace-wide)
+4. `.venv/bin/python -m pip install -e . --no-build-isolation --no-deps`
 
-### Task: angr-g7zs — csgames2018 regression — CLOSED
+**Optional modes:**
+- `--keep-cargo-cache` skips step 3 (faster, when only the Python
+  wrapper / setuptools-rust state is suspect)
+- `--cargo-only` skips pip; uses `cargo build --release` then copies
+  `target/release/librustylib.so` → `angr/rustylib<EXT_SUFFIX>.so`.
+  Recovery path when the venv's pip/setuptools is corrupt — the PyO3
+  .so exports the same module so `import angr.rustylib` works.
+  Honors `Z3_SYS_Z3_HEADER`, falls back to `/usr/include/z3.h` when the
+  venv-shipped `z3/include/z3.h` is missing.
 
-Skipped the bisect; instead used the runtime log "No cached state for ID
-6, using blank state fallback" + fwrite filling thousands of 4096-byte
-pages as the smoking gun, then traced into `_cleanup_state_cache`.
-
-**Root cause:** the live filter at rust_manager.py:2603-2605 deleted
-state 0 from `_state_cache` once state 0 left `active_set` (after it
-forked into descendants). The qm7w pinning logic only applied later
-at the overflow step, so state 0 was already gone by the time pinning
-ran. When forked state 6 fired its first Python callback, the lookup
-walked self → root_id (from Rust's `sm.roots()`) → ancestry; none of
-those IDs were in the Python cache, so the callback fell through to
-`_create_blank_state_fallback` where fwrite triggered
-default_filler_mixin to lazily fill memory pages — runaway runtime.
-
-**Fix (commit 7fe7baf79):** one-liner in `_cleanup_state_cache` —
-`live |= set(self._state_roots.values())` before the eviction loop, so
-roots survive the live filter (the same protection they already had
-during the overflow step).
-
-Why this only surfaced after qm7w (67d46f940): pre-qm7w, cleanup wasn't
-called after every callback and the cap was 500 (rarely triggered), so
-state 0 had a much narrower window to be evicted. Post-qm7w, cleanup
-runs on every callback exit and the cap is tight (8), so any spurious
-eviction got hit immediately.
+**Surprises hit during impl:**
+- This `.venv/` has NO `pip` executable script in `bin/` (only
+  `python*`). Initial draft used `$VENV/bin/pip` and failed with
+  "No such file or directory". Switched to `python -m pip`. Saved
+  as memory `venv-no-pip-executable`.
+- The default pip-based mode on this venv hits the
+  `pip._vendor.resolvelib` ImportError described in
+  `avoid-broken-venv-pip-fallback-cargo-build`. So I verified the
+  script via `--cargo-only` instead. The pip path is still the
+  documented default for healthy venvs.
 
 ### Verification
 
-- csgames2018: timed out >90s → 0.96s (back to 0.96 baseline)
-- 342/342 rust exploration tests passing
-- Full regression suite: 12/12 benchmarks pass
+- `--cargo-only --keep-cargo-cache`: rebuilt .so in ~2s (incremental),
+  342/342 rust exploration tests pass.
+- `--cargo-only` (full cargo clean + rebuild): 41.8s rebuild from
+  scratch, .so loads, smoke tests pass.
+- CLAUDE.md "Stale .so file" entry now points at the new script.
 
 ### Memories saved
 
-- `state-cache-root-eviction-bug` — invariant: any state-cache cleanup
-  must merge roots into the 'live' set OR enforce pinning at every
-  delete site, not just the overflow step.
-- `csgames2018-cache-ruled-out` — recorded mid-investigation that
-  cache size alone (8 vs 500) is not the cause.
-- `benchmark-csgames2018-fix-2026-05-09` — before/after numbers and
-  fix commit pointer.
+- `tool-rebuild-rust-script` — what the script does and how to invoke
+  each mode.
+- `venv-no-pip-executable` — current loop venv lacks `bin/pip`; always
+  use `python -m pip`.
 
 ### Next session
 
-Pick up `bd ready`. Several P1/P2 items waiting.
+`bd ready` — many P2/P3 tasks. Several P2 items (angr-is4x, angr-8s4b,
+angr-3tek) are auto-deferred after 3 dirty iterations — handle with
+care, prefer smaller scoped tasks first.
