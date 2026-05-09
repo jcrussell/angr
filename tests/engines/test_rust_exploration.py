@@ -3447,6 +3447,54 @@ class TestErrorRecovery:
             f"continued instead of erroring or dead-ending."
         )
 
+    def test_dcas_increments_unsupported_counter(self):
+        """`cmpxchg16b` lifts to a VEX `CAS` with `old_hi`/`expdHi`/`dataHi`
+        populated. The Rust callback interpreter rejects DCAS via
+        `DCAS_UNSUPPORTED_REASON`, the run loop tags it as a
+        `PythonVEXFallback`, and the manager-side `dcas_unsupported_count`
+        increments.
+
+        Without this end-to-end exercise the metric is only checked at zero
+        (`test_dcas_unsupported_metric_exposed`) — a regression that wires the
+        wrong reason string or breaks fallback dispatch would go unnoticed.
+        """
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        # cmpxchg16b [rdi]   -> 48 0f c7 0f
+        # ret                -> c3
+        shellcode = bytes.fromhex("480fc70fc3")
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        # rdi must be 16-byte aligned or VEX raises Ijk_SigSEGV before CAS.
+        state.regs.rdi = 0x2000
+        state.memory.store(0x2000, b"\x00" * 16)
+        state.regs.rax = 0
+        state.regs.rdx = 0
+        state.regs.rbx = 0xDEADBEEF
+        state.regs.rcx = 0xCAFEBABE
+        # Concretize rsp so the trailing `ret` doesn't blow up exploration
+        # by branching on a symbolic return address.
+        state.regs.rsp = 0x7FFFFE00
+        state.memory.store(0x7FFFFE00, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state])
+        assert mgr.stats["dcas_unsupported_count"] == 0
+
+        mgr.run(max_steps=2)
+
+        stats = mgr.stats
+        fb = mgr._rust_mgr.get_fallback_stats()
+        assert stats["dcas_unsupported_count"] >= 1, (
+            f"DCAS path did not increment counter; stats={stats}, fb={fb}"
+        )
+        assert fb["dcas_unsupported_count"] >= 1
+        assert any(
+            "double compare-and-swap" in reason
+            for reason in fb["addresses"].values()
+        ), f"No DCAS reason recorded in vex_fallback_addrs: {fb['addresses']}"
+
     def test_unsat_state_pruned_during_step(self):
         """State with pre-existing contradictory constraints (x>100 AND x<50)
         must NOT remain in `active` after stepping. Locks down behaviour for

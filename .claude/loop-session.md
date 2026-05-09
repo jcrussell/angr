@@ -1,51 +1,52 @@
-## Session log: 2026-05-09, 179th loop session
+## Session log: 2026-05-09, 180th loop session
 
-### Task: angr-lwpt — max_history retroactive cap + FIFO + fork inheritance — CLOSED
+### Task: angr-f58x — Synthetic DCAS test that increments dcas_unsupported_count — CLOSED
 
-Discovered `set_max_history` was non-converging when shrinking the cap
-below the current buffer length: `add_to_history` and `add_history_entry`
-only remove ONE entry per push when over cap, so a state with 100
-entries pushed at cap=5 would oscillate between 100-101 forever. The
-manager-level docstring at `exploration/mod.rs:664-668` promised "applied
-to every state already in any stash" — but state.set_max_history was
-just a field assignment.
+The `dcas_unsupported_count` metric (commit baf34e689) was previously only
+checked at zero (`test_dcas_unsupported_metric_exposed`). No test
+exercised the DCAS path end-to-end, so a regression that changed the
+reason string or broke fallback dispatch would have gone unnoticed.
 
-### Fix
+### Implementation
 
-In `state.rs:1799` `set_max_history` now FIFO-drains both `history` and
-`detailed_history` down to the new cap immediately. `max=0` means
-unlimited and explicitly does NOT trim.
+Added `test_dcas_increments_unsupported_counter` in the
+`TestErrorRecovery` class. Uses `angr.load_shellcode` to assemble a
+single `cmpxchg16b [rdi]` (`48 0f c7 0f`) followed by `ret` (`c3`),
+maps writable memory at `0x2000`, sets rdi to it (16-byte aligned to
+avoid the VEX `Ijk_SigSEGV` alignment trap), and runs
+`RustExplorationManager` for 2 steps. Verifies:
 
-### Files modified
+1. `mgr.stats["dcas_unsupported_count"] >= 1` after run
+2. `mgr._rust_mgr.get_fallback_stats()["dcas_unsupported_count"] >= 1`
+3. The `addresses` map contains a reason matching
+   `"double compare-and-swap"`
 
-- native/angr/src/state.rs (+81 lines)
-  * `set_max_history` now trims retroactively
-  * Added 4 PyRustSimState helpers: `get_max_history`, `detailed_history`,
-    `add_history`, `add_detailed_history` (testing surface)
-  * Added 2 Rust unit tests: `test_set_max_history_trims_retroactively`,
-    `test_set_max_history_zero_no_trim`
-- tests/engines/test_rust_exploration.py (+85 lines)
-  * `test_max_history_retroactive_trim`
-  * `test_max_history_fifo_eviction_via_add`
-  * `test_max_history_inherited_through_fork`
+`rsp` is concretized to avoid exploration explosion from the trailing
+`ret` popping a symbolic return address.
 
 ### Verification
 
-- Rust unit tests: `state::tests::test_set_max_history_*` 2/2 pass
-- Python: `pytest tests/engines/test_rust_exploration.py` 345/345 pass
-- Commit: `27441a00e`
+- pyvex confirmed the lift produces `t(5,4) = CASle(t11 :: (t10,t9)->(t3,t2))`
+  — DCAS form with `_hi`/`_lo` populated.
+- Test passes in 1.23s.
+- Full suite: 346/346 pass in 18.71s.
 
-### Memories saved
+### Files modified
 
-- `set-max-history-non-converging-bug` — root cause + fix.
-- `invariant-fork-needs-python-init` — RustSimState::fork() panics in
-  pure cargo test (PyO3 0.27 needs Py interpreter initialized); known
-  pre-existing failures (test_state_fork etc.). Write fork tests in
-  Python (test_rust_exploration.py) so pytest initializes the harness.
+- tests/engines/test_rust_exploration.py (+48 lines)
+
+### Gotchas captured for memory
+
+- `mgr.stats` on `RustExplorationManager` is a property, not a method
+  (the inner `mgr._rust_mgr.stats()` IS a method) — `()` raised
+  `TypeError: 'dict' object is not callable`.
+- `get_fallback_stats` lives on the inner Rust manager only — Python
+  wrapper does not re-export it. Tests must reach in via
+  `mgr._rust_mgr.get_fallback_stats()`.
 
 ### Next session
 
-`bd ready` shows P3 follow-ups: angr-w6ry callstack proxy fork tests,
-angr-orc9 ARM/AArch64/MIPS proc round-trip, angr-f58x DCAS counter
-test. Larger P2 items remain (angr-wqao split rust_manager.py,
-angr-4j5u decompose god struct) but auto-defer policy still applies.
+`bd ready` shows P3 follow-ups still: angr-w6ry callstack proxy fork
+tests, angr-orc9 ARM/AArch64/MIPS proc round-trip. Larger P2 items
+remain (angr-wqao split rust_manager.py, angr-4j5u decompose god struct)
+but auto-defer policy still applies.
