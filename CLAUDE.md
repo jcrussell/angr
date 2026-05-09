@@ -208,17 +208,17 @@ tests and no benchmarks. Treat them as experimental until that changes.
 |-------------|------------|-------------------|------------|-------------------|--------------|
 | AMD64       | ~110+      | ~268 (fauxware)   | 15/16      | SystemV, MS x64   | Supported    |
 | x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
-| ARM (32-bit)| 2          | 0                 | 0          | ARMEABI           | Skeleton     |
+| ARM (32-bit)| 2          | 1 (validate)      | 0          | ARMEABI           | Experimental |
 | ARM64       | 1          | 0                 | 0          | AArch64           | Skeleton     |
 | MIPS32      | 4          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
 | MIPS64      | 0          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
 
-**What "Skeleton" means:** `RustSimState("arm")` etc. constructs successfully,
+**What "Skeleton" means:** `RustSimState("arm64")` etc. constructs successfully,
 register reads/writes round-trip, and `fork()` preserves isolation, but no
 test runs VEX through the interpreter on a real binary for these archs and
 no calling convention is actually exercised. The Cdecl x86 return-register
 bug (commit 5329d8222) was latent for months precisely because no end-to-end
-x86 test ran — assume the same risk for ARM/ARM64/MIPS until coverage lands.
+x86 test ran — assume the same risk for ARM64/MIPS until coverage lands.
 
 **What's wired up but unverified:**
 - Register offsets for all six arches in `native/angr/src/arch/*.rs`
