@@ -57,6 +57,8 @@ class SymbolicIdentityTracker:
             py_hash = hash(py_ast)
             self._hash_to_py[py_hash] = py_ast
         except (TypeError, AttributeError):
+            # cat-(a) EXPECTED CONTROL FLOW: hash-based lookup is an optional
+            # optimization; an unhashable AST falls through to id()-keyed maps.
             pass
 
     def get_rust_id(self, py_ast: object) -> Optional[int]:
@@ -182,6 +184,9 @@ class CallbackMemoryTracker:
 
                         tracker._writes.append((concrete_addr, bytes(data_bytes)))
                 except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: tracking failure means this
+                    # write won't be replayed back to Rust; the original store
+                    # already succeeded so the live state is correct.
                     l.debug(f"Memory tracking error at addr={addr}: {e}")
 
                 return result

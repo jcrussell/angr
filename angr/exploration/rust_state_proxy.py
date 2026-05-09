@@ -214,7 +214,9 @@ class RustSolverProxy:
         try:
             return self._mgr.get_state_solver_timeout(self._state_id)
         except Exception:
-            # State may have been GC'd or backend lacks Z3 — return 0 as default.
+            # cat-(b) FALLBACK WITH LOSS: state may have been GC'd or backend
+            # lacks Z3 — return 0 as default. (No log: this property is read
+            # frequently from solver hot paths.)
             return 0
 
     @timeout.setter
@@ -252,6 +254,9 @@ class RustRegisterProxy:
         try:
             values = self._mgr.get_state_registers_batch(self._state_id, names)
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: prefetch is a best-effort
+            # optimization; missing prefetch falls back to per-register
+            # __getattr__ on first access.
             return
         for name, val in zip(names, values):
             width = self._get_register_width(name)
@@ -268,6 +273,12 @@ class RustRegisterProxy:
         try:
             val = self._mgr.get_state_register(self._state_id, name)
         except Exception:
+            # cat-(b) FALLBACK WITH LOSS: re-raise as AttributeError so callers
+            # using hasattr()/getattr() see "no such register". Note: this
+            # masks transient FFI errors as missing-attribute — log debug so
+            # they're visible under --debug.
+            l.debug("get_state_register(sid=%d, name=%r) failed; reporting as AttributeError",
+                    self._state_id, name)
             raise AttributeError(f"register '{name}' not found")
         width = self._get_register_width(name)
         if val is None:
@@ -385,6 +396,8 @@ class RustHeapProxy:
         try:
             return self._mgr.get_state_mmap_base(self._state_id)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: returning None on FFI error mirrors
+            # angr's behavior when state.heap is unavailable.
             l.debug("get_state_mmap_base(sid=%d) failed: %s: %s",
                     self._state_id, type(e).__name__, e)
             return None
@@ -400,6 +413,8 @@ class RustHeapProxy:
             allocated, _freed = self._mgr.get_state_heap_metadata(self._state_id)
             return list(allocated)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is
+            # unavailable (e.g., state already cleaned up).
             l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s",
                     self._state_id, type(e).__name__, e)
             return []
@@ -411,6 +426,8 @@ class RustHeapProxy:
             _allocated, freed = self._mgr.get_state_heap_metadata(self._state_id)
             return list(freed)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is
+            # unavailable (e.g., state already cleaned up).
             l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s",
                     self._state_id, type(e).__name__, e)
             return []
@@ -469,7 +486,13 @@ class RustPosixProxy:
             # Other fds (stderr, opened files) — query Rust engine
             try:
                 return bytes(self._mgr.get_state_fd_output(self._state_id, fd))
-            except Exception:
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: empty bytes when the requested
+                # fd has no Rust-side buffer. Tools that expect specific
+                # output should distinguish "no buffer" from "empty buffer";
+                # log so they're visible under --debug.
+                l.debug("get_state_fd_output(sid=%d, fd=%d) failed: %s: %s",
+                        self._state_id, fd, type(e).__name__, e)
                 return b""
 
     def _eval_stdin(self):
@@ -487,6 +510,9 @@ class RustPosixProxy:
                     result.extend(val.to_bytes(byte_len, "big"))
             return bytes(result)
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: returning empty bytes when stdin eval
+            # fails could be misread as "the input was empty" by callers
+            # comparing solution bytes. Logged at warn so the failure is loud.
             l.warning("RustPosixProxy: failed to evaluate stdin: %s", e)
             return b""
 
@@ -560,7 +586,11 @@ class RustCallStackProxy:
         if self._frames_cache is None:
             try:
                 raw = self._mgr.get_state_call_stack(self._state_id)
-            except Exception:
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: empty callstack when FFI fails.
+                # Distinguishable from a real empty stack only via the log.
+                l.debug("get_state_call_stack(sid=%d) failed: %s: %s",
+                        self._state_id, type(e).__name__, e)
                 raw = []
             # Rust pushes onto the end → most recent is last → reverse.
             self._frames_cache = list(reversed(raw))
@@ -707,8 +737,13 @@ class RustStateProxy:
             pc = self._mgr.get_state_pc_by_id(self._state_id)
             if pc is not None:
                 return pc
-        except Exception:
-            pass
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: returning 0 when PC lookup fails can
+            # spuriously match a find/avoid predicate that includes addr 0.
+            # Log at warn so the failure is loud; callers reading proxy.addr
+            # in critical paths will see the silent zero behavior in stderr.
+            l.warning("RustStateProxy.addr(sid=%d) lookup failed: %s: %s",
+                      self._state_id, type(e).__name__, e)
         return 0
 
     @property
@@ -860,10 +895,14 @@ class RustStateProxy:
         try:
             stash = self._mgr.state_stash(self._state_id)
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: __repr__ is best-effort; skip
+            # missing stash field rather than fail repr().
             stash = None
         try:
             n_constraints = self._mgr.state_constraint_count(self._state_id)
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: __repr__ is best-effort; skip
+            # missing constraint count rather than fail repr().
             n_constraints = None
         parts = [f"id={self._state_id}", f"addr={hex(self.addr)}"]
         if stash is not None:
@@ -1000,8 +1039,11 @@ class _StashDict:
             # Clear the stash — common pattern: simgr.stashes['found'] = []
             try:
                 self._simgr._mgr.clear_stash(key)
-            except Exception:
-                pass
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: stash clear failed; user expects
+                # the stash to be empty afterward but it may not be. Log so
+                # this is visible under --debug.
+                l.debug("clear_stash(%r) failed: %s: %s", key, type(e).__name__, e)
         else:
             l.warning("_StashDict.__setitem__ only supports clearing (empty list) for key '%s'", key)
 
@@ -1022,4 +1064,6 @@ class _StashDict:
         try:
             return self[key]
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: dict.get() contract — return the
+            # caller-supplied default when the key is missing or unfetchable.
             return default

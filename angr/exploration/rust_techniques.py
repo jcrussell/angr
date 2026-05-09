@@ -38,6 +38,8 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
             technique.setup(mgr)
             l.debug(f"Called setup() on technique {tech_name}")
     except Exception as e:
+        # cat-(b) FALLBACK WITH LOSS: technique setup failed; we keep going
+        # with a partially-initialized technique. Warn so the user sees it.
         l.warning(f"Technique {tech_name} setup failed: {e}")
 
     # Handle specific technique types
@@ -47,6 +49,7 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
             mgr._rust_mgr.set_state_selection_lifo()
             l.debug("Enabled DFS (LIFO) state selection")
         except AttributeError:
+            # cat-(a) EXPECTED CONTROL FLOW: probing for optional Rust API.
             l.debug("DFS technique registered (LIFO not natively supported)")
 
     # BFS: Use breadth-first state selection (FIFO) - default behavior
@@ -55,6 +58,7 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
             mgr._rust_mgr.set_state_selection_fifo()
             l.debug("Enabled BFS (FIFO) state selection")
         except AttributeError:
+            # cat-(a) EXPECTED CONTROL FLOW: probing for optional Rust API.
             l.debug("BFS technique registered (default FIFO selection)")
 
     # LoopSeer: Loop detection and handling
@@ -104,11 +108,15 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
                             find_addrs.append(addr)
                             continue
                     except Exception:
+                        # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
+                        # may reject mock state; fall through to avoid probe.
                         pass
                     try:
                         if avoid_func(mock):
                             avoid_addrs.append(addr)
                     except Exception:
+                        # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
+                        # may reject mock state; addr is simply not classified.
                         pass
 
         if find_addrs:
@@ -144,6 +152,8 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
                 technique._native_uniqueness = True
                 l.debug(f"CheckUniqueness registered natively with {len(regs)} registers")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: native registration failed; the
+                # Python technique.filter() path still runs (just slower).
                 l.debug(f"Failed to register native uniqueness: {e}")
         else:
             l.debug(f"CheckUniqueness registered (Python fallback)")
@@ -158,6 +168,8 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
                 technique._native_length_limiter = True
                 l.debug(f"LengthLimiter registered natively (max_length={max_length}, drop={drop})")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: native registration failed; the
+                # Python technique._filter() path still runs (just slower).
                 l.debug(f"LengthLimiter native registration failed: {e}, using Python fallback")
         else:
             l.debug(f"LengthLimiter registered (no max_length found)")
@@ -171,6 +183,8 @@ def use_technique(mgr: "RustExplorationManager", technique, **kwargs):
                 technique._native_timeout = True
                 l.debug(f"Timeout registered natively ({timeout_val}s)")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: native registration failed; the
+                # Python check_technique_complete() path still runs.
                 l.debug(f"Timeout native registration failed: {e}, using Python fallback")
         else:
             l.debug(f"Timeout technique registered (no timeout value)")
@@ -196,6 +210,8 @@ def remove_technique(mgr: "RustExplorationManager", technique) -> bool:
         mgr._active_techniques.remove(technique)
         return True
     except ValueError:
+        # cat-(a) EXPECTED CONTROL FLOW: list.remove raises ValueError when the
+        # technique was never registered; returning False is the documented contract.
         return False
 
 
@@ -270,6 +286,8 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                             goto = "_DROP" if drop else "cut"
                             break
                     except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: user technique raised; we
+                        # treat the state as not-cut and let other techniques try.
                         l.debug(f"LengthLimiter._filter() error: {e}")
                     continue
 
@@ -280,6 +298,8 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                             goto = result
                             break
                     except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: user technique raised; we
+                        # leave the state in its current stash. (User code bug.)
                         l.debug(f"Technique {tech_name}.filter() error: {e}")
 
             # Mark as filtered regardless of outcome
@@ -296,8 +316,12 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                             if root is not None:
                                 mgr._state_roots[sid] = root
                         except Exception:
+                            # cat-(a) EXPECTED CONTROL FLOW: state may not have
+                            # a Rust-tracked root; that's OK, the move succeeded.
                             pass
                 except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: move_state failed; the state
+                    # stays in its current stash and the next sweep will retry.
                     l.debug(f"Failed to move state {sid} from {stash} to {goto}: {e}")
 
     # Periodic cleanup: remove dead state IDs from _filtered_state_ids
@@ -311,6 +335,8 @@ def apply_technique_filters(mgr: "RustExplorationManager"):
                 live.update(mgr._rust_mgr.get_state_ids(stash_name))
             mgr._filtered_state_ids &= live
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: best-effort cache GC; if we can't
+            # enumerate stashes the set just grows until next sweep.
             pass
 
 
@@ -348,8 +374,11 @@ def check_technique_complete(mgr: "RustExplorationManager") -> bool:
                 if time.time() - tech.start_time > timeout_val:
                     try:
                         mgr._rust_mgr.move_states("active", "timeout", None)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # cat-(b) FALLBACK WITH LOSS: timeout-stash move failed;
+                        # active states remain in 'active' but caller still gets
+                        # the timeout signal via the True return below.
+                        l.debug(f"Timeout move_states failed: {e}")
                     l.warning(f"exploration timeout in {timeout_val} seconds!")
                     return True
 
@@ -359,6 +388,8 @@ def check_technique_complete(mgr: "RustExplorationManager") -> bool:
                     l.debug(f"Technique {tech_name}.complete() returned True")
                     return True
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: user technique raised; we treat
+                # the technique as not-complete and continue exploration.
                 l.debug(f"Technique {tech_name}.complete() error: {e}")
 
     return False
