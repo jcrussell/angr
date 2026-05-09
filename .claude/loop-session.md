@@ -1,47 +1,39 @@
-## Session log: 2026-05-09 — angr-lvem CLOSED (184th loop session)
+## Session log: 2026-05-09 — angr-pe5t CLOSED (185th loop session)
 
-### Task: ARM and MIPS real-binary integration tests
+### Task: Document SimOption coverage matrix
 
-Reduced scope to ARM-only because no AArch64 or MIPS binaries are
-available locally and the loop env has no network for cloning
-github.com/angr/binaries. Spawned angr-800o for the AArch64/MIPS
-follow-up.
+Doc-only audit of which `sim_options` flags the Rust engine honors,
+which inherit through Python code paths, and which are silently
+ignored. Source-of-truth read from `angr/sim_options.py` and the four
+read sites in `angr/exploration/rust_manager.py` (lines 697–706,
+1751–1756, 1962–1966, 2320–2325).
 
 ### Files modified
 
-- tests/engines/test_rust_exploration.py (+41) — added
-  test_arm32_explore_real_binary inside TestMultiArchSupport.
-- CLAUDE.md (+3 / -3) — promoted ARM (32-bit) from Skeleton to
-  Experimental in the architecture matrix; trimmed Skeleton-language
-  to ARM64/MIPS.
+- docs/RUST_SIMOPTION_COVERAGE.md (new, ~150 lines) — full matrix
+  with four sections: Honored, Inherited, Ignored — divergence-risk,
+  Ignored — no-op. Each silent-ignore row tagged with future fix
+  (a) implement, (b) explicitly reject, (c) accept-but-document.
+- CLAUDE.md (+9) — added SimOption Coverage stub between Architecture
+  Support Matrix and Rust Symbolic Execution sections, linking to the
+  new doc.
 
-### Test design
+### Honored set (5)
 
-- Loads ~/repos/angr-examples/examples/android_arm_license_validation/validate
-  (ARMEL).
-- blank_state(addr=0x401760), 80-bit BVS at 0xffe00000, r0 set to point
-  at the BVS.
-- explore(find=0x401840, avoid=0x401854, num_find=1, max_steps=2000).
-- Asserts found ≥ 1 AND found[0].solver.satisfiable() — locks both the
-  exploration completion and the symbolic-input round-trip through
-  the Rust solver.
-- Skips when the binary is missing.
+LAZY_SOLVES, ZERO_FILL_UNCONSTRAINED_MEMORY, APPROXIMATE_MEMORY_INDICES,
+SYMBOLIC_WRITE_ADDRESSES, STRICT_PAGE_ACCESS.
 
-### Commits
+### Notable divergence-risk findings
 
-- 32328959f — test(arch): ARM32 real-binary integration test for Rust engine
-- c0c0ddf75 — docs(arch): promote ARM (32-bit) from Skeleton to Experimental
+The matrix flags KEEP_IP_SYMBOLIC, NO_IP_CONCRETIZATION, ENABLE_NX,
+NO_SYMBOLIC_JUMP_RESOLUTION, NO_SYMBOLIC_SYSCALL_RESOLUTION,
+AVOID_MULTIVALUED_*, CONCRETIZE_SYMBOLIC_WRITE_SIZES, the BYPASS_*
+resilience set, the TRACK_*_ACTIONS set, DO_RET_EMULATION,
+PRODUCE_ZERODIV_SUCCESSORS as silent-divergence options. None are
+fixed in this commit; the doc tags each with a recommended remediation
+(implement vs explicit-reject).
 
-### Memories saved
+### Smoke test
 
-- invariant-arm-integration-test-binary-path — explore-end-to-end
-  proof that ARMEL works in the Rust engine; gates on os.path.exists.
-- arch-matrix-arm-supported-2026-05-09 — ARM promoted to Experimental;
-  benchmark still missing for full Supported status.
-
-### Other actions
-
-- Released angr-wqao.1 (mechanical refactor; parent angr-wqao
-  deferred). See avoid-deferred-wqao1-disk-cache-save-extract memory.
-- Created angr-800o (AArch64/MIPS integration tests blocked on
-  binaries).
+7 option-related tests pass (test_zero_fill / test_strict_page /
+test_lazy / test_options).
