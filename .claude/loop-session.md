@@ -1,65 +1,56 @@
-## Session log: 2026-05-09 — angr-ufez (201st loop session, READY-TO-CLOSE)
+## Session log: 2026-05-09 — bd-ready queue hygiene (202nd loop session, COMPLETE)
 
 ### Task
-angr-ufez (P3) — Implement DCAS (double compare-and-swap, e.g. x86-64
-cmpxchg16b) in the Rust callback interpreter. Previously
-native/angr/src/interpreter_cb/statements.rs:589 errored with
-DCAS_UNSUPPORTED_REASON, causing every cmpxchg16b block to fall back to
-Python's VEX engine.
-
-Symbolic-address single CAS (the second listed gap) is already handled by
-the existing `cas_store_symbolic_data` helper which routes to
-`memory_store_symbolic_full` — no change needed there.
+No `in_progress` work; nothing claimed by a prior session. `bd ready` listed 12
+issues but on inspection many had explicit deferral memories from prior audits
+that had not been propagated to bd state — they kept reappearing in `bd ready`
+and consuming triage time. This session does the hygiene step.
 
 ### What landed
-1. Refactored CAS branch in statements.rs into a dedicated
-   `execute_cas_stmt` helper (single + DCAS share the same body).
-2. DCAS implementation:
-   - Detect via (oldHi, expdHi, dataHi) all-Some.
-   - Reject big-endian DCAS explicitly (no real arch is BE).
-   - Load both halves at addr / addr+sizeof(half) using two separate
-     IRExpr::Load — second addr is synthesised via IRExpr::Binop(Add, …).
-   - Compare per-half, AND results into combined cmp.
-   - Concrete-cmp-true: store both halves via the existing Store path.
-   - Symbolic cmp: store ITE(cmp, data, current) per half via
-     `cas_store_symbolic_data`.
-   - Concrete-cmp-false: skip stores.
-   - Write current_lo → oldLo, current_hi → oldHi temps.
-3. Extracted `cas_store_symbolic_data` helper for the symbolic-data store
-   path (was inline before).
-4. Tests updated in tests/engines/test_rust_exploration.py:
-   - `test_dcas_cmpxchg16b_no_python_fallback`: verifies DCAS path runs in
-     Rust (rust_step_count > 0, rust_store_stmt_count == 2) and the DCAS
-     unsupported counter stays at 0.
-   - `test_dcas_cmpxchg16b_no_match_keeps_memory`: cmp-false path — no
-     store fires, memory unchanged.
-   - Replaced `test_dcas_increments_unsupported_counter` (which
-     intentionally exercised the OLD fallback behavior).
+1. Claimed angr-wqao.4 (P2, top of `bd ready`) and audited it. Findings:
+   - Description proposes renaming `_step_N` helpers to `phase_<name>_*`, but
+     no such methods exist in rust_manager.py — only `_step_python_to_main`
+     (line 2155, multi-stage handler — different concern).
+   - Three init phases already exist as well-named methods: `_setup_callbacks`
+     (line 1053), `_load_binary_regions` (line 1639), `_register_simprocedures`
+     (line 1676). `_perf_stats.set_init_phase` calls track them at lines
+     738/743/748.
+   - Acceptance criterion "rust_manager.py under 1000 lines" is unachievable
+     by renaming alone (file is 3758 lines); requires the parent angr-wqao
+     extractions which were explicitly deferred.
+   - Sibling angr-wqao.1/.2 (named as preconditions in the description) are
+     also deferred per memory.
+2. Saved memory `avoid-deferred-wqao4-init-pipeline-phases` capturing the
+   audit and reopen-criteria.
+3. Deferred 8 tasks total whose deferral was documented in memory but whose
+   bd state was still `open`:
+   - angr-wqao (parent) and angr-wqao.1/.2/.4 (rust_manager decomposition)
+   - angr-qrhl (VEX trait dispatcher) — `avoid-deferred-qrhl-vex-trait-dispatcher`
+   - angr-m2hf (unified error trait) — `avoid-deferred-m2hf-error-trait`
+   - angr-34w.12 (grub OOM / z3-rs library bug) — notes say "deferred"
+   - angr-3tek (native read/write enable) — notes say "auto-deferred"; gated
+     on the symbolic_objects stale-cache sync issue (`avoid-enabling-native-read`)
+4. Saved memory `avoid-deferred-wqao2-disk-cache-load-extract` for symmetry
+   with the existing `avoid-deferred-wqao1-...` memory.
+
+### `bd ready` before/after
+- Before: 12 issues (most with explicit deferral memories already)
+- After: 4 issues, all legitimate open work:
+  * angr-qh5u (P3) Lazy symbolic STORE — big design effort
+  * angr-czph (P3) Lazy symbolic LOAD — big design effort
+  * angr-0z34 (P4) Native amd64 read/write syscall handlers
+  * angr-k67f (P4) Invalidate cached VEX blocks for self-modifying code
 
 ### Files modified
-- native/angr/src/interpreter_cb/mod.rs (1 line — add IROp import)
-- native/angr/src/interpreter_cb/statements.rs (~250 lines net)
-- tests/engines/test_rust_exploration.py (~85 lines net)
+None. Pure bd metadata changes.
 
 ### Test status
-- cargo check (release): clean
-- cargo build (release): clean (no new warnings except pre-existing
-  `manual_div_ceil` style hints in surrounding code)
-- pip rebuild: pip in .venv was corrupted, used cargo-only fallback
-- pytest tests/engines/test_rust_exploration.py: 366/366 passing
-  (one solo flake — `test_solver_proxy_eval_returns_single_value` —
-  passes in the full suite; unrelated to DCAS)
+N/A — no code changed.
 
-### Memories to save
-1. dcas-rust-impl-shape — the IRExpr::Binop(Add,…) trick to synthesise
-   addr_hi inside CAS without mutating the per-IRSB tyenv.
-2. dcas-be-not-implemented — BE DCAS deferred to Python with explicit
-   Unsupported error; reason recorded.
-3. shellcode-blank-state-rust-sync-gap — `load_shellcode` +
-   `blank_state` does not propagate Rust-side register/memory writes
-   back to the Python state after run; tests that need to verify Rust
-   semantics from the Python side via state.regs/state.memory must use
-   a real binary or rely on counter-based assertions.
+### Memories saved
+1. `avoid-deferred-wqao4-init-pipeline-phases` — full audit + reopen criteria.
+2. `avoid-deferred-wqao2-disk-cache-load-extract` — sibling deferral memory.
 
 ### Status
-READY TO CLOSE. Next: commit, close angr-ufez, save memories.
+COMPLETE. The `bd ready` queue is now an honest list of un-deferred work.
+Future sessions won't re-evaluate the eight already-audited deferred tasks.
