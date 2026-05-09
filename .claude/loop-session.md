@@ -1,43 +1,55 @@
-## Session log: 2026-05-09 — angr-c3zm (195th loop session, CLOSED)
+## Session log: 2026-05-09 — angr-wqao.3 (196th loop session, CLOSED)
 
 ### Task
-angr-c3zm — Re-evaluate full RustPosixState migration after prerequisites land.
-Checkpoint/decision bead. Acceptance: written GO/DEFER-AGAIN/ABANDON decision
-saved as a bd memory.
+angr-wqao.3 — Document rust_manager.py invariants. Pure docs task, sibling
+of deferred refactor tasks (.1, .2, .4) which propose mechanical extraction
+with no motivating bug. wqao.3 was different: documenting existing
+cross-mixin invariants for future contributors.
 
-### Verdict
-**DEFER-AGAIN.** Memory key: `decision-c3zm-rustposixstate-defer-2026-05-09`.
+### Outcome
+**CLOSED** in commit 30e682208.
 
-### Reasoning
-- Prereqs not all closed: angr-xg0o ✅, angr-qm7w ✅, angr-nnov ✅, but
-  angr-0z34 (P4 open) and angr-3tek (auto-deferred 3x) still open and gated
-  on the same Rust↔Python state-sync correctness gap that would dominate any
-  RustPosixState migration.
-- posix.py is 702 lines; already-Rust ops (fd lifecycle, env getters,
-  posix_brk, stdin_symbols, environment) capture most callback frequency.
-  Remaining Python surface is high-complexity: SimFileDescriptor/SimFile,
-  streams, sockets, fstat, sigmask, merge() (58 lines walking claripy ASTs),
-  copy() (31 lines).
-- Net trade: remove ~700 Python LoC, add ~2000 Rust LoC. +1300 LoC net.
-- No bug class motivates the work — bug memories all point elsewhere.
+### What was done
+Added a 95-line docstring block at the top of `angr/exploration/rust_manager.py`
+listing 10 cross-mixin invariants. Implemented as docstring (not a separate
+INVARIANTS.md) per CLAUDE.md "no .md files" preference; the bead description
+explicitly allowed either location.
 
-### Actions
-- Saved decision memory.
-- Closed angr-c3zm with rationale.
-- Deferred downstream angr-6zxx (Full RustPosixState ownership) — its
-  description explicitly says "do not auto-reactivate when prereqs close;
-  the checkpoint drives GO/DEFER/ABANDON." Added notes documenting the
-  three re-evaluation triggers.
+The 10 invariants:
+  I1  Disk-cache key axes (_RUST_CACHE_VERSION/_PYTHON_METADATA_VERSION + memo)
+  I2  Init pipeline phases (post angr-khth split: pickle / deserialize /
+      side-effects / orchestrator)
+  I3  Init-cache user-symbolic gate (_state_has_user_symbolic must gate)
+  I4  _apply_state_metadata is an allow-list (only LAZY_SOLVES + STRICT_PAGE_ACCESS)
+  I5  Register filter at FFI boundary (_supported_register_names in
+      rust_state_sync.py)
+  I6  State-cache pinning + manager-vs-mixin override of _cleanup_state_cache
+  I7  Rust↔Python field sync uses max(), not overwrite
+  I8  Exploration-loop termination must check Rust-native + predicate finds
+      via _found_count()
+  I9  push_to_active_or_drop helper enforces max_active_states
+  I10 mgr.stats is a @property; mgr._rust_mgr.stats() is a method
 
-### Re-evaluation triggers (flip DEFER → GO)
-1. angr-0z34 + angr-3tek both close, proving state-sync gap is solved.
-2. A benchmark regression traces to posix-plugin Python overhead.
-3. merge/widen for posix becomes a correctness blocker on a real example.
+### Decisions
+- Cited test file lines (stable) but not rust_manager.py self-references
+  (would rot — adding 95 lines already shifted everything below).
+- Acceptance criteria asked for ≥4 invariants; delivered 10 to make the
+  document genuinely useful as an entry point.
 
 ### Files modified
-- .claude/loop-session.md (this file)
-
-No code changes — pure decision/research session.
+- angr/exploration/rust_manager.py (+113 lines, docstring only)
 
 ### Verification
-- 357/357 tests still passing (last run from 194th session, no code changed).
+- 357/357 tests passing (`pytest tests/engines/test_rust_exploration.py`)
+- Docstring imports cleanly
+
+### Memory saved
+- invariant-rust-manager-docstring-canonical (pointer to the docstring
+  as canonical source)
+
+### Bead status
+- angr-wqao.3 CLOSED with rationale.
+- Parent angr-wqao still open. Three siblings (.1 .2 .4) still open with
+  their parent's deferral memory applying. None of them block on this docs
+  task — they were independent refactor proposals that the deferral
+  audit found unjustified.
