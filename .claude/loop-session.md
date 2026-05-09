@@ -1,44 +1,48 @@
-## Session log: 2026-05-09 — angr-qrhl.2 (191st loop session, CLOSED)
+## Session log: 2026-05-09 — angr-vt0t.2 (192nd loop session, CLOSED)
 
 ### Task
-FloatLaneOp trait + dispatcher to dedupe vec_float_op / vec_float_unop /
-vec_float_minmax in `native/angr/src/vex/ops.rs`.
+Categorize except blocks in rust_state_sync.py (60 blocks) and
+rust_state_export.py (41 blocks) per the bridge-except categorization
+invariant established in vt0t.3 (commit 97e94a8bd).
 
-### Change
-- Defined private `FloatLaneOp` trait at module level + 8 unit structs:
-  FAdd / FSub / FMul / FDiv / FSqrt / FAbs / FMin / FMax.
-- Added `VEXOps::vec_float_lane_op(&[RustBV], elem, count, &dyn FloatLaneOp, ctx)`
-  with one shared lane loop for both concrete (shift+mask, run Rust f32/f64 op,
-  repack) and symbolic (.extract(hi,lo) + build_float_expr + concat_le_elements)
-  branches.
-- `FMin`/`FMax` symbolic path uses ITE+CmpLt to match Rust `<`/`>` semantics
-  (NaN passes through right) — same as the previous concrete branch.
-- `FLOAT_LANE_OP_MAX_ARITY = 2` const + fixed-size stack buffers in concrete
-  path avoid per-lane allocation. Bump this if a ternary lane op (e.g. FMA)
-  is added.
-- Updated 8 dispatch arms at unop/binop sites to use the new signature.
-- Removed three old functions (~205 lines) — net -22 lines in ops.rs.
+### Changes
+- Walked all 101 except handlers across the two state-bridge files,
+  tagging each with a `cat-(a|b|c)` comment per the categorization:
+  - (a) EXPECTED CONTROL FLOW — bare except + return is fine
+  - (b) FALLBACK WITH LOSS — alternate path runs; log at debug
+  - (c) WRONG-ANSWER RISK — caller silently sees wrong value; log at warn
 
-### Files modified
-- native/angr/src/vex/ops.rs (+161 -175)
+### Stats
+- rust_state_export.py: 41 blocks (cat-a: 9, cat-b: 19, cat-c: 13)
+- rust_state_sync.py: 60 blocks (cat-a: 12, cat-b: 37, cat-c: 12)
+- Total: 101 blocks (cat-a: 21, cat-b: 56, cat-c: 25)
+
+### New (c) blocks promoted from silent/debug to WARN log
+- rust_state_export.py:
+  - _get_stash_states `_snapshot_to_angr` per-state convert failure
+    — single state dropped from result list
+  - _get_stash_states `export_stash` outer failure — all uncached
+    states dropped
+  - _sync_rust_memory_to_state per-chunk concrete write failure
+  - _sync_rust_memory_to_state full-page write failure
+  - _sync_rust_symbolic_objects_to_state get_state_symbolic_z3_asts
+    failure (was silent return)
+  - _replace_with_rust_snapshot outer failure
+  - found_states convert failure
+  - get_state_by_id snapshot failure (was silent None return)
+  - _load_snapshot_pages per-page load failure
+
+Pre-existing (c) sites already had warn logs from commits 4f16e3792
+and 1e00e4919 (angr-i1wg).
 
 ### Verification
-- cargo check (release): clean
-- cargo test --release --lib: 603/603 (87/87 in vex::ops including
-  test_vec_float_add_concrete_f32x4, test_vec_float_div_concrete_f64x2,
-  test_vec_float_max_concrete_f32x4, test_vec_float_abs_concrete_f32x4,
-  test_vec_float_min_concrete_f64x2, test_vec_float_sqrt_concrete_f32x4,
-  test_vec_float_add_symbolic_f32x4)
-- pytest tests/engines/test_rust_exploration.py: 357/357
-- run_single.py fauxware (rust): 0.4s OK
-- run_single.py ais3_crackme (rust): 0.87s OK
-- run_single.py securityfest_fairlight (FP-heavy, rust): 7.87s OK
+- pytest tests/engines/test_rust_exploration.py: 357/357 passed in 20s
+- No behavior change for cat-(a)/(b) handlers — comments only
+- (c) handlers now log at WARN where the caller drops/dampens info
+  silently; debug-only kept where higher-level export sites already
+  surface the divergence
 
-### Memories saved
-- invariant-floatlaneop-pattern: trait + struct pattern + arity const
-- venv-rebuild-cargo-only-2026-05-09: tools/rebuild-rust.sh --cargo-only
-  is the correct rebuild path when venv pip is broken; PYTHONPATH=. needed
-  for run_single.py multiprocessing spawn
+### Files modified
+- angr/exploration/rust_state_export.py (+198 -39)
+- angr/exploration/rust_state_sync.py (+241 -25)
 
-### Commit
-f278e1da9 refactor(vex/ops): FloatLaneOp trait dedupes vec_float_op/unop/minmax — angr-qrhl.2

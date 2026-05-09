@@ -73,6 +73,9 @@ class RustSolverFallback:
             try:
                 ctx.set_timeout(120000)
             except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: set_timeout is a best-effort
+                # tuning knob; older Rust contexts may not expose it. Default
+                # 30s timeout still applies.
                 pass
             self._cached_rust_ctx = ctx
         # Replay constraints that the caller added after attach
@@ -82,8 +85,14 @@ class RustSolverFallback:
             for c in new_constraints:
                 try:
                     self._cached_rust_ctx.add_constraint_ast(c)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: a post-attach constraint
+                    # added by the caller could not be replayed into Rust's
+                    # context (e.g., references a Python-only symbol). The
+                    # next eval() will use a Rust solver missing this
+                    # constraint and may return values inconsistent with
+                    # the Python solver.
+                    l.debug("Could not replay post-attach constraint into Rust ctx: %s", e)
             self._synced_constraint_count = current
         return self._cached_rust_ctx
 
@@ -122,8 +131,11 @@ class RustSolverFallback:
             result = self._rust_eval(expr, cast_to)
             if result is not None:
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust eval failed; Python solver
+            # is the fallback and has the same constraints (constraint sync
+            # ran during exploration), so no wrong-answer risk.
+            l.debug("Rust eval failed, falling back to Python: %s", e)
         return self._original_eval(expr, cast_to=cast_to, **kwargs)
 
     def eval_upto(self, expr, n, cast_to=None, **kwargs):
@@ -135,8 +147,11 @@ class RustSolverFallback:
                     nbytes = (expr.length + 7) // 8
                     return [r.to_bytes(nbytes, 'big') for r in results]
                 return list(results)
-        except Exception:
-            pass
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust eval_upto failed; Python
+            # solver produces the result. Same constraint set, so no
+            # wrong-answer risk.
+            l.debug("Rust eval_upto failed, falling back to Python: %s", e)
         return self._original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
 
     def min(self, expr, **kwargs):
@@ -145,8 +160,10 @@ class RustSolverFallback:
             result = rust_ctx.min(expr, signed=kwargs.get('signed', False))
             if result is not None:
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust min failed; Python solver
+            # is the fallback. Same constraint set.
+            l.debug("Rust min failed, falling back to Python: %s", e)
         return self._original_min(expr, **kwargs)
 
     def max(self, expr, **kwargs):
@@ -155,8 +172,10 @@ class RustSolverFallback:
             result = rust_ctx.max(expr, signed=kwargs.get('signed', False))
             if result is not None:
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust max failed; Python solver
+            # is the fallback. Same constraint set.
+            l.debug("Rust max failed, falling back to Python: %s", e)
         return self._original_max(expr, **kwargs)
 
     def satisfiable(self, **kwargs):
@@ -164,12 +183,15 @@ class RustSolverFallback:
             rust_ctx = self._get_rust_ctx()
             return rust_ctx.satisfiable()
         except Exception as e_rust:
+            # cat-(b) FALLBACK WITH LOSS: Rust solver failed; Python is
+            # tried next.
             l.debug("Rust satisfiable() failed, trying Python: %s", e_rust)
         try:
             return self._original_satisfiable(**kwargs)
         except Exception as e_py:
-            # CRITICAL: returning False here would mean "UNSAT" — a wrong
-            # answer that masks the underlying solver failure.
+            # cat-(c) WRONG-ANSWER RISK: returning False here would mean
+            # "UNSAT" — a wrong answer that masks the underlying solver
+            # failure. Re-raise so the caller sees the failure.
             l.warning("Both Rust and Python satisfiable() failed for "
                       "state — Python error: %s", e_py)
             raise
@@ -237,6 +259,9 @@ class RustStateExportMixin:
                     try:
                         root = self._rust_mgr.get_state_root(sid)
                     except Exception:
+                        # cat-(a) EXPECTED CONTROL FLOW: probing for a Rust
+                        # root id; absence is normal for entry / unparented
+                        # states. Caller falls through to other lookups.
                         pass
                 if root is not None and root in self._state_cache:
                     state = self._state_cache[root].copy()
@@ -308,8 +333,17 @@ class RustStateExportMixin:
                                 self._state_cache[snapshot.state_id] = angr_state
                                 states.append(angr_state)
                             except Exception as e:
+                                # cat-(c) WRONG-ANSWER RISK: a state in
+                                # the Rust stash is dropped from the
+                                # Python-visible result. The user expects
+                                # N states and sees fewer. WARN ensures
+                                # the missing state is observable.
                                 l.warning(f"Failed to convert state from {stash}: {e}")
                 except Exception as e:
+                    # cat-(c) WRONG-ANSWER RISK: entire export_stash() FFI
+                    # failed; *all* uncached states are dropped from the
+                    # result. Caller will see fewer states than the Rust
+                    # mgr reports.
                     l.warning(f"export_stash failed for {stash}: {e}")
 
         # Restore stdin content for states that were forked purely in Rust.
@@ -327,8 +361,13 @@ class RustStateExportMixin:
                         continue
                     if not stdin.content:
                         stdin.content = list(self._stdin_content)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: stdin restore best-effort;
+                    # state's posix plugin shape may differ from the template
+                    # (e.g., custom posix subclass). Original (empty) content
+                    # remains; user solving for stdin won't see the captured
+                    # packets but the exploration result is still valid.
+                    l.debug("Could not restore stdin content for state: %s", e)
 
         # Fix posix nested weakrefs on all returned states
         # This ensures stdin/stdout/stderr have valid state references
@@ -359,6 +398,9 @@ class RustStateExportMixin:
                     if fd_obj is not None and hasattr(fd_obj, 'set_state'):
                         fd_obj.set_state(state)
         except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: states without posix plugin
+            # (custom factories, blank states) hit attribute / type errors
+            # that we silently absorb. Weakref refresh is fix-up only.
             pass
 
     def _sync_rust_registers_to_state(self, state: "angr.SimState", state_id: int):
@@ -371,9 +413,9 @@ class RustStateExportMixin:
         try:
             snapshot = self._rust_mgr.export_state(state_id)
         except Exception as e:
-            # CRITICAL: registers in Python state are now stale. User code
-            # reading state.regs.* after exploration will see pre-exploration
-            # values, not the values Rust computed.
+            # cat-(c) WRONG-ANSWER RISK: registers in Python state are now
+            # stale. User code reading state.regs.* after exploration will
+            # see pre-exploration values, not the values Rust computed.
             l.warning("export_state(%d) failed during register sync: %s — "
                       "Python registers may be stale", state_id, e)
             return
@@ -383,8 +425,9 @@ class RustStateExportMixin:
             try:
                 setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
             except Exception as e:
-                # Expected: VEX internal registers (e.g. ip_at_syscall) that
-                # angr's register plugin doesn't expose. Log at debug only.
+                # cat-(a) EXPECTED CONTROL FLOW: VEX internal registers
+                # (e.g. ip_at_syscall) that angr's register plugin doesn't
+                # expose. Log at debug only.
                 l.debug("Skipping register %s during sync: %s", reg_name, e)
 
     def _sync_rust_mmap_base_to_state(self, state: "angr.SimState", state_id: int):
@@ -405,6 +448,11 @@ class RustStateExportMixin:
         try:
             rust_base = self._rust_mgr.get_state_mmap_base(state_id)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: per-state mmap_base unavailable
+            # (state may have been dropped from Rust). Python keeps its
+            # current heap.mmap_base; a subsequent Python-side allocation
+            # may overlap a Rust-allocated region. Debug only because
+            # this state is likely no longer being explored.
             l.debug("get_state_mmap_base(%d) failed: %s", state_id, e)
             return
         if rust_base > heap.mmap_base:
@@ -436,6 +484,9 @@ class RustStateExportMixin:
         try:
             rust_brk = self._rust_mgr.get_state_posix_brk(state_id)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: per-state posix_brk unavailable.
+            # Same risk as mmap_base sync — Python-side fallback may
+            # overlap a Rust heap region.
             l.debug("get_state_posix_brk(%d) failed: %s", state_id, e)
             return
         if rust_brk > py_brk:
@@ -456,6 +507,9 @@ class RustStateExportMixin:
         try:
             frames = self._rust_mgr.get_state_call_stack(state_id)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: state.callstack stays at the
+            # template's pre-Rust history. Downstream callers reading
+            # callstack will see fewer frames than Rust observed.
             l.debug("get_state_call_stack(%d) failed: %s", state_id, e)
             return
 
@@ -478,6 +532,10 @@ class RustStateExportMixin:
         try:
             state.register_plugin("callstack", chain)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: register_plugin failed; the
+            # state keeps its pre-Rust callstack plugin. Downstream
+            # consumers that depend on Rust-tracked frames will see
+            # incomplete history.
             l.debug("register_plugin('callstack') failed for %d: %s", state_id, e)
 
     def _sync_rust_memory_to_state(self, state: "angr.SimState", state_id: int):
@@ -495,14 +553,16 @@ class RustStateExportMixin:
         except Exception as e_flushed:
             try:
                 snapshot = self._rust_mgr.export_state(state_id)
-                # Flushed failed but unflushed worked — pending symbolic
-                # writes may not be visible in Python memory.
+                # cat-(c) WRONG-ANSWER RISK: flushed failed but unflushed
+                # worked — pending symbolic writes may not be visible in
+                # Python memory. WARN so the user notices.
                 l.warning("export_state_flushed(%d) failed (%s); falling "
                           "back to unflushed snapshot — pending symbolic "
                           "stores may be missing", state_id, e_flushed)
             except Exception as e_unflushed:
-                # CRITICAL: both export paths failed. Python state.memory
-                # will return zeros (or stale data) for any address Rust wrote.
+                # cat-(c) WRONG-ANSWER RISK: both export paths failed.
+                # Python state.memory will return zeros (or stale data)
+                # for any address Rust wrote.
                 l.warning("Both export_state_flushed and export_state failed "
                           "for state %d (flushed: %s; unflushed: %s) — "
                           "Python memory will be stale",
@@ -536,8 +596,15 @@ class RustStateExportMixin:
                                     inspect=False,
                                     disable_actions=True,
                                 )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                # cat-(c) WRONG-ANSWER RISK: a concrete
+                                # byte range from Rust failed to write into
+                                # Python memory. state.memory.load() of
+                                # this region will return whatever the
+                                # Python state held pre-exploration (often
+                                # zero or a stale BVS).
+                                l.warning("Failed to sync concrete chunk to 0x%x: %s",
+                                          page_addr + start, e)
                             start = None
             else:
                 try:
@@ -550,8 +617,11 @@ class RustStateExportMixin:
                         inspect=False,
                         disable_actions=True,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    # cat-(c) WRONG-ANSWER RISK: full-page sync failed.
+                    # All addresses on this page in Python memory are
+                    # stale.
+                    l.warning("Failed to sync page at 0x%x: %s", page_addr, e)
 
         # Export Rust-computed symbolic expressions to Python memory.
         # These are Expression values computed by the Rust VEX interpreter
@@ -568,7 +638,13 @@ class RustStateExportMixin:
         """
         try:
             sym_asts = self._rust_mgr.get_state_symbolic_z3_asts(state_id)
-        except Exception:
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: Rust-computed symbolic objects
+            # are not exported to Python memory. state.memory.load() of
+            # those addresses will see concrete bytes (or template BVS),
+            # not the symbolic expression Rust computed.
+            l.warning("get_state_symbolic_z3_asts(%d) failed: %s — "
+                      "Rust-side symbolic memory not synced", state_id, e)
             return
 
         if not sym_asts:
@@ -601,6 +677,10 @@ class RustStateExportMixin:
                     disable_actions=True,
                 )
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: per-AST sync failed (e.g.
+                # ctypes binding incompatible with this z3 version). The
+                # other ASTs on this state still get synced, but this one
+                # is missing — Python sees concrete bytes for the address.
                 l.debug("Failed to sync symbolic object at 0x%x: %s", addr, e)
 
     def _attach_rust_solver_fallback(self, state, state_id):
@@ -631,6 +711,9 @@ class RustStateExportMixin:
                     if rust_root is not None:
                         root_id = rust_root
                 except Exception:
+                    # cat-(a) EXPECTED CONTROL FLOW: probing for a Rust
+                    # root id; absence is normal for entry / unparented
+                    # states.
                     pass
 
             rust_constraints = self._rust_mgr.export_state_constraints(state_id)
@@ -676,7 +759,13 @@ class RustStateExportMixin:
                                             c = c.replace(leaf, orig_ast)
                                             break
                         except Exception:
-                            pass  # Substitution failed, use constraint as-is
+                            # cat-(b) FALLBACK WITH LOSS: rust_sym_*
+                            # substitution failed (claripy AST shape
+                            # mismatch). Constraint is added as-is and
+                            # its rust_sym_ leaf may not match the
+                            # Python AST identity, leading to a downstream
+                            # identity-mismatch skip.
+                            pass
 
                     # Check for identity mismatch: if a Rust constraint uses
                     # a symbol with the same NAME as a Python symbol but a
@@ -700,6 +789,12 @@ class RustStateExportMixin:
                             state.solver.add(c != 0)
                         synced += 1
                 except Exception:
+                    # cat-(b) FALLBACK WITH LOSS: this individual
+                    # constraint failed to add (rare malformed AST).
+                    # Other constraints still sync. The Rust solver
+                    # fallback supplies eval/satisfiable so the missing
+                    # constraint is not a wrong-answer source — Python
+                    # solver path may diverge but is not used.
                     pass
             if synced or skipped:
                 l.debug(f"Synced {synced} constraints to state {state_id} "
@@ -710,6 +805,11 @@ class RustStateExportMixin:
             # LAZY_SOLVES examples (hackcon) takes 60s+ with zero benefit.
             # The Rust solver fallback handles eval() correctly regardless.
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: outer constraint sync failed.
+            # The Rust solver fallback (attached separately by the caller)
+            # serves eval/min/max/satisfiable from Rust's full constraint
+            # set, so missing Python-side constraints are not a wrong-
+            # answer source.
             l.debug(f"Could not sync constraints for state {state_id}: {e}")
 
     def _replace_with_rust_snapshot(self, state, state_id):
@@ -734,6 +834,7 @@ class RustStateExportMixin:
                     if rust_root is not None:
                         root_id = rust_root
                 except Exception:
+                    # cat-(a) EXPECTED CONTROL FLOW: probing for Rust root.
                     pass
 
             for lookup_id in [state_id, root_id]:
@@ -748,6 +849,11 @@ class RustStateExportMixin:
                             concrete_val = int.from_bytes(concrete_bytes, 'little')
                             fresh.solver.add(ast == claripy.BVV(concrete_val, size * 8))
                     except Exception:
+                        # cat-(b) FALLBACK WITH LOSS: per-symbol pin
+                        # failed (memory read or constraint add). Other
+                        # pins still apply but this symbol is left
+                        # unconstrained — eval() may return arbitrary
+                        # solutions where Rust had a concrete answer.
                         pass
 
             # Replace the original state's internals
@@ -757,6 +863,9 @@ class RustStateExportMixin:
                 state.regs._ip = fresh.addr
             l.debug(f"Replaced UNSAT state {state_id} with pinned Rust values")
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: replacement failed entirely; the
+            # caller-supplied state is unchanged and may still be UNSAT,
+            # producing wrong eval() results downstream.
             l.warning(f"Could not replace UNSAT state {state_id}: {e}")
 
     @property
@@ -776,6 +885,9 @@ class RustStateExportMixin:
                 angr_state = self._snapshot_to_angr(snapshot)
                 states.append(angr_state)
             except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: a found state is dropped
+                # from the result list. Caller may report fewer
+                # solutions than the engine actually found.
                 l.warning(f"Failed to convert state {snapshot.state_id}: {e}")
         return states
 
@@ -792,6 +904,10 @@ class RustStateExportMixin:
             snapshot = self._rust_mgr.export_state(state_id)
             return self._snapshot_to_angr(snapshot)
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: returning None hides the
+            # underlying failure. Callers checking "if state is None"
+            # may treat this as "state doesn't exist" when in fact
+            # the state exists but failed to convert.
             l.warning(f"Failed to get state {state_id}: {e}")
             return None
 
@@ -830,7 +946,9 @@ class RustStateExportMixin:
             try:
                 setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
             except Exception:
-                pass  # Skip VEX internal registers that angr doesn't expose
+                # cat-(a) EXPECTED CONTROL FLOW: Skip VEX internal
+                # registers that angr doesn't expose (ip_at_syscall etc.).
+                pass
 
     def _load_snapshot_pages(self, state: "angr.SimState", snapshot, arch):
         """Load memory pages from snapshot, restoring symbolic regions with original ASTs."""
@@ -851,6 +969,9 @@ class RustStateExportMixin:
                 )
                 self._apply_symbolic_constraints(state, snapshot.state_id, sym_to_constrain)
             except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: page failed to load. State
+                # memory at this page is left at its blank-state default,
+                # so loads return zeros instead of Rust's values.
                 l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
 
     @staticmethod
@@ -904,6 +1025,9 @@ class RustStateExportMixin:
             try:
                 root_id = self._rust_mgr.get_state_root(snapshot.state_id)
             except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: probing for Rust root id;
+                # absence is normal for entry / unparented states. We
+                # then search only state_id and parent_id for the AST.
                 root_id = None
         if root_id is not None and root_id != snapshot.state_id:
             candidate_ids.append(root_id)
@@ -932,6 +1056,10 @@ class RustStateExportMixin:
                 concrete_val = int.from_bytes(concrete_bytes, 'little')
                 state.solver.add(ast == claripy.BVV(concrete_val, size * 8))
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: per-symbol pin failed; the
+                # symbol is left unconstrained while concrete bytes for
+                # the address are still loaded by the page sync. The
+                # solver may pick a different value than what Rust held.
                 l.debug(f"Could not add constraint at 0x{sym_addr:x}: {e}")
 
     def _restore_plugins_to_state(self, state: "angr.SimState", state_id: int):
@@ -955,6 +1083,8 @@ class RustStateExportMixin:
                 if rust_root is not None:
                     root_id = rust_root
             except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: probing for Rust root;
+                # falls through to the next-state-cache template.
                 pass
         if root_id in self._state_cache:
             template = self._state_cache[root_id]
@@ -981,6 +1111,10 @@ class RustStateExportMixin:
                             state.register_plugin(plugin_name, plugin.copy())
                             l.debug(f"Restored {plugin_name} plugin to state")
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: per-plugin restore failed
+                # (incompatible copy()). State is left without that
+                # plugin; downstream code that accesses it will fall
+                # through to angr's default plugin instantiation.
                 l.debug(f"Could not restore {plugin_name} plugin: {e}")
 
         # Fix nested plugin state references for posix (stdin/stdout/stderr)
@@ -999,6 +1133,10 @@ class RustStateExportMixin:
                         if fd_obj is not None and hasattr(fd_obj, 'set_state'):
                             fd_obj.set_state(state)
         except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: posix weakref refresh failed
+            # (custom posix plugin shape). Stale weakrefs may surface
+            # later as AttributeError when the user inspects stdin/
+            # stdout/stderr.
             l.debug(f"Could not fix posix nested state refs: {e}")
 
     def eval_memory(self, state_id: int, addr: int, size: int) -> Optional[bytes]:
