@@ -180,6 +180,24 @@ impl<'a> CallbackInterpreter<'a> {
             };
         }
 
+        // Ijk_Ret with an empty call stack means we are returning from a
+        // function we never entered (typical for blank_state at a `ret`
+        // instruction). The popped IP was lazy-filled by Python's symbolic
+        // stack but materialized to a concrete value during Python->Rust
+        // sync (rust_state_sync.py:_sync_stack_page). Match Python's
+        // _eval_target_brutal behaviour (engines/successors.py:308-323):
+        // when the IP has no meaningful constraint pinning it, route to
+        // the unconstrained stash instead of treating it as a call to
+        // address 0. See angr-3uye.
+        if jumpkind.is_ret() && self.call_stack.is_empty() && !self.is_in_binary(target) {
+            return BlockResult::UnconstrainedJump {
+                min_target: target,
+                max_target: target,
+                limit: self.config.max_symbolic_ip_targets,
+                jumpkind,
+            };
+        }
+
         // For jumps/returns to external addresses that are NOT hooked,
         // treat as UnmodeledCall so Python can handle them properly.
         // This includes:

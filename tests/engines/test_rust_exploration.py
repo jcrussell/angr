@@ -7390,5 +7390,42 @@ class TestEdgeCases:
             )
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestUnconstrainedRet:
+    """angr-3uye: `ret` from a blank state with no prior call must route the
+    state to the `unconstrained` stash (matching Python), not be silently
+    concretized to address 0 and deadended.
+
+    Python's _eval_target_brutal (engines/successors.py) sees the lazy-filled
+    symbolic stack as a `<BV64 mem_*>` with >256 solutions and overflows into
+    `unconstrained_successors`. Rust's state sync materialises the lazy stack
+    to concrete zeros, so the popped IP is concrete 0; the fix in
+    interpreter_cb/exits.rs detects `Ijk_Ret` with an empty call stack to
+    an out-of-binary target and routes to the unconstrained stash instead.
+    """
+
+    def test_ret_with_empty_call_stack_routes_to_unconstrained(self):
+        """Single-instruction `ret` on a blank state lands in the
+        unconstrained stash, not deadended."""
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rsp = 0x7FFF_0000
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=2)
+
+        # The state must be in the unconstrained stash (Python's behaviour).
+        assert len(mgr.unconstrained) == 1, (
+            f"expected 1 unconstrained state, got stashes="
+            f"{ {k: len(v) for k, v in mgr.stashes.items() if v} }"
+        )
+        assert len(mgr.deadended) == 0, (
+            "ret-from-blank-state must not deadend (would have meant the "
+            "popped IP was silently concretized to 0)"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
