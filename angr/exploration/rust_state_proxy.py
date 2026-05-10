@@ -304,10 +304,28 @@ class RustRegisterProxy:
         return self._arch.bits
 
     def load(self, reg_name_or_offset, size=None):
-        """Load register by name."""
+        """Load register by name or by ``(offset, size)`` tuple.
+
+        Mirrors ``SimRegisters.load``: string names route through
+        ``__getattr__``; integer offsets are resolved via the architecture's
+        ``register_size_names[(offset, size)]`` map (size defaults to
+        ``arch.bytes``, matching angr's SimMemory default).
+        """
         if isinstance(reg_name_or_offset, str):
             return getattr(self, reg_name_or_offset)
-        raise NotImplementedError("register load by offset not yet supported in proxy")
+        if isinstance(reg_name_or_offset, int):
+            if size is None:
+                size = self._arch.bytes
+            try:
+                name = self._arch.register_size_names[(reg_name_or_offset, size)]
+            except KeyError as e:
+                raise NotImplementedError(
+                    f"no register for offset {reg_name_or_offset} size {size} on {self._arch.name}"
+                ) from e
+            return getattr(self, name)
+        raise TypeError(
+            f"register load expects str name or int offset, got {type(reg_name_or_offset).__name__}"
+        )
 
 
 class RustMemoryProxy:
@@ -321,17 +339,31 @@ class RustMemoryProxy:
         self._mgr = rust_mgr
         self._state_id = state_id
         self._arch = arch
+        self._solver_ctx = None  # lazy — forked on first symbolic-addr load
+
+    def _ensure_solver(self):
+        if self._solver_ctx is None:
+            self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
 
     def load(self, addr, size=None, endness=None, **kwargs):
-        """Load memory from the Rust state."""
+        """Load memory from the Rust state.
+
+        Concrete addresses (int or concrete claripy AST) issue a direct
+        FFI load. Symbolic addresses are concretized to a single solution
+        under the state's constraints by forking a Rust solver context.
+        Unsat addresses raise ``claripy.errors.UnsatError``.
+        """
         if isinstance(addr, claripy.ast.Base):
-            # Concrete address extraction
             if addr.concrete:
                 addr = addr.concrete_value
             else:
-                raise NotImplementedError(
-                    "symbolic memory load not supported in proxy"
-                )
+                self._ensure_solver()
+                resolved = self._solver_ctx.eval(addr)
+                if resolved is None:
+                    raise claripy.errors.UnsatError(
+                        "symbolic memory load addr is unsat"
+                    )
+                addr = resolved
         if size is None:
             size = self._arch.bytes
         if isinstance(size, claripy.ast.Base):

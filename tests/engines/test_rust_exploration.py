@@ -1618,6 +1618,117 @@ class TestSolverProxyTimeout:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestProxyLiskovGaps:
+    """Tests for previously-unimplemented load shapes on RustStateProxy
+    (angr-1w75): register load by integer offset and memory load with a
+    symbolic address. Both used to raise NotImplementedError despite being
+    standard angr SimState idioms.
+    """
+
+    def test_register_load_by_offset_amd64(self, fauxware_project):
+        """``regs.load(offset)`` resolves through ``arch.register_size_names``
+        and returns the same value as the named accessor."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        # rax sits at offset 16 on AMD64.
+        offset, size = state.arch.registers["rax"]
+        assert (offset, size) == (16, 8)
+
+        v_off = proxy.regs.load(offset)  # default size -> arch.bytes (8)
+        v_name = proxy.regs.rax
+        assert v_off.size() == v_name.size() == 64
+        # Cached BVV objects are reference-equal; otherwise compare concrete
+        # values. The proxy may return either depending on whether __getattr__
+        # cached the read.
+        assert v_off.concrete == v_name.concrete
+        if v_off.concrete:
+            assert v_off.concrete_value == v_name.concrete_value
+
+    def test_register_load_subreg_via_size(self, fauxware_project):
+        """``regs.load(offset, size=4)`` resolves to ``eax`` for AMD64 and
+        returns a 32-bit value (the low half of rax)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        v_eax = proxy.regs.load(16, 4)
+        assert v_eax.size() == 32
+        # The proxy returns whatever Rust holds for "eax" — verify it matches
+        # the named accessor (the resolution path is what we're testing).
+        assert v_eax.concrete == proxy.regs.eax.concrete
+        if v_eax.concrete:
+            assert v_eax.concrete_value == proxy.regs.eax.concrete_value
+
+    def test_register_load_bad_offset(self, fauxware_project):
+        """Unknown (offset, size) pairs raise NotImplementedError with a
+        message that identifies the arch — easier to diagnose than a bare
+        KeyError."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        with pytest.raises(NotImplementedError, match="AMD64"):
+            proxy.regs.load(7777, 8)
+
+    def test_register_load_wrong_type(self, fauxware_project):
+        """A float/None arg is a programming error, not an offset miss."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        with pytest.raises(TypeError):
+            proxy.regs.load(1.5)
+
+    def test_memory_load_symbolic_addr(self, fauxware_project):
+        """``memory.load(sym_addr)`` evaluates the address under the state's
+        constraints and falls through to the concrete read path."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        # Constrain a symbolic addr to a concrete location inside the loaded
+        # binary so the concrete read returns deterministic bytes.
+        addr_sym = claripy.BVS("addr_load_sym", 64)
+        target = fauxware_project.entry
+        state.solver.add(addr_sym == target)
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxy = mgr.proxy.active[0]
+        loaded = proxy.memory.load(addr_sym, 4)
+
+        # Reference: angr SimState memory.load at the concrete addr (big-endian
+        # default — same convention as RustMemoryProxy).
+        expected = state.solver.eval(state.memory.load(target, 4))
+        assert loaded.concrete_value == expected
+
+    def test_memory_load_unsat_symbolic_addr(self, fauxware_project):
+        """An unsatisfiable symbolic addr raises UnsatError rather than
+        silently reading zero bytes."""
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        addr_sym = claripy.BVS("addr_unsat", 64)
+        state.solver.add(addr_sym == 0x1000)
+        state.solver.add(addr_sym == 0x2000)  # contradictory
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        with pytest.raises(claripy.errors.UnsatError):
+            proxy.memory.load(addr_sym, 4)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestMmapBaseSync:
     """Tests that the Rust per-state mmap_base mirrors back to Python's
     state.heap.mmap_base on stash export.
