@@ -1,74 +1,75 @@
-## Session log: 2026-05-10 — angr-3uye.1 (211th loop session, COMPLETE)
+## Session log: 2026-05-10 — angr-3uye.2 (212th loop session, COMPLETE)
 
 ### Task
-Trace-only bead: localize divergence point where Rust's symex of a single
-`ret` instruction concretizes the popped PC to 0 instead of routing the
-state to the `unconstrained` stash (Python's behaviour). Acceptance:
-divergence named down to file:line so angr-3uye.2 can take a one-shot fix.
+Implement the unconstrained-PC routing fix in the Rust engine after the
+trace bead (angr-3uye.1) localized the divergence to
+interpreter_cb/exits.rs:189 (Ijk_Ret to address 0 routed as UnmodeledCall
+→ generic skip → deadended, instead of unconstrained).
 
-### Repro confirmed
-- `load_shellcode(b"\xc3", AMD64, 0x1000)`; `blank_state(addr=0x1000)`;
-  `rsp = 0x7fff_0000`; step 2.
-- Python: `{'unconstrained': 1}`, rip = `<BV64 mem_7fff0000_0_64>`.
-- Rust:   `{'deadended': 1}`, addr = 0x0 (P21 generic skip log line).
+### Implementation
+`native/angr/src/interpreter_cb/exits.rs:182-198` — inserted a guard
+before the `!is_in_binary` UnmodeledCall fallback:
 
-### Method
-Added 3 temporary `log::debug!` statements (exits.rs, expressions.rs) with
-`ANGR_RUST_LOG=debug`, ran the repro in a subprocess with RLIMIT_AS=4GB,
-captured the divergence chain end-to-end, then **reverted** all
-instrumentation. `cargo check --release` clean, all 372 tests pass on the
-clean tree.
+```rust
+if jumpkind.is_ret() && self.call_stack.is_empty() && !self.is_in_binary(target) {
+    return BlockResult::UnconstrainedJump {
+        min_target: target, max_target: target,
+        limit: self.config.max_symbolic_ip_targets,
+        jumpkind,
+    };
+}
+```
 
-### Root divergence (named down to file:line)
-`angr/exploration/rust_state_sync.py:486-503` — `_sync_stack_page` slow
-path solver.eval()s the symbolic stack page to concrete bytes (default
-model = zeros) and maps them into Rust's page cache. The
-`_has_user_symbolic_var` filter at lines 540-552 explicitly rejects
-variable names starting with `mem_`/`reg_`/`unconstrained`, so the
-auto-generated stack placeholders (`mem_7fff0000_*`) are never re-imported
-as symbolic regions. Net: Rust's stack is all-zero where Python's is
-symbolic.
+The `call_stack.is_empty()` guard is the safety net: normal in-binary
+function rets always have a frame pushed by an earlier `Ijk_Call`, so
+they keep the existing UnmodeledCall path. Only "ret from a state that
+never called anything" — the angr-3uye repro — hits this new branch.
 
-### Downstream chain (consequence)
-1. `interpreter_cb/expressions.rs:60` — `IRExpr::Load` concrete-addr fast
-   path returns `Concrete(0, 64)`.
-2. `interpreter_cb/exits.rs:47-52` — `eval_next_addr_concretized`
-   concrete fast path returns `Single(0)` without consulting solver.
-3. `interpreter_cb/exits.rs:160,189-196` — `handle_exit(0, Ijk_Ret)`:
-   `is_in_binary(0)` false => `BlockResult::UnmodeledCall { addr: 0,
-   return_addr: 0, … }`.
-4. `exploration/stepping.rs:710,720-742` — no `resolve_function` =>
-   `unmodeled_call_generic_skip` sets rax=0, pc=0, continues. State ends
-   in `deadended` at 0x0.
+### Verification
+- `cargo check --release`: clean (7.18s).
+- Rebuild via `tools/rebuild-rust.sh --cargo-only` (venv pip is broken:
+  `pip._vendor.resolvelib.structs` import failure; out of scope here).
+- Repro: `load_shellcode(b"\xc3"); blank_state(addr=0x1000);
+  rsp=0x7fff_0000; mgr.run(max_steps=2)` now lands in
+  `{'unconstrained': 1}`, matching Python (was: `{'deadended': 1, addr=0}`).
+- Full suite: 370 passed, 3 pre-existing failures (dcas, pipe, dup2 —
+  verified pre-existing via `git stash` before/after).
+- Fauxware --both: both engines pass (rust 0.28s vs python 0.40s).
 
-### Python counterpart (for reference)
-- `angr/engines/successors.py:308-323` — `_eval_target_brutal` enumerates
-  the symbolic ip up to `max_targets+1` (256, from
-  `address_concretization_mixin.py:31`); on overflow appends to
-  `unconstrained_successors` (successors.py:323).
-- `angr/sim_manager.py:519` maps that list to the `'unconstrained'` stash.
+### Regression test added
+`tests/engines/test_rust_exploration.py::TestUnconstrainedRet::test_ret_with_empty_call_stack_routes_to_unconstrained` —
+asserts `len(mgr.unconstrained) == 1` and `len(mgr.deadended) == 0` for
+the angr-3uye repro. **Critical**: the test constructs the manager with
+`save_unconstrained=True`, because the default `False` drops the
+unconstrained stash after every `run()` iteration (rust_manager.py:2867-2875).
 
-### Two fix axes for angr-3uye.2 (documented in bead notes)
-- **A. Preserve symbolic stack bytes during sync** (root fix): relax the
-  `_has_user_symbolic_var` filter for stack pages whose load is wholly
-  symbolic, or sync the page itself as one BVS.
-- **B. Defensive route in handle_exit**: before the `!is_in_binary`
-  branch at exits.rs:189, detect Ijk_Ret to 0 with empty/mismatched call
-  stack and emit `BlockResult::UnconstrainedJump`.
-
-### Files touched
-None (all instrumentation reverted). `git diff` is empty.
+### Files changed
+- `native/angr/src/interpreter_cb/exits.rs` (+18 lines)
+- `tests/engines/test_rust_exploration.py` (+37 lines, new test class)
 
 ### Memories saved
-- `3uye-stack-page-eager-materialization` — root cause + file:line refs.
-- `invariant-has-user-symbolic-var-divergence-knob` — the explicit
-  filter at rust_state_sync.py:540-552 that gates Python->Rust symbolic
-  identity preservation.
-- `avoid-concretize-fast-path-skips-solver` — concretize.rs:344-347
-  unguarded fast path that would silently concretize a `Constrained` BV.
+- `3uye-2-call-stack-empty-as-unconstrained-trigger` — fix location and
+  the call_stack.is_empty() invariant.
+- `invariant-save-unconstrained-default-false` — RustExplorationManager
+  defaults `save_unconstrained=False` and drops the stash after each
+  run — tests/repros must pass `save_unconstrained=True` or the stash
+  appears empty even when the underlying routing is correct.
 
 ### Closed beads
-- `angr-3uye.1` (this trace bead).
+- `angr-3uye.2` (this fix bead).
+
+### Caveats / followups
+- This is a **defensive route** at the exit handler, not a root fix for
+  the upstream sync divergence. `rust_state_sync.py:_sync_stack_page`
+  still eagerly concretizes the lazy-symbolic stack to zeros (filtered
+  out by `_has_user_symbolic_var`). If a future test relies on the
+  popped IP carrying the symbolic identity *across* the Python→Rust
+  boundary (e.g., constraints added in Python on `mem_7fff*` must be
+  visible in Rust), the sync path would still need work. The narrow fix
+  here matches Python's observable behaviour for the canonical repro;
+  deeper sync preservation is a separate epic.
+- Venv pip is broken — used `tools/rebuild-rust.sh --cargo-only`. If
+  this recurs, consider filing a bead.
 
 ### Status
-COMPLETE. Unblocks `angr-3uye.2` (the one-shot fix bead).
+COMPLETE.
