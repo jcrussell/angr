@@ -1491,125 +1491,131 @@ class RustStateSyncMixin:
         Returns:
             Dict mapping address -> claripy AST for symbolic memory locations.
         """
-        symbolic_regions = {}
+        symbolic_regions: dict = {}
         try:
-            # Strategy 1: Use angr's internal symbolic tracking if available
-            # This is the most accurate method as angr tracks symbolic bytes precisely
-            if hasattr(state.memory, 'get_symbolic_addrs'):
-                try:
-                    # get_symbolic_addrs returns addresses of symbolic bytes
-                    symbolic_addrs = state.memory.get_symbolic_addrs()
-                    if symbolic_addrs:
-                        # Group contiguous symbolic regions
-                        for addr in symbolic_addrs:
-                            try:
-                                # Load individual symbolic bytes
-                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-                                if hasattr(val, 'symbolic') and val.symbolic:
-                                    symbolic_regions[addr] = val
-                                    self._register_handle(id(val), val)
-                            except Exception:
-                                # cat-(b) FALLBACK WITH LOSS: per-byte
-                                # symbolic load failed; that byte not in
-                                # symbolic_regions and Rust will see
-                                # concrete data (or zeros) for it.
-                                pass
-                        if symbolic_regions:
-                            l.debug(f"Extracted {len(symbolic_regions)} symbolic bytes via get_symbolic_addrs")
-                            return symbolic_regions
-                except Exception as e:
-                    # cat-(a) EXPECTED CONTROL FLOW: get_symbolic_addrs is
-                    # an opt-in API; falls through to page bitmap walk.
-                    l.debug(f"get_symbolic_addrs failed: {e}")
+            if self._extract_via_get_symbolic_addrs(state, symbolic_regions):
+                return symbolic_regions
 
-            # Strategy 2: Scan pages for symbolic content
-            # Note: _pages keys are page NUMBERS, not addresses
             if hasattr(state.memory, '_pages'):
                 page_size = getattr(state.memory, 'page_size', 4096)
-
                 for page_num in list(state.memory._pages.keys()):
                     page = state.memory._pages.get(page_num)
                     if page is None:
                         continue
-
-                    page_addr = page_num * page_size  # Convert page number to address
-
-                    # UltraPage: use all_bytes_changed_in_history() for written bytes,
-                    # then check symbolic_bitmap to filter to symbolic ones
-                    if hasattr(page, 'all_bytes_changed_in_history') and hasattr(page, 'symbolic_bitmap'):
-                        try:
-                            changed = page.all_bytes_changed_in_history()
-                            sb = page.symbolic_bitmap
-                            # changed is a SegmentList, iterate over Segment objects
-                            for segment in changed:
-                                # Segment has start/end attributes
-                                start = getattr(segment, 'start', None)
-                                end = getattr(segment, 'end', None)
-                                if start is not None and end is not None:
-                                    for offset in range(start, end):
-                                        if offset < len(sb) and sb[offset]:
-                                            addr = page_addr + offset
-                                            try:
-                                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-                                                if hasattr(val, 'symbolic') and val.symbolic:
-                                                    symbolic_regions[addr] = val
-                                                    self._register_handle(id(val), val)
-                                            except Exception:
-                                                # cat-(b) FALLBACK WITH
-                                                # LOSS: per-byte load
-                                                # failed; that byte's
-                                                # symbolic identity is
-                                                # not extracted.
-                                                pass
-                        except Exception:
-                            # cat-(b) FALLBACK WITH LOSS: page-level
-                            # walk (changed_bytes_in_history) failed;
-                            # that page's symbolic content not extracted.
-                            pass
-                    # ListPage: stored_offset tracks all written bytes
-                    elif hasattr(page, 'stored_offset') and page.stored_offset:
-                        for offset in page.stored_offset:
-                            addr = page_addr + offset
-                            try:
-                                val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-                                if hasattr(val, 'symbolic') and val.symbolic:
-                                    symbolic_regions[addr] = val
-                                    self._register_handle(id(val), val)
-                            except Exception:
-                                # cat-(b) FALLBACK WITH LOSS: ListPage
-                                # per-offset load failed; that byte's
-                                # symbolic identity not extracted.
-                                pass
-                    # Fallback: Check alternative tracking attributes
-                    elif hasattr(page, '_symbolic_bitmap') and page._symbolic_bitmap:
-                        for offset in range(page_size):
-                            if page._symbolic_bitmap.get(offset, False):
-                                addr = page_addr + offset
-                                try:
-                                    val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
-                                    if hasattr(val, 'symbolic') and val.symbolic:
-                                        symbolic_regions[addr] = val
-                                        self._register_handle(id(val), val)
-                                except Exception:
-                                    # cat-(b) FALLBACK WITH LOSS:
-                                    # alternative-bitmap per-byte load
-                                    # failed; symbolic identity dropped.
-                                    pass
-                    elif hasattr(page, 'symbolic_byte_map') and page.symbolic_byte_map:
-                        for offset, sym_val in page.symbolic_byte_map.items():
-                            addr = page_addr + offset
-                            symbolic_regions[addr] = sym_val
-                            self._register_handle(id(sym_val), sym_val)
+                    page_addr = page_num * page_size
+                    # First backend that hasattr-matches handles the page.
+                    (self._extract_from_ultrapage(state, page, page_addr, symbolic_regions)
+                     or self._extract_from_listpage(state, page, page_addr, symbolic_regions)
+                     or self._extract_from_alt_bitmap(state, page, page_addr, page_size, symbolic_regions)
+                     or self._extract_from_byte_map(page, page_addr, symbolic_regions))
 
             if symbolic_regions:
                 l.debug(f"Extracted {len(symbolic_regions)} symbolic memory regions")
-
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: outer extract loop failed.
             # Returns empty regions dict; downstream Rust restoration
             # will not see any symbolic memory from this state.
             l.debug(f"Error extracting symbolic pages: {e}")
         return symbolic_regions
+
+    def _load_symbolic_byte(self, state: "angr.SimState", addr: int):
+        """Load 1 byte at addr; return the AST if symbolic, else None.
+
+        cat-(b) FALLBACK WITH LOSS on load failure: returns None, so the
+        caller drops that byte and Rust will see concrete data (or zeros).
+        """
+        try:
+            val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
+            if hasattr(val, 'symbolic') and val.symbolic:
+                return val
+        except Exception:
+            pass
+        return None
+
+    def _record_symbolic(self, out: dict, addr: int, val) -> None:
+        out[addr] = val
+        self._register_handle(id(val), val)
+
+    def _extract_via_get_symbolic_addrs(self, state: "angr.SimState", out: dict) -> bool:
+        """Strategy 1: angr's internal symbolic tracking. Most accurate.
+
+        Returns True iff at least one symbolic byte was recorded — matching
+        the original early-return guard on a non-empty regions dict.
+        """
+        if not hasattr(state.memory, 'get_symbolic_addrs'):
+            return False
+        try:
+            symbolic_addrs = state.memory.get_symbolic_addrs()
+        except Exception as e:
+            # cat-(a) EXPECTED CONTROL FLOW: opt-in API; fall through.
+            l.debug(f"get_symbolic_addrs failed: {e}")
+            return False
+        if not symbolic_addrs:
+            return False
+        before = len(out)
+        for addr in symbolic_addrs:
+            val = self._load_symbolic_byte(state, addr)
+            if val is not None:
+                self._record_symbolic(out, addr, val)
+        added = len(out) - before
+        if added:
+            l.debug(f"Extracted {added} symbolic bytes via get_symbolic_addrs")
+            return True
+        return False
+
+    def _extract_from_ultrapage(self, state, page, page_addr: int, out: dict) -> bool:
+        """UltraPage: changed-byte segments filtered by symbolic_bitmap."""
+        if not (hasattr(page, 'all_bytes_changed_in_history') and hasattr(page, 'symbolic_bitmap')):
+            return False
+        try:
+            changed = page.all_bytes_changed_in_history()
+            sb = page.symbolic_bitmap
+            for segment in changed:
+                start = getattr(segment, 'start', None)
+                end = getattr(segment, 'end', None)
+                if start is None or end is None:
+                    continue
+                for offset in range(start, end):
+                    if offset < len(sb) and sb[offset]:
+                        addr = page_addr + offset
+                        val = self._load_symbolic_byte(state, addr)
+                        if val is not None:
+                            self._record_symbolic(out, addr, val)
+        except Exception:
+            # cat-(b) FALLBACK WITH LOSS: page-level walk failed.
+            pass
+        return True
+
+    def _extract_from_listpage(self, state, page, page_addr: int, out: dict) -> bool:
+        """ListPage: stored_offset tracks all written bytes."""
+        if not (hasattr(page, 'stored_offset') and page.stored_offset):
+            return False
+        for offset in page.stored_offset:
+            addr = page_addr + offset
+            val = self._load_symbolic_byte(state, addr)
+            if val is not None:
+                self._record_symbolic(out, addr, val)
+        return True
+
+    def _extract_from_alt_bitmap(self, state, page, page_addr: int, page_size: int, out: dict) -> bool:
+        """Fallback page with a `_symbolic_bitmap` dict attribute."""
+        if not (hasattr(page, '_symbolic_bitmap') and page._symbolic_bitmap):
+            return False
+        for offset in range(page_size):
+            if page._symbolic_bitmap.get(offset, False):
+                addr = page_addr + offset
+                val = self._load_symbolic_byte(state, addr)
+                if val is not None:
+                    self._record_symbolic(out, addr, val)
+        return True
+
+    def _extract_from_byte_map(self, page, page_addr: int, out: dict) -> bool:
+        """Page exposing a `symbolic_byte_map` of offset → AST directly."""
+        if not (hasattr(page, 'symbolic_byte_map') and page.symbolic_byte_map):
+            return False
+        for offset, sym_val in page.symbolic_byte_map.items():
+            self._record_symbolic(out, page_addr + offset, sym_val)
+        return True
 
     def _install_rust_memory_proxy(self, state: "angr.SimState"):
         """Sync stack data from Rust to Python callback state.
