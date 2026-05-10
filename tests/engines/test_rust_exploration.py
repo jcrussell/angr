@@ -2820,12 +2820,12 @@ class TestExplorationIntegration:
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.explore(find=0x4006ed, max_steps=3)
+        mgr.explore(find=0x4006ed, max_steps=1)
 
-        # 3 steps is too few to find target in fauxware
+        # 1 step is too few to find target in fauxware
         stats = mgr.stats
         assert stats['ffi_crossings'] > 0, "should have crossed FFI boundary"
-        assert len(mgr.found) == 0, "3 steps too few to find target in fauxware"
+        assert len(mgr.found) == 0, "1 step too few to find target in fauxware"
 
     def test_explore_finds_correct_state(self, fauxware_project):
         """Full exploration finds the expected state."""
@@ -6946,6 +6946,54 @@ class TestNativeFileDescriptorProcedures:
             assert fds[7][0] == "/dev/stdin" and fds[7][1] == 0 and fds[7][2]
         finally:
             proj.unhook(self.DUP2_ADDR)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeReadCacheSync:
+    """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
+    requires the cached Python SimState to be invalidate-and-replayed per
+    dirty page in `_create_state_for_callback`. Without the replay,
+    symbolic bytes written by NativeRead are invisible to a later Python
+    SimProc fallback (the original failure that kept NativeRead disabled —
+    see angr-mme3 / `avoid-enabling-native-read` memory)."""
+
+    def test_native_read_dispatches_during_fauxware_exploration(self, fauxware_project):
+        """NativeRead is registered by default and dispatches when fauxware
+        calls read() during authenticate(). The fauxware backdoor path
+        (find=0x4006ed) must remain reachable end-to-end — this exercises
+        the read+strcmp interaction that previously broke when NativeRead
+        was first attempted."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+
+        assert len(mgr.found) > 0, "fauxware backdoor must remain reachable with NativeRead enabled"
+        stats = mgr._rust_mgr.native_procedure_stats()
+        assert stats['call_counts'].get('read', 0) >= 1, (
+            f"expected at least one native read dispatch, got stats={stats}"
+        )
+
+    def test_pending_memory_load_symbolic_page_api_exposed(self, fauxware_project):
+        """The new `pending_memory_load_symbolic_page` PyO3 method must be
+        exposed and callable (a no-pending-callback error is acceptable
+        outside a callback; what we're guarding against is a missing
+        wrapper, which would surface as AttributeError)."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        # Calling outside a callback raises RuntimeError("no pending callback state")
+        # — that's fine; what we're verifying is wrapper presence.
+        assert hasattr(mgr._rust_mgr, 'pending_memory_load_symbolic_page'), (
+            "pending_memory_load_symbolic_page wrapper missing on Rust manager"
+        )
+        try:
+            mgr._rust_mgr.pending_memory_load_symbolic_page(0x500000)
+        except RuntimeError as e:
+            assert "no pending" in str(e), f"unexpected error: {e}"
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

@@ -1869,6 +1869,16 @@ class RustCallbackDispatchMixin:
             # (stack frames created during VEX execution).
             self._install_rust_memory_proxy(state)
 
+            # angr-3tek.2: replay Rust-side memory mutations (concrete +
+            # symbolic) recorded in dirty_pages since the last callback.
+            # Must run AFTER _install_rust_memory_proxy (which writes
+            # concrete pointer slots from the SP page) and BEFORE
+            # _restore_symbolic_pages (which restores Python-pushed
+            # snapshots). Inside the helper, symbolic stores happen LAST
+            # per page so they overwrite concrete defaults at the same
+            # addresses — see invariant-3tek2-replay-ordering.
+            self._replay_rust_dirty_pages(state)
+
             # Restore symbolic memory regions — only needed for copied states
             # (predicates case) or on first callback for a new state.
             # When reusing the same state object, symbolic pages persist.

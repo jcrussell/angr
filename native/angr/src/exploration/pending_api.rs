@@ -435,6 +435,40 @@ impl RustExplorationManager {
         })
     }
 
+    /// Return every multi-byte symbolic object whose base address lies on
+    /// `page_addr`'s page, as `(addr, claripy_ast)` pairs.
+    ///
+    /// Used by Python's `_create_state_for_callback` to replay symbolic
+    /// stores that native SimProcedures (NativeRead, etc.) made into the
+    /// cached Python SimState after `_install_rust_memory_proxy` has
+    /// already written concrete defaults from the SP page.
+    pub(crate) fn _pending_memory_load_symbolic_page<'py>(
+        &self,
+        py: Python<'py>,
+        page_addr: u64,
+    ) -> PyResult<Vec<(u64, Py<PyAny>)>> {
+        self.with_pending(|pending| {
+            let claripy_mod = py.import("claripy")?;
+            let target_page = page_addr >> 12;
+            let mut out = Vec::new();
+            for (&addr, bv) in pending.state.memory().symbolic_objects_iter() {
+                if (addr >> 12) != target_page {
+                    continue;
+                }
+                match rustbv_to_claripy(py, bv, claripy_mod.as_any()) {
+                    Ok(ast) => out.push((addr, ast)),
+                    Err(e) => {
+                        log::debug!(
+                            "symbolic-page replay: failed to convert AST at 0x{:x}: {}",
+                            addr, e
+                        );
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
     pub(crate) fn _pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
         self.with_pending(|pending| {
             let solver_ref = pending.state.solver();

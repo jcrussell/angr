@@ -1672,6 +1672,77 @@ class RustStateSyncMixin:
             # callback runs with potentially stale stack contents.
             pass
 
+    def _replay_rust_dirty_pages(self, state: "angr.SimState"):
+        """Replay Rust-side memory mutations into the cached Python SimState.
+
+        Walks `_get_pending_dirty_pages()` from the Rust pending state and
+        writes per-page concrete bytes (`pending_memory_load_page`) then
+        symbolic objects (`pending_memory_load_symbolic_page`) into
+        `state.memory`. Symbolic stores are applied LAST per page so a
+        symbolic byte does not get clobbered by a concrete-zero default
+        sitting at the same address.
+
+        This is the cache-sync fix from angr-3tek.2 that re-enables
+        NativeRead/NativeWrite: native procs mutate Rust memory but never
+        push into the symbolic-page snapshot consumed by
+        `_restore_symbolic_pages`, so without this replay a later Python
+        SimProc (e.g. strcmp) reads stale concrete-zero bytes.
+        """
+        try:
+            dirty_pages = self._rust_mgr.get_pending_dirty_pages()
+        except Exception:
+            # cat-(a) EXPECTED CONTROL FLOW: dirty-page API unavailable on
+            # this build; skip replay. NativeRead/NativeWrite-style sync
+            # gaps fall back to the older snapshot path.
+            return
+        if not dirty_pages:
+            return
+
+        for page_addr in dirty_pages:
+            try:
+                page_bytes = self._rust_mgr.pending_memory_load_page(page_addr)
+            except Exception:
+                page_bytes = None
+
+            if page_bytes and len(page_bytes) == PAGE_SIZE:
+                try:
+                    state.memory.store(
+                        page_addr,
+                        claripy.BVV(bytes(page_bytes), PAGE_SIZE * 8),
+                        endness='Iend_BE',
+                        inspect=False,
+                        disable_actions=True,
+                    )
+                except Exception as e:
+                    if _DBG:
+                        l.debug(f"dirty-page concrete replay failed at 0x{page_addr:x}: {e}")
+
+            try:
+                sym_entries = self._rust_mgr.pending_memory_load_symbolic_page(page_addr)
+            except Exception:
+                sym_entries = None
+
+            if sym_entries:
+                for addr, ast in sym_entries:
+                    try:
+                        state.memory.store(
+                            addr,
+                            ast,
+                            endness=state.arch.memory_endness,
+                            inspect=False,
+                            disable_actions=True,
+                        )
+                        self._register_handle(id(ast), ast)
+                    except Exception as e:
+                        if _DBG:
+                            l.debug(f"dirty-page symbolic replay failed at 0x{addr:x}: {e}")
+
+        try:
+            self._rust_mgr.clear_pending_dirty_tracking()
+        except Exception:
+            if _DBG:
+                l.debug("clear_pending_dirty_tracking failed after replay")
+
     def _restore_symbolic_pages(self, state: "angr.SimState", state_id: int):
         """Restore symbolic memory regions to an angr state.
 

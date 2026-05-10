@@ -229,16 +229,13 @@ impl NativeProcedureRegistry {
         // String formatting (sprintf, snprintf)
         registry.register(Arc::new(sprintf::NativeSprintf));
         registry.register(Arc::new(sprintf::NativeSnprintf));
-        // I/O procedures: NOT registered by default. Enabling NativeRead breaks
-        // benchmarks where a later Python SimProc fallback (e.g., strcmp) needs
-        // to read the bytes NativeRead wrote: the cached Python callback state
-        // is not synced from Rust memory between callbacks, so it sees stale
-        // (concrete-zero) bytes and divergent paths fail. Re-enabling requires
-        // syncing Rust symbolic_objects to the Python cached state on each
-        // callback (or extending RustMemoryProxy beyond concrete pointer values
-        // on the SP page). See angr-mme3.
-        // registry.register(Arc::new(read::NativeRead));
-        // registry.register(Arc::new(write::NativeWrite));
+        // I/O procedures: re-enabled by angr-3tek.2. The Python-side cache
+        // is now invalidate-and-replayed per dirty page in
+        // `_create_state_for_callback` (rust_callback_dispatch.py +
+        // rust_state_sync.py::_replay_rust_dirty_pages), so the stale-cache
+        // issue described in angr-mme3 / angr-3tek no longer applies.
+        registry.register(Arc::new(read::NativeRead));
+        registry.register(Arc::new(write::NativeWrite));
         // File operations: registered for fd tracking in FileSystem.
         registry.register(Arc::new(fileops::NativeOpen));
         registry.register(Arc::new(fileops::NativeClose));

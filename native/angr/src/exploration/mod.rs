@@ -1325,6 +1325,18 @@ impl RustExplorationManager {
         self._pending_memory_load_page(page_addr)
     }
 
+    /// Symbolic counterpart of `pending_memory_load_page`: returns the
+    /// (addr, claripy AST) pairs for every multi-byte symbolic object whose
+    /// base address falls on the given page.
+    /// See [`pending_api::_pending_memory_load_symbolic_page`] for the body.
+    pub fn pending_memory_load_symbolic_page<'py>(
+        &self,
+        py: Python<'py>,
+        page_addr: u64,
+    ) -> PyResult<Vec<(u64, Py<PyAny>)>> {
+        self._pending_memory_load_symbolic_page(py, page_addr)
+    }
+
     /// See [`pending_api::_pending_memory_load`] for the body.
     pub fn pending_memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
         self._pending_memory_load(addr, size)
