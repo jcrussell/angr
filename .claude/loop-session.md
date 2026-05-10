@@ -1,60 +1,74 @@
-## Session log: 2026-05-10 — angr-3tek.2 (210th loop session, COMPLETE)
+## Session log: 2026-05-10 — angr-3uye.1 (211th loop session, COMPLETE)
 
 ### Task
-Re-enable native read/write SimProcedures using the cache-sync fix
-proposed by angr-3tek.1. Acceptance: NativeRead/NativeWrite on by default
-with no regressions; the read+strcmp interaction exercised.
+Trace-only bead: localize divergence point where Rust's symex of a single
+`ret` instruction concretizes the popped PC to 0 instead of routing the
+state to the `unconstrained` stash (Python's behaviour). Acceptance:
+divergence named down to file:line so angr-3uye.2 can take a one-shot fix.
 
-### Changes
-1. **`native/angr/src/exploration/pending_api.rs`** (+34 lines)
-   New `_pending_memory_load_symbolic_page(py, page_addr) -> Vec<(u64, Py<PyAny>)>`
-   walks the pending state's `symbolic_objects` map and returns
-   (addr, claripy AST) pairs whose base address lies on the queried page.
+### Repro confirmed
+- `load_shellcode(b"\xc3", AMD64, 0x1000)`; `blank_state(addr=0x1000)`;
+  `rsp = 0x7fff_0000`; step 2.
+- Python: `{'unconstrained': 1}`, rip = `<BV64 mem_7fff0000_0_64>`.
+- Rust:   `{'deadended': 1}`, addr = 0x0 (P21 generic skip log line).
 
-2. **`native/angr/src/exploration/mod.rs`** (+12 lines)
-   Added the matching `pending_memory_load_symbolic_page` pyclass wrapper.
+### Method
+Added 3 temporary `log::debug!` statements (exits.rs, expressions.rs) with
+`ANGR_RUST_LOG=debug`, ran the repro in a subprocess with RLIMIT_AS=4GB,
+captured the divergence chain end-to-end, then **reverted** all
+instrumentation. `cargo check --release` clean, all 372 tests pass on the
+clean tree.
 
-3. **`angr/exploration/rust_state_sync.py`** (+71 lines)
-   New `_replay_rust_dirty_pages(state)` helper. Walks
-   `get_pending_dirty_pages()`, writes per-page concrete bytes then
-   per-page symbolic ASTs (symbolic LAST so concrete defaults don't
-   clobber them), then `clear_pending_dirty_tracking()`.
+### Root divergence (named down to file:line)
+`angr/exploration/rust_state_sync.py:486-503` — `_sync_stack_page` slow
+path solver.eval()s the symbolic stack page to concrete bytes (default
+model = zeros) and maps them into Rust's page cache. The
+`_has_user_symbolic_var` filter at lines 540-552 explicitly rejects
+variable names starting with `mem_`/`reg_`/`unconstrained`, so the
+auto-generated stack placeholders (`mem_7fff0000_*`) are never re-imported
+as symbolic regions. Net: Rust's stack is all-zero where Python's is
+symbolic.
 
-4. **`angr/exploration/rust_callback_dispatch.py`** (+10 lines)
-   Wired `_replay_rust_dirty_pages(state)` into `_create_state_for_callback`
-   AFTER `_install_rust_memory_proxy` and BEFORE `_restore_symbolic_pages`.
+### Downstream chain (consequence)
+1. `interpreter_cb/expressions.rs:60` — `IRExpr::Load` concrete-addr fast
+   path returns `Concrete(0, 64)`.
+2. `interpreter_cb/exits.rs:47-52` — `eval_next_addr_concretized`
+   concrete fast path returns `Single(0)` without consulting solver.
+3. `interpreter_cb/exits.rs:160,189-196` — `handle_exit(0, Ijk_Ret)`:
+   `is_in_binary(0)` false => `BlockResult::UnmodeledCall { addr: 0,
+   return_addr: 0, … }`.
+4. `exploration/stepping.rs:710,720-742` — no `resolve_function` =>
+   `unmodeled_call_generic_skip` sets rax=0, pc=0, continues. State ends
+   in `deadended` at 0x0.
 
-5. **`native/angr/src/procedures/mod.rs`** (-9, +6)
-   Removed the comment-out of `read::NativeRead` / `write::NativeWrite`.
-   Default registry now includes both.
+### Python counterpart (for reference)
+- `angr/engines/successors.py:308-323` — `_eval_target_brutal` enumerates
+  the symbolic ip up to `max_targets+1` (256, from
+  `address_concretization_mixin.py:31`); on overflow appends to
+  `unconstrained_successors` (successors.py:323).
+- `angr/sim_manager.py:519` maps that list to the `'unconstrained'` stash.
 
-6. **`tests/engines/test_rust_exploration.py`** (+54, -6)
-   - Lowered `test_explore_with_max_steps` to `max_steps=1` (3 steps now
-     suffice with NativeRead enabled — see `3tek2-test-max-steps-tightening`
-     memory).
-   - Added `TestNativeReadCacheSync` with two tests: native-dispatch
-     count for `read` during fauxware exploration (canonical
-     read+strcmp interaction), and presence of the new PyO3 wrapper.
+### Two fix axes for angr-3uye.2 (documented in bead notes)
+- **A. Preserve symbolic stack bytes during sync** (root fix): relax the
+  `_has_user_symbolic_var` filter for stack pages whose load is wholly
+  symbolic, or sync the page itself as one BVS.
+- **B. Defensive route in handle_exit**: before the `!is_in_binary`
+  branch at exits.rs:189, detect Ijk_Ret to 0 with empty/mismatched call
+  stack and emit `BlockResult::UnconstrainedJump`.
 
-### Verification
-- `cargo check --release`: clean
-- `tools/rebuild-rust.sh --cargo-only`: built (venv pip is corrupted again)
-- `python -m pytest tests/engines/test_rust_exploration.py`: **372/372 pass**
-- `python tests/benchmarks/run_regression.py`: **12/12 pass**
+### Files touched
+None (all instrumentation reverted). `git diff` is empty.
 
-### Memories saved/updated
-- `avoid-enabling-native-read` — UPDATED: NativeRead/NativeWrite now
-  registered by default; points at the new replay helper.
-- `invariant-rust-dirty-pages-pending` — UPDATED: added the new
-  `_pending_memory_load_symbolic_page` accessor and clarified that
-  `_replay_rust_dirty_pages` is the canonical consumer.
-- `3tek2-test-max-steps-tightening` — NEW: future agents tuning
-  fauxware step counts should expect tighter caps now.
+### Memories saved
+- `3uye-stack-page-eager-materialization` — root cause + file:line refs.
+- `invariant-has-user-symbolic-var-divergence-knob` — the explicit
+  filter at rust_state_sync.py:540-552 that gates Python->Rust symbolic
+  identity preservation.
+- `avoid-concretize-fast-path-skips-solver` — concretize.rs:344-347
+  unguarded fast path that would silently concretize a `Constrained` BV.
 
 ### Closed beads
-- `angr-3tek.2` (this task)
-- `angr-3tek` (parent epic — both children done)
+- `angr-3uye.1` (this trace bead).
 
 ### Status
-COMPLETE. Unblocks `angr-0z34` (native amd64 read/write SYSCALL handlers
-— same state-sync prereq).
+COMPLETE. Unblocks `angr-3uye.2` (the one-shot fix bead).
