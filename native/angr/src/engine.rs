@@ -1515,6 +1515,31 @@ fn set_rust_log_level(level: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Get the size in BYTES of a register on the given architecture.
+///
+/// Returns `None` for unknown arch names or registers not modelled by Rust.
+/// Arch name follows the same case-insensitive conventions as
+/// `RustSimState::new` (e.g. "AMD64", "aarch64", "armel", "mips32"). Used by
+/// the Python `RustRegisterProxy` to derive register widths from the single
+/// Rust source of truth instead of hardcoding prefix-based heuristics.
+#[pyfunction]
+fn register_size_for_arch(arch_name: &str, reg_name: &str) -> Option<u32> {
+    arch_from_name(arch_name).and_then(|a| a.register_size(reg_name))
+}
+
+/// Get the canonical register name list for the given architecture.
+///
+/// Returns an empty vec for unknown arch names. Names are the canonical
+/// Rust-side identifiers (e.g. "rax", "x0", "v0") — the same set the
+/// interpreter uses. Callers that need a narrower sync subset (e.g.
+/// excluding XMM/CC flags) must filter further.
+#[pyfunction]
+fn register_names_for_arch(arch_name: &str) -> Vec<String> {
+    arch_from_name(arch_name)
+        .map(|a| a.register_names().iter().map(|s| s.to_string()).collect())
+        .unwrap_or_default()
+}
+
 /// Register the VEX engine module with Python.
 pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustVEXEngine>()?;
@@ -1541,6 +1566,8 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "vex-engine-z3")]
     m.add_function(pyo3::wrap_pyfunction!(reset_shared_z3_context, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;

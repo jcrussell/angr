@@ -13,6 +13,8 @@ import logging
 
 import claripy
 
+from angr.rustylib.vex_engine import register_size_for_arch
+
 l = logging.getLogger(__name__)
 
 
@@ -289,37 +291,16 @@ class RustRegisterProxy:
         return result
 
     def _get_register_width(self, name):
-        """Get the bit width for a named register."""
-        # Common register widths by name pattern
-        if self._arch.name in ("AMD64", "X86_64"):
-            if name in ("rax", "rbx", "rcx", "rdx", "rsi", "rdi",
-                        "rbp", "rsp", "rip", "r8", "r9", "r10",
-                        "r11", "r12", "r13", "r14", "r15"):
-                return 64
-            if name in ("eax", "ebx", "ecx", "edx", "esi", "edi",
-                        "ebp", "esp", "eip"):
-                return 32
-            if name in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp"):
-                return 16
-            if name in ("al", "ah", "bl", "bh", "cl", "ch", "dl", "dh"):
-                return 8
-        elif self._arch.name in ("X86",):
-            if name in ("eax", "ebx", "ecx", "edx", "esi", "edi",
-                        "ebp", "esp", "eip"):
-                return 32
-            if name in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp"):
-                return 16
-            if name in ("al", "ah", "bl", "bh", "cl", "ch", "dl", "dh"):
-                return 8
-        elif "ARM" in self._arch.name or "AARCH" in self._arch.name:
-            if name.startswith("x") or name in ("sp", "lr", "pc"):
-                return 64 if "64" in self._arch.name else 32
-            if name.startswith("r") or name.startswith("w"):
-                return 32
-        elif "MIPS" in self._arch.name:
-            if name.startswith("v") or name.startswith("a") or name.startswith("t") or name.startswith("s"):
-                return 64 if "64" in self._arch.name else 32
-        # Default: use architecture word size
+        """Get the bit width for a named register.
+
+        Looks up the size in BYTES from the Rust arch table (single source of
+        truth) and converts to bits. Falls back to ``arch.bits`` for registers
+        Rust doesn't model — the same default the old hand-rolled prefix
+        matcher used.
+        """
+        size_bytes = register_size_for_arch(self._arch.name, name)
+        if size_bytes is not None:
+            return size_bytes * 8
         return self._arch.bits
 
     def load(self, reg_name_or_offset, size=None):

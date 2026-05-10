@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Optional
 
 import claripy
 
+from angr.rustylib.vex_engine import register_names_for_arch
+
 from ._constants import PAGE_SIZE, PAGE_MASK, STACK_SIZE, MAX_OVERLAY_SECTION_SIZE
 
 if TYPE_CHECKING:
@@ -97,36 +99,15 @@ class RustStateSyncMixin:
     def _supported_register_names(arch) -> list:
         """Registers that the Rust engine models for `arch`.
 
-        Used by both the slow sync path and the disk-cache fast path so they
-        agree on which registers cross the FFI boundary. archinfo defines many
-        registers (cr0..8, ymm0..15, fs_seg, cmstart, ...) that the Rust engine
-        does not model; passing them to set_registers_bulk raises ValueError.
+        Single source of truth: delegates to Rust's per-arch canonical
+        register table via `register_names_for_arch`. Used by both the slow
+        sync path and the disk-cache fast path so they agree on which
+        registers cross the FFI boundary. archinfo defines many registers
+        (cr0..8, ymm0..15, fs_seg, cmstart, ...) the Rust engine does not
+        model; the Rust list excludes them, so `set_registers_bulk` will
+        not raise ValueError on the names returned here.
         """
-        if arch.name in ('AMD64', 'X86_64'):
-            return ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi',
-                    'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11',
-                    'r12', 'r13', 'r14', 'r15', 'rip']
-        if arch.name == 'X86':
-            return ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi',
-                    'ebp', 'esp', 'eip',
-                    'dflag', 'idflag', 'acflag',
-                    'cc_op', 'cc_dep1', 'cc_dep2', 'cc_ndep']
-        if arch.name == 'AARCH64':
-            return ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7',
-                    'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15',
-                    'x16', 'x17', 'x18', 'x19', 'x20', 'x21', 'x22', 'x23',
-                    'x24', 'x25', 'x26', 'x27', 'x28', 'x29', 'x30',
-                    'sp', 'pc']
-        if arch.name.startswith('ARM'):
-            return ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
-                    'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc']
-        if arch.name == 'MIPS32':
-            return ['zero', 'at', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3',
-                    't0', 't1', 't2', 't3', 't4', 't5', 't6', 't7',
-                    's0', 's1', 's2', 's3', 's4', 's5', 's6', 's7',
-                    't8', 't9', 'k0', 'k1', 'gp', 'sp', 'fp', 'ra',
-                    'pc', 'hi', 'lo']
-        return []
+        return register_names_for_arch(arch.name)
 
     def _sync_registers_to_rust(self, angr_state: "angr.SimState", rust_state: "_RustSimState",
                                precomputed_regs: dict = None):
