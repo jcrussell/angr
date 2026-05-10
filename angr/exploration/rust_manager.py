@@ -812,6 +812,9 @@ class RustExplorationManager(
         # Track root state IDs for plugin restoration.
         # Maps state_id -> root_state_id (the original state from Python).
         # When Rust forks states, this allows finding the original state for plugin copying.
+        # Pruned in `_cleanup_state_cache`: an entry whose key state is no
+        # longer in any Rust stash is dropped (state IDs are monotonically
+        # allocated and never reused, so this is safe).
         self._state_roots: Dict[int, int] = {}
 
         # Per-state-id Python-side stand-ins for state.options and state.globals.
@@ -2987,6 +2990,11 @@ class RustExplorationManager(
         non-pinned entries (Python ``dict`` preserves insertion order; entries
         that were re-written most recently sit at the back, so evicting from
         the front removes the least-recently-touched first).
+
+        Also prunes shadow structures keyed by state id (``_state_roots``,
+        ``_predicate_matched_ids``) of entries whose state no longer exists
+        in *any* Rust stash. Rust state IDs are monotonically allocated and
+        never reused, so a dropped entry can never become relevant again.
         """
         try:
             active_set = set(self._rust_mgr.get_state_ids('active'))
@@ -2995,6 +3003,24 @@ class RustExplorationManager(
             # cat-(b) FALLBACK WITH LOSS: cannot read live state IDs; skip this
             # cleanup tick. Cache may temporarily exceed cap until next call.
             return
+
+        # Broader "known-to-Rust" set for shadow-structure pruning. State IDs
+        # outside this set are unreachable (no stash holds them) and Rust will
+        # never resurrect them, so it's safe to drop any Python-side mapping
+        # keyed on them. Failure here is non-fatal — fall back to the narrower
+        # active/found set so we never over-prune.
+        try:
+            avoid_set = set(self._rust_mgr.get_state_ids('avoid'))
+            deadended_set = set(self._rust_mgr.get_state_ids('deadended'))
+            any_stash = active_set | found_set | avoid_set | deadended_set
+        except (RuntimeError, KeyError):
+            # cat-(b) FALLBACK WITH LOSS: missing avoid/deadended view means
+            # the shadow-prune below sees a smaller live set and is more
+            # aggressive than ideal. Mappings for states currently sitting in
+            # those stashes will be dropped this tick (harmless: the state
+            # itself is no longer being stepped, and a new explore() call
+            # rebuilds mappings as states get re-registered).
+            any_stash = active_set | found_set
 
         live = active_set | found_set
         live.update(self._state_roots.get(sid, sid) for sid in live)
@@ -3015,6 +3041,23 @@ class RustExplorationManager(
         for sid in list(self._py_state_globals.keys()):
             if sid not in live_with_roots:
                 del self._py_state_globals[sid]
+
+        # Prune _state_roots: drop entries whose key state no longer exists in
+        # any Rust stash. The root state's own self-entry survives only while
+        # the root is still tracked by Rust. Without this, _state_roots grows
+        # monotonically across explore() calls (every forked state's id stays
+        # forever) — the root pinning above would then pin a growing set of
+        # dead roots in _state_cache, defeating the cap.
+        for sid in list(self._state_roots.keys()):
+            if sid not in any_stash:
+                del self._state_roots[sid]
+
+        # Prune _predicate_matched_ids similarly: once the underlying state is
+        # gone, the "already moved to found/avoid" mark is irrelevant. Lazy-
+        # initialized in rust_state_cache.py, so guard with hasattr.
+        matched = getattr(self, '_predicate_matched_ids', None)
+        if matched is not None:
+            matched.intersection_update(any_stash)
 
         pinned = set(self._state_roots.values())
         if self._current_callback_state_id is not None:

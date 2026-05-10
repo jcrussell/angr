@@ -2300,6 +2300,53 @@ class TestStateMetadataStorage:
             "current callback state must not be evicted under cache pressure"
         )
 
+    def test_cleanup_state_cache_prunes_state_roots(self, fauxware_project):
+        """`_cleanup_state_cache` must drop `_state_roots` entries whose key
+        state no longer exists in any Rust stash. Without this, the dict
+        grows monotonically across `explore()` calls and root pinning bloats
+        `_state_cache` indirectly (every dead root pinned into the live set).
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+
+        # Live state + a guaranteed-dead id that has a root-mapping entry.
+        live_sid = mgr._rust_mgr.create_state("active")
+        dead_sid = 0xDEAD_BEEF_DEAD_BEEF
+        dead_root = 0xDEAD_BEEF_DEAD_BEEE
+        mgr._state_roots[live_sid] = live_sid
+        mgr._state_roots[dead_sid] = dead_root
+
+        mgr._cleanup_state_cache()
+
+        assert live_sid in mgr._state_roots
+        assert dead_sid not in mgr._state_roots, (
+            "_state_roots entry for a dead state must be pruned"
+        )
+
+    def test_cleanup_state_cache_prunes_predicate_matched_ids(
+        self, fauxware_project
+    ):
+        """`_cleanup_state_cache` must shrink `_predicate_matched_ids` to
+        only ids that still exist in some Rust stash. The set otherwise
+        grows monotonically over the manager's lifetime — fine for a one-
+        shot script, leaky for orchestrators that drive many explore()s.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+
+        live_sid = mgr._rust_mgr.create_state("active")
+        dead_sid = 0xDEAD_BEEF_DEAD_BEEF
+        mgr._predicate_matched_ids = {live_sid, dead_sid}
+
+        mgr._cleanup_state_cache()
+
+        assert live_sid in mgr._predicate_matched_ids
+        assert dead_sid not in mgr._predicate_matched_ids
+
     def test_state_fork_clones_metadata_via_dispatcher(self, fauxware_project):
         """The Rust dispatcher forks states on symbolic branches, and the
         forked state's metadata must be a clone of the parent's, not a
