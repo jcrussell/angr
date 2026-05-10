@@ -1299,15 +1299,15 @@ class TestInspectProxy:
         from angr.exploration.rust_state_proxy import _NoOpInspectProxy
 
         ins = _NoOpInspectProxy()
-        with pytest.raises(NotImplementedError, match="angr-osuu"):
+        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
             ins.b("mem_read", when="before", action=lambda s: None)
-        with pytest.raises(NotImplementedError, match="angr-osuu"):
+        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
             ins.make_breakpoint("mem_write")
-        with pytest.raises(NotImplementedError, match="angr-osuu"):
+        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
             ins.add_breakpoint("call", lambda s: None)
-        with pytest.raises(NotImplementedError, match="angr-osuu"):
+        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
             ins.remove_breakpoint("call", 0)
-        with pytest.raises(NotImplementedError, match="angr-osuu"):
+        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
             ins.action("call", lambda s: None)
 
 

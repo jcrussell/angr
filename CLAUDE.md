@@ -241,6 +241,16 @@ silent no-ops. See [`docs/RUST_SIMOPTION_COVERAGE.md`](docs/RUST_SIMOPTION_COVER
 for the per-option matrix (honored / inherited / ignored — divergence-risk /
 ignored — no-op).
 
+## state.inspect Unsupported
+
+`state.inspect` breakpoints are not dispatched under the Rust engine.
+Registering one through a `RustStateProxy` raises `NotImplementedError`
+at call time rather than silently never firing. Use the Python engine
+(`proj.factory.simulation_manager(state)` without `use_rust_engine=True`)
+for breakpoint-driven analyses. See
+[`docs/RUST_STATE_INSPECT.md`](docs/RUST_STATE_INSPECT.md) for the
+affected API, the rationale, and the historical decision trail.
+
 ## Rust Symbolic Execution
 
 ```python
