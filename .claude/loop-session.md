@@ -1,55 +1,49 @@
-## Session log: 2026-05-09 — angr-czph + angr-qh5u audit (207th loop session, COMPLETE)
+## Session log: 2026-05-10 — angr-gzk8 (208th loop session, COMPLETE)
 
 ### Task
-Audit-and-defer for the two ready P3 lazy-memory beads (angr-czph "Lazy
-symbolic LOAD for very large solution sets" + angr-qh5u "Lazy symbolic
-STORE for very large solution sets"). Both explicitly described as
-"Big design effort" multi-session work.
+Fix or guard MIPS64 calling-convention silent fallback to SystemV_AMD64.
+`default_cc_for_arch` was returning `SystemVAMD64` for unrecognized
+arches (including MIPS64), meaning a MIPS64 SimProcedure would read
+its first arg from AMD64 RDI (offset 72) instead of MIPS $a0
+(offset 48). Same risk class as the latent x86 Cdecl return-register
+bug (commit 5329d8222) that hid for months.
 
-### Why audit instead of implementation
-- All 3 ready tasks (czph, qh5u, 0z34) are explicitly multi-session efforts
-- czph + qh5u depend on the same Z3 array/lambda primitive — net-new
-  architecture; grep confirms NO Array/ArraySort use anywhere in
-  native/angr/src/
-- Parent design bead angr-pogf is deferred until 2026-06-01
-- Recent iter-9 hit budget-exhausted (429); iter-8 timed out — pattern
-  argues for tight scope this session
+### Resolution (preferred path: implement MipsN64)
+Added `MipsN64` calling convention to `native/angr/src/arch/calling_conventions.rs`:
+- N64 ABI: 8 integer args in $a0-$a7 (R4-R11, VEX MIPS64 offsets
+  48, 56, 64, 72, 80, 88, 96, 104)
+- Return register: $v0 (R2, offset 32)
+- Return addr: $ra (R31, offset 264) — register-based, no SP pop
+- `stack_arg_offset = 0` (N64 does NOT reserve a save area for register
+  args, unlike O32's 16-byte window)
+- Aliases: `mips64`, `mips64el`, `mips64le`, `mips64be`
 
-### Findings (saved in memory invariant-lazy-mem-deferred-2026-05-09)
-1. czph site reference (270-301) was wrong — actual symbolic Load
-   TooLarge/Failed dispatch is at expressions.rs:138-153 (270-301 is
-   CCall code).
-2. memory_load_symbolic_full + memory_store_symbolic_full callbacks ARE
-   wired up since 2026-05-07 (rust_manager.py:1095, 1619). Original
-   "fresh unconstrained symbolic" claim is partially stale.
-3. Loss-of-relationship still happens but for a NARROWER reason:
-   concretize_cached_read applies read_fallback_any (concretize.rs:278-
-   285) which converts TooLarge → Single via eval(). This matches
-   Python's SimConcretizationStrategyAny default — not a Rust-only bug.
-4. qh5u site refs (statements.rs:1083-1115 etc.) verified correct.
-   Stores TooLarge falls back to write_fallback_max first.
-5. The Z3 array/lambda primitive is genuinely net-new architecture.
-   z3-rs 0.19; no current Array/ArraySort usage.
+Defense-in-depth: changed `default_cc_for_arch` to **panic** on
+unknown arches instead of silently falling back to SystemV_AMD64.
+The exploration-manager construction path already gates on
+`arch_from_name` which only accepts the 6 supported arches, so the
+panic is a backstop, not user-facing.
 
-### Changes landed (bd state, not git)
-- `bd update angr-czph --description ...` — refreshed with corrected
-  site refs and current-state context
-- `bd defer angr-czph --until=2026-06-01` (aligned with angr-pogf)
-- `bd update angr-qh5u --notes ...` — verified site refs accurate;
-  context note added
-- `bd defer angr-qh5u --until=2026-06-01`
-- `bd dep add angr-0z34 angr-3tek` — explicit dep so 0z34 stops appearing
-  as "ready" despite in-description prerequisite block on the
-  state-sync correctness gap (avoid-enabling-native-read memory).
-  After this, `bd ready` correctly reports no ready work.
-- `bd remember --key invariant-lazy-mem-deferred-2026-05-09` — full
-  audit findings persisted for next session
+### Tests added
+- `test_mips_n64_arg_registers` (Rust) — locks the N64 offsets/values
+- `test_default_cc_for_arch_unknown_panics` (Rust) — guards the loud-failure invariant
+- Updated `test_default_cc_for_arch_registry` to cover all 4 mips64 aliases
+- Added `MIPS_N64` to `test_arch_aliases_disjoint`
+- `test_mips64_native_procedure_round_trip` (Python) — end-to-end native
+  strlen with N64 args/return registers
+
+### Results
+- Rust unit tests: 11/11 CC tests pass (added 2)
+- Python integration: 370/370 pass (added 1, was 369)
+- Smoke test confirmed: `RustExplorationManager('ppc')` raises
+  `ValueError` (caught earlier at `arch_from_name`);
+  `RustExplorationManager('mips64')` succeeds.
 
 ### Files modified
-- `.claude/loop-session.md` only (no code changes)
+- `native/angr/src/arch/calling_conventions.rs` (added MipsN64 + panic;
+  updated 3 tests + added 2)
+- `tests/engines/test_rust_exploration.py` (added MIPS64 native-proc
+  round-trip test; refreshed stale MIPS32 comment)
 
 ### Status
-COMPLETE. Three ready beads triaged: 2 deferred to align with parent
-design phase, 1 (0z34) given explicit dep on its known prerequisite.
-Next session will see `bd ready` = empty, signal that the implementation
-queue is genuinely blocked on angr-pogf (2026-06-01) and angr-3tek.
+COMPLETE. Unblocks angr-gxhf.3 (MIPS64 binary-driven integration test).

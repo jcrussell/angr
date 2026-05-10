@@ -466,11 +466,84 @@ impl CallingConvention for MipsO32 {
     }
 }
 
+/// MIPS N64 calling convention (64-bit MIPS, the default Linux ABI).
+///
+/// Integer/pointer arguments: $a0-$a7 (R4-R11). N64 widens the O32
+/// four-register window to eight by repurposing $t0-$t3 as $a4-$a7.
+/// Return value: $v0 (R2). Return address: $ra (R31) — JAL writes the
+/// return address into $ra, not the stack.
+///
+/// Unlike O32, N64 does NOT reserve a stack save area for the
+/// register-passed arguments; stack-passed args (9+) start at [sp + 0].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MipsN64;
+
+impl MipsN64 {
+    pub const ARCH_ALIASES: &'static [&'static str] =
+        &["mips64", "mips64el", "mips64le", "mips64be"];
+}
+
+impl CallingConvention for MipsN64 {
+    fn name(&self) -> &'static str {
+        "MIPS_N64"
+    }
+
+    fn arg_registers(&self) -> &[u32] {
+        // $a0-$a7 (MIPS64 VEX offsets: R4=48, R5=56, R6=64, R7=72,
+        // R8=80, R9=88, R10=96, R11=104). See arch/mips.rs offsets64.
+        &[48, 56, 64, 72, 80, 88, 96, 104]
+    }
+
+    fn fp_arg_registers(&self) -> &[u32] {
+        &[]
+    }
+
+    fn pointer_size(&self) -> u32 {
+        8
+    }
+
+    fn stack_arg_offset(&self) -> u64 {
+        // N64 does not reserve a save area for register args
+        // (unlike O32's 16-byte window). Stack-passed args start at [sp].
+        0
+    }
+
+    fn endness(&self) -> Endness {
+        // MIPS may be either-endian; default to little. The arch's own
+        // `is_little_endian()` is the authoritative endianness for memory
+        // access on a given state.
+        Endness::Little
+    }
+
+    fn return_register(&self) -> u32 {
+        32 // $v0 (R2) in MIPS64 VEX guest state
+    }
+
+    fn get_return_addr(
+        &self,
+        regs: &RegisterFile,
+        _memory: Option<&SymbolicMemory>,
+        ctx: &SymContext,
+    ) -> Option<u64> {
+        // $ra (R31) offset = 264 in MIPS64 VEX guest state
+        let ra = regs.get(264, 8, ctx);
+        ra.as_u64()
+    }
+
+    fn pops_return_addr(&self) -> bool {
+        false
+    }
+}
+
 /// Get the default calling convention for an architecture.
 ///
 /// Driven by each CC's inherent `ARCH_ALIASES` constant — adding a new
 /// alias only requires updating the relevant impl block. Unknown arch
-/// names fall back to `SystemVAMD64`.
+/// names cause a panic so that mis-routed argument extraction (silently
+/// reading AMD64 RDI/RSI for a foreign arch) fails loudly instead of
+/// producing wrong-but-plausible values. See the latent x86 Cdecl
+/// return-register bug (commit 5329d8222) for the failure mode this
+/// guards against.
 pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
     let lower = arch_name.to_lowercase();
     let lower_str = lower.as_str();
@@ -485,8 +558,14 @@ pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
         Box::new(AArch64CC)
     } else if MipsO32::ARCH_ALIASES.contains(&lower_str) {
         Box::new(MipsO32)
+    } else if MipsN64::ARCH_ALIASES.contains(&lower_str) {
+        Box::new(MipsN64)
     } else {
-        Box::new(SystemVAMD64)
+        panic!(
+            "default_cc_for_arch: no calling convention registered for arch {arch_name:?}. \
+             Register it in ARCH_ALIASES on the relevant CC, or add a new CallingConvention impl. \
+             Silent fallback to SystemV_AMD64 would mis-route argument extraction."
+        )
     }
 }
 
@@ -554,6 +633,8 @@ mod tests {
         assert_eq!(AArch64CC.return_register(), 16);
         // MIPS32 $v0 (R2) = offset 16 (R2 in MIPS32 VEX guest state).
         assert_eq!(MipsO32.return_register(), 16);
+        // MIPS64 $v0 (R2) = offset 32 (R2 in MIPS64 VEX guest state).
+        assert_eq!(MipsN64.return_register(), 32);
     }
 
     #[test]
@@ -568,6 +649,21 @@ mod tests {
         assert!(!ARMEABI.pops_return_addr());
         assert!(!AArch64CC.pops_return_addr());
         assert!(!MipsO32.pops_return_addr());
+        assert!(!MipsN64.pops_return_addr());
+    }
+
+    #[test]
+    fn test_mips_n64_arg_registers() {
+        // N64 widens the O32 four-register window to eight: $a0-$a7
+        // (R4-R11), repurposing $t0-$t3. VEX MIPS64 offsets for R4-R11
+        // are 48, 56, 64, 72, 80, 88, 96, 104.
+        let cc = MipsN64;
+        assert_eq!(cc.name(), "MIPS_N64");
+        assert_eq!(cc.arg_registers(), &[48, 56, 64, 72, 80, 88, 96, 104]);
+        assert_eq!(cc.pointer_size(), 8);
+        // N64 does not reserve a save area for register args (unlike O32's
+        // 16-byte window).
+        assert_eq!(cc.stack_arg_offset(), 0);
     }
 
     #[test]
@@ -591,8 +687,11 @@ mod tests {
             ("mips32", "MIPS_O32"),
             ("mipsel", "MIPS_O32"),
             ("mipsbe", "MIPS_O32"),
-            // Unknown falls back to SystemV_AMD64.
-            ("ppc", "SystemV_AMD64"),
+            ("mips64", "MIPS_N64"),
+            ("mips64el", "MIPS_N64"),
+            ("mips64le", "MIPS_N64"),
+            ("mips64be", "MIPS_N64"),
+            ("MIPS64", "MIPS_N64"), // case-insensitive
         ];
         for (arch, expected) in cases {
             assert_eq!(
@@ -601,6 +700,15 @@ mod tests {
                 "default_cc_for_arch({arch:?}) should resolve to {expected}",
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "no calling convention registered")]
+    fn test_default_cc_for_arch_unknown_panics() {
+        // Unknown archs must panic loudly, not silently fall back to
+        // SystemV_AMD64 (which would mis-route argument extraction —
+        // see commit 5329d8222 for the x86 Cdecl variant of this bug).
+        let _ = default_cc_for_arch("ppc");
     }
 
     #[test]
@@ -614,6 +722,7 @@ mod tests {
             ("ARM_EABI", ARMEABI::ARCH_ALIASES),
             ("AArch64", AArch64CC::ARCH_ALIASES),
             ("MIPS_O32", MipsO32::ARCH_ALIASES),
+            ("MIPS_N64", MipsN64::ARCH_ALIASES),
         ];
         for (i, (name_a, aliases_a)) in groups.iter().enumerate() {
             for (name_b, aliases_b) in &groups[i + 1..] {

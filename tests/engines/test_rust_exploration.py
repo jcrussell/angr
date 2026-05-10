@@ -3862,9 +3862,9 @@ class TestMultiArchSupport:
         MIPS uses JAL which stores the return address in $ra (R31, offset 132),
         not on the stack. Args are passed in $a0-$a3 (R4-R7). Return value
         in $v0 (R2, offset 16). Locks the calling-convention bug class — if
-        MIPS falls back to SystemVAMD64 (the default before this lands), the
-        dispatcher would read RDI=72 = MIPS R12 instead of $a0=24, and the
-        native procedure would see garbage args.
+        MIPS falls back to SystemVAMD64, the dispatcher would read RDI=72
+        = MIPS R12 instead of $a0=24, and the native procedure would see
+        garbage args.
         """
         mgr = _RustExplorationManager("mips32")
 
@@ -3910,6 +3910,66 @@ class TestMultiArchSupport:
         sp = mgr.get_state_register(sid, "sp")
         assert sp == STACK_BASE, (
             f"MIPS SP changed from {STACK_BASE:#x} to {sp:#x}; "
+            f"the dispatcher should NOT pop a return address from the stack."
+        )
+
+    def test_mips64_native_procedure_round_trip(self):
+        """MIPS64 (N64): native strlen runs, return lands in $v0, PC = $ra.
+
+        Guards against the silent SystemV_AMD64 fallback that motivated
+        angr-gzk8: before MipsN64 was added to default_cc_for_arch, a
+        MIPS64 SimProcedure would extract its first arg from offset 72
+        (AMD64 RDI) instead of offset 48 (MIPS64 $a0), and the dispatcher
+        would have popped a return address off the stack instead of
+        leaving $ra/$sp alone.
+
+        Args: $a0-$a7 (R4-R11, VEX offsets 48..104). Return value: $v0
+        (R2, offset 32). Return addr: $ra (R31, offset 264).
+        """
+        mgr = _RustExplorationManager("mips64")
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: '{}')
+        mgr.set_callbacks(callbacks)
+
+        STRLEN_HOOK = 0x500000
+        EXIT_HOOK = 0x600000
+        STRING_ADDR = 0x2000
+        STACK_BASE = 0x7FFF0000
+
+        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+
+        state = RustSimState("mips64")
+        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state.map_memory(STACK_BASE, 0x1000, 7)
+        state.memory_store(STRING_ADDR, b"hello\x00")
+
+        # MIPS N64: $a0 = arg0; $ra = return addr.
+        state.set_register("a0", STRING_ADDR)
+        state.set_register("ra", EXIT_HOOK)
+        state.set_register("sp", STACK_BASE)
+        state.pc = STRLEN_HOOK
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        deadended_ids = mgr.get_state_ids("deadended")
+        assert len(deadended_ids) == 1, (
+            f"expected exactly one deadended state after exit hook fired; "
+            f"stashes={mgr.stash_counts()}"
+        )
+        sid = deadended_ids[0]
+        v0 = mgr.get_state_register(sid, "v0")
+        assert v0 == 5, (
+            f"strlen('hello') should return 5 in $v0, got {v0!r}. "
+            f"native_calls={mgr.native_procedure_stats()}"
+        )
+        sp = mgr.get_state_register(sid, "sp")
+        assert sp == STACK_BASE, (
+            f"MIPS64 SP changed from {STACK_BASE:#x} to {sp:#x}; "
             f"the dispatcher should NOT pop a return address from the stack."
         )
 
