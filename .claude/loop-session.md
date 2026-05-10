@@ -1,49 +1,66 @@
-## Session log: 2026-05-10 — angr-gzk8 (208th loop session, COMPLETE)
+## Session log: 2026-05-10 — angr-3tek.1 (209th loop session, COMPLETE)
 
 ### Task
-Fix or guard MIPS64 calling-convention silent fallback to SystemV_AMD64.
-`default_cc_for_arch` was returning `SystemVAMD64` for unrecognized
-arches (including MIPS64), meaning a MIPS64 SimProcedure would read
-its first arg from AMD64 RDI (offset 72) instead of MIPS $a0
-(offset 48). Same risk class as the latent x86 Cdecl return-register
-bug (commit 5329d8222) that hid for months.
+Root-cause analysis for the symbolic_objects stale-cache divergence
+that blocks NativeRead/NativeWrite. Pure analysis bead — no production
+code change. Acceptance: a one-paragraph patch description that
+angr-3tek.2 can implement directly.
 
-### Resolution (preferred path: implement MipsN64)
-Added `MipsN64` calling convention to `native/angr/src/arch/calling_conventions.rs`:
-- N64 ABI: 8 integer args in $a0-$a7 (R4-R11, VEX MIPS64 offsets
-  48, 56, 64, 72, 80, 88, 96, 104)
-- Return register: $v0 (R2, offset 32)
-- Return addr: $ra (R31, offset 264) — register-based, no SP pop
-- `stack_arg_offset = 0` (N64 does NOT reserve a save area for register
-  args, unlike O32's 16-byte window)
-- Aliases: `mips64`, `mips64el`, `mips64le`, `mips64be`
+### Findings (full trace in bd notes on angr-3tek.1)
 
-Defense-in-depth: changed `default_cc_for_arch` to **panic** on
-unknown arches instead of silently falling back to SystemV_AMD64.
-The exploration-manager construction path already gates on
-`arch_from_name` which only accepts the 6 supported arches, so the
-panic is a backstop, not user-facing.
+**The stale cache:** `RustExplorationManager._state_cache: dict[int, SimState]`
+at `angr/exploration/rust_manager.py:756`. Populated on initial state
+register (`rust_manager.py:2414, 2498`) and after every callback successor
+(`rust_callback_dispatch.py:1064, 1217, 1402, 1594`). Never invalidated by
+Rust-side memory mutations because Rust has no callback into Python on
+`memory_store`.
 
-### Tests added
-- `test_mips_n64_arg_registers` (Rust) — locks the N64 offsets/values
-- `test_default_cc_for_arch_unknown_panics` (Rust) — guards the loud-failure invariant
-- Updated `test_default_cc_for_arch_registry` to cover all 4 mips64 aliases
-- Added `MIPS_N64` to `test_arch_aliases_disjoint`
-- `test_mips64_native_procedure_round_trip` (Python) — end-to-end native
-  strlen with N64 args/return registers
+**Python entry point:** `_handle_simprocedure_callback`
+(`rust_callback_dispatch.py:371`) → `_create_state_for_callback`
+(`rust_callback_dispatch.py:1733`). The latter does only two sync
+steps: `_install_rust_memory_proxy` (eager-copies non-zero pointer
+slots from the SP page only) and `_restore_symbolic_pages` (replays
+from a Python-pushed snapshot that native procs never touch). So
+concrete bytes outside SP and any symbolic byte from a native proc
+are invisible to the next Python SimProc fallback.
 
-### Results
-- Rust unit tests: 11/11 CC tests pass (added 2)
-- Python integration: 370/370 pass (added 1, was 369)
-- Smoke test confirmed: `RustExplorationManager('ppc')` raises
-  `ValueError` (caught earlier at `arch_from_name`);
-  `RustExplorationManager('mips64')` succeeds.
+**Already-built tooling for the fix:** Rust's `SymbolicMemory.dirty_pages`
+(`native/angr/src/memory/mod.rs:88`) tracks per-state mutations
+(updated at `memory/store.rs:92, 103, 132`; cleared on fork at
+`mod.rs:345`). PyO3 already exposes pending-state versions:
+`_get_pending_dirty_pages` (`exploration/pending_api.rs:227`),
+`_clear_pending_dirty_tracking` (:231), and `_pending_memory_load_page` (:431).
+
+**Missing piece:** No PyO3 method to fetch SYMBOLIC bytes from a
+Rust page. Needs a wrapper around `symbolic_objects: FxHashMap<u64, RustBV>`
+(`memory/mod.rs:79`) using the existing `rustbv_to_claripy` helper
+(already used at `pending_api.rs:66, 84, 249`).
+
+### Fix proposal for angr-3tek.2
+Don't kill the cache — invalidate-and-replay just the dirty pages.
+1. Add `_pending_memory_load_symbolic_page(page_addr) -> dict[u64, AST]`
+   in `pending_api.rs`.
+2. In `_create_state_for_callback`, AFTER `_install_rust_memory_proxy`
+   and BEFORE `_restore_symbolic_pages`, walk
+   `_get_pending_dirty_pages()` and replay both concrete and symbolic
+   bytes (symbolic LAST per-page so they overwrite concrete defaults
+   at the same addresses), then `_clear_pending_dirty_tracking()`.
+3. Re-enable the registry lines at `procedures/mod.rs:240-241`.
+4. Update `avoid-enabling-native-read` memory.
+
+### Memories saved
+- `3tek-root-cause` — full trace summary
+- `invariant-rust-dirty-pages-pending` — the dirty-page mechanism
+  (so future agents don't reinvent it)
+- `invariant-3tek2-replay-ordering` — order-of-operations gotcha
+  for the fix (symbolic stores must come AFTER the SP-page concrete
+  copy, not before)
+- Updated `avoid-enabling-native-read` to point to `3tek-root-cause`
 
 ### Files modified
-- `native/angr/src/arch/calling_conventions.rs` (added MipsN64 + panic;
-  updated 3 tests + added 2)
-- `tests/engines/test_rust_exploration.py` (added MIPS64 native-proc
-  round-trip test; refreshed stale MIPS32 comment)
+None. Pure analysis bead.
 
 ### Status
-COMPLETE. Unblocks angr-gxhf.3 (MIPS64 binary-driven integration test).
+COMPLETE. Unblocks angr-3tek.2 (re-enable native read/write with the
+cache-sync fix). The next session can pick that up directly with the
+patch description in hand.
