@@ -1548,9 +1548,14 @@ class RustStateSyncMixin:
         """UltraPage: changed-byte segments filtered by symbolic_bitmap."""
         if not (hasattr(page, 'all_bytes_changed_in_history') and hasattr(page, 'symbolic_bitmap')):
             return False
+        sb = page.symbolic_bitmap
+        # symbolic_bitmap entries are 0 (concrete) or 1 (symbolic). A C-level
+        # `1 in sb` scan beats walking every changed byte when nothing is
+        # symbolic — common for entry_state pages with concrete loader writes.
+        if sb is None or 1 not in sb:
+            return True
         try:
             changed = page.all_bytes_changed_in_history()
-            sb = page.symbolic_bitmap
             for segment in changed:
                 start = getattr(segment, 'start', None)
                 end = getattr(segment, 'end', None)

@@ -1,46 +1,41 @@
-## Session log: 2026-05-11 — angr-34w.30 (init overhead, CLOSED as misdiagnosis)
+## Session log: 2026-05-11 — angr-l9h7 (profile symbolic_pages, FIXED)
 
 ### Task
-Reduce add_state init overhead via direct Rust state population. Bead claimed
-RustSimState + add_state + get_state_ids takes ~13ms on first call and a
-`create_and_add_state()` API would save ~5ms per init.
+Profile and (if possible) optimize `_extract_symbolic_pages` +
+`import_symbolic_to_state` which were claimed to take 0.95ms / 79% of warm
+`_add_rust_state` on fauxware.
 
-### Investigation
-Measured the actual cost of each phase in `_add_rust_state` on fauxware:
+### Findings (cProfile, 50 warm _add_rust_state calls on fauxware entry_state)
+Real per-call breakdown of `_add_rust_state`:
+- TOTAL: 17.0ms
+- _sync_registers_to_rust: 7.8ms (46%)
+- _sync_memory_to_rust:    7.2ms (42%) — most in _overlay_relocated_sections
+- _extract_symbolic_pages: 1.56ms (9%)  <- the bead's target
+- (almost zero pages get imported on fauxware: 0 symbolic addrs)
 
-WARM path (entry_state with disk-cached init): TOTAL=1.2ms
-  symbolic_pages (extract+import):  0.95ms  (79% — the real bottleneck)
-  concretize_stack:                 0.10ms
-  sync_memory:                      0.03ms
-  sync_regs:                        0.02ms
-  new_rustsim + add + 2 get_ids:    0.03ms  (bead's target = 2.2%)
+`_extract_symbolic_pages` was wasted work: fauxware has 0 symbolic bytes
+but `_extract_from_ultrapage` iterated every changed byte across 36 pages
+checking `sb[offset]` in a Python loop. Per page = 42us, total 1.5ms.
 
-COLD path (blank_state, no cache): TOTAL=25-37ms
-  _concretize_stack_registers:     11.9ms  (solver.eval on rsp/rbp)
-  _sync_registers_to_rust:          6.9ms
-  _sync_memory_to_rust:             5.6ms
-  symbolic_pages:                   0.6ms
+### Fix
+Added an early-bailout to `_extract_from_ultrapage`:
+  if sb is None or 1 not in sb: return True
+`1 in bytearray` is a single C-level scan (~5us / 4096-byte page), so when
+the page has no symbolic bytes, we skip the segment walk entirely.
 
-Even "first call" Z3 ctx init inside RustSimState construction is 9us total,
-not 13ms. The bead was off by ~100x.
+### Results (cProfile, same harness)
+Before: 0.849s for 50 calls; _extract_from_ultrapage = 0.076s tottime.
+After:  0.785s for 50 calls; _extract_from_ultrapage no longer in top 40.
+Net: ~1.3ms saved per warm `_add_rust_state` (~7.5% of total).
 
-### Decision
-Closed the bead with detailed rationale. No code change.
-
-### Memories saved
-- `add-state-init-breakdown-2026-05-11`: full warm/cold breakdown
-
-### Follow-up beads filed
-- `angr-l9h7` (P3): Profile _extract_symbolic_pages / import_symbolic_to_state
-  (the 0.95ms warm-path bottleneck).
-- `angr-sgbn` (P3): Profile _concretize_stack_registers (12ms cold-path,
-  largest single phase for non-cached states).
-
-### Closed beads
-- `angr-34w.30` (with reason explaining the measurement evidence).
+### Tests
+382/385 pass. Same 3 failures as baseline (pre-existing unrelated):
+- TestErrorRecovery::test_dcas_cmpxchg16b_no_match_keeps_memory
+- TestNativeFileDescriptorProcedures::test_pipe_native_dispatch_creates_two_fds
+- TestNativeFileDescriptorProcedures::test_dup2_native_dispatch_redirects_stdin
 
 ### Files changed
-None (source). Only .claude/loop-session.md.
+- angr/exploration/rust_state_sync.py (_extract_from_ultrapage)
 
 ### Status
-COMPLETE — bead closed as misdiagnosed, follow-ups filed with real targets.
+COMPLETE — bead angr-l9h7 to close.
