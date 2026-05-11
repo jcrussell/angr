@@ -210,7 +210,7 @@ tests and no benchmarks. Treat them as experimental until that changes.
 | x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
 | ARM (32-bit)| 2          | 2 (validate, native-proc) | 0  | ARMEABI           | Experimental |
 | ARM64       | 1          | 3 (blob branch, real ELF, native-proc) | 0 | AArch64 | Experimental |
-| MIPS32      | 4          | 2 (blob branch, native-proc) | 0 | MipsO32        | Experimental |
+| MIPS32      | 4          | 3 (BE blob, LE real ELF, native-proc) | 0 | MipsO32 | Experimental |
 | MIPS64      | 0          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
 
 **What "Skeleton" means:** `RustSimState("arm64")` etc. constructs successfully,
@@ -222,7 +222,7 @@ x86 test ran — assume the same risk for ARM64/MIPS until coverage lands.
 
 **What's wired up but unverified:**
 - Register offsets for all six arches in `native/angr/src/arch/*.rs`
-- Endianness flag (MIPS32 BE smoke-tested; ARM/ARM64/MIPS64 BE untested)
+- Endianness flag (MIPS32 BE+LE end-to-end via ELF + blob; ARM/ARM64/MIPS64 BE untested)
 - ARMEABI / AArch64 / MipsO32 calling conventions defined in
   `calling_conventions.rs`. MIPS64 still falls back to `SystemVAMD64`,
   which will silently misbehave on any SimProcedure that takes args.
