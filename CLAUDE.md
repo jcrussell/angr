@@ -34,7 +34,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/engines/test_rust_exploration.py --tb=short -q
 ```
 
-**Caveat:** `pyproject.toml` pins `claripy==9.2.210.dev0` etc., but the `.dev0` versions don't exist on PyPI (PyPI jumps 9.2.209 → 9.2.211). Existing working venvs use `9.2.209` from cache and the editable install tolerates the version mismatch in practice. A fresh `pip install` with no cache may resolve to `9.2.213+` and fail the pin — in that case relax the pins or restore from tarball. See bd memory `env-venv-fully-wiped-2026-05-05` for the historical incident.
+**Note:** `pyproject.toml` pins the four angr-ecosystem deps (`archinfo`, `claripy`, `cle`, `pyvex`) to `==9.2.209`. The previous pin (`9.2.210.dev0`) was unobtainable on PyPI (which jumps 9.2.209 → 9.2.211), so fresh installs without cache failed. `9.2.209` is the latest available in the 9.2.20x range and is what existing working venvs already have installed. Bumping past `9.2.209` is risky because newer claripy releases may bundle a different `z3-solver` version that would break the Rust↔Python shared Z3 context — see bd memory `avoid-pip-install-deps`.
 
 ### Build Commands (incremental)
 
