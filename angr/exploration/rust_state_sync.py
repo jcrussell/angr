@@ -807,42 +807,36 @@ class RustStateSyncMixin:
         This prevents symbolic address issues during Rust exploration by
         ensuring stack-relative registers have concrete values.
 
-        Uses solver.eval() to get the same concrete values that Python
-        already evaluated, ensuring Rust has consistent state with what
-        Python set up (e.g., address calculations like ebp - 0x80004).
+        Fast path: if the register's symbolic variables don't appear in any
+        solver constraint, skip solver.eval and pick a sensible default —
+        same value Z3 would have picked, without paying the ~10 ms model-query
+        cost. Common on blank_state cold path where rbp is filled with a
+        fresh unconstrained BVS by default_filler_mixin.
         """
         arch = state.arch
 
-        # Determine which registers to concretize based on architecture
         if arch.name in ('AMD64', 'X86_64'):
-            stack_regs = ['rsp', 'rbp']
             bp_reg = 'rbp'
             sp_reg = 'rsp'
         elif arch.name == 'X86':
-            stack_regs = ['esp', 'ebp']
             bp_reg = 'ebp'
             sp_reg = 'esp'
         elif arch.name.startswith('ARM'):
-            stack_regs = ['sp']
             bp_reg = None
             sp_reg = 'sp'
         else:
-            stack_regs = []
             bp_reg = None
             sp_reg = None
 
-        # First, concretize SP if needed (we need a concrete SP for BP default)
-        sp_val = None
         if sp_reg:
             try:
                 reg_val = getattr(state.regs, sp_reg)
                 if reg_val.symbolic:
-                    sp_val = state.solver.eval(reg_val)
+                    sp_default = getattr(arch, 'initial_sp', None) or 0
+                    sp_val = self._eval_or_default(state, reg_val, sp_default)
                     state.solver.add(reg_val == sp_val)
                     setattr(state.regs, sp_reg, sp_val)
                     l.debug(f"Concretized {sp_reg} to 0x{sp_val:x} (constraint added)")
-                else:
-                    sp_val = state.solver.eval(reg_val)
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: SP stays symbolic; Rust will
                 # not be able to map a concrete stack region. The lazy
@@ -851,15 +845,11 @@ class RustStateSyncMixin:
                 # downstream stack-page sync also catches this.
                 l.debug(f"Could not concretize {sp_reg}: {e}")
 
-        # Then concretize BP - always use solver.eval() to get the same value
-        # that Python already used to calculate addresses. This ensures
-        # Rust gets consistent register values with what Python set up.
         if bp_reg:
             try:
                 reg_val = getattr(state.regs, bp_reg)
                 if reg_val.symbolic:
-                    # Use existing solver evaluation (respects any prior concretization)
-                    concrete_val = state.solver.eval(reg_val)
+                    concrete_val = self._eval_or_default(state, reg_val, 0)
                     setattr(state.regs, bp_reg, concrete_val)
                     l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x}")
             except Exception as e:
@@ -869,6 +859,22 @@ class RustStateSyncMixin:
                 # hit; when it is, the compiler used BP and Rust will
                 # need to fork on it.
                 l.debug(f"Could not concretize {bp_reg}: {e}")
+
+    @staticmethod
+    def _eval_or_default(state, reg_val, default):
+        """Fast-path solver.eval for unconstrained symbolic registers.
+
+        Z3 returns 0 (or arbitrary) for a BVS that no constraint references,
+        but the call still costs ~10 ms (ctx init + check + model). When we
+        can prove no constraint mentions any of the value's variables, return
+        `default` directly — Z3 would have picked something arbitrary anyway,
+        and downstream code only requires *some* concrete value.
+        """
+        val_vars = reg_val.variables
+        for c in state.solver.constraints:
+            if val_vars & c.variables:
+                return state.solver.eval(reg_val)
+        return default
 
     def _sync_rust_constraints_to_python(self, state: "angr.SimState"):
         """Sync constraints from Rust solver to Python state.
