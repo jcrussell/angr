@@ -69,6 +69,16 @@ silently dropped, which can produce different found/avoided sets vs. Python.
 > mode bundle (`sim_options.py:391`, `:374`); warning every default-options
 > `entry_state()` would generate noise the user did not consent to. They
 > remain divergence-risk in this matrix, just not warn-on-add.
+>
+> **Followup (angr-383x, 2026-05-11):** For the default-bundle options
+> above, materialized Rust-owned states have their `history` plugin promoted
+> to `_RustOwnedSimStateHistory` (`angr/exploration/rust_state_export.py`),
+> which warns once per process the first time a caller reads
+> `state.history.actions` or `state.history.events`. This catches the
+> divergence at the moment the empty stream is actually consumed — users who
+> never read `.actions`/`.events` see nothing, those who do get a single
+> clear `UserWarning` pointing them at the Python engine for action-driven
+> analyses.
 
 | Option | What Python does | Suggested fix |
 |--------|------------------|---------------|

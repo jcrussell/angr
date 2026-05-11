@@ -7547,6 +7547,131 @@ class TestEdgeCases:
                 f"unexpected UserWarning from default entry_state: {msg!r}"
             )
 
+    def test_history_actions_read_warns_under_rust(self, fauxware_project):
+        """angr-383x: TRACK_CONSTRAINT_ACTIONS / TRACK_MEMORY_MAPPING ship in
+        the default `symbolic` bundle, so they can't be rejected on add()
+        without spamming every entry_state(). Instead, reading
+        ``state.history.actions`` (or ``.events``) on a Rust-owned materialized
+        state must emit a UserWarning so users see a signal the empty stream
+        is a Rust-engine limitation, not an actually-empty history.
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
+
+        # Reset the process-wide warn-once latch so the test is order-independent
+        _RustOwnedSimStateHistory._WARNED = False
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        materialized = list(mgr.active) + list(mgr.deadended)
+        assert materialized, "expected at least one materialized state"
+        s = materialized[0]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _ = s.history.actions
+
+        history_warnings = [
+            w for w in caught
+            if issubclass(w.category, UserWarning) and "state.history.actions" in str(w.message)
+        ]
+        assert len(history_warnings) == 1, (
+            f"expected exactly one history.actions warning, got "
+            f"{[str(w.message) for w in caught]!r}"
+        )
+        assert "Rust engine" in str(history_warnings[0].message)
+
+    def test_history_events_read_warns_under_rust(self, fauxware_project):
+        """Sibling of the actions test for state.history.events."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
+
+        _RustOwnedSimStateHistory._WARNED = False
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        materialized = list(mgr.active) + list(mgr.deadended)
+        assert materialized, "expected at least one materialized state"
+        s = materialized[0]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _ = s.history.events
+
+        history_warnings = [
+            w for w in caught
+            if issubclass(w.category, UserWarning) and "state.history.events" in str(w.message)
+        ]
+        assert len(history_warnings) == 1, (
+            f"expected exactly one history.events warning, got "
+            f"{[str(w.message) for w in caught]!r}"
+        )
+
+    def test_history_actions_warn_once_process_wide(self, fauxware_project):
+        """The warn-once latch is process-wide: once fired, no subsequent
+        ``state.history.actions`` read (on any state, in any manager) re-warns.
+        Default-bundle users who never read .actions get zero warnings; those
+        who do, get exactly one."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
+
+        _RustOwnedSimStateHistory._WARNED = False
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=1)
+        states = list(mgr.active) + list(mgr.deadended)
+        assert len(states) >= 1
+        s = states[0]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _ = s.history.actions
+            _ = s.history.actions  # second read on same state
+            _ = s.history.events   # different attribute, same latch
+
+        history_warnings = [
+            w for w in caught
+            if issubclass(w.category, UserWarning)
+            and ("state.history.actions" in str(w.message)
+                 or "state.history.events" in str(w.message))
+        ]
+        assert len(history_warnings) == 1, (
+            f"expected one process-wide warning, got {len(history_warnings)}"
+        )
+
+    def test_history_warning_does_not_fire_when_actions_not_read(self, fauxware_project):
+        """Users who run RustExplorationManager but never touch
+        state.history.actions/.events must see zero history-related warnings,
+        even though TRACK_CONSTRAINT_ACTIONS is in the default `symbolic`
+        bundle (the whole reason this strategy exists)."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_export import _RustOwnedSimStateHistory
+
+        _RustOwnedSimStateHistory._WARNED = False
+
+        state = fauxware_project.factory.entry_state()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            mgr = RustExplorationManager(fauxware_project, [state])
+            mgr.run(max_steps=1)
+            # Touch unrelated history attributes — bbl_addrs should be fine.
+            for s in list(mgr.active) + list(mgr.deadended):
+                _ = s.history.recent_bbl_addrs
+
+        history_warnings = [
+            w for w in caught
+            if issubclass(w.category, UserWarning)
+            and ("state.history.actions" in str(w.message)
+                 or "state.history.events" in str(w.message))
+        ]
+        assert history_warnings == [], (
+            f"expected zero history warnings when .actions/.events not read; "
+            f"got {[str(w.message) for w in history_warnings]!r}"
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestUnconstrainedRet:
