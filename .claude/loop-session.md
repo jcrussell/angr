@@ -1,69 +1,46 @@
-## Session log: 2026-05-11 — angr-383x (silent-divergence: TRACK_CONSTRAINT_ACTIONS / TRACK_MEMORY_MAPPING, COMPLETE)
+## Session log: 2026-05-11 — angr-34w.30 (init overhead, CLOSED as misdiagnosis)
 
 ### Task
-Close the silent-divergence gap for `TRACK_CONSTRAINT_ACTIONS` and
-`TRACK_MEMORY_MAPPING` which were intentionally excluded from
-`_REJECTED_OPTION_NAMES` (rust_manager.py:189-200) because they ship in the
-default `symbolic` mode bundle (sim_options.py:391, 374) and would warn on
-every `entry_state()`.
+Reduce add_state init overhead via direct Rust state population. Bead claimed
+RustSimState + add_state + get_state_ids takes ~13ms on first call and a
+`create_and_add_state()` API would save ~5ms per init.
 
-### Detour: angr-m2hf
-First claimed angr-m2hf (CommonErrorReason refactor). Verified the audit
-memo's deferral was correct — only `Unsupported(String)` actually appears in
-3+ enums (CbExecutionError, ExecutionError, LiftError); `SymbolicArgument` /
-`Other` only in 2 each. Re-deferred with updated rationale + memory.
+### Investigation
+Measured the actual cost of each phase in `_add_rust_state` on fauxware:
 
-### Strategy
-Warn-once on first read of `state.history.actions` / `state.history.events`
-via `state.history.__class__` reassignment:
+WARM path (entry_state with disk-cached init): TOTAL=1.2ms
+  symbolic_pages (extract+import):  0.95ms  (79% — the real bottleneck)
+  concretize_stack:                 0.10ms
+  sync_memory:                      0.03ms
+  sync_regs:                        0.02ms
+  new_rustsim + add + 2 get_ids:    0.03ms  (bead's target = 2.2%)
 
-- New `_RustOwnedSimStateHistory(SimStateHistory)` in `rust_state_export.py`
-  overrides `.actions` and `.events` properties with a process-wide `_WARNED`
-  class flag (one warning per Python process across all managers and states).
-- `_install_rust_history_warning()` swaps `state.history.__class__` once per
-  materialized Rust-owned state.
-- Hooked in `_restore_plugins_to_state` so every state returned by
-  `mgr.active` / `.found` / `.deadended` / etc. inherits the warning.
-- Default-bundle users who never touch `.actions` / `.events` see nothing.
-- Users who do touch them get one clear `UserWarning` pointing at the
-  Python engine and `docs/RUST_SIMOPTION_COVERAGE.md`.
+COLD path (blank_state, no cache): TOTAL=25-37ms
+  _concretize_stack_registers:     11.9ms  (solver.eval on rsp/rbp)
+  _sync_registers_to_rust:          6.9ms
+  _sync_memory_to_rust:             5.6ms
+  symbolic_pages:                   0.6ms
 
-### Files changed
-- `angr/exploration/rust_state_export.py` (+70): subclass + install function
-  + hook call in `_restore_plugins_to_state`.
-- `tests/engines/test_rust_exploration.py` (+125): 4 regression tests under
-  `TestEdgeCases`:
-  - `test_history_actions_read_warns_under_rust`
-  - `test_history_events_read_warns_under_rust`
-  - `test_history_actions_warn_once_process_wide`
-  - `test_history_warning_does_not_fire_when_actions_not_read`
-- `docs/RUST_SIMOPTION_COVERAGE.md` (+10): followup note on the warn-on-read
-  mechanism for default-bundle (b) options.
+Even "first call" Z3 ctx init inside RustSimState construction is 9us total,
+not 13ms. The bead was off by ~100x.
 
-### Verification
-- New tests: 4/4 pass.
-- Full suite: 382 passed, 3 failed. The 3 failures (dcas/pipe/dup2) are
-  the same pre-existing set as sessions 215–217. No regressions from
-  this change.
+### Decision
+Closed the bead with detailed rationale. No code change.
 
 ### Memories saved
-- `strategy-default-bundle-silent-divergence` (new): the warn-on-read pattern
-  for SimOptions that can't be warn-on-add'd because they ship in default
-  bundles.
-- `python-class-reassignment-for-history-plugin` (new): records that
-  `state.history.__class__ = SubClass` works cleanly on `SimStateHistory`
-  (no `__slots__`).
-- `avoid-deferred-m2hf-error-trait` (updated): re-deferral rationale for
-  CommonErrorReason refactor, with the actual variant-overlap counts.
+- `add-state-init-breakdown-2026-05-11`: full warm/cold breakdown
+
+### Follow-up beads filed
+- `angr-l9h7` (P3): Profile _extract_symbolic_pages / import_symbolic_to_state
+  (the 0.95ms warm-path bottleneck).
+- `angr-sgbn` (P3): Profile _concretize_stack_registers (12ms cold-path,
+  largest single phase for non-cached states).
 
 ### Closed beads
-- `angr-383x`.
+- `angr-34w.30` (with reason explaining the measurement evidence).
 
-### Re-deferred beads
-- `angr-m2hf` (back to deferred with updated note).
-
-### Commit
-07630755c  feat(rust-symex): warn-on-read for state.history.actions/.events — angr-383x
+### Files changed
+None (source). Only .claude/loop-session.md.
 
 ### Status
-COMPLETE.
+COMPLETE — bead closed as misdiagnosed, follow-ups filed with real targets.
