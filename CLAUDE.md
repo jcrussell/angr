@@ -192,9 +192,9 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 | flareon2015_2 | 1.1x | 32-bit x86 |
 | securityfest_fairlight | 1.0x | Rust interpreter parity for symbolic-heavy blocks |
 | hackcon2016_angry-reverser | 0.9x | |
-| mma_howtouse | 0.7x | See angr-ed7j |
+| mma_howtouse | 0.7x | Callable-heavy; thread-local AST cache lookup overhead. See [`docs/RUST_KNOWN_SLOWER_BENCHMARKS.md`](docs/RUST_KNOWN_SLOWER_BENCHMARKS.md) |
 | google2016_unbreakable_1 | 0.5x | High variance; regressed from 3.3x |
-| ekopartyctf2016_sokohashv2 | 0.4x | Slow floor; see angr-ed7j |
+| ekopartyctf2016_sokohashv2 | 0.4x | x87 transcendentals fall back to Python; bimodal Z3 variance. See [`docs/RUST_KNOWN_SLOWER_BENCHMARKS.md`](docs/RUST_KNOWN_SLOWER_BENCHMARKS.md) |
 
 ## Architecture
 
