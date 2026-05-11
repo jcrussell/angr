@@ -760,6 +760,18 @@ pub enum IROp {
     Crc32C,
 
     // =========================================================================
+    // ARM/AArch64 NEON SIMD ops (scaffolded — panic on dispatch)
+    // =========================================================================
+    /// Placeholder for a NEON SIMD opcode that has been mapped from pyvex
+    /// (so it does NOT silently fall back to a fresh-symbolic result), but
+    /// whose semantics have not been implemented yet. Dispatch (`VEXOps::unop`,
+    /// `VEXOps::binop`, etc.) panics with the captured opcode name so missing
+    /// NEON coverage is visible immediately. Implementations land one-by-one
+    /// in angr-bkcs.2 by replacing the matching `opcode_map` entry with a
+    /// real `IROp::V*` variant.
+    NeonUnimplemented(&'static str),
+
+    // =========================================================================
     // Raw VEX opcode (for unhandled operations)
     // =========================================================================
     /// Fallback for operations not yet implemented.
@@ -918,6 +930,13 @@ impl IROp {
             | IROp::PclmulLQHQ
             | IROp::PclmulHQLQ
             | IROp::Crc32C => Some(IRType::I64),
+
+            // NEON ops are scaffolded — dispatch panics before result_type
+            // is consulted in a hot path. Returning None here means callers
+            // that *do* peek at the result type (e.g. fallback width guess
+            // in expressions.rs) won't crash, but in practice the dispatch
+            // panic fires first.
+            IROp::NeonUnimplemented(_) => None,
 
             IROp::Raw(_) => None,
         }

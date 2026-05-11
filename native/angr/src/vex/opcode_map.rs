@@ -34,6 +34,9 @@ pub fn parse_opcode(op_str: &str) -> IROp {
     if let Some(op) = parse_special(op_str) {
         return op;
     }
+    if let Some(op) = parse_neon_unimplemented(op_str) {
+        return op;
+    }
 
     // Unmapped operation
     log::warn!("Unmapped VEX operation: {}", op_str);
@@ -893,6 +896,284 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     }
 }
 
+/// Parse ARM/AArch64 NEON SIMD opcodes that have been claimed but not yet
+/// implemented. Hits here route through `IROp::NeonUnimplemented(name)` so
+/// dispatch in `VEXOps::unop` / `binop` / etc. panics with the original
+/// opcode name instead of silently returning a fresh-symbolic value.
+///
+/// Implementations are added one-at-a-time in angr-bkcs.2 by:
+///   1. Removing the opcode's entry from this function.
+///   2. Adding it to `parse_vector` (or `parse_float`) with a real IROp variant.
+///   3. Wiring that variant into `VEXOps::unop` / `binop`.
+///
+/// Scope: D-register (Ity_I64) and Q-register (Ity_V128) opcodes that pyvex
+/// emits for ARM/AArch64 NEON and that this engine currently has no handler
+/// for. Opcodes already handled by `parse_vector` (e.g. `Iop_Add8x8` ->
+/// `VAdd`) are deliberately excluded so we do not regress existing coverage.
+fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
+    let op = match op_str {
+        // Dup (broadcast scalar across lanes)
+        "Iop_Dup8x8" => "Iop_Dup8x8",
+        "Iop_Dup16x4" => "Iop_Dup16x4",
+        "Iop_Dup32x2" => "Iop_Dup32x2",
+        "Iop_Dup8x16" => "Iop_Dup8x16",
+        "Iop_Dup16x8" => "Iop_Dup16x8",
+        "Iop_Dup32x4" => "Iop_Dup32x4",
+
+        // Narrow (truncating, non-saturating)
+        "Iop_NarrowBin16to8x8" => "Iop_NarrowBin16to8x8",
+        "Iop_NarrowBin32to16x4" => "Iop_NarrowBin32to16x4",
+        "Iop_NarrowBin16to8x16" => "Iop_NarrowBin16to8x16",
+        "Iop_NarrowBin32to16x8" => "Iop_NarrowBin32to16x8",
+        "Iop_NarrowBin64to32x4" => "Iop_NarrowBin64to32x4",
+        "Iop_NarrowUn16to8x8" => "Iop_NarrowUn16to8x8",
+        "Iop_NarrowUn32to16x4" => "Iop_NarrowUn32to16x4",
+        "Iop_NarrowUn64to32x2" => "Iop_NarrowUn64to32x2",
+
+        // QNarrow (saturating narrow)
+        "Iop_QNarrowBin16Sto8Sx8" => "Iop_QNarrowBin16Sto8Sx8",
+        "Iop_QNarrowBin16Sto8Ux8" => "Iop_QNarrowBin16Sto8Ux8",
+        "Iop_QNarrowBin32Sto16Sx4" => "Iop_QNarrowBin32Sto16Sx4",
+        "Iop_QNarrowBin32Sto16Ux4" => "Iop_QNarrowBin32Sto16Ux4",
+        "Iop_QNarrowBin16Sto8Sx16" => "Iop_QNarrowBin16Sto8Sx16",
+        "Iop_QNarrowBin16Sto8Ux16" => "Iop_QNarrowBin16Sto8Ux16",
+        "Iop_QNarrowBin16Uto8Ux16" => "Iop_QNarrowBin16Uto8Ux16",
+        "Iop_QNarrowBin32Sto16Sx8" => "Iop_QNarrowBin32Sto16Sx8",
+        "Iop_QNarrowBin32Sto16Ux8" => "Iop_QNarrowBin32Sto16Ux8",
+        "Iop_QNarrowBin32Uto16Ux8" => "Iop_QNarrowBin32Uto16Ux8",
+        "Iop_QNarrowBin64Sto32Sx4" => "Iop_QNarrowBin64Sto32Sx4",
+        "Iop_QNarrowBin64Uto32Ux4" => "Iop_QNarrowBin64Uto32Ux4",
+        "Iop_QNarrowUn16Sto8Sx8" => "Iop_QNarrowUn16Sto8Sx8",
+        "Iop_QNarrowUn16Sto8Ux8" => "Iop_QNarrowUn16Sto8Ux8",
+        "Iop_QNarrowUn16Uto8Ux8" => "Iop_QNarrowUn16Uto8Ux8",
+        "Iop_QNarrowUn32Sto16Sx4" => "Iop_QNarrowUn32Sto16Sx4",
+        "Iop_QNarrowUn32Sto16Ux4" => "Iop_QNarrowUn32Sto16Ux4",
+        "Iop_QNarrowUn32Uto16Ux4" => "Iop_QNarrowUn32Uto16Ux4",
+        "Iop_QNarrowUn64Sto32Sx2" => "Iop_QNarrowUn64Sto32Sx2",
+        "Iop_QNarrowUn64Sto32Ux2" => "Iop_QNarrowUn64Sto32Ux2",
+        "Iop_QNarrowUn64Uto32Ux2" => "Iop_QNarrowUn64Uto32Ux2",
+
+        // Widen (sign- or zero-extend element width, halving lane count)
+        "Iop_Widen8Sto16x8" => "Iop_Widen8Sto16x8",
+        "Iop_Widen8Uto16x8" => "Iop_Widen8Uto16x8",
+        "Iop_Widen16Sto32x4" => "Iop_Widen16Sto32x4",
+        "Iop_Widen16Uto32x4" => "Iop_Widen16Uto32x4",
+        "Iop_Widen32Sto64x2" => "Iop_Widen32Sto64x2",
+        "Iop_Widen32Uto64x2" => "Iop_Widen32Uto64x2",
+
+        // GetElem (extract lane to scalar)
+        "Iop_GetElem8x8" => "Iop_GetElem8x8",
+        "Iop_GetElem16x4" => "Iop_GetElem16x4",
+        "Iop_GetElem32x2" => "Iop_GetElem32x2",
+        "Iop_GetElem8x16" => "Iop_GetElem8x16",
+        "Iop_GetElem16x8" => "Iop_GetElem16x8",
+        "Iop_GetElem32x4" => "Iop_GetElem32x4",
+        "Iop_GetElem64x2" => "Iop_GetElem64x2",
+
+        // SetElem (insert scalar into lane)
+        "Iop_SetElem8x8" => "Iop_SetElem8x8",
+        "Iop_SetElem16x4" => "Iop_SetElem16x4",
+        "Iop_SetElem32x2" => "Iop_SetElem32x2",
+        "Iop_SetElem8x16" => "Iop_SetElem8x16",
+        "Iop_SetElem16x8" => "Iop_SetElem16x8",
+        "Iop_SetElem32x4" => "Iop_SetElem32x4",
+        "Iop_SetElem64x2" => "Iop_SetElem64x2",
+
+        // Reciprocal estimate / Newton-Raphson step (FP)
+        "Iop_RecipEst32Fx2" => "Iop_RecipEst32Fx2",
+        "Iop_RecipEst32Fx4" => "Iop_RecipEst32Fx4",
+        "Iop_RecipEst64Fx2" => "Iop_RecipEst64Fx2",
+        "Iop_RecipStep32Fx2" => "Iop_RecipStep32Fx2",
+        "Iop_RecipStep32Fx4" => "Iop_RecipStep32Fx4",
+        "Iop_RecipStep64Fx2" => "Iop_RecipStep64Fx2",
+        "Iop_RSqrtEst32Fx2" => "Iop_RSqrtEst32Fx2",
+        "Iop_RSqrtEst32Fx4" => "Iop_RSqrtEst32Fx4",
+        "Iop_RSqrtEst64Fx2" => "Iop_RSqrtEst64Fx2",
+        "Iop_RSqrtStep32Fx2" => "Iop_RSqrtStep32Fx2",
+        "Iop_RSqrtStep32Fx4" => "Iop_RSqrtStep32Fx4",
+        "Iop_RSqrtStep64Fx2" => "Iop_RSqrtStep64Fx2",
+
+        // Reciprocal estimate (integer, NEON-only)
+        "Iop_RecipEst32Ux2" => "Iop_RecipEst32Ux2",
+        "Iop_RecipEst32Ux4" => "Iop_RecipEst32Ux4",
+        "Iop_RSqrtEst32Ux2" => "Iop_RSqrtEst32Ux2",
+        "Iop_RSqrtEst32Ux4" => "Iop_RSqrtEst32Ux4",
+
+        // Saturating integer add/sub (NEON Q-prefixed)
+        "Iop_QAdd8Sx8" => "Iop_QAdd8Sx8",
+        "Iop_QAdd16Sx4" => "Iop_QAdd16Sx4",
+        "Iop_QAdd32Sx2" => "Iop_QAdd32Sx2",
+        "Iop_QAdd64Sx1" => "Iop_QAdd64Sx1",
+        "Iop_QAdd8Ux8" => "Iop_QAdd8Ux8",
+        "Iop_QAdd16Ux4" => "Iop_QAdd16Ux4",
+        "Iop_QAdd32Ux2" => "Iop_QAdd32Ux2",
+        "Iop_QAdd64Ux1" => "Iop_QAdd64Ux1",
+        "Iop_QAdd8Sx16" => "Iop_QAdd8Sx16",
+        "Iop_QAdd16Sx8" => "Iop_QAdd16Sx8",
+        "Iop_QAdd32Sx4" => "Iop_QAdd32Sx4",
+        "Iop_QAdd64Sx2" => "Iop_QAdd64Sx2",
+        "Iop_QAdd8Ux16" => "Iop_QAdd8Ux16",
+        "Iop_QAdd16Ux8" => "Iop_QAdd16Ux8",
+        "Iop_QAdd32Ux4" => "Iop_QAdd32Ux4",
+        "Iop_QAdd64Ux2" => "Iop_QAdd64Ux2",
+        "Iop_QSub8Sx8" => "Iop_QSub8Sx8",
+        "Iop_QSub16Sx4" => "Iop_QSub16Sx4",
+        "Iop_QSub32Sx2" => "Iop_QSub32Sx2",
+        "Iop_QSub64Sx1" => "Iop_QSub64Sx1",
+        "Iop_QSub8Ux8" => "Iop_QSub8Ux8",
+        "Iop_QSub16Ux4" => "Iop_QSub16Ux4",
+        "Iop_QSub32Ux2" => "Iop_QSub32Ux2",
+        "Iop_QSub64Ux1" => "Iop_QSub64Ux1",
+        "Iop_QSub8Sx16" => "Iop_QSub8Sx16",
+        "Iop_QSub16Sx8" => "Iop_QSub16Sx8",
+        "Iop_QSub32Sx4" => "Iop_QSub32Sx4",
+        "Iop_QSub64Sx2" => "Iop_QSub64Sx2",
+        "Iop_QSub8Ux16" => "Iop_QSub8Ux16",
+        "Iop_QSub16Ux8" => "Iop_QSub16Ux8",
+        "Iop_QSub32Ux4" => "Iop_QSub32Ux4",
+        "Iop_QSub64Ux2" => "Iop_QSub64Ux2",
+
+        // Averaging
+        "Iop_Avg8Ux8" => "Iop_Avg8Ux8",
+        "Iop_Avg16Ux4" => "Iop_Avg16Ux4",
+        "Iop_Avg32Ux2" => "Iop_Avg32Ux2",
+        "Iop_Avg8Sx8" => "Iop_Avg8Sx8",
+        "Iop_Avg16Sx4" => "Iop_Avg16Sx4",
+        "Iop_Avg32Sx2" => "Iop_Avg32Sx2",
+        "Iop_Avg8Ux16" => "Iop_Avg8Ux16",
+        "Iop_Avg16Ux8" => "Iop_Avg16Ux8",
+        "Iop_Avg32Ux4" => "Iop_Avg32Ux4",
+        "Iop_Avg8Sx16" => "Iop_Avg8Sx16",
+        "Iop_Avg16Sx8" => "Iop_Avg16Sx8",
+        "Iop_Avg32Sx4" => "Iop_Avg32Sx4",
+
+        // Reverse bytes within lanes
+        "Iop_Reverse8sIn16_x4" => "Iop_Reverse8sIn16_x4",
+        "Iop_Reverse8sIn32_x2" => "Iop_Reverse8sIn32_x2",
+        "Iop_Reverse8sIn64_x1" => "Iop_Reverse8sIn64_x1",
+        "Iop_Reverse16sIn32_x2" => "Iop_Reverse16sIn32_x2",
+        "Iop_Reverse16sIn64_x1" => "Iop_Reverse16sIn64_x1",
+        "Iop_Reverse32sIn64_x1" => "Iop_Reverse32sIn64_x1",
+        "Iop_Reverse8sIn16_x8" => "Iop_Reverse8sIn16_x8",
+        "Iop_Reverse8sIn32_x4" => "Iop_Reverse8sIn32_x4",
+        "Iop_Reverse8sIn64_x2" => "Iop_Reverse8sIn64_x2",
+        "Iop_Reverse16sIn32_x4" => "Iop_Reverse16sIn32_x4",
+        "Iop_Reverse16sIn64_x2" => "Iop_Reverse16sIn64_x2",
+        "Iop_Reverse32sIn64_x2" => "Iop_Reverse32sIn64_x2",
+        "Iop_Reverse1sIn8_x8" => "Iop_Reverse1sIn8_x8",
+        "Iop_Reverse1sIn8_x16" => "Iop_Reverse1sIn8_x16",
+
+        // Pairwise add/min/max (NEON)
+        "Iop_PwAdd8x8" => "Iop_PwAdd8x8",
+        "Iop_PwAdd16x4" => "Iop_PwAdd16x4",
+        "Iop_PwAdd32x2" => "Iop_PwAdd32x2",
+        "Iop_PwAdd32Fx2" => "Iop_PwAdd32Fx2",
+        "Iop_PwAdd8x16" => "Iop_PwAdd8x16",
+        "Iop_PwAdd16x8" => "Iop_PwAdd16x8",
+        "Iop_PwAdd32x4" => "Iop_PwAdd32x4",
+        "Iop_PwAddL8Sx8" => "Iop_PwAddL8Sx8",
+        "Iop_PwAddL8Ux8" => "Iop_PwAddL8Ux8",
+        "Iop_PwAddL16Sx4" => "Iop_PwAddL16Sx4",
+        "Iop_PwAddL16Ux4" => "Iop_PwAddL16Ux4",
+        "Iop_PwAddL32Sx2" => "Iop_PwAddL32Sx2",
+        "Iop_PwAddL32Ux2" => "Iop_PwAddL32Ux2",
+        "Iop_PwAddL8Sx16" => "Iop_PwAddL8Sx16",
+        "Iop_PwAddL8Ux16" => "Iop_PwAddL8Ux16",
+        "Iop_PwAddL16Sx8" => "Iop_PwAddL16Sx8",
+        "Iop_PwAddL16Ux8" => "Iop_PwAddL16Ux8",
+        "Iop_PwAddL32Sx4" => "Iop_PwAddL32Sx4",
+        "Iop_PwAddL32Ux4" => "Iop_PwAddL32Ux4",
+        "Iop_PwMin8Sx8" => "Iop_PwMin8Sx8",
+        "Iop_PwMin16Sx4" => "Iop_PwMin16Sx4",
+        "Iop_PwMin32Sx2" => "Iop_PwMin32Sx2",
+        "Iop_PwMin8Ux8" => "Iop_PwMin8Ux8",
+        "Iop_PwMin16Ux4" => "Iop_PwMin16Ux4",
+        "Iop_PwMin32Ux2" => "Iop_PwMin32Ux2",
+        "Iop_PwMax8Sx8" => "Iop_PwMax8Sx8",
+        "Iop_PwMax16Sx4" => "Iop_PwMax16Sx4",
+        "Iop_PwMax32Sx2" => "Iop_PwMax32Sx2",
+        "Iop_PwMax8Ux8" => "Iop_PwMax8Ux8",
+        "Iop_PwMax16Ux4" => "Iop_PwMax16Ux4",
+        "Iop_PwMax32Ux2" => "Iop_PwMax32Ux2",
+
+        // Polynomial multiply (carry-less, NEON crypto-adjacent)
+        "Iop_PolynomialMul8x8" => "Iop_PolynomialMul8x8",
+        "Iop_PolynomialMul8x16" => "Iop_PolynomialMul8x16",
+        "Iop_PolynomialMull8x8" => "Iop_PolynomialMull8x8",
+
+        // Per-lane count operations
+        "Iop_Cnt8x8" => "Iop_Cnt8x8",
+        "Iop_Cnt8x16" => "Iop_Cnt8x16",
+        "Iop_Clz8x8" => "Iop_Clz8x8",
+        "Iop_Clz16x4" => "Iop_Clz16x4",
+        "Iop_Clz32x2" => "Iop_Clz32x2",
+        "Iop_Clz8x16" => "Iop_Clz8x16",
+        "Iop_Clz16x8" => "Iop_Clz16x8",
+        "Iop_Clz32x4" => "Iop_Clz32x4",
+        "Iop_Cls8x8" => "Iop_Cls8x8",
+        "Iop_Cls16x4" => "Iop_Cls16x4",
+        "Iop_Cls32x2" => "Iop_Cls32x2",
+        "Iop_Cls8x16" => "Iop_Cls8x16",
+        "Iop_Cls16x8" => "Iop_Cls16x8",
+        "Iop_Cls32x4" => "Iop_Cls32x4",
+
+        // Vector shift by *vector* (NEON-only; ShlN/ShrN/SarN are by immediate)
+        "Iop_Shl8x8" => "Iop_Shl8x8",
+        "Iop_Shl16x4" => "Iop_Shl16x4",
+        "Iop_Shl32x2" => "Iop_Shl32x2",
+        "Iop_Shl64x1" => "Iop_Shl64x1",
+        "Iop_Shl8x16" => "Iop_Shl8x16",
+        "Iop_Shl16x8" => "Iop_Shl16x8",
+        "Iop_Shl32x4" => "Iop_Shl32x4",
+        "Iop_Shl64x2" => "Iop_Shl64x2",
+        "Iop_Shr8x8" => "Iop_Shr8x8",
+        "Iop_Shr16x4" => "Iop_Shr16x4",
+        "Iop_Shr32x2" => "Iop_Shr32x2",
+        "Iop_Shr64x1" => "Iop_Shr64x1",
+        "Iop_Shr8x16" => "Iop_Shr8x16",
+        "Iop_Shr16x8" => "Iop_Shr16x8",
+        "Iop_Shr32x4" => "Iop_Shr32x4",
+        "Iop_Shr64x2" => "Iop_Shr64x2",
+        "Iop_Sar8x8" => "Iop_Sar8x8",
+        "Iop_Sar16x4" => "Iop_Sar16x4",
+        "Iop_Sar32x2" => "Iop_Sar32x2",
+        "Iop_Sar64x1" => "Iop_Sar64x1",
+        "Iop_Sar8x16" => "Iop_Sar8x16",
+        "Iop_Sar16x8" => "Iop_Sar16x8",
+        "Iop_Sar32x4" => "Iop_Sar32x4",
+        "Iop_Sar64x2" => "Iop_Sar64x2",
+        "Iop_Sal8x8" => "Iop_Sal8x8",
+        "Iop_Sal16x4" => "Iop_Sal16x4",
+        "Iop_Sal32x2" => "Iop_Sal32x2",
+        "Iop_Sal64x1" => "Iop_Sal64x1",
+        "Iop_Sal8x16" => "Iop_Sal8x16",
+        "Iop_Sal16x8" => "Iop_Sal16x8",
+        "Iop_Sal32x4" => "Iop_Sal32x4",
+        "Iop_Sal64x2" => "Iop_Sal64x2",
+
+        // Saturating shifts (NEON QShl/QSal/QShlN)
+        "Iop_QShl8x8" => "Iop_QShl8x8",
+        "Iop_QShl16x4" => "Iop_QShl16x4",
+        "Iop_QShl32x2" => "Iop_QShl32x2",
+        "Iop_QShl64x1" => "Iop_QShl64x1",
+        "Iop_QShl8x16" => "Iop_QShl8x16",
+        "Iop_QShl16x8" => "Iop_QShl16x8",
+        "Iop_QShl32x4" => "Iop_QShl32x4",
+        "Iop_QShl64x2" => "Iop_QShl64x2",
+        "Iop_QSal8x8" => "Iop_QSal8x8",
+        "Iop_QSal16x4" => "Iop_QSal16x4",
+        "Iop_QSal32x2" => "Iop_QSal32x2",
+        "Iop_QSal64x1" => "Iop_QSal64x1",
+        "Iop_QSal8x16" => "Iop_QSal8x16",
+        "Iop_QSal16x8" => "Iop_QSal16x8",
+        "Iop_QSal32x4" => "Iop_QSal32x4",
+        "Iop_QSal64x2" => "Iop_QSal64x2",
+
+        _ => return None,
+    };
+    Some(IROp::NeonUnimplemented(op))
+}
+
 /// Parse special and x86-specific operations
 fn parse_special(op_str: &str) -> Option<IROp> {
     match op_str {
@@ -1283,5 +1564,44 @@ mod tests {
     fn test_unmapped_opcode() {
         // Unknown opcodes should return Raw(0)
         assert_eq!(parse_opcode("Iop_UnknownOp"), IROp::Raw(0));
+    }
+
+    #[test]
+    fn test_neon_unimplemented_routing() {
+        // NEON-only opcodes route through IROp::NeonUnimplemented with the
+        // original opcode string captured. Dispatch in VEXOps::unop/binop
+        // panics on this variant — the scaffolding makes missing NEON
+        // coverage visible immediately instead of silently producing a
+        // fresh-symbolic value.
+        for op in [
+            "Iop_Dup8x8",
+            "Iop_NarrowBin16to8x8",
+            "Iop_QNarrowBin16Sto8Sx8",
+            "Iop_Widen8Sto16x8",
+            "Iop_GetElem8x16",
+            "Iop_SetElem32x4",
+            "Iop_RecipEst32Fx4",
+            "Iop_QAdd8Sx8",
+            "Iop_Avg8Ux8",
+            "Iop_Reverse8sIn32_x2",
+            "Iop_PwAdd16x4",
+            "Iop_PolynomialMull8x8",
+            "Iop_Cnt8x8",
+            "Iop_Shl8x16",
+        ] {
+            match parse_opcode(op) {
+                IROp::NeonUnimplemented(name) => assert_eq!(name, op),
+                other => panic!("{} expected NeonUnimplemented, got {:?}", op, other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_neon_does_not_shadow_existing_mappings() {
+        // Sanity: opcodes already mapped to real IROps (VAdd/VShlN/etc.)
+        // must not be intercepted by the NEON-unimplemented scaffold.
+        assert!(matches!(parse_opcode("Iop_Add8x8"), IROp::VAdd { .. }));
+        assert!(matches!(parse_opcode("Iop_ShlN32x4"), IROp::VShlN { .. }));
+        assert!(matches!(parse_opcode("Iop_CmpEQ32Fx4"), IROp::FCmpVecPacked { .. }));
     }
 }

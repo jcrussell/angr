@@ -331,6 +331,10 @@ impl VEXOps {
             IROp::VFSqrt { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FSqrt, ctx),
             IROp::VFAbs { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FAbs, ctx),
 
+            // NEON scaffolding: fail loudly rather than silently fall back to
+            // a fresh-symbolic result. Implementations land in angr-bkcs.2.
+            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
+
             _ => Err(OpError::NotUnary(op)),
         }
     }
@@ -547,6 +551,9 @@ impl VEXOps {
             // unop_with_rm instead of falling back to a fresh symbolic.
             IROp::FSqrt(_) => Self::unop_with_rm(op, left, right, ctx),
 
+            // NEON scaffolding: fail loudly rather than silently fall back.
+            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
+
             _ => Err(OpError::NotBinary(op)),
         }
     }
@@ -574,6 +581,8 @@ impl VEXOps {
                 let lo = low_bit as u32;
                 Ok(arg1.extract_into(hi, lo, ctx))
             }
+            // NEON scaffolding: fail loudly rather than silently fall back.
+            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
             _ => Err(OpError::NotTernary(op)),
         }
     }
@@ -596,6 +605,8 @@ impl VEXOps {
         match op {
             IROp::FMAdd(ty) => Self::float_madd(a, b, c, ty, ctx),
             IROp::FMSub(ty) => Self::float_msub(a, b, c, ty, ctx),
+            // NEON scaffolding: fail loudly rather than silently fall back.
+            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
             _ => Err(OpError::NotQuaternary(op)),
         }
     }
