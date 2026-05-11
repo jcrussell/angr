@@ -1,61 +1,69 @@
-## Session log: 2026-05-10 — angr-r4r7 (audit unbounded Python shadow structures, COMPLETE)
+## Session log: 2026-05-11 — angr-383x (silent-divergence: TRACK_CONSTRAINT_ACTIONS / TRACK_MEMORY_MAPPING, COMPLETE)
 
 ### Task
-Audit Python-side bookkeeping dicts/sets in `rust_manager.py` and friends for
-unbounded growth. For each, decide: (a) bounded by lifetime, (b) needs explicit
-clear, (c) needs LRU cap, (d) shadows Rust and should be deleted.
+Close the silent-divergence gap for `TRACK_CONSTRAINT_ACTIONS` and
+`TRACK_MEMORY_MAPPING` which were intentionally excluded from
+`_REJECTED_OPTION_NAMES` (rust_manager.py:189-200) because they ship in the
+default `symbolic` mode bundle (sim_options.py:391, 374) and would warn on
+every `entry_state()`.
 
-### Audit result
+### Detour: angr-m2hf
+First claimed angr-m2hf (CommonErrorReason refactor). Verified the audit
+memo's deferral was correct — only `Unsupported(String)` actually appears in
+3+ enums (CbExecutionError, ExecutionError, LiftError); `SymbolicArgument` /
+`Other` only in 2 each. Re-deferred with updated rationale + memory.
 
-| Structure | Verdict |
-|-----------|---------|
-| `_state_cache` (cap=8, LRU) | (a) bounded |
-| `_ast_handle_cache` (cap=10000) | (a) bounded |
-| `_z3_ptr_cache` (cap=1024) | (a) bounded |
-| `_py_state_options`, `_py_state_globals` | (a) bounded — pruned in `_cleanup_state_cache` |
-| `_predicate_eval_cache` | (a) bounded — popped in `_cleanup_state_refs` |
-| `_state_roots` | **(b) FIXED — now pruned in `_cleanup_state_cache`** |
-| `_predicate_matched_ids` | **(b) FIXED — now `intersection_update(any_stash)`** |
-| `_registered_hooks`, `_exit_continuation_addrs` | (a) bounded by binary |
-| `_predicate_found` | (a) bounded by found stash |
-| `_pending_procedure_data` | (a) bounded by binary's continuation set |
-| `_warned_rejected_options` | (a) bounded by sim_options enum |
-| `_stdin_content` | (a) bounded by stdin size |
-| `_procedure_times` | (a) bounded by SimProcedure name set |
-| `_active_techniques` | (a) bounded by user input |
+### Strategy
+Warn-once on first read of `state.history.actions` / `state.history.events`
+via `state.history.__class__` reassignment:
 
-### Fix
-`_cleanup_state_cache` (rust_manager.py:2980) now reads `avoid` + `deadended`
-stashes in addition to `active` + `found`, builds `any_stash = active | found |
-avoid | deadended`, and prunes `_state_roots` keys and `_predicate_matched_ids`
-members not present in `any_stash`. Rust state IDs are monotonically allocated
-and never reused so dropped entries can never become relevant.
+- New `_RustOwnedSimStateHistory(SimStateHistory)` in `rust_state_export.py`
+  overrides `.actions` and `.events` properties with a process-wide `_WARNED`
+  class flag (one warning per Python process across all managers and states).
+- `_install_rust_history_warning()` swaps `state.history.__class__` once per
+  materialized Rust-owned state.
+- Hooked in `_restore_plugins_to_state` so every state returned by
+  `mgr.active` / `.found` / `.deadended` / etc. inherits the warning.
+- Default-bundle users who never touch `.actions` / `.events` see nothing.
+- Users who do touch them get one clear `UserWarning` pointing at the
+  Python engine and `docs/RUST_SIMOPTION_COVERAGE.md`.
 
 ### Files changed
-- `angr/exploration/rust_manager.py` (+43): broader `any_stash` set, two new
-  prune blocks, doc on `_state_roots` declaration.
-- `tests/engines/test_rust_exploration.py` (+47): two regression tests under
-  `TestStateMetadataStorage`:
-  - `test_cleanup_state_cache_prunes_state_roots`
-  - `test_cleanup_state_cache_prunes_predicate_matched_ids`
+- `angr/exploration/rust_state_export.py` (+70): subclass + install function
+  + hook call in `_restore_plugins_to_state`.
+- `tests/engines/test_rust_exploration.py` (+125): 4 regression tests under
+  `TestEdgeCases`:
+  - `test_history_actions_read_warns_under_rust`
+  - `test_history_events_read_warns_under_rust`
+  - `test_history_actions_warn_once_process_wide`
+  - `test_history_warning_does_not_fire_when_actions_not_read`
+- `docs/RUST_SIMOPTION_COVERAGE.md` (+10): followup note on the warn-on-read
+  mechanism for default-bundle (b) options.
 
 ### Verification
-- `pytest -k cleanup_state_cache`: 5 passed (3 existing + 2 new).
-- Full test suite: 378 passed (was 376), 3 pre-existing failures unchanged
-  (dcas/pipe/dup2 — same set as sessions 215 & 216).
-- `run_single.py fauxware --engine rust`: fauxware still runs correctly.
+- New tests: 4/4 pass.
+- Full suite: 382 passed, 3 failed. The 3 failures (dcas/pipe/dup2) are
+  the same pre-existing set as sessions 215–217. No regressions from
+  this change.
 
 ### Memories saved
-- `invariant-state-id-never-reused` (new): the load-bearing invariant for any
-  future shadow-structure prune.
-- `audit-shadow-structures-2026-05-10` (new): full audit table for future
-  reference, so this work doesn't have to be redone.
+- `strategy-default-bundle-silent-divergence` (new): the warn-on-read pattern
+  for SimOptions that can't be warn-on-add'd because they ship in default
+  bundles.
+- `python-class-reassignment-for-history-plugin` (new): records that
+  `state.history.__class__ = SubClass` works cleanly on `SimStateHistory`
+  (no `__slots__`).
+- `avoid-deferred-m2hf-error-trait` (updated): re-deferral rationale for
+  CommonErrorReason refactor, with the actual variant-overlap counts.
 
 ### Closed beads
-- `angr-r4r7`.
+- `angr-383x`.
+
+### Re-deferred beads
+- `angr-m2hf` (back to deferred with updated note).
 
 ### Commit
-7dd834b78  fix(rust-symex): prune dead _state_roots / _predicate_matched_ids — angr-r4r7
+07630755c  feat(rust-symex): warn-on-read for state.history.actions/.events — angr-383x
 
 ### Status
 COMPLETE.
