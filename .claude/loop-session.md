@@ -1,54 +1,58 @@
-## Session log: 2026-05-11 — angr-bkcs.2 (NEON SIMD vadd/vsub/vmul + lane ops)
+## Session log: 2026-05-11 — angr-0z34 (Native amd64 read/write syscall handlers)
 
 ### Task
-Implement NEON SIMD ops on top of scaffolding from angr-bkcs.1. Acceptance:
-at least one ARM/AArch64 binary that uses NEON instructions runs end-to-end
-under RustExplorationManager without falling back to Python.
+Add native amd64 syscall handlers for read (sys_read = 0) and write (sys_write = 1)
+into NativeSyscallRegistry. Builds on angr-3tek.2 (NativeRead/NativeWrite procedures
+are now default-registered with cache-sync via dirty-page replay), so the previously
+blocking state-sync gap is resolved.
 
 ### What was done
 
-**New IROp variants** (ir.rs):
-- `IROp::VGetElem { elem, count }` — NEON lane extract (binop)
-- `IROp::VSetElem { elem, count }` — NEON lane insert (triop, non-rm)
+**New file** `native/angr/src/syscalls/read.rs`:
+- `NativeReadSyscall` for AMD64 sys_read (#0). Mirrors
+  `procedures/read.rs::NativeRead`: stdin (fd=0) only, MAX_READ_SIZE=4096,
+  fresh symbolic bytes named `sys_read_<id>_<i>` written via `state.memory_store`
+  (so dirty-page replay picks them up). Other fds, symbolic args, oversized
+  counts → `Err(...)` to fall back to Python.
 
-**New opcode mappings** (opcode_map.rs::parse_vector):
-- `Iop_Mul8x8`, `Iop_Mul8x16` (D-reg / Q-reg 8-bit packed multiply) — were missing
-- All `Iop_GetElem{N}x{M}` (8x8, 16x4, 32x2, 8x16, 16x8, 32x4, 64x2) → VGetElem
-- All `Iop_SetElem{N}x{M}` (same shapes) → VSetElem
-- Removed corresponding entries from `parse_neon_unimplemented`.
+**New file** `native/angr/src/syscalls/write.rs`:
+- `NativeWriteSyscall` for AMD64 sys_write (#1). Mirrors
+  `procedures/write.rs::NativeWrite`: stdout/stderr (fd=1,2) only,
+  MAX_WRITE_SIZE=4096, concrete bytes only, appended via `state.write_fd`.
+  Symbolic bytes / other fds / oversized → fall back to Python.
 
-**Dispatch** (vex/ops.rs):
-- `binop` handler for VGetElem → `vec_get_elem`
-- `binop_with_rm` short-circuits VSetElem to `vec_set_elem`: VEX delivers
-  SetElem as a Triop with `(vec, idx, val)` and the Triop dispatch in
-  expressions.rs hands them off as `(rm, left, right)` — we reinterpret.
-- `vec_get_elem`: concrete fast-path bit-slice when both vec+idx concrete;
-  symbolic-vec concrete-idx → extract; symbolic idx → ITE chain.
-- `vec_set_elem`: concrete fast-path bit-twiddle; concrete idx → element
-  rebuild; symbolic idx → per-lane ITE then concat.
+**Registry updates** (`native/angr/src/syscalls/mod.rs`):
+- New `pub mod read; pub mod write;` declarations.
+- Two new `r.register("AMD64", 0/1, ...)` lines in `NativeSyscallRegistry::new`.
+- Updated `default_registry_has_amd64_exit_handlers` test: removed the
+  "read (0) is intentionally unregistered" assertion, added asserts that
+  read/write are now present.
 
-**Tests**:
-- 10 new cargo unit tests in `vex::ops::tests::test_v*` (Mul8x{8,16}, GetElem
-  for 8x8/16x8/64x2, SetElem with round-trip, symbolic idx via z3).
-- 1 new Python integration test
-  (`TestMultiArchSupport::test_aarch64_neon_mla_blob`): hand-assembled
-  AArch64 blob using `MLA V0.16B, V0.16B, V1.16B` which lifts to
-  `Iop_Mul8x16 + Iop_Add8x16`. Solver drives `w0 & 0xFF` to a residue r
-  satisfying `r + r*r ≡ 20 (mod 256)`. **Without the new Mul8x16
-  mapping the test panics at `NEON op Iop_Mul8x16 not yet implemented`.**
+### Tests
+- 8 new cargo unit tests in `syscalls::read::tests` covering: metadata,
+  stdin happy path, zero-count no-op, non-stdin fall-back, oversized fall-back,
+  and symbolic fd/buf/count fall-backs.
+- 7 new cargo unit tests in `syscalls::write::tests` covering: metadata,
+  stdout/stderr happy paths, unsupported fd, oversized count, symbolic fd,
+  symbolic byte, plus assertions that no partial output was appended on Err.
+- Cargo: 92 syscall tests passing (was 92 before — actually +15 for
+  read/write minus the count of moved test scope; net +15). Two pre-existing
+  failures in syscalls::brk/mmap fork tests (`fork_preserves_*`) are
+  unrelated to this change (they fail when cargo test runs them outside
+  PyO3 init — confirmed by stashing my changes).
+- Python: 385 passed, 3 pre-existing failures (`TestNativeFileDescriptor*`
+  pipe/dup2 dispatch and `TestErrorRecovery::test_dcas_cmpxchg16b_*`).
+  All same on baseline (verified via `git stash` + rerun).
 
-### Results
-- cargo lib: 627/627 passing (was 617 before).
-- Python: 386 passed, 3 pre-existing failures (same as before, unrelated).
-- Files modified: `native/angr/src/vex/{ir,opcode_map,ops}.rs`,
-  `tests/engines/test_rust_exploration.py`.
+### Performance smoke test
+fauxware via Rust engine: works, `Syscall -> Python: 0`. Doesn't exercise the
+new code (fauxware uses libc read() handled by NativeRead procedure, not raw
+syscall) but confirms no regression to the existing syscall path.
 
 ### Notes for follow-up
-- pyvex does NOT emit `Iop_GetElem*` / `Iop_SetElem*` for AArch64
-  `UMOV`/`INS` (which uses lane-aliased register offsets in the register
-  file). Tests covered the ops via unit tests instead. ARM 32-bit
-  NEON D-register lane access (e.g. `VMOV.32 R0, D0[1]`) is where
-  these IRops likely arise — but no ARM-32 NEON cross-compiler is
-  available locally to add another integration test.
-- `Iop_Mul64x2` / `Iop_Add64x1` / `Iop_Sub64x1` don't exist in pyvex —
-  not added.
+- These handlers only help binaries that issue raw `syscall` instructions for
+  read/write — typically statically linked binaries, Go binaries, or hand-rolled
+  asm. Most CTF benchmarks call libc which dispatches through SimProcedure.
+- NativeReadSyscall does NOT call `record_stdin_symbol` — same as NativeRead
+  procedure (which doesn't either). If symbolic stdin tracking via posix.dumps(0)
+  is needed, both should grow that call together (out of scope here).

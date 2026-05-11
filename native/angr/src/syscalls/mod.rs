@@ -23,8 +23,10 @@ pub mod exit;
 pub mod mmap;
 pub mod mprotect;
 pub mod munmap;
+pub mod read;
 pub mod sigaction;
 pub mod sim_time;
+pub mod write;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -86,6 +88,10 @@ impl NativeSyscallRegistry {
             handlers: HashMap::new(),
             enabled: true,
         };
+        // amd64: read (0) — stdin (fd=0) only; symbolic bytes mirror NativeRead.
+        r.register("AMD64", 0, Arc::new(read::NativeReadSyscall));
+        // amd64: write (1) — stdout (fd=1) and stderr (fd=2); concrete bytes only.
+        r.register("AMD64", 1, Arc::new(write::NativeWriteSyscall));
         // amd64: exit (60), exit_group (231) -> deadend.
         r.register("AMD64", 60, Arc::new(exit::NativeExitSyscall { name: "exit" }));
         r.register("AMD64", 231, Arc::new(exit::NativeExitSyscall { name: "exit_group" }));
@@ -166,6 +172,8 @@ mod tests {
     #[test]
     fn default_registry_has_amd64_exit_handlers() {
         let r = NativeSyscallRegistry::new();
+        assert!(r.get("AMD64", 0).is_some(), "read (0) should be registered");
+        assert!(r.get("AMD64", 1).is_some(), "write (1) should be registered");
         assert!(r.get("AMD64", 60).is_some(), "exit (60) should be registered");
         assert!(r.get("AMD64", 231).is_some(), "exit_group (231) should be registered");
         assert!(r.get("AMD64", 10).is_some(), "mprotect (10) should be registered");
@@ -177,7 +185,6 @@ mod tests {
         assert!(r.get("AMD64", 158).is_some(), "arch_prctl (158) should be registered");
         assert!(r.get("AMD64", 201).is_some(), "time (201) should be registered");
         assert!(r.get("AMD64", 228).is_some(), "clock_gettime (228) should be registered");
-        assert!(r.get("AMD64", 0).is_none(), "read (0) is intentionally unregistered");
         assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");
     }
 
