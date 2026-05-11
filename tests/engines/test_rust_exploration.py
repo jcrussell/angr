@@ -3837,6 +3837,138 @@ class TestMultiArchSupport:
             f"Expected x0==42 to reach found, got {found.solver.eval(x0)}"
         )
 
+    def test_aarch64_explore_real_elf(self, tmp_path):
+        """End-to-end AArch64 exploration on a hand-assembled ELF binary.
+
+        The existing aarch64 blob test covers only a single compare + branch
+        through the cle Blob backend. This test goes further:
+
+          * loads through cle's ELF backend (parses e_machine / e_entry /
+            PT_LOAD), exercising the full ELF loader path on AArch64
+          * exercises BL / RET (calling-convention plumbing — X30 set on
+            BL, branch target read back from X30 on RET) in addition to
+            the conditional branch
+          * runs from the ELF's e_entry (proj.entry) rather than a
+            hand-picked address, confirming e_entry decoding
+
+        No AArch64 binaries ship with angr-examples and no cross-compiler
+        is available locally, so the ELF is constructed inline. The
+        program calls a subroutine ``double_it`` that returns ``2 * w0``,
+        then checks the result equals 84 — symbolic execution must drive
+        ``w0`` to 42 to reach the find address.
+
+        Promotes AArch64 from blob-only to real-ELF coverage in the
+        support matrix; pairs with angr-gxhf.1.
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # AArch64 little-endian instructions (verified against ARMv8 ARM):
+        #   double_it (at 0x400078):
+        #     0x400078: add w0, w0, w0       0B000000  ; w0 = 2*w0
+        #     0x40007c: ret                  D65F03C0  ; return via x30
+        #   entry (at 0x400080):
+        #     0x400080: bl double_it (-8)    97FFFFFE
+        #     0x400084: movz w1, #84         52800A81
+        #     0x400088: cmp w0, w1           6B01001F  ; subs wzr, w0, w1
+        #     0x40008c: b.eq found (+8)      54000040
+        #     0x400090: b avoid (+12)        14000003
+        #   found (at 0x400094):
+        #     0x400094: nop                  D503201F
+        #     0x400098: nop                  D503201F
+        #   avoid (at 0x40009C):
+        #     0x40009c: nop                  D503201F
+        code = struct.pack(
+            "<IIIIIIIIII",
+            0x0B000000,  # add w0, w0, w0
+            0xD65F03C0,  # ret
+            0x97FFFFFE,  # bl -8 -> double_it
+            0x52800A81,  # movz w1, #84
+            0x6B01001F,  # cmp w0, w1
+            0x54000040,  # b.eq +8 -> found
+            0x14000003,  # b +12 -> avoid
+            0xD503201F,  # nop (found)
+            0xD503201F,  # nop
+            0xD503201F,  # nop (avoid)
+        )
+
+        # Minimal ELF64 (AArch64) header. PT_LOAD covers file [0, 160] →
+        # vaddr [0x400000, 0x4000A0). Entry = 0x400080. No section headers.
+        BASE = 0x400000
+        EHDR_SIZE = 64
+        PHDR_SIZE = 56
+        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code)
+        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE + 8  # skip subroutine
+
+        # ELF64 header (little-endian)
+        ehdr = b"\x7fELF" + bytes([
+            2,  # EI_CLASS = ELF64
+            1,  # EI_DATA = LSB
+            1,  # EI_VERSION
+            0,  # EI_OSABI = System V
+            0,  # EI_ABIVERSION
+        ]) + b"\x00" * 7  # EI_PAD
+        ehdr += struct.pack(
+            "<HHIQQQIHHHHHH",
+            2,                  # e_type = ET_EXEC
+            0xB7,               # e_machine = EM_AARCH64
+            1,                  # e_version
+            ENTRY,              # e_entry
+            EHDR_SIZE,          # e_phoff
+            0,                  # e_shoff
+            0,                  # e_flags
+            EHDR_SIZE,          # e_ehsize
+            PHDR_SIZE,          # e_phentsize
+            1,                  # e_phnum
+            0,                  # e_shentsize
+            0,                  # e_shnum
+            0,                  # e_shstrndx
+        )
+        assert len(ehdr) == EHDR_SIZE
+
+        # PT_LOAD program header
+        phdr = struct.pack(
+            "<IIQQQQQQ",
+            1,                  # p_type = PT_LOAD
+            5,                  # p_flags = PF_R | PF_X
+            0,                  # p_offset
+            BASE,               # p_vaddr
+            BASE,               # p_paddr
+            TOTAL,              # p_filesz
+            TOTAL,              # p_memsz
+            0x1000,             # p_align
+        )
+        assert len(phdr) == PHDR_SIZE
+
+        elf_bytes = ehdr + phdr + code
+        elf_path = tmp_path / "aarch64_call.elf"
+        elf_path.write_bytes(elf_bytes)
+
+        proj = angr.Project(str(elf_path), auto_load_libs=False)
+        assert proj.arch.name == "AARCH64"
+        assert proj.entry == ENTRY, (
+            f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
+        )
+
+        state = proj.factory.blank_state(addr=proj.entry)
+        x0 = claripy.BVS("x0", 64)
+        state.regs.x0 = x0
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x400094, avoid=0x40009C, num_find=1, max_steps=50)
+
+        assert len(mgr.found) >= 1, (
+            f"AArch64 ELF exploration did not reach 0x400094; "
+            f"counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+        # The doubled input must equal 84, so the input must be 42.
+        assert found.solver.eval(x0) == 42, (
+            f"Expected x0==42 (so 2*x0==84) to reach found, got {found.solver.eval(x0)}"
+        )
+
     def test_mips32_explore_blob(self, tmp_path):
         """End-to-end MIPS32 (big-endian) exploration on a hand-assembled blob.
 

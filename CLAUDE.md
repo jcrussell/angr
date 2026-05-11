@@ -209,7 +209,7 @@ tests and no benchmarks. Treat them as experimental until that changes.
 | AMD64       | ~110+      | ~268 (fauxware)   | 15/16      | SystemV, MS x64   | Supported    |
 | x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
 | ARM (32-bit)| 2          | 2 (validate, native-proc) | 0  | ARMEABI           | Experimental |
-| ARM64       | 1          | 2 (blob branch, native-proc) | 0 | AArch64        | Experimental |
+| ARM64       | 1          | 3 (blob branch, real ELF, native-proc) | 0 | AArch64 | Experimental |
 | MIPS32      | 4          | 2 (blob branch, native-proc) | 0 | MipsO32        | Experimental |
 | MIPS64      | 0          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
 
