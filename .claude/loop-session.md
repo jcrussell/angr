@@ -1,42 +1,62 @@
-## Session log: 2026-05-11 — angr-trwl (fauxware FFI overhead investigation)
+## Session log: 2026-05-11 — angr-bkcs.1 (NEON Q-register scaffolding)
 
 ### Task
-Investigate fauxware FFI-overhead bottleneck (cited as 0.9x baseline,
-only canonical demo binary slower than Python). Per task: profile and
-either fix or write a 'known-slower' rationale + update CLAUDE.md.
+Land scaffolding-only step of angr-bkcs (parent ARM/AArch64 NEON SIMD
+epic, auto-deferred after 3 dirty iterations). Need: register defs in
+arch/arm.rs + arm64.rs, IROp variants for NEON ops, opcode_map entries
+routing through dispatch, dispatch sites panic explicitly instead of
+silently falling back. No actual op implementations.
 
-### Live measurement (5 runs, run_single.py fauxware --both)
-  rust:   0.27 / 0.27 / 0.27 / 0.28 / 0.28 s  (median 0.28)
-  python: 0.37 / 0.37 / 0.38 / 0.38 / 0.40 s  (median 0.38)
-  speedup: 1.36x — Rust is now FASTER than Python.
+### Surprise: arch defs already in place
+arm.rs already had D0..D31 + Q0..Q15. arm64.rs already had Q0..Q31 +
+V0..V31 aliases + D0..D31 (lower half). Past dirty iterations must have
+failed downstream (op implementations); register tables landed already.
 
-### Root cause of the flip
-angr-3tek.2 (2026-05-10) registered NativeRead/NativeWrite by default
-(native/angr/src/procedures/mod.rs:240-241) plus the page-replay fix in
-_replay_rust_dirty_pages. fauxware callback count dropped 6 -> 1
-(eliminated 4 read() callbacks @ ~20ms each, plus strcmp benefit).
-Only open() still falls back to Python.
+### Approach
+Instead of N new IROp variants (one per NEON family), one variant:
 
-### Profile breakdown of current 280ms rust runtime
-  Init total:       20.9 ms  ( 7%)
-  open SimProc x1:  59-61 ms (20%) — 43ms execute + 13ms sync + 3ms create
-  lift_block x14:    2-3  ms ( 1%)
-  Rust interp/Z3:  ~205 ms  (~72%, residual)
-No remaining FFI hot path. The bead's premise is obsolete.
+  IROp::NeonUnimplemented(&'static str)
 
-### Changes (commit 92e22981f)
-- CLAUDE.md: fauxware row 0.9x -> 1.4x; performance line 14/16 -> 15/16.
-- baseline_timings.json: fauxware rust_time 0.385->0.28, callback_count 5->1.
+The &'static str captures the original Iop name (e.g. "Iop_Dup8x8") so
+the panic message points at the exact opcode. Single arm in
+VEXOps::{unop, binop, ternop, qop} panics with "NEON op X not yet
+implemented". opcode_map.rs::parse_neon_unimplemented() enumerates
+~150 NEON-only Iop names across Dup, Narrow, QNarrow, Widen,
+Get/SetElem, RecipEst/Step, RSqrtEst/Step, QAdd/QSub, Avg, Reverse,
+Pw{Add,Min,Max,AddL}, Polynomial(l)Mul, Cnt/Clz/Cls, Sh{l,r,a,al}x*,
+QSh{l,al}x*. Hooked into parse_opcode() BEFORE the Raw(0) fallback.
 
-### Tests
-382/382 passing (same 3 pre-existing failures: dcas_cmpxchg16b_no_match,
-pipe_native_dispatch_creates_two_fds, dup2_native_dispatch_redirects_stdin).
-Regression script run: fauxware passed against new tighter baseline.
-defcamp_r100 had a 16% noise regression (0.27 vs 0.23) — pre-existing.
+### Tests added
+- arch/arm.rs::test_neon_q_and_d_registers — locks D/Q overlap
+- arch/arm64.rs::test_neon_q_registers — locks V/Q alias + D lower half
+- vex/opcode_map.rs::test_neon_unimplemented_routing — opcode -> variant
+- vex/opcode_map.rs::test_neon_does_not_shadow_existing_mappings —
+  confirms Iop_Add8x8 / Iop_ShlN32x4 / Iop_CmpEQ32Fx4 still hit their
+  existing handlers (sanity that the scaffold did not regress coverage).
+
+### Build / test
+- cargo check --release: clean
+- cargo clippy: 1 pre-existing error in exploration/pending_api.rs:293
+  (unrelated, verified by git stash)
+- cargo test --release --lib: 617/617 passing
+- Python suite: 382/385 (same 3 pre-existing failures —
+  dcas_cmpxchg16b_no_match, pipe_native_dispatch_creates_two_fds,
+  dup2_native_dispatch_redirects_stdin)
+- Rebuild via tools/rebuild-rust.sh --cargo-only because venv pip is
+  broken (pip._vendor.resolvelib import error)
+
+### Commit / bead
+- 48f949fde feat(rust-symex): scaffold ARM/AArch64 NEON SIMD opcodes
+- angr-bkcs.1 closed. Sibling bkcs.2 implements ops one-by-one by
+  removing the opcode_map entry and adding a real IROp variant.
 
 ### Memories saved
-- trwl-fauxware-flip-2026-05-11 — flip explanation + lesson re re-measuring stale beads
-- benchmark-fauxware-2026-05-11 — snapshot for future drift comparisons
+- invariant-neon-scaffolding-panic-not-fallback — design rationale,
+  how bkcs.2 should peel ops off this scaffold
+- bkcs1-arch-defs-already-present — surprise that arch defs were
+  pre-landed; grep before duplicating
+- avoid-broken-venv-pip-rebuild — workaround for the current broken
+  pip; use rebuild-rust.sh --cargo-only
 
 ### Status
-COMPLETE — bead angr-trwl closed.
+COMPLETE — angr-bkcs.1 closed.
