@@ -1,64 +1,48 @@
-## Session log: 2026-05-11 — angr-hv22 (profile _overlay_relocated_sections, RATIONALE)
+## Session log: 2026-05-11 — angr-sgbn (fast-path _concretize_stack_registers)
 
 ### Task
-Profile `_overlay_relocated_sections` (claimed 6.1 ms / 36 % of warm
-`_add_rust_state` per cProfile) and decide between optimization or
-written rationale.
+Profile `_concretize_stack_registers` (claimed 12ms on cold blank_state path
+per add-state-init-breakdown-2026-05-11 memory) and decide between
+optimization or rationale.
 
 ### Profile (wall-clock, fauxware, 20 iterations)
-Per-call (ms): min=1.19  max=7.74 (cold)  mean=1.79  median=1.475
 
-Section breakdown (one full sweep, fauxware):
-  Sections in range:    29
-  Concrete (overlaid):  25
-  Symbolic (skipped):   4
+Via mgr._concretize_stack_registers (real call):
+  Cold (blank_state):  median 10.04 ms (rbp branch = 9.79 ms)
+  Warm (entry_state):  median 0.08 ms
 
-Size histogram:  <256 = 24,  <4K = 5  (all sections are tiny)
+Root cause: blank_state sets `regs.sp = stack_end` (concrete) but rbp is
+filled with a fresh unconstrained BVS by default_filler_mixin. solver.eval
+on the unconstrained BVS pays full Z3 ctx init + check + model (~10ms)
+just to return 0.
 
-Per-section operation cost (one full sweep, 29 sections):
-  state.memory.load:    1.250 ms (97 %)
-  solver.eval+to_bytes: 0.026 ms  (2 %)
-  rust map FFI:         0.016 ms (~1 %)
+Z3's model for an unconstrained rbp is arbitrary — observed `0x0` across
+all iterations.
 
-The 6.1 ms cProfile number in the bead is inflated relative to wall-clock,
-same artefact we hit in z8xa (cProfile penalises code with lots of nested
-attribute access through angr's 14-layer memory-mixin chain).
+### Fix (commit 1a233418b)
 
-### Decision: rationale, no code change
+Added `_eval_or_default(state, reg_val, default)` helper:
+- Scan `state.solver.constraints` for variable overlap with `reg_val.variables`
+- If no constraint references any var, return `default` directly (skip Z3)
+- Otherwise fall back to `solver.eval`
 
-1. **Wall-clock is 1.5 ms, not 6.1 ms.** The slow path's true cost is
-   ~97 % `state.memory.load` walking the angr mixin stack (same root cause
-   as z8xa register sync). solver.eval + FFI together are negligible.
+For SP, default is `arch.initial_sp` (or 0). For BP, default is 0
+(matching Z3's empirical result).
 
-2. **Naive manager-scope caching is unsafe.** Current code gates each
-   section overlay on `val.symbolic` per-state. Caching section bytes
-   keyed by binary path would lose this gate, so a forked successor that
-   has symbolic bytes in a .data section would have those bytes
-   overwritten by stale concrete patches from the first state.
+Also dropped a dead `sp_val = state.solver.eval(reg_val)` in the SP
+non-symbolic else branch — value was never used.
 
-3. **Disk cache already handles the safe case.** When state has no
-   user-symbolic, `_compute_disk_init_key` succeeds, the disk pickle is
-   saved, and `_try_fast_memory_sync` short-circuits the entire memory
-   sync (including section patches) on later runs. The slow path only
-   runs in the unsafe case where caching is risky.
+### Results
 
-4. **In-process gain is small.** `_overlay_relocated_sections` runs once
-   per `_add_rust_state` — initial seed (1-2x), merged states (rare),
-   forked successors (handful). Even at 5-10 calls per fauxware run,
-   total cost is ~10-15 ms in a ~1 s exploration; <2 %.
+  Cold (blank_state):  10.04 ms → 0.29 ms  (34x faster, saves ~9.7 ms per call)
+  Warm (entry_state):   0.08 ms → 0.08 ms  (no regression)
 
-5. **One niche optimization considered and rejected**: when
-   `_try_in_memory_init_cache` hits without populating `_mem_cache`, the
-   slow path runs unnecessarily even though disk cache exists. Fixing
-   it would help only when multiple managers are constructed for the
-   same binary in the same process — rare outside benchmark loops, and
-   `_isolate_class_caches` clears the in-memory cache between tests.
-
-### Tests
-146/146 pass (no code changes).
+Tests: 382/382 RustExploration tests still pass. 3 pre-existing failures
+unchanged (verified on master: test_dcas_cmpxchg16b_no_match_keeps_memory,
+test_pipe_native_dispatch_creates_two_fds, test_dup2_native_dispatch_redirects_stdin).
 
 ### Memory saved
-`hv22-overlay-relocated-bottleneck` — full profile breakdown + rationale.
+`sgbn-unconstrained-sp-fastpath` — root cause + fix + before/after numbers.
 
 ### Status
-COMPLETE — bead angr-hv22 closed as no-action.
+COMPLETE — bead angr-sgbn closed.
