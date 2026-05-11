@@ -72,10 +72,10 @@
     "steps": 0
   },
   "fauxware": {
-    "callback_count": 5,
+    "callback_count": 1,
     "peak_memory_mb": 188.1,
     "python_time": 0.379,
-    "rust_time": 0.385,
+    "rust_time": 0.28,
     "state_creations": 0,
     "steps": 3
   },

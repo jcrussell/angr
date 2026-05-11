@@ -169,7 +169,7 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 
 **Tests:** 146/146 passing
 **Benchmarks:** 16 benchmarks, all correct (16/16)
-**Performance:** 14/16 faster than Python
+**Performance:** 15/16 faster than Python
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
@@ -185,9 +185,9 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 | csgames2018 | 1.6x | |
 | google2016_unbreakable_0 | 1.5x | |
 | defcamp_r100 | 1.5x | |
+| fauxware | 1.4x | Was 0.9x; flipped after NativeRead/NativeWrite enabled by default (angr-3tek.2) cut callbacks from 6 to 1 |
 | flareon2015_10 | 1.3x | Callable flow |
 | flareon2015_2 | 1.1x | 32-bit x86 |
-| fauxware | 0.9x | Per-callback FFI overhead |
 | securityfest_fairlight | 0.4x | Rust interpreter slower for symbolic-heavy blocks |
 
 ## Architecture
