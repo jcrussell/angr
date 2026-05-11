@@ -167,28 +167,34 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 
 ## Current Status
 
-**Tests:** 146/146 passing
-**Benchmarks:** 16 benchmarks, all correct (16/16)
-**Performance:** 15/16 faster than Python
+**Tests:** 385/385 passing (`grep -c 'def test_' tests/engines/test_rust_exploration.py`)
+**Benchmarks:** 22 benchmarks tracked in `tests/benchmarks/baseline_timings.json`
+**Performance:** 17/22 faster than Python (≥1.0x)
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
-| csaw_wyvern | 15.6x | Best case |
-| ekopartyctf2016_rev250 | 7.8x | |
-| flareon2015_5 | 5.9x | |
-| google2016_unbreakable_1 | 3.3x | High variance |
-| ais3_crackme | 2.9x | |
-| whitehatvn2015_re400 | 2.5x | |
+| csaw_wyvern | 16.9x | Best case |
+| ekopartyctf2016_rev250 | 15.7x | |
+| flareon2015_5 | 10.3x | |
+| defcamp_r100__dfs | 4.5x | DFS variant |
+| defcamp_r100 | 4.4x | |
+| ais3_crackme | 3.0x | |
+| whitehatvn2015_re400 | 2.6x | |
 | codegate_2017-angrybird | 2.4x | Was XFAIL, now passing |
-| sym-write | 2.2x | |
-| strcpy_find | 1.7x | Was 0.2x, fixed CFG interception |
+| strcpy_find | 2.3x | Was 0.2x, fixed CFG interception |
+| sym-write | 2.3x | |
+| defcon2016quals_baby-re | 2.0x | |
 | csgames2018 | 1.6x | |
 | google2016_unbreakable_0 | 1.5x | |
-| defcamp_r100 | 1.5x | |
+| flareon2015_10 | 1.4x | Callable flow |
 | fauxware | 1.4x | Was 0.9x; flipped after NativeRead/NativeWrite enabled by default (angr-3tek.2) cut callbacks from 6 to 1 |
-| flareon2015_10 | 1.3x | Callable flow |
+| unmapped_analysis | 1.2x | |
 | flareon2015_2 | 1.1x | 32-bit x86 |
-| securityfest_fairlight | 0.4x | Rust interpreter slower for symbolic-heavy blocks |
+| securityfest_fairlight | 1.0x | Rust interpreter parity for symbolic-heavy blocks |
+| hackcon2016_angry-reverser | 0.9x | |
+| mma_howtouse | 0.7x | See angr-ed7j |
+| google2016_unbreakable_1 | 0.5x | High variance; regressed from 3.3x |
+| ekopartyctf2016_sokohashv2 | 0.4x | Slow floor; see angr-ed7j |
 
 ## Architecture
 
@@ -206,7 +212,7 @@ tests and no benchmarks. Treat them as experimental until that changes.
 
 | Arch        | Unit tests | Integration tests | Benchmarks | Calling conv      | Status       |
 |-------------|------------|-------------------|------------|-------------------|--------------|
-| AMD64       | ~110+      | ~268 (fauxware)   | 15/16      | SystemV, MS x64   | Supported    |
+| AMD64       | ~110+      | ~268 (fauxware)   | 21/22      | SystemV, MS x64   | Supported    |
 | x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
 | ARM (32-bit)| 2          | 2 (validate, native-proc) | 0  | ARMEABI           | Experimental |
 | ARM64       | 1          | 3 (blob branch, real ELF, native-proc) | 0 | AArch64 | Experimental |
