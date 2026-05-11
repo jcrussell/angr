@@ -695,6 +695,16 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
             count: 4,
         }),
 
+        // Vector multiply (8-bit elements — NEON only, VMUL.I8)
+        "Iop_Mul8x8" => Some(IROp::VMul {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_Mul8x16" => Some(IROp::VMul {
+            elem: IRType::I8,
+            count: 16,
+        }),
+
         // Vector multiply (16-bit elements)
         "Iop_Mul16x4" => Some(IROp::VMul {
             elem: IRType::I16,
@@ -714,6 +724,24 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
             elem: IRType::I32,
             count: 4,
         }),
+
+        // NEON lane extract — Iop_GetElem{N}x{M}: (vec, idx) -> scalar lane
+        "Iop_GetElem8x8"  => Some(IROp::VGetElem { elem: IRType::I8,  count: 8 }),
+        "Iop_GetElem16x4" => Some(IROp::VGetElem { elem: IRType::I16, count: 4 }),
+        "Iop_GetElem32x2" => Some(IROp::VGetElem { elem: IRType::I32, count: 2 }),
+        "Iop_GetElem8x16" => Some(IROp::VGetElem { elem: IRType::I8,  count: 16 }),
+        "Iop_GetElem16x8" => Some(IROp::VGetElem { elem: IRType::I16, count: 8 }),
+        "Iop_GetElem32x4" => Some(IROp::VGetElem { elem: IRType::I32, count: 4 }),
+        "Iop_GetElem64x2" => Some(IROp::VGetElem { elem: IRType::I64, count: 2 }),
+
+        // NEON lane insert — Iop_SetElem{N}x{M}: (vec, idx, val) -> vec
+        "Iop_SetElem8x8"  => Some(IROp::VSetElem { elem: IRType::I8,  count: 8 }),
+        "Iop_SetElem16x4" => Some(IROp::VSetElem { elem: IRType::I16, count: 4 }),
+        "Iop_SetElem32x2" => Some(IROp::VSetElem { elem: IRType::I32, count: 2 }),
+        "Iop_SetElem8x16" => Some(IROp::VSetElem { elem: IRType::I8,  count: 16 }),
+        "Iop_SetElem16x8" => Some(IROp::VSetElem { elem: IRType::I16, count: 8 }),
+        "Iop_SetElem32x4" => Some(IROp::VSetElem { elem: IRType::I32, count: 4 }),
+        "Iop_SetElem64x2" => Some(IROp::VSetElem { elem: IRType::I64, count: 2 }),
 
         // Vector multiply keeping low half (PMULLD - SSE4.1)
         "Iop_MullS32x4" => Some(IROp::VMulLo {
@@ -961,23 +989,9 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         "Iop_Widen32Sto64x2" => "Iop_Widen32Sto64x2",
         "Iop_Widen32Uto64x2" => "Iop_Widen32Uto64x2",
 
-        // GetElem (extract lane to scalar)
-        "Iop_GetElem8x8" => "Iop_GetElem8x8",
-        "Iop_GetElem16x4" => "Iop_GetElem16x4",
-        "Iop_GetElem32x2" => "Iop_GetElem32x2",
-        "Iop_GetElem8x16" => "Iop_GetElem8x16",
-        "Iop_GetElem16x8" => "Iop_GetElem16x8",
-        "Iop_GetElem32x4" => "Iop_GetElem32x4",
-        "Iop_GetElem64x2" => "Iop_GetElem64x2",
-
-        // SetElem (insert scalar into lane)
-        "Iop_SetElem8x8" => "Iop_SetElem8x8",
-        "Iop_SetElem16x4" => "Iop_SetElem16x4",
-        "Iop_SetElem32x2" => "Iop_SetElem32x2",
-        "Iop_SetElem8x16" => "Iop_SetElem8x16",
-        "Iop_SetElem16x8" => "Iop_SetElem16x8",
-        "Iop_SetElem32x4" => "Iop_SetElem32x4",
-        "Iop_SetElem64x2" => "Iop_SetElem64x2",
+        // NOTE: Iop_GetElem* / Iop_SetElem* (lane extract/insert) implemented
+        // in angr-bkcs.2 — routed through parse_vector to IROp::VGetElem /
+        // IROp::VSetElem above.
 
         // Reciprocal estimate / Newton-Raphson step (FP)
         "Iop_RecipEst32Fx2" => "Iop_RecipEst32Fx2",
@@ -1578,8 +1592,6 @@ mod tests {
             "Iop_NarrowBin16to8x8",
             "Iop_QNarrowBin16Sto8Sx8",
             "Iop_Widen8Sto16x8",
-            "Iop_GetElem8x16",
-            "Iop_SetElem32x4",
             "Iop_RecipEst32Fx4",
             "Iop_QAdd8Sx8",
             "Iop_Avg8Ux8",
@@ -1603,5 +1615,15 @@ mod tests {
         assert!(matches!(parse_opcode("Iop_Add8x8"), IROp::VAdd { .. }));
         assert!(matches!(parse_opcode("Iop_ShlN32x4"), IROp::VShlN { .. }));
         assert!(matches!(parse_opcode("Iop_CmpEQ32Fx4"), IROp::FCmpVecPacked { .. }));
+        // angr-bkcs.2: Mul8x{8,16} + GetElem/SetElem are real ops, not
+        // NeonUnimplemented placeholders.
+        assert!(matches!(parse_opcode("Iop_Mul8x8"), IROp::VMul { .. }));
+        assert!(matches!(parse_opcode("Iop_Mul8x16"), IROp::VMul { .. }));
+        assert!(matches!(parse_opcode("Iop_GetElem8x8"), IROp::VGetElem { .. }));
+        assert!(matches!(parse_opcode("Iop_GetElem32x4"), IROp::VGetElem { .. }));
+        assert!(matches!(parse_opcode("Iop_GetElem64x2"), IROp::VGetElem { .. }));
+        assert!(matches!(parse_opcode("Iop_SetElem8x8"), IROp::VSetElem { .. }));
+        assert!(matches!(parse_opcode("Iop_SetElem32x4"), IROp::VSetElem { .. }));
+        assert!(matches!(parse_opcode("Iop_SetElem64x2"), IROp::VSetElem { .. }));
     }
 }

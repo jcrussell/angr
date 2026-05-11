@@ -3837,6 +3837,74 @@ class TestMultiArchSupport:
             f"Expected x0==42 to reach found, got {found.solver.eval(x0)}"
         )
 
+    def test_aarch64_neon_mla_blob(self, tmp_path):
+        """End-to-end AArch64 NEON exploration on a hand-assembled blob.
+
+        Validates angr-bkcs.2: NEON SIMD ops (Iop_Add8x16, Iop_Mul8x16) run
+        natively through the Rust engine without falling back to Python.
+        The program performs a byte-wise multiply-accumulate on the low byte
+        of a symbolic w0 and branches based on the result. The MLA NEON
+        instruction lifts to ``t = Mul8x16(...); t' = Add8x16(...)`` in VEX —
+        if either op had no real handler, dispatch would panic at
+        ``IROp::NeonUnimplemented`` and the test would fail loudly.
+
+        Solver must drive ``w0 & 0xFF`` to one of the residues r where
+        ``r + r * r ≡ 20 (mod 256)``; r=4 (4 + 16 = 20) is the canonical
+        solution.
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # AArch64 little-endian — verified individually via pyvex:
+        #   0x400000: FMOV S0, W0       1E270000  ; q0 = [0,0,0, w0_low32]
+        #   0x400004: FMOV S1, W0       1E270001  ; q1 = [0,0,0, w0_low32]
+        #   0x400008: MLA V0.16B,V0,V1  4E219400  ; v0 += v0 * v1 (per byte)
+        #                                         ; -> Iop_Mul8x16 + Iop_Add8x16
+        #   0x40000C: UMOV W0, V0.B[0]  0E013C00  ; w0 = byte 0 (zero-extended)
+        #   0x400010: MOVZ W1, #20      52800281
+        #   0x400014: CMP W0, W1        6B01001F
+        #   0x400018: B.EQ +8 -> 0x20   54000040
+        #   0x40001C: B +8 -> 0x24      14000002
+        #   0x400020: NOP (found)       D503201F
+        #   0x400024: NOP (avoid)       D503201F
+        code = struct.pack(
+            "<IIIIIIIIII",
+            0x1E270000, 0x1E270001, 0x4E219400, 0x0E013C00,
+            0x52800281, 0x6B01001F, 0x54000040, 0x14000002,
+            0xD503201F, 0xD503201F,
+        )
+        blob_path = tmp_path / "aarch64_neon_mla.bin"
+        blob_path.write_bytes(code)
+
+        proj = angr.Project(
+            str(blob_path),
+            main_opts={"backend": "blob", "arch": "aarch64", "base_addr": 0x400000},
+        )
+        assert proj.arch.name == "AARCH64"
+
+        state = proj.factory.blank_state(addr=0x400000)
+        x0 = claripy.BVS("x0", 64)
+        state.regs.x0 = x0
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x400020, avoid=0x400024, num_find=1, max_steps=50)
+
+        assert len(mgr.found) >= 1, (
+            f"AArch64 NEON exploration did not reach 0x400020; "
+            f"counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+
+        # Solver picks any residue r with r + r*r ≡ 20 (mod 256).
+        val = found.solver.eval(x0) & 0xFF
+        expected = (val + val * val) & 0xFF
+        assert expected == 20, (
+            f"low-byte residue {val} did not satisfy r + r*r == 20 (mod 256); "
+            f"got r + r*r = {expected}"
+        )
+
     def test_aarch64_explore_real_elf(self, tmp_path):
         """End-to-end AArch64 exploration on a hand-assembled ELF binary.
 

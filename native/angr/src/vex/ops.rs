@@ -459,6 +459,9 @@ impl VEXOps {
             IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
             IROp::VCmpGT { elem, count } => Self::vec_cmp(left, right, elem, count, "gt", ctx),
 
+            // NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> lane.
+            IROp::VGetElem { elem, count } => Self::vec_get_elem(left, right, elem, count, ctx),
+
             // Vector interleave
             IROp::VInterleaveLO { elem } => Self::vec_interleave_lo(left, right, elem, ctx),
             IROp::VInterleaveHI { elem } => Self::vec_interleave_hi(left, right, elem, ctx),
@@ -629,6 +632,13 @@ impl VEXOps {
         right: RustBV,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
+        // Iop_SetElem* is a VEX Triop but does NOT carry a rounding mode.
+        // The Triop dispatch in expressions.rs passes (rm, left, right) as
+        // the raw three operands (vec, idx, val); reinterpret accordingly.
+        if let IROp::VSetElem { elem, count } = op {
+            return Self::vec_set_elem(rm, left, right, elem, count, ctx);
+        }
+
         let (kind_rm, ty) = match op {
             IROp::FAdd(t) => (FloatOpKind::AddRm, t),
             IROp::FSub(t) => (FloatOpKind::SubRm, t),
@@ -950,6 +960,119 @@ impl VEXOps {
             elements.push(res_elem);
         }
 
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON lane extract (Iop_GetElem{N}x{M}).
+    ///
+    /// `vec` is the source vector (width = elem.bits() * count), `idx` is
+    /// Ity_I8 (the lane index — 0 = lowest lane). Result is one lane.
+    ///
+    /// For concrete `idx < count`, this is a simple bit-slice. Concrete
+    /// out-of-range indices saturate at the highest valid lane (matches
+    /// pyvex's behavior of treating `idx % count` as the effective lane).
+    /// Symbolic `idx` builds an ITE chain over all `count` lanes.
+    fn vec_get_elem(
+        vec: RustBV,
+        idx: RustBV,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(vec.width(), total_width);
+        debug_assert_eq!(idx.width(), 8);
+
+        // Concrete fast path
+        if let (Some(v), Some(i)) = (vec.as_u128(), idx.as_u128()) {
+            let lane = (i as u8) % count;
+            let lo = lane as u32 * elem_width;
+            let mask = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+            let result = (v >> lo) & mask;
+            return Ok(RustBV::concrete(result, elem_width));
+        }
+
+        // Concrete idx, symbolic vec: bit-slice
+        if let Some(i) = idx.as_u128() {
+            let lane = (i as u8) % count;
+            let lo = lane as u32 * elem_width;
+            let hi = lo + elem_width - 1;
+            return Ok(vec.extract(hi, lo, ctx));
+        }
+
+        // Symbolic idx: ITE chain over all lanes. count is small (<= 16).
+        let mut result = vec.extract(elem_width - 1, 0, ctx);
+        for lane in 1..count {
+            let lo = lane as u32 * elem_width;
+            let hi = lo + elem_width - 1;
+            let lane_val = vec.extract(hi, lo, ctx);
+            let lane_idx = RustBV::concrete(lane as u128, 8);
+            let cond = idx.eq(&lane_idx, ctx);
+            result = cond.ite(&lane_val, &result, ctx);
+        }
+        Ok(result)
+    }
+
+    /// NEON lane insert (Iop_SetElem{N}x{M}).
+    ///
+    /// `vec` is the source vector, `idx` (Ity_I8) selects the lane, `val`
+    /// (width = elem.bits()) is the replacement. Returns the modified
+    /// vector. Concrete out-of-range indices wrap (matches pyvex).
+    /// Symbolic `idx` builds an ITE chain.
+    fn vec_set_elem(
+        vec: RustBV,
+        idx: RustBV,
+        val: RustBV,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(vec.width(), total_width);
+        debug_assert_eq!(idx.width(), 8);
+        debug_assert_eq!(val.width(), elem_width);
+
+        // Concrete vec + val + idx: bit-twiddle.
+        if let (Some(v), Some(i), Some(x)) = (vec.as_u128(), idx.as_u128(), val.as_u128()) {
+            let lane = (i as u8) % count;
+            let lo = lane as u32 * elem_width;
+            let mask_elem = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+            let shifted_mask = mask_elem << lo;
+            let cleared = v & !shifted_mask;
+            let new_val = cleared | ((x & mask_elem) << lo);
+            return Ok(RustBV::concrete(new_val, total_width));
+        }
+
+        // Concrete idx, symbolic vec/val: rebuild from element slices.
+        if let Some(i) = idx.as_u128() {
+            let lane = (i as u8) % count;
+            let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+            for slot in 0..count {
+                if slot == lane {
+                    elements.push(val.clone());
+                } else {
+                    let lo = slot as u32 * elem_width;
+                    let hi = lo + elem_width - 1;
+                    elements.push(vec.extract(hi, lo, ctx));
+                }
+            }
+            return Ok(Self::concat_le_elements(elements, ctx));
+        }
+
+        // Symbolic idx: ITE chain — for each lane, select val if idx==lane
+        // else the original lane bits, then rebuild the vector.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for slot in 0..count {
+            let lo = slot as u32 * elem_width;
+            let hi = lo + elem_width - 1;
+            let orig_lane = vec.extract(hi, lo, ctx);
+            let slot_idx = RustBV::concrete(slot as u128, 8);
+            let cond = idx.eq(&slot_idx, ctx);
+            let chosen = cond.ite(&val, &orig_lane, ctx);
+            elements.push(chosen);
+        }
         Ok(Self::concat_le_elements(elements, ctx))
     }
 
@@ -4538,5 +4661,217 @@ mod tests {
         let model = ctx.eval(&l).expect("eval(l) None");
         let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
         assert!(lane0 < 5.0 && !lane0.is_nan(), "expected lane0 < 5.0 and not NaN, got {}", lane0);
+    }
+
+    // -------------------------------------------------------------------------
+    // NEON SIMD (angr-bkcs.2)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_vmul_8x8_concrete() {
+        let ctx = SymContext::new_mock();
+        // 8 lanes of 8-bit, lane i = i for both → product = i*i mod 256.
+        // l = 0x0706050403020100, r = same. result lane i = i*i.
+        let l = RustBV::concrete(0x0706_0504_0302_0100u128, 64);
+        let r = RustBV::concrete(0x0706_0504_0302_0100u128, 64);
+        let res = VEXOps::binop(IROp::VMul { elem: IRType::I8, count: 8 }, l, r, &ctx).unwrap();
+        assert_eq!(res.width(), 64);
+        let v = res.as_u128().unwrap();
+        // lane i (bits [8i+7:8i]) should equal i*i.
+        for i in 0u128..8 {
+            let lane = (v >> (i * 8)) & 0xFF;
+            assert_eq!(lane, (i * i) & 0xFF, "lane {} of Mul8x8", i);
+        }
+    }
+
+    #[test]
+    fn test_vmul_8x16_concrete() {
+        let ctx = SymContext::new_mock();
+        // All lanes = 3, multiplied by all lanes = 5 → all lanes = 15.
+        let lo64 = 0x0303_0303_0303_0303u128;
+        let l = RustBV::concrete(lo64 | (lo64 << 64), 128);
+        let lo5 = 0x0505_0505_0505_0505u128;
+        let r = RustBV::concrete(lo5 | (lo5 << 64), 128);
+        let res = VEXOps::binop(IROp::VMul { elem: IRType::I8, count: 16 }, l, r, &ctx).unwrap();
+        assert_eq!(res.width(), 128);
+        let v = res.as_u128().unwrap();
+        for i in 0..16 {
+            let lane = (v >> (i * 8)) & 0xFF;
+            assert_eq!(lane, 15, "lane {} of Mul8x16", i);
+        }
+    }
+
+    #[test]
+    fn test_vget_elem_8x8_concrete() {
+        let ctx = SymContext::new_mock();
+        let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
+        // Lane 0 = 0x11, lane 7 = 0x88.
+        for (lane, expected) in
+            [(0u128, 0x11), (1, 0x22), (2, 0x33), (3, 0x44), (4, 0x55), (5, 0x66), (6, 0x77), (7, 0x88)]
+        {
+            let idx = RustBV::concrete(lane, 8);
+            let res = VEXOps::binop(
+                IROp::VGetElem { elem: IRType::I8, count: 8 },
+                vec.clone(),
+                idx,
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(res.width(), 8);
+            assert_eq!(res.as_u128().unwrap(), expected, "lane {}", lane);
+        }
+    }
+
+    #[test]
+    fn test_vget_elem_16x8_concrete() {
+        let ctx = SymContext::new_mock();
+        // V128 with 8 lanes of 16 bits. Lane 3 = 0xDEAD.
+        let mut payload: u128 = 0;
+        payload |= (0xDEAD as u128) << (3 * 16);
+        payload |= (0xBEEF as u128) << (7 * 16);
+        let vec = RustBV::concrete(payload, 128);
+        let res = VEXOps::binop(
+            IROp::VGetElem { elem: IRType::I16, count: 8 },
+            vec.clone(),
+            RustBV::concrete(3, 8),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 16);
+        assert_eq!(res.as_u128().unwrap(), 0xDEAD);
+
+        let res = VEXOps::binop(
+            IROp::VGetElem { elem: IRType::I16, count: 8 },
+            vec,
+            RustBV::concrete(7, 8),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.as_u128().unwrap(), 0xBEEF);
+    }
+
+    #[test]
+    fn test_vget_elem_64x2_concrete() {
+        let ctx = SymContext::new_mock();
+        let lo = 0xAAAA_BBBB_CCCC_DDDDu128;
+        let hi = 0x1111_2222_3333_4444u128;
+        let vec = RustBV::concrete(lo | (hi << 64), 128);
+        let r0 = VEXOps::binop(
+            IROp::VGetElem { elem: IRType::I64, count: 2 },
+            vec.clone(),
+            RustBV::concrete(0, 8),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(r0.as_u128().unwrap(), lo);
+        let r1 = VEXOps::binop(
+            IROp::VGetElem { elem: IRType::I64, count: 2 },
+            vec,
+            RustBV::concrete(1, 8),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(r1.as_u128().unwrap(), hi);
+    }
+
+    #[test]
+    fn test_vset_elem_8x8_concrete() {
+        let ctx = SymContext::new_mock();
+        let vec = RustBV::concrete(0x0u128, 64);
+        // Set lane 3 to 0xFF.
+        let res = VEXOps::binop_with_rm(
+            IROp::VSetElem { elem: IRType::I8, count: 8 },
+            vec,
+            RustBV::concrete(3, 8),
+            RustBV::concrete(0xFF, 8),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 64);
+        assert_eq!(res.as_u128().unwrap(), 0xFF00_0000u128);
+    }
+
+    #[test]
+    fn test_vset_elem_16x8_concrete() {
+        let ctx = SymContext::new_mock();
+        let vec = RustBV::concrete(0u128, 128);
+        // Set lane 5 to 0xCAFE in a 16x8 vector.
+        let res = VEXOps::binop_with_rm(
+            IROp::VSetElem { elem: IRType::I16, count: 8 },
+            vec,
+            RustBV::concrete(5, 8),
+            RustBV::concrete(0xCAFE, 16),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 128);
+        assert_eq!(res.as_u128().unwrap(), (0xCAFE as u128) << (5 * 16));
+    }
+
+    #[test]
+    fn test_vset_elem_preserves_other_lanes() {
+        let ctx = SymContext::new_mock();
+        let vec = RustBV::concrete(0xDEAD_BEEF_CAFE_F00Du128, 64);
+        // Overwrite lane 2 (byte 2) with 0x77.
+        let res = VEXOps::binop_with_rm(
+            IROp::VSetElem { elem: IRType::I8, count: 8 },
+            vec,
+            RustBV::concrete(2, 8),
+            RustBV::concrete(0x77, 8),
+            &ctx,
+        )
+        .unwrap();
+        let v = res.as_u128().unwrap();
+        // Original byte 2 was 0xFE; expect 0x77 in its place, rest unchanged.
+        let expected: u128 = (0xDEAD_BEEF_CAFE_F00Du128 & !(0xFFu128 << 16)) | (0x77u128 << 16);
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn test_vset_elem_round_trip_via_get() {
+        let ctx = SymContext::new_mock();
+        let vec = RustBV::concrete(0u128, 128);
+        let inserted = VEXOps::binop_with_rm(
+            IROp::VSetElem { elem: IRType::I32, count: 4 },
+            vec,
+            RustBV::concrete(2, 8),
+            RustBV::concrete(0x1234_5678, 32),
+            &ctx,
+        )
+        .unwrap();
+        let lane = VEXOps::binop(
+            IROp::VGetElem { elem: IRType::I32, count: 4 },
+            inserted,
+            RustBV::concrete(2, 8),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(lane.as_u128().unwrap(), 0x1234_5678);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vget_elem_symbolic_idx() {
+        // Build a concrete vector with distinct lane values, then read
+        // through a symbolic idx and constrain it to return a specific lane.
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
+        let sym_idx = RustBV::symbolic(&ctx, "get_idx", 8);
+        let res = VEXOps::binop(
+            IROp::VGetElem { elem: IRType::I8, count: 8 },
+            vec,
+            sym_idx.clone(),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 8);
+        // Constrain result to 0x66 → solver must pick idx == 5.
+        let target = RustBV::concrete(0x66, 8);
+        ctx.add_constraint(res.to_z3_ast()._eq(&target.to_z3_ast()));
+        assert!(ctx.is_sat(), "expected SAT for lane==0x66");
+        let model_idx = ctx.eval(&sym_idx).expect("eval(idx) None");
+        // idx must be 5 mod 8 (modulo because ITE chain ignores high bits).
+        assert_eq!(model_idx & 0x7, 5, "expected idx&7 == 5, got {}", model_idx);
     }
 }

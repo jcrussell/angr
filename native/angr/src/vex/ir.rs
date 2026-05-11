@@ -697,6 +697,13 @@ pub enum IROp {
     VInterleaveHI { elem: IRType },
     /// Permute/shuffle
     VPerm { elem: IRType },
+    /// NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> scalar lane.
+    /// Binop; idx is Ity_I8. Result width = elem.bits().
+    VGetElem { elem: IRType, count: u8 },
+    /// NEON lane insert (Iop_SetElem{N}x{M}): (vec, idx, val) -> vec.
+    /// Triop in VEX, but not rm-bearing — dispatched through
+    /// binop_with_rm by reinterpreting (rm, left, right) as (vec, idx, val).
+    VSetElem { elem: IRType, count: u8 },
 
     // =========================================================================
     // Packed integer min/max/abs
@@ -905,6 +912,20 @@ impl IROp {
             IROp::VInterleaveLO { .. }
             | IROp::VInterleaveHI { .. }
             | IROp::VPerm { .. } => Some(IRType::V128),
+
+            // GetElem returns one lane.
+            IROp::VGetElem { elem, .. } => Some(*elem),
+
+            // SetElem returns the full vector — width = elem * count.
+            IROp::VSetElem { elem, count } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    256 => Some(IRType::V256),
+                    _ => None,
+                }
+            }
 
             // Packed integer min/max/abs and packed FP arith all return V128 (or V256
             // for AVX variants — we pick V128 to match the rest of the family for now)
