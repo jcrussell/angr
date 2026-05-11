@@ -211,21 +211,24 @@ tests and no benchmarks. Treat them as experimental until that changes.
 | ARM (32-bit)| 2          | 2 (validate, native-proc) | 0  | ARMEABI           | Experimental |
 | ARM64       | 1          | 3 (blob branch, real ELF, native-proc) | 0 | AArch64 | Experimental |
 | MIPS32      | 4          | 3 (BE blob, LE real ELF, native-proc) | 0 | MipsO32 | Experimental |
-| MIPS64      | 0          | 0                 | 0          | none (falls back to SystemV) | Skeleton |
+| MIPS64      | 0          | 2 (LE real ELF, native-proc) | 0 | MipsN64 | Experimental |
 
-**What "Skeleton" means:** `RustSimState("arm64")` etc. constructs successfully,
+**What "Skeleton" means:** `RustSimState(<arch>)` constructs successfully,
 register reads/writes round-trip, and `fork()` preserves isolation, but no
-test runs VEX through the interpreter on a real binary for these archs and
-no calling convention is actually exercised. The Cdecl x86 return-register
-bug (commit 5329d8222) was latent for months precisely because no end-to-end
-x86 test ran — assume the same risk for ARM64/MIPS until coverage lands.
+test runs VEX through the interpreter on a real binary for that arch and
+no calling convention is actually exercised. No arch is currently in this
+state — see angr-gxhf for the epic that promoted ARM64 / MIPS32 / MIPS64
+from Skeleton to Experimental. The Cdecl x86 return-register bug
+(commit 5329d8222) was latent for months precisely because no end-to-end
+x86 test ran — assume the same risk for any new arch added without
+coverage.
 
 **What's wired up but unverified:**
 - Register offsets for all six arches in `native/angr/src/arch/*.rs`
-- Endianness flag (MIPS32 BE+LE end-to-end via ELF + blob; ARM/ARM64/MIPS64 BE untested)
-- ARMEABI / AArch64 / MipsO32 calling conventions defined in
-  `calling_conventions.rs`. MIPS64 still falls back to `SystemVAMD64`,
-  which will silently misbehave on any SimProcedure that takes args.
+- Endianness flag (MIPS32 BE+LE end-to-end via ELF + blob; MIPS64 LE end-to-end;
+  ARM/ARM64/MIPS64 BE untested)
+- ARMEABI / AArch64 / MipsO32 / MipsN64 calling conventions defined in
+  `calling_conventions.rs`.
 
 To promote an arch from Skeleton → Experimental: add at least one
 integration test that loads a real binary, runs `mgr.run(...)`, and
