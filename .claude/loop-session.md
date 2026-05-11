@@ -1,44 +1,28 @@
-## Session log: 2026-05-11 — angr-glgd (claripy version-pin packaging fragility)
+## Session log: 2026-05-11 — angr-ed7j (slow-benchmark documentation)
 
 ### Task
-Resolve the unobtainable `9.2.210.dev0` pins on archinfo / claripy / cle / pyvex
-in pyproject.toml that broke fresh `pip install -e .` from a clean cache.
+Investigate mma_howtouse (0.65x) and ekopartyctf2016_sokohashv2 (slow floor) regressions vs Python. Acceptance: each bench either above 1.0x OR has a written rationale + table entry.
 
-### Root cause
-PyPI never published `.dev0` versions of any angr-ecosystem package; PyPI's
-release sequence jumps 9.2.209 → 9.2.211. Existing venvs only worked because
-pip's local cache held 9.2.209 from earlier installs. Fresh installs hit a
-ResolutionImpossible error.
+### Approach
+Investigation was already substantially complete via prior bd memories:
+- mma-howtouse-leak-source (memory leak fixed in 342df4a7f; remaining 6.5s vs 4.2s is AST cache lookup overhead)
+- mma-howtouse-cache-clear-speedup (clear_all_caches() reduces 6.62s → 5.07s but only helps benchmark-style isolated calls)
+- avoid-silent-zero-raw-fallback (sokohashv2 uses x87 fyl2x/fscale/f2xm1; Raw fallback was silently 0, fixed)
+- invariant-bimodal-variance-benchmarks (sokohashv2 bimodal ~9.5s/~15.4s due to Z3 nondeterminism)
 
-### Fix
-Pin all four to `==9.2.209` (also updated build-system requires for pyvex).
-Chosen over `>=9.2.209,<9.3` because claripy 9.2.209 declares
-`z3-solver==4.13.0.0` exactly, matching the installed venv z3 and the
-version z3-sys was built against. Bumping further would risk pulling a
-claripy that requires a different z3, breaking the Rust↔Python shared Z3
-context (per `avoid-pip-install-deps` memory).
+Chose option (b) — document root cause + table entry. A Rust fix is non-trivial (per-manager AST cache scoping or native x87 transcendentals) and the workloads are degenerate/niche.
 
-### Verification
-- pip3 download claripy/pyvex/archinfo/cle ==9.2.209 → all four resolved
-- Test suite: 385 passed, 3 pre-existing failures (dcas_cmpxchg16b_no_match,
-  pipe_native_dispatch_creates_two_fds, dup2_native_dispatch_redirects_stdin)
-- `python -c "import claripy"` → 9.2.209 (matches new pin)
-- `import z3` → 4.13.0 (matches claripy 9.2.209's z3-solver==4.13.0.0 dep)
+### Changes
+- Created `docs/RUST_KNOWN_SLOWER_BENCHMARKS.md` with detailed rationale for mma_howtouse and sokohashv2, plus a brief table covering the other three sub-1.0x benchmarks.
+- Updated CLAUDE.md table notes for both benchmarks to point to the new doc (removed "See angr-ed7j" sentinels).
 
 ### Files modified
-- pyproject.toml (5 occurrences of 9.2.210.dev0 → 9.2.209)
-- CLAUDE.md (Bootstrap caveat rewritten as "Note" explaining new pin)
+- docs/RUST_KNOWN_SLOWER_BENCHMARKS.md (new)
+- CLAUDE.md (table notes for mma_howtouse and ekopartyctf2016_sokohashv2)
 
 ### Commit / bead
-- 27a11d99f build: relax angr-ecosystem pins from 9.2.210.dev0 to 9.2.209
-- angr-glgd closed.
-
-### Memory saved
-- invariant-angr-ecosystem-deps-pin — these four deps MUST stay pinned to
-  ==9.2.209, not relaxed to >=, because claripy 9.2.209 requires
-  z3-solver==4.13.0.0 exactly. Newer claripy may bundle different z3 →
-  shared-context segfault risk.
+- Pending commit.
+- angr-ed7j to be closed after commit.
 
 ### Status
-COMPLETE — angr-glgd closed; fresh `pip install -e .` will now resolve from
-PyPI without cache. No regressions.
+Doc-only change, no Rust rebuild required. Will commit + close.
