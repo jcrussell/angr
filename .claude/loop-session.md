@@ -1,48 +1,42 @@
-## Session log: 2026-05-11 — angr-sgbn (fast-path _concretize_stack_registers)
+## Session log: 2026-05-11 — angr-trwl (fauxware FFI overhead investigation)
 
 ### Task
-Profile `_concretize_stack_registers` (claimed 12ms on cold blank_state path
-per add-state-init-breakdown-2026-05-11 memory) and decide between
-optimization or rationale.
+Investigate fauxware FFI-overhead bottleneck (cited as 0.9x baseline,
+only canonical demo binary slower than Python). Per task: profile and
+either fix or write a 'known-slower' rationale + update CLAUDE.md.
 
-### Profile (wall-clock, fauxware, 20 iterations)
+### Live measurement (5 runs, run_single.py fauxware --both)
+  rust:   0.27 / 0.27 / 0.27 / 0.28 / 0.28 s  (median 0.28)
+  python: 0.37 / 0.37 / 0.38 / 0.38 / 0.40 s  (median 0.38)
+  speedup: 1.36x — Rust is now FASTER than Python.
 
-Via mgr._concretize_stack_registers (real call):
-  Cold (blank_state):  median 10.04 ms (rbp branch = 9.79 ms)
-  Warm (entry_state):  median 0.08 ms
+### Root cause of the flip
+angr-3tek.2 (2026-05-10) registered NativeRead/NativeWrite by default
+(native/angr/src/procedures/mod.rs:240-241) plus the page-replay fix in
+_replay_rust_dirty_pages. fauxware callback count dropped 6 -> 1
+(eliminated 4 read() callbacks @ ~20ms each, plus strcmp benefit).
+Only open() still falls back to Python.
 
-Root cause: blank_state sets `regs.sp = stack_end` (concrete) but rbp is
-filled with a fresh unconstrained BVS by default_filler_mixin. solver.eval
-on the unconstrained BVS pays full Z3 ctx init + check + model (~10ms)
-just to return 0.
+### Profile breakdown of current 280ms rust runtime
+  Init total:       20.9 ms  ( 7%)
+  open SimProc x1:  59-61 ms (20%) — 43ms execute + 13ms sync + 3ms create
+  lift_block x14:    2-3  ms ( 1%)
+  Rust interp/Z3:  ~205 ms  (~72%, residual)
+No remaining FFI hot path. The bead's premise is obsolete.
 
-Z3's model for an unconstrained rbp is arbitrary — observed `0x0` across
-all iterations.
+### Changes (commit 92e22981f)
+- CLAUDE.md: fauxware row 0.9x -> 1.4x; performance line 14/16 -> 15/16.
+- baseline_timings.json: fauxware rust_time 0.385->0.28, callback_count 5->1.
 
-### Fix (commit 1a233418b)
+### Tests
+382/382 passing (same 3 pre-existing failures: dcas_cmpxchg16b_no_match,
+pipe_native_dispatch_creates_two_fds, dup2_native_dispatch_redirects_stdin).
+Regression script run: fauxware passed against new tighter baseline.
+defcamp_r100 had a 16% noise regression (0.27 vs 0.23) — pre-existing.
 
-Added `_eval_or_default(state, reg_val, default)` helper:
-- Scan `state.solver.constraints` for variable overlap with `reg_val.variables`
-- If no constraint references any var, return `default` directly (skip Z3)
-- Otherwise fall back to `solver.eval`
-
-For SP, default is `arch.initial_sp` (or 0). For BP, default is 0
-(matching Z3's empirical result).
-
-Also dropped a dead `sp_val = state.solver.eval(reg_val)` in the SP
-non-symbolic else branch — value was never used.
-
-### Results
-
-  Cold (blank_state):  10.04 ms → 0.29 ms  (34x faster, saves ~9.7 ms per call)
-  Warm (entry_state):   0.08 ms → 0.08 ms  (no regression)
-
-Tests: 382/382 RustExploration tests still pass. 3 pre-existing failures
-unchanged (verified on master: test_dcas_cmpxchg16b_no_match_keeps_memory,
-test_pipe_native_dispatch_creates_two_fds, test_dup2_native_dispatch_redirects_stdin).
-
-### Memory saved
-`sgbn-unconstrained-sp-fastpath` — root cause + fix + before/after numbers.
+### Memories saved
+- trwl-fauxware-flip-2026-05-11 — flip explanation + lesson re re-measuring stale beads
+- benchmark-fauxware-2026-05-11 — snapshot for future drift comparisons
 
 ### Status
-COMPLETE — bead angr-sgbn closed.
+COMPLETE — bead angr-trwl closed.
