@@ -1,63 +1,69 @@
-## Session log: 2026-05-13 — angr-qdwt (Pre-PR final docs sweep)
+## Session log: 2026-05-13 — angr-6apa (Centralize Z3 header discovery) — CLOSED
 
 ### Task
 
-**angr-qdwt** (P1) — Pre-PR final docs sweep: verify CLAUDE.md
-test/benchmark counts and arch matrix at HEAD; cross-link to
-contributor guides.
+**angr-6apa** (P2, CLOSED) — Z3 header auto-detect probes the venv,
+pkg-config, and standard system include paths from `setup.py`, sets
+`Z3_SYS_Z3_HEADER` before cargo runs, and emits an actionable
+install hint when nothing is found.
 
-### Audit results vs HEAD
+### Why setup.py and not build.rs
 
-- `grep -c 'def test_' tests/engines/test_rust_exploration.py` = **389**
-  (CLAUDE.md said 385). 4 new tests added since the prior refresh
-  (`c504e02e8`, angr-k25z): 3 unsat_core tests (angr-w2je) + 1
-  `test_aarch64_neon_mla_blob` (angr-bkcs.2).
-- `tests/benchmarks/baseline_timings.json` has **22 keys** — matches.
-- Speedup table values vs live `baseline_timings.json` (recomputed
-  `python_time / rust_time`): all 22 rows already match rounded to
-  one decimal place. `securityfest_fairlight` is 0.98x; CLAUDE.md
-  rounds to "1.0x" which is acceptable per the ≥1.0x classification.
-- Architecture matrix: ARM64 integration tests had grown from 3 to 4
-  because `test_aarch64_neon_mla_blob` landed in angr-bkcs.2. All
-  other rows (x86 unit=2 incl. native-proc/ret reg, ARM=2/2,
-  MIPS32=4/3, MIPS64=0/2) match a hand-count of `TestMultiArchSupport`
-  plus the `test_x86_native_procedure_returns_to_eax_not_edx` outlier
-  in `TestRustExplorationManagerUnit`.
-- `docs/extending-angr/index.rst` toctree: includes both
-  `simprocedures` and `rust_vex_ops`. ✓
-- `docs/advanced-topics/index.rst` toctree: includes `rust_engine`. ✓
-- `docs/advanced-topics/rust_engine.rst` slow-bench section: live
-  speedups (mma_howtouse 0.65x, sokohashv2 0.36x, unbreakable_1
-  0.46x, hackcon angry-reverser 0.87x, fairlight 0.98x) all match
-  current `baseline_timings.json`. ✓
+z3-sys's build.rs runs BEFORE our crate's build.rs (cargo runs dep
+build scripts first), so our build.rs cannot influence z3-sys's
+header discovery via cargo:rustc-env. The env var must be set by
+the PARENT process before cargo is invoked — setup.py (called by
+setuptools-rust before cargo) is the right injection point.
 
-### Changes
+### Probe order (matches setup.py + tools/rebuild-rust.sh --cargo-only)
 
-- `CLAUDE.md` line 214: tests `385/385` → `389/389`.
-- `CLAUDE.md` line 262: ARM64 integration tests `3 (blob branch,
-  real ELF, native-proc)` → `4 (blob branch, NEON mla, real ELF,
-  native-proc)`.
+1. venv `site-packages/z3/include/z3.h` — rare (PyPI wheel ships
+   no headers; only useful after manual copy).
+2. `pkg-config --variable=includedir z3` + `/z3.h`.
+3. `/usr/include`, `/usr/local/include`, `/opt/homebrew/include`,
+   `/opt/local/include`.
 
-### Limitations
+If no header matches, prints apt/dnf/brew install hints to stderr
+and lets z3-sys's own pkg-config probe report the build failure.
 
-- Acceptance criterion mentions `sphinx-build` warning-free verification.
-  Sphinx is not installed in the venv, and the venv pip is broken (per
-  `avoid-pip-install-broken-venv` memory), so I couldn't run a docs
-  build. Changes are content-only (table values in existing rows), so
-  no RST syntax was touched — warnings should be unchanged. If a
-  reviewer wants a fresh build, install sphinx outside the venv
-  (e.g. `pipx install sphinx`) then `cd docs && sphinx-build -W -b html
-  . _build/html`.
+### Verification
+
+- pkg-config returns `/usr/include`, helper resolves
+  `Z3_SYS_Z3_HEADER=/usr/include/z3.h` ✓
+- preset `Z3_SYS_Z3_HEADER=/sentinel` is honored ✓
+- `cargo check --release` passes ✓
+- `tools/rebuild-rust.sh --cargo-only` rebuild OK (venv pip remains
+  broken — `avoid-broken-venv-pip-rebuild`) ✓
+- `pytest tests/engines/test_rust_exploration.py` 389 pass, 3 fail
+  (`dcas_cmpxchg16b_no_match_keeps_memory`,
+  `pipe_native_dispatch_creates_two_fds`,
+  `dup2_native_dispatch_redirects_stdin`) — these failures
+  reproduce on master (stashed) — pre-existing, unrelated.
 
 ### Files touched
 
-- `CLAUDE.md`
-- `.claude/loop-session.md` (this file)
+- `setup.py` — new `_resolve_z3_header()` helper, called at module
+  load (before `setup()`).
+- `native/angr/build.rs` — comment now points at the setup.py helper.
+- `tools/rebuild-rust.sh` — --cargo-only fallback probes the same
+  ordered list as setup.py.
+- `CLAUDE.md` — Build section + Common Issues subsection refreshed.
 
-### Next ready P1/P2 candidates after angr-qdwt closes
+### Commit
 
-P2 (10 tasks ready overall):
-- `angr-nivm` — Split CLAUDE.md into quick-reference + DEVELOPMENT.md
-- `angr-6apa` — Centralize Z3 header discovery into setup.py / build.rs
-- `angr-w2yr` — Characterize bimodal Z3 variance via 20× runs
-- `angr-2xfz` / `angr-jzn8` — MIPS32 / ARM64 promotion benchmarks
+`d66c5d969` build(rust-symex): centralize Z3 header discovery in setup.py (angr-6apa)
+
+### Memories saved
+
+- `invariant-z3-sys-build-script-ordering`
+- `z3-header-discovery-probe-order`
+
+### Followups visible from session (not filed)
+
+- The 3 pre-existing test failures (dcas, pipe native, dup2 native)
+  reproduce on a stashed checkout — present before this session
+  began. No existing bd issue covers them. Did not file because
+  the failures appear after a `tools/rebuild-rust.sh --cargo-only`
+  rebuild, which may differ subtly from `pip install -e .` (the
+  normal path). Worth re-checking after the next `pip install`
+  builds; if still failing, file a P2 bug.
