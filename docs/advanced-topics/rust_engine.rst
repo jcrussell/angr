@@ -30,6 +30,197 @@ Overview
   number of known slower cases driven by Python-side cache pressure,
   x87 transcendental fallbacks, or bimodal Z3 solver nondeterminism.
 
+Usage
+-----
+
+Construct a ``RustExplorationManager`` directly, or pass
+``use_rust_engine=True`` to ``proj.factory.simulation_manager()``:
+
+.. code-block:: python
+
+   import angr
+   from angr.exploration import RustExplorationManager
+
+   proj = angr.Project("/path/to/binary", auto_load_libs=False)
+   state = proj.factory.entry_state()
+
+   mgr = RustExplorationManager(proj, [state])
+   mgr.set_find_addresses([0x401234])
+   mgr.set_avoid_addresses([0x401000])
+   mgr.run(max_steps=10000)
+
+   for found in mgr.found:
+       print(f"Found at {hex(found.addr)}")
+
+The ``proj.factory.simulation_manager(state, use_rust_engine=True)``
+form returns a wrapper that exposes the same interface as the standard
+``SimulationManager`` (``explore``, ``step``, ``found``, ``avoid``,
+etc.) while running the Rust engine underneath.
+
+Architecture
+------------
+
+The Rust engine spans a Rust core and a thin Python wrapper that
+cooperate through PyO3:
+
+* **Rust core** (``native/angr/src/``): VEX interpreter, symbolic
+  memory, Z3 solver, exploration loop, and native SimProcedures.
+* **Python wrapper** (``angr/exploration/rust_manager.py``): callback
+  dispatch for Python SimProcedures, technique support, and state
+  synchronization through ``RustStateProxy``.
+* **FFI boundary:** PyO3 bindings in ``native/angr/src/lib.rs``.
+* **Shared Z3 context:** Python and Rust load the same ``libz3.so`` and
+  share the Z3 context so claripy ASTs round-trip without
+  re-serialization.
+* **Feature flag:** ``use_rust_engine=True`` on
+  ``proj.factory.simulation_manager()``.
+
+Architecture support matrix
+---------------------------
+
+Only AMD64 is exercised end-to-end. Other architectures have register
+and state plumbing wired up, and (mostly) calling-convention
+definitions, but limited or no binary-driven coverage. Treat anything
+below "Supported" as experimental.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 12 22 12 22 17
+
+   * - Arch
+     - Unit tests
+     - Integration tests
+     - Benchmarks
+     - Calling conv
+     - Status
+   * - AMD64
+     - ~110+
+     - ~268 (fauxware)
+     - 21/22
+     - SystemV, MS x64
+     - Supported
+   * - x86 (32-bit)
+     - 2
+     - 1 (Cdecl ret reg)
+     - 1 (flareon2015_2)
+     - Cdecl
+     - Experimental
+   * - ARM (32-bit)
+     - 2
+     - 2 (validate, native-proc)
+     - 0
+     - ARMEABI
+     - Experimental
+   * - ARM64
+     - 1
+     - 4 (blob branch, NEON mla, real ELF, native-proc)
+     - 0
+     - AArch64
+     - Experimental
+   * - MIPS32
+     - 4
+     - 3 (BE blob, LE real ELF, native-proc)
+     - 0
+     - MipsO32
+     - Experimental
+   * - MIPS64
+     - 0
+     - 2 (LE real ELF, native-proc)
+     - 0
+     - MipsN64
+     - Experimental
+
+Status meanings:
+
+* **Skeleton** — ``RustSimState(<arch>)`` constructs and registers
+  round-trip, ``fork()`` preserves isolation, but no test runs VEX
+  through the interpreter on a real binary and no calling convention
+  is actually exercised. No arch is currently in this state.
+* **Experimental** — at least one integration test loads a real binary,
+  runs ``mgr.run(...)``, and verifies a found-state result.
+* **Supported** — has at least one benchmark in
+  ``tests/benchmarks/baseline_timings.json`` and stays green in the
+  regression suite.
+
+Wired-up but not fully verified:
+
+* Register offsets for all six arches in ``native/angr/src/arch/*.rs``.
+* Endianness flag (MIPS32 BE+LE end-to-end via ELF + blob; MIPS64 LE
+  end-to-end; ARM/ARM64/MIPS64 BE untested).
+* ARMEABI / AArch64 / MipsO32 / MipsN64 calling conventions defined in
+  ``calling_conventions.rs``.
+
+To promote an arch from Skeleton → Experimental: add at least one
+integration test that loads a real binary, runs ``mgr.run(...)``, and
+verifies a found state. To promote Experimental → Supported: add a
+benchmark and ensure it stays green in regression runs. The Cdecl x86
+return-register bug (commit ``5329d8222``) was latent for months
+precisely because no end-to-end x86 test ran — assume the same risk
+for any new arch added without coverage.
+
+Z3 solver API
+-------------
+
+``RustSolverContext`` exposes Z3-backed satisfiability and
+range-bound queries directly to Python, sharing the Rust engine's
+solver context:
+
+.. code-block:: python
+
+   from angr.rustylib.vex_engine import RustSolverContext
+   import claripy
+
+   ctx = RustSolverContext()
+   print(f"Z3 available: {ctx.z3_available()}")  # True
+
+   x = claripy.BVS("x", 32)
+   ctx.add_constraint_ast(x > 10)
+   ctx.add_constraint_ast(x < 20)
+   print(f"satisfiable: {ctx.satisfiable()}")
+   print(f"min: {ctx.min(x, signed=False)}")  # 11
+   print(f"max: {ctx.max(x, signed=False)}")  # 19
+
+This is intended for low-level solver experiments and tests; for
+exploration use ``RustExplorationManager`` instead.
+
+Z3 solver profiling counters
+----------------------------
+
+Process-wide atomic counters in
+``native/angr/src/symbolic/context.rs`` track every
+``solver.check()`` call and a number of related events. Read or reset
+them through the manager:
+
+.. code-block:: python
+
+   mgr = RustExplorationManager(proj, [state])
+   mgr.reset_solver_stats()
+   mgr.explore(find=...)
+   stats = mgr.get_solver_stats()
+
+The returned dict includes:
+
+* ``z3_check_count`` — total ``solver.check()`` calls.
+* ``z3_check_time_ns`` — total time spent in ``solver.check()``.
+* ``z3_sat_count`` / ``z3_unsat_count`` / ``z3_timeout_count`` — by
+  ``SatResult``.
+* ``z3_materialize_count`` / ``z3_materialize_time_ns`` — lazy-fork
+  solver materialization.
+* ``z3_assume_concrete`` / ``z3_assume_symbolic`` —
+  ``assume_true``/``assume_false`` fast-path counters.
+* ``z3_branch_check``, ``z3_branch_concrete``, ``z3_branch_model_hit``,
+  ``z3_branch_model_miss`` — branch-evaluation outcomes.
+* ``z3_ast_build`` — AST construction count.
+* ``z3_site_<name>_count`` / ``z3_site_<name>_time_ns`` — per-call-site
+  breakdown. Sites include ``satisfiable``, ``branch_true``,
+  ``branch_false``, ``eval``, ``eval_upto``, ``min_init``,
+  ``min_search``, ``max_init``, ``max_search``.
+
+Counters are global (shared across ``SymContext`` instances). Call
+``mgr.reset_solver_stats()`` to zero them at the start of a measured
+window. The same dict is also merged into ``mgr.stats`` for
+convenience.
+
 SimOption coverage matrix
 -------------------------
 

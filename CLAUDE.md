@@ -240,128 +240,20 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 | google2016_unbreakable_1 | 0.5x | High variance; regressed from 3.3x |
 | ekopartyctf2016_sokohashv2 | 0.4x | x87 transcendentals fall back to Python; bimodal Z3 variance. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
 
-## Architecture
+## User-facing documentation
 
-- **Rust engine** (`native/angr/src/`): VEX interpreter, Z3 solver, state management
-- **Python wrapper** (`angr/exploration/rust_manager.py`): Callback dispatch, state sync, technique support
-- **FFI boundary**: PyO3 bindings in `native/angr/src/lib.rs`
-- **Shared Z3 context**: Python and Rust share Z3 context for AST passthrough
-- **Feature flag**: `use_rust_engine=True` on `proj.factory.simulation_manager()`
+End-user documentation for the Rust engine lives in
+[`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst).
+Refer users there for:
 
-## Architecture Support Matrix
+- Usage example (`RustExplorationManager`, `use_rust_engine=True`)
+- Architecture overview (Rust core, Python wrapper, PyO3 FFI, shared Z3)
+- Architecture support matrix (which arches are Skeleton / Experimental / Supported)
+- `RustSolverContext` Z3 API example
+- Z3 solver profiling counters (`get_solver_stats`)
+- SimOption coverage matrix (honored / inherited / ignored)
+- `state.inspect` limitation (raises `NotImplementedError`)
+- Known slower benchmarks and their root causes
 
-Only AMD64 is exercised end-to-end. Other archs have register/state plumbing
-and (mostly) calling-convention definitions, but no binary-driven integration
-tests and no benchmarks. Treat them as experimental until that changes.
-
-| Arch        | Unit tests | Integration tests | Benchmarks | Calling conv      | Status       |
-|-------------|------------|-------------------|------------|-------------------|--------------|
-| AMD64       | ~110+      | ~268 (fauxware)   | 21/22      | SystemV, MS x64   | Supported    |
-| x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
-| ARM (32-bit)| 2          | 2 (validate, native-proc) | 0  | ARMEABI           | Experimental |
-| ARM64       | 1          | 4 (blob branch, NEON mla, real ELF, native-proc) | 0 | AArch64 | Experimental |
-| MIPS32      | 4          | 3 (BE blob, LE real ELF, native-proc) | 0 | MipsO32 | Experimental |
-| MIPS64      | 0          | 2 (LE real ELF, native-proc) | 0 | MipsN64 | Experimental |
-
-**What "Skeleton" means:** `RustSimState(<arch>)` constructs successfully,
-register reads/writes round-trip, and `fork()` preserves isolation, but no
-test runs VEX through the interpreter on a real binary for that arch and
-no calling convention is actually exercised. No arch is currently in this
-state — see angr-gxhf for the epic that promoted ARM64 / MIPS32 / MIPS64
-from Skeleton to Experimental. The Cdecl x86 return-register bug
-(commit 5329d8222) was latent for months precisely because no end-to-end
-x86 test ran — assume the same risk for any new arch added without
-coverage.
-
-**What's wired up but unverified:**
-- Register offsets for all six arches in `native/angr/src/arch/*.rs`
-- Endianness flag (MIPS32 BE+LE end-to-end via ELF + blob; MIPS64 LE end-to-end;
-  ARM/ARM64/MIPS64 BE untested)
-- ARMEABI / AArch64 / MipsO32 / MipsN64 calling conventions defined in
-  `calling_conventions.rs`.
-
-To promote an arch from Skeleton → Experimental: add at least one
-integration test that loads a real binary, runs `mgr.run(...)`, and
-verifies a found-state result. To promote Experimental → Supported:
-add a benchmark and ensure it stays green in regression runs.
-
-## SimOption Coverage
-
-The Rust engine honors only a handful of `angr.sim_options` flags
-(`LAZY_SOLVES`, `ZERO_FILL_UNCONSTRAINED_MEMORY`, `APPROXIMATE_MEMORY_INDICES`,
-`SYMBOLIC_WRITE_ADDRESSES`, `STRICT_PAGE_ACCESS`). Most other options are
-silent no-ops. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst)
-for the per-option matrix (honored / inherited / ignored — divergence-risk /
-ignored — no-op).
-
-## state.inspect Unsupported
-
-`state.inspect` breakpoints are not dispatched under the Rust engine.
-Registering one through a `RustStateProxy` raises `NotImplementedError`
-at call time rather than silently never firing. Use the Python engine
-(`proj.factory.simulation_manager(state)` without `use_rust_engine=True`)
-for breakpoint-driven analyses. See
-[`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst)
-for the affected API, the rationale, and the historical decision trail.
-
-## Rust Symbolic Execution
-
-```python
-import angr
-from angr.exploration import RustExplorationManager
-
-proj = angr.Project("/path/to/binary", auto_load_libs=False)
-state = proj.factory.entry_state()
-mgr = RustExplorationManager(proj, [state])
-mgr.set_find_addresses([0x401234])
-mgr.set_avoid_addresses([0x401000])
-mgr.run(max_steps=10000)
-
-found_states = mgr.found
-for state in found_states:
-    print(f"Found at {hex(state.addr)}")
-```
-
-## Z3 Solver Integration (z3-rs 0.19)
-
-```python
-from angr.rustylib.vex_engine import RustSolverContext
-import claripy
-
-ctx = RustSolverContext()
-print(f'Z3 available: {ctx.z3_available()}')  # True
-
-x = claripy.BVS('x', 32)
-ctx.add_constraint_ast(x > 10)
-ctx.add_constraint_ast(x < 20)
-print(f'satisfiable: {ctx.satisfiable()}')
-print(f'min: {ctx.min(x, signed=False)}')  # 11
-print(f'max: {ctx.max(x, signed=False)}')  # 19
-```
-
-### Z3 Solver Profiling Counters
-
-Process-wide atomics in `native/angr/src/symbolic/context.rs` track every
-`solver.check()` call. Read or reset them via the manager:
-
-```python
-mgr = RustExplorationManager(proj, [state])
-mgr.reset_solver_stats()
-mgr.explore(find=...)
-stats = mgr.get_solver_stats()
-# stats includes:
-#   z3_check_count        — total solver.check() calls
-#   z3_check_time_ns      — total time in solver.check()
-#   z3_sat_count / z3_unsat_count / z3_timeout_count — by SatResult
-#   z3_materialize_count, z3_materialize_time_ns — lazy-fork solver materialization
-#   z3_assume_concrete / z3_assume_symbolic — assume_true/false fast-path counters
-#   z3_branch_check / z3_branch_concrete / z3_branch_model_hit / z3_branch_model_miss
-#   z3_ast_build          — AST construction count
-#   z3_site_<name>_count, z3_site_<name>_time_ns — per-call-site breakdown
-#     (sites: satisfiable, branch_true, branch_false, eval, eval_upto,
-#      min_init, min_search, max_init, max_search)
-```
-
-Counters are global (shared across SymContexts). Call
-`mgr.reset_solver_stats()` to zero them at the start of a measured window.
-The same dict is also merged into `mgr.stats` for convenience.
+Keep that file authoritative; cite it from new commits rather than
+duplicating prose into CLAUDE.md.
