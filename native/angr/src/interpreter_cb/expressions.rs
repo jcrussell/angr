@@ -708,7 +708,9 @@ impl<'a> CallbackInterpreter<'a> {
         if src_bits >= target_bits {
             // No widening needed, possibly truncate
             if src_bits > target_bits {
-                value.extract(0, target_bits, self.ctx)
+                // extract(high, low) takes bits [high:low] inclusive, so the
+                // low `target_bits` bits are extract(target_bits - 1, 0).
+                value.extract(target_bits - 1, 0, self.ctx)
             } else {
                 value
             }
@@ -997,5 +999,20 @@ mod tests {
         let same = interp.apply_loadg_conversion(IRLoadGOp::WidenZ, val, 32);
         assert_eq!(same.width(), 32);
         assert_eq!(same.as_u64(), Some(0xdead_beef));
+    }
+
+    #[test]
+    fn apply_loadg_conversion_truncates_when_src_wider() {
+        // The truncation branch is currently never exercised in production
+        // (LoadG always widens), but guard against future refactors:
+        // extract(high, low) requires high >= low and yields high - low + 1
+        // bits, so the previous extract(0, target_bits) underflowed in
+        // release builds. Confirm we now keep the low target_bits.
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let val = RustBV::concrete(0xdead_beef, 32);
+        let truncated = interp.apply_loadg_conversion(IRLoadGOp::Identity, val, 16);
+        assert_eq!(truncated.width(), 16);
+        assert_eq!(truncated.as_u64(), Some(0xbeef));
     }
 }
