@@ -4895,7 +4895,11 @@ class TestErrorRecovery:
         state.regs.rsp = 0x7FFFFE00
         state.memory.store(0x7FFFFE00, b"\x00" * 8)
 
-        mgr = RustExplorationManager(proj, [state])
+        # save_unconstrained=True: the shellcode is `cmpxchg16b [rdi]; ret`,
+        # and the trailing ret runs against an empty call stack — angr-3uye.2
+        # routes that to the unconstrained stash. Without saving it, the
+        # post-step state would be dropped before we can inspect memory.
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.enable_profiling()
         mgr.run(max_steps=1)
 
@@ -4905,7 +4909,9 @@ class TestErrorRecovery:
         assert mgr.stats["rust_store_stmt_count"] == 0, (
             f"cmp-false DCAS should not store; got {mgr.stats['rust_store_stmt_count']}"
         )
-        survived = list(mgr.active) + list(mgr.found) + list(mgr.deadended)
+        survived = (
+            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
+        )
         assert survived, "DCAS block produced no survived state"
         s = survived[0]
 
@@ -7526,9 +7532,13 @@ class TestNativeFileDescriptorProcedures:
 
     @staticmethod
     def _all_fds(mgr):
-        """Collect FD info from any stash that holds states (the post-procedure
-        state may have deadended on a lift error at the bogus return target)."""
-        for stash in ("active", "deadended", "errored"):
+        """Collect FD info from any stash that holds states. After the native
+        procedure dispatches and sets PC to DEAD_ADDR, the next step may walk
+        into a ret-with-empty-call-stack and land the state in 'unconstrained'
+        (angr-3uye.2); the manager must be built with save_unconstrained=True
+        for the state to remain inspectable. 'deadended'/'errored' are also
+        possible if the post-DEAD_ADDR block lifts cleanly but ends terminally."""
+        for stash in ("active", "deadended", "errored", "unconstrained"):
             ids = mgr._rust_mgr.get_state_ids(stash)
             if ids:
                 sid = ids[0]
@@ -7564,7 +7574,7 @@ class TestNativeFileDescriptorProcedures:
             state.regs.rdi = self.BUF_ADDR
             state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64),
                                endness='Iend_LE')
-            mgr = RustExplorationManager(proj, [state])
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
 
             # Confirm native dispatch fired (not Python fallback).
@@ -7608,7 +7618,7 @@ class TestNativeFileDescriptorProcedures:
             state.regs.rsi = 7     # newfd = 7
             state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64),
                                endness='Iend_LE')
-            mgr = RustExplorationManager(proj, [state])
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
 
             stats = mgr._rust_mgr.native_procedure_stats()
