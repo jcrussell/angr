@@ -112,3 +112,42 @@ jobs:
           ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
         run: uv run python tests/benchmarks/run_regression.py --rust-only
         timeout-minutes: 5
+
+  property_fuzzer:
+    name: Differential Property Fuzzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/binaries
+          path: binaries
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/angr-examples
+          path: angr-examples
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Sync dependencies
+        run: uv sync -p 3.10
+      - name: Build Rust extension
+        run: uv run pip install -e . --no-build-isolation --no-deps
+      - name: Run property-based differential fuzzer
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        # 50 trials × ~5s/trial ≈ 4–5 min. --strict fails the run on any
+        # NEW divergence (i.e. not on the rust_only/bimodal allow-list).
+        # Seed is fixed for reproducibility; bump it intentionally to
+        # surface new (example, strategy) pairs.
+        run: |
+          uv run python tests/benchmarks/property_fuzzer.py \
+            --trials 50 --seed 1 --strict \
+            --report property_fuzzer_report.json
+        timeout-minutes: 20
+      - name: Upload fuzzer report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: property-fuzzer-report
+          path: property_fuzzer_report.json
+          if-no-files-found: warn

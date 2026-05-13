@@ -1,63 +1,82 @@
-## Session log: 2026-05-13 — angr-1583 (PR-time benchmark regression gate)
+## Session log: 2026-05-13 — angr-3hzg (Property-based differential fuzzer)
 
-### Task closed
+### Task
 
-**angr-1583** (P1, "PR-time fast-tier benchmark regression gate
-(<2m, 15% threshold)") — closed at this session.
+**angr-3hzg** (P1) — Property-based differential fuzzer: Rust ≡ Python
+on random binaries/seeds.
 
 ### Changes
 
-- `.github/workflows/ci.yml`: new `benchmark_regression` job on PR.
-  Checkouts `angr`, `angr/binaries`, `angr/angr-examples`; builds the
-  Rust .so; runs `tests/benchmarks/run_regression.py --rust-only
-  --skip-bimodal --threshold 0.15`. Job timeout 15m (Rust build
-  dominates cold); bench step timeout 3m to enforce the <2m bench-work
-  SLA.
-- `.github/workflows/nightly-ci.yml`: added the missing
-  `angr/angr-examples` checkout + `ANGR_EXAMPLES_DIR` env on the
-  existing nightly bench step. That step was silently broken — without
-  the corpus, `run_regression.py` exits with `Missing examples`.
-- `tests/benchmarks/run_regression.py`:
-  - `BIMODAL_BENCHMARKS = {unbreakable_1, fairlight, sokohashv2}`
-  - new `--skip-bimodal` flag, applied after suite normalization so
-    `--full --skip-bimodal` works too.
-- `tests/benchmarks/run_single.py`: `EXAMPLES_DIR` now honors
-  `ANGR_EXAMPLES_DIR` env var; falls back to `~/repos/angr-examples`.
-- `CLAUDE.md`: documented the two CI gates and the new env override.
+- `tests/benchmarks/property_fuzzer.py` (new, 320 lines). Samples
+  random (example, strategy, seed) tuples from the rust_ok=True
+  catalog, runs both engines in subprocesses (reusing
+  `run_single._run_in_child` with the 4 GB RLIMIT_AS), and compares
+  normalized stdout. Classifies each trial as `pass`,
+  `diverge`, `expected-diverge`, `py-fail`, `rust-fail`, or
+  `both-fail`. `expected-diverge` is for examples on the known
+  rust_only/bimodal allow-list (derived programmatically from
+  `run_regression.FAST_SUITE`/`MEDIUM_SUITE` rust_only=True entries
+  plus `BIMODAL_BENCHMARKS`) — divergence on those is benign, not a
+  regression. Strict mode (`--strict`) fails only on NEW divergences
+  or Rust crashes.
+
+  Module docstring includes the 3-step triage workflow (reproduce →
+  classify benign/path/crash → fix-and-reverify). Subprocess timeouts,
+  memory limits, seeded sampling, JSON report (`--report`), eligibility
+  listing (`--list`), and `--only` override all wired up.
+
+  Located in `tests/benchmarks/` rather than `tests/` (where the task
+  spec suggested) because `tests/types/` shadows the stdlib `types`
+  module when sys.path[0] is `tests/`. The benchmark dir is on the
+  same conventional level as `run_single.py` / `run_regression.py`.
+
+- `.github/workflows/nightly-ci.yml`: new `property_fuzzer` job. Runs
+  `--trials 50 --seed 1 --strict` (~5 min wall) and uploads the JSON
+  report as an artifact even on failure. 20 min job timeout.
 
 ### Validation
 
-- `cargo check --release` — clean.
-- `python tests/benchmarks/run_regression.py --help` shows
-  `--skip-bimodal` correctly.
-- `--skip-bimodal` filter verified: 22-bench full suite → 19 after skip,
-  and only the 3 bimodal names are removed.
-- `ANGR_EXAMPLES_DIR=/tmp/foo python -c ...` confirms env override.
-- `pytest tests/engines/test_rust_exploration.py`: 389 passed, 3
-  pre-existing failures (`test_dcas_cmpxchg16b_no_match_keeps_memory`,
+- `python tests/benchmarks/property_fuzzer.py --list` — lists 17
+  eligible examples.
+- `--trials 2 --only fauxware --seed 42`: 2 EXPECTED-DIVERGE trials
+  (fauxware is rust_only=True). Strict mode would not fail.
+- `--trials 5 --seed 1`: produced mix of PASS (defcamp_r100,
+  mma_howtouse) and EXPECTED-DIVERGE (csgames2018, unmapped_analysis).
+- `--trials 3 --seed 7 --report /tmp/fuzz.json` (captured run):
+  1 PASS (google2016_unbreakable_0), 1 EXPECTED-DIVERGE
+  (codegate_2017-angrybird), 1 PY-FAIL (flareon2015_5 timeout). JSON
+  report well-formed.
+- `pytest tests/engines/test_rust_exploration.py -q --tb=no`:
+  389 passed, 3 pre-existing failures (`test_dcas_cmpxchg16b_no_match_keeps_memory`,
   `test_pipe_native_dispatch_creates_two_fds`,
-  `test_dup2_native_dispatch_redirects_stdin`) — same as documented at
-  HEAD in the prior loop-session.md and on `bd memories
-  pre-existing-dcas-test-failure`.
+  `test_dup2_native_dispatch_redirects_stdin`) — same as documented
+  on `bd memories pre-existing-dcas-test-failure`. No regressions
+  from this change (it only adds a new file).
 
 ### Observations worth saving as memory
 
-- Nightly bench step was latently broken: it checks out `angr/binaries`
-  but not `angr/angr-examples`, and `run_regression.py` resolves the
-  corpus from `~/repos/angr-examples/examples`. Without the env-var
-  override path, the nightly job's bench step has been exiting with
-  `Missing examples`. Worth a memory under `latent-nightly-bench-broken`.
-- Local PR-gate dry run on this dev box flagged 0-5 sub-second
-  benchmarks per run with 13-29% relative deltas (defcamp_r100,
-  google2016_unbreakable_0, strcpy_find, flareon2015_2). The deltas
-  are consistent with system-load jitter on a sub-second baseline —
-  i.e. 60ms-150ms absolute variance is normal at this scale. CI runners
-  are usually more stable, so the 15% gate is expected to be reliable
-  in CI; but the team should be ready to either rebaseline or
-  introduce an `--abs-threshold` floor if flakes show up in the wild.
-  Worth a `pr-bench-gate-jitter-risk` memory.
+- The fuzzer revealed that `defcamp_r100` in BFS mode actually
+  produces matching output between engines — yet it's flagged
+  `rust_only=True` in `run_regression.py`. Either it was marked
+  conservatively, or the divergence was DFS-only / Z3-seed-dependent.
+  Worth a follow-up to audit the rust_only=True list and promote
+  cases that consistently pass. Memory under
+  `fuzzer-rust_only-audit-candidate`.
+- Only 2 of 17 eligible examples (`flareon2015_10`, `mma_howtouse`)
+  are NOT on the known-divergence list, so under default sampling
+  ~88% of trials will be `expected-diverge`. The fuzzer is still
+  useful as a regression guard (any NEW divergence fails strict
+  mode), but the "signal" trials are sparse. Long-term, the
+  rust_only=True list needs an audit to identify which examples
+  can be promoted to first-class output comparison. Memory under
+  `fuzzer-eligible-pass-set-small`.
 
-### Next ready P1 candidates (for the next session)
+### Files touched
 
-- `angr-3hzg` — Property-based differential fuzzer
+- `tests/benchmarks/property_fuzzer.py` (new)
+- `.github/workflows/nightly-ci.yml` (new `property_fuzzer` job)
+- `.claude/loop-session.md` (this file)
+
+### Next ready P1 candidates
+
 - `angr-qdwt` — Pre-PR final docs sweep (intentionally LAST)
