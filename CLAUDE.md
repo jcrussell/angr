@@ -177,7 +177,7 @@ Caveats:
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
 - **Claripy bridge**: `native/angr/src/claripy_bridge.rs`
 - **VEX interpreter**: `native/angr/src/interpreter.rs`, `native/angr/src/interpreter_cb/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, constraints.rs, helpers.rs, prefetch.rs), `native/angr/src/vex/`
-- **Native SimProcedures**: `native/angr/src/procedures/` (strlen, memcpy, strcmp, malloc, free, etc.)
+- **Native SimProcedures**: `native/angr/src/procedures/` (strlen, memcpy, strcmp, malloc, free, etc.) — contributor guide in [`docs/extending-angr/simprocedures.rst`](docs/extending-angr/simprocedures.rst) ("Native (Rust) SimProcedures" section)
 - **State proxy**: `angr/exploration/rust_state_proxy.py`
 - **State export**: `angr/exploration/rust_state_export.py`
 - **State sync**: `angr/exploration/rust_state_sync.py`

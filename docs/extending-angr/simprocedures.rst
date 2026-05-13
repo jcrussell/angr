@@ -306,3 +306,361 @@ sequence of values:
 
 Now, whenever the program tries to call ``rand()``, it'll return the integers
 from the ``return_values`` array in a loop.
+
+Native (Rust) SimProcedures
+---------------------------
+
+The Python SimProcedure machinery above is the right tool for almost every
+hook you'll write. But for a small set of very-hot libc functions (``strlen``,
+``memcpy``, ``strcmp``, ``malloc``, …) the cost of crossing the FFI boundary
+on every call dominates the work the procedure actually does. The Rust
+engine (``use_rust_engine=True`` on
+``proj.factory.simulation_manager(...)``) ships with **native** versions of
+those procedures written in Rust against the engine's internal
+``RustSimState``. They never enter Python, never marshal arguments through
+claripy, and never pay the callback round-trip — when they're applicable,
+they're roughly two orders of magnitude faster than the equivalent Python
+SimProcedure.
+
+This section is the contributor guide for adding one. If you're hooking
+application code (not a hot libc symbol), write a normal Python
+``SimProcedure`` instead: the perf wins below are only meaningful at very
+high call frequencies, and Python is significantly easier to read, test,
+and debug.
+
+When to add a native procedure
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add one only if all of these are true:
+
+* The function is called *frequently* under the Rust engine — typically a
+  libc primitive that shows up in callback-frequency profiles
+  (see the ``z3_check_count`` / fallback counters in ``CLAUDE.md`` →
+  *Z3 Solver Profiling Counters*).
+* It has a well-defined contract that you can implement byte-for-byte
+  against ``RustSimState`` (or you have an explicit, documented
+  approximation, like ``strlen``'s ``MAX_STRLEN`` cap).
+* It has a sensible fallback to Python when its arguments don't satisfy
+  the native fast path (typically: addresses or sizes are symbolic).
+
+The trait
+^^^^^^^^^
+
+Every native procedure lives in ``native/angr/src/procedures/`` and
+implements the ``NativeSimProcedure`` trait defined in
+``native/angr/src/procedures/mod.rs``:
+
+.. code-block:: rust
+
+   pub trait NativeSimProcedure: Send + Sync {
+       fn name(&self) -> &'static str;
+       fn num_args(&self) -> usize;
+       fn no_return(&self) -> bool { false }
+
+       fn call(
+           &self,
+           state: &mut RustSimState,
+           args: &[RustBV],
+       ) -> Result<Option<RustBV>, ProcedureError>;
+   }
+
+The return convention is the contract between your procedure and the
+dispatcher:
+
+* ``Ok(Some(value))`` — the procedure ran to completion; ``value`` is
+  written to the calling convention's return register and the dispatcher
+  advances PC past the call.
+* ``Ok(None)`` — the procedure ran to completion with no return value
+  (a ``void`` function, or a terminal procedure with
+  ``no_return() == true`` like ``exit``).
+* ``Err(ProcedureError)`` — the native fast path can't handle this call;
+  fall back to the Python SimProcedure registered at this address.
+  ``ProcedureError::SymbolicArgument(name)`` is by far the most common
+  variant.
+
+The full ``ProcedureError`` enum lives in ``procedures/mod.rs``:
+``SymbolicArgument``, ``MemoryError``, ``NotImplemented``,
+``MaxIterations``, and ``Other``. Any of them triggers Python fallback.
+
+Argument extraction with ``declare_proc!``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Most procedures need concrete ``u64`` arguments (addresses, sizes,
+indices). Writing the boilerplate by hand drifts out of sync — the
+``num_args()`` count and the argument-extraction code can disagree
+silently. The ``declare_proc!`` macro (in
+``native/angr/src/procedures/macros.rs``) drives both from a single
+declaration:
+
+.. code-block:: rust
+
+   crate::declare_proc! {
+       name = "strlen",
+       struct = NativeStrlen,
+       args = [addr: concrete],
+       call |state| {
+           scan_for_null(state, addr, MAX_STRLEN as u64)
+       }
+   }
+
+The supported argument kinds are:
+
+* ``concrete`` — invokes ``extract_concrete_arg`` on the argument and
+  binds a ``u64``. A symbolic argument short-circuits to
+  ``ProcedureError::SymbolicArgument(<arg name>)``.
+* ``bv`` — clones the raw ``RustBV`` and binds it. Use this when the
+  body itself wants to inspect concreteness (e.g. building an ITE
+  chain over a symbolic byte stream).
+
+The optional ``no_return = true,`` flag overrides the default
+``no_return()``; use it for terminal procedures like ``exit`` and
+``abort`` so the dispatcher routes the state to the deadended stash
+instead of advancing PC past the call.
+
+Dispatch and registration
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The engine looks up native procedures by **name** through
+``NativeProcedureRegistry``. Registration is hand-written in
+``NativeProcedureRegistry::new`` (``procedures/mod.rs``):
+
+.. code-block:: rust
+
+   registry.register(Arc::new(strlen::NativeStrlen));
+   registry.register(Arc::new(memcpy::NativeMemcpy));
+   registry.register(Arc::new(malloc::NativeMalloc));
+
+Every angr SimProcedure that has a matching name in the registry is
+intercepted before its Python ``run()`` would be invoked. The dispatcher
+extracts the calling convention's argument bitvectors, hands them to
+``call()``, and acts on the returned ``Result``. The registry also
+supports per-procedure ``disable()`` and ``set_python_override()`` —
+both force the dispatcher to fall back to Python — and a global
+``disable_all()`` switch (used in differential testing).
+
+For a contributor: adding a new procedure means (1) writing a module
+under ``native/angr/src/procedures/``, (2) declaring it ``pub mod`` from
+``mod.rs``, and (3) adding a single ``registry.register(...)`` line in
+``NativeProcedureRegistry::new``. The acceptance bar is then a handful
+of ``#[cfg(test)] mod tests`` cases exercising the happy path, the
+symbolic-arg fallback, and any edge cases (zero-size, max-size, etc.).
+
+Worked example 1: concrete-only — ``strlen``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The simplest interesting shape: the address argument *must* be concrete
+(addresses with symbolic offsets are out of scope for the fast path);
+the bytes the procedure reads may themselves be symbolic, in which case
+the procedure still produces a useful symbolic ``size_t`` rather than
+bailing out. Source:
+``native/angr/src/procedures/strlen.rs``.
+
+.. code-block:: rust
+
+   crate::declare_proc! {
+       /// Native strlen: `size_t strlen(const char *s)`.
+       name = "strlen",
+       struct = NativeStrlen,
+       args = [addr: concrete],
+       call |state| {
+           scan_for_null(state, addr, MAX_STRLEN as u64)
+       }
+   }
+
+``scan_for_null`` walks the buffer byte-by-byte from ``addr``. While
+every byte is concrete it short-circuits at the first ``\0``. As soon
+as it encounters a symbolic byte it switches to collecting
+``(position, byte)`` pairs and, at the end, folds them into a
+right-to-left ``ITE`` chain so that the returned ``RustBV`` is a
+symbolic ``size_t`` that earlier-positioned nulls win on. The procedure
+saturates at ``MAX_STRLEN = 4096`` and falls back to Python via
+``ProcedureError::MaxIterations`` if it sees that many bytes with no
+concrete null.
+
+Things to take away from this example:
+
+* The ``addr: concrete`` declaration handles the address-must-be-known
+  invariant — no manual ``args[0].as_u64()`` plumbing.
+* Symbolic *byte values* are fine; they live in ``RustBV`` and the
+  procedure works with them directly using
+  ``state.solver().borrow()`` and the ``RustBV::ite`` /
+  ``RustBV::eq`` combinators.
+* The fallback path is ``MaxIterations(MAX_STRLEN)`` — large or
+  truly unbounded inputs go back to Python rather than producing a
+  4096-deep ITE chain inside Z3.
+
+Worked example 2: concrete + symbolic-arg fallback — ``memcpy``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``memcpy`` is the canonical example of "three concrete arguments,
+bail out on any symbolic one." Source:
+``native/angr/src/procedures/memcpy.rs``.
+
+.. code-block:: rust
+
+   impl NativeSimProcedure for NativeMemcpy {
+       fn name(&self) -> &'static str { "memcpy" }
+       fn num_args(&self) -> usize { 3 }
+
+       fn call(
+           &self,
+           state: &mut RustSimState,
+           args: &[RustBV],
+       ) -> Result<Option<RustBV>, ProcedureError> {
+           let dst  = extract_concrete_arg(&args[0], "dst")?;
+           let src  = extract_concrete_arg(&args[1], "src")?;
+           let size = extract_concrete_arg(&args[2], "size")? as usize;
+
+           if size > MAX_COPY_SIZE {
+               return Err(ProcedureError::MaxIterations(MAX_COPY_SIZE));
+           }
+           if size == 0 {
+               return Ok(Some(args[0].clone()));
+           }
+           copy_forward(state, src, dst, size)?;
+           Ok(Some(args[0].clone()))
+       }
+   }
+
+This is the long-hand form of what ``declare_proc!`` generates for
+``args = [dst: concrete, src: concrete, size: concrete]`` — both
+styles are accepted; pick whichever reads better for the procedure.
+The propagation of ``ProcedureError::SymbolicArgument`` via the ``?``
+operator is the engine's fallback signal: any symbolic argument turns
+into ``Err(SymbolicArgument(name))`` and the dispatcher hands the call
+off to Python.
+
+Things to take away from this example:
+
+* ``extract_concrete_arg(&args[i], "name")?`` is the verbose form of
+  the ``concrete`` declaration. The ``name`` string lands in the
+  ``ProcedureError`` message and is purely diagnostic.
+* The return value is ``Ok(Some(args[0].clone()))`` — POSIX
+  ``memcpy`` returns ``dst``, which is exactly the first argument
+  bitvector. Cloning a ``RustBV`` is cheap (it's an ``Arc`` under
+  the hood).
+* Bulk memory motion goes through ``state.memory_load`` /
+  ``state.memory_store``, which preserves symbolic byte values
+  end-to-end (the memcpy of a symbolic buffer is itself symbolic).
+* ``MAX_COPY_SIZE`` is a guard against pathological inputs: a 100MB
+  concrete-size memcpy would lock the engine inside Rust for minutes.
+  Falling back to Python at the size cap is correct, not a bug.
+
+Worked example 3: allocator state — ``malloc``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``malloc`` is interesting because it doesn't just transform memory —
+it mutates engine state (the heap bump pointer) that *must* survive
+into the next instruction and into forked successor states. Source:
+``native/angr/src/procedures/malloc.rs``.
+
+.. code-block:: rust
+
+   impl NativeSimProcedure for NativeMalloc {
+       fn name(&self) -> &'static str { "malloc" }
+       fn num_args(&self) -> usize { 1 }
+
+       fn call(
+           &self,
+           state: &mut RustSimState,
+           args: &[RustBV],
+       ) -> Result<Option<RustBV>, ProcedureError> {
+           let size = extract_concrete_arg(&args[0], "size")?;
+           let addr = state.heap_alloc(size);
+           let bits = state.arch().bits();
+           Ok(Some(RustBV::concrete(addr as u128, bits)))
+       }
+   }
+
+``state.heap_alloc`` is the bump allocator that mirrors angr's
+``SimHeapBrk``: it advances a per-state pointer and returns the new
+allocation's base. Because the allocator lives on ``RustSimState``,
+it's already correctly cloned when the state forks — the contributor
+gets state-aware allocation for free.
+
+Things to take away from this example:
+
+* Return-value width must match the arch's pointer width
+  (``state.arch().bits()``). Returning a ``RustBV::concrete(addr, 64)``
+  on a 32-bit guest would silently truncate.
+* Side-effects on ``RustSimState`` (heap, fd table, posix env) are
+  the *only* state the engine considers durable — write through
+  ``state`` methods, not through globals or thread-locals.
+* ``free`` (in the same file) just calls ``state.heap_free`` and
+  returns ``Ok(None)``. The bump allocator can't actually reclaim
+  memory; ``heap_free`` exists for bookkeeping.
+
+Terminal procedures: ``no_return``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``exit`` and ``abort`` are tiny but instructive — see
+``native/angr/src/procedures/exit.rs``. They override
+``fn no_return(&self) -> bool { true }`` and return ``Ok(None)``. The
+dispatcher in ``stepping.rs`` / ``exploration/mod.rs`` recognizes
+``no_return`` and stashes the state in ``STASH_DEADENDED`` instead of
+advancing PC past the call. Forgetting the flag will cause the engine
+to re-execute the call site — in fauxware that turns into an
+infinite re-entry loop because ``exit``'s call site overlaps ``main``'s
+prologue.
+
+Testing a native procedure
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The convention used across ``procedures/*.rs`` is a single
+``#[cfg(test)] mod tests`` at the bottom of the module. ``strlen.rs``
+is the most complete reference and covers every shape worth testing:
+
+* **Happy path** — basic, empty, longer string.
+  (``test_strlen_basic`` / ``test_strlen_empty`` /
+  ``test_strlen_longer_string``.)
+* **Bounded variants** — limits below, at, and above the input size.
+  (``test_strnlen_*``.)
+* **Symbolic-arg fallback** — expects
+  ``Err(ProcedureError::SymbolicArgument(_))``. Every procedure with
+  a ``concrete`` argument should have at least one of these.
+* **Symbolic-content path** — places a symbolic byte in memory and
+  asserts that the returned ``RustBV`` is symbolic, then constrains
+  it and checks ``ctx.min(&result, false) == ctx.max(&result, false)
+  == <expected length>``. This is what gives the symbolic ITE chain
+  a behavioral test rather than just a structural one.
+
+``RustSimState::new("amd64").unwrap()`` plus
+``state.map_memory_data(addr, bytes, Permission::RWX)`` is the entire
+test fixture — the procedures are pure functions over state, so the
+tests don't need an entire ``Project`` or VEX block setup.
+
+User-attached Python procedures
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The procedure registry has an escape hatch for users who want to
+attach a custom Python callable to a hot symbol *without* compiling
+Rust. ``RustExplorationManager.register_python_procedure(name,
+num_args, no_return, callable)`` (defined in
+``native/angr/src/exploration/mod.rs``) wraps a Python callable so it
+fronts the procedure registry just like a Rust-side ``NativeStrlen``
+would:
+
+.. code-block:: python
+
+   def widget_init(args):
+       # args is a list[int] of CONCRETE u64 values.
+       # Return Optional[int]: None = no return, int = arch-bits BV.
+       return 0
+
+   mgr.register_python_procedure(
+       "custom_widget_init",
+       num_args=0,
+       no_return=False,
+       callable=widget_init,
+   )
+
+Symbolic arguments still fall back to the regular Python
+``SimProcedure`` path; the callable only runs when every argument is
+concrete. This is the right shape when you want a one-off hook that
+short-circuits a concrete-only function — it skips both the Python
+``SimProcedure`` machinery *and* the VEX call frame the engine would
+otherwise reconstruct, but stays in Python so you can iterate quickly.
+
+If the callable shows up in benchmark profiles as a hot spot, that's
+your signal to port it to a real ``NativeSimProcedure`` following the
+recipe above.
