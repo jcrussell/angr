@@ -564,21 +564,28 @@ impl SymContext {
 
     /// Add a constraint with tracking for unsat_core extraction.
     /// Use this only when unsat_core analysis is needed.
+    ///
+    /// Returns the tracker index assigned to this constraint, which is also
+    /// the index that will appear in [`Self::unsat_core`] output if the
+    /// constraint participates in the unsat core.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn add_constraint_tracked(&self, constraint: z3::ast::Bool) {
+    pub fn add_constraint_tracked_indexed(&self, constraint: z3::ast::Bool) -> usize {
         let idx = self.constraint_count.load(Ordering::SeqCst);
         let track_name = format!("__track_{}", idx);
         let track_bool = z3::ast::Bool::new_const(track_name.as_str());
 
-        {
+        let tracker_idx = {
             let mut trackers = self.constraint_trackers.lock();
+            let i = trackers.len();
             trackers.push(track_bool.clone());
-        }
+            i
+        };
 
         self.solver().assert_and_track(&constraint, &track_bool);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
         self.invalidate_model_if_inconsistent(&constraint);
+        tracker_idx
     }
 
     /// If a cached model exists, drop it unless it still satisfies the new

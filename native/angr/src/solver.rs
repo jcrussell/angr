@@ -169,6 +169,64 @@ impl RustSolverContext {
         Ok(())
     }
 
+    /// Add a constraint with unsat-core tracking enabled.
+    ///
+    /// Mirrors `add_constraint_ast` but routes through
+    /// `SymContext::add_constraint_tracked`, which uses
+    /// `solver.assert_and_track` so the constraint participates in
+    /// `solver.get_unsat_core()`. The index of the constraint within the
+    /// per-context tracker vector is returned and is what
+    /// [`Self::unsat_core`] will report.
+    ///
+    /// Untracked constraints (added via `add_constraint_ast`) coexist with
+    /// tracked ones in the solver but never appear in `unsat_core()` output.
+    /// Tracking adds overhead (fresh Bool symbol, name formatting, mutex
+    /// acquisition) so callers should opt in only when they need core
+    /// extraction.
+    pub fn add_constraint_tracked_ast(
+        &self,
+        py: Python<'_>,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<usize> {
+        let ctx = self.inner.ctx();
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            if let Ok(z3_ast_ptr) = extract_z3_ast_ptr(py, ast) {
+                let z3_ctx = z3::Context::thread_local();
+                let constraint: z3::ast::Bool = unsafe {
+                    let raw = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
+                    z3::ast::Ast::wrap(&z3_ctx, raw)
+                };
+                let idx = ctx.add_constraint_tracked_indexed(constraint);
+                if let Ok(bv) = claripy_to_rustbv(py, ast, &*ctx) {
+                    ctx.assumed_constraints_push(bv, true);
+                }
+                return Ok(idx);
+            }
+
+            // Slow path: build the Z3 Bool from a RustBV. Mirrors
+            // assume_true's symbolic path (BV width 1 → bool via to_z3_bool;
+            // wider BV → ne(0) bool).
+            let bv = claripy_to_rustbv(py, ast, &*ctx)?;
+            let constraint = if bv.width() == 1 {
+                bv.to_z3_bool()
+            } else {
+                let zero = RustBV::concrete(0, bv.width());
+                bv.ne(&zero, &*ctx).to_z3_bool()
+            };
+            let idx = ctx.add_constraint_tracked_indexed(constraint);
+            ctx.assumed_constraints_push(bv, true);
+            Ok(idx)
+        }
+        #[cfg(not(feature = "vex-engine-z3"))]
+        {
+            let _ = (py, ast);
+            Err(PyRuntimeError::new_err(
+                "unsat_core tracking requires Z3 support (vex-engine-z3 feature)",
+            ))
+        }
+    }
+
     /// Check if the current constraints are satisfiable.
     pub fn satisfiable(&self) -> bool {
         self.inner.ctx().is_sat()

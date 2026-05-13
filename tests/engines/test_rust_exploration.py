@@ -2617,6 +2617,71 @@ class TestSolverOperations:
         assert ctx.max(x, signed=False) is None
         assert ctx.eval_upto(x, 5) == []
 
+    def test_unsat_core_reports_contributing_indices(self):
+        """add_constraint_tracked_ast() + unsat_core() reports the indices
+        of the constraints participating in the UNSAT core.
+
+        Locks down angr-w2je: untracked constraints (added via
+        add_constraint_ast) NEVER appear in unsat_core output — only
+        tracked constraints do. The returned indices are 0-based and
+        match the order in which add_constraint_tracked_ast() was called.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        # Three tracked constraints, indices 0,1,2. The first two are
+        # contradictory; the third (x < 1000) is satisfied by neither
+        # because the contradiction has already made the solver UNSAT.
+        # Z3 typically returns just the minimal contradicting pair.
+        idx0 = ctx.add_constraint_tracked_ast(x == 0)
+        idx1 = ctx.add_constraint_tracked_ast(x == 1)
+        idx2 = ctx.add_constraint_tracked_ast(x < 1000)
+        assert (idx0, idx1, idx2) == (0, 1, 2)
+
+        assert ctx.satisfiable() is False
+        core = ctx.unsat_core()
+        # Z3 returns at least the two contradicting constraints. It may
+        # also include x < 1000 depending on the engine's bookkeeping;
+        # the only invariant we check is that 0 and 1 are both present.
+        assert 0 in core and 1 in core, f"expected indices 0,1 in core, got {core}"
+        assert len(core) >= 2
+
+    def test_unsat_core_empty_when_untracked(self):
+        """unsat_core() returns [] when constraints were added via
+        add_constraint_ast() (the untracked fast path), even on UNSAT.
+
+        This is the documented limitation: callers who want core
+        extraction must opt in via add_constraint_tracked_ast(). Locks
+        down the silent-empty behaviour memo'd in
+        `avoid-rust-tracking-actions-silent-ignore`.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x == 0)
+        ctx.add_constraint_ast(x == 1)
+        assert ctx.satisfiable() is False
+        assert ctx.unsat_core() == []
+
+    def test_unsat_core_empty_when_sat(self):
+        """unsat_core() returns [] when the solver is satisfiable, even
+        if constraints were tracked. Z3 does not produce a core for a
+        SAT instance, so the matched indices list is empty.
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_tracked_ast(x >= 0)
+        ctx.add_constraint_tracked_ast(x <= 100)
+        assert ctx.satisfiable() is True
+        assert ctx.unsat_core() == []
+
     def test_solver_fork_independence(self):
         """Forked solver contexts are independent."""
         from angr.rustylib.vex_engine import RustSolverContext
