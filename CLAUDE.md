@@ -211,7 +211,7 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 
 ## Current Status
 
-**Tests:** 385/385 passing (`grep -c 'def test_' tests/engines/test_rust_exploration.py`)
+**Tests:** 389/389 passing (`grep -c 'def test_' tests/engines/test_rust_exploration.py`)
 **Benchmarks:** 22 benchmarks tracked in `tests/benchmarks/baseline_timings.json`
 **Performance:** 17/22 faster than Python (≥1.0x)
 
@@ -259,7 +259,7 @@ tests and no benchmarks. Treat them as experimental until that changes.
 | AMD64       | ~110+      | ~268 (fauxware)   | 21/22      | SystemV, MS x64   | Supported    |
 | x86 (32-bit)| 2          | 1 (Cdecl ret reg) | 1 (flareon2015_2) | Cdecl    | Experimental |
 | ARM (32-bit)| 2          | 2 (validate, native-proc) | 0  | ARMEABI           | Experimental |
-| ARM64       | 1          | 3 (blob branch, real ELF, native-proc) | 0 | AArch64 | Experimental |
+| ARM64       | 1          | 4 (blob branch, NEON mla, real ELF, native-proc) | 0 | AArch64 | Experimental |
 | MIPS32      | 4          | 3 (BE blob, LE real ELF, native-proc) | 0 | MipsO32 | Experimental |
 | MIPS64      | 0          | 2 (LE real ELF, native-proc) | 0 | MipsN64 | Experimental |
 

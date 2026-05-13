@@ -1,82 +1,63 @@
-## Session log: 2026-05-13 — angr-3hzg (Property-based differential fuzzer)
+## Session log: 2026-05-13 — angr-qdwt (Pre-PR final docs sweep)
 
 ### Task
 
-**angr-3hzg** (P1) — Property-based differential fuzzer: Rust ≡ Python
-on random binaries/seeds.
+**angr-qdwt** (P1) — Pre-PR final docs sweep: verify CLAUDE.md
+test/benchmark counts and arch matrix at HEAD; cross-link to
+contributor guides.
+
+### Audit results vs HEAD
+
+- `grep -c 'def test_' tests/engines/test_rust_exploration.py` = **389**
+  (CLAUDE.md said 385). 4 new tests added since the prior refresh
+  (`c504e02e8`, angr-k25z): 3 unsat_core tests (angr-w2je) + 1
+  `test_aarch64_neon_mla_blob` (angr-bkcs.2).
+- `tests/benchmarks/baseline_timings.json` has **22 keys** — matches.
+- Speedup table values vs live `baseline_timings.json` (recomputed
+  `python_time / rust_time`): all 22 rows already match rounded to
+  one decimal place. `securityfest_fairlight` is 0.98x; CLAUDE.md
+  rounds to "1.0x" which is acceptable per the ≥1.0x classification.
+- Architecture matrix: ARM64 integration tests had grown from 3 to 4
+  because `test_aarch64_neon_mla_blob` landed in angr-bkcs.2. All
+  other rows (x86 unit=2 incl. native-proc/ret reg, ARM=2/2,
+  MIPS32=4/3, MIPS64=0/2) match a hand-count of `TestMultiArchSupport`
+  plus the `test_x86_native_procedure_returns_to_eax_not_edx` outlier
+  in `TestRustExplorationManagerUnit`.
+- `docs/extending-angr/index.rst` toctree: includes both
+  `simprocedures` and `rust_vex_ops`. ✓
+- `docs/advanced-topics/index.rst` toctree: includes `rust_engine`. ✓
+- `docs/advanced-topics/rust_engine.rst` slow-bench section: live
+  speedups (mma_howtouse 0.65x, sokohashv2 0.36x, unbreakable_1
+  0.46x, hackcon angry-reverser 0.87x, fairlight 0.98x) all match
+  current `baseline_timings.json`. ✓
 
 ### Changes
 
-- `tests/benchmarks/property_fuzzer.py` (new, 320 lines). Samples
-  random (example, strategy, seed) tuples from the rust_ok=True
-  catalog, runs both engines in subprocesses (reusing
-  `run_single._run_in_child` with the 4 GB RLIMIT_AS), and compares
-  normalized stdout. Classifies each trial as `pass`,
-  `diverge`, `expected-diverge`, `py-fail`, `rust-fail`, or
-  `both-fail`. `expected-diverge` is for examples on the known
-  rust_only/bimodal allow-list (derived programmatically from
-  `run_regression.FAST_SUITE`/`MEDIUM_SUITE` rust_only=True entries
-  plus `BIMODAL_BENCHMARKS`) — divergence on those is benign, not a
-  regression. Strict mode (`--strict`) fails only on NEW divergences
-  or Rust crashes.
+- `CLAUDE.md` line 214: tests `385/385` → `389/389`.
+- `CLAUDE.md` line 262: ARM64 integration tests `3 (blob branch,
+  real ELF, native-proc)` → `4 (blob branch, NEON mla, real ELF,
+  native-proc)`.
 
-  Module docstring includes the 3-step triage workflow (reproduce →
-  classify benign/path/crash → fix-and-reverify). Subprocess timeouts,
-  memory limits, seeded sampling, JSON report (`--report`), eligibility
-  listing (`--list`), and `--only` override all wired up.
+### Limitations
 
-  Located in `tests/benchmarks/` rather than `tests/` (where the task
-  spec suggested) because `tests/types/` shadows the stdlib `types`
-  module when sys.path[0] is `tests/`. The benchmark dir is on the
-  same conventional level as `run_single.py` / `run_regression.py`.
-
-- `.github/workflows/nightly-ci.yml`: new `property_fuzzer` job. Runs
-  `--trials 50 --seed 1 --strict` (~5 min wall) and uploads the JSON
-  report as an artifact even on failure. 20 min job timeout.
-
-### Validation
-
-- `python tests/benchmarks/property_fuzzer.py --list` — lists 17
-  eligible examples.
-- `--trials 2 --only fauxware --seed 42`: 2 EXPECTED-DIVERGE trials
-  (fauxware is rust_only=True). Strict mode would not fail.
-- `--trials 5 --seed 1`: produced mix of PASS (defcamp_r100,
-  mma_howtouse) and EXPECTED-DIVERGE (csgames2018, unmapped_analysis).
-- `--trials 3 --seed 7 --report /tmp/fuzz.json` (captured run):
-  1 PASS (google2016_unbreakable_0), 1 EXPECTED-DIVERGE
-  (codegate_2017-angrybird), 1 PY-FAIL (flareon2015_5 timeout). JSON
-  report well-formed.
-- `pytest tests/engines/test_rust_exploration.py -q --tb=no`:
-  389 passed, 3 pre-existing failures (`test_dcas_cmpxchg16b_no_match_keeps_memory`,
-  `test_pipe_native_dispatch_creates_two_fds`,
-  `test_dup2_native_dispatch_redirects_stdin`) — same as documented
-  on `bd memories pre-existing-dcas-test-failure`. No regressions
-  from this change (it only adds a new file).
-
-### Observations worth saving as memory
-
-- The fuzzer revealed that `defcamp_r100` in BFS mode actually
-  produces matching output between engines — yet it's flagged
-  `rust_only=True` in `run_regression.py`. Either it was marked
-  conservatively, or the divergence was DFS-only / Z3-seed-dependent.
-  Worth a follow-up to audit the rust_only=True list and promote
-  cases that consistently pass. Memory under
-  `fuzzer-rust_only-audit-candidate`.
-- Only 2 of 17 eligible examples (`flareon2015_10`, `mma_howtouse`)
-  are NOT on the known-divergence list, so under default sampling
-  ~88% of trials will be `expected-diverge`. The fuzzer is still
-  useful as a regression guard (any NEW divergence fails strict
-  mode), but the "signal" trials are sparse. Long-term, the
-  rust_only=True list needs an audit to identify which examples
-  can be promoted to first-class output comparison. Memory under
-  `fuzzer-eligible-pass-set-small`.
+- Acceptance criterion mentions `sphinx-build` warning-free verification.
+  Sphinx is not installed in the venv, and the venv pip is broken (per
+  `avoid-pip-install-broken-venv` memory), so I couldn't run a docs
+  build. Changes are content-only (table values in existing rows), so
+  no RST syntax was touched — warnings should be unchanged. If a
+  reviewer wants a fresh build, install sphinx outside the venv
+  (e.g. `pipx install sphinx`) then `cd docs && sphinx-build -W -b html
+  . _build/html`.
 
 ### Files touched
 
-- `tests/benchmarks/property_fuzzer.py` (new)
-- `.github/workflows/nightly-ci.yml` (new `property_fuzzer` job)
+- `CLAUDE.md`
 - `.claude/loop-session.md` (this file)
 
-### Next ready P1 candidates
+### Next ready P1/P2 candidates after angr-qdwt closes
 
-- `angr-qdwt` — Pre-PR final docs sweep (intentionally LAST)
+P2 (10 tasks ready overall):
+- `angr-nivm` — Split CLAUDE.md into quick-reference + DEVELOPMENT.md
+- `angr-6apa` — Centralize Z3 header discovery into setup.py / build.rs
+- `angr-w2yr` — Characterize bimodal Z3 variance via 20× runs
+- `angr-2xfz` / `angr-jzn8` — MIPS32 / ARM64 promotion benchmarks
