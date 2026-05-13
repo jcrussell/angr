@@ -7,6 +7,7 @@ use rustylib::concretize::AddressConcretizer;
 use rustylib::memory::{Permission, SymbolicMemory};
 use rustylib::symbolic::{RustBV, SymContext};
 use rustylib::vex::ir::Endness;
+use rustylib::vex::{IROp, IRType, VEXOps};
 
 // ---------------------------------------------------------------------------
 // RustBV operations
@@ -273,6 +274,165 @@ fn bench_state_fork(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// NEON SIMD ops (Mul8x16 / VGetElem / VSetElem — landed in angr-bkcs.2)
+// ---------------------------------------------------------------------------
+
+/// Microbenches for the NEON ops implemented in commit da0966893
+/// (Iop_Mul8x{8,16}, Iop_GetElem{N}x{M}, Iop_SetElem{N}x{M}).
+///
+/// Each op gets two variants:
+///   * `*_concrete` — both operands concrete, exercising the bit-twiddle
+///     fast path.
+///   * `*_symbolic` — one or both operands symbolic, exercising the
+///     Z3 AST / ITE-chain path.
+///
+/// Mul8x16 is also paired with a scalar `Mul64` baseline so the
+/// per-lane multiply cost is comparable to plain 64-bit arithmetic.
+fn bench_rustbv_neon_ops(c: &mut Criterion) {
+    let ctx = SymContext::new();
+    let mut group = c.benchmark_group("rustbv_neon_ops");
+
+    // ---- Iop_Mul8x16: 16 lanes of 8-bit multiply over a V128.
+    let mul_lo64 = 0x0303_0303_0303_0303u128;
+    let mul_v128_l = RustBV::concrete(mul_lo64 | (mul_lo64 << 64), 128);
+    let mul_v128_r_lo = 0x0505_0505_0505_0505u128;
+    let mul_v128_r = RustBV::concrete(mul_v128_r_lo | (mul_v128_r_lo << 64), 128);
+    group.bench_function("mul8x16_concrete", |bench| {
+        bench.iter(|| {
+            black_box(
+                VEXOps::binop(
+                    IROp::VMul {
+                        elem: IRType::I8,
+                        count: 16,
+                    },
+                    mul_v128_l.clone(),
+                    mul_v128_r.clone(),
+                    &ctx,
+                )
+                .unwrap(),
+            )
+        })
+    });
+
+    let mul_v128_sym_l = RustBV::symbolic(&ctx, "neon_mul_l", 128);
+    let mul_v128_sym_r = RustBV::symbolic(&ctx, "neon_mul_r", 128);
+    group.bench_function("mul8x16_symbolic", |bench| {
+        bench.iter(|| {
+            black_box(
+                VEXOps::binop(
+                    IROp::VMul {
+                        elem: IRType::I8,
+                        count: 16,
+                    },
+                    mul_v128_sym_l.clone(),
+                    mul_v128_sym_r.clone(),
+                    &ctx,
+                )
+                .unwrap(),
+            )
+        })
+    });
+
+    // Scalar Mul64 baseline so the per-bench cost can be compared against
+    // plain 64-bit multiply.
+    let scalar_a = RustBV::concrete(0xDEAD_BEEF, 64);
+    let scalar_b = RustBV::concrete(0xCAFE_BABE, 64);
+    group.bench_function("mul64_concrete_baseline", |bench| {
+        bench.iter(|| {
+            black_box(
+                VEXOps::binop(
+                    IROp::Mul(IRType::I64),
+                    scalar_a.clone(),
+                    scalar_b.clone(),
+                    &ctx,
+                )
+                .unwrap(),
+            )
+        })
+    });
+
+    // ---- Iop_GetElem8x16 (V128 → byte lane): concrete idx hits the
+    // bit-slice fast path; symbolic idx walks the ITE chain over 16 lanes.
+    let lane_vec = RustBV::concrete(0xFEDC_BA98_7654_3210u128 | (0x0011_2233_4455_6677u128 << 64), 128);
+    let lane_idx_concrete = RustBV::concrete(7, 8);
+    group.bench_function("get_elem8x16_concrete_idx", |bench| {
+        bench.iter(|| {
+            black_box(
+                VEXOps::binop(
+                    IROp::VGetElem {
+                        elem: IRType::I8,
+                        count: 16,
+                    },
+                    lane_vec.clone(),
+                    lane_idx_concrete.clone(),
+                    &ctx,
+                )
+                .unwrap(),
+            )
+        })
+    });
+
+    let lane_idx_sym = RustBV::symbolic(&ctx, "neon_get_idx", 8);
+    group.bench_function("get_elem8x16_symbolic_idx", |bench| {
+        bench.iter(|| {
+            black_box(
+                VEXOps::binop(
+                    IROp::VGetElem {
+                        elem: IRType::I8,
+                        count: 16,
+                    },
+                    lane_vec.clone(),
+                    lane_idx_sym.clone(),
+                    &ctx,
+                )
+                .unwrap(),
+            )
+        })
+    });
+
+    // ---- Iop_SetElem8x16: triop, dispatched through binop_with_rm by
+    // reinterpreting (rm, left, right) as (vec, idx, val).
+    let set_val = RustBV::concrete(0xAB, 8);
+    group.bench_function("set_elem8x16_concrete_idx", |bench| {
+        bench.iter(|| {
+            black_box(
+                VEXOps::binop_with_rm(
+                    IROp::VSetElem {
+                        elem: IRType::I8,
+                        count: 16,
+                    },
+                    lane_vec.clone(),
+                    lane_idx_concrete.clone(),
+                    set_val.clone(),
+                    &ctx,
+                )
+                .unwrap(),
+            )
+        })
+    });
+
+    group.bench_function("set_elem8x16_symbolic_idx", |bench| {
+        bench.iter(|| {
+            black_box(
+                VEXOps::binop_with_rm(
+                    IROp::VSetElem {
+                        elem: IRType::I8,
+                        count: 16,
+                    },
+                    lane_vec.clone(),
+                    lane_idx_sym.clone(),
+                    set_val.clone(),
+                    &ctx,
+                )
+                .unwrap(),
+            )
+        })
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Groups
 // ---------------------------------------------------------------------------
 
@@ -290,5 +450,6 @@ criterion_group!(
     bench_memory_symbolic_load,
     bench_memory_fork,
     bench_state_fork,
+    bench_rustbv_neon_ops,
 );
 criterion_main!(benches);

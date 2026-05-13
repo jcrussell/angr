@@ -78,6 +78,7 @@ Available bench groups (see native/angr/benches/vex_engine.rs):
   memory_symbolic_load  — symbolic-address load
   memory_fork           — SymbolicMemory fork
   state_fork            — RustSimState fork
+  rustbv_neon_ops       — NEON Mul8x16 / VGetElem / VSetElem (concrete + symbolic)
 
 Pass any prefix (e.g. --filter rustbv_) to scope to a subset, or omit to run all.
 EOF
