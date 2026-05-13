@@ -1,52 +1,81 @@
-## Session log: 2026-05-13 — angr-4ffe (Add Makefile)
+## Session log: 2026-05-13 — angr-sij2 (VEX interpreter unit tests)
 
-### Task
-P2 DX: Add a repo-root Makefile of canonical targets (rebuild, test,
-profile-bench, lint, …) so contributors do not have to remember script
-paths in `tools/` and `tests/benchmarks/`. Cross-reference from CLAUDE.md.
+### Task closed
 
-### What was done
-- New `Makefile` at the repo root. Targets:
-  - Build:  `rebuild`, `rebuild-clean`, `rebuild-cargo`, `check`, `clean`
-  - Tests:  `test` / `test-quick` (alias), `test-verbose`, `test-full`
-  - Bench:  `bench-regression`, `bench-single EXAMPLE=… ARGS=…`,
-            `profile-bench FILTER=… SECS=… TOOL=…`
-  - Lint:   `lint`, `lint-changed`, `fmt`, `fmt-check`
-  - `make help` auto-generates the menu from `##` comments.
-- `CLAUDE.md` gained a "Makefile Shortcuts" table near the top that
-  forwards to the existing tools/scripts docs (those remain
-  authoritative).
+**angr-sij2** (P1, "Add VEX interpreter unit tests for
+constraints/exits/expressions/execution/statements/prefetch")
+- Added 63 unit tests across 6 previously-untested files in
+  `native/angr/src/interpreter_cb/`. Each file now has ≥10 tests
+  (acceptance criterion was ≥8).
+- Commits: `c1cb2013f` (constraints + exits + expressions +
+  execution), `0cc4ca427` (statements + prefetch).
 
-### Design choices
-- Thin Makefile — every target shells out to the existing
-  `tools/rebuild-rust.sh`, `tests/benchmarks/run_*.py`, or
-  `profile_rust_bench.sh`. The Makefile is an index, not a build
-  system.
-- PY points at `.venv/bin/python` so `make` works without a manual
-  `source .venv/bin/activate`.
-- Python lint/format routes through `pre-commit` (the canonical tool
-  per `.pre-commit-config.yaml`) rather than installing ruff
-  separately. This matches CI exactly.
-- `fmt-check` only checks cargo fmt (Python is covered by `make lint`).
+#### Per-file breakdown
+- `constraints.rs` (+10): symbolic-vs-concrete address tracking;
+  branch true/false; clear/drain ordering; PendingConstraint
+  helper construction.
+- `exits.rs` (+11): handle_exit dispatch by JumpKind + binary
+  region (Boring/Hook/Call/Ret/syscall); the angr-3uye empty-
+  call-stack Ret guard; AMD64 syscall num extraction.
+- `expressions.rs` (+14): eval_const for U1/U32/U64/U128/F32;
+  eval_expr_simple Const/RdTmp/Get paths and Load rejection;
+  apply_loadg_conversion WidenS/WidenZ/Identity/same-width.
+- `execution.rs` (+11): sort_concrete_memory ordering +
+  idempotence; block_cache round-trip; pop_block_solver_if_pushed
+  no-op; next_cond_id monotonicity; deferred-fork + stored-
+  condition take/clear lifecycle; swap_block_cache.
+- `statements.rs` (+13): NoOp/AbiHint/MBE; IMark sets insn +
+  triggers Exit at hooked addr; Put writes register + dirty
+  mask; WrTmp writes / errors on unknown tmp; Exit with concrete
+  true/false guard; Store with concrete addr buffers via fast
+  path.
+- `prefetch.rs` (+14): set_load_prefetch / page_prefetch_count
+  toggles; clear/get cache; scan_loads_in_irsb concrete-load
+  collection + skip-if-cached behaviour; try_eval_expr_concrete
+  cases; stack-pointer / stack-region helpers; nearby-prefetch
+  fallback without rust_memory.
+
+### Decisions
+- For `statements.rs`, used `Python::attach` with `prepare_freethreaded_python`
+  and empty `PythonCallbacks::new()` for the py-param plumbing,
+  since Const-only IR exprs never call out to Python — pattern
+  borrowed from `procedures/python_proc.rs`.
+- StmtResult is not `Debug`, so `assert!(matches!(...))` /
+  `is_err()` are required instead of `expect_err`.
+- Skipped `mod.rs` despite the title because (a) it's huge —
+  1730 LOC, mostly stable infra used by the new tests — and (b)
+  it already has 5 SMC tests + the `helpers.rs` 4 tests; the
+  per-file ≥8 criterion is satisfied for every previously-zero
+  module.
+
+### Bugs discovered
+- `apply_loadg_conversion` truncation branch (src_bits >
+  target_bits) calls `extract(0, target_bits)`, violating
+  `high >= low` and underflowing `result_width` in release
+  builds. Never hit because LoadG always widens. New ticket
+  `angr-ipd0` (P3) tracks the fix; bd memory `apply-loadg-
+  truncation-bug` captures the diagnostic.
+
+### Pre-existing failures noted (NOT regressions)
+- `test_dcas_cmpxchg16b_no_match_keeps_memory` fails at HEAD
+  (also pre-c1cb2013f via git stash). Memory:
+  `pre-existing-dcas-test-failure`.
+- `test_pipe_native_dispatch_creates_two_fds` and
+  `test_dup2_native_dispatch_redirects_stdin` also fail at
+  HEAD without any uncommitted changes.
 
 ### Validation
-- `make help` — lists all targets cleanly.
-- `make check` — clean (release cargo check, ~7s after warm cache).
-- `make fmt-check` — clean (cargo fmt --check passes).
-- `make rebuild-cargo` — succeeded (pip is broken in this venv, the
-  documented fallback path works).
-- `make test` — 389 passed, 3 pre-existing failures
-  (`test_pipe_native_dispatch_creates_two_fds`,
-   `test_dup2_native_dispatch_redirects_stdin`,
-   `test_dcas_cmpxchg16b_no_match_keeps_memory`). Matches baseline.
-- `make bench-single EXAMPLE=fauxware ARGS="--engine rust"` — ran.
-- `make bench-regression` — ran 12 benches, 2 noise regressions on
-  defcamp_r100 (unrelated to this change).
-
-### Memories to save
-- (none — this is plumbing; nothing surprising. The pre-existing
-  `avoid-pip-install-broken-venv` memory already covers the pip
-  failure mode that drove `make rebuild-cargo`.)
+- `cargo test --release --lib` — 715 / 715 green.
+- `interpreter_cb::` tests went 17 → 80 (+63).
+- Did not rebuild Python .so (no Rust source changes outside
+  `#[cfg(test)]` blocks), so Python test set is unchanged from
+  HEAD.
 
 ### Prior session
-`angr-govb + angr-wvxj` (auto-memory housekeeping) closed at 226590a10.
+`angr-2bjx` and `angr-7ylc` (contributor guides) — closed at
+`14332688f` / `f6210b534`.
+
+### Next ready P1 candidates
+- `angr-1583` — Pre-PR fast-tier benchmark regression gate
+- `angr-3hzg` — Property-based differential fuzzer
+- `angr-qdwt` — Pre-PR final docs sweep (intentionally LAST)
