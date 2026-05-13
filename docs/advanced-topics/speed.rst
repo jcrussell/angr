@@ -5,6 +5,13 @@ The performance of angr as an analysis tool or emulator is greatly handicapped
 by the fact that lots of it is written in Python. Regardless, there are a lot of
 optimizations and tweaks you can use to make angr faster and lighter.
 
+.. note::
+
+   For the largest single performance win, consider the experimental Rust
+   symbolic-execution engine. See :doc:`rust_engine` for what it covers,
+   what it does not (notably ``state.inspect``), and which benchmarks it
+   accelerates or slows down.
+
 General speed tips
 ------------------
 

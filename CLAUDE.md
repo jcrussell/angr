@@ -214,9 +214,9 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 | flareon2015_2 | 1.1x | 32-bit x86 |
 | securityfest_fairlight | 1.0x | Rust interpreter parity for symbolic-heavy blocks |
 | hackcon2016_angry-reverser | 0.9x | |
-| mma_howtouse | 0.7x | Callable-heavy; thread-local AST cache lookup overhead. See [`docs/RUST_KNOWN_SLOWER_BENCHMARKS.md`](docs/RUST_KNOWN_SLOWER_BENCHMARKS.md) |
+| mma_howtouse | 0.7x | Callable-heavy; thread-local AST cache lookup overhead. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
 | google2016_unbreakable_1 | 0.5x | High variance; regressed from 3.3x |
-| ekopartyctf2016_sokohashv2 | 0.4x | x87 transcendentals fall back to Python; bimodal Z3 variance. See [`docs/RUST_KNOWN_SLOWER_BENCHMARKS.md`](docs/RUST_KNOWN_SLOWER_BENCHMARKS.md) |
+| ekopartyctf2016_sokohashv2 | 0.4x | x87 transcendentals fall back to Python; bimodal Z3 variance. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
 
 ## Architecture
 
@@ -268,7 +268,7 @@ add a benchmark and ensure it stays green in regression runs.
 The Rust engine honors only a handful of `angr.sim_options` flags
 (`LAZY_SOLVES`, `ZERO_FILL_UNCONSTRAINED_MEMORY`, `APPROXIMATE_MEMORY_INDICES`,
 `SYMBOLIC_WRITE_ADDRESSES`, `STRICT_PAGE_ACCESS`). Most other options are
-silent no-ops. See [`docs/RUST_SIMOPTION_COVERAGE.md`](docs/RUST_SIMOPTION_COVERAGE.md)
+silent no-ops. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst)
 for the per-option matrix (honored / inherited / ignored — divergence-risk /
 ignored — no-op).
 
@@ -279,8 +279,8 @@ Registering one through a `RustStateProxy` raises `NotImplementedError`
 at call time rather than silently never firing. Use the Python engine
 (`proj.factory.simulation_manager(state)` without `use_rust_engine=True`)
 for breakpoint-driven analyses. See
-[`docs/RUST_STATE_INSPECT.md`](docs/RUST_STATE_INSPECT.md) for the
-affected API, the rationale, and the historical decision trail.
+[`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst)
+for the affected API, the rationale, and the historical decision trail.
 
 ## Rust Symbolic Execution
 

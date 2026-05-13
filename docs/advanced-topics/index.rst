@@ -8,6 +8,7 @@ Advanced Topics
    pipeline
    mixins
    speed
+   rust_engine
    file_system
    ir
    structured_data

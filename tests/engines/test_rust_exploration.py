@@ -1299,15 +1299,15 @@ class TestInspectProxy:
         from angr.exploration.rust_state_proxy import _NoOpInspectProxy
 
         ins = _NoOpInspectProxy()
-        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
+        with pytest.raises(NotImplementedError, match="rust_engine"):
             ins.b("mem_read", when="before", action=lambda s: None)
-        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
+        with pytest.raises(NotImplementedError, match="rust_engine"):
             ins.make_breakpoint("mem_write")
-        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
+        with pytest.raises(NotImplementedError, match="rust_engine"):
             ins.add_breakpoint("call", lambda s: None)
-        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
+        with pytest.raises(NotImplementedError, match="rust_engine"):
             ins.remove_breakpoint("call", 0)
-        with pytest.raises(NotImplementedError, match="RUST_STATE_INSPECT"):
+        with pytest.raises(NotImplementedError, match="rust_engine"):
             ins.action("call", lambda s: None)
 
 
@@ -7992,9 +7992,9 @@ class TestEdgeCases:
 
     def test_rejected_options_emit_warning(self, fauxware_project):
         """Setting an option tagged ``(b) explicitly reject`` in
-        docs/RUST_SIMOPTION_COVERAGE.md must emit a UserWarning at state-add
-        time. Without this signal, users silently get divergent behavior
-        from the Python engine (e.g. empty action streams under
+        docs/advanced-topics/rust_engine.rst must emit a UserWarning at
+        state-add time. Without this signal, users silently get divergent
+        behavior from the Python engine (e.g. empty action streams under
         TRACK_MEMORY_ACTIONS).
         """
         from angr.exploration import RustExplorationManager

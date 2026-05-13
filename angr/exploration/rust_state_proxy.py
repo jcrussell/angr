@@ -770,7 +770,7 @@ _INSPECT_NOT_IMPLEMENTED_MSG = (
     "state.inspect breakpoints are not dispatched by the Rust symex engine. "
     "Registering a breakpoint here would silently never fire. "
     "Switch to the Python engine (use_rust_engine=False) for breakpoint-driven "
-    "analyses. See docs/RUST_STATE_INSPECT.md for details."
+    "analyses. See docs/advanced-topics/rust_engine.rst for details."
 )
 
 

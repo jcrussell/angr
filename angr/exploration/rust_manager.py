@@ -180,7 +180,7 @@ except ImportError:
     PythonCallbacks = None
     _RustSimState = None
 
-# SimOptions tagged "(b) explicitly reject" in docs/RUST_SIMOPTION_COVERAGE.md.
+# SimOptions tagged "(b) explicitly reject" in docs/advanced-topics/rust_engine.rst.
 # Setting any of these on a state owned by RustExplorationManager would change
 # Python-engine semantics, but the Rust engine silently ignores them — without
 # a warning users can spend hours chasing a divergence between engines. We
@@ -2244,7 +2244,7 @@ class RustExplorationManager(
                 f"SimOption {name!r} is set on a state owned by "
                 "RustExplorationManager, but the Rust engine does not honor "
                 "it. Behavior may diverge from the Python engine. See "
-                "docs/RUST_SIMOPTION_COVERAGE.md for the full matrix.",
+                "docs/advanced-topics/rust_engine.rst for the full matrix.",
                 UserWarning,
                 stacklevel=3,
             )

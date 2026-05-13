@@ -49,7 +49,7 @@ class _RustOwnedSimStateHistory(SimStateHistory):
             "TRACK_MEMORY_MAPPING SimOptions have no effect under "
             "RustExplorationManager. Use the Python engine (drop "
             "use_rust_engine=True) for action-stream-driven analyses. See "
-            "docs/RUST_SIMOPTION_COVERAGE.md.",
+            "docs/advanced-topics/rust_engine.rst.",
             UserWarning,
             stacklevel=3,
         )
