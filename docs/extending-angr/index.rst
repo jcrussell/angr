@@ -8,3 +8,4 @@ Extending angr
    state_plugins
    environment
    analysis_writing
+   rust_vex_ops
