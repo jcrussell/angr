@@ -15,9 +15,10 @@ fn main() {
     // python venv's z3 package — Python and Rust share libz3.so for AST
     // passthrough, so they must load the same library version.
     //
-    // Header discovery is z3-sys's job: when Z3_SYS_Z3_HEADER is unset,
-    // z3-sys probes pkg-config and uses its bundled wrapper.h. That works
-    // out of the box on systems with z3-dev (apt) / z3-devel (dnf) / brew z3.
+    // Header discovery: setup.py's `_resolve_z3_header()` probes common
+    // locations (venv, pkg-config, /usr/include, brew, MacPorts) and sets
+    // Z3_SYS_Z3_HEADER before cargo runs. When invoking cargo directly
+    // (outside `pip install`), z3-sys falls back to pkg-config on its own.
     // See CLAUDE.md "Common Issues" for troubleshooting.
     if let Some(lib_dir) = find_z3_lib_dir() {
         println!("cargo:rustc-link-search=native={}", lib_dir.display());

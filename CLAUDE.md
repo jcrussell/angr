@@ -71,7 +71,7 @@ source .venv/bin/activate
 pip install -e . --no-build-isolation --no-deps
 ```
 
-`native/angr/build.rs` auto-detects the Z3 shared library from the active venv's `z3-solver` install and sets the runpath so Python and Rust load the same `libz3.so` (required for AST passthrough). Header discovery is delegated to `z3-sys`, which probes `pkg-config` and falls back to system include paths.
+`native/angr/build.rs` auto-detects the Z3 shared library from the active venv's `z3-solver` install and sets the runpath so Python and Rust load the same `libz3.so` (required for AST passthrough). For headers, `setup.py::_resolve_z3_header` probes the venv `z3/include`, then `pkg-config --variable=includedir z3`, then `/usr/include`, `/usr/local/include`, `/opt/homebrew/include`, `/opt/local/include`, and sets `Z3_SYS_Z3_HEADER` before cargo runs. If nothing matches it prints an install hint (apt/dnf/brew) to stderr and lets z3-sys fall back to its own pkg-config probe.
 
 ### Common Issues
 
@@ -84,7 +84,7 @@ pip install. Pass `--keep-cargo-cache` to skip `cargo clean` (faster), or
 (recovery path when the venv's pip/setuptools is corrupt — see
 `venv-rebuild-cargo-direct-copy` memory).
 
-**"Unable to generate bindings: NotExist ...z3.h"**: The Z3 C headers are missing. Install the system package (`libz3-dev` / `z3-devel` / `brew z3`). To override discovery, set `Z3_SYS_Z3_HEADER=/path/to/z3.h` before invoking `pip install` or `cargo`.
+**"Unable to generate bindings: NotExist ...z3.h"**: `setup.py::_resolve_z3_header` couldn't find `z3.h` in any standard location. Install the Z3 dev package: `apt install libz3-dev pkg-config` / `dnf install z3-devel pkgconf-pkg-config` / `brew install z3 pkg-config`. To override discovery, set `Z3_SYS_Z3_HEADER=/path/to/z3.h` before invoking `pip install` or `cargo`. When using `tools/rebuild-rust.sh --cargo-only` (setup.py bypassed), the shell script also probes the venv path then `/usr/include/z3.h` as a fallback.
 
 **Linker can't find libz3** at runtime: build.rs sets the runpath to the venv's `z3/lib`, so an `import angr` from inside the venv works. Outside the venv, set `LD_LIBRARY_PATH` to that directory or override with `Z3_LIBRARY_PATH_OVERRIDE=/path/to/lib`.
 

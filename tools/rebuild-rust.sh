@@ -96,14 +96,24 @@ fi
 if (( CARGO_ONLY == 1 )); then
     echo
     echo "=== cargo build --release (--cargo-only fallback) ==="
-    # z3-sys needs the C header; if the venv-shipped header is missing,
-    # fall back to the system one. Honor an existing override.
+    # z3-sys needs the C header. Honor an existing override; otherwise probe
+    # the same locations setup.py::_resolve_z3_header does (venv → pkg-config
+    # → system paths). If none match, leave Z3_SYS_Z3_HEADER unset and let
+    # z3-sys's own pkg-config probe report the error.
     if [[ -z "${Z3_SYS_Z3_HEADER:-}" ]]; then
-        VENV_Z3="$VENV/lib/python3.12/site-packages/z3/include/z3.h"
-        if [[ ! -f "$VENV_Z3" && -f /usr/include/z3.h ]]; then
-            export Z3_SYS_Z3_HEADER=/usr/include/z3.h
-            echo "using Z3_SYS_Z3_HEADER=$Z3_SYS_Z3_HEADER"
+        CANDIDATES=("$VENV/lib/python3.12/site-packages/z3/include/z3.h")
+        if command -v pkg-config >/dev/null 2>&1; then
+            PCINC="$(pkg-config --variable=includedir z3 2>/dev/null)"
+            [[ -n "$PCINC" ]] && CANDIDATES+=("$PCINC/z3.h")
         fi
+        CANDIDATES+=(/usr/include/z3.h /usr/local/include/z3.h /opt/homebrew/include/z3.h /opt/local/include/z3.h)
+        for C in "${CANDIDATES[@]}"; do
+            if [[ -f "$C" ]]; then
+                export Z3_SYS_Z3_HEADER="$C"
+                echo "using Z3_SYS_Z3_HEADER=$Z3_SYS_Z3_HEADER"
+                break
+            fi
+        done
     fi
     cargo build --manifest-path "$MANIFEST" --release
     SRC="$REPO_DIR/target/release/librustylib.so"
