@@ -178,10 +178,12 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             spec.loader.exec_module(module)
         except MemoryError:
             sys.stdout = original_stdout
-            return {"ok": False, "error": "MemoryError (hit memory limit)"}
+            elapsed = time.perf_counter() - start
+            return {"ok": False, "error": "MemoryError (hit memory limit)", "elapsed": elapsed}
         except Exception as e:
             sys.stdout = original_stdout
-            return {"ok": False, "error": str(e)}
+            elapsed = time.perf_counter() - start
+            return {"ok": False, "error": f"{type(e).__name__}: {e}", "elapsed": elapsed}
         finally:
             sys.stdout = original_stdout
 
@@ -251,7 +253,9 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         pool.join()
 
     if not result.get("ok"):
-        print(f"FAIL {engine} {example_name}: {result.get('error', 'unknown error')}")
+        elapsed = result.get("elapsed")
+        elapsed_str = f" {elapsed:.2f}s" if elapsed is not None else ""
+        print(f"FAIL {engine} {example_name}{elapsed_str}: {result.get('error', 'unknown error')}")
         return result
 
     elapsed = result["elapsed"]

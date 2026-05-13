@@ -9,6 +9,7 @@ Advanced Topics
    mixins
    speed
    rust_engine
+   rust_bimodal_variance
    file_system
    ir
    structured_data

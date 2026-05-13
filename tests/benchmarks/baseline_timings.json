@@ -139,7 +139,7 @@
     "callback_count": 1,
     "peak_memory_mb": 334.6,
     "python_time": 15.756,
-    "rust_time": 16.0,
+    "rust_time": 22.0,
     "state_creations": 0,
     "steps": 57
   },

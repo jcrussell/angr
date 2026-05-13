@@ -746,15 +746,18 @@ be tracked.
      - Speedup
      - Root cause
    * - ``google2016_unbreakable_1``
-     - 0.46x
-     - Bimodal Z3 nondeterminism (~1.6–3.3s Rust vs 1.6s Py). See
-       ``invariant-sla-bimodal-unbreakable1`` +
-       ``benchmark-google2016-unbreakable-1-regression``. Regressed
-       from a previous 3.3x peak; cause not yet isolated.
+     - 0.53x
+     - Was bimodal (1.6s/3.3s); 2026-05-13 campaign found 20/20 runs
+       in 3.01–3.06s (stdev 0.01s) — has unimodalized at what used to
+       be the slow mode. See :doc:`rust_bimodal_variance` and
+       ``benchmark-google2016-unbreakable-1-regression``.
    * - ``hackcon2016_angry-reverser``
      - 0.87x
      - Close to parity, no formal investigation yet.
    * - ``securityfest_fairlight``
-     - 0.98x
-     - At parity in fast mode; bimodal (7.8s OR 15s baseline). See
+     - 0.73x (slow mode)
+     - Bimodal; 2026-05-13 campaign measured ~7.95s OR ~21.4s
+       (15× slow, 5× fast over 20 runs). Baseline raised from 16.0s
+       to 22.0s to cover slow mode. See
+       :doc:`rust_bimodal_variance` and
        ``invariant-bimodal-variance-benchmarks``.
