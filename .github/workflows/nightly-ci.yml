@@ -95,6 +95,10 @@ jobs:
         with:
           repository: angr/binaries
           path: binaries
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/angr-examples
+          path: angr-examples
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
@@ -104,5 +108,7 @@ jobs:
       - name: Run Rust exploration tests
         run: uv run pytest tests/engines/test_rust_exploration.py -v --tb=short
       - name: Run benchmark regression (fast tier)
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
         run: uv run python tests/benchmarks/run_regression.py --rust-only
         timeout-minutes: 5

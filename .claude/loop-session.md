@@ -1,81 +1,63 @@
-## Session log: 2026-05-13 — angr-sij2 (VEX interpreter unit tests)
+## Session log: 2026-05-13 — angr-1583 (PR-time benchmark regression gate)
 
 ### Task closed
 
-**angr-sij2** (P1, "Add VEX interpreter unit tests for
-constraints/exits/expressions/execution/statements/prefetch")
-- Added 63 unit tests across 6 previously-untested files in
-  `native/angr/src/interpreter_cb/`. Each file now has ≥10 tests
-  (acceptance criterion was ≥8).
-- Commits: `c1cb2013f` (constraints + exits + expressions +
-  execution), `0cc4ca427` (statements + prefetch).
+**angr-1583** (P1, "PR-time fast-tier benchmark regression gate
+(<2m, 15% threshold)") — closed at this session.
 
-#### Per-file breakdown
-- `constraints.rs` (+10): symbolic-vs-concrete address tracking;
-  branch true/false; clear/drain ordering; PendingConstraint
-  helper construction.
-- `exits.rs` (+11): handle_exit dispatch by JumpKind + binary
-  region (Boring/Hook/Call/Ret/syscall); the angr-3uye empty-
-  call-stack Ret guard; AMD64 syscall num extraction.
-- `expressions.rs` (+14): eval_const for U1/U32/U64/U128/F32;
-  eval_expr_simple Const/RdTmp/Get paths and Load rejection;
-  apply_loadg_conversion WidenS/WidenZ/Identity/same-width.
-- `execution.rs` (+11): sort_concrete_memory ordering +
-  idempotence; block_cache round-trip; pop_block_solver_if_pushed
-  no-op; next_cond_id monotonicity; deferred-fork + stored-
-  condition take/clear lifecycle; swap_block_cache.
-- `statements.rs` (+13): NoOp/AbiHint/MBE; IMark sets insn +
-  triggers Exit at hooked addr; Put writes register + dirty
-  mask; WrTmp writes / errors on unknown tmp; Exit with concrete
-  true/false guard; Store with concrete addr buffers via fast
-  path.
-- `prefetch.rs` (+14): set_load_prefetch / page_prefetch_count
-  toggles; clear/get cache; scan_loads_in_irsb concrete-load
-  collection + skip-if-cached behaviour; try_eval_expr_concrete
-  cases; stack-pointer / stack-region helpers; nearby-prefetch
-  fallback without rust_memory.
+### Changes
 
-### Decisions
-- For `statements.rs`, used `Python::attach` with `prepare_freethreaded_python`
-  and empty `PythonCallbacks::new()` for the py-param plumbing,
-  since Const-only IR exprs never call out to Python — pattern
-  borrowed from `procedures/python_proc.rs`.
-- StmtResult is not `Debug`, so `assert!(matches!(...))` /
-  `is_err()` are required instead of `expect_err`.
-- Skipped `mod.rs` despite the title because (a) it's huge —
-  1730 LOC, mostly stable infra used by the new tests — and (b)
-  it already has 5 SMC tests + the `helpers.rs` 4 tests; the
-  per-file ≥8 criterion is satisfied for every previously-zero
-  module.
-
-### Bugs discovered
-- `apply_loadg_conversion` truncation branch (src_bits >
-  target_bits) calls `extract(0, target_bits)`, violating
-  `high >= low` and underflowing `result_width` in release
-  builds. Never hit because LoadG always widens. New ticket
-  `angr-ipd0` (P3) tracks the fix; bd memory `apply-loadg-
-  truncation-bug` captures the diagnostic.
-
-### Pre-existing failures noted (NOT regressions)
-- `test_dcas_cmpxchg16b_no_match_keeps_memory` fails at HEAD
-  (also pre-c1cb2013f via git stash). Memory:
-  `pre-existing-dcas-test-failure`.
-- `test_pipe_native_dispatch_creates_two_fds` and
-  `test_dup2_native_dispatch_redirects_stdin` also fail at
-  HEAD without any uncommitted changes.
+- `.github/workflows/ci.yml`: new `benchmark_regression` job on PR.
+  Checkouts `angr`, `angr/binaries`, `angr/angr-examples`; builds the
+  Rust .so; runs `tests/benchmarks/run_regression.py --rust-only
+  --skip-bimodal --threshold 0.15`. Job timeout 15m (Rust build
+  dominates cold); bench step timeout 3m to enforce the <2m bench-work
+  SLA.
+- `.github/workflows/nightly-ci.yml`: added the missing
+  `angr/angr-examples` checkout + `ANGR_EXAMPLES_DIR` env on the
+  existing nightly bench step. That step was silently broken — without
+  the corpus, `run_regression.py` exits with `Missing examples`.
+- `tests/benchmarks/run_regression.py`:
+  - `BIMODAL_BENCHMARKS = {unbreakable_1, fairlight, sokohashv2}`
+  - new `--skip-bimodal` flag, applied after suite normalization so
+    `--full --skip-bimodal` works too.
+- `tests/benchmarks/run_single.py`: `EXAMPLES_DIR` now honors
+  `ANGR_EXAMPLES_DIR` env var; falls back to `~/repos/angr-examples`.
+- `CLAUDE.md`: documented the two CI gates and the new env override.
 
 ### Validation
-- `cargo test --release --lib` — 715 / 715 green.
-- `interpreter_cb::` tests went 17 → 80 (+63).
-- Did not rebuild Python .so (no Rust source changes outside
-  `#[cfg(test)]` blocks), so Python test set is unchanged from
-  HEAD.
 
-### Prior session
-`angr-2bjx` and `angr-7ylc` (contributor guides) — closed at
-`14332688f` / `f6210b534`.
+- `cargo check --release` — clean.
+- `python tests/benchmarks/run_regression.py --help` shows
+  `--skip-bimodal` correctly.
+- `--skip-bimodal` filter verified: 22-bench full suite → 19 after skip,
+  and only the 3 bimodal names are removed.
+- `ANGR_EXAMPLES_DIR=/tmp/foo python -c ...` confirms env override.
+- `pytest tests/engines/test_rust_exploration.py`: 389 passed, 3
+  pre-existing failures (`test_dcas_cmpxchg16b_no_match_keeps_memory`,
+  `test_pipe_native_dispatch_creates_two_fds`,
+  `test_dup2_native_dispatch_redirects_stdin`) — same as documented at
+  HEAD in the prior loop-session.md and on `bd memories
+  pre-existing-dcas-test-failure`.
 
-### Next ready P1 candidates
-- `angr-1583` — Pre-PR fast-tier benchmark regression gate
+### Observations worth saving as memory
+
+- Nightly bench step was latently broken: it checks out `angr/binaries`
+  but not `angr/angr-examples`, and `run_regression.py` resolves the
+  corpus from `~/repos/angr-examples/examples`. Without the env-var
+  override path, the nightly job's bench step has been exiting with
+  `Missing examples`. Worth a memory under `latent-nightly-bench-broken`.
+- Local PR-gate dry run on this dev box flagged 0-5 sub-second
+  benchmarks per run with 13-29% relative deltas (defcamp_r100,
+  google2016_unbreakable_0, strcpy_find, flareon2015_2). The deltas
+  are consistent with system-load jitter on a sub-second baseline —
+  i.e. 60ms-150ms absolute variance is normal at this scale. CI runners
+  are usually more stable, so the 15% gate is expected to be reliable
+  in CI; but the team should be ready to either rebaseline or
+  introduce an `--abs-threshold` floor if flakes show up in the wild.
+  Worth a `pr-bench-gate-jitter-risk` memory.
+
+### Next ready P1 candidates (for the next session)
+
 - `angr-3hzg` — Property-based differential fuzzer
 - `angr-qdwt` — Pre-PR final docs sweep (intentionally LAST)

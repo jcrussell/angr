@@ -80,6 +80,17 @@ MEDIUM_SUITE = [
 # Default: fast only. Use --full for fast + medium.
 REGRESSION_SUITE = FAST_SUITE  # overridden in main() if --full
 
+# Benchmarks whose Rust-side timing is bimodal under Z3 model nondeterminism
+# (slow-mode runs can be ~2x the fast-mode runs even on a stable HEAD). They
+# routinely exceed the 15% regression threshold without a real code change and
+# should be skipped on tight PR gates. See bd memory
+# `invariant-bimodal-variance-benchmarks`.
+BIMODAL_BENCHMARKS = frozenset({
+    "google2016_unbreakable_1",
+    "securityfest_fairlight",
+    "ekopartyctf2016_sokohashv2",
+})
+
 
 def _normalize_output(output):
     """Normalize benchmark output for comparison.
@@ -150,6 +161,9 @@ def main():
                         help="Speedup vs Python below this fails the run (default: 0.5x)")
     parser.add_argument("--no-sla", action="store_true",
                         help="Disable SLA enforcement (skip speedup check entirely)")
+    parser.add_argument("--skip-bimodal", action="store_true",
+                        help="Skip benchmarks with known bimodal Z3 timing variance "
+                             "(intended for PR gates that need stable signal).")
     args = parser.parse_args()
 
     global REGRESSION_SUITE
@@ -166,6 +180,9 @@ def main():
         )
         for e in REGRESSION_SUITE
     ]
+
+    if args.skip_bimodal:
+        REGRESSION_SUITE = [e for e in REGRESSION_SUITE if e[0] not in BIMODAL_BENCHMARKS]
 
     # Verify examples exist
     missing = [name for name, _, _, _ in REGRESSION_SUITE

@@ -57,6 +57,38 @@ jobs:
           python-version: "3.10"
       - run: cargo test --release
 
+  benchmark_regression:
+    name: Benchmark Regression (fast tier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # Rust build dominates (~5-7m cold); bench step itself capped at 3m below
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/binaries
+          path: binaries
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          repository: angr/angr-examples
+          path: angr-examples
+      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
+      - name: Sync dependencies
+        run: uv sync -p 3.10
+      - name: Build Rust extension
+        run: uv run pip install -e . --no-build-isolation --no-deps
+      - name: Run fast-tier benchmark regression
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        # --rust-only: skip the Python comparison run (cuts runtime in half).
+        # --skip-bimodal: exclude Z3-nondeterministic benches whose 2x bimodal
+        #   timing routinely exceeds the 15% regression threshold even on a
+        #   stable HEAD (see bd memory `invariant-bimodal-variance-benchmarks`).
+        # --threshold 0.15: explicit (matches the default) — 15% slower than
+        #   baseline_timings.json fails the gate.
+        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15
+        timeout-minutes: 3
+
   orchestrator_smoke:
     name: Loop Orchestrator Smoke
     runs-on: ubuntu-latest

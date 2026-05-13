@@ -97,11 +97,33 @@ python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 # Run benchmark regression tests (7 fast-tier benchmarks)
 python tests/benchmarks/run_regression.py
 
+# Skip the three bimodal-Z3 benches (unbreakable_1 / fairlight / sokohashv2)
+# — matches the PR-time CI gate, useful when chasing a regression locally.
+python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15
+
 # Run single benchmark (safe, subprocess with 4GB memory limit)
 python tests/benchmarks/run_single.py fauxware --both
 
+# Point at a custom angr-examples checkout (defaults to ~/repos/angr-examples)
+ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_regression.py
+
 # AVOID run_comparison_10.py on <16GB machines (OOM risk)
 ```
+
+### Benchmark gates in CI
+
+- **`.github/workflows/ci.yml::benchmark_regression`** (PR-time): runs the
+  fast-tier suite with `--rust-only --skip-bimodal --threshold 0.15`, capped at
+  3-minute timeout. Fails a PR when any non-bimodal fast-tier bench is more than
+  15% slower than `baseline_timings.json`. Warns (but does not fail) when the
+  Rust-vs-Python speedup, computed against cached `python_time`, slips into the
+  0.5x–1.0x band.
+- **`.github/workflows/nightly-ci.yml::benchmark_regression`** (nightly): runs
+  the same suite without `--skip-bimodal` (bimodal benches still tracked for
+  drift, just expected to vary).
+- Both jobs checkout `angr/angr-examples` and set `ANGR_EXAMPLES_DIR` so
+  `tests/benchmarks/run_single.py` finds the example corpus. Without that the
+  script falls back to `~/repos/angr-examples/examples`.
 
 ## Profiling Rust Benches
 

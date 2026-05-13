@@ -16,7 +16,7 @@ import os
 import sys
 
 
-EXAMPLES_DIR = os.path.expanduser("~/repos/angr-examples/examples")
+EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 DEFAULT_MEM_LIMIT_MB = 4096  # 4 GB — leaves 4 GB for parent + OS on 8GB machine
 
 # Catalog of tested examples with expected behavior
