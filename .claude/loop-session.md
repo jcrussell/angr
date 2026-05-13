@@ -1,69 +1,60 @@
-## Session log: 2026-05-13 — angr-6apa (Centralize Z3 header discovery) — CLOSED
+## Session log: 2026-05-13 — angr-ipd0 (Fix u32 underflow in LoadG truncation) — CLOSED
 
 ### Task
 
-**angr-6apa** (P2, CLOSED) — Z3 header auto-detect probes the venv,
-pkg-config, and standard system include paths from `setup.py`, sets
-`Z3_SYS_Z3_HEADER` before cargo runs, and emits an actionable
-install hint when nothing is found.
+**angr-ipd0** (P3, CLOSED) — Swap argument order in
+`apply_loadg_conversion`'s truncation branch:
+`extract(0, target_bits)` → `extract(target_bits - 1, 0)`.
 
-### Why setup.py and not build.rs
+The branch is currently latent (LoadG always widens) but was a
+correctness trap waiting for a future refactor. With the wrong
+arg order `extract` would have asserted in debug or underflowed
+`result_width = 0 - target_bits + 1` to ~4B in release.
 
-z3-sys's build.rs runs BEFORE our crate's build.rs (cargo runs dep
-build scripts first), so our build.rs cannot influence z3-sys's
-header discovery via cargo:rustc-env. The env var must be set by
-the PARENT process before cargo is invoked — setup.py (called by
-setuptools-rust before cargo) is the right injection point.
+### Root cause
 
-### Probe order (matches setup.py + tools/rebuild-rust.sh --cargo-only)
-
-1. venv `site-packages/z3/include/z3.h` — rare (PyPI wheel ships
-   no headers; only useful after manual copy).
-2. `pkg-config --variable=includedir z3` + `/z3.h`.
-3. `/usr/include`, `/usr/local/include`, `/opt/homebrew/include`,
-   `/opt/local/include`.
-
-If no header matches, prints apt/dnf/brew install hints to stderr
-and lets z3-sys's own pkg-config probe report the build failure.
-
-### Verification
-
-- pkg-config returns `/usr/include`, helper resolves
-  `Z3_SYS_Z3_HEADER=/usr/include/z3.h` ✓
-- preset `Z3_SYS_Z3_HEADER=/sentinel` is honored ✓
-- `cargo check --release` passes ✓
-- `tools/rebuild-rust.sh --cargo-only` rebuild OK (venv pip remains
-  broken — `avoid-broken-venv-pip-rebuild`) ✓
-- `pytest tests/engines/test_rust_exploration.py` 389 pass, 3 fail
-  (`dcas_cmpxchg16b_no_match_keeps_memory`,
-  `pipe_native_dispatch_creates_two_fds`,
-  `dup2_native_dispatch_redirects_stdin`) — these failures
-  reproduce on master (stashed) — pre-existing, unrelated.
+`RustBV::extract(high, low, ctx)` takes INCLUSIVE bit indices,
+asserts `high >= low`, and computes `result_width = high - low + 1`.
+To keep the low N bits, the correct call is `extract(N - 1, 0)`.
+Old call had high=0, low=target_bits — backwards.
 
 ### Files touched
 
-- `setup.py` — new `_resolve_z3_header()` helper, called at module
-  load (before `setup()`).
-- `native/angr/build.rs` — comment now points at the setup.py helper.
-- `tools/rebuild-rust.sh` — --cargo-only fallback probes the same
-  ordered list as setup.py.
-- `CLAUDE.md` — Build section + Common Issues subsection refreshed.
+- `native/angr/src/interpreter_cb/expressions.rs:711` — fixed
+  arg order with explanatory comment.
+- `native/angr/src/interpreter_cb/expressions.rs` (test module) —
+  added `apply_loadg_conversion_truncates_when_src_wider`
+  regression test (0xdead_beef @ 32 bits truncates to 0xbeef @ 16).
+
+### Verification
+
+- `cargo check --release` ✓
+- `cargo test --release --lib apply_loadg_conversion` — 5/5 pass ✓
+- `tools/rebuild-rust.sh --cargo-only` rebuild ✓ (venv pip is
+  still broken — `avoid-broken-venv-pip-rebuild`).
+- `pytest tests/engines/test_rust_exploration.py` — 389 pass,
+  same 3 pre-existing failures as last session
+  (`dcas_cmpxchg16b_no_match_keeps_memory`,
+  `pipe_native_dispatch_creates_two_fds`,
+  `dup2_native_dispatch_redirects_stdin`). Unrelated to this fix.
 
 ### Commit
 
-`d66c5d969` build(rust-symex): centralize Z3 header discovery in setup.py (angr-6apa)
+`566be309f` fix(rust-symex): correct extract arg order in LoadG truncation branch (angr-ipd0)
 
-### Memories saved
+### Memories saved / updated
 
-- `invariant-z3-sys-build-script-ordering`
-- `z3-header-discovery-probe-order`
+- NEW `invariant-rustbv-extract-args` — `RustBV::extract` API
+  semantics + how to construct low/high N-bit extracts correctly.
+- UPDATED `apply-loadg-truncation-bug` — marked FIXED with commit
+  hash and regression-test name.
 
-### Followups visible from session (not filed)
+### Still-open followup from prior session (unchanged)
 
-- The 3 pre-existing test failures (dcas, pipe native, dup2 native)
-  reproduce on a stashed checkout — present before this session
-  began. No existing bd issue covers them. Did not file because
-  the failures appear after a `tools/rebuild-rust.sh --cargo-only`
-  rebuild, which may differ subtly from `pip install -e .` (the
-  normal path). Worth re-checking after the next `pip install`
-  builds; if still failing, file a P2 bug.
+Three pre-existing test failures (`dcas`, `pipe native`, `dup2
+native`) remain. They reproduce after a `tools/rebuild-rust.sh
+--cargo-only` rebuild. No existing bd issue covers them. The prior
+session deferred filing because the cargo-only rebuild path can
+differ subtly from `pip install -e .` and the venv's pip is still
+broken so we can't re-check the conventional way. Worth filing as
+a P2 bug after `avoid-broken-venv-pip-rebuild` is resolved.
