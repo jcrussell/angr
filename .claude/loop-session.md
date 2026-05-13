@@ -1,51 +1,52 @@
-## Session log: 2026-05-13 — angr-w2je (unsat_core() FFI completion)
+## Session log: 2026-05-13 — angr-govb + angr-wvxj (auto-memory housekeeping)
 
-### Task
-P2: `RustSolverContext.unsat_core()` was exposed via PyO3
-(solver.rs:532) but always returned `[]` — `add_constraint_ast()` uses
-`add_constraint_raw()` which calls `solver.assert()` (untracked), not
-`solver.assert_and_track()`. The `constraint_trackers` vector stayed
-empty, so the post-UNSAT lookup found no matches.
+Two related memory-housekeeping tasks closed in the same session.
 
-### What was done
-- `native/angr/src/solver.rs` — added
-  `add_constraint_tracked_ast(ast) -> int`. Mirrors
-  `add_constraint_ast` but routes through the new
-  `SymContext::add_constraint_tracked_indexed` and returns the
-  assigned tracker index. Both the fast (raw Z3 ptr) and slow
-  (claripy → RustBV → to_z3_bool) paths are supported; without z3
-  feature the method returns `PyRuntimeError`.
-- `native/angr/src/symbolic/context.rs` — renamed
-  `add_constraint_tracked` → `add_constraint_tracked_indexed` and
-  changed return type from `()` to `usize` (tracker index). No
-  existing callers, safe rename. Hot-path `add_constraint`/_raw paths
-  untouched.
-- Added three test cases under `TestSolverOperations`:
-  - `test_unsat_core_reports_contributing_indices`: idx returned from
-    add_constraint_tracked_ast, asserts core contains the contradicting
-    pair.
-  - `test_unsat_core_empty_when_untracked`: locks down the silent-
-    empty behaviour for the untracked fast path (matches the
-    `avoid-rust-tracking-actions-silent-ignore` memory).
-  - `test_unsat_core_empty_when_sat`: tracked but SAT → core is [].
+### angr-govb — project_rust_engine.md refresh
+P1 chore. Auto-memory `project_rust_engine.md` was 32 days old and
+claimed "14/14 tests passing" (real count: 389 tests, 22 benchmarks,
+17/22 faster than Python). Rewrote as a thin pointer to CLAUDE.md
+(the live doc). Rationale: snapshots in memory rot; pointers do not.
+Updated MEMORY.md index entry to match.
+
+### angr-wvxj — endianness_bug distillation
+P1 chore. Auto-memory `project_endianness_bug.md` documented three
+bugs (wide symbolic import endianness, Rust solver eval fallback,
+pre-pinning overconstrain) that are all FIXED in code. Verified the
+three referenced commits exist (bb1a908dc, 1f823ba68, 2f0e8164f) and
+that `_attach_rust_solver_fallback` is still wired (rust_state_export,
+rust_state_proxy, rust_state_cache).
+
+Replaced with `feedback_constraint_export.md`, framed as a lesson:
+- Rule: don't pre-pin tracked symbols with ast==BVV during export.
+- Why: pre-pinning overconstrains because get_state_memory() concrete
+  values can disagree with the actual model — broke fauxware and
+  flareon2015_5 in the rolled-back attempt.
+- How to apply: ensure `_attach_rust_solver_fallback` is wired on
+  every new export path; Rust eval returns LE bytes (reverse for
+  cast_to=bytes); wide symbolic loads need Iend_BE + Reverse().
+
+Deleted the original .md, updated MEMORY.md index, cross-ref in
+project_rust_engine.md.
 
 ### Verification
-- `cargo check --release` — clean.
-- `tools/rebuild-rust.sh --cargo-only` — succeeded (pip in this
-  venv is broken, per the prior session note).
-- pytest: 389 passed, 3 pre-existing failures
-  (`test_pipe_native_dispatch_creates_two_fds`,
-  `test_dup2_native_dispatch_redirects_stdin`,
-  `test_dcas_cmpxchg16b_no_match_keeps_memory`). Baseline at HEAD was
-  386 passed + 3 failed; new tests add +3. No regressions.
+No code changes. Memory files live outside the repo. `git status`
+clean (only untracked `.venv/`). No build/test required.
 
-### Architectural note
-The fast path (extract_z3_ast_ptr) preserves claripy's original Z3
-AST structure. The slow path goes through claripy_to_rustbv +
-to_z3_bool — width 1 BV is treated as a bool directly; wider BV is
-converted via ne(0). Both paths feed
-`SymContext::add_constraint_tracked_indexed` which is the single
-write point for `constraint_trackers`.
+### Memories saved this session
+- `invariant-memory-pointer-vs-snapshot` — snapshots in memory rot;
+  prefer pointers to CLAUDE.md for live state.
+- `avoid-prepinning-export-constraints` — the pre-pinning anti-pattern
+  with the rollback history.
 
 ### Prior session
-`angr-dxsf` (gitignore) closed clean at 58e50aaf0.
+`angr-w2je` (unsat_core FFI) closed at 190186a32.
+
+### Next ready work
+- `angr-7ylc` (P1, contributor guide: native SimProcedures) — has
+  comment redirecting output to .rst tree.
+- `angr-2bjx` (P1, contributor guide: VEX ops) — also redirected to
+  .rst.
+- `angr-zv0a` (P1, migrate docs/RUST_*.md into Sphinx tree).
+- `angr-qdwt` (P1, pre-PR docs sweep) — runs LAST, blocked on
+  in-flight docs/test work.
