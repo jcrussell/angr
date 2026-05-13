@@ -821,3 +821,181 @@ impl<'a> CallbackInterpreter<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vex::ir::{Endness, IRType};
+
+    fn new_interp(ctx: &SymContext) -> CallbackInterpreter<'_> {
+        CallbackInterpreter::new(VexArch::AMD64, ctx)
+    }
+
+    #[test]
+    fn eval_const_u32_matches_width_and_value() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let bv = interp.eval_const(&IRConst::U32(0xdead_beef));
+        assert_eq!(bv.width(), 32);
+        assert_eq!(bv.as_u64(), Some(0xdead_beef));
+    }
+
+    #[test]
+    fn eval_const_u1_round_trips() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let t = interp.eval_const(&IRConst::U1(true));
+        let f = interp.eval_const(&IRConst::U1(false));
+        assert_eq!(t.width(), 1);
+        assert_eq!(t.as_u64(), Some(1));
+        assert_eq!(f.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn eval_const_u128_preserves_high_bits() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let value: u128 = (1u128 << 100) | 0xff;
+        let bv = interp.eval_const(&IRConst::U128(value));
+        assert_eq!(bv.width(), 128);
+        assert_eq!(bv.as_u128(), Some(value));
+    }
+
+    #[test]
+    fn eval_const_f32_packs_to_bits() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let bv = interp.eval_const(&IRConst::F32(1.0));
+        assert_eq!(bv.width(), 32);
+        assert_eq!(bv.as_u64(), Some(f32::to_bits(1.0) as u64));
+    }
+
+    #[test]
+    fn eval_expr_simple_const() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let env = TypeEnv::new();
+        let bv = interp
+            .eval_expr_simple(&IRExpr::Const(IRConst::U64(0x1234)), &env)
+            .expect("const eval");
+        assert_eq!(bv.as_u64(), Some(0x1234));
+    }
+
+    #[test]
+    fn eval_expr_simple_rdtmp_returns_stored_value() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        interp.temps.resize(4, None);
+        interp.temps[2] = Some(RustBV::concrete(0xabc, 32));
+        let env = TypeEnv::new();
+        let bv = interp
+            .eval_expr_simple(&IRExpr::RdTmp(2), &env)
+            .expect("temp eval");
+        assert_eq!(bv.as_u64(), Some(0xabc));
+    }
+
+    #[test]
+    fn eval_expr_simple_unknown_temp_errors() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let env = TypeEnv::new();
+        let err = interp
+            .eval_expr_simple(&IRExpr::RdTmp(0), &env)
+            .expect_err("missing temp should error");
+        matches!(err, CbExecutionError::UnknownTemp(0));
+    }
+
+    #[test]
+    fn eval_expr_simple_get_register_reads_zero_initially() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let env = TypeEnv::new();
+        // AMD64 RAX = offset 16, 8 bytes
+        let bv = interp
+            .eval_expr_simple(
+                &IRExpr::Get {
+                    offset: 16,
+                    ty: IRType::I64,
+                },
+                &env,
+            )
+            .expect("get eval");
+        assert_eq!(bv.width(), 64);
+        assert_eq!(bv.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn eval_expr_simple_get_reads_register_after_write() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        interp.registers.put_reg("rax", RustBV::concrete(0xfeed, 64));
+        let env = TypeEnv::new();
+        let bv = interp
+            .eval_expr_simple(
+                &IRExpr::Get {
+                    offset: 16, // RAX on AMD64
+                    ty: IRType::I64,
+                },
+                &env,
+            )
+            .expect("get eval");
+        assert_eq!(bv.as_u64(), Some(0xfeed));
+    }
+
+    #[test]
+    fn eval_expr_simple_rejects_complex_load() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let env = TypeEnv::new();
+        let load = IRExpr::Load {
+            addr: Box::new(IRExpr::Const(IRConst::U64(0x1000))),
+            ty: IRType::I64,
+            endness: Endness::Little,
+        };
+        let err = interp
+            .eval_expr_simple(&load, &env)
+            .expect_err("simple eval should not handle Load");
+        matches!(err, CbExecutionError::Unsupported(_));
+    }
+
+    #[test]
+    fn apply_loadg_conversion_widens_zero() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let val = RustBV::concrete(0xff, 8);
+        let widened = interp.apply_loadg_conversion(IRLoadGOp::WidenZ, val, 32);
+        assert_eq!(widened.width(), 32);
+        assert_eq!(widened.as_u64(), Some(0xff));
+    }
+
+    #[test]
+    fn apply_loadg_conversion_widens_signed() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        // 0xff as signed i8 is -1; zero-extend says 0xff (255); sign-extend says 0xffffffff.
+        let val = RustBV::concrete(0xff, 8);
+        let widened = interp.apply_loadg_conversion(IRLoadGOp::WidenS, val, 32);
+        assert_eq!(widened.width(), 32);
+        assert_eq!(widened.as_u64(), Some(0xffff_ffff));
+    }
+
+    #[test]
+    fn apply_loadg_conversion_identity_passes_through() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let val = RustBV::concrete(0xab, 8);
+        let same = interp.apply_loadg_conversion(IRLoadGOp::Identity, val, 8);
+        assert_eq!(same.width(), 8);
+        assert_eq!(same.as_u64(), Some(0xab));
+    }
+
+    #[test]
+    fn apply_loadg_conversion_same_width_is_no_op() {
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let val = RustBV::concrete(0xdead_beef, 32);
+        let same = interp.apply_loadg_conversion(IRLoadGOp::WidenZ, val, 32);
+        assert_eq!(same.width(), 32);
+        assert_eq!(same.as_u64(), Some(0xdead_beef));
+    }
+}

@@ -99,3 +99,136 @@ impl<'a> CallbackInterpreter<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_interp(ctx: &SymContext) -> CallbackInterpreter<'_> {
+        CallbackInterpreter::new(VexArch::AMD64, ctx)
+    }
+
+    #[test]
+    fn concrete_address_does_not_get_tracked() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let concrete = RustBV::concrete(0x4000, 64);
+        interp.track_concretization_constraint(&concrete, 0x4000);
+        assert_eq!(interp.pending_constraint_count(), 0);
+        assert!(!interp.has_pending_constraints());
+    }
+
+    #[test]
+    fn symbolic_address_gets_tracked() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let sym = RustBV::symbolic(&ctx, "addr", 64);
+        interp.track_concretization_constraint(&sym, 0xdead_beef);
+        assert_eq!(interp.pending_constraint_count(), 1);
+        assert!(interp.has_pending_constraints());
+        let exported = interp.export_constraints_for_python();
+        assert_eq!(exported.len(), 1);
+        let (desc, width, value, handle_id) = &exported[0];
+        assert_eq!(*width, 64);
+        assert_eq!(*value, 0xdead_beef_u128);
+        assert_eq!(*handle_id, None);
+        assert!(desc.contains("addr_concretize"));
+        assert!(desc.contains("deadbeef"));
+    }
+
+    #[test]
+    fn branch_true_on_concrete_is_dropped() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let cond = RustBV::concrete(1, 1);
+        interp.track_branch_constraint(&cond, true);
+        assert_eq!(interp.pending_constraint_count(), 0);
+    }
+
+    #[test]
+    fn branch_true_on_symbolic_is_tracked() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let cond = RustBV::symbolic(&ctx, "cond", 1);
+        interp.track_branch_constraint(&cond, true);
+        assert_eq!(interp.pending_constraint_count(), 1);
+        let (desc, width, value, _) = &interp.export_constraints_for_python()[0];
+        assert_eq!(desc, "branch_true");
+        assert_eq!(*width, 1);
+        assert_eq!(*value, 1);
+    }
+
+    #[test]
+    fn branch_false_on_symbolic_records_zero() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let cond = RustBV::symbolic(&ctx, "cond", 1);
+        interp.track_branch_constraint(&cond, false);
+        let (desc, _width, value, _) = &interp.export_constraints_for_python()[0];
+        assert_eq!(desc, "branch_false");
+        assert_eq!(*value, 0);
+    }
+
+    #[test]
+    fn clear_drops_all_pending() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let sym = RustBV::symbolic(&ctx, "x", 64);
+        interp.track_concretization_constraint(&sym, 0x1000);
+        interp.track_branch_constraint(&sym, true);
+        assert_eq!(interp.pending_constraint_count(), 2);
+        interp.clear_pending_constraints();
+        assert_eq!(interp.pending_constraint_count(), 0);
+        assert!(!interp.has_pending_constraints());
+    }
+
+    #[test]
+    fn multiple_constraints_preserve_order() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let a = RustBV::symbolic(&ctx, "a", 64);
+        let b = RustBV::symbolic(&ctx, "b", 1);
+        interp.track_concretization_constraint(&a, 0x10);
+        interp.track_branch_constraint(&b, true);
+        interp.track_concretization_constraint(&a, 0x20);
+        let exported = interp.export_constraints_for_python();
+        assert_eq!(exported.len(), 3);
+        assert_eq!(exported[0].2, 0x10);
+        assert_eq!(exported[1].0, "branch_true");
+        assert_eq!(exported[2].2, 0x20);
+    }
+
+    #[test]
+    fn pending_constraint_branch_helpers_set_concrete_values() {
+        let ctx = SymContext::new_mock();
+        let cond = RustBV::symbolic(&ctx, "c", 1);
+        let t = PendingConstraint::branch_true(cond.clone());
+        let f = PendingConstraint::branch_false(cond);
+        assert_eq!(t.concrete_value, 1);
+        assert_eq!(t.description, "branch_true");
+        assert_eq!(f.concrete_value, 0);
+        assert_eq!(f.description, "branch_false");
+    }
+
+    #[test]
+    fn address_concretization_with_handle_preserves_id() {
+        let ctx = SymContext::new_mock();
+        let addr = RustBV::symbolic(&ctx, "p", 64);
+        let pc = PendingConstraint::address_concretization_with_handle(addr, 0x1234, Some(42));
+        assert_eq!(pc.handle_id, Some(42));
+        assert_eq!(pc.concrete_value, 0x1234);
+        assert!(pc.description.contains("1234"));
+    }
+
+    #[test]
+    fn get_pending_constraints_returns_same_as_export() {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let sym = RustBV::symbolic(&ctx, "z", 32);
+        interp.track_concretization_constraint(&sym, 0xabcd);
+        let pending = interp.get_pending_constraints();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].concrete_value, 0xabcd);
+        assert_eq!(pending[0].expression.width(), 32);
+    }
+}
