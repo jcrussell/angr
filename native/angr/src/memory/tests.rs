@@ -95,7 +95,8 @@ fn test_symbolic_load_concrete_fast_path() {
 
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
-    mem.store_concrete(0x1000, RustBV::concrete(0x12345678, 32)).unwrap();
+    mem.store_concrete(0x1000, RustBV::concrete(0x12345678, 32))
+        .unwrap();
 
     // Load with concrete address should work
     let addr = RustBV::concrete(0x1000, 64);
@@ -128,7 +129,8 @@ fn test_permission_enforcement_disabled_by_default() {
     mem.map(0x1000, 0x1000, Permission::R);
     assert!(!mem.enforce_permissions());
 
-    mem.store_concrete(0x1000, RustBV::concrete(0xCAFE, 16)).unwrap();
+    mem.store_concrete(0x1000, RustBV::concrete(0xCAFE, 16))
+        .unwrap();
     let loaded = mem.load_concrete(0x1000, 2, &ctx).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xCAFE));
 }
@@ -143,7 +145,11 @@ fn test_permission_enforcement_blocks_write_to_readonly() {
         .store_concrete(0x1000, RustBV::concrete(0xCAFE, 16))
         .unwrap_err();
     match err {
-        MemoryError::Permission { addr, required, actual } => {
+        MemoryError::Permission {
+            addr,
+            required,
+            actual,
+        } => {
             assert_eq!(addr, 0x1000);
             assert!(required.write);
             assert!(!actual.write);
@@ -163,7 +169,11 @@ fn test_permission_enforcement_blocks_read_from_writeonly() {
 
     let err = mem.load_concrete(0x1000, 2, &ctx).unwrap_err();
     match err {
-        MemoryError::Permission { addr, required, actual } => {
+        MemoryError::Permission {
+            addr,
+            required,
+            actual,
+        } => {
             assert_eq!(addr, 0x1000);
             assert!(required.read);
             assert!(!actual.read);
@@ -179,7 +189,8 @@ fn test_permission_enforcement_allows_rwx() {
     mem.map(0x1000, 0x1000, Permission::RWX);
     mem.set_enforce_permissions(true);
 
-    mem.store_concrete(0x1000, RustBV::concrete(0xBEEF, 16)).unwrap();
+    mem.store_concrete(0x1000, RustBV::concrete(0xBEEF, 16))
+        .unwrap();
     let loaded = mem.load_concrete(0x1000, 2, &ctx).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xBEEF));
 }
@@ -220,7 +231,11 @@ fn test_check_executable_rejects_non_x_page() {
     mem.set_enforce_permissions(true);
     let err = mem.check_executable(0x1234).unwrap_err();
     match err {
-        MemoryError::Permission { addr, required, actual } => {
+        MemoryError::Permission {
+            addr,
+            required,
+            actual,
+        } => {
             assert_eq!(addr, 0x1234);
             assert_eq!(required, Permission::X);
             assert_eq!(actual, Permission::RW);
@@ -299,9 +314,7 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
     // addr1's solution constraint (== 0x1000) must survive: probing
     // an alternative value in a forked context must be UNSAT.
     let probe_addr = ctx.fork();
-    probe_addr.assume_true(
-        &addr1.eq(&RustBV::concrete(0x2000, 64), &probe_addr),
-    );
+    probe_addr.assume_true(&addr1.eq(&RustBV::concrete(0x2000, 64), &probe_addr));
     assert!(
         !probe_addr.is_sat(),
         "addr1==0x1000 must survive partial-overlap stores; \
@@ -311,8 +324,7 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
     // sym1's value constraint must survive: probing sym1 == 0 must
     // be UNSAT (sym1 is pinned to 0xDEAD_BEEF_F00D_BABE).
     let probe_sym1 = ctx.fork();
-    probe_sym1
-        .assume_true(&sym1.eq(&RustBV::concrete(0, 64), &probe_sym1));
+    probe_sym1.assume_true(&sym1.eq(&RustBV::concrete(0, 64), &probe_sym1));
     assert!(
         !probe_sym1.is_sat(),
         "sym1's value constraint must survive partial-overlap stores; \
@@ -381,7 +393,8 @@ fn test_big_endian_128bit_wide_symbolic_store() {
             ctx.eval(&byte_bv),
             Some(expected),
             "BE byte at offset {} expected 0x{:02x}",
-            i, expected
+            i,
+            expected
         );
     }
 
@@ -470,7 +483,8 @@ fn test_little_endian_128bit_wide_symbolic_store() {
             ctx.eval(&byte_bv),
             Some(expected),
             "LE byte at offset {} expected 0x{:02x}",
-            i, expected
+            i,
+            expected
         );
     }
 
@@ -533,7 +547,10 @@ fn per_byte_symbolic_setup(endness: Endness) -> (SymContext, SymbolicMemory, [u1
         ctx.assume_true(&sym.eq(&RustBV::concrete(val, 8), &ctx));
         mem.store_concrete(0x1000 + i as u64, sym).unwrap();
     }
-    assert!(ctx.is_sat(), "context must remain SAT after per-byte stores");
+    assert!(
+        ctx.is_sat(),
+        "context must remain SAT after per-byte stores"
+    );
     (ctx, mem, pinned)
 }
 
@@ -923,7 +940,11 @@ fn test_permission_enforcement_unaligned_store_two_pages_middle_readonly() {
     let value = RustBV::concrete(0xDEADBEEFCAFEBABE, 32 * 8);
     let err = mem.store_concrete(0x1FF0, value).unwrap_err();
     match err {
-        MemoryError::Permission { addr, required, actual } => {
+        MemoryError::Permission {
+            addr,
+            required,
+            actual,
+        } => {
             assert_eq!(
                 addr, 0x2000,
                 "Permission error should point at R-only middle page"
@@ -952,7 +973,11 @@ fn test_permission_enforcement_wide_store_three_pages_middle_readonly() {
     let value = RustBV::concrete(0xCAFEBABE, width_bits);
     let err = mem.store_concrete(0x1FF0, value).unwrap_err();
     match err {
-        MemoryError::Permission { addr, required, actual } => {
+        MemoryError::Permission {
+            addr,
+            required,
+            actual,
+        } => {
             assert_eq!(
                 addr, 0x2000,
                 "Permission error should point at R-only middle page \
@@ -990,8 +1015,10 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     // Store sym1 at 0x1000 (covers 0x1000..0x1008), then sym2 at
     // 0x1004 (covers 0x1004..0x100C). Bytes 0x1004..0x1008 are now
     // sym2's lower half; bytes 0x1000..0x1004 remain sym1's lower half.
-    mem.store_concrete(0x1000, sym1.clone()).expect("store sym1");
-    mem.store_concrete(0x1004, sym2.clone()).expect("store sym2");
+    mem.store_concrete(0x1000, sym1.clone())
+        .expect("store sym1");
+    mem.store_concrete(0x1004, sym2.clone())
+        .expect("store sym2");
     assert!(ctx.is_sat(), "context must remain SAT after both stores");
 
     // 8-byte load at 0x1000 must reflect both writes:
@@ -1153,7 +1180,11 @@ fn test_permission_enforcement_wide_load_three_pages_middle_writeonly() {
 
     let err = mem.load_concrete(0x1FF0, 8208, &ctx).unwrap_err();
     match err {
-        MemoryError::Permission { addr, required, actual } => {
+        MemoryError::Permission {
+            addr,
+            required,
+            actual,
+        } => {
             assert_eq!(
                 addr, 0x2000,
                 "Permission error should point at W-only middle page"

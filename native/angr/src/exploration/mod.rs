@@ -9,41 +9,44 @@
 //! This achieves ~3x speedup by keeping state management in Rust and
 //! minimizing Python callback overhead.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::stash::{
+    STASH_ACTIVE, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_FOUND, STASH_PRUNED,
+    STASH_UNCONSTRAINED, StashManager,
+};
 use rustc_hash::FxHashMap;
-use crate::stash::{StashManager, STASH_ACTIVE, STASH_FOUND, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_PRUNED, STASH_UNCONSTRAINED};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use pyo3::class::{PyTraverseError, PyVisit};
-use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::arch::{arch_from_name, default_cc_for_arch};
-use crate::callbacks::{ExecutionConfig, PythonCallbacks, RunResult, DeferredFork};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
-use crate::interpreter_cb::{CallbackInterpreter, ExecutionStats, DCAS_UNSUPPORTED_REASON};
+use crate::interpreter_cb::{CallbackInterpreter, DCAS_UNSUPPORTED_REASON, ExecutionStats};
 use crate::memory::Permission;
 use crate::procedures::NativeProcedureRegistry;
-use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
 use crate::symbolic::{RustBV, SymContext};
+use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 
 use std::cell::Cell;
 
-mod stepping;
-mod helpers;
-mod profiling;
 mod constraints;
-mod memory_config;
 mod execution_env;
-mod run_loop;
-mod resume;
+mod helpers;
+mod memory_config;
 mod pending_api;
+mod profiling;
+mod resume;
+mod run_loop;
 mod state_api;
 mod state_lifecycle;
 mod stats_api;
+mod stepping;
 
 use self::constraints::{ConstraintSolver, ConstraintTracker};
 use self::execution_env::ExecutionEnvironment;
@@ -140,7 +143,12 @@ pub struct ExplorationEvent {
 
 impl ExplorationEvent {
     /// Base constructor with common fields; all Optional fields default to None.
-    pub(crate) fn base(event_type: &str, found_count: usize, active_count: usize, steps: u64) -> Self {
+    pub(crate) fn base(
+        event_type: &str,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
+    ) -> Self {
         ExplorationEvent {
             event_type: event_type.to_string(),
             found_count,
@@ -177,8 +185,14 @@ impl ExplorationEvent {
     }
 
     pub(crate) fn need_simprocedure(
-        state_id: u64, addr: u64, name: String, num_args: usize, return_addr: u64,
-        found_count: usize, active_count: usize, steps: u64,
+        state_id: u64,
+        addr: u64,
+        name: String,
+        num_args: usize,
+        return_addr: u64,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
     ) -> Self {
         ExplorationEvent {
             callback_state_id: Some(state_id),
@@ -192,8 +206,11 @@ impl ExplorationEvent {
     }
 
     pub(crate) fn need_syscall(
-        state_id: u64, syscall_num: u64,
-        found_count: usize, active_count: usize, steps: u64,
+        state_id: u64,
+        syscall_num: u64,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
     ) -> Self {
         ExplorationEvent {
             callback_state_id: Some(state_id),
@@ -204,8 +221,13 @@ impl ExplorationEvent {
     }
 
     pub(crate) fn need_symbolic_branch(
-        state_id: u64, condition_id: u64, true_target: u64, false_target: u64,
-        found_count: usize, active_count: usize, steps: u64,
+        state_id: u64,
+        condition_id: u64,
+        true_target: u64,
+        false_target: u64,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
     ) -> Self {
         ExplorationEvent {
             callback_state_id: Some(state_id),
@@ -217,7 +239,12 @@ impl ExplorationEvent {
         }
     }
 
-    pub(crate) fn error(message: String, found_count: usize, active_count: usize, steps: u64) -> Self {
+    pub(crate) fn error(
+        message: String,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
+    ) -> Self {
         ExplorationEvent {
             callback_reason: Some(message),
             ..Self::base(STASH_ERRORED, found_count, active_count, steps)
@@ -225,8 +252,12 @@ impl ExplorationEvent {
     }
 
     pub(crate) fn need_python_vex(
-        state_id: u64, addr: u64, reason: &str,
-        found_count: usize, active_count: usize, steps: u64,
+        state_id: u64,
+        addr: u64,
+        reason: &str,
+        found_count: usize,
+        active_count: usize,
+        steps: u64,
     ) -> Self {
         ExplorationEvent {
             callback_state_id: Some(state_id),
@@ -309,10 +340,7 @@ impl PendingCallback {
 pub(crate) enum NativeTechnique {
     /// Limits path length by block count. States exceeding `max_length` blocks
     /// are moved to "cut" (or "_DROP" if `drop` is true).
-    LengthLimiter {
-        max_length: usize,
-        drop: bool,
-    },
+    LengthLimiter { max_length: usize, drop: bool },
     /// Wall-clock timeout. Exploration stops after `timeout_secs` seconds.
     Timeout {
         timeout_secs: f64,
@@ -320,10 +348,7 @@ pub(crate) enum NativeTechnique {
     },
     /// Basic loop bounding: limits how many times a single address can appear
     /// in a state's history. States exceeding the bound are moved to `discard_stash`.
-    LoopBound {
-        bound: usize,
-        discard_stash: String,
-    },
+    LoopBound { bound: usize, discard_stash: String },
 }
 
 /// Rust-native exploration manager.
@@ -426,9 +451,8 @@ impl RustExplorationManager {
     #[new]
     #[pyo3(signature = (arch="amd64", little_endian=None))]
     pub fn new(arch: &str, little_endian: Option<bool>) -> PyResult<Self> {
-        let arch_info = arch_from_name(arch).ok_or_else(|| {
-            PyValueError::new_err(format!("unsupported architecture: {}", arch))
-        })?;
+        let arch_info = arch_from_name(arch)
+            .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {}", arch)))?;
 
         let vex_arch = arch_info.vex_arch();
 
@@ -463,7 +487,7 @@ impl RustExplorationManager {
             syscall_python_fallback_count: 0,
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
-            use_lifo: false,  // P9: Default to BFS (FIFO)
+            use_lifo: false, // P9: Default to BFS (FIFO)
             constraint_solver: ConstraintSolver::new(),
             memory_config: MemoryConfiguration::default(),
             max_active_states: None,
@@ -472,7 +496,6 @@ impl RustExplorationManager {
             profiling: ProfilingCollector::default(),
         })
     }
-
 
     // =========================================================================
     // PyAPI methods (from pyapi.rs)
@@ -497,7 +520,11 @@ impl RustExplorationManager {
 
     /// Get found state count.
     pub fn found_count(&self) -> usize {
-        self.sm.stashes().get(STASH_FOUND).map(|s| s.len()).unwrap_or(0)
+        self.sm
+            .stashes()
+            .get(STASH_FOUND)
+            .map(|s| s.len())
+            .unwrap_or(0)
     }
 
     /// Get stash counts as a dictionary.
@@ -600,7 +627,9 @@ impl RustExplorationManager {
     /// Set a per-address VEX optimization level override.
     /// Blocks at this address will be lifted with the specified opt_level.
     pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {
-        self.memory_config.vex_opt_level_overrides.insert(addr, level);
+        self.memory_config
+            .vex_opt_level_overrides
+            .insert(addr, level);
         // Remove this address from block cache since opt_level changed
         self.environment.block_cache.pop(&addr);
     }
@@ -613,7 +642,12 @@ impl RustExplorationManager {
 
     /// Clear all per-address VEX optimization level overrides.
     pub fn clear_vex_opt_level_overrides(&mut self) {
-        let addrs: Vec<u64> = self.memory_config.vex_opt_level_overrides.keys().copied().collect();
+        let addrs: Vec<u64> = self
+            .memory_config
+            .vex_opt_level_overrides
+            .keys()
+            .copied()
+            .collect();
         self.memory_config.vex_opt_level_overrides.clear();
         for addr in addrs {
             self.environment.block_cache.pop(&addr);
@@ -623,7 +657,10 @@ impl RustExplorationManager {
     /// Resolve the VEX optimization level for a given address.
     /// Per-address overrides take precedence over the global level.
     pub fn resolve_vex_opt_level(&self, addr: u64) -> Option<i32> {
-        self.memory_config.vex_opt_level_overrides.get(&addr).copied()
+        self.memory_config
+            .vex_opt_level_overrides
+            .get(&addr)
+            .copied()
             .or(self.memory_config.vex_opt_level)
     }
 
@@ -766,7 +803,8 @@ impl RustExplorationManager {
 
     /// Load binary code regions.
     pub fn load_binary_regions(&mut self, regions: Vec<(u64, Vec<u8>)>) {
-        self.environment.binary_regions = regions.into_iter()
+        self.environment.binary_regions = regions
+            .into_iter()
             .map(|(base, data)| (base, Arc::new(data)))
             .collect();
     }
@@ -801,7 +839,10 @@ impl RustExplorationManager {
     /// Get the PC of a state in a stash by index.
     #[pyo3(signature = (stash="active", index=0))]
     pub fn get_state_pc(&self, stash: &str, index: usize) -> Option<u64> {
-        self.sm.get(stash).and_then(|s| s.get(index)).map(|s| s.pc())
+        self.sm
+            .get(stash)
+            .and_then(|s| s.get(index))
+            .map(|s| s.pc())
     }
 
     /// Get the PC of a state by its ID (O(1) via state index, no full export).
@@ -813,7 +854,8 @@ impl RustExplorationManager {
     /// Get state IDs in a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn get_state_ids(&self, stash: &str) -> Vec<u64> {
-        self.sm.get(stash)
+        self.sm
+            .get(stash)
             .map(|s| s.iter().map(|state| state.state_id()).collect())
             .unwrap_or_default()
     }
@@ -823,10 +865,13 @@ impl RustExplorationManager {
     /// a state's address and stdout haven't changed.
     #[pyo3(signature = (stash="active"))]
     pub fn get_state_predicate_info(&self, stash: &str) -> Vec<(u64, u64, usize)> {
-        self.sm.get(stash)
-            .map(|s| s.iter().map(|state| {
-                (state.state_id(), state.pc(), state.stdout_buffer().len())
-            }).collect())
+        self.sm
+            .get(stash)
+            .map(|s| {
+                s.iter()
+                    .map(|state| (state.state_id(), state.pc(), state.stdout_buffer().len()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -1391,13 +1436,23 @@ impl RustExplorationManager {
 
     /// Move states between stashes.
     /// See [`state_lifecycle::_move_states`] for the body.
-    pub fn move_states(&mut self, from_stash: &str, to_stash: &str, filter_fn: Option<Py<PyAny>>) -> PyResult<usize> {
+    pub fn move_states(
+        &mut self,
+        from_stash: &str,
+        to_stash: &str,
+        filter_fn: Option<Py<PyAny>>,
+    ) -> PyResult<usize> {
         self._move_states(from_stash, to_stash, filter_fn)
     }
 
     /// P8 fix: Move a single state by ID between stashes.
     /// See [`state_lifecycle::_move_state`] for the body.
-    pub fn move_state(&mut self, state_id: u64, from_stash: &str, to_stash: &str) -> PyResult<bool> {
+    pub fn move_state(
+        &mut self,
+        state_id: u64,
+        from_stash: &str,
+        to_stash: &str,
+    ) -> PyResult<bool> {
         self._move_state(state_id, from_stash, to_stash)
     }
 
@@ -1476,7 +1531,8 @@ impl RustExplorationManager {
 
     /// Get list of available native procedures.
     pub fn list_native_procedures(&self) -> Vec<String> {
-        self.native_procedures.procedure_names()
+        self.native_procedures
+            .procedure_names()
             .iter()
             .map(|s| s.to_string())
             .collect()
@@ -1508,11 +1564,9 @@ impl RustExplorationManager {
         no_return: bool,
         callable: Py<PyAny>,
     ) {
-        let proc = std::sync::Arc::new(
-            crate::procedures::python_proc::PythonNativeProcedure::new(
-                name, num_args, no_return, callable,
-            ),
-        );
+        let proc = std::sync::Arc::new(crate::procedures::python_proc::PythonNativeProcedure::new(
+            name, num_args, no_return, callable,
+        ));
         self.native_procedures.register(proc);
     }
 
@@ -1529,7 +1583,10 @@ impl RustExplorationManager {
         self.constraint_tracker.uniqueness_registers = register_names;
         self.constraint_tracker.uniqueness_set.clear();
         // Ensure not_unique stash exists
-        self.sm.stashes_mut().entry("not_unique".to_string()).or_insert_with(VecDeque::new);
+        self.sm
+            .stashes_mut()
+            .entry("not_unique".to_string())
+            .or_insert_with(VecDeque::new);
     }
 
     /// Disable the native uniqueness filter.
@@ -1557,12 +1614,13 @@ impl RustExplorationManager {
     /// States whose history exceeds `max_length` blocks are moved to "cut"
     /// (or "_DROP" if `drop` is true). Runs entirely in Rust with zero FFI overhead.
     pub fn register_length_limiter(&mut self, max_length: usize, drop: bool) {
-        self.native_techniques.push(NativeTechnique::LengthLimiter {
-            max_length,
-            drop,
-        });
+        self.native_techniques
+            .push(NativeTechnique::LengthLimiter { max_length, drop });
         if !drop {
-            self.sm.stashes_mut().entry("cut".to_string()).or_insert_with(VecDeque::new);
+            self.sm
+                .stashes_mut()
+                .entry("cut".to_string())
+                .or_insert_with(VecDeque::new);
         }
     }
 
@@ -1575,7 +1633,10 @@ impl RustExplorationManager {
             timeout_secs,
             start_time: None,
         });
-        self.sm.stashes_mut().entry("timeout".to_string()).or_insert_with(VecDeque::new);
+        self.sm
+            .stashes_mut()
+            .entry("timeout".to_string())
+            .or_insert_with(VecDeque::new);
     }
 
     /// Register a native LoopBound technique.
@@ -1589,7 +1650,10 @@ impl RustExplorationManager {
             bound,
             discard_stash: discard_stash.to_string(),
         });
-        self.sm.stashes_mut().entry(discard_stash.to_string()).or_insert_with(VecDeque::new);
+        self.sm
+            .stashes_mut()
+            .entry(discard_stash.to_string())
+            .or_insert_with(VecDeque::new);
     }
 
     /// Get the number of registered native techniques.
@@ -1615,7 +1679,10 @@ impl RustExplorationManager {
     }
 
     /// Export a state by ID, flushing pending writes first.
-    pub fn export_state_flushed(&mut self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    pub fn export_state_flushed(
+        &mut self,
+        state_id: u64,
+    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
         self._export_state_flushed(state_id)
     }
 
@@ -1678,12 +1745,21 @@ impl RustExplorationManager {
 
     /// Get multiple register values from a state in one FFI call.
     /// Returns a list of Option<u128> in the same order as the input names.
-    pub fn get_state_registers_batch(&self, state_id: u64, names: Vec<String>) -> PyResult<Vec<Option<u128>>> {
+    pub fn get_state_registers_batch(
+        &self,
+        state_id: u64,
+        names: Vec<String>,
+    ) -> PyResult<Vec<Option<u128>>> {
         self._get_state_registers_batch(state_id, names)
     }
 
     /// Get memory from a state.
-    pub fn get_state_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
+    pub fn get_state_memory(
+        &self,
+        state_id: u64,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<Option<Vec<u8>>> {
         self._get_state_memory(state_id, addr, size)
     }
 
@@ -1754,7 +1830,10 @@ impl RustExplorationManager {
     /// Get the list of open file descriptors for a state.
     ///
     /// Returns list of (fd, name, position, flags, content_len, is_open) tuples.
-    pub fn get_state_open_fds(&self, state_id: u64) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
+    pub fn get_state_open_fds(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
         self._get_state_open_fds(state_id)
     }
 
@@ -1785,7 +1864,10 @@ impl RustExplorationManager {
     /// Get inspection events for a state.
     ///
     /// Returns list of (event_type, event_name, addr, size, block_addr) tuples.
-    pub fn get_state_inspection_events(&self, state_id: u64) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
+    pub fn get_state_inspection_events(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
         self._get_state_inspection_events(state_id)
     }
 
@@ -1827,7 +1909,13 @@ impl RustExplorationManager {
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
-        self._resume_after_simprocedure(py, new_pc, register_changes, memory_changes, new_constraints)
+        self._resume_after_simprocedure(
+            py,
+            new_pc,
+            register_changes,
+            memory_changes,
+            new_constraints,
+        )
     }
 
     /// Resume after a syscall callback.
@@ -1841,7 +1929,13 @@ impl RustExplorationManager {
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
         // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
-        self._resume_after_simprocedure(py, new_pc, register_changes, memory_changes, new_constraints)
+        self._resume_after_simprocedure(
+            py,
+            new_pc,
+            register_changes,
+            memory_changes,
+            new_constraints,
+        )
     }
 
     /// Resume after a hook callback. Same semantics as resume_after_simprocedure.
@@ -1855,7 +1949,13 @@ impl RustExplorationManager {
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
         // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
-        self._resume_after_simprocedure(py, new_pc, register_changes, memory_changes, new_constraints)
+        self._resume_after_simprocedure(
+            py,
+            new_pc,
+            register_changes,
+            memory_changes,
+            new_constraints,
+        )
     }
 
     /// Fast-path: deadend the pending callback state without full apply_changes.
@@ -1882,7 +1982,13 @@ impl RustExplorationManager {
         true_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
         false_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
-        self._resume_after_symbolic_branch(py, true_pc, false_pc, true_constraints, false_constraints)
+        self._resume_after_symbolic_branch(
+            py,
+            true_pc,
+            false_pc,
+            true_constraints,
+            false_constraints,
+        )
     }
 
     /// Resume after Python evaluates a find predicate (P2).
@@ -1912,7 +2018,6 @@ impl RustExplorationManager {
     pub fn reset_solver_stats() {
         crate::symbolic::reset_solver_stats()
     }
-
 }
 
 /// Register the exploration module with Python.

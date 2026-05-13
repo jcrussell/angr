@@ -60,10 +60,7 @@ fn find_z3_lib_dir() -> Option<PathBuf> {
 
 fn find_z3_pkg_from_python() -> Option<PathBuf> {
     let output = Command::new("python3")
-        .args([
-            "-c",
-            "import z3, os; print(os.path.dirname(z3.__file__))",
-        ])
+        .args(["-c", "import z3, os; print(os.path.dirname(z3.__file__))"])
         .output()
         .ok()?;
     if !output.status.success() {

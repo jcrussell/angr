@@ -4,9 +4,9 @@
 //!
 //! Symbolic arguments fall back to Python.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_SCAN: usize = 4096;
 
@@ -20,8 +20,12 @@ const MAX_SCAN: usize = 4096;
 pub struct NativeStrstr;
 
 impl NativeSimProcedure for NativeStrstr {
-    fn name(&self) -> &'static str { "strstr" }
-    fn num_args(&self) -> usize { 2 }
+    fn name(&self) -> &'static str {
+        "strstr"
+    }
+    fn num_args(&self) -> usize {
+        2
+    }
 
     fn call(
         &self,
@@ -36,10 +40,13 @@ impl NativeSimProcedure for NativeStrstr {
         // Read needle into a Vec
         let mut needle = Vec::new();
         for i in 0..MAX_SCAN as u64 {
-            let val = state.memory_load(needle_addr.wrapping_add(i), 1)
+            let val = state
+                .memory_load(needle_addr.wrapping_add(i), 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             let byte = extract_concrete_arg(&val, &format!("needle[{}]", i))? as u8;
-            if byte == 0 { break; }
+            if byte == 0 {
+                break;
+            }
             needle.push(byte);
         }
 
@@ -53,7 +60,8 @@ impl NativeSimProcedure for NativeStrstr {
             let h_addr = haystack_addr.wrapping_add(i);
 
             // Check first byte of haystack at this position
-            let first_val = state.memory_load(h_addr, 1)
+            let first_val = state
+                .memory_load(h_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             let first = extract_concrete_arg(&first_val, &format!("haystack[{}]", i))? as u8;
 
@@ -67,9 +75,11 @@ impl NativeSimProcedure for NativeStrstr {
                 let mut matched = true;
                 for j in 1..needle.len() {
                     let h_byte_addr = h_addr.wrapping_add(j as u64);
-                    let val = state.memory_load(h_byte_addr, 1)
+                    let val = state
+                        .memory_load(h_byte_addr, 1)
                         .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-                    let byte = extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))? as u8;
+                    let byte =
+                        extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))? as u8;
                     if byte != needle[j] {
                         matched = false;
                         break;
@@ -97,10 +107,13 @@ mod tests {
         state.map_memory_data(0x2000, b"world\x00", Permission::RWX);
 
         let p = NativeStrstr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1006)); // "world" starts at offset 6
     }
 
@@ -111,10 +124,13 @@ mod tests {
         state.map_memory_data(0x2000, b"xyz\x00", Permission::RWX);
 
         let p = NativeStrstr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0)); // NULL
     }
 
@@ -125,10 +141,13 @@ mod tests {
         state.map_memory_data(0x2000, b"\x00", Permission::RWX);
 
         let p = NativeStrstr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1000)); // Return haystack
     }
 
@@ -139,10 +158,13 @@ mod tests {
         state.map_memory_data(0x2000, b"hello\x00", Permission::RWX);
 
         let p = NativeStrstr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1000));
     }
 }

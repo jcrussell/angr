@@ -172,8 +172,11 @@ impl ExecutionConfig {
     fn __repr__(&self) -> String {
         format!(
             "ExecutionConfig(max_deferred_forks={}, use_deferred_forks={}, policy={:?}, eager_prefetch={}, max_prefetch_batch={})",
-            self.max_deferred_forks, self.use_deferred_forks, self.branch_policy,
-            self.enable_eager_prefetch, self.max_prefetch_batch
+            self.max_deferred_forks,
+            self.use_deferred_forks,
+            self.branch_policy,
+            self.enable_eager_prefetch,
+            self.max_prefetch_batch
         )
     }
 }
@@ -181,7 +184,7 @@ impl ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         ExecutionConfig {
-            max_deferred_forks: 500,  // Increased from 100 for complex binaries
+            max_deferred_forks: 500, // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
             // Deferred forks enabled with one-per-step limit:
             // interpreter_cb.rs limits to one deferred fork per
@@ -193,10 +196,10 @@ impl Default for ExecutionConfig {
             // pages) on first access is extremely slow due to Python callbacks.
             // Individual pages are fetched on demand instead.
             enable_eager_prefetch: false,
-            max_prefetch_batch: 256,        // 256 pages = 1MB (unused when eager disabled)
+            max_prefetch_batch: 256, // 256 pages = 1MB (unused when eager disabled)
             max_concretization_range: 65536,
             enable_stride_detection: true,
-            max_symbolic_ip_targets: 257,   // Match Python angr default
+            max_symbolic_ip_targets: 257, // Match Python angr default
         }
     }
 }
@@ -583,9 +586,7 @@ impl PythonCallbacks {
 
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
-        self.memory_load.is_some()
-            && self.memory_store.is_some()
-            && self.lift_block.is_some()
+        self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
     }
 
     /// GC traversal: visit each held Python callback so the cycle
@@ -756,7 +757,7 @@ impl PythonCallbacks {
     pub fn call_memory_load_batch(
         &self,
         py: Python<'_>,
-        loads: &[(u64, u32)],  // (address, size) pairs
+        loads: &[(u64, u32)], // (address, size) pairs
     ) -> PyResult<Vec<(Vec<u8>, bool, Option<Py<PyAny>>)>> {
         if loads.is_empty() {
             return Ok(Vec::new());
@@ -917,9 +918,10 @@ impl PythonCallbacks {
     ///
     /// Returns the new PC after hook execution.
     pub fn call_on_hook(&self, py: Python<'_>, addr: u64) -> PyResult<u64> {
-        let cb = self.on_hook.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("on_hook callback not set")
-        })?;
+        let cb = self
+            .on_hook
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("on_hook callback not set"))?;
 
         let result = cb.call1(py, (addr,))?;
         result.extract(py)
@@ -1067,11 +1069,7 @@ impl PythonCallbacks {
     /// - page_data: 4096 bytes of page content
     /// - permissions: permission bits (R=4, W=2, X=1)
     /// - is_mapped: whether the page exists in Python memory
-    pub fn call_fetch_page(
-        &self,
-        py: Python<'_>,
-        page_addr: u64,
-    ) -> PyResult<(Vec<u8>, u8, bool)> {
+    pub fn call_fetch_page(&self, py: Python<'_>, page_addr: u64) -> PyResult<(Vec<u8>, u8, bool)> {
         let cb = self.fetch_page.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("fetch_page callback not set")
         })?;
@@ -1253,7 +1251,7 @@ impl PythonCallbacks {
             return cb.call1(py, (addr_ast, size));
         }
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "memory_load_symbolic_full callback not set"
+            "memory_load_symbolic_full callback not set",
         ))
     }
 
@@ -1297,7 +1295,7 @@ impl PythonCallbacks {
         let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
         if tuple.len() != 3 {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "resolve_function must return (name, num_args, no_return) or None"
+                "resolve_function must return (name, num_args, no_return) or None",
             ));
         }
 
@@ -1446,7 +1444,12 @@ impl LoopExecutionEvent {
                 unmodeled_call_return_addr: None,
                 unmodeled_call_symbol: None,
             },
-            RunResult::SimProcedure { addr, name, num_args, return_addr } => LoopExecutionEvent {
+            RunResult::SimProcedure {
+                addr,
+                name,
+                num_args,
+                return_addr,
+            } => LoopExecutionEvent {
                 event_type: "simprocedure".to_string(),
                 pc: Some(addr),
                 addr: Some(addr),
@@ -1460,7 +1463,11 @@ impl LoopExecutionEvent {
                 push_level,
                 simprocedure_name: Some(name),
                 simprocedure_num_args: Some(num_args),
-                simprocedure_return_addr: if return_addr != 0 { Some(return_addr) } else { None },
+                simprocedure_return_addr: if return_addr != 0 {
+                    Some(return_addr)
+                } else {
+                    None
+                },
                 jump_targets: None,
                 jump_condition_id: None,
                 unconstrained_min: None,
@@ -1522,7 +1529,10 @@ impl LoopExecutionEvent {
                 unmodeled_call_return_addr: None,
                 unmodeled_call_symbol: None,
             },
-            RunResult::BlockEnd { next_addr, jumpkind } => LoopExecutionEvent {
+            RunResult::BlockEnd {
+                next_addr,
+                jumpkind,
+            } => LoopExecutionEvent {
                 event_type: "block_end".to_string(),
                 pc: Some(next_addr),
                 addr: Some(next_addr),
@@ -1618,7 +1628,11 @@ impl LoopExecutionEvent {
                 unmodeled_call_return_addr: None,
                 unmodeled_call_symbol: None,
             },
-            RunResult::SymbolicJumpTarget { targets, condition_id, jumpkind } => LoopExecutionEvent {
+            RunResult::SymbolicJumpTarget {
+                targets,
+                condition_id,
+                jumpkind,
+            } => LoopExecutionEvent {
                 event_type: "symbolic_jump_target".to_string(),
                 pc: targets.first().copied(),
                 addr: None,
@@ -1642,7 +1656,12 @@ impl LoopExecutionEvent {
                 unmodeled_call_return_addr: None,
                 unmodeled_call_symbol: None,
             },
-            RunResult::UnconstrainedJump { min_target, max_target, limit, jumpkind } => LoopExecutionEvent {
+            RunResult::UnconstrainedJump {
+                min_target,
+                max_target,
+                limit,
+                jumpkind,
+            } => LoopExecutionEvent {
                 event_type: "unconstrained_jump".to_string(),
                 pc: None,
                 addr: None,
@@ -1666,7 +1685,11 @@ impl LoopExecutionEvent {
                 unmodeled_call_return_addr: None,
                 unmodeled_call_symbol: None,
             },
-            RunResult::UnmodeledCall { addr, return_addr, symbol_name } => LoopExecutionEvent {
+            RunResult::UnmodeledCall {
+                addr,
+                return_addr,
+                symbol_name,
+            } => LoopExecutionEvent {
                 event_type: "unmodeled_call".to_string(),
                 pc: Some(addr),
                 addr: Some(addr),

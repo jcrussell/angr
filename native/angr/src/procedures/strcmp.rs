@@ -17,9 +17,9 @@
 //!     result = ITE(c1_i != c2_i, sext(c1_i) - sext(c2_i), result_next) -- memcmp
 //! - Maximum compare length is 4096 bytes (configurable).
 
+use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::ProcedureError;
 
 /// Maximum string length before falling back to Python.
 pub(super) const MAX_STRCMP_LEN: usize = 4096;
@@ -88,9 +88,11 @@ pub(super) fn compare_bytes(
     for i in 0..max_len {
         let c1_addr = s1_addr.wrapping_add(i);
         let c2_addr = s2_addr.wrapping_add(i);
-        let c1_val = state.memory_load(c1_addr, 1)
+        let c1_val = state
+            .memory_load(c1_addr, 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-        let c2_val = state.memory_load(c2_addr, 1)
+        let c2_val = state
+            .memory_load(c2_addr, 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
         if !symbolic_seen {
@@ -99,8 +101,12 @@ pub(super) fn compare_bytes(
                     let mut a = b1 as u8;
                     let mut b = b2 as u8;
                     if case_insensitive {
-                        if (b'A'..=b'Z').contains(&a) { a += 32; }
-                        if (b'A'..=b'Z').contains(&b) { b += 32; }
+                        if (b'A'..=b'Z').contains(&a) {
+                            a += 32;
+                        }
+                        if (b'A'..=b'Z').contains(&b) {
+                            b += 32;
+                        }
                     }
                     if a != b {
                         let diff = (a as i32) - (b as i32);
@@ -119,8 +125,7 @@ pub(super) fn compare_bytes(
 
         // Symbolic-mode collection. Stop scanning when c1 is concretely null
         // (positions past the null cannot affect the result for strcmp).
-        let stop_scan = stop_at_null
-            && c1_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
+        let stop_scan = stop_at_null && c1_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
         pairs.push((c1_val, c2_val));
         if stop_scan {
             break;
@@ -139,7 +144,12 @@ pub(super) fn compare_bytes(
     }
 
     let ctx = state.solver().borrow();
-    Ok(Some(build_diff_chain(&pairs, stop_at_null, case_insensitive, &ctx)))
+    Ok(Some(build_diff_chain(
+        &pairs,
+        stop_at_null,
+        case_insensitive,
+        &ctx,
+    )))
 }
 
 crate::declare_proc! {
@@ -194,10 +204,12 @@ mod tests {
         state.map_memory_data(0x2000, b"hello\x00", Permission::RWX);
 
         let proc = NativeStrcmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
@@ -210,10 +222,12 @@ mod tests {
         state.map_memory_data(0x2000, b"abd\x00", Permission::RWX);
 
         let proc = NativeStrcmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
 
         // 'c' - 'd' = -1
         let val = result.unwrap().as_u128().unwrap() as i32;
@@ -228,10 +242,12 @@ mod tests {
         state.map_memory_data(0x2000, b"abc\x00", Permission::RWX);
 
         let proc = NativeStrcmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
 
         // 'd' - 'c' = 1
         let val = result.unwrap().as_u128().unwrap() as i32;
@@ -246,10 +262,12 @@ mod tests {
         state.map_memory_data(0x2000, b"hello world\x00", Permission::RWX);
 
         let proc = NativeStrcmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
 
         // '\0' - ' ' < 0
         let val = result.unwrap().as_u128().unwrap() as i32;
@@ -266,26 +284,30 @@ mod tests {
         let proc = NativeStrncmp;
 
         // Compare only first 5 chars (should be equal)
-        let result = proc.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(5, 64),
-            ],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(5, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0));
 
         // Compare 6 chars (should differ)
-        let result = proc.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(6, 64),
-            ],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(6, 64),
+                ],
+            )
+            .unwrap();
 
         let val = result.unwrap().as_u128().unwrap() as i32;
         assert!(val != 0);
@@ -299,10 +321,12 @@ mod tests {
         state.map_memory_data(0x2000, b"hello\x00", Permission::RWX);
 
         let proc = NativeStrcasecmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
@@ -328,10 +352,13 @@ mod tests {
         let _sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
 
         let proc = NativeStrcmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap().unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.width(), 32);
         assert!(result.as_u64().is_none(), "expected symbolic result");
     }
@@ -349,10 +376,13 @@ mod tests {
         drop(ctx);
 
         let proc = NativeStrcmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap().unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(0));
@@ -372,10 +402,13 @@ mod tests {
         drop(ctx);
 
         let proc = NativeStrcmp;
-        let result = proc.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        ).unwrap().unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         // The 32-bit result equals 1 (signed).
@@ -397,14 +430,17 @@ mod tests {
         drop(ctx);
 
         let proc = NativeStrncmp;
-        let result = proc.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(3, 64),
-            ],
-        ).unwrap().unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(3, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(0));

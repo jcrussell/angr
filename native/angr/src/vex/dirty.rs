@@ -66,9 +66,18 @@ impl DirtyHelperDispatch {
 
         // CPUID helpers (amd64)
         handlers.insert("amd64g_dirtyhelper_CPUID_baseline", handle_cpuid_baseline);
-        handlers.insert("amd64g_dirtyhelper_CPUID_sse3_and_cx16", handle_cpuid_sse3_cx16);
-        handlers.insert("amd64g_dirtyhelper_CPUID_sse42_and_cx16", handle_cpuid_sse42_cx16);
-        handlers.insert("amd64g_dirtyhelper_CPUID_avx_and_cx16", handle_cpuid_avx_cx16);
+        handlers.insert(
+            "amd64g_dirtyhelper_CPUID_sse3_and_cx16",
+            handle_cpuid_sse3_cx16,
+        );
+        handlers.insert(
+            "amd64g_dirtyhelper_CPUID_sse42_and_cx16",
+            handle_cpuid_sse42_cx16,
+        );
+        handlers.insert(
+            "amd64g_dirtyhelper_CPUID_avx_and_cx16",
+            handle_cpuid_avx_cx16,
+        );
         handlers.insert("amd64g_dirtyhelper_CPUID_avx2", handle_cpuid_avx2);
 
         // RDTSC helper
@@ -133,7 +142,7 @@ fn get_cpuid_values(leaf: u32, subleaf: u32) -> CpuidValues {
         0 => {
             // Highest basic calling parameter and vendor ID
             CpuidValues {
-                eax: 0x16,        // Max leaf
+                eax: 0x16,       // Max leaf
                 ebx: 0x756e6547, // "Genu"
                 ecx: 0x6c65746e, // "ntel"
                 edx: 0x49656e69, // "ineI"
@@ -165,7 +174,12 @@ fn get_cpuid_values(leaf: u32, subleaf: u32) -> CpuidValues {
                         edx: 0,
                     }
                 }
-                _ => CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 },
+                _ => CpuidValues {
+                    eax: 0,
+                    ebx: 0,
+                    ecx: 0,
+                    edx: 0,
+                },
             }
         }
         0x80000000 => {
@@ -188,7 +202,12 @@ fn get_cpuid_values(leaf: u32, subleaf: u32) -> CpuidValues {
                 edx: 0x2c100800,
             }
         }
-        _ => CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 },
+        _ => CpuidValues {
+            eax: 0,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        },
     }
 }
 
@@ -321,7 +340,9 @@ mod tests {
         assert_eq!(in_result.return_value, Some(0xFF));
 
         // OUT should have no return value
-        let out_result = dispatch.try_call("amd64g_dirtyhelper_OUT", &[0x80, 0x00]).unwrap();
+        let out_result = dispatch
+            .try_call("amd64g_dirtyhelper_OUT", &[0x80, 0x00])
+            .unwrap();
         assert!(out_result.return_value.is_none());
     }
 }

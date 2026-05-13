@@ -4,9 +4,9 @@
 //! this is modeled as an unconstrained 31-bit symbolic variable
 //! (zero-extended to 32 bits), matching angr's Python SimProcedure.
 
+use super::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -112,7 +112,9 @@ mod tests {
     #[test]
     fn test_srand_noop() {
         let mut state = RustSimState::new("amd64").unwrap();
-        let result = NativeSrand.call(&mut state, &[RustBV::concrete(42, 32)]).unwrap();
+        let result = NativeSrand
+            .call(&mut state, &[RustBV::concrete(42, 32)])
+            .unwrap();
         assert!(result.is_none());
         assert_eq!(NativeSrand.name(), "srand");
     }

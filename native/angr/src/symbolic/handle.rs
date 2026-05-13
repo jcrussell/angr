@@ -119,9 +119,15 @@ impl RustBVHandle {
     /// String representation for debugging.
     pub fn __repr__(&self) -> String {
         if let Some(v) = self.concrete {
-            format!("<RustBVHandle id={} width={} concrete=0x{:x}>", self.id, self.width, v)
+            format!(
+                "<RustBVHandle id={} width={} concrete=0x{:x}>",
+                self.id, self.width, v
+            )
         } else {
-            format!("<RustBVHandle id={} width={} symbolic>", self.id, self.width)
+            format!(
+                "<RustBVHandle id={} width={} symbolic>",
+                self.id, self.width
+            )
         }
     }
 
@@ -146,7 +152,7 @@ impl RustBVHandle {
     #[pyo3(name = "__add__")]
     pub fn py_add(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -154,7 +160,7 @@ impl RustBVHandle {
     #[pyo3(name = "__sub__")]
     pub fn py_sub(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -162,7 +168,7 @@ impl RustBVHandle {
     #[pyo3(name = "__mul__")]
     pub fn py_mul(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -170,7 +176,7 @@ impl RustBVHandle {
     #[pyo3(name = "__and__")]
     pub fn py_and(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -178,7 +184,7 @@ impl RustBVHandle {
     #[pyo3(name = "__or__")]
     pub fn py_or(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -186,7 +192,7 @@ impl RustBVHandle {
     #[pyo3(name = "__xor__")]
     pub fn py_xor(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -194,7 +200,7 @@ impl RustBVHandle {
     #[pyo3(name = "__invert__")]
     pub fn py_invert(&self) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -202,7 +208,7 @@ impl RustBVHandle {
     #[pyo3(name = "__lshift__")]
     pub fn py_lshift(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 
@@ -210,7 +216,7 @@ impl RustBVHandle {
     #[pyo3(name = "__rshift__")]
     pub fn py_rshift(&self, _other: &RustBVHandle) -> PyResult<RustBVHandle> {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "RustBVHandle arithmetic must be performed via solver context"
+            "RustBVHandle arithmetic must be performed via solver context",
         ))
     }
 }

@@ -17,8 +17,7 @@ pub use amd64::AMD64;
 pub use arm::ARM;
 pub use arm64::ARM64;
 pub use calling_conventions::{
-    AArch64CC, ARMEABI, CallingConvention, Cdecl, MicrosoftX64, SystemVAMD64,
-    default_cc_for_arch,
+    AArch64CC, ARMEABI, CallingConvention, Cdecl, MicrosoftX64, SystemVAMD64, default_cc_for_arch,
 };
 pub use mips::{MIPS32, MIPS64};
 pub use x86::X86;
@@ -219,7 +218,9 @@ impl RegisterFile {
                         } else {
                             // Read concrete upper bytes
                             let mut v: u128 = 0;
-                            for (i, &byte) in self.data[remaining_start..remaining_end].iter().enumerate() {
+                            for (i, &byte) in
+                                self.data[remaining_start..remaining_end].iter().enumerate()
+                            {
                                 v |= (byte as u128) << (i * 8);
                             }
                             RustBV::concrete(v, remaining_bytes * 8)
@@ -227,7 +228,9 @@ impl RegisterFile {
                     } else {
                         // Read concrete upper bytes
                         let mut v: u128 = 0;
-                        for (i, &byte) in self.data[remaining_start..remaining_end].iter().enumerate() {
+                        for (i, &byte) in
+                            self.data[remaining_start..remaining_end].iter().enumerate()
+                        {
                             v |= (byte as u128) << (i * 8);
                         }
                         RustBV::concrete(v, remaining_bytes * 8)
@@ -282,7 +285,9 @@ impl RegisterFile {
                 // Compose parts: in little-endian, lower offset = LSB
                 // Concat builds MSB first, so we reverse
                 if !parts.is_empty() {
-                    let mut result = parts.pop().expect("parts vec is non-empty because at least one sub-register was found");
+                    let mut result = parts.pop().expect(
+                        "parts vec is non-empty because at least one sub-register was found",
+                    );
                     while let Some(part) = parts.pop() {
                         result = result.concat(&part, ctx);
                     }
@@ -379,7 +384,9 @@ impl RegisterFile {
         // If symbolic, store in symbolic map
         if value.is_symbolic() {
             // Clean up any narrower symbolic overlays within our range
-            let overlapping: Vec<u32> = self.symbolic.keys()
+            let overlapping: Vec<u32> = self
+                .symbolic
+                .keys()
                 .filter(|&&k| k >= offset && k < offset + size && k != offset)
                 .copied()
                 .collect();
@@ -402,7 +409,9 @@ impl RegisterFile {
                 // Clear any symbolic overlay at this offset
                 self.symbolic.remove(&offset);
                 // Also remove any narrower symbolic overlays within our range
-                let overlapping: Vec<u32> = self.symbolic.keys()
+                let overlapping: Vec<u32> = self
+                    .symbolic
+                    .keys()
                     .filter(|&&k| k >= offset && k < offset + size)
                     .copied()
                     .collect();
@@ -458,7 +467,9 @@ impl RegisterFile {
     pub fn get_sp_value(&self) -> Option<u64> {
         let offset = self.arch.sp_offset() as usize;
         let size = self.arch.bytes() as usize;
-        if offset + size > self.data.len() { return None; }
+        if offset + size > self.data.len() {
+            return None;
+        }
         let mut value: u64 = 0;
         for i in 0..size.min(8) {
             value |= (self.data[offset + i] as u64) << (i * 8);
@@ -519,7 +530,8 @@ impl RegisterFile {
         let mut merged = false;
 
         // Collect all symbolic offsets from both register files
-        let mut all_offsets: std::collections::HashSet<u32> = self.symbolic.keys().copied().collect();
+        let mut all_offsets: std::collections::HashSet<u32> =
+            self.symbolic.keys().copied().collect();
         all_offsets.extend(other.symbolic.keys());
 
         // Merge symbolic registers

@@ -8,7 +8,7 @@ use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
-use super::page::{MemoryPage, Permission, PAGE_MASK, PAGE_SIZE};
+use super::page::{MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
 use super::{MemoryError, SymbolicMemory};
 
 impl SymbolicMemory {
@@ -22,27 +22,21 @@ impl SymbolicMemory {
         // For symbolic addresses, we need to concretize
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
-            None => {
-                match ctx.eval(&addr) {
-                    Some(a) => a as u64,
-                    None => {
-                        return Err(MemoryError::SymbolicAddress {
-                            description: "could not resolve address for store".to_string(),
-                        });
-                    }
+            None => match ctx.eval(&addr) {
+                Some(a) => a as u64,
+                None => {
+                    return Err(MemoryError::SymbolicAddress {
+                        description: "could not resolve address for store".to_string(),
+                    });
                 }
-            }
+            },
         };
 
         self.store_concrete(concrete_addr, value)
     }
 
     /// Store to a concrete address.
-    pub fn store_concrete(
-        &mut self,
-        addr: u64,
-        value: RustBV,
-    ) -> Result<(), MemoryError> {
+    pub fn store_concrete(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
         let size = value.width() / 8;
 
         // Check if pages are mapped (fast path for same-page stores)
@@ -76,7 +70,8 @@ impl SymbolicMemory {
             let width_bits = value.width();
             let sym_bytes = width_bits / 8;
             for i in 1..sym_bytes {
-                self.symbolic_spans.insert(addr + i as u64, (addr, width_bits));
+                self.symbolic_spans
+                    .insert(addr + i as u64, (addr, width_bits));
             }
             // Mark pages as having symbolic bytes — batch per-page
             let mut current_page_num = u64::MAX;
@@ -186,9 +181,11 @@ impl SymbolicMemory {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_lazy(concrete_addr, value)
             }
-            ConcretizationResult::Strided { base, stride, count } => {
-                self.store_strided(&addr, &value, base, stride, count, ctx)
-            }
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => self.store_strided(&addr, &value, base, stride, count, ctx),
             ConcretizationResult::Multiple(addrs) => {
                 let size = value.width() / 8;
                 for &candidate in &addrs {
@@ -200,19 +197,15 @@ impl SymbolicMemory {
                 }
                 Ok(())
             }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                Err(MemoryError::SymbolicAddress {
-                    description: format!(
-                        "address range too large for concretization: 0x{:x} - 0x{:x}",
-                        min, max
-                    ),
-                })
-            }
-            ConcretizationResult::Failed(reason) => {
-                Err(MemoryError::SymbolicAddress {
-                    description: reason,
-                })
-            }
+            ConcretizationResult::TooLarge { min, max, .. } => Err(MemoryError::SymbolicAddress {
+                description: format!(
+                    "address range too large for concretization: 0x{:x} - 0x{:x}",
+                    min, max
+                ),
+            }),
+            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
+                description: reason,
+            }),
         }
     }
 
@@ -293,7 +286,11 @@ impl SymbolicMemory {
                 self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)?;
                 Ok(Some(result))
             }
-            ConcretizationResult::Strided { base, stride, count } => {
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
                 let (base, stride, count) = (*base, *stride, *count);
                 // Prepare strided region
                 self.prepare_strided_region(base, stride, count, value.width() / 8);
@@ -311,9 +308,9 @@ impl SymbolicMemory {
                     ),
                 })
             }
-            ConcretizationResult::Failed(reason) => {
-                Err(MemoryError::SymbolicAddress { description: reason.clone() })
-            }
+            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
+                description: reason.clone(),
+            }),
         }
     }
 
@@ -335,7 +332,11 @@ impl SymbolicMemory {
                 let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
                 self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
             }
-            ConcretizationResult::Strided { base, stride, count } => {
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
                 self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
                 self.store_strided(addr, &value, *base, *stride, *count, ctx)
             }
@@ -349,9 +350,9 @@ impl SymbolicMemory {
                     ),
                 })
             }
-            ConcretizationResult::Failed(reason) => {
-                Err(MemoryError::SymbolicAddress { description: reason.clone() })
-            }
+            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
+                description: reason.clone(),
+            }),
         }
     }
 
@@ -388,11 +389,7 @@ impl SymbolicMemory {
     }
 
     /// Store to a concrete address, returning UnmappedPageInRegion for lazy regions.
-    pub fn store_concrete_lazy(
-        &mut self,
-        addr: u64,
-        value: RustBV,
-    ) -> Result<(), MemoryError> {
+    pub fn store_concrete_lazy(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
         let size = value.width() / 8;
 
         // Check if pages are mapped
@@ -431,11 +428,7 @@ impl SymbolicMemory {
     ///
     /// If you need auto-mapping behavior for internal Rust operations that
     /// don't involve Python state, use `store_concrete_automap_internal`.
-    pub fn store_concrete_automap(
-        &mut self,
-        addr: u64,
-        value: RustBV,
-    ) -> Result<(), MemoryError> {
+    pub fn store_concrete_automap(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
         let size = value.width() / 8;
         let start_page = addr >> 12;
         let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;

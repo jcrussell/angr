@@ -1,5 +1,5 @@
+use super::helpers::{build_balanced_ite, bytes_to_bv};
 use super::*;
-use super::helpers::{bytes_to_bv, build_balanced_ite};
 
 impl<'a> CallbackInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
@@ -10,7 +10,11 @@ impl<'a> CallbackInterpreter<'a> {
         expr: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
-        let expr_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        let expr_start = if self.profiling_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let result = self.eval_expr_with_callbacks_inner(py, callbacks, expr, tyenv);
         if let Some(start) = expr_start {
             self.stats.expr_eval_time_ns += start.elapsed().as_nanos() as u64;
@@ -43,16 +47,22 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRExpr::Load { addr, ty, .. } => {
-                let load_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+                let load_start = if self.profiling_enabled {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
                 let size = ty.bytes() as usize;
-                if self.profiling_enabled { self.stats.load_stmt_count += 1; }
+                if self.profiling_enabled {
+                    self.stats.load_stmt_count += 1;
+                }
 
                 // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
                 if self.use_rust_memory {
-                    if let Some(value) = self.try_rust_memory_load(
-                        py, callbacks, &addr_val, size, load_start,
-                    )? {
+                    if let Some(value) =
+                        self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
+                    {
                         return Ok(value);
                     }
                 }
@@ -113,8 +123,10 @@ impl<'a> CallbackInterpreter<'a> {
                     match &*self.concretize_cached_read(&addr_val) {
                         ConcretizationResult::Single(addr_concrete) => {
                             let addr_concrete = *addr_concrete;
-                            if self.arch.pointer_size() == 32 && addr_concrete >= 0x400000 && addr_concrete < 0x420000 {
-                            }
+                            if self.arch.pointer_size() == 32
+                                && addr_concrete >= 0x400000
+                                && addr_concrete < 0x420000
+                            {}
                             self.track_concretization_constraint(&addr_val, addr_concrete);
                             if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
                                 return Ok(bytes_to_bv(data, (size * 8) as u32));
@@ -126,14 +138,22 @@ impl<'a> CallbackInterpreter<'a> {
                             self.sync_before_callback(py, callbacks)?;
                             // Build ITE chain in Rust instead of delegating to Python
                             // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
-                            self.build_ite_load_from_callbacks(py, callbacks, addrs, &addr_val, size)
+                            self.build_ite_load_from_callbacks(
+                                py, callbacks, addrs, &addr_val, size,
+                            )
                         }
-                        ConcretizationResult::Strided { base, stride, count } => {
+                        ConcretizationResult::Strided {
+                            base,
+                            stride,
+                            count,
+                        } => {
                             // Sync constraints before batch load
                             self.sync_before_callback(py, callbacks)?;
                             // Strided access pattern - generate addresses and build ITE chain in Rust
                             let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
-                            self.build_ite_load_from_callbacks(py, callbacks, &addrs, &addr_val, size)
+                            self.build_ite_load_from_callbacks(
+                                py, callbacks, &addrs, &addr_val, size,
+                            )
                         }
                         ConcretizationResult::TooLarge { min, max, .. } => {
                             let descr = format!("range 0x{:x}-0x{:x}", min, max);
@@ -167,7 +187,11 @@ impl<'a> CallbackInterpreter<'a> {
                         self.stats.python_vex_unop_fallback_count += 1;
                         let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                         if arg_is_sym {
-                            Ok(RustBV::symbolic(self.ctx, format!("unsup_unop_{:x}", self.pc), width))
+                            Ok(RustBV::symbolic(
+                                self.ctx,
+                                format!("unsup_unop_{:x}", self.pc),
+                                width,
+                            ))
                         } else {
                             Ok(RustBV::concrete(0, width))
                         }
@@ -178,9 +202,10 @@ impl<'a> CallbackInterpreter<'a> {
             IRExpr::Binop { op, left, right } => {
                 let left_val = self.eval_expr_with_callbacks(py, callbacks, left, tyenv)?;
                 let right_val = self.eval_expr_with_callbacks(py, callbacks, right, tyenv)?;
-                let fallback_width = op.result_type().map(|t| t.bits()).unwrap_or(
-                    left_val.width().max(right_val.width())
-                );
+                let fallback_width = op
+                    .result_type()
+                    .map(|t| t.bits())
+                    .unwrap_or(left_val.width().max(right_val.width()));
                 let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
                 match VEXOps::binop(*op, left_val, right_val, self.ctx) {
                     Ok(v) => Ok(v),
@@ -189,7 +214,11 @@ impl<'a> CallbackInterpreter<'a> {
                         self.stats.python_vex_op_fallback_count += 1;
                         self.stats.python_vex_binop_fallback_count += 1;
                         if any_sym {
-                            Ok(RustBV::symbolic(self.ctx, format!("unsup_binop_{:x}", self.pc), fallback_width))
+                            Ok(RustBV::symbolic(
+                                self.ctx,
+                                format!("unsup_binop_{:x}", self.pc),
+                                fallback_width,
+                            ))
                         } else {
                             Ok(RustBV::concrete(0, fallback_width))
                         }
@@ -197,7 +226,11 @@ impl<'a> CallbackInterpreter<'a> {
                 }
             }
 
-            IRExpr::ITE { cond, iftrue, iffalse } => {
+            IRExpr::ITE {
+                cond,
+                iftrue,
+                iffalse,
+            } => {
                 let cond_val = self.eval_expr_with_callbacks(py, callbacks, cond, tyenv)?;
                 // Short-circuit: skip evaluating the dead branch when condition is concrete
                 if let Some(v) = cond_val.as_u128() {
@@ -224,7 +257,9 @@ impl<'a> CallbackInterpreter<'a> {
                     if let Some(concrete) = self.ctx.eval(&ix_val) {
                         concrete as u64
                     } else {
-                        return Err(CbExecutionError::Unsupported("GetI index concretization failed".to_string()));
+                        return Err(CbExecutionError::Unsupported(
+                            "GetI index concretization failed".to_string(),
+                        ));
                     }
                 };
 
@@ -238,7 +273,12 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(self.registers.get(offset, elem_size, self.ctx))
             }
 
-            IRExpr::Triop { op, arg1, arg2, arg3 } => {
+            IRExpr::Triop {
+                op,
+                arg1,
+                arg2,
+                arg3,
+            } => {
                 // VEX Triops are float arithmetic with a rounding mode:
                 // (rm, a, b). For FAdd/FSub/FMul/FDiv we route through
                 // `binop_with_rm` which honors the VEX rm bits when non-RNE;
@@ -255,7 +295,11 @@ impl<'a> CallbackInterpreter<'a> {
                         self.stats.python_vex_op_fallback_count += 1;
                         self.stats.python_vex_triop_fallback_count += 1;
                         if any_sym {
-                            Ok(RustBV::symbolic(self.ctx, format!("triop_{:x}", self.pc), width))
+                            Ok(RustBV::symbolic(
+                                self.ctx,
+                                format!("triop_{:x}", self.pc),
+                                width,
+                            ))
                         } else {
                             Ok(RustBV::concrete(0, width))
                         }
@@ -263,7 +307,13 @@ impl<'a> CallbackInterpreter<'a> {
                 }
             }
 
-            IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
+            IRExpr::Qop {
+                op,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+            } => {
                 // VEX Qops are typically fused multiply-add/sub with a
                 // rounding mode: (rm, a, b, c). Drop rm for the same reason
                 // as Triop above.
@@ -279,7 +329,11 @@ impl<'a> CallbackInterpreter<'a> {
                         self.stats.python_vex_op_fallback_count += 1;
                         self.stats.python_vex_qop_fallback_count += 1;
                         if any_sym {
-                            Ok(RustBV::symbolic(self.ctx, format!("qop_{:x}", self.pc), width))
+                            Ok(RustBV::symbolic(
+                                self.ctx,
+                                format!("qop_{:x}", self.pc),
+                                width,
+                            ))
                         } else {
                             Ok(RustBV::concrete(0, width))
                         }
@@ -293,7 +347,9 @@ impl<'a> CallbackInterpreter<'a> {
                     arg_vals.push(self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?);
                 }
 
-                if let Some(result) = ccall::handle_ccall_with_ctx(&cee.name, &arg_vals, retty.bits(), Some(self.ctx)) {
+                if let Some(result) =
+                    ccall::handle_ccall_with_ctx(&cee.name, &arg_vals, retty.bits(), Some(self.ctx))
+                {
                     return Ok(result);
                 }
 
@@ -307,7 +363,8 @@ impl<'a> CallbackInterpreter<'a> {
                 if is_cond_ccall {
                     log::debug!(
                         "CCall '{}' not handled symbolically at 0x{:x}, returning symbolic variable",
-                        cee.name, self.pc
+                        cee.name,
+                        self.pc
                     );
                     return Ok(RustBV::symbolic(
                         self.ctx,
@@ -328,9 +385,10 @@ impl<'a> CallbackInterpreter<'a> {
             IRExpr::VECRET | IRExpr::GSPTR => {
                 // P7 fix: Request Python fallback instead of failing
                 // These special expressions require Python's VEX handling
-                Err(CbExecutionError::NeedPythonFallback(
-                    format!("special expr {:?} requires Python", expr)
-                ))
+                Err(CbExecutionError::NeedPythonFallback(format!(
+                    "special expr {:?} requires Python",
+                    expr
+                )))
             }
         }
     }
@@ -354,7 +412,9 @@ impl<'a> CallbackInterpreter<'a> {
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
         if addrs.is_empty() {
-            return Err(CbExecutionError::Memory("no candidate addresses".to_string()));
+            return Err(CbExecutionError::Memory(
+                "no candidate addresses".to_string(),
+            ));
         }
 
         let width = (size * 8) as u32;
@@ -427,22 +487,14 @@ impl<'a> CallbackInterpreter<'a> {
                             )
                         }
                     } else {
-                        RustBV::symbolic(
-                            self.ctx,
-                            format!("ite_load_{:x}_{}", addr, size),
-                            width,
-                        )
+                        RustBV::symbolic(self.ctx, format!("ite_load_{:x}_{}", addr, size), width)
                     }
                 } else {
                     bytes_to_bv(data, width)
                 }
             } else {
                 // Missing result - create symbolic placeholder
-                RustBV::symbolic(
-                    self.ctx,
-                    format!("ite_load_{:x}_{}", addr, size),
-                    width,
-                )
+                RustBV::symbolic(self.ctx, format!("ite_load_{:x}_{}", addr, size), width)
             };
 
             // Build condition: addr_expr == this address
@@ -453,11 +505,17 @@ impl<'a> CallbackInterpreter<'a> {
         }
 
         // Use the last value as default (for robustness, though one condition should always match)
-        let default_value = pairs.last().map(|(_, v)| v.clone())
+        let default_value = pairs
+            .last()
+            .map(|(_, v)| v.clone())
             .unwrap_or_else(|| RustBV::symbolic(self.ctx, "ite_default", width));
 
         // Build balanced ITE tree for better solver performance
-        Ok(build_balanced_ite(&pairs[..pairs.len()-1], default_value, self.ctx))
+        Ok(build_balanced_ite(
+            &pairs[..pairs.len() - 1],
+            default_value,
+            self.ctx,
+        ))
     }
 
     /// Build ITE chain stores for symbolic memory writes with multiple candidate addresses.
@@ -504,26 +562,50 @@ impl<'a> CallbackInterpreter<'a> {
                                 bv
                             } else if is_claripy_ast(&ast) {
                                 claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
-                                    RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
+                                    RustBV::symbolic(
+                                        self.ctx,
+                                        format!("ite_store_cur_{:x}", addr),
+                                        data_val.width(),
+                                    )
                                 })
                             } else {
-                                RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
+                                RustBV::symbolic(
+                                    self.ctx,
+                                    format!("ite_store_cur_{:x}", addr),
+                                    data_val.width(),
+                                )
                             }
                         } else if is_claripy_ast(&ast) {
                             claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
-                                RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
+                                RustBV::symbolic(
+                                    self.ctx,
+                                    format!("ite_store_cur_{:x}", addr),
+                                    data_val.width(),
+                                )
                             })
                         } else {
-                            RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
+                            RustBV::symbolic(
+                                self.ctx,
+                                format!("ite_store_cur_{:x}", addr),
+                                data_val.width(),
+                            )
                         }
                     } else {
-                        RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
+                        RustBV::symbolic(
+                            self.ctx,
+                            format!("ite_store_cur_{:x}", addr),
+                            data_val.width(),
+                        )
                     }
                 } else {
                     bytes_to_bv(data, data_val.width())
                 }
             } else {
-                RustBV::symbolic(self.ctx, format!("ite_store_cur_{:x}", addr), data_val.width())
+                RustBV::symbolic(
+                    self.ctx,
+                    format!("ite_store_cur_{:x}", addr),
+                    data_val.width(),
+                )
             };
 
             // Build ITE: if (addr == candidate) then new_data else current
@@ -550,9 +632,7 @@ impl<'a> CallbackInterpreter<'a> {
             IRConst::F32(v) => RustBV::concrete(v.to_bits() as u128, 32),
             IRConst::F64(v) => RustBV::concrete(v.to_bits() as u128, 64),
             IRConst::V128(v) => RustBV::concrete(*v, 128),
-            IRConst::V256(v) => {
-                RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128)
-            }
+            IRConst::V256(v) => RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128),
         }
     }
 
@@ -587,7 +667,11 @@ impl<'a> CallbackInterpreter<'a> {
                 })?;
                 self.load_from_callback(py, callbacks, a, load_size)
             }
-            ConcretizationResult::Strided { base, stride, count } => {
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
                 let descr = format!(
                     "strided base=0x{:x} stride=0x{:x} count={}",
                     base, stride, count
@@ -614,7 +698,12 @@ impl<'a> CallbackInterpreter<'a> {
     /// Apply LoadG conversion (widening) to loaded value.
     ///
     /// LoadG can widen the loaded value with sign or zero extension.
-    pub(super) fn apply_loadg_conversion(&self, cvt: IRLoadGOp, value: RustBV, target_bits: u32) -> RustBV {
+    pub(super) fn apply_loadg_conversion(
+        &self,
+        cvt: IRLoadGOp,
+        value: RustBV,
+        target_bits: u32,
+    ) -> RustBV {
         let src_bits = value.width();
         if src_bits >= target_bits {
             // No widening needed, possibly truncate
@@ -645,7 +734,12 @@ impl<'a> CallbackInterpreter<'a> {
         load_start: Option<Instant>,
     ) -> Result<Option<RustBV>, CbExecutionError> {
         let first_result = match self.rust_memory.as_mut() {
-            Some(rust_mem) => rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer),
+            Some(rust_mem) => rust_mem.load_symbolic_unified(
+                addr_val.clone(),
+                size as u32,
+                self.ctx,
+                &self.concretizer,
+            ),
             None => return Ok(None),
         };
 
@@ -659,7 +753,8 @@ impl<'a> CallbackInterpreter<'a> {
             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
                 // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
                 let prefetch_count = self.page_prefetch_count;
-                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+                let page_fetched =
+                    self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
 
                 // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
                 // Python may have actual data for this page from backers (file contents,
@@ -669,17 +764,26 @@ impl<'a> CallbackInterpreter<'a> {
 
                 if page_fetched {
                     if let Some(ref mut rust_mem) = self.rust_memory {
-                        if let Ok(value) = rust_mem.load_symbolic_unified(addr_val.clone(), size as u32, self.ctx, &self.concretizer) {
+                        if let Ok(value) = rust_mem.load_symbolic_unified(
+                            addr_val.clone(),
+                            size as u32,
+                            self.ctx,
+                            &self.concretizer,
+                        ) {
                             return Ok(Some(value));
                         }
                     }
                 }
                 Ok(None)
             }
-            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
+            Err(MemoryError::Unmapped {
+                addr,
+                size: unmapped_size,
+            }) => {
                 log::debug!(
                     "Unmapped memory load at 0x{:x} (size={}), falling back to Python",
-                    addr, unmapped_size
+                    addr,
+                    unmapped_size
                 );
                 Ok(None)
             }
@@ -716,5 +820,4 @@ impl<'a> CallbackInterpreter<'a> {
             )),
         }
     }
-
 }

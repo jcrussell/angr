@@ -34,7 +34,8 @@ impl RustExplorationManager {
 
             // Pre-fetch Z3 backend for fast path
             #[cfg(feature = "vex-engine-z3")]
-            let z3_backend = py.import("claripy")
+            let z3_backend = py
+                .import("claripy")
                 .and_then(|c| c.getattr("backends"))
                 .and_then(|b| b.getattr("z3"))
                 .ok();
@@ -47,9 +48,13 @@ impl RustExplorationManager {
                     if let Some(ref backend) = z3_backend {
                         if let Ok(z3_obj) = backend.call_method1("convert", (&item,)) {
                             if let Ok(ast_ref) = z3_obj.call_method0("as_ast") {
-                                if let Ok(ptr) = ast_ref.getattr("value").and_then(|v| v.extract::<usize>()) {
+                                if let Ok(ptr) =
+                                    ast_ref.getattr("value").and_then(|v| v.extract::<usize>())
+                                {
                                     if ptr != 0 {
-                                        unsafe { ctx_ref.add_constraint_raw(ptr); }
+                                        unsafe {
+                                            ctx_ref.add_constraint_raw(ptr);
+                                        }
                                         if let Ok(bv) = claripy_to_rustbv(py, &item, ctx_ref) {
                                             ctx_ref.assumed_constraints_push(bv, true);
                                         }
@@ -94,16 +99,26 @@ impl RustExplorationManager {
     }
 
     #[cfg(feature = "vex-engine-z3")]
-    pub(crate) fn _import_z3_constraint_ptrs(&mut self, state_id: u64, ptrs: Vec<usize>) -> PyResult<bool> {
+    pub(crate) fn _import_z3_constraint_ptrs(
+        &mut self,
+        state_id: u64,
+        ptrs: Vec<usize>,
+    ) -> PyResult<bool> {
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
             for ptr in &ptrs {
                 if *ptr != 0 {
-                    unsafe { ctx.add_constraint_raw(*ptr); }
+                    unsafe {
+                        ctx.add_constraint_raw(*ptr);
+                    }
                 }
             }
-            log::debug!("Imported {} Z3 constraints to state {}", ptrs.len(), state_id);
+            log::debug!(
+                "Imported {} Z3 constraints to state {}",
+                ptrs.len(),
+                state_id
+            );
             Ok(state.satisfiable())
         })
     }
@@ -116,7 +131,12 @@ impl RustExplorationManager {
             let push_level = ctx.debug_push_level();
             let n_constraints = ctx.num_constraints();
             let ptrs = ctx.export_z3_assertion_ptrs();
-            Ok(format!("push_level={}, num_constraints={}, exported_ptrs={}", push_level, n_constraints, ptrs.len()))
+            Ok(format!(
+                "push_level={}, num_constraints={}, exported_ptrs={}",
+                push_level,
+                n_constraints,
+                ptrs.len()
+            ))
         })
     }
 
@@ -177,20 +197,14 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_state_mmap_base(&self, state_id: u64) -> PyResult<u64> {
         let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "get_state_mmap_base: state {} not found",
-                state_id
-            ))
+            PyValueError::new_err(format!("get_state_mmap_base: state {} not found", state_id))
         })?;
         Ok(state.mmap_base())
     }
 
     pub(crate) fn _set_state_mmap_base(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
         let state = self.find_state_mut(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "set_state_mmap_base: state {} not found",
-                state_id
-            ))
+            PyValueError::new_err(format!("set_state_mmap_base: state {} not found", state_id))
         })?;
         state.set_mmap_base(addr);
         Ok(())
@@ -198,20 +212,14 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_state_posix_brk(&self, state_id: u64) -> PyResult<u64> {
         let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "get_state_posix_brk: state {} not found",
-                state_id
-            ))
+            PyValueError::new_err(format!("get_state_posix_brk: state {} not found", state_id))
         })?;
         Ok(state.posix_brk())
     }
 
     pub(crate) fn _set_state_posix_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
         let state = self.find_state_mut(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "set_state_posix_brk: state {} not found",
-                state_id
-            ))
+            PyValueError::new_err(format!("set_state_posix_brk: state {} not found", state_id))
         })?;
         state.set_posix_brk(addr);
         Ok(())
@@ -328,10 +336,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _fork_state_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
         let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "fork_state_solver: state {} not found",
-                state_id
-            ))
+            PyValueError::new_err(format!("fork_state_solver: state {} not found", state_id))
         })?;
         let solver_ref = state.solver();
         let forked_ctx = solver_ref.borrow().fork();
@@ -342,11 +347,17 @@ impl RustExplorationManager {
     // State export
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _export_state(&self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    pub(crate) fn _export_state(
+        &self,
+        state_id: u64,
+    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
         self.with_state(state_id, |state| Ok(state.export_full()))
     }
 
-    pub(crate) fn _export_state_flushed(&mut self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    pub(crate) fn _export_state_flushed(
+        &mut self,
+        state_id: u64,
+    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
         // find_state_mut only checks stashes; we still need an explicit pending fallback.
         if let Some(state) = self.find_state_mut(state_id) {
             return Ok(state.flush_and_export_full());
@@ -356,18 +367,27 @@ impl RustExplorationManager {
                 return Ok(pending.state.flush_and_export_full());
             }
         }
-        Err(PyValueError::new_err(format!("state {} not found", state_id)))
+        Err(PyValueError::new_err(format!(
+            "state {} not found",
+            state_id
+        )))
     }
 
     pub(crate) fn _export_stash(&self, stash: &str) -> Vec<crate::state::ExplorationStateSnapshot> {
-        self.sm.get(stash)
+        self.sm
+            .get(stash)
             .map(|s| s.iter().map(|state| state.export_full()).collect())
             .unwrap_or_default()
     }
 
-    pub(crate) fn _export_found_states_flushed(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
+    pub(crate) fn _export_found_states_flushed(
+        &mut self,
+    ) -> Vec<crate::state::ExplorationStateSnapshot> {
         if let Some(states) = self.sm.get_mut(STASH_FOUND) {
-            states.iter_mut().map(|s| s.flush_and_export_full()).collect()
+            states
+                .iter_mut()
+                .map(|s| s.flush_and_export_full())
+                .collect()
         } else {
             Vec::new()
         }
@@ -381,20 +401,22 @@ impl RustExplorationManager {
     // Eval / satisfiability / register / memory inspection
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _eval_in_state(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
-        self.with_state(state_id, |state| {
-            match state.memory_load(addr, size) {
-                Ok(bv) => {
-                    if let Some(val) = state.eval(&bv) {
-                        let bytes: Vec<u8> = (0..size as usize)
-                            .map(|i| (val >> (i * 8)) as u8)
-                            .collect();
-                        return Ok(Some(bytes));
-                    }
-                    Ok(None)
+    pub(crate) fn _eval_in_state(
+        &self,
+        state_id: u64,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<Option<Vec<u8>>> {
+        self.with_state(state_id, |state| match state.memory_load(addr, size) {
+            Ok(bv) => {
+                if let Some(val) = state.eval(&bv) {
+                    let bytes: Vec<u8> =
+                        (0..size as usize).map(|i| (val >> (i * 8)) as u8).collect();
+                    return Ok(Some(bytes));
                 }
-                Err(_) => Ok(None),
+                Ok(None)
             }
+            Err(_) => Ok(None),
         })
     }
 
@@ -418,7 +440,10 @@ impl RustExplorationManager {
     }
 
     #[cfg(feature = "vex-engine-z3")]
-    pub(crate) fn _get_state_symbolic_z3_asts(&self, state_id: u64) -> PyResult<Vec<(u64, usize, u32)>> {
+    pub(crate) fn _get_state_symbolic_z3_asts(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u64, usize, u32)>> {
         use z3::ast::Ast;
         self.with_state(state_id, |state| {
             let mem = state.memory();
@@ -461,34 +486,40 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_state_registers_batch(&self, state_id: u64, names: Vec<String>) -> PyResult<Vec<Option<u128>>> {
+    pub(crate) fn _get_state_registers_batch(
+        &self,
+        state_id: u64,
+        names: Vec<String>,
+    ) -> PyResult<Vec<Option<u128>>> {
         self.with_state(state_id, |state| {
-            Ok(names.iter()
+            Ok(names
+                .iter()
                 .map(|name| state.get_register(name).and_then(|bv| bv.as_u128()))
                 .collect())
         })
     }
 
-    pub(crate) fn _get_state_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
-        self.with_state(state_id, |state| {
-            match state.memory_load(addr, size) {
-                Ok(bv) => {
-                    if let Some(val) = bv.as_u128() {
-                        let bytes: Vec<u8> = (0..size as usize)
-                            .map(|i| (val >> (i * 8)) as u8)
-                            .collect();
-                        return Ok(Some(bytes));
-                    }
-                    if let Some(val) = state.eval(&bv) {
-                        let bytes: Vec<u8> = (0..size as usize)
-                            .map(|i| (val >> (i * 8)) as u8)
-                            .collect();
-                        return Ok(Some(bytes));
-                    }
-                    Ok(None)
+    pub(crate) fn _get_state_memory(
+        &self,
+        state_id: u64,
+        addr: u64,
+        size: u32,
+    ) -> PyResult<Option<Vec<u8>>> {
+        self.with_state(state_id, |state| match state.memory_load(addr, size) {
+            Ok(bv) => {
+                if let Some(val) = bv.as_u128() {
+                    let bytes: Vec<u8> =
+                        (0..size as usize).map(|i| (val >> (i * 8)) as u8).collect();
+                    return Ok(Some(bytes));
                 }
-                Err(_) => Ok(None),
+                if let Some(val) = state.eval(&bv) {
+                    let bytes: Vec<u8> =
+                        (0..size as usize).map(|i| (val >> (i * 8)) as u8).collect();
+                    return Ok(Some(bytes));
+                }
+                Ok(None)
             }
+            Err(_) => Ok(None),
         })
     }
 
@@ -510,7 +541,8 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _has_state_stdin_symbols(&self, state_id: u64) -> bool {
-        self.find_state(state_id).map_or(false, |s| s.has_stdin_symbols())
+        self.find_state(state_id)
+            .map_or(false, |s| s.has_stdin_symbols())
     }
 
     pub(crate) fn _get_state_stdin_symbols(&self, state_id: u64) -> PyResult<Vec<(String, u32)>> {
@@ -521,9 +553,14 @@ impl RustExplorationManager {
     // Call stack / history / heap / fds
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _get_state_call_stack(&self, state_id: u64) -> PyResult<Vec<(u64, u64, u64, u64)>> {
+    pub(crate) fn _get_state_call_stack(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u64, u64, u64, u64)>> {
         self.with_state(state_id, |state| {
-            Ok(state.call_stack().iter()
+            Ok(state
+                .call_stack()
+                .iter()
                 .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
                 .collect())
         })
@@ -533,18 +570,28 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.call_stack_depth()))
     }
 
-    pub(crate) fn _get_state_detailed_history(&self, state_id: u64) -> PyResult<Vec<(u64, u8, u64)>> {
+    pub(crate) fn _get_state_detailed_history(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u64, u8, u64)>> {
         self.with_state(state_id, |state| {
-            Ok(state.detailed_history().iter()
+            Ok(state
+                .detailed_history()
+                .iter()
                 .map(|e| (e.addr, e.jumpkind, e.jump_target))
                 .collect())
         })
     }
 
-    pub(crate) fn _get_state_heap_metadata(&self, state_id: u64) -> PyResult<(Vec<(u64, u64)>, Vec<u64>)> {
+    pub(crate) fn _get_state_heap_metadata(
+        &self,
+        state_id: u64,
+    ) -> PyResult<(Vec<(u64, u64)>, Vec<u64>)> {
         self.with_state(state_id, |state| {
             let meta = state.heap_metadata();
-            let allocated: Vec<(u64, u64)> = meta.allocated.iter()
+            let allocated: Vec<(u64, u64)> = meta
+                .allocated
+                .iter()
                 .map(|(&addr, &size)| (addr, size))
                 .collect();
             let freed = meta.freed.clone();
@@ -552,12 +599,20 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_state_open_fds(&self, state_id: u64) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
+    pub(crate) fn _get_state_open_fds(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u32, String, u64, u32, usize, bool)>> {
         self.with_state(state_id, |state| {
-            Ok(state.file_system_ref().all_fds().iter().filter_map(|&fd| {
-                let info = state.file_system_ref().fd_info(fd)?;
-                Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
-            }).collect())
+            Ok(state
+                .file_system_ref()
+                .all_fds()
+                .iter()
+                .filter_map(|&fd| {
+                    let info = state.file_system_ref().fd_info(fd)?;
+                    Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
+                })
+                .collect())
         })
     }
 
@@ -571,7 +626,11 @@ impl RustExplorationManager {
     // Inspection events
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _enable_state_inspection(&mut self, state_id: u64, event_type: u8) -> PyResult<()> {
+    pub(crate) fn _enable_state_inspection(
+        &mut self,
+        state_id: u64,
+        event_type: u8,
+    ) -> PyResult<()> {
         let event = crate::state::InspectEvent::from_u8(event_type)
             .ok_or_else(|| PyValueError::new_err(format!("invalid event type: {}", event_type)))?;
         self.with_state_mut(state_id, |state| {
@@ -587,9 +646,16 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_state_inspection_counts(&self, state_id: u64) -> PyResult<Vec<(String, u64)>> {
+    pub(crate) fn _get_state_inspection_counts(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(String, u64)>> {
         self.with_state(state_id, |state| {
-            Ok(state.inspection().event_counts().iter().enumerate()
+            Ok(state
+                .inspection()
+                .event_counts()
+                .iter()
+                .enumerate()
                 .filter(|&(_, &count)| count > 0)
                 .filter_map(|(i, &count)| {
                     let event = crate::state::InspectEvent::from_u8(i as u8)?;
@@ -599,11 +665,25 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_state_inspection_events(&self, state_id: u64) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
+    pub(crate) fn _get_state_inspection_events(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u8, String, u64, u32, u64)>> {
         self.with_state(state_id, |state| {
-            Ok(state.inspection().events().iter().map(|e| {
-                (e.event as u8, e.event.name().to_string(), e.addr, e.size, e.block_addr)
-            }).collect())
+            Ok(state
+                .inspection()
+                .events()
+                .iter()
+                .map(|e| {
+                    (
+                        e.event as u8,
+                        e.event.name().to_string(),
+                        e.addr,
+                        e.size,
+                        e.block_addr,
+                    )
+                })
+                .collect())
         })
     }
 

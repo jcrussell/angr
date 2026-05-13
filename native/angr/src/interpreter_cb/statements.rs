@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::bv_to_bytes;
+use super::*;
 
 impl<'a> CallbackInterpreter<'a> {
     /// Execute a single statement using Python callbacks.
@@ -52,14 +52,27 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRStmt::Store { addr, data, .. } => {
-                let store_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+                let store_start = if self.profiling_enabled {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                 let data_size = ((data_val.width() + 7) / 8) as usize;
-                if self.profiling_enabled { self.stats.store_stmt_count += 1; }
+                if self.profiling_enabled {
+                    self.stats.store_stmt_count += 1;
+                }
 
                 if self.use_rust_memory
-                    && self.try_rust_memory_store(py, callbacks, &addr_val, &data_val, data_size, store_start)?
+                    && self.try_rust_memory_store(
+                        py,
+                        callbacks,
+                        &addr_val,
+                        &data_val,
+                        data_size,
+                        store_start,
+                    )?
                 {
                     return Ok(StmtResult::Continue);
                 }
@@ -119,7 +132,9 @@ impl<'a> CallbackInterpreter<'a> {
                             self.ctx.push();
                             self.block_solver_pushed = true;
                             for prev_fork in &self.deferred_forks {
-                                if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                                if let Some(cond) =
+                                    self.stored_conditions.get(&prev_fork.condition_id)
+                                {
                                     if prev_fork.path_taken {
                                         self.ctx.assume_true(cond);
                                     } else {
@@ -132,7 +147,9 @@ impl<'a> CallbackInterpreter<'a> {
                             // Subsequent Exits: only assert NEW fork conditions
                             while self.block_forks_asserted < self.deferred_forks.len() {
                                 let prev_fork = &self.deferred_forks[self.block_forks_asserted];
-                                if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                                if let Some(cond) =
+                                    self.stored_conditions.get(&prev_fork.condition_id)
+                                {
                                     if prev_fork.path_taken {
                                         self.ctx.assume_true(cond);
                                     } else {
@@ -146,7 +163,6 @@ impl<'a> CallbackInterpreter<'a> {
                     self.ctx.check_branch_feasibility(&guard_val)
                 };
                 if can_be_true && can_be_false {
-
                     // The unexplored path (guard=false) should resume at the
                     // next instruction after this conditional jump, NOT the
                     // block's default exit. When a VEX IRSB contains multiple
@@ -172,11 +188,14 @@ impl<'a> CallbackInterpreter<'a> {
                     // Snapshot full state BEFORE adding the branch constraint.
                     // This enables correct alternate-path forking with solver,
                     // registers, and memory from the branch point.
-                    self.fork_snapshots.insert(cond_id, BranchSnapshot {
-                        solver: self.ctx.fork(),
-                        registers: self.registers.fork(),
-                        memory: self.rust_memory.as_ref().map(|m| m.fork()),
-                    });
+                    self.fork_snapshots.insert(
+                        cond_id,
+                        BranchSnapshot {
+                            solver: self.ctx.fork(),
+                            registers: self.registers.fork(),
+                            memory: self.rust_memory.as_ref().map(|m| m.fork()),
+                        },
+                    );
 
                     // Decide which path to take based on branch direction.
                     // For backward branches (loops), take the exit (loop back)
@@ -190,7 +209,7 @@ impl<'a> CallbackInterpreter<'a> {
                     let deferred = if is_backward_branch {
                         DeferredFork {
                             branch_addr: self.current_insn_addr,
-                            path_taken: true,           // we took the exit (guard=true) path
+                            path_taken: true, // we took the exit (guard=true) path
                             unexplored_target: false_target, // fall-through deferred
                             condition_id: cond_id,
                             push_level: self.push_level,
@@ -199,8 +218,8 @@ impl<'a> CallbackInterpreter<'a> {
                     } else {
                         DeferredFork {
                             branch_addr: self.current_insn_addr,
-                            path_taken: false,          // we took the fallthrough (guard=false) path
-                            unexplored_target: *dst,    // the exit target is deferred
+                            path_taken: false, // we took the fallthrough (guard=false) path
+                            unexplored_target: *dst, // the exit target is deferred
                             condition_id: cond_id,
                             push_level: self.push_level,
                             condition_ast,
@@ -236,7 +255,12 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRStmt::MBE(_) => Ok(StmtResult::Continue),
 
-            IRStmt::PutI { descr, ix, bias, data } => {
+            IRStmt::PutI {
+                descr,
+                ix,
+                bias,
+                data,
+            } => {
                 // Evaluate the index expression
                 let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, &irsb.tyenv)?;
 
@@ -248,7 +272,9 @@ impl<'a> CallbackInterpreter<'a> {
                     if let Some(concrete) = self.ctx.eval(&ix_val) {
                         concrete as u64
                     } else {
-                        return Err(CbExecutionError::Unsupported("PutI index concretization failed".to_string()));
+                        return Err(CbExecutionError::Unsupported(
+                            "PutI index concretization failed".to_string(),
+                        ));
                     }
                 };
 
@@ -273,7 +299,9 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(StmtResult::Continue)
             }
 
-            IRStmt::StoreG { guard, addr, data, .. } => {
+            IRStmt::StoreG {
+                guard, addr, data, ..
+            } => {
                 // Evaluate guard condition
                 let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
 
@@ -287,14 +315,17 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                     if !self.ctx.can_be_false(&guard_val) {
                         // Guard is always true - perform store unconditionally
-                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                        let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                        let addr_val =
+                            self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let data_val =
+                            self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                         let data_size = ((data_val.width() + 7) / 8) as usize;
 
                         if let Some(addr_concrete) = addr_val.as_u64() {
                             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                             // Check if data is symbolic - use symbolic store callback
-                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value()
+                            {
                                 self.flush_stores(py, callbacks)?;
                                 callbacks
                                     .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
@@ -311,13 +342,16 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                     // Both paths possible with symbolic guard - use ITE for conditional store
                     // Store ITE(guard, new_data, current_data)
-                    let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                    let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                    let addr_val =
+                        self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let data_val =
+                        self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                     let data_size = ((data_val.width() + 7) / 8) as usize;
 
                     if let Some(addr_concrete) = addr_val.as_u64() {
                         // Load current value at address
-                        let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                        let current =
+                            self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
                         // Create ITE: if guard then new_data else current
                         let ite_result = guard_val.ite(&data_val, &current, self.ctx);
                         self.load_prefetch_cache.remove(&(addr_concrete, data_size));
@@ -342,13 +376,24 @@ impl<'a> CallbackInterpreter<'a> {
                                 // Track concretization constraint for Python sync
                                 self.track_concretization_constraint(&addr_val, addr_concrete);
                                 // Load current value and use ITE
-                                let current = self.load_from_callback(py, callbacks, addr_concrete, data_size)?;
+                                let current = self.load_from_callback(
+                                    py,
+                                    callbacks,
+                                    addr_concrete,
+                                    data_size,
+                                )?;
                                 let ite_result = guard_val.ite(&data_val, &current, self.ctx);
                                 self.flush_stores(py, callbacks)?;
                                 // ITE result is symbolic - use symbolic store callback
-                                if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                                if ite_result.is_symbolic()
+                                    && callbacks.has_memory_store_symbolic_value()
+                                {
                                     callbacks
-                                        .call_memory_store_symbolic_value(py, addr_concrete, &ite_result)
+                                        .call_memory_store_symbolic_value(
+                                            py,
+                                            addr_concrete,
+                                            &ite_result,
+                                        )
                                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                                 } else {
                                     let ite_bytes = bv_to_bytes(&ite_result);
@@ -374,7 +419,8 @@ impl<'a> CallbackInterpreter<'a> {
                                 } else {
                                     return Err(CbExecutionError::Unsupported(
                                         "guarded store with symbolic address: \
-                                         no memory_store_symbolic_full callback".to_string()
+                                         no memory_store_symbolic_full callback"
+                                            .to_string(),
                                     ));
                                 }
                                 // Touched addresses are unknown, drop the whole cache.
@@ -389,14 +435,17 @@ impl<'a> CallbackInterpreter<'a> {
                 if let Some(g) = guard_val.as_u64() {
                     if g != 0 {
                         // Guard is true - perform the store
-                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-                        let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                        let addr_val =
+                            self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let data_val =
+                            self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                         let data_size = ((data_val.width() + 7) / 8) as usize;
 
                         if let Some(addr_concrete) = addr_val.as_u64() {
                             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
                             // Check if data is symbolic - use symbolic store callback
-                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value()
+                            {
                                 self.flush_stores(py, callbacks)?;
                                 callbacks
                                     .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
@@ -412,17 +461,28 @@ impl<'a> CallbackInterpreter<'a> {
                             // Symbolic address with concrete guard - flush and use callback
                             self.flush_stores(py, callbacks)?;
                             // Check if data is symbolic - use symbolic store callback
-                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
+                            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value()
+                            {
                                 // Concretize address for write (with cache)
                                 let concret_result = self.concretize_cached_write(&addr_val);
                                 match &*concret_result {
                                     ConcretizationResult::Single(addr_concrete) => {
                                         let addr_concrete = *addr_concrete;
-                                        self.track_concretization_constraint(&addr_val, addr_concrete);
+                                        self.track_concretization_constraint(
+                                            &addr_val,
+                                            addr_concrete,
+                                        );
                                         callbacks
-                                            .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
-                                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                                        self.load_prefetch_cache.remove(&(addr_concrete, data_size));
+                                            .call_memory_store_symbolic_value(
+                                                py,
+                                                addr_concrete,
+                                                &data_val,
+                                            )
+                                            .map_err(|e| {
+                                                CbExecutionError::Callback(e.to_string())
+                                            })?;
+                                        self.load_prefetch_cache
+                                            .remove(&(addr_concrete, data_size));
                                     }
                                     ConcretizationResult::Multiple(addrs) => {
                                         // Symbolic data + multiple address solutions: prefer the full
@@ -431,9 +491,15 @@ impl<'a> CallbackInterpreter<'a> {
                                         // addresses are updated, not just the first one.
                                         if callbacks.has_memory_store_symbolic_full() {
                                             callbacks
-                                                .call_memory_store_symbolic_full(py, &addr_val, &data_val)
-                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                                        } else if callbacks.has_memory_store_symbolic_value() && addrs.len() <= 16 {
+                                                .call_memory_store_symbolic_full(
+                                                    py, &addr_val, &data_val,
+                                                )
+                                                .map_err(|e| {
+                                                    CbExecutionError::Callback(e.to_string())
+                                                })?;
+                                        } else if callbacks.has_memory_store_symbolic_value()
+                                            && addrs.len() <= 16
+                                        {
                                             self.build_ite_store_from_callbacks(
                                                 py, callbacks, addrs, &addr_val, &data_val,
                                             )?;
@@ -450,11 +516,16 @@ impl<'a> CallbackInterpreter<'a> {
                                         // TooLarge or Failed - delegate to Python's full symbolic callback
                                         if callbacks.has_memory_store_symbolic_full() {
                                             callbacks
-                                                .call_memory_store_symbolic_full(py, &addr_val, &data_val)
-                                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                                .call_memory_store_symbolic_full(
+                                                    py, &addr_val, &data_val,
+                                                )
+                                                .map_err(|e| {
+                                                    CbExecutionError::Callback(e.to_string())
+                                                })?;
                                         } else {
                                             return Err(CbExecutionError::Unsupported(
-                                                "symbolic store with unconcretizable address".to_string()
+                                                "symbolic store with unconcretizable address"
+                                                    .to_string(),
                                             ));
                                         }
                                         // Touched addresses are unknown, drop the whole cache.
@@ -475,7 +546,14 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(StmtResult::Continue)
             }
 
-            IRStmt::LoadG { dst, guard, addr, alt, cvt, .. } => {
+            IRStmt::LoadG {
+                dst,
+                guard,
+                addr,
+                alt,
+                cvt,
+                ..
+            } => {
                 // Evaluate guard condition
                 let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
 
@@ -484,7 +562,10 @@ impl<'a> CallbackInterpreter<'a> {
 
                 // Determine the load size from the destination temp type
                 let dst_ty = irsb.tyenv.get(*dst).ok_or_else(|| {
-                    CbExecutionError::InvalidIR(format!("LoadG destination temp {} not in tyenv", dst))
+                    CbExecutionError::InvalidIR(format!(
+                        "LoadG destination temp {} not in tyenv",
+                        dst
+                    ))
                 })?;
                 let load_size = match cvt {
                     IRLoadGOp::Identity => dst_ty.bytes() as usize,
@@ -507,9 +588,13 @@ impl<'a> CallbackInterpreter<'a> {
 
                     if can_be_true && !can_be_false {
                         // Guard is always true - perform load unconditionally
-                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let addr_val =
+                            self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                         let loaded = self.resolve_loadg_load(
-                            py, callbacks, &addr_val, load_size,
+                            py,
+                            callbacks,
+                            &addr_val,
+                            load_size,
                             "LoadG (always-true guard)",
                         )?;
 
@@ -531,9 +616,13 @@ impl<'a> CallbackInterpreter<'a> {
                     }
 
                     // Both paths possible - evaluate address and load, then ITE
-                    let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                    let addr_val =
+                        self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                     let loaded = self.resolve_loadg_load(
-                        py, callbacks, &addr_val, load_size,
+                        py,
+                        callbacks,
+                        &addr_val,
+                        load_size,
                         "LoadG (symbolic guard)",
                     )?;
 
@@ -553,9 +642,13 @@ impl<'a> CallbackInterpreter<'a> {
                 if let Some(g) = guard_val.as_u64() {
                     let result = if g != 0 {
                         // Guard is true - perform the load
-                        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
+                        let addr_val =
+                            self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                         let loaded = self.resolve_loadg_load(
-                            py, callbacks, &addr_val, load_size,
+                            py,
+                            callbacks,
+                            &addr_val,
+                            load_size,
                             "LoadG (concrete-true guard)",
                         )?;
                         self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
@@ -569,7 +662,9 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                 } else {
                     // This shouldn't happen if guard_val is concrete
-                    return Err(CbExecutionError::InvalidIR("LoadG guard evaluation failed".to_string()));
+                    return Err(CbExecutionError::InvalidIR(
+                        "LoadG guard evaluation failed".to_string(),
+                    ));
                 }
 
                 Ok(StmtResult::Continue)
@@ -585,11 +680,25 @@ impl<'a> CallbackInterpreter<'a> {
                 dataLo,
                 endness,
             } => self.execute_cas_stmt(
-                py, callbacks, *old_hi, *old_lo, addr, expdHi.as_deref(), expdLo,
-                dataHi.as_deref(), dataLo, *endness, irsb,
+                py,
+                callbacks,
+                *old_hi,
+                *old_lo,
+                addr,
+                expdHi.as_deref(),
+                expdLo,
+                dataHi.as_deref(),
+                dataLo,
+                *endness,
+                irsb,
             ),
 
-            IRStmt::LLSC { storedata, result, addr, endness } => {
+            IRStmt::LLSC {
+                storedata,
+                result,
+                addr,
+                endness,
+            } => {
                 match storedata {
                     None => {
                         // Load-linked: load value at addr, write to result temp.
@@ -604,9 +713,8 @@ impl<'a> CallbackInterpreter<'a> {
                             ty: result_ty,
                             endness: *endness,
                         };
-                        let value = self.eval_expr_with_callbacks(
-                            py, callbacks, &load_expr, &irsb.tyenv,
-                        )?;
+                        let value =
+                            self.eval_expr_with_callbacks(py, callbacks, &load_expr, &irsb.tyenv)?;
                         if (*result as usize) < self.temps.len() {
                             self.temps[*result as usize] = Some(value);
                         } else {
@@ -634,7 +742,8 @@ impl<'a> CallbackInterpreter<'a> {
             IRStmt::Dirty(dirty) => {
                 // Check guard if present
                 if let Some(guard) = &dirty.guard {
-                    let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+                    let guard_val =
+                        self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
                     if guard_val.is_symbolic() {
                         // Symbolic guard: pick the taken branch if feasible,
                         // otherwise skip. We can't fork mid-block, so we
@@ -698,7 +807,11 @@ impl<'a> CallbackInterpreter<'a> {
                 if all_args_concrete {
                     if let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals) {
                         // Native handler succeeded!
-                        log::trace!("Native dirty call: {} (args: {:?})", dirty.cee.name, arg_vals);
+                        log::trace!(
+                            "Native dirty call: {} (args: {:?})",
+                            dirty.cee.name,
+                            arg_vals
+                        );
 
                         // Store result in temporary if specified
                         if let Some(tmp) = dirty.tmp {
@@ -774,10 +887,12 @@ impl<'a> CallbackInterpreter<'a> {
                 self.stats.python_dirty_call_count += 1;
                 let (data, is_symbolic, _symbolic_ast) = callbacks
                     .call_dirty_call(py, &dirty.cee.name, &arg_vals, ret_ty_bits)
-                    .map_err(|e| CbExecutionError::Callback(format!(
-                        "dirty call {} failed: {}",
-                        dirty.cee.name, e
-                    )))?;
+                    .map_err(|e| {
+                        CbExecutionError::Callback(format!(
+                            "dirty call {} failed: {}",
+                            dirty.cee.name, e
+                        ))
+                    })?;
 
                 // Store result in temporary if specified
                 if let Some(tmp) = dirty.tmp {
@@ -826,7 +941,12 @@ impl<'a> CallbackInterpreter<'a> {
 
         // Attempt store using pre-computed concretization
         let first_result = match self.rust_memory.as_mut() {
-            Some(rust_mem) => rust_mem.store_with_concretization(addr_val, data_val.clone(), &*conc_result, self.ctx),
+            Some(rust_mem) => rust_mem.store_with_concretization(
+                addr_val,
+                data_val.clone(),
+                &*conc_result,
+                self.ctx,
+            ),
             None => return Ok(false),
         };
 
@@ -842,12 +962,18 @@ impl<'a> CallbackInterpreter<'a> {
             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
                 // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
                 let prefetch_count = self.page_prefetch_count;
-                let page_fetched = self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
+                let page_fetched =
+                    self.fetch_page_with_prefetch(py, callbacks, page_addr, prefetch_count)?;
 
                 if page_fetched {
                     // Page was fetched - retry store using cached concretization
                     if let Some(ref mut rust_mem) = self.rust_memory {
-                        match rust_mem.store_with_concretization(addr_val, data_val.clone(), &*conc_result, self.ctx) {
+                        match rust_mem.store_with_concretization(
+                            addr_val,
+                            data_val.clone(),
+                            &*conc_result,
+                            self.ctx,
+                        ) {
                             Ok(()) => {
                                 self.update_prefetch_on_store(addr_val, &conc_result, data_size);
                                 return Ok(true);
@@ -860,10 +986,14 @@ impl<'a> CallbackInterpreter<'a> {
                 }
                 Ok(false)
             }
-            Err(MemoryError::Unmapped { addr, size: unmapped_size }) => {
+            Err(MemoryError::Unmapped {
+                addr,
+                size: unmapped_size,
+            }) => {
                 log::debug!(
                     "Unmapped memory store at 0x{:x} (size={}), falling back to Python",
-                    addr, unmapped_size
+                    addr,
+                    unmapped_size
                 );
                 Ok(false)
             }
@@ -892,7 +1022,8 @@ impl<'a> CallbackInterpreter<'a> {
     ) {
         match conc_result {
             ConcretizationResult::Single(addr_concrete) => {
-                self.load_prefetch_cache.remove(&(*addr_concrete, data_size));
+                self.load_prefetch_cache
+                    .remove(&(*addr_concrete, data_size));
                 self.track_concretization_constraint(addr_val, *addr_concrete);
                 if self.is_in_binary(*addr_concrete) {
                     self.invalidate_code_at(*addr_concrete, data_size);
@@ -923,7 +1054,11 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                 }
             }
-            ConcretizationResult::Strided { base, stride, count } => {
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
                 for i in 0..*count {
                     let addr = base.saturating_add(i.saturating_mul(*stride));
                     if self.is_in_binary(addr) {
@@ -943,7 +1078,9 @@ impl<'a> CallbackInterpreter<'a> {
                     self.block_cache.clear();
                     // Mark all binary pages as dirtied so native lift skips
                     // them until they're re-lifted via Python.
-                    let pages: Vec<u64> = self.concrete_memory.iter()
+                    let pages: Vec<u64> = self
+                        .concrete_memory
+                        .iter()
                         .flat_map(|region| {
                             let first = region.base >> 12;
                             let last = (region.base + region.size - 1) >> 12;
@@ -973,8 +1110,7 @@ impl<'a> CallbackInterpreter<'a> {
         data_size: usize,
     ) -> Result<(), CbExecutionError> {
         if let Some(addr_concrete) = addr_val.as_u64() {
-            if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {
-            }
+            if self.arch.pointer_size() == 32 && data_val.is_symbolic() && data_size <= 4 {}
             self.load_prefetch_cache.remove(&(addr_concrete, data_size));
             if self.is_in_binary(addr_concrete) {
                 self.invalidate_code_at(addr_concrete, data_size);
@@ -995,13 +1131,17 @@ impl<'a> CallbackInterpreter<'a> {
                 });
                 !is_stack
             } else {
-                false  // Skip for 64-bit — too expensive
+                false // Skip for 64-bit — too expensive
             };
-            if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
+            if data_val.is_symbolic()
+                && callbacks.has_memory_store_symbolic_value()
+                && use_sym_store
+            {
                 // Try symbolic store callback (preserves expression tree)
                 let sym_ok = (|| -> Result<(), CbExecutionError> {
                     self.flush_stores(py, callbacks)?;
-                    callbacks.call_memory_store_symbolic_value(py, addr_concrete, &data_val)
+                    callbacks
+                        .call_memory_store_symbolic_value(py, addr_concrete, &data_val)
                         .map_err(|e| CbExecutionError::Callback(e.to_string()))
                 })();
                 if let Err(_e) = sym_ok {
@@ -1062,18 +1202,26 @@ impl<'a> CallbackInterpreter<'a> {
                     self.sync_before_callback(py, callbacks)?;
                     // Build ITE chain in Rust for ≤16 addresses
                     if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
-                        self.build_ite_store_from_callbacks(py, callbacks, addrs, addr_val, &data_val)?;
+                        self.build_ite_store_from_callbacks(
+                            py, callbacks, addrs, addr_val, &data_val,
+                        )?;
                     } else {
                         callbacks
                             .call_memory_store_symbolic(py, addrs, &data_val, addr_val)
                             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                     }
                 }
-                ConcretizationResult::Strided { base, stride, count } => {
+                ConcretizationResult::Strided {
+                    base,
+                    stride,
+                    count,
+                } => {
                     self.sync_before_callback(py, callbacks)?;
                     let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
                     if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
-                        self.build_ite_store_from_callbacks(py, callbacks, &addrs, addr_val, &data_val)?;
+                        self.build_ite_store_from_callbacks(
+                            py, callbacks, &addrs, addr_val, &data_val,
+                        )?;
                     } else {
                         callbacks
                             .call_memory_store_symbolic(py, &addrs, &data_val, addr_val)
@@ -1092,10 +1240,12 @@ impl<'a> CallbackInterpreter<'a> {
                     if callbacks.has_memory_store_symbolic_full() {
                         callbacks
                             .call_memory_store_symbolic_full(py, addr_val, &data_val)
-                            .map_err(|e| CbExecutionError::Callback(format!(
-                                "symbolic store full callback failed at 0x{:x}-0x{:x}: {}",
-                                min, max, e
-                            )))?;
+                            .map_err(|e| {
+                                CbExecutionError::Callback(format!(
+                                    "symbolic store full callback failed at 0x{:x}-0x{:x}: {}",
+                                    min, max, e
+                                ))
+                            })?;
                     } else {
                         return Err(CbExecutionError::Unsupported(format!(
                             "symbolic store with too-large address range 0x{:x}-0x{:x}: \
@@ -1154,9 +1304,9 @@ impl<'a> CallbackInterpreter<'a> {
         };
 
         // Half type comes from expdLo — both halves share it.
-        let half_ty = expd_lo.get_type(&irsb.tyenv).ok_or_else(|| {
-            CbExecutionError::InvalidIR("CAS expdLo has no type".to_string())
-        })?;
+        let half_ty = expd_lo
+            .get_type(&irsb.tyenv)
+            .ok_or_else(|| CbExecutionError::InvalidIR("CAS expdLo has no type".to_string()))?;
 
         if is_dcas && endness == Endness::Big {
             // No real arch (x86-64 cmpxchg16b, ARM64 LDXP) is BE; if BE DCAS
@@ -1175,16 +1325,14 @@ impl<'a> CallbackInterpreter<'a> {
         };
         let current_lo =
             self.eval_expr_with_callbacks(py, callbacks, &load_lo_expr, &irsb.tyenv)?;
-        let expd_lo_val =
-            self.eval_expr_with_callbacks(py, callbacks, expd_lo, &irsb.tyenv)?;
-        let data_lo_val =
-            self.eval_expr_with_callbacks(py, callbacks, data_lo, &irsb.tyenv)?;
+        let expd_lo_val = self.eval_expr_with_callbacks(py, callbacks, expd_lo, &irsb.tyenv)?;
+        let data_lo_val = self.eval_expr_with_callbacks(py, callbacks, data_lo, &irsb.tyenv)?;
 
         // For DCAS, also load the high half at addr + sizeof(half).
         let (current_hi, expd_hi_val, data_hi_val, addr_hi_expr) = if is_dcas {
-            let addr_ty = addr.get_type(&irsb.tyenv).ok_or_else(|| {
-                CbExecutionError::InvalidIR("CAS addr has no type".to_string())
-            })?;
+            let addr_ty = addr
+                .get_type(&irsb.tyenv)
+                .ok_or_else(|| CbExecutionError::InvalidIR("CAS addr has no type".to_string()))?;
             let half_bytes = half_ty.bytes() as u64;
             let offset_const = match addr_ty {
                 IRType::I32 => IRExpr::Const(IRConst::U32(half_bytes as u32)),
@@ -1207,13 +1355,16 @@ impl<'a> CallbackInterpreter<'a> {
             };
             let current_hi =
                 self.eval_expr_with_callbacks(py, callbacks, &load_hi_expr, &irsb.tyenv)?;
-            let expd_hi_val = self.eval_expr_with_callbacks(
-                py, callbacks, expd_hi.unwrap(), &irsb.tyenv,
-            )?;
-            let data_hi_val = self.eval_expr_with_callbacks(
-                py, callbacks, data_hi.unwrap(), &irsb.tyenv,
-            )?;
-            (Some(current_hi), Some(expd_hi_val), Some(data_hi_val), Some(addr_hi_expr))
+            let expd_hi_val =
+                self.eval_expr_with_callbacks(py, callbacks, expd_hi.unwrap(), &irsb.tyenv)?;
+            let data_hi_val =
+                self.eval_expr_with_callbacks(py, callbacks, data_hi.unwrap(), &irsb.tyenv)?;
+            (
+                Some(current_hi),
+                Some(expd_hi_val),
+                Some(data_hi_val),
+                Some(addr_hi_expr),
+            )
         } else {
             (None, None, None, None)
         };
@@ -1238,9 +1389,7 @@ impl<'a> CallbackInterpreter<'a> {
             Some(0) => { /* no store */ }
             Some(_) => {
                 // Concrete-true: store data_lo (and data_hi for DCAS).
-                self.cas_dispatch_store(
-                    py, callbacks, addr, data_lo, &data_lo_val, endness, irsb,
-                )?;
+                self.cas_dispatch_store(py, callbacks, addr, data_lo, &data_lo_val, endness, irsb)?;
                 if is_dcas {
                     self.cas_dispatch_store(
                         py,
@@ -1340,7 +1489,8 @@ impl<'a> CallbackInterpreter<'a> {
                     .call_memory_store_symbolic_value(py, addr_concrete, data_bv)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
             } else {
-                self.pending_symbolic_stores.insert(addr_concrete, data_bv.clone());
+                self.pending_symbolic_stores
+                    .insert(addr_concrete, data_bv.clone());
                 let data_bytes = bv_to_bytes(data_bv);
                 self.pending_stores.push(addr_concrete, data_bytes);
                 if self.pending_stores.len() >= self.max_pending_stores {

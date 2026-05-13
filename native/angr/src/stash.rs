@@ -143,7 +143,9 @@ impl StashManager {
     /// Whether the active stash is non-empty.
     #[inline]
     pub fn has_active(&self) -> bool {
-        self.stashes.get(STASH_ACTIVE).map_or(false, |s| !s.is_empty())
+        self.stashes
+            .get(STASH_ACTIVE)
+            .map_or(false, |s| !s.is_empty())
     }
 
     /// Get state IDs in a stash.
@@ -248,7 +250,8 @@ impl StashManager {
         self.state_index.clear();
         for (stash_name, stash) in &self.stashes {
             for state in stash {
-                self.state_index.insert(state.state_id(), stash_name.clone());
+                self.state_index
+                    .insert(state.state_id(), stash_name.clone());
             }
         }
     }
@@ -298,7 +301,9 @@ impl StashManager {
                         break;
                     }
                 }
-                if found.is_some() { break; }
+                if found.is_some() {
+                    break;
+                }
             }
             found
         };

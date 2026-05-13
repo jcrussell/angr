@@ -13,8 +13,8 @@ pub mod registry;
 mod table;
 mod value;
 
-pub use context::{SymContext, ConstraintSyncError, get_solver_stats, reset_solver_stats};
+pub use context::{ConstraintSyncError, SymContext, get_solver_stats, reset_solver_stats};
 pub use handle::RustBVHandle;
-pub use registry::{SymbolicIdentityRegistry, SymbolInfo, global_registry, clear_global_registry};
+pub use registry::{SymbolInfo, SymbolicIdentityRegistry, clear_global_registry, global_registry};
 pub use table::RustSymbolTable;
-pub use value::{BitWidth, BVOp, FloatOpKind, FloatPrec, RustBV, Signedness};
+pub use value::{BVOp, BitWidth, FloatOpKind, FloatPrec, RustBV, Signedness};

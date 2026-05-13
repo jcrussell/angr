@@ -8,17 +8,12 @@ use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
-use super::page::{Permission, PAGE_MASK, PAGE_SIZE};
+use super::page::{PAGE_MASK, PAGE_SIZE, Permission};
 use super::{MemoryError, SymbolicMemory};
 
 impl SymbolicMemory {
     /// Load bytes from memory as a RustBV.
-    pub fn load(
-        &self,
-        addr: RustBV,
-        size: u32,
-        ctx: &SymContext,
-    ) -> Result<RustBV, MemoryError> {
+    pub fn load(&self, addr: RustBV, size: u32, ctx: &SymContext) -> Result<RustBV, MemoryError> {
         // For symbolic addresses, we need to concretize or fork
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
@@ -51,8 +46,8 @@ impl SymbolicMemory {
         // value, ignoring the overwrite. Detect by scanning for any
         // symbolic_objects entry whose start lies strictly inside our range,
         // and fall back to a per-byte merge (which uses both indices).
-        let has_inner_overlap = (1..size as u64)
-            .any(|i| self.symbolic_objects.contains_key(&(addr + i)));
+        let has_inner_overlap =
+            (1..size as u64).any(|i| self.symbolic_objects.contains_key(&(addr + i)));
         if has_inner_overlap {
             if let Some(merged) = self.try_byte_merge_load(addr, size, ctx) {
                 return Ok(merged);
@@ -96,10 +91,9 @@ impl SymbolicMemory {
                         // LE: same byte range occupies bits
                         //     [off_bits+size*8-1 : off_bits].
                         let (hi, lo) = match self.endness {
-                            Endness::Big => (
-                                total_bits - off_bits - 1,
-                                total_bits - off_bits - size * 8,
-                            ),
+                            Endness::Big => {
+                                (total_bits - off_bits - 1, total_bits - off_bits - size * 8)
+                            }
                             Endness::Little => (off_bits + size * 8 - 1, off_bits),
                         };
                         return Ok(sym.extract(hi, lo, ctx));
@@ -215,10 +209,9 @@ impl SymbolicMemory {
                     //     [total-1-off_bits : total-off_bits-size*8].
                     // LE: same byte range occupies bits [off_bits+size*8-1 : off_bits].
                     let (hi, lo) = match self.endness {
-                        Endness::Big => (
-                            total_bits - off_bits - 1,
-                            total_bits - off_bits - size * 8,
-                        ),
+                        Endness::Big => {
+                            (total_bits - off_bits - 1, total_bits - off_bits - size * 8)
+                        }
                         Endness::Little => (off_bits + size * 8 - 1, off_bits),
                     };
                     return Ok(sym_val.extract(hi, lo, ctx));
@@ -287,9 +280,11 @@ impl SymbolicMemory {
             ConcretizationResult::Single(concrete_addr) => {
                 self.load_concrete_lazy(concrete_addr, size, ctx)?
             }
-            ConcretizationResult::Strided { base, stride, count } => {
-                self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
-            }
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => self.load_strided_balanced(&addr, base, stride, count, size, ctx)?,
             ConcretizationResult::Multiple(addrs) => {
                 self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
             }
@@ -399,7 +394,11 @@ impl SymbolicMemory {
                 let addr_clone = addr.clone();
                 self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)?
             }
-            ConcretizationResult::Strided { base, stride, count } => {
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
                 self.prepare_strided_region(base, stride, count, size);
                 self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
             }
@@ -414,7 +413,9 @@ impl SymbolicMemory {
                 });
             }
             ConcretizationResult::Failed(reason) => {
-                return Err(MemoryError::SymbolicAddress { description: reason });
+                return Err(MemoryError::SymbolicAddress {
+                    description: reason,
+                });
             }
         };
 
@@ -621,7 +622,9 @@ impl SymbolicMemory {
                 match self.endness {
                     Endness::Little => {
                         // Start with the MSB (last byte) and concat towards LSB
-                        let mut result = byte_objects.pop().expect("byte_objects non-empty when size > 0");
+                        let mut result = byte_objects
+                            .pop()
+                            .expect("byte_objects non-empty when size > 0");
                         while let Some(byte) = byte_objects.pop() {
                             result = result.concat(&byte, ctx);
                         }
@@ -692,20 +695,13 @@ impl SymbolicMemory {
     ///
     /// Returns the byte-merged bitvector, or `None` if a fully-symbolic
     /// reconstruction was not possible.
-    fn try_byte_merge_load(
-        &self,
-        addr: u64,
-        size: u32,
-        ctx: &SymContext,
-    ) -> Option<RustBV> {
+    fn try_byte_merge_load(&self, addr: u64, size: u32, ctx: &SymContext) -> Option<RustBV> {
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {
             let byte_addr = addr + i as u64;
             let part = if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
                 Self::extract_byte_lane(sym, 0, self.endness, ctx)?
-            } else if let Some(&(base_addr, base_width)) =
-                self.symbolic_spans.get(&byte_addr)
-            {
+            } else if let Some(&(base_addr, base_width)) = self.symbolic_spans.get(&byte_addr) {
                 let sym = self.symbolic_objects.get(&base_addr)?;
                 if sym.width() != base_width {
                     return None;
@@ -758,9 +754,7 @@ impl SymbolicMemory {
             return None;
         }
         Some(match endness {
-            Endness::Little => {
-                sym.extract(byte_offset * 8 + 7, byte_offset * 8, ctx)
-            }
+            Endness::Little => sym.extract(byte_offset * 8 + 7, byte_offset * 8, ctx),
             Endness::Big => sym.extract(
                 total_bits - byte_offset * 8 - 1,
                 total_bits - byte_offset * 8 - 8,

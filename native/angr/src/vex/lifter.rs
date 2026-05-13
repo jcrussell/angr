@@ -7,11 +7,9 @@
 
 use std::collections::HashMap;
 
+use super::ir::{Endness, IRConst, IRExpr, IROp, IRSB, IRStmt, IRType, JumpKind, VexArch};
 #[cfg(feature = "native-lift")]
 use super::libpyvex_ffi;
-use super::ir::{
-    Endness, IRConst, IRExpr, IROp, IRStmt, IRType, IRSB, JumpKind, VexArch,
-};
 
 /// Errors from VEX lifting.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -175,9 +173,11 @@ impl IRSBBuilder {
 
     /// Add a Store statement.
     pub fn store(&mut self, addr: IRExpr, data: IRExpr, endness: Endness) -> &mut Self {
-        self.irsb
-            .statements
-            .push(IRStmt::Store { addr, data, endness });
+        self.irsb.statements.push(IRStmt::Store {
+            addr,
+            data,
+            endness,
+        });
         self
     }
 

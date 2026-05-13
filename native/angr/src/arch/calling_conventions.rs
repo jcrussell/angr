@@ -594,7 +594,11 @@ mod tests {
             &[72, 64, 32, 96, 80, 88][..],
             "amd64 syscall ABI must use R10 (96), not RCX (24), at arg 4",
         );
-        assert_eq!(cc.arg_registers()[3], 24, "C ABI arg 4 is RCX (sanity check)");
+        assert_eq!(
+            cc.arg_registers()[3],
+            24,
+            "C ABI arg 4 is RCX (sanity check)"
+        );
     }
 
     #[test]

@@ -2,9 +2,9 @@
 //!
 //! Concrete string concatenation. Symbolic arguments fall back to Python.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_STRLEN: usize = 4096;
 
@@ -12,9 +12,11 @@ const MAX_STRLEN: usize = 4096;
 fn find_null(state: &mut RustSimState, addr: u64) -> Result<u64, ProcedureError> {
     for i in 0..MAX_STRLEN as u64 {
         let byte_addr = addr.wrapping_add(i);
-        let byte_val = state.memory_load(byte_addr, 1)
+        let byte_val = state
+            .memory_load(byte_addr, 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-        let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))? as u8;
+        let byte =
+            extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))? as u8;
         if byte == 0 {
             return Ok(byte_addr);
         }
@@ -26,8 +28,12 @@ fn find_null(state: &mut RustSimState, addr: u64) -> Result<u64, ProcedureError>
 pub struct NativeStrcat;
 
 impl NativeSimProcedure for NativeStrcat {
-    fn name(&self) -> &'static str { "strcat" }
-    fn num_args(&self) -> usize { 2 }
+    fn name(&self) -> &'static str {
+        "strcat"
+    }
+    fn num_args(&self) -> usize {
+        2
+    }
 
     fn call(
         &self,
@@ -43,15 +49,20 @@ impl NativeSimProcedure for NativeStrcat {
         // Copy src to dest_end (including null terminator)
         for i in 0..MAX_STRLEN as u64 {
             let src_addr = src.wrapping_add(i);
-            let byte_val = state.memory_load(src_addr, 1)
+            let byte_val = state
+                .memory_load(src_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
+            let byte =
+                extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
 
             let dst_addr = dest_end.wrapping_add(i);
-            state.memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
+            state
+                .memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
-            if byte == 0 { break; }
+            if byte == 0 {
+                break;
+            }
         }
 
         let bits = state.arch().bits();
@@ -63,8 +74,12 @@ impl NativeSimProcedure for NativeStrcat {
 pub struct NativeStrncat;
 
 impl NativeSimProcedure for NativeStrncat {
-    fn name(&self) -> &'static str { "strncat" }
-    fn num_args(&self) -> usize { 3 }
+    fn name(&self) -> &'static str {
+        "strncat"
+    }
+    fn num_args(&self) -> usize {
+        3
+    }
 
     fn call(
         &self,
@@ -81,21 +96,27 @@ impl NativeSimProcedure for NativeStrncat {
         let mut copied = 0u64;
         for i in 0..max_copy {
             let src_addr = src.wrapping_add(i);
-            let byte_val = state.memory_load(src_addr, 1)
+            let byte_val = state
+                .memory_load(src_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-            let byte = extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
+            let byte =
+                extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
 
-            if byte == 0 { break; }
+            if byte == 0 {
+                break;
+            }
 
             let dst_addr = dest_end.wrapping_add(i);
-            state.memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
+            state
+                .memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             copied += 1;
         }
 
         // Null-terminate
         let null_addr = dest_end.wrapping_add(copied);
-        state.memory_store(null_addr, RustBV::concrete(0u128, 8))
+        state
+            .memory_store(null_addr, RustBV::concrete(0u128, 8))
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
         let bits = state.arch().bits();
@@ -119,15 +140,22 @@ mod tests {
         state.map_memory_data(0x2000, b" world\x00", Permission::RWX);
 
         let p = NativeStrcat;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1000));
 
         // Verify concatenated string
         for (i, &expected) in b"hello world\x00".iter().enumerate() {
-            let byte = state.memory_load(0x1000 + i as u64, 1).unwrap().as_u64().unwrap() as u8;
+            let byte = state
+                .memory_load(0x1000 + i as u64, 1)
+                .unwrap()
+                .as_u64()
+                .unwrap() as u8;
             assert_eq!(byte, expected, "byte {} mismatch", i);
         }
     }
@@ -141,16 +169,26 @@ mod tests {
         state.map_memory_data(0x2000, b"there\x00", Permission::RWX);
 
         let p = NativeStrncat;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(3, 64), // only copy 3 bytes
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(3, 64), // only copy 3 bytes
+                ],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1000));
 
         // Should be "hithe\0" (3 bytes from "there")
         for (i, &expected) in b"hithe\x00".iter().enumerate() {
-            let byte = state.memory_load(0x1000 + i as u64, 1).unwrap().as_u64().unwrap() as u8;
+            let byte = state
+                .memory_load(0x1000 + i as u64, 1)
+                .unwrap()
+                .as_u64()
+                .unwrap() as u8;
             assert_eq!(byte, expected, "byte {} mismatch", i);
         }
     }

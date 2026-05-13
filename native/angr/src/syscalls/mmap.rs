@@ -255,20 +255,14 @@ mod tests {
         let mut state = fresh_state();
         // 0x800 bytes — not page-aligned. Python's allocate_memory
         // bumps mmap_base by size, then aligns up to next page.
-        h.call(
-            &mut state,
-            &args(0, 0x800, 0x3, ANON_PRIVATE, ANON_FD, 0),
-        )
-        .expect("ok");
+        h.call(&mut state, &args(0, 0x800, 0x3, ANON_PRIVATE, ANON_FD, 0))
+            .expect("ok");
         // First call: allocated at DEFAULT_MMAP_BASE, returned that.
         // mmap_base should now be DEFAULT_MMAP_BASE + 0x1000 (aligned up).
         assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE + 0x1000);
         // The second call should land at the next page.
         let outcome = h
-            .call(
-                &mut state,
-                &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0),
-            )
+            .call(&mut state, &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0))
             .expect("ok");
         match outcome {
             SyscallOutcome::Continue { ret } => {
@@ -311,10 +305,7 @@ mod tests {
         let h = NativeMmapSyscall;
         let mut state = fresh_state();
         let outcome = h
-            .call(
-                &mut state,
-                &args(0, 0x1000, 0x3, ANON_SHARED, ANON_FD, 0),
-            )
+            .call(&mut state, &args(0, 0x1000, 0x3, ANON_SHARED, ANON_FD, 0))
             .expect("ok");
         match outcome {
             SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_MMAP_BASE),
@@ -328,10 +319,7 @@ mod tests {
         let mut state = fresh_state();
         // flags has neither MAP_SHARED nor MAP_PRIVATE → Python returns -1.
         let outcome = h
-            .call(
-                &mut state,
-                &args(0, 0x1000, 0x3, MAP_ANONYMOUS, ANON_FD, 0),
-            )
+            .call(&mut state, &args(0, 0x1000, 0x3, MAP_ANONYMOUS, ANON_FD, 0))
             .expect("ok");
         match outcome {
             SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
@@ -339,7 +327,12 @@ mod tests {
         }
         // No region mapped, mmap_base unchanged.
         assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
-        assert!(state.memory().page_permissions(DEFAULT_MMAP_BASE >> 12).is_none());
+        assert!(
+            state
+                .memory()
+                .page_permissions(DEFAULT_MMAP_BASE >> 12)
+                .is_none()
+        );
     }
 
     #[test]
@@ -423,14 +416,7 @@ mod tests {
         let err = h
             .call(
                 &mut state,
-                &args(
-                    target,
-                    0x1000,
-                    0x3,
-                    ANON_PRIVATE | MAP_FIXED,
-                    ANON_FD,
-                    0,
-                ),
+                &args(target, 0x1000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
             )
             .expect_err("must fall back");
         assert!(matches!(err, SyscallError::Other(_)));
@@ -445,10 +431,7 @@ mod tests {
         state.map_memory(DEFAULT_MMAP_BASE, 0x1000, Permission::RW);
 
         let err = h
-            .call(
-                &mut state,
-                &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0),
-            )
+            .call(&mut state, &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0))
             .expect_err("must fall back");
         assert!(matches!(err, SyscallError::Other(_)));
         // mmap_base must NOT advance on fallback.
@@ -545,7 +528,12 @@ mod tests {
         // which would have left it where it is after aligning new_base=base).
         // Our impl skips set_mmap_base in the size==0 short-circuit.
         assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
-        assert!(state.memory().page_permissions(DEFAULT_MMAP_BASE >> 12).is_none());
+        assert!(
+            state
+                .memory()
+                .page_permissions(DEFAULT_MMAP_BASE >> 12)
+                .is_none()
+        );
     }
 
     #[test]

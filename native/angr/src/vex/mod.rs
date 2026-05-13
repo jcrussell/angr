@@ -23,8 +23,10 @@ pub mod transcendentals;
 pub use dirty::{DirtyHelperDispatch, DirtyHelperResult};
 pub use ir::*;
 #[cfg(feature = "native-lift")]
-pub use libpyvex_ffi::{lift_native, init_vex, is_vex_initialized, NativeLiftError};
+pub use libpyvex_ffi::{NativeLiftError, init_vex, is_vex_initialized, lift_native};
 pub use lifter::{IRSBBuilder, LiftError, NativeVEXLifter, VEXLifter};
-pub use opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_opcode_from_u32, parse_type};
+pub use opcode_map::{
+    parse_endness, parse_jumpkind, parse_opcode, parse_opcode_from_u32, parse_type,
+};
 pub use ops::{OpError, VEXOps};
-pub use pyvex_bridge::{deserialize_irsb, DeserializeError};
+pub use pyvex_bridge::{DeserializeError, deserialize_irsb};

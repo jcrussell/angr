@@ -26,9 +26,10 @@ impl RustExplorationManager {
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
-        let pending = self.pending_callback.take().ok_or_else(|| {
-            PyRuntimeError::new_err("no pending callback state")
-        })?;
+        let pending = self
+            .pending_callback
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
 
         // Apply changes
         let mut changes = StateChanges::new();
@@ -70,14 +71,16 @@ impl RustExplorationManager {
                 missing_conditions += 1;
                 log::warn!(
                     "Deferred fork at 0x{:x} references missing condition_id={}",
-                    fork.branch_addr, fork.condition_id
+                    fork.branch_addr,
+                    fork.condition_id
                 );
             }
         }
         if missing_conditions > 0 {
             log::warn!(
                 "{} of {} deferred forks have missing conditions - will be skipped",
-                missing_conditions, pending.deferred_forks.len()
+                missing_conditions,
+                pending.deferred_forks.len()
             );
         }
 
@@ -103,7 +106,11 @@ impl RustExplorationManager {
         // due to Z3 solver clone, and most callbacks have zero deferred forks.
         let has_deferred_forks = !pending.deferred_forks.is_empty();
         let fork_base = if has_deferred_forks {
-            Some(pending.pre_callback_snapshot.unwrap_or_else(|| state.fork()))
+            Some(
+                pending
+                    .pre_callback_snapshot
+                    .unwrap_or_else(|| state.fork()),
+            )
         } else {
             drop(pending.pre_callback_snapshot); // explicitly drop unused snapshot
             None
@@ -112,7 +119,12 @@ impl RustExplorationManager {
         // Track root state ID for lineage
         // The root is inherited from the original pending state
         let original_state_id = state.state_id();
-        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+        let root_state_id = self
+            .sm
+            .roots()
+            .get(&original_state_id)
+            .copied()
+            .unwrap_or(original_state_id);
 
         // P12: Only add main state if SAT, otherwise add to pruned list
         let (mut successors, mut pruned_states) = if main_state_unsat {
@@ -131,7 +143,9 @@ impl RustExplorationManager {
                     // Try to convert the claripy AST to RustBV
                     Python::attach(|py| {
                         let ast = py_ast.bind(py);
-                        let fb = fork_base.as_ref().expect("fork_base set before deferred fork processing");
+                        let fb = fork_base
+                            .as_ref()
+                            .expect("fork_base set before deferred fork processing");
                         let solver_ref = fb.solver();
                         let ctx: &SymContext = &*solver_ref.borrow();
                         claripy_to_rustbv(py, ast, ctx).ok()
@@ -147,7 +161,9 @@ impl RustExplorationManager {
 
             if let Some(cond) = effective_condition {
                 // Use solver snapshot (from before branch constraint) if available
-                let fb = fork_base.as_ref().expect("fork_base set before deferred fork processing");
+                let fb = fork_base
+                    .as_ref()
+                    .expect("fork_base set before deferred fork processing");
                 let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
                     let mut f = fb.fork_from_snapshot(snapshot);
                     if fork.path_taken {
@@ -201,7 +217,10 @@ impl RustExplorationManager {
                 );
                 // Create a fork without additional constraints - this is conservative
                 // but ensures we don't lose valid paths
-                let mut forked = fork_base.as_ref().expect("fork_base set before fork").fork();
+                let mut forked = fork_base
+                    .as_ref()
+                    .expect("fork_base set before fork")
+                    .fork();
                 forked.set_pc(fork.unexplored_target);
                 self.sm.set_root(forked.state_id(), root_state_id);
 
@@ -238,8 +257,11 @@ impl RustExplorationManager {
         for s in final_successors {
             let spc = s.pc();
             if self.find_addrs.contains(&spc) {
-                self.sm.stashes_mut().entry(STASH_FOUND.to_string())
-                    .or_insert_with(VecDeque::new).push_back(s);
+                self.sm
+                    .stashes_mut()
+                    .entry(STASH_FOUND.to_string())
+                    .or_insert_with(VecDeque::new)
+                    .push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
             } else {
@@ -262,16 +284,24 @@ impl RustExplorationManager {
 
     /// Inner body of the pymethods-exposed `deadend_pending_callback`.
     pub(crate) fn _deadend_pending_callback(&mut self) -> PyResult<()> {
-        let pending = self.pending_callback.take().ok_or_else(|| {
-            PyRuntimeError::new_err("no pending callback state for deadend")
-        })?;
+        let pending = self
+            .pending_callback
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state for deadend"))?;
 
         // Process deferred forks BEFORE deadending — these represent
         // unexplored branches that diverged before the exit/abort call.
         if !pending.deferred_forks.is_empty() {
-            let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| pending.state.fork());
+            let fork_base = pending
+                .pre_callback_snapshot
+                .unwrap_or_else(|| pending.state.fork());
             let original_state_id = pending.state.state_id();
-            let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+            let root_state_id = self
+                .sm
+                .roots()
+                .get(&original_state_id)
+                .copied()
+                .unwrap_or(original_state_id);
 
             let mut snapshots = pending.fork_snapshots;
             for fork in pending.deferred_forks {
@@ -304,8 +334,11 @@ impl RustExplorationManager {
                     if self.constraint_solver.lazy_solves || forked.satisfiable() {
                         let spc = forked.pc();
                         if self.find_addrs.contains(&spc) {
-                            self.sm.stashes_mut().entry(STASH_FOUND.to_string())
-                                .or_insert_with(VecDeque::new).push_back(forked);
+                            self.sm
+                                .stashes_mut()
+                                .entry(STASH_FOUND.to_string())
+                                .or_insert_with(VecDeque::new)
+                                .push_back(forked);
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, forked);
                         } else {
@@ -331,14 +364,17 @@ impl RustExplorationManager {
 
         log::warn!(
             "P17: Moving state {} to errored stash after callback error at 0x{:x}: {}",
-            state_id, pc, error_msg
+            state_id,
+            pc,
+            error_msg
         );
 
         // Record the error
         self.errors.push((pc, error_msg.to_string(), state_id));
 
         // Move to errored stash
-        self.sm.stashes_mut()
+        self.sm
+            .stashes_mut()
             .entry(STASH_ERRORED.to_string())
             .or_insert_with(VecDeque::new)
             .push_back(pending.state);
@@ -358,7 +394,9 @@ impl RustExplorationManager {
         // true_constraints and false_constraints are accepted for API compatibility but
         // the branch condition is sourced from stored_conditions (set by interpreter).
         let _ = (true_constraints, false_constraints);
-        let pending = self.pending_callback.take()
+        let pending = self
+            .pending_callback
+            .take()
             .ok_or_else(|| PyRuntimeError::new_err("no pending symbolic branch callback"))?;
 
         // Get the branch condition from stored_conditions (set by interpreter)
@@ -386,7 +424,12 @@ impl RustExplorationManager {
 
         // Track root state ID for lineage
         let original_state_id = pending.state.state_id();
-        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+        let root_state_id = self
+            .sm
+            .roots()
+            .get(&original_state_id)
+            .copied()
+            .unwrap_or(original_state_id);
 
         // Create the true state (fork of original) and add constraint
         let mut true_state = pending.state.fork();
@@ -498,14 +541,22 @@ impl RustExplorationManager {
             false_state.set_sat_cache(true);
             // Check find/avoid on new states before adding to active
             if self.find_addrs.contains(&true_pc) {
-                self.sm.stashes_mut().entry(STASH_FOUND.to_string()).or_insert_with(VecDeque::new).push_back(true_state);
+                self.sm
+                    .stashes_mut()
+                    .entry(STASH_FOUND.to_string())
+                    .or_insert_with(VecDeque::new)
+                    .push_back(true_state);
             } else if self.avoid_addrs.contains(&true_pc) {
                 self.push_or_drop_terminal(STASH_AVOID, true_state);
             } else {
                 active_states.push(true_state);
             }
             if self.find_addrs.contains(&false_pc) {
-                self.sm.stashes_mut().entry(STASH_FOUND.to_string()).or_insert_with(VecDeque::new).push_back(false_state);
+                self.sm
+                    .stashes_mut()
+                    .entry(STASH_FOUND.to_string())
+                    .or_insert_with(VecDeque::new)
+                    .push_back(false_state);
             } else if self.avoid_addrs.contains(&false_pc) {
                 self.push_or_drop_terminal(STASH_AVOID, false_state);
             } else {
@@ -529,8 +580,11 @@ impl RustExplorationManager {
         for s in deferred_successors {
             let spc = s.pc();
             if self.find_addrs.contains(&spc) {
-                self.sm.stashes_mut().entry(STASH_FOUND.to_string())
-                    .or_insert_with(VecDeque::new).push_back(s);
+                self.sm
+                    .stashes_mut()
+                    .entry(STASH_FOUND.to_string())
+                    .or_insert_with(VecDeque::new)
+                    .push_back(s);
             } else if self.avoid_addrs.contains(&spc) {
                 self.push_or_drop_terminal(STASH_AVOID, s);
             } else {
@@ -549,8 +603,11 @@ impl RustExplorationManager {
             self.push_or_drop_terminal(STASH_PRUNED, s);
         }
 
-        log::debug!("Resumed after symbolic branch: true_pc=0x{:x}, false_pc=0x{:x}",
-                    true_pc, false_pc);
+        log::debug!(
+            "Resumed after symbolic branch: true_pc=0x{:x}, false_pc=0x{:x}",
+            true_pc,
+            false_pc
+        );
 
         // Apply native uniqueness filter if enabled
         self.apply_uniqueness_filter();
@@ -562,13 +619,16 @@ impl RustExplorationManager {
 
     /// Inner body of the pymethods-exposed `resume_find_predicate`.
     pub(crate) fn _resume_find_predicate(&mut self, matched: bool) -> PyResult<()> {
-        let pending = self.pending_callback.take()
+        let pending = self
+            .pending_callback
+            .take()
             .ok_or_else(|| PyRuntimeError::new_err("no pending find predicate callback"))?;
 
         if matched {
             log::debug!("Find predicate matched - moving state to found stash");
             let state_id = pending.state.state_id();
-            self.sm.stashes_mut()
+            self.sm
+                .stashes_mut()
                 .entry(STASH_FOUND.to_string())
                 .or_insert_with(VecDeque::new)
                 .push_back(pending.state);
@@ -578,7 +638,9 @@ impl RustExplorationManager {
             // Mark this state to skip the find predicate check on next pop,
             // preventing infinite loop (state was already checked at this PC).
             let state_id = pending.state.state_id();
-            self.constraint_tracker.skip_find_predicate_states.insert(state_id);
+            self.constraint_tracker
+                .skip_find_predicate_states
+                .insert(state_id);
             self.push_to_active_or_drop(pending.state);
         }
 
@@ -587,7 +649,9 @@ impl RustExplorationManager {
 
     /// Inner body of the pymethods-exposed `resume_avoid_predicate`.
     pub(crate) fn _resume_avoid_predicate(&mut self, matched: bool) -> PyResult<()> {
-        let pending = self.pending_callback.take()
+        let pending = self
+            .pending_callback
+            .take()
             .ok_or_else(|| PyRuntimeError::new_err("no pending avoid predicate callback"))?;
 
         if matched {
@@ -596,7 +660,9 @@ impl RustExplorationManager {
         } else {
             log::debug!("Avoid predicate did not match - continuing exploration");
             let state_id = pending.state.state_id();
-            self.constraint_tracker.skip_avoid_predicate_states.insert(state_id);
+            self.constraint_tracker
+                .skip_avoid_predicate_states
+                .insert(state_id);
             self.push_to_active_or_drop(pending.state);
         }
 

@@ -8,7 +8,9 @@ impl RustExplorationManager {
     where
         F: FnOnce(&PendingCallback) -> PyResult<T>,
     {
-        let pending = self.pending_callback.as_ref()
+        let pending = self
+            .pending_callback
+            .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
         f(pending)
     }
@@ -20,7 +22,9 @@ impl RustExplorationManager {
     where
         F: FnOnce(&mut PendingCallback) -> PyResult<T>,
     {
-        let pending = self.pending_callback.as_mut()
+        let pending = self
+            .pending_callback
+            .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
         f(pending)
     }
@@ -33,7 +37,8 @@ impl RustExplorationManager {
     where
         F: FnOnce(&RustSimState) -> PyResult<T>,
     {
-        let state = self.find_state(state_id)
+        let state = self
+            .find_state(state_id)
             .ok_or_else(|| PyValueError::new_err(format!("state {} not found", state_id)))?;
         f(state)
     }
@@ -47,7 +52,8 @@ impl RustExplorationManager {
     where
         F: FnOnce(&mut RustSimState) -> PyResult<T>,
     {
-        let state = self.find_state_mut(state_id)
+        let state = self
+            .find_state_mut(state_id)
             .ok_or_else(|| PyValueError::new_err(format!("state {} not found", state_id)))?;
         f(state)
     }
@@ -115,8 +121,8 @@ impl RustExplorationManager {
     /// For each register in uniqueness_registers, gets the concrete value
     /// (or uses u64::MAX as sentinel for symbolic). Hashes the tuple.
     pub(crate) fn compute_register_tuple_hash(&self, state: &RustSimState) -> u64 {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
         for reg_name in &self.constraint_tracker.uniqueness_registers {
@@ -183,7 +189,9 @@ impl RustExplorationManager {
         }
 
         if !self.sm.drop_terminal_states() {
-            let not_unique = self.sm.stashes_mut()
+            let not_unique = self
+                .sm
+                .stashes_mut()
                 .entry("not_unique".to_string())
                 .or_insert_with(VecDeque::new);
             for state in removed_states {
@@ -206,14 +214,22 @@ impl RustExplorationManager {
 
         for tech_idx in 0..self.native_techniques.len() {
             match &mut self.native_techniques[tech_idx] {
-                NativeTechnique::Timeout { timeout_secs, start_time } => {
+                NativeTechnique::Timeout {
+                    timeout_secs,
+                    start_time,
+                } => {
                     let start = start_time.get_or_insert_with(std::time::Instant::now);
                     if start.elapsed().as_secs_f64() > *timeout_secs {
-                        log::info!("Native Timeout: exploration timed out after {:.1}s", timeout_secs);
+                        log::info!(
+                            "Native Timeout: exploration timed out after {:.1}s",
+                            timeout_secs
+                        );
                         // Move all active states to "timeout" stash
                         if let Some(active) = self.sm.get_mut(STASH_ACTIVE) {
                             let states: Vec<_> = active.drain(..).collect();
-                            let timeout_stash = self.sm.stashes_mut()
+                            let timeout_stash = self
+                                .sm
+                                .stashes_mut()
                                 .entry("timeout".to_string())
                                 .or_insert_with(VecDeque::new);
                             for s in states {
@@ -260,7 +276,9 @@ impl RustExplorationManager {
                     if do_drop {
                         // States are simply discarded
                     } else {
-                        let cut_stash = self.sm.stashes_mut()
+                        let cut_stash = self
+                            .sm
+                            .stashes_mut()
                             .entry("cut".to_string())
                             .or_insert_with(VecDeque::new);
                         for state in removed_states {
@@ -268,7 +286,10 @@ impl RustExplorationManager {
                         }
                     }
                 }
-                NativeTechnique::LoopBound { bound, discard_stash } => {
+                NativeTechnique::LoopBound {
+                    bound,
+                    discard_stash,
+                } => {
                     let max_bound = *bound;
                     let stash_name = discard_stash.clone();
 
@@ -304,7 +325,9 @@ impl RustExplorationManager {
                     }
 
                     if !self.sm.drop_terminal_states() {
-                        let target = self.sm.stashes_mut()
+                        let target = self
+                            .sm
+                            .stashes_mut()
                             .entry(stash_name)
                             .or_insert_with(VecDeque::new);
                         for state in removed_states {
@@ -435,16 +458,21 @@ impl RustExplorationManager {
 
                             let z3_ptr = backend
                                 .as_ref()
-                                .and_then(|b| Self::extract_z3_ptr_from_claripy(b, &constraint).ok())
+                                .and_then(|b| {
+                                    Self::extract_z3_ptr_from_claripy(b, &constraint).ok()
+                                })
                                 .filter(|p| *p != 0);
 
                             if let Some(ptr) = z3_ptr {
-                                unsafe { sym_ctx.add_constraint_raw(ptr); }
+                                unsafe {
+                                    sym_ctx.add_constraint_raw(ptr);
+                                }
                                 z3_ptr_fallback_count += 1;
                                 success_count += 1;
                                 log::debug!(
                                     "Constraint {} fell back to Z3 ptr (claripy_to_rustbv: {})",
-                                    i, e
+                                    i,
+                                    e
                                 );
                                 continue;
                             }
@@ -453,7 +481,8 @@ impl RustExplorationManager {
                         failed_count += 1;
                         log::warn!(
                             "Constraint {} conversion failed: {}. Solver state may diverge.",
-                            i, e
+                            i,
+                            e
                         );
                     }
                 }
@@ -470,7 +499,8 @@ impl RustExplorationManager {
         if failed_count > 0 {
             log::warn!(
                 "sync_constraints_from_python: {}/{} constraints failed to convert",
-                failed_count, failed_count + success_count
+                failed_count,
+                failed_count + success_count
             );
         }
 
@@ -486,7 +516,8 @@ impl RustExplorationManager {
                 log::debug!(
                     "P12: Constraints are UNSAT after syncing {} from Python (failed={}). \
                      Returning false to trigger pruning.",
-                    success_count, failed_count
+                    success_count,
+                    failed_count
                 );
                 return Ok(false);
             }
@@ -500,7 +531,8 @@ impl RustExplorationManager {
             if !is_sat {
                 log::debug!(
                     "P14: State became UNSAT with partial constraint sync ({}/{} failed). Pruning.",
-                    failed_count, failed_count + success_count
+                    failed_count,
+                    failed_count + success_count
                 );
                 return Ok(false);
             }
@@ -533,7 +565,11 @@ impl RustExplorationManager {
     }
 
     /// Extract procedure arguments from state registers.
-    pub(crate) fn extract_procedure_args(&self, state: &RustSimState, num_args: usize) -> Vec<RustBV> {
+    pub(crate) fn extract_procedure_args(
+        &self,
+        state: &RustSimState,
+        num_args: usize,
+    ) -> Vec<RustBV> {
         let arg_regs = self.environment.calling_convention.arg_registers();
         let ptr_size = self.environment.calling_convention.pointer_size();
         let mut args = Vec::with_capacity(num_args);
@@ -573,7 +609,11 @@ impl RustExplorationManager {
     /// (R10 vs RCX). Syscalls do not pull args from the stack: if `num_args`
     /// exceeds the available register count, the extra slots are zero —
     /// callers should treat that as a misconfiguration.
-    pub(crate) fn extract_syscall_args(&self, state: &RustSimState, num_args: usize) -> Vec<RustBV> {
+    pub(crate) fn extract_syscall_args(
+        &self,
+        state: &RustSimState,
+        num_args: usize,
+    ) -> Vec<RustBV> {
         let arg_regs = self.environment.calling_convention.syscall_arg_registers();
         let ptr_size = self.environment.calling_convention.pointer_size();
         let mut args = Vec::with_capacity(num_args);

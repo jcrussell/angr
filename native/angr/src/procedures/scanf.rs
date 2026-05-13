@@ -7,9 +7,9 @@
 //! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %ld, %lld, %lu, %lx, %%
 //! Falls back to Python for symbolic format strings or pointer arguments.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -142,7 +142,11 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
                 });
             }
             b's' => {
-                let max_len = if has_width { field_width } else { MAX_SCANF_STR_LEN };
+                let max_len = if has_width {
+                    field_width
+                } else {
+                    MAX_SCANF_STR_LEN
+                };
                 specs.push(ScanfSpec {
                     bits: 8,
                     is_string: true,
@@ -153,19 +157,20 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
             b'[' => {
                 // Character class like %[^\n] — too complex, fall back
                 return Err(ProcedureError::Other(
-                    "scanf %[...] not supported natively".to_string()
+                    "scanf %[...] not supported natively".to_string(),
                 ));
             }
             b'n' => {
                 // %n writes count of chars read — skip
                 return Err(ProcedureError::Other(
-                    "scanf %n not supported natively".to_string()
+                    "scanf %n not supported natively".to_string(),
                 ));
             }
             _ => {
-                return Err(ProcedureError::Other(
-                    format!("scanf: unsupported specifier '%{}'", spec as char)
-                ));
+                return Err(ProcedureError::Other(format!(
+                    "scanf: unsupported specifier '%{}'",
+                    spec as char
+                )));
             }
         }
     }
@@ -212,7 +217,8 @@ fn do_scanf(
 
             let sym_bytes: Vec<RustBV> = {
                 let ctx = state.solver().borrow();
-                names.iter()
+                names
+                    .iter()
                     .map(|name| RustBV::symbolic(&ctx, name, 8))
                     .collect()
             };
@@ -222,12 +228,14 @@ fn do_scanf(
             }
 
             for (j, sym_byte) in sym_bytes.into_iter().enumerate() {
-                state.memory_store(ptr.wrapping_add(j as u64), sym_byte)
+                state
+                    .memory_store(ptr.wrapping_add(j as u64), sym_byte)
                     .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             }
 
             // NUL terminator
-            state.memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))
+            state
+                .memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         } else {
             // Numeric or char: create one symbolic BVS of appropriate width
@@ -240,7 +248,8 @@ fn do_scanf(
             state.record_stdin_symbol(name, spec.bits);
 
             // Store to pointer — write spec.bits/8 bytes
-            state.memory_store(ptr, sym_val)
+            state
+                .memory_store(ptr, sym_val)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         }
 
@@ -354,15 +363,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64), // format
-            RustBV::concrete(0x2000, 64), // &int_var
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64), // format
+                    RustBV::concrete(0x2000, 64), // &int_var
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // Should return 1 (one conversion)
         assert_eq!(result.unwrap().as_u64(), Some(1));
@@ -377,15 +391,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%d %d\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64), // &a
-            RustBV::concrete(0x2010, 64), // &b
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64), // &a
+                    RustBV::concrete(0x2010, 64), // &b
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(2));
 
@@ -401,21 +420,29 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%s\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64), // char buf[]
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64), // char buf[]
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(1));
 
         // First byte should be symbolic
         let first = state.memory_load(0x2000, 1).unwrap();
-        assert!(first.as_u64().is_none(), "scanf %s first byte should be symbolic");
+        assert!(
+            first.as_u64().is_none(),
+            "scanf %s first byte should be symbolic"
+        );
 
         // NUL terminator at max_str_len offset
         let nul = state.memory_load(0x2000 + MAX_SCANF_STR_LEN, 1).unwrap();
@@ -427,15 +454,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%10s\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(1));
 
@@ -449,15 +481,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%c\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64), // &char_var
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64), // &char_var
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(1));
 
@@ -471,15 +508,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%x\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(1));
 
@@ -492,15 +534,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%ld\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64), // &long_var
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64), // &long_var
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(1));
 
@@ -514,15 +561,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%*d %d\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64), // only one pointer (first %d is suppressed)
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64), // only one pointer (first %d is suppressed)
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // One successful conversion (suppressed doesn't count)
         assert_eq!(result.unwrap().as_u64(), Some(1));
@@ -535,15 +587,18 @@ mod tests {
         let sym = RustBV::symbolic(&ctx, "fmt", 64);
         drop(ctx);
 
-        let result = NativeScanf.call(&mut state, &[
-            sym,
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]);
+        let result = NativeScanf.call(
+            &mut state,
+            &[
+                sym,
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        );
         assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
     }
 
@@ -555,15 +610,18 @@ mod tests {
         let sym = RustBV::symbolic(&ctx, "ptr", 64);
         drop(ctx);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            sym,
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]);
+        let result = NativeScanf.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                sym,
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        );
         assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
     }
 
@@ -572,15 +630,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%d %c %s\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64), // &int_var
-            RustBV::concrete(0x2010, 64), // &char_var
-            RustBV::concrete(0x2020, 64), // char buf[]
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64), // &int_var
+                    RustBV::concrete(0x2010, 64), // &char_var
+                    RustBV::concrete(0x2020, 64), // char buf[]
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(3));
     }
@@ -590,15 +653,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
 
-        let result = NativeIsoc99Scanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeIsoc99Scanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(1));
     }
@@ -606,19 +674,24 @@ mod tests {
     #[test]
     fn test_sscanf_basic() {
         let mut state = setup_state();
-        state.map_memory_data(0x1000, b"42\x00", Permission::RWX);      // source string
-        state.map_memory_data(0x1100, b"%d\x00", Permission::RWX);      // format
+        state.map_memory_data(0x1000, b"42\x00", Permission::RWX); // source string
+        state.map_memory_data(0x1100, b"%d\x00", Permission::RWX); // format
 
-        let result = NativeSscanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64), // str
-            RustBV::concrete(0x1100, 64), // format
-            RustBV::concrete(0x2000, 64), // &int_var
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSscanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64), // str
+                    RustBV::concrete(0x1100, 64), // format
+                    RustBV::concrete(0x2000, 64), // &int_var
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(1));
         // Value should be symbolic (we don't actually parse the source)
@@ -631,15 +704,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%%d\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // "%%" is literal %, "d" is literal — no conversions
         assert_eq!(result.unwrap().as_u64(), Some(0));
@@ -650,15 +728,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
 
-        let result = NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
@@ -668,15 +751,20 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%d %s\x00", Permission::RWX);
 
-        NativeScanf.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x2100, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        NativeScanf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x2100, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // Should have recorded stdin symbols
         let symbols = state.stdin_symbols();

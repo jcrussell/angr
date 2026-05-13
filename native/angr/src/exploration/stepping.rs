@@ -1,11 +1,11 @@
 use super::*;
-use std::num::NonZeroUsize;
-use lru::LruCache;
 use crate::arch::RegisterFile;
 use crate::interpreter_cb::BranchSnapshot;
 use crate::memory::SymbolicMemory;
 use crate::state::{CallStackEntry, HistoryEntry};
 use crate::vex::IRSB;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 
 /// Error during state stepping.
 pub(crate) enum StepError {
@@ -51,11 +51,22 @@ impl RustExplorationManager {
         mut state: RustSimState,
         skip_addr: Option<u64>,
     ) -> Result<Vec<RustSimState>, StepError> {
-        let setup_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+        let setup_start = if self.profiling.profiling_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let initial_pc = state.pc();
 
         // Run the VEX interpreter to its next event.
-        let step = self.run_interpreter_step(py, callbacks, &mut state, initial_pc, skip_addr, setup_start);
+        let step = self.run_interpreter_step(
+            py,
+            callbacks,
+            &mut state,
+            initial_pc,
+            skip_addr,
+            setup_start,
+        );
 
         // Restore the shared block cache (now populated with any newly-lifted blocks)
         self.environment.block_cache = step.updated_block_cache;
@@ -92,9 +103,9 @@ impl RustExplorationManager {
 
         // Process result
         match step.result {
-            RunResult::MaxBlocks { pc } |
-            RunResult::MaxDeferredForks { pc } |
-            RunResult::BlockEnd { next_addr: pc, .. } => {
+            RunResult::MaxBlocks { pc }
+            | RunResult::MaxDeferredForks { pc }
+            | RunResult::BlockEnd { next_addr: pc, .. } => {
                 self.handle_block_end(state, pc, deferred_forks, stored_conditions, fork_snapshots)
             }
             RunResult::Hook { addr } => {
@@ -103,7 +114,11 @@ impl RustExplorationManager {
                 state.add_to_history(addr);
                 // Only create pre-callback snapshot if deferred forks need it.
                 // state.fork() clones the Z3 solver (~3-40ms), so skip when not needed.
-                let hook_fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let hook_fork_start = if self.profiling.profiling_enabled {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 let pre_callback_snapshot = if !deferred_forks.is_empty() {
                     Some(state.fork())
                 } else {
@@ -113,8 +128,13 @@ impl RustExplorationManager {
                 let solver_ref = state.solver();
                 let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
                 if let Some(start) = hook_fork_start {
-                    let fork_count = if pre_callback_snapshot.is_some() { 1u64 } else { 0u64 };
-                    self.profiling.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                    let fork_count = if pre_callback_snapshot.is_some() {
+                        1u64
+                    } else {
+                        0u64
+                    };
+                    self.profiling.accumulated_stats.solver_fork_time_ns +=
+                        start.elapsed().as_nanos() as u64;
                     self.profiling.accumulated_stats.solver_fork_count += fork_count;
                 }
                 // Return to Python for hook - store deferred forks for later processing
@@ -134,12 +154,21 @@ impl RustExplorationManager {
                     fork_snapshots,
                 )))
             }
-            RunResult::SimProcedure { addr, name, num_args, return_addr } => {
-                self.handle_simprocedure(
-                    state, addr, name, num_args, return_addr,
-                    deferred_forks, stored_conditions, fork_snapshots,
-                )
-            }
+            RunResult::SimProcedure {
+                addr,
+                name,
+                num_args,
+                return_addr,
+            } => self.handle_simprocedure(
+                state,
+                addr,
+                name,
+                num_args,
+                return_addr,
+                deferred_forks,
+                stored_conditions,
+                fork_snapshots,
+            ),
             RunResult::Syscall { num, pc } => {
                 state.set_pc(pc);
                 // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
@@ -225,7 +254,11 @@ impl RustExplorationManager {
                     fork_snapshots,
                 )))
             }
-            RunResult::SymbolicBranch { condition_id, true_target, false_target } => {
+            RunResult::SymbolicBranch {
+                condition_id,
+                true_target,
+                false_target,
+            } => {
                 // Return to Python for proper state forking with constraints.
                 // No pre_callback_snapshot or solver_ctx fork needed here —
                 // resume_after_symbolic_branch forks from pending.state directly.
@@ -281,24 +314,47 @@ impl RustExplorationManager {
             RunResult::NeedLift { addr } => {
                 // This shouldn't happen if callbacks are properly set
                 state.set_pc(addr);
-                Err(StepError::Error(state, format!("need lift at 0x{:x}", addr)))
+                Err(StepError::Error(
+                    state,
+                    format!("need lift at 0x{:x}", addr),
+                ))
             }
-            RunResult::SymbolicJumpTarget { targets, condition_id, jumpkind: _ } => {
-                self.handle_symbolic_jump_target(
-                    state, targets, condition_id,
-                    deferred_forks, stored_conditions, fork_snapshots,
-                )
-            }
-            RunResult::UnconstrainedJump { min_target: _, max_target: _, limit: _, jumpkind: _ } => {
+            RunResult::SymbolicJumpTarget {
+                targets,
+                condition_id,
+                jumpkind: _,
+            } => self.handle_symbolic_jump_target(
+                state,
+                targets,
+                condition_id,
+                deferred_forks,
+                stored_conditions,
+                fork_snapshots,
+            ),
+            RunResult::UnconstrainedJump {
+                min_target: _,
+                max_target: _,
+                limit: _,
+                jumpkind: _,
+            } => {
                 // Too many symbolic jump targets - move to unconstrained stash
                 Err(StepError::Unconstrained(state))
             }
-            RunResult::UnmodeledCall { addr, return_addr, symbol_name } => {
-                self.handle_unmodeled_call(
-                    py, callbacks, state, addr, return_addr, symbol_name,
-                    deferred_forks, stored_conditions, fork_snapshots,
-                )
-            }
+            RunResult::UnmodeledCall {
+                addr,
+                return_addr,
+                symbol_name,
+            } => self.handle_unmodeled_call(
+                py,
+                callbacks,
+                state,
+                addr,
+                return_addr,
+                symbol_name,
+                deferred_forks,
+                stored_conditions,
+                fork_snapshots,
+            ),
         }
     }
 
@@ -319,13 +375,22 @@ impl RustExplorationManager {
 
         // Track root state ID for lineage
         let original_state_id = state.state_id();
-        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+        let root_state_id = self
+            .sm
+            .roots()
+            .get(&original_state_id)
+            .copied()
+            .unwrap_or(original_state_id);
 
         // Process deferred forks with proper constraint handling
         // P13: Track UNSAT states for pruning
         let mut successors = vec![state];
         let mut pruned_states = Vec::new();
-        let deferred_fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+        let deferred_fork_start = if self.profiling.profiling_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let deferred_fork_total = deferred_forks.len() as u64;
 
         for fork in deferred_forks {
@@ -345,7 +410,11 @@ impl RustExplorationManager {
                 // Use solver snapshot (from before branch constraint) if available
                 // to avoid inheriting the taken-path constraint (which would make
                 // the opposite constraint UNSAT).
-                let fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let fork_start = if self.profiling.profiling_enabled {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 let forked = if let Some(snapshot) = fork_snapshots.remove(&fork.condition_id) {
                     let mut f = successors[0].fork_from_snapshot(snapshot);
                     if fork.path_taken {
@@ -365,23 +434,30 @@ impl RustExplorationManager {
                     f
                 };
                 if let Some(start) = fork_start {
-                    self.profiling.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                    self.profiling.accumulated_stats.solver_fork_time_ns +=
+                        start.elapsed().as_nanos() as u64;
                     self.profiling.accumulated_stats.solver_fork_count += 1;
                 }
                 // Track root state ID for this forked state
                 self.sm.set_root(forked.state_id(), root_state_id);
 
                 // P13: Check satisfiability before adding to successors
-                let sat_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                let sat_start = if self.profiling.profiling_enabled {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 if self.constraint_solver.lazy_solves || forked.satisfiable() {
                     if let Some(start) = sat_start {
-                        self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                        self.profiling.accumulated_stats.solver_sat_time_ns +=
+                            start.elapsed().as_nanos() as u64;
                         self.profiling.accumulated_stats.solver_sat_count += 1;
                     }
                     successors.push(forked);
                 } else {
                     if let Some(start) = sat_start {
-                        self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                        self.profiling.accumulated_stats.solver_sat_time_ns +=
+                            start.elapsed().as_nanos() as u64;
                         self.profiling.accumulated_stats.solver_sat_count += 1;
                     }
                     log::debug!(
@@ -415,7 +491,8 @@ impl RustExplorationManager {
             }
         }
         if let Some(start) = deferred_fork_start {
-            self.profiling.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+            self.profiling.accumulated_stats.deferred_fork_time_ns +=
+                start.elapsed().as_nanos() as u64;
             self.profiling.accumulated_stats.deferred_fork_count += deferred_fork_total;
         }
 
@@ -445,9 +522,11 @@ impl RustExplorationManager {
         // Skip native for addresses inside the binary — these are user-placed
         // hooks where the Python SimProcedure should always run (the user hooked
         // a specific function for a reason, e.g., hooking strings_not_equal with strcmp).
-        let is_in_binary = self.environment.binary_regions.iter().any(|(base, data)| {
-            addr >= *base && addr < *base + data.len() as u64
-        });
+        let is_in_binary = self
+            .environment
+            .binary_regions
+            .iter()
+            .any(|(base, data)| addr >= *base && addr < *base + data.len() as u64);
         // Result of native execution: None = fall back to Python, Some(bool) =
         // succeeded with no_return flag indicating whether to deadend the main state.
         let native_no_return: Option<bool> = if !is_in_binary {
@@ -457,7 +536,10 @@ impl RustExplorationManager {
                 match native_proc.call(&mut state, &args) {
                     Ok(ret_val) => {
                         self.profiling.native_proc_stats.native_calls += 1;
-                        *self.profiling.native_proc_stats.call_counts
+                        *self
+                            .profiling
+                            .native_proc_stats
+                            .call_counts
                             .entry(name.clone())
                             .or_insert(0) += 1;
 
@@ -471,7 +553,10 @@ impl RustExplorationManager {
                             state.set_pc(return_addr);
                             let sp = state.get_sp().as_u64().unwrap_or(0);
                             let ptr_size = state.arch().bytes() as u64;
-                            state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
+                            state.set_sp(RustBV::concrete(
+                                (sp + ptr_size) as u128,
+                                state.arch().bits(),
+                            ));
                         }
                         Some(proc_no_return)
                     }
@@ -584,17 +669,22 @@ impl RustExplorationManager {
         // Multiple targets - fork for each from the UNCONSTRAINED original
         // CRITICAL: Save unconstrained base state BEFORE adding any target constraints
         // This ensures each fork only has its own target constraint, not all previous ones
-        let base_state = state.fork();  // Save unconstrained clone
+        let base_state = state.fork(); // Save unconstrained clone
 
         // Track root state ID for lineage
         let original_state_id = state.state_id();
-        let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+        let root_state_id = self
+            .sm
+            .roots()
+            .get(&original_state_id)
+            .copied()
+            .unwrap_or(original_state_id);
 
         let mut successors = Vec::with_capacity(targets.len());
 
         // Handle first target - use the original state (moved here)
         let first_addr = targets[0];
-        let mut first_state = state;  // Move state into first_state
+        let mut first_state = state; // Move state into first_state
         if let Some(ref expr) = target_expr {
             let concrete = RustBV::concrete(first_addr as u128, expr.width());
             let constraint = expr.eq(&concrete, &*first_state.solver().borrow());
@@ -658,12 +748,16 @@ impl RustExplorationManager {
                     // Function resolved! Register it and return to Python for execution
                     log::debug!(
                         "Resolved unmodeled call at 0x{:x} -> {} (args={}, no_return={})",
-                        addr, name, num_args, no_return
+                        addr,
+                        name,
+                        num_args,
+                        no_return
                     );
 
                     // Register the procedure so future calls are hooked
                     self.hooks.insert(addr);
-                    self.simprocedures.insert(addr, (name.clone(), num_args, no_return));
+                    self.simprocedures
+                        .insert(addr, (name.clone(), num_args, no_return));
 
                     // Only snapshot if deferred forks need it
                     let pre_callback_snapshot = if !deferred_forks.is_empty() {
@@ -695,21 +789,32 @@ impl RustExplorationManager {
                 Ok(None) => {
                     // P21: Function could not be resolved - use generic skip instead of deadending
                     self.unmodeled_call_generic_skip(
-                        state, addr, return_addr,
-                        deferred_forks, stored_conditions, fork_snapshots,
+                        state,
+                        addr,
+                        return_addr,
+                        deferred_forks,
+                        stored_conditions,
+                        fork_snapshots,
                     )
                 }
                 Err(e) => {
                     // Callback error - treat as execution error
                     log::warn!("resolve_function callback error at 0x{:x}: {}", addr, e);
-                    Err(StepError::Error(state, format!("resolve_function error: {}", e)))
+                    Err(StepError::Error(
+                        state,
+                        format!("resolve_function error: {}", e),
+                    ))
                 }
             }
         } else {
             // P21: No resolve_function callback - use generic skip instead of deadending
             self.unmodeled_call_generic_skip(
-                state, addr, return_addr,
-                deferred_forks, stored_conditions, fork_snapshots,
+                state,
+                addr,
+                return_addr,
+                deferred_forks,
+                stored_conditions,
+                fork_snapshots,
             )
         }
     }
@@ -728,7 +833,8 @@ impl RustExplorationManager {
     ) -> Result<Vec<RustSimState>, StepError> {
         log::debug!(
             "P21: Unmodeled call at 0x{:x} - generic skip (ret=0) to return_addr=0x{:x}",
-            addr, return_addr
+            addr,
+            return_addr
         );
 
         // Set return register to 0 (symbolic unconstrained would be better but
@@ -786,7 +892,8 @@ impl RustExplorationManager {
         interp.vex_opt_level = self.memory_config.vex_opt_level;
         // Take a fresh Arc snapshot of the manager's overrides; interp will
         // share until a setter mutates (none do during step execution).
-        interp.vex_opt_level_overrides = Arc::new(self.memory_config.vex_opt_level_overrides.clone());
+        interp.vex_opt_level_overrides =
+            Arc::new(self.memory_config.vex_opt_level_overrides.clone());
 
         // Copy state registers to interpreter (including symbolic values)
         interp.registers = state.registers().fork();
@@ -831,9 +938,10 @@ impl RustExplorationManager {
         // Share the exploration-level block cache with the interpreter
         // so lifted blocks persist across steps (avoids re-lifting).
         // Swap exploration's populated cache into interp, stash interp's empty one.
-        let interp_empty_cache = interp.swap_block_cache(
-            std::mem::replace(&mut self.environment.block_cache, LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")))
-        );
+        let interp_empty_cache = interp.swap_block_cache(std::mem::replace(
+            &mut self.environment.block_cache,
+            LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")),
+        ));
         // interp now has the exploration's cache; self.environment.block_cache is a temporary empty placeholder
         let _ = interp_empty_cache; // drop the empty cache
 
@@ -852,7 +960,8 @@ impl RustExplorationManager {
         } else {
             self.max_steps_per_run as u32
         };
-        let (result, _blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, steps_limit);
+        let (result, _blocks_executed, deferred_forks) =
+            interp.run_until_event(py, callbacks, steps_limit);
 
         // Drain interpreter state into owned values before drop.
         let last_condition = interp.take_last_branch_condition();
@@ -868,7 +977,9 @@ impl RustExplorationManager {
         let recovered_memory = interp.take_rust_memory();
 
         // Return shared block cache to exploration before interpreter is dropped
-        let updated_block_cache = interp.swap_block_cache(LruCache::new(NonZeroUsize::new(4096).expect("nonzero literal")));
+        let updated_block_cache = interp.swap_block_cache(LruCache::new(
+            NonZeroUsize::new(4096).expect("nonzero literal"),
+        ));
 
         let step_stats = interp.take_stats();
 
@@ -904,7 +1015,11 @@ impl RustExplorationManager {
 
         let root_state_id = {
             let original_state_id = successors[0].state_id();
-            self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id)
+            self.sm
+                .roots()
+                .get(&original_state_id)
+                .copied()
+                .unwrap_or(original_state_id)
         };
 
         for fork in &deferred_forks {

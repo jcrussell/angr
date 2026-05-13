@@ -19,9 +19,9 @@
 
 use pyo3::prelude::*;
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 
 /// Wraps a Python callable so it can act as a native SimProcedure.
 pub struct PythonNativeProcedure {
@@ -33,7 +33,12 @@ pub struct PythonNativeProcedure {
 
 impl PythonNativeProcedure {
     pub fn new(name: String, num_args: usize, no_return: bool, callable: Py<PyAny>) -> Self {
-        Self { name, num_args, no_return, callable }
+        Self {
+            name,
+            num_args,
+            no_return,
+            callable,
+        }
     }
 
     /// Leaked &'static str for the trait's name() method. Stored once at
@@ -74,17 +79,20 @@ impl NativeSimProcedure for PythonNativeProcedure {
         let arch_bits = state.arch().bits();
 
         Python::attach(|py| -> Result<Option<RustBV>, ProcedureError> {
-            let result = self.callable
-                .call1(py, (concrete_args,))
-                .map_err(|e| ProcedureError::Other(format!("python procedure '{}' raised: {}", self.name, e)))?;
+            let result = self.callable.call1(py, (concrete_args,)).map_err(|e| {
+                ProcedureError::Other(format!("python procedure '{}' raised: {}", self.name, e))
+            })?;
 
             if result.is_none(py) {
                 return Ok(None);
             }
 
-            let ret_int: u64 = result
-                .extract(py)
-                .map_err(|e| ProcedureError::Other(format!("python procedure '{}' returned non-int: {}", self.name, e)))?;
+            let ret_int: u64 = result.extract(py).map_err(|e| {
+                ProcedureError::Other(format!(
+                    "python procedure '{}' returned non-int: {}",
+                    self.name, e
+                ))
+            })?;
 
             Ok(Some(RustBV::concrete(ret_int as u128, arch_bits)))
         })
@@ -103,18 +111,16 @@ mod tests {
             // Build a Python lambda that returns 42.
             let locals = pyo3::types::PyDict::new(py);
             py.run(
-                std::ffi::CString::new("f = lambda args: 42").unwrap().as_c_str(),
+                std::ffi::CString::new("f = lambda args: 42")
+                    .unwrap()
+                    .as_c_str(),
                 None,
                 Some(&locals),
-            ).unwrap();
+            )
+            .unwrap();
             let callable: Py<PyAny> = locals.get_item("f").unwrap().unwrap().unbind();
 
-            let proc = PythonNativeProcedure::new(
-                "py_meaning".to_string(),
-                0,
-                false,
-                callable,
-            );
+            let proc = PythonNativeProcedure::new("py_meaning".to_string(), 0, false, callable);
             assert_eq!(proc.name(), "py_meaning");
             assert_eq!(proc.num_args(), 0);
             assert!(!proc.no_return());
@@ -131,18 +137,16 @@ mod tests {
         Python::attach(|py| {
             let locals = pyo3::types::PyDict::new(py);
             py.run(
-                std::ffi::CString::new("f = lambda args: 0").unwrap().as_c_str(),
+                std::ffi::CString::new("f = lambda args: 0")
+                    .unwrap()
+                    .as_c_str(),
                 None,
                 Some(&locals),
-            ).unwrap();
+            )
+            .unwrap();
             let callable: Py<PyAny> = locals.get_item("f").unwrap().unwrap().unbind();
 
-            let proc = PythonNativeProcedure::new(
-                "py_sym".to_string(),
-                1,
-                false,
-                callable,
-            );
+            let proc = PythonNativeProcedure::new("py_sym".to_string(), 1, false, callable);
 
             let mut state = RustSimState::new("amd64").unwrap();
             let ctx = state.solver().borrow();
@@ -159,18 +163,16 @@ mod tests {
         Python::attach(|py| {
             let locals = pyo3::types::PyDict::new(py);
             py.run(
-                std::ffi::CString::new("f = lambda args: None").unwrap().as_c_str(),
+                std::ffi::CString::new("f = lambda args: None")
+                    .unwrap()
+                    .as_c_str(),
                 None,
                 Some(&locals),
-            ).unwrap();
+            )
+            .unwrap();
             let callable: Py<PyAny> = locals.get_item("f").unwrap().unwrap().unbind();
 
-            let proc = PythonNativeProcedure::new(
-                "py_void".to_string(),
-                0,
-                false,
-                callable,
-            );
+            let proc = PythonNativeProcedure::new("py_void".to_string(), 0, false, callable);
 
             let mut state = RustSimState::new("amd64").unwrap();
             let result = proc.call(&mut state, &[]).unwrap();
@@ -184,10 +186,13 @@ mod tests {
         Python::attach(|py| {
             let locals = pyo3::types::PyDict::new(py);
             py.run(
-                std::ffi::CString::new("f = lambda args: args[0] * 2 if args else 0").unwrap().as_c_str(),
+                std::ffi::CString::new("f = lambda args: args[0] * 2 if args else 0")
+                    .unwrap()
+                    .as_c_str(),
                 None,
                 Some(&locals),
-            ).unwrap();
+            )
+            .unwrap();
             let callable: Py<PyAny> = locals.get_item("f").unwrap().unwrap().unbind();
 
             let mut registry = NativeProcedureRegistry::empty();

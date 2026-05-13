@@ -6,22 +6,22 @@
 //! - Minimizes Python-Rust state transfer overhead
 //! - Enables Rust-native exploration loops
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::arch::{arch_from_name, arch_from_vex, Arch, RegisterFile};
+use crate::arch::{Arch, RegisterFile, arch_from_name, arch_from_vex};
+use crate::concretize::AddressConcretizer;
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{Endness, VexArch};
-use crate::concretize::AddressConcretizer;
 
 /// Entry in the function call stack.
 ///
@@ -175,10 +175,22 @@ impl Default for FileSystem {
     fn default() -> Self {
         let mut fds = HashMap::new();
         // Pre-register standard file descriptors
-        fds.insert(0, FileDescriptor::new("/dev/stdin".to_string(), FdFlags::ReadOnly));
-        fds.insert(1, FileDescriptor::new("/dev/stdout".to_string(), FdFlags::WriteOnly));
-        fds.insert(2, FileDescriptor::new("/dev/stderr".to_string(), FdFlags::WriteOnly));
-        FileSystem { fds: Arc::new(fds), next_fd: 3 }
+        fds.insert(
+            0,
+            FileDescriptor::new("/dev/stdin".to_string(), FdFlags::ReadOnly),
+        );
+        fds.insert(
+            1,
+            FileDescriptor::new("/dev/stdout".to_string(), FdFlags::WriteOnly),
+        );
+        fds.insert(
+            2,
+            FileDescriptor::new("/dev/stderr".to_string(), FdFlags::WriteOnly),
+        );
+        FileSystem {
+            fds: Arc::new(fds),
+            next_fd: 3,
+        }
     }
 }
 
@@ -195,8 +207,7 @@ impl FileSystem {
     pub fn open_with_content(&mut self, name: String, flags: FdFlags, content: Vec<u8>) -> u32 {
         let fd = self.next_fd;
         self.next_fd += 1;
-        Arc::make_mut(&mut self.fds)
-            .insert(fd, FileDescriptor::with_content(name, flags, content));
+        Arc::make_mut(&mut self.fds).insert(fd, FileDescriptor::with_content(name, flags, content));
         fd
     }
 
@@ -216,9 +227,11 @@ impl FileSystem {
 
     /// Write data to a file descriptor's content buffer.
     pub fn write(&mut self, fd: u32, data: &[u8]) {
-        Arc::make_mut(&mut self.fds).entry(fd).or_insert_with(|| {
-            FileDescriptor::new(String::new(), FdFlags::WriteOnly)
-        }).content.extend_from_slice(data);
+        Arc::make_mut(&mut self.fds)
+            .entry(fd)
+            .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly))
+            .content
+            .extend_from_slice(data);
     }
 
     /// Read up to `count` bytes from a file descriptor at its current position.
@@ -253,9 +266,9 @@ impl FileSystem {
         // and the whence value is valid.
         let desc = self.fds.get(&fd)?;
         let new_pos = match whence {
-            0 => offset.max(0) as u64,                                     // SEEK_SET
-            1 => (desc.position as i64 + offset).max(0) as u64,            // SEEK_CUR
-            2 => (desc.content.len() as i64 + offset).max(0) as u64,      // SEEK_END
+            0 => offset.max(0) as u64,                               // SEEK_SET
+            1 => (desc.position as i64 + offset).max(0) as u64,      // SEEK_CUR
+            2 => (desc.content.len() as i64 + offset).max(0) as u64, // SEEK_END
             _ => return None,
         };
         Arc::make_mut(&mut self.fds).get_mut(&fd)?.position = new_pos;
@@ -264,7 +277,10 @@ impl FileSystem {
 
     /// Get the content buffer for a file descriptor (read-only).
     pub fn fd_content(&self, fd: u32) -> &[u8] {
-        self.fds.get(&fd).map(|d| d.content.as_slice()).unwrap_or(&[])
+        self.fds
+            .get(&fd)
+            .map(|d| d.content.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Check if a file descriptor is open.
@@ -275,7 +291,13 @@ impl FileSystem {
     /// Get file descriptor info: (name, position, flags, content_len, is_open).
     pub fn fd_info(&self, fd: u32) -> Option<(&str, u64, u32, usize, bool)> {
         self.fds.get(&fd).map(|d| {
-            (d.name.as_str(), d.position, d.flags.to_posix(), d.content.len(), d.is_open)
+            (
+                d.name.as_str(),
+                d.position,
+                d.flags.to_posix(),
+                d.content.len(),
+                d.is_open,
+            )
         })
     }
 
@@ -288,7 +310,9 @@ impl FileSystem {
 
     /// List only open file descriptor numbers.
     pub fn open_fds(&self) -> Vec<u32> {
-        let mut fds: Vec<u32> = self.fds.iter()
+        let mut fds: Vec<u32> = self
+            .fds
+            .iter()
             .filter(|(_, d)| d.is_open)
             .map(|(k, _)| *k)
             .collect();
@@ -351,8 +375,14 @@ impl FileSystem {
         let write_fd = self.next_fd + 1;
         self.next_fd += 2;
         let map = Arc::make_mut(&mut self.fds);
-        map.insert(read_fd, FileDescriptor::new("<pipe:r>".to_string(), FdFlags::ReadOnly));
-        map.insert(write_fd, FileDescriptor::new("<pipe:w>".to_string(), FdFlags::WriteOnly));
+        map.insert(
+            read_fd,
+            FileDescriptor::new("<pipe:r>".to_string(), FdFlags::ReadOnly),
+        );
+        map.insert(
+            write_fd,
+            FileDescriptor::new("<pipe:w>".to_string(), FdFlags::WriteOnly),
+        );
         (read_fd, write_fd)
     }
 }
@@ -494,7 +524,12 @@ impl InspectionManager {
         if self.events.len() >= self.max_events {
             self.events.remove(0);
         }
-        self.events.push(InspectRecord { event, addr, size, block_addr });
+        self.events.push(InspectRecord {
+            event,
+            addr,
+            size,
+            block_addr,
+        });
     }
 
     /// Get all recorded events.
@@ -552,10 +587,15 @@ impl HistoryEntry {
 
     /// Create from JumpKind enum.
     pub fn jumpkind_from_vex(jk: &crate::vex::JumpKind) -> u8 {
-        if jk.is_call() { Self::JK_CALL }
-        else if jk.is_ret() { Self::JK_RET }
-        else if jk.is_syscall() { Self::JK_SYSCALL }
-        else { Self::JK_BORING }
+        if jk.is_call() {
+            Self::JK_CALL
+        } else if jk.is_ret() {
+            Self::JK_RET
+        } else if jk.is_syscall() {
+            Self::JK_SYSCALL
+        } else {
+            Self::JK_BORING
+        }
     }
 
     /// Convert jumpkind byte to string (for Python API).
@@ -758,11 +798,7 @@ impl RustSimState {
             .ok_or_else(|| format!("unknown architecture: {}", arch_name))?;
         let vex_arch = arch.vex_arch();
         let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
-        let endness = if is_le {
-            Endness::Little
-        } else {
-            Endness::Big
-        };
+        let endness = if is_le { Endness::Little } else { Endness::Big };
 
         Ok(RustSimState {
             vex_arch,
@@ -843,16 +879,16 @@ impl RustSimState {
     }
 
     /// Create a state with a shared solver context and explicit endianness.
-    pub fn with_solver_endian(arch_name: &str, solver: Rc<RefCell<SymContext>>, little_endian: Option<bool>) -> Result<Self, String> {
+    pub fn with_solver_endian(
+        arch_name: &str,
+        solver: Rc<RefCell<SymContext>>,
+        little_endian: Option<bool>,
+    ) -> Result<Self, String> {
         let arch = arch_from_name(arch_name)
             .ok_or_else(|| format!("unknown architecture: {}", arch_name))?;
         let vex_arch = arch.vex_arch();
         let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
-        let endness = if is_le {
-            Endness::Little
-        } else {
-            Endness::Big
-        };
+        let endness = if is_le { Endness::Little } else { Endness::Big };
 
         Ok(RustSimState {
             vex_arch,
@@ -1065,7 +1101,8 @@ impl RustSimState {
     #[inline(always)]
     pub fn inspect_mem_read(&mut self, addr: u64, size: u32) {
         if self.inspection.is_enabled(InspectEvent::MemRead) {
-            self.inspection.record(InspectEvent::MemRead, addr, size, self.pc);
+            self.inspection
+                .record(InspectEvent::MemRead, addr, size, self.pc);
         }
     }
 
@@ -1073,7 +1110,8 @@ impl RustSimState {
     #[inline(always)]
     pub fn inspect_mem_write(&mut self, addr: u64, size: u32) {
         if self.inspection.is_enabled(InspectEvent::MemWrite) {
-            self.inspection.record(InspectEvent::MemWrite, addr, size, self.pc);
+            self.inspection
+                .record(InspectEvent::MemWrite, addr, size, self.pc);
         }
     }
 
@@ -1153,7 +1191,13 @@ impl RustSimState {
     }
 
     /// Push a call onto the call stack (on Ijk_Call).
-    pub fn push_call(&mut self, call_site_addr: u64, callee_addr: u64, return_addr: u64, stack_ptr: u64) {
+    pub fn push_call(
+        &mut self,
+        call_site_addr: u64,
+        callee_addr: u64,
+        return_addr: u64,
+        stack_ptr: u64,
+    ) {
         self.call_stack.push(CallStackEntry {
             call_site_addr,
             callee_addr,
@@ -1316,13 +1360,19 @@ impl RustSimState {
     /// Load from a symbolic address.
     pub fn memory_load_symbolic(&mut self, addr: RustBV, size: u32) -> Result<RustBV, MemoryError> {
         let ctx = self.solver.borrow();
-        self.memory.load_symbolic_unified(addr, size, &ctx, &self.concretizer)
+        self.memory
+            .load_symbolic_unified(addr, size, &ctx, &self.concretizer)
     }
 
     /// Store to a symbolic address.
-    pub fn memory_store_symbolic(&mut self, addr: RustBV, value: RustBV) -> Result<(), MemoryError> {
+    pub fn memory_store_symbolic(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
         let ctx = self.solver.borrow();
-        self.memory.store_symbolic_unified(addr, value, &ctx, &self.concretizer)
+        self.memory
+            .store_symbolic_unified(addr, value, &ctx, &self.concretizer)
             .map(|_| ())
     }
 
@@ -1664,7 +1714,10 @@ impl RustSimState {
         // Merge solver contexts
         let other_solvers: Vec<_> = others.iter().map(|s| s.solver.borrow()).collect();
         let other_solver_refs: Vec<&SymContext> = other_solvers.iter().map(|s| &**s).collect();
-        let merged_solver = self.solver.borrow().merge(&other_solver_refs, merge_conditions);
+        let merged_solver = self
+            .solver
+            .borrow()
+            .merge(&other_solver_refs, merge_conditions);
 
         // Start with a clone of self's registers and merge each other into it
         let mut merged_regs = self.registers.fork();
@@ -1900,20 +1953,27 @@ impl PyRustSimState {
 
     /// Get a register value by name.
     pub fn get_register(&self, name: &str) -> PyResult<u128> {
-        self.inner.get_register(name)
+        self.inner
+            .get_register(name)
             .and_then(|bv| bv.as_u128())
             .ok_or_else(|| PyValueError::new_err(format!("cannot read register {}", name)))
     }
 
     /// Set a register value by name.
     pub fn set_register(&mut self, name: &str, value: u128) -> PyResult<()> {
-        let size = self.inner.arch().register_size(name)
+        let size = self
+            .inner
+            .arch()
+            .register_size(name)
             .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
         let bv = RustBV::concrete(value, size * 8);
         if self.inner.set_register(name, bv) {
             Ok(())
         } else {
-            Err(PyValueError::new_err(format!("failed to set register: {}", name)))
+            Err(PyValueError::new_err(format!(
+                "failed to set register: {}",
+                name
+            )))
         }
     }
 
@@ -1923,7 +1983,10 @@ impl PyRustSimState {
         for (key, val) in registers.iter() {
             let name: String = key.extract()?;
             let value: u128 = val.extract()?;
-            let size = self.inner.arch().register_size(&name)
+            let size = self
+                .inner
+                .arch()
+                .register_size(&name)
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
             let bv = RustBV::concrete(value, size * 8);
             self.inner.set_register(&name, bv);
@@ -1950,13 +2013,24 @@ impl PyRustSimState {
     /// The Z3 AST must be a BitVec in the shared Z3 context.
     /// Used to import symbolic register values (e.g., BVS in rax) from Python.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn set_register_symbolic(&mut self, name: &str, z3_ast_ptr: usize, width: u32) -> PyResult<()> {
+    pub fn set_register_symbolic(
+        &mut self,
+        name: &str,
+        z3_ast_ptr: usize,
+        width: u32,
+    ) -> PyResult<()> {
         use z3::ast::Ast;
-        let size = self.inner.arch().register_size(name)
+        let size = self
+            .inner
+            .arch()
+            .register_size(name)
             .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
         if width != size * 8 {
             return Err(PyValueError::new_err(format!(
-                "width mismatch: register {} is {} bits, got {} bits", name, size * 8, width
+                "width mismatch: register {} is {} bits, got {} bits",
+                name,
+                size * 8,
+                width
             )));
         }
         // Reconstruct z3::ast::BV from raw pointer.
@@ -1975,27 +2049,33 @@ impl PyRustSimState {
         if self.inner.set_register(name, bv) {
             Ok(())
         } else {
-            Err(PyValueError::new_err(format!("failed to set register: {}", name)))
+            Err(PyValueError::new_err(format!(
+                "failed to set register: {}",
+                name
+            )))
         }
     }
 
     /// Map a memory region.
     #[pyo3(signature = (addr, size, permissions=7))]
     pub fn map_memory(&mut self, addr: u64, size: u64, permissions: u8) {
-        self.inner.map_memory(addr, size, Permission::from_bits(permissions));
+        self.inner
+            .map_memory(addr, size, Permission::from_bits(permissions));
     }
 
     /// Map memory with initial data.
     #[pyo3(signature = (addr, data, permissions=7))]
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: u8) {
-        self.inner.map_memory_data(addr, data, Permission::from_bits(permissions));
+        self.inner
+            .map_memory_data(addr, data, Permission::from_bits(permissions));
     }
 
     /// Map multiple memory pages in a single FFI call.
     /// pages is a list of (addr, data, permissions) tuples.
     pub fn map_memory_batch(&mut self, pages: Vec<(u64, Vec<u8>, u8)>) {
         for (addr, data, permissions) in pages {
-            self.inner.map_memory_data(addr, &data, Permission::from_bits(permissions));
+            self.inner
+                .map_memory_data(addr, &data, Permission::from_bits(permissions));
         }
     }
 
@@ -2014,7 +2094,9 @@ impl PyRustSimState {
 
     /// Load from memory.
     pub fn memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        let bv = self.inner.memory_load(addr, size)
+        let bv = self
+            .inner
+            .memory_load(addr, size)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let value = bv.to_u128();
@@ -2032,7 +2114,8 @@ impl PyRustSimState {
             value |= (b as u128) << (i * 8);
         }
         let bv = RustBV::concrete(value, width);
-        self.inner.memory_store(addr, bv)
+        self.inner
+            .memory_store(addr, bv)
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -2086,7 +2169,8 @@ impl PyRustSimState {
     /// Configure address concretization (legacy interface).
     #[pyo3(signature = (use_approximate, range_limit=None))]
     pub fn configure_concretization(&mut self, use_approximate: bool, range_limit: Option<u64>) {
-        self.inner.configure_concretization(use_approximate, range_limit);
+        self.inner
+            .configure_concretization(use_approximate, range_limit);
     }
 
     /// Configure address concretization with full strategy configuration.
@@ -2276,10 +2360,9 @@ impl ExplorationStateSnapshot {
     ///
     /// Returns list of (addr, jumpkind_str, jump_target) tuples.
     pub fn get_detailed_history_str(&self) -> Vec<(u64, String, u64)> {
-        self.detailed_history.iter()
-            .map(|(addr, jk, target)| {
-                (*addr, HistoryEntry::jumpkind_str(*jk).to_string(), *target)
-            })
+        self.detailed_history
+            .iter()
+            .map(|(addr, jk, target)| (*addr, HistoryEntry::jumpkind_str(*jk).to_string(), *target))
             .collect()
     }
 
@@ -2291,9 +2374,9 @@ impl ExplorationStateSnapshot {
     /// Get a memory page by index.
     /// Returns (addr, data, permissions, symbolic_offsets) or None.
     pub fn get_page(&self, index: usize) -> Option<(u64, Vec<u8>, u8, Vec<u16>)> {
-        self.memory_pages.get(index).map(|p| {
-            (p.0, p.1.clone(), p.2, p.3.clone())
-        })
+        self.memory_pages
+            .get(index)
+            .map(|p| (p.0, p.1.clone(), p.2, p.3.clone()))
     }
 
     /// Get all memory page addresses.
@@ -2411,12 +2494,16 @@ impl RustSimState {
         let constraint_count = self.solver.borrow().num_constraints();
 
         // Export call stack
-        let call_stack: Vec<(u64, u64, u64, u64)> = self.call_stack.iter()
+        let call_stack: Vec<(u64, u64, u64, u64)> = self
+            .call_stack
+            .iter()
             .map(|e| (e.call_site_addr, e.callee_addr, e.return_addr, e.stack_ptr))
             .collect();
 
         // Export detailed history
-        let detailed_history: Vec<(u64, u8, u64)> = self.detailed_history.iter()
+        let detailed_history: Vec<(u64, u8, u64)> = self
+            .detailed_history
+            .iter()
             .map(|e| (e.addr, e.jumpkind, e.jump_target))
             .collect();
 
@@ -2432,15 +2519,27 @@ impl RustSimState {
             named_registers,
             call_stack,
             detailed_history,
-            heap_allocated: self.heap_metadata.allocated.iter()
+            heap_allocated: self
+                .heap_metadata
+                .allocated
+                .iter()
                 .map(|(&addr, &size)| (addr, size))
                 .collect(),
             heap_freed: self.heap_metadata.freed.clone(),
-            open_fds: self.fs.all_fds().iter().filter_map(|&fd| {
-                let info = self.fs.fd_info(fd)?;
-                Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
-            }).collect(),
-            inspection_counts: self.inspection.event_counts().iter().enumerate()
+            open_fds: self
+                .fs
+                .all_fds()
+                .iter()
+                .filter_map(|&fd| {
+                    let info = self.fs.fd_info(fd)?;
+                    Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
+                })
+                .collect(),
+            inspection_counts: self
+                .inspection
+                .event_counts()
+                .iter()
+                .enumerate()
                 .filter(|&(_, &count)| count > 0)
                 .filter_map(|(i, &count)| {
                     InspectEvent::from_u8(i as u8).map(|e| (e.name().to_string(), count))
@@ -2500,7 +2599,11 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.set_max_history(3);
         let entries: Vec<HistoryEntry> = (0..10)
-            .map(|i| HistoryEntry { addr: 0x1000 + i, jumpkind: 0, jump_target: 0 })
+            .map(|i| HistoryEntry {
+                addr: 0x1000 + i,
+                jumpkind: 0,
+                jump_target: 0,
+            })
             .collect();
         state.set_detailed_history(entries);
         let kept = state.detailed_history();
@@ -2554,7 +2657,11 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.set_max_history(0);
         let entries: Vec<HistoryEntry> = (0..50)
-            .map(|i| HistoryEntry { addr: 0x2000 + i, jumpkind: 0, jump_target: 0 })
+            .map(|i| HistoryEntry {
+                addr: 0x2000 + i,
+                jumpkind: 0,
+                jump_target: 0,
+            })
             .collect();
         state.set_detailed_history(entries);
         assert_eq!(state.detailed_history().len(), 50);
@@ -2566,7 +2673,9 @@ mod tests {
 
         // Map and write
         state.map_memory(0x1000, 0x1000, Permission::RWX);
-        state.memory_store(0x1000, RustBV::concrete(0xDEADBEEF, 32)).unwrap();
+        state
+            .memory_store(0x1000, RustBV::concrete(0xDEADBEEF, 32))
+            .unwrap();
 
         // Read back
         let val = state.memory_load(0x1000, 4).unwrap();
@@ -2577,12 +2686,16 @@ mod tests {
     fn test_state_fork_memory_cow() {
         let mut state1 = RustSimState::new("amd64").unwrap();
         state1.map_memory(0x1000, 0x1000, Permission::RWX);
-        state1.memory_store(0x1000, RustBV::concrete(0xAAAA, 16)).unwrap();
+        state1
+            .memory_store(0x1000, RustBV::concrete(0xAAAA, 16))
+            .unwrap();
 
         let mut state2 = state1.fork();
 
         // Modify state2
-        state2.memory_store(0x1000, RustBV::concrete(0xBBBB, 16)).unwrap();
+        state2
+            .memory_store(0x1000, RustBV::concrete(0xBBBB, 16))
+            .unwrap();
 
         // state1 should still have original value
         let val1 = state1.memory_load(0x1000, 2).unwrap();
@@ -2621,7 +2734,11 @@ mod tests {
     #[test]
     fn test_filesystem_write_read() {
         let mut fs = FileSystem::default();
-        let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, b"hello world".to_vec());
+        let fd = fs.open_with_content(
+            "data.bin".to_string(),
+            FdFlags::ReadOnly,
+            b"hello world".to_vec(),
+        );
 
         let data = fs.read(fd, 5);
         assert_eq!(data, b"hello");
@@ -2652,7 +2769,9 @@ mod tests {
     #[test]
     fn test_filesystem_fork_isolation() {
         let mut state = RustSimState::new("amd64").unwrap();
-        state.file_system().open("test.txt".to_string(), FdFlags::ReadOnly);
+        state
+            .file_system()
+            .open("test.txt".to_string(), FdFlags::ReadOnly);
         assert!(state.file_system_ref().is_open(3));
 
         let mut forked = state.fork();
@@ -2801,8 +2920,14 @@ mod tests {
         state.inspect_mem_write(0x1000, 8);
         state.inspect_mem_read(0x2000, 4);
 
-        assert_eq!(state.inspection().event_counts()[InspectEvent::MemWrite as usize], 1);
-        assert_eq!(state.inspection().event_counts()[InspectEvent::MemRead as usize], 1);
+        assert_eq!(
+            state.inspection().event_counts()[InspectEvent::MemWrite as usize],
+            1
+        );
+        assert_eq!(
+            state.inspection().event_counts()[InspectEvent::MemRead as usize],
+            1
+        );
     }
 
     #[test]
@@ -2815,9 +2940,15 @@ mod tests {
         forked.inspect_mem_write(0x2000, 4);
 
         // Parent should have 1 event
-        assert_eq!(state.inspection().event_counts()[InspectEvent::MemWrite as usize], 1);
+        assert_eq!(
+            state.inspection().event_counts()[InspectEvent::MemWrite as usize],
+            1
+        );
         // Forked should have 2 (inherited 1 + new 1)
-        assert_eq!(forked.inspection().event_counts()[InspectEvent::MemWrite as usize], 2);
+        assert_eq!(
+            forked.inspection().event_counts()[InspectEvent::MemWrite as usize],
+            2
+        );
     }
 
     #[test]
@@ -2828,6 +2959,9 @@ mod tests {
         state.inspect_mem_read(0x2000, 4);
 
         assert_eq!(state.inspection().events().len(), 0);
-        assert_eq!(state.inspection().event_counts()[InspectEvent::MemWrite as usize], 0);
+        assert_eq!(
+            state.inspection().event_counts()[InspectEvent::MemWrite as usize],
+            0
+        );
     }
 }

@@ -10,7 +10,7 @@
 //! All entry points are inherent methods on `SymbolicMemory`, so callers in
 //! `memory/mod.rs` and external crates keep using `mem.method(...)`.
 
-use super::{MemoryPage, Permission, SymbolicMemory, PAGE_MASK};
+use super::{MemoryPage, PAGE_MASK, Permission, SymbolicMemory};
 use crate::symbolic::RustBV;
 
 impl SymbolicMemory {
@@ -60,7 +60,8 @@ impl SymbolicMemory {
         let width_bits = value.width();
         let sym_bytes = width_bits / 8;
         for i in 1..sym_bytes {
-            self.symbolic_spans.insert(addr + i as u64, (addr, width_bits));
+            self.symbolic_spans
+                .insert(addr + i as u64, (addr, width_bits));
         }
 
         // Mark pages as having symbolic bytes
@@ -73,9 +74,10 @@ impl SymbolicMemory {
             let page_addr = page_num << 12;
 
             // Get or create page
-            let page = self.pages.entry(page_num).or_insert_with(|| {
-                MemoryPage::new(page_addr, Permission::RW)
-            });
+            let page = self
+                .pages
+                .entry(page_num)
+                .or_insert_with(|| MemoryPage::new(page_addr, Permission::RW));
 
             // Modify in place (COW handled by bitmap allocation in mark_symbolic)
             page.mark_symbolic(offset, 1);

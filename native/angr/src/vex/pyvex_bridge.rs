@@ -6,8 +6,8 @@
 use serde::Deserialize;
 
 use super::ir::{
-    DirtyFx, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp,
-    IRRegArray, IRStmt, IRType, MBusEvent, TypeEnv, VexArch, IRSB,
+    DirtyFx, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IRRegArray, IRSB, IRStmt, IRType,
+    MBusEvent, TypeEnv, VexArch,
 };
 use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
 
@@ -338,12 +338,12 @@ fn const_to_u64(c: &PyVexConst) -> u64 {
         PyVexConst::U16 { value } => *value as u64,
         PyVexConst::U32 { value } => *value as u64,
         PyVexConst::U64 { value } => *value,
-        PyVexConst::U128 { low, .. } => *low,  // Take low 64 bits
+        PyVexConst::U128 { low, .. } => *low, // Take low 64 bits
         PyVexConst::F32 { value } => value.to_bits() as u64,
         PyVexConst::F32i { value } => *value as u64,
         PyVexConst::F64 { value } => value.to_bits(),
         PyVexConst::F64i { value } => *value,
-        PyVexConst::V128 { low, .. } => *low,  // Take low 64 bits
+        PyVexConst::V128 { low, .. } => *low, // Take low 64 bits
         PyVexConst::V256 { value } => value[0],
     }
 }
@@ -649,8 +649,8 @@ pub fn convert_pyvex_irsb(pyvex: &PyVexIRSB) -> Result<IRSB, DeserializeError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::ir::{IROp, JumpKind};
+    use super::*;
 
     #[test]
     fn test_simple_irsb_deserialization() {
@@ -784,7 +784,11 @@ mod tests {
             assert_eq!(*tmp, 0);
             if let IRExpr::Binop { op, left, right } = data {
                 println!("Parsed opcode: {:?}", op);
-                assert!(matches!(op, IROp::VFAddS { elem: IRType::F32 }), "Expected VFAddS{{F32}}, got {:?}", op);
+                assert!(
+                    matches!(op, IROp::VFAddS { elem: IRType::F32 }),
+                    "Expected VFAddS{{F32}}, got {:?}",
+                    op
+                );
             } else {
                 panic!("Expected Binop expression");
             }

@@ -12,9 +12,9 @@
 //! was consumed). The whitespace, sign, and base-prefix bytes must be
 //! concrete; if any of them is symbolic we fall back to Python.
 
+use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::ProcedureError;
 
 const MAX_DIGITS: usize = 64;
 
@@ -109,7 +109,10 @@ fn parse_concrete_prefix(
             None => 10,
         }
     } else if base_arg == 16 {
-        if let (Some(b0), Some(b1)) = (bytes[idx].as_u64(), bytes.get(idx + 1).and_then(|b| b.as_u64())) {
+        if let (Some(b0), Some(b1)) = (
+            bytes[idx].as_u64(),
+            bytes.get(idx + 1).and_then(|b| b.as_u64()),
+        ) {
             if (b0 as u8) == b'0' && ((b1 as u8) == b'x' || (b1 as u8) == b'X') {
                 idx += 2;
             }
@@ -144,11 +147,7 @@ fn parse_concrete_digits(bytes: &[u8], base: u32) -> (i64, usize) {
         value = value.wrapping_mul(base as i64).wrapping_add(digit as i64);
         idx += 1;
     }
-    if !found_digit {
-        (0, 0)
-    } else {
-        (value, idx)
-    }
+    if !found_digit { (0, 0) } else { (value, idx) }
 }
 
 /// Build the ITE accumulator over `bytes[start..]` for the given concrete
@@ -264,7 +263,11 @@ fn run_strtol(
             .map(|b| b.as_u64().unwrap() as u8)
             .collect();
         let (value, consumed) = parse_concrete_digits(&cb, base);
-        let value = if negative { value.wrapping_neg() } else { value };
+        let value = if negative {
+            value.wrapping_neg()
+        } else {
+            value
+        };
         if let Some(end) = endptr {
             if end != 0 {
                 let end_addr = if consumed == 0 {

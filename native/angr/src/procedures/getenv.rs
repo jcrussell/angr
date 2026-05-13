@@ -7,9 +7,9 @@
 //!
 //! Concrete keys only — falls back to Python for symbolic arguments.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_STR_LEN: usize = 4096;
 
@@ -67,16 +67,20 @@ impl NativeSimProcedure for NativeGetenv {
                 let buf_addr = state.heap_alloc(value.len() as u64 + 1);
                 // Write value bytes
                 for (i, &byte) in value.iter().enumerate() {
-                    state.memory_store(
-                        buf_addr.wrapping_add(i as u64),
-                        RustBV::concrete(byte as u128, 8),
-                    ).map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                    state
+                        .memory_store(
+                            buf_addr.wrapping_add(i as u64),
+                            RustBV::concrete(byte as u128, 8),
+                        )
+                        .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
                 }
                 // NUL terminator
-                state.memory_store(
-                    buf_addr.wrapping_add(value.len() as u64),
-                    RustBV::concrete(0, 8),
-                ).map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                state
+                    .memory_store(
+                        buf_addr.wrapping_add(value.len() as u64),
+                        RustBV::concrete(0, 8),
+                    )
+                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
                 Ok(Some(RustBV::concrete(buf_addr as u128, bits)))
             }
@@ -187,9 +191,9 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"PATH\x00", Permission::RWX);
 
-        let result = NativeGetenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-        ]).unwrap();
+        let result = NativeGetenv
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
 
         // Should return NULL
         assert_eq!(result.unwrap().as_u64(), Some(0));
@@ -202,17 +206,22 @@ mod tests {
         state.map_memory_data(0x1100, b"/root\x00", Permission::RWX);
 
         // setenv("HOME", "/root", 1)
-        let result = NativeSetenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x1100, 64),
-            RustBV::concrete(1, 64),
-        ]).unwrap();
+        let result = NativeSetenv
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x1100, 64),
+                    RustBV::concrete(1, 64),
+                ],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
 
         // getenv("HOME")
-        let result = NativeGetenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-        ]).unwrap();
+        let result = NativeGetenv
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
 
         let ptr = result.unwrap().as_u64().unwrap();
         assert_ne!(ptr, 0, "getenv should return non-NULL");
@@ -238,23 +247,33 @@ mod tests {
         state.map_memory_data(0x1200, b"val2\x00", Permission::RWX);
 
         // setenv("KEY", "val1", 1)
-        NativeSetenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x1100, 64),
-            RustBV::concrete(1, 64),
-        ]).unwrap();
+        NativeSetenv
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x1100, 64),
+                    RustBV::concrete(1, 64),
+                ],
+            )
+            .unwrap();
 
         // setenv("KEY", "val2", 0) — should NOT overwrite
-        NativeSetenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x1200, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        NativeSetenv
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x1200, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // getenv should still return "val1"
-        let result = NativeGetenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-        ]).unwrap();
+        let result = NativeGetenv
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         let ptr = result.unwrap().as_u64().unwrap();
         let mut val = Vec::new();
         for i in 0..4u64 {
@@ -269,9 +288,9 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"LANG=en_US\x00", Permission::RWX);
 
-        let result = NativePutenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-        ]).unwrap();
+        let result = NativePutenv
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
 
         // Verify via state's environment
@@ -284,9 +303,9 @@ mod tests {
         state.map_memory_data(0x1000, b"NOEQUALS\x00", Permission::RWX);
 
         // Should succeed but not add anything
-        let result = NativePutenv.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-        ]).unwrap();
+        let result = NativePutenv
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
 

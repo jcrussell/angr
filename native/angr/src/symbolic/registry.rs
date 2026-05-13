@@ -22,10 +22,10 @@
 //! On import: Check registry before creating new symbol
 //! On export: Return original Py<PyAny> if in registry
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::RwLock;
 use pyo3::prelude::*;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Information about a registered symbol.
 #[derive(Clone, Debug)]
@@ -100,14 +100,7 @@ impl SymbolicIdentityRegistry {
     /// * `name` - The symbol name
     /// * `width` - The bit width
     /// * `py_ast` - The original Python AST object
-    pub fn register(
-        &self,
-        py_hash: i64,
-        rust_id: u64,
-        name: &str,
-        width: u32,
-        py_ast: Py<PyAny>,
-    ) {
+    pub fn register(&self, py_hash: i64, rust_id: u64, name: &str, width: u32, py_ast: Py<PyAny>) {
         // Store mappings
         self.py_hash_to_rust_id.write().insert(py_hash, rust_id);
         self.rust_id_to_py.write().insert(rust_id, py_ast);
@@ -214,12 +207,10 @@ impl SymbolicIdentityRegistry {
     pub fn ensure_id_at_least(&self, id: u64) {
         let mut current = self.next_id.load(Ordering::SeqCst);
         while current <= id {
-            match self.next_id.compare_exchange(
-                current,
-                id + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
+            match self
+                .next_id
+                .compare_exchange(current, id + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
                 Ok(_) => break,
                 Err(actual) => current = actual,
             }

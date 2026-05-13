@@ -10,13 +10,13 @@
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
-use std::ffi::{c_char, c_int, c_uchar, c_uint, c_ulonglong, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_ulonglong, c_void};
 use std::ptr;
 use std::sync::Once;
 
 use super::ir::{
-    DirtyFx, Endness, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IROp, IRRegArray, IRStmt,
-    IRType, JumpKind, MBusEvent, TypeEnv, VexArch, IRSB,
+    DirtyFx, Endness, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IROp, IRRegArray, IRSB,
+    IRStmt, IRType, JumpKind, MBusEvent, TypeEnv, VexArch,
 };
 use super::opcode_map;
 
@@ -107,7 +107,8 @@ impl CVexArchInfo {
         match arch {
             VexArch::AMD64 => {
                 info.endness = 0x601; // LE
-                info.hwcaps = (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11);
+                info.hwcaps =
+                    (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11);
             }
             VexArch::X86 => {
                 info.endness = 0x601; // LE
@@ -117,7 +118,11 @@ impl CVexArchInfo {
                 info.endness = 0x601; // LE (ARM can be either, default to LE)
                 info.hwcaps = 0;
             }
-            VexArch::MIPS32 | VexArch::MIPS64 | VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X => {
+            VexArch::MIPS32
+            | VexArch::MIPS64
+            | VexArch::PPC32
+            | VexArch::PPC64
+            | VexArch::S390X => {
                 info.endness = 0x602; // BE
                 info.hwcaps = 0;
             }
@@ -222,7 +227,7 @@ pub enum CIRConstTag {
 /// IR constant union
 #[repr(C)]
 pub union CIRConstUnion {
-    pub u1: c_int,      // Bool stored as int
+    pub u1: c_int, // Bool stored as int
     pub u8_: c_uchar,
     pub u16_: u16,
     pub u32_: u32,
@@ -231,8 +236,8 @@ pub union CIRConstUnion {
     pub f32i: u32,
     pub f64_: f64,
     pub f64i: u64,
-    pub v128: u16,      // V128 stored as 16-bit selector
-    pub v256: u32,      // V256 stored as 32-bit selector
+    pub v128: u16, // V128 stored as 16-bit selector
+    pub v256: u32, // V256 stored as 32-bit selector
 }
 
 /// IR constant structure
@@ -509,7 +514,7 @@ pub struct CIRStmtNoOp {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CIRStmtIMark {
-    pub addr: u64,  // Addr
+    pub addr: u64, // Addr
     pub len: c_uint,
     pub delta: c_uchar,
 }
@@ -957,7 +962,7 @@ fn convert_stmt(c_stmt: &CIRStmt) -> Result<Option<IRStmt>, NativeLiftError> {
             let loadg = unsafe { c_stmt.data.loadg };
             let details = unsafe { &*loadg.details };
             let cvt = match details.cvt {
-                0x1500 => IRLoadGOp::WidenS,  // ILGop_IdentV128
+                0x1500 => IRLoadGOp::WidenS,   // ILGop_IdentV128
                 0x1501 => IRLoadGOp::Identity, // ILGop_Ident64
                 0x1502 => IRLoadGOp::Identity, // ILGop_Ident32
                 0x1503 => IRLoadGOp::WidenS,   // ILGop_16Uto32
@@ -1315,9 +1320,7 @@ pub fn register_binary_region(addr: u64, bytes: &[u8]) -> bool {
     if !is_vex_initialized() {
         return false;
     }
-    unsafe {
-        register_readonly_region(addr, bytes.len() as u64, bytes.as_ptr()) != 0
-    }
+    unsafe { register_readonly_region(addr, bytes.len() as u64, bytes.as_ptr()) != 0 }
 }
 
 /// Clear all registered binary regions

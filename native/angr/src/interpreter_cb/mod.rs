@@ -13,7 +13,9 @@ use lru::LruCache;
 use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::arch::{arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch, RegisterFile};
+use crate::arch::{
+    RegisterFile, arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch,
+};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
@@ -21,10 +23,11 @@ use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{BVOp, RustBV, RustSymbolTable, SymContext};
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;
-use crate::vex::ir::{IRConst, IRExpr, IRLoadGOp, IROp, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
+use crate::vex::ir::{
+    IRConst, IRExpr, IRLoadGOp, IROp, IRSB, IRStmt, IRType, JumpKind, TypeEnv, VexArch,
+};
 use crate::vex::ops::{OpError, VEXOps};
-use crate::vex::{deserialize_irsb, Endness};
-
+use crate::vex::{Endness, deserialize_irsb};
 
 mod constraints;
 mod execution;
@@ -37,8 +40,6 @@ mod statements;
 
 use helpers::bytes_to_bv;
 use pending_store::PendingStoreBuffer;
-
-
 
 /// Full state snapshot at a symbolic branch point.
 /// Used by deferred forks to create correct alternate-path states
@@ -296,17 +297,10 @@ enum ConcretizedJump {
     Single(u64),
     /// Multiple concrete addresses (for symbolic ret/call/jmp).
     /// Contains the list of targets and the original symbolic expression.
-    Multiple {
-        targets: Vec<u64>,
-        expr: RustBV,
-    },
+    Multiple { targets: Vec<u64>, expr: RustBV },
     /// Too many targets - exceeds max_symbolic_ip_targets limit.
     /// State should be marked as unconstrained.
-    TooMany {
-        min: u64,
-        max: u64,
-        limit: usize,
-    },
+    TooMany { min: u64, max: u64, limit: usize },
 }
 
 /// Result of executing a single statement.
@@ -672,7 +666,7 @@ impl<'a> CallbackInterpreter<'a> {
             registers: RegisterFile::new(arch_box),
             temps: Vec::with_capacity(64), // Pre-allocate for typical block size
             ctx,
-            symbol_table: None,  // Set via set_symbol_table() when using handles
+            symbol_table: None, // Set via set_symbol_table() when using handles
             pc: 0,
             current_insn_addr: 0,
             current_insn_len: 0,
@@ -701,7 +695,7 @@ impl<'a> CallbackInterpreter<'a> {
             lazy_solves: false,
             load_prefetch_cache: FxHashMap::default(),
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
-            page_prefetch_count: 2,    // Prefetch 2 pages in each direction by default
+            page_prefetch_count: 2,   // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
             simprocedure_registry: Arc::new(FxHashMap::default()),
             calling_convention: cc,
@@ -816,23 +810,38 @@ impl<'a> CallbackInterpreter<'a> {
     /// Compute a cache key for a RustBV value.
     /// Uses the symbolic id for Symbolic/Constrained, and a hash of op+operand structure for Expression.
     fn bv_cache_key(bv: &RustBV) -> u64 {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         match bv {
             RustBV::Concrete { value, .. } => *value as u64,
             RustBV::Symbolic { id, .. } => *id,
             RustBV::Constrained { id, .. } => *id,
-            RustBV::Expression { op, operands, width, .. } => {
+            RustBV::Expression {
+                op,
+                operands,
+                width,
+                ..
+            } => {
                 let mut hasher = DefaultHasher::new();
                 // Hash op discriminant + width + operand keys recursively (1 level deep)
                 std::mem::discriminant(op).hash(&mut hasher);
                 width.hash(&mut hasher);
                 for operand in operands.iter() {
                     match operand {
-                        RustBV::Concrete { value, .. } => { value.hash(&mut hasher); }
-                        RustBV::Symbolic { id, .. } => { id.hash(&mut hasher); }
-                        RustBV::Constrained { id, .. } => { id.hash(&mut hasher); }
-                        RustBV::Expression { op: sub_op, width: sub_w, .. } => {
+                        RustBV::Concrete { value, .. } => {
+                            value.hash(&mut hasher);
+                        }
+                        RustBV::Symbolic { id, .. } => {
+                            id.hash(&mut hasher);
+                        }
+                        RustBV::Constrained { id, .. } => {
+                            id.hash(&mut hasher);
+                        }
+                        RustBV::Expression {
+                            op: sub_op,
+                            width: sub_w,
+                            ..
+                        } => {
                             std::mem::discriminant(sub_op).hash(&mut hasher);
                             sub_w.hash(&mut hasher);
                         }
@@ -857,16 +866,18 @@ impl<'a> CallbackInterpreter<'a> {
     /// without going through Python callbacks, significantly improving performance.
     pub fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
         let size = data.len() as u64;
-        Arc::make_mut(&mut self.concrete_memory)
-            .push(ConcreteMemoryRegion { base, size, data: Arc::new(data) });
+        Arc::make_mut(&mut self.concrete_memory).push(ConcreteMemoryRegion {
+            base,
+            size,
+            data: Arc::new(data),
+        });
         self.concrete_memory_sorted = false;
     }
 
     /// Add a concrete memory region using pre-shared Arc data (O(1) clone).
     pub fn add_concrete_memory_shared(&mut self, base: u64, data: Arc<Vec<u8>>) {
         let size = data.len() as u64;
-        Arc::make_mut(&mut self.concrete_memory)
-            .push(ConcreteMemoryRegion { base, size, data });
+        Arc::make_mut(&mut self.concrete_memory).push(ConcreteMemoryRegion { base, size, data });
         self.concrete_memory_sorted = false;
     }
 
@@ -968,10 +979,12 @@ impl<'a> CallbackInterpreter<'a> {
 
         let result_ast = callbacks
             .call_memory_load_symbolic_full(py, addr_val, size as u32)
-            .map_err(|e| CbExecutionError::Callback(format!(
-                "{} symbolic load full callback failed ({}): {}",
-                context, addr_descr, e
-            )))?;
+            .map_err(|e| {
+                CbExecutionError::Callback(format!(
+                    "{} symbolic load full callback failed ({}): {}",
+                    context, addr_descr, e
+                ))
+            })?;
 
         let ast = result_ast.bind(py);
 
@@ -987,7 +1000,9 @@ impl<'a> CallbackInterpreter<'a> {
             }
             log::warn!(
                 "{} symbolic load ({}, size={}): AST conversion failed; using fresh symbol",
-                context, addr_descr, size
+                context,
+                addr_descr,
+                size
             );
         }
 
@@ -1025,10 +1040,12 @@ impl<'a> CallbackInterpreter<'a> {
         self.sync_before_callback(py, callbacks)?;
         callbacks
             .call_memory_store_symbolic_full(py, addr_val, data_val)
-            .map_err(|e| CbExecutionError::Callback(format!(
-                "{} symbolic store full callback failed ({}): {}",
-                context, addr_descr, e
-            )))?;
+            .map_err(|e| {
+                CbExecutionError::Callback(format!(
+                    "{} symbolic store full callback failed ({}): {}",
+                    context, addr_descr, e
+                ))
+            })?;
         Ok(())
     }
 
@@ -1248,7 +1265,9 @@ impl<'a> CallbackInterpreter<'a> {
         for (addr, data) in self.pending_stores.drain() {
             self.all_flushed_stores.insert(addr, data);
         }
-        std::mem::take(&mut self.all_flushed_stores).into_iter().collect()
+        std::mem::take(&mut self.all_flushed_stores)
+            .into_iter()
+            .collect()
     }
 
     /// Set the program counter.
@@ -1294,9 +1313,9 @@ impl<'a> CallbackInterpreter<'a> {
     /// Check if an address is within loaded binary (concrete memory) regions.
     /// Used to distinguish internal function calls from external/library calls.
     pub fn is_in_binary(&self, addr: u64) -> bool {
-        self.concrete_memory.iter().any(|region| {
-            addr >= region.base && addr < region.base + region.size
-        })
+        self.concrete_memory
+            .iter()
+            .any(|region| addr >= region.base && addr < region.base + region.size)
     }
 
     /// Whether the page containing `addr` has been overwritten via a store.
@@ -1353,13 +1372,22 @@ impl<'a> CallbackInterpreter<'a> {
     ///
     /// This allows the interpreter to pre-extract arguments when the hook is hit,
     /// reducing Python callback overhead.
-    pub fn register_simprocedure(&mut self, addr: u64, name: String, num_args: usize, no_return: bool) {
+    pub fn register_simprocedure(
+        &mut self,
+        addr: u64,
+        name: String,
+        num_args: usize,
+        no_return: bool,
+    ) {
         Arc::make_mut(&mut self.hook_addrs).insert(addr);
-        Arc::make_mut(&mut self.simprocedure_registry).insert(addr, SimProcedureInfo {
-            name,
-            num_args,
-            no_return,
-        });
+        Arc::make_mut(&mut self.simprocedure_registry).insert(
+            addr,
+            SimProcedureInfo {
+                name,
+                num_args,
+                no_return,
+            },
+        );
     }
 
     /// Register multiple SimProcedures at once.
@@ -1372,11 +1400,14 @@ impl<'a> CallbackInterpreter<'a> {
         }
         let registry = Arc::make_mut(&mut self.simprocedure_registry);
         for (addr, name, num_args, no_return) in procs {
-            registry.insert(*addr, SimProcedureInfo {
-                name: name.clone(),
-                num_args: *num_args,
-                no_return: *no_return,
-            });
+            registry.insert(
+                *addr,
+                SimProcedureInfo {
+                    name: name.clone(),
+                    num_args: *num_args,
+                    no_return: *no_return,
+                },
+            );
         }
     }
 
@@ -1409,15 +1440,16 @@ impl<'a> CallbackInterpreter<'a> {
     /// interpreter detects the SimProcedure hook.
     pub fn get_return_addr(&self) -> Option<u64> {
         let ptr_size = self.calling_convention.pointer_size();
-        let sp = self.registers.get(
-            self.registers.arch().sp_offset(),
-            ptr_size,
-            self.ctx,
-        );
+        let sp = self
+            .registers
+            .get(self.registers.arch().sp_offset(), ptr_size, self.ctx);
         let sp_val = sp.as_u64()?;
 
         // Check pending_stores first (most recent writes, same block)
-        if let Some(data) = self.pending_stores.try_load_exact(sp_val, ptr_size as usize) {
+        if let Some(data) = self
+            .pending_stores
+            .try_load_exact(sp_val, ptr_size as usize)
+        {
             let mut bytes = [0u8; 8];
             let len = std::cmp::min(ptr_size as usize, 8);
             bytes[..len].copy_from_slice(&data[..len]);
@@ -1458,7 +1490,10 @@ impl<'a> CallbackInterpreter<'a> {
     }
 
     /// Swap in a shared block cache, returning the interpreter's current cache.
-    pub fn swap_block_cache(&mut self, cache: LruCache<u64, Arc<IRSB>>) -> LruCache<u64, Arc<IRSB>> {
+    pub fn swap_block_cache(
+        &mut self,
+        cache: LruCache<u64, Arc<IRSB>>,
+    ) -> LruCache<u64, Arc<IRSB>> {
         std::mem::replace(&mut self.block_cache, cache)
     }
 
@@ -1525,7 +1560,7 @@ impl<'a> CallbackInterpreter<'a> {
             push_level: self.push_level, // Inherit push level for forked interpreter
             concrete_memory: Arc::clone(&self.concrete_memory), // Share concrete memory (read-only)
             concretizer: self.concretizer.clone(), // Share concretizer settings
-            dirty_registers: 0, // Fresh dirty tracking for fork
+            dirty_registers: 0,          // Fresh dirty tracking for fork
             pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
             all_flushed_stores: FxHashMap::default(),
             all_flushed_symbolic_stores: FxHashMap::default(),
@@ -1538,24 +1573,24 @@ impl<'a> CallbackInterpreter<'a> {
             load_prefetch_cache: FxHashMap::default(), // Fresh prefetch cache for fork
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
-            dirty_dispatch: DirtyHelperDispatch::new(), // Fresh dispatch (stateless)
+            dirty_dispatch: DirtyHelperDispatch::new(),    // Fresh dispatch (stateless)
             simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
             calling_convention: cc,
-            last_branch_condition: None, // Fresh for fork
-            pending_python_constraints: Vec::new(), // Fresh constraints for fork
-            stored_conditions: FxHashMap::default(), // Fresh for fork
-            fork_snapshots: FxHashMap::default(), // Fresh for fork
-            stats: ExecutionStats::default(), // Fresh stats for fork
+            last_branch_condition: None,               // Fresh for fork
+            pending_python_constraints: Vec::new(),    // Fresh constraints for fork
+            stored_conditions: FxHashMap::default(),   // Fresh for fork
+            fork_snapshots: FxHashMap::default(),      // Fresh for fork
+            stats: ExecutionStats::default(),          // Fresh stats for fork
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
-            concretize_cache: FxHashMap::default(), // Fresh cache for fork
+            concretize_cache: FxHashMap::default(),    // Fresh cache for fork
             prefetch_loads_scratch: Vec::new(),
             prefetch_unique_scratch: Vec::new(),
             prefetch_dedup_scratch: HashSet::new(),
             prefetch_callback_scratch: Vec::new(),
             call_stack: self.call_stack.clone(), // Clone call stack for fork
             detailed_history: self.detailed_history.clone(), // Clone history for fork
-            vex_opt_level: self.vex_opt_level, // Inherit VEX opt level
+            vex_opt_level: self.vex_opt_level,   // Inherit VEX opt level
             vex_opt_level_overrides: Arc::clone(&self.vex_opt_level_overrides), // Inherit overrides
             dirtied_code_pages: self.dirtied_code_pages.clone(), // Inherit SMC tracking
         }
@@ -1606,10 +1641,13 @@ impl<'a> CallbackInterpreter<'a> {
     /// Get statistics about Rust memory usage.
     pub fn rust_memory_stats(&self) -> Option<(usize, usize, usize)> {
         self.rust_memory.as_ref().map(|m| {
-            (m.page_count(), m.lazy_region_count(), m.get_dirty_pages().len())
+            (
+                m.page_count(),
+                m.lazy_region_count(),
+                m.get_dirty_pages().len(),
+            )
         })
     }
-
 }
 
 #[cfg(test)]
@@ -1618,7 +1656,11 @@ mod smc_tests {
 
     fn make_irsb(addr: u64, len_bytes: u32) -> IRSB {
         let mut irsb = IRSB::new(addr, VexArch::AMD64);
-        irsb.statements.push(IRStmt::IMark { addr, len: len_bytes, delta: 0 });
+        irsb.statements.push(IRStmt::IMark {
+            addr,
+            len: len_bytes,
+            delta: 0,
+        });
         irsb
     }
 

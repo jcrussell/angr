@@ -4,9 +4,9 @@
 //! with width, zero-padding, and left-alignment flags. Falls back to
 //! Python for symbolic format strings or arguments.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_FMT_LEN: usize = 4096;
 const MAX_OUTPUT_LEN: usize = 4096;
@@ -17,7 +17,9 @@ fn read_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedure
     for i in 0..MAX_FMT_LEN as u64 {
         match state.memory_load(addr.wrapping_add(i), 1) {
             Ok(bv) => {
-                let byte = extract_concrete_arg(&bv, &format!("byte at 0x{:x}", addr.wrapping_add(i)))? as u8;
+                let byte =
+                    extract_concrete_arg(&bv, &format!("byte at 0x{:x}", addr.wrapping_add(i)))?
+                        as u8;
                 if byte == 0 {
                     break;
                 }
@@ -109,7 +111,9 @@ fn format_string(
             let mut prec: usize = 0;
             if i < fmt.len() && fmt[i] == b'*' {
                 if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("precision arg".to_string()));
+                    return Err(ProcedureError::SymbolicArgument(
+                        "precision arg".to_string(),
+                    ));
                 }
                 let p = extract_concrete_arg(&args[arg_idx], "precision")?;
                 prec = p as usize;
@@ -180,7 +184,14 @@ fn format_string(
                 } else {
                     format!("{}", signed_val)
                 };
-                pad_and_push(&mut output, formatted.as_bytes(), width, left_align, zero_pad, signed_val < 0);
+                pad_and_push(
+                    &mut output,
+                    formatted.as_bytes(),
+                    width,
+                    left_align,
+                    zero_pad,
+                    signed_val < 0,
+                );
             }
             b'u' => {
                 if arg_idx >= args.len() {
@@ -194,7 +205,14 @@ fn format_string(
                     val as u32 as u64
                 };
                 let formatted = format!("{}", unsigned_val);
-                pad_and_push(&mut output, formatted.as_bytes(), width, left_align, zero_pad, false);
+                pad_and_push(
+                    &mut output,
+                    formatted.as_bytes(),
+                    width,
+                    left_align,
+                    zero_pad,
+                    false,
+                );
             }
             b'x' | b'X' => {
                 if arg_idx >= args.len() {
@@ -216,7 +234,14 @@ fn format_string(
                     let prefix = if spec == b'x' { "0x" } else { "0X" };
                     formatted = format!("{}{}", prefix, formatted);
                 }
-                pad_and_push(&mut output, formatted.as_bytes(), width, left_align, zero_pad, false);
+                pad_and_push(
+                    &mut output,
+                    formatted.as_bytes(),
+                    width,
+                    left_align,
+                    zero_pad,
+                    false,
+                );
             }
             b'o' => {
                 if arg_idx >= args.len() {
@@ -233,7 +258,14 @@ fn format_string(
                 if hash_flag && unsigned_val != 0 {
                     formatted = format!("0{}", formatted);
                 }
-                pad_and_push(&mut output, formatted.as_bytes(), width, left_align, zero_pad, false);
+                pad_and_push(
+                    &mut output,
+                    formatted.as_bytes(),
+                    width,
+                    left_align,
+                    zero_pad,
+                    false,
+                );
             }
             b'c' => {
                 if arg_idx >= args.len() {
@@ -265,7 +297,14 @@ fn format_string(
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{}", arg_idx))?;
                 arg_idx += 1;
                 let formatted = format!("0x{:x}", val);
-                pad_and_push(&mut output, formatted.as_bytes(), width, left_align, false, false);
+                pad_and_push(
+                    &mut output,
+                    formatted.as_bytes(),
+                    width,
+                    left_align,
+                    false,
+                    false,
+                );
             }
             b'n' => {
                 // %n writes the number of chars written so far — skip for safety
@@ -273,7 +312,10 @@ fn format_string(
             }
             _ => {
                 // Unknown specifier — fall back to Python
-                return Err(ProcedureError::Other(format!("unsupported format specifier '%{}'", spec as char)));
+                return Err(ProcedureError::Other(format!(
+                    "unsupported format specifier '%{}'",
+                    spec as char
+                )));
             }
         }
 
@@ -286,7 +328,14 @@ fn format_string(
 }
 
 /// Pad a formatted value and push to output.
-fn pad_and_push(output: &mut Vec<u8>, value: &[u8], width: usize, left_align: bool, zero_pad: bool, is_negative: bool) {
+fn pad_and_push(
+    output: &mut Vec<u8>,
+    value: &[u8],
+    width: usize,
+    left_align: bool,
+    zero_pad: bool,
+    is_negative: bool,
+) {
     if width <= value.len() {
         output.extend_from_slice(value);
         return;
@@ -344,10 +393,16 @@ impl NativeSimProcedure for NativeSprintf {
 
         // Write output to destination
         for (i, &byte) in output.iter().enumerate() {
-            state.memory_store(dest.wrapping_add(i as u64), RustBV::concrete(byte as u128, 8))?;
+            state.memory_store(
+                dest.wrapping_add(i as u64),
+                RustBV::concrete(byte as u128, 8),
+            )?;
         }
         // Null terminator
-        state.memory_store(dest.wrapping_add(output.len() as u64), RustBV::concrete(0, 8))?;
+        state.memory_store(
+            dest.wrapping_add(output.len() as u64),
+            RustBV::concrete(0, 8),
+        )?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(output.len() as u128, bits)))
@@ -387,7 +442,10 @@ impl NativeSimProcedure for NativeSnprintf {
         if size > 0 {
             let write_len = output.len().min(size - 1);
             for i in 0..write_len {
-                state.memory_store(dest.wrapping_add(i as u64), RustBV::concrete(output[i] as u128, 8))?;
+                state.memory_store(
+                    dest.wrapping_add(i as u64),
+                    RustBV::concrete(output[i] as u128, 8),
+                )?;
             }
             // Always null-terminate if size > 0
             state.memory_store(dest.wrapping_add(write_len as u64), RustBV::concrete(0, 8))?;
@@ -416,16 +474,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64), // dest
-            RustBV::concrete(0x1000, 64), // format
-            RustBV::concrete(0, 64),      // unused vararg
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64), // dest
+                    RustBV::concrete(0x1000, 64), // format
+                    RustBV::concrete(0, 64),      // unused vararg
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(11));
         // Verify written data
@@ -440,16 +503,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"val=%d\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(42, 64),     // %d arg
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(42, 64), // %d arg
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(6)); // "val=42"
         let mut out = Vec::new();
@@ -464,16 +532,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%x\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(255, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(255, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(2)); // "ff"
         let mut out = Vec::new();
@@ -489,16 +562,21 @@ mod tests {
         state.map_memory_data(0x1000, b"hi %s!\x00", Permission::RWX);
         state.map_memory_data(0x3000, b"world\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x3000, 64), // pointer to "world"
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x3000, 64), // pointer to "world"
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(9)); // "hi world!"
         let mut out = Vec::new();
@@ -513,16 +591,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%c%c%c\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(b'A' as u128, 64),
-            RustBV::concrete(b'B' as u128, 64),
-            RustBV::concrete(b'C' as u128, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(b'A' as u128, 64),
+                    RustBV::concrete(b'B' as u128, 64),
+                    RustBV::concrete(b'C' as u128, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(3));
         let mut out = Vec::new();
@@ -537,16 +620,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"100%%\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(4)); // "100%"
     }
@@ -556,16 +644,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%08x\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0xAB, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0xAB, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(8)); // "000000ab"
         let mut out = Vec::new();
@@ -582,16 +675,21 @@ mod tests {
 
         // -1 as u64
         let neg_one = (-1i32) as u32 as u64;
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(neg_one as u128, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(neg_one as u128, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(2)); // "-1"
         let mut out = Vec::new();
@@ -606,17 +704,22 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
 
-        let result = NativeSnprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(6, 64),      // size = 6
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSnprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(6, 64), // size = 6
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // Returns full would-have-been length
         assert_eq!(result.unwrap().as_u64(), Some(11));
@@ -633,17 +736,22 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
 
-        let result = NativeSnprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0, 64),      // size = 0
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSnprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64), // size = 0
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // Returns full length, writes nothing
         assert_eq!(result.unwrap().as_u64(), Some(5));
@@ -656,16 +764,19 @@ mod tests {
         let sym = RustBV::symbolic(&ctx, "dest", 64);
         drop(ctx);
 
-        let result = NativeSprintf.call(&mut state, &[
-            sym,
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]);
+        let result = NativeSprintf.call(
+            &mut state,
+            &[
+                sym,
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        );
         assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
     }
 
@@ -674,16 +785,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%p\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0xdeadbeef, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0xdeadbeef, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(10)); // "0xdeadbeef"
         let mut out = Vec::new();
@@ -698,16 +814,21 @@ mod tests {
         let mut state = setup_state();
         state.map_memory_data(0x1000, b"%d+%d=%d\x00", Permission::RWX);
 
-        let result = NativeSprintf.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(1, 64),
-            RustBV::concrete(2, 64),
-            RustBV::concrete(3, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = NativeSprintf
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(1, 64),
+                    RustBV::concrete(2, 64),
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(5)); // "1+2=3"
         let mut out = Vec::new();

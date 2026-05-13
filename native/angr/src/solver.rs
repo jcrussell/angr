@@ -14,7 +14,7 @@ use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::claripy_bridge::{claripy_to_rustbv, try_extract_bvv, BridgeError};
+use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext};
 
 /// Try to extract raw Z3_ast pointer from a claripy AST's z3 backend.
@@ -30,7 +30,9 @@ fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<usize>
     let ast_ref = z3_obj.call_method0("as_ast")?;
     let ptr: usize = ast_ref.getattr("value")?.extract()?;
     if ptr == 0 {
-        return Err(PyRuntimeError::new_err("claripy z3 backend returned null Z3_ast pointer"));
+        return Err(PyRuntimeError::new_err(
+            "claripy z3 backend returned null Z3_ast pointer",
+        ));
     }
     Ok(ptr)
 }
@@ -131,7 +133,9 @@ impl RustSolverContext {
         {
             if let Ok(z3_ast_ptr) = extract_z3_ast_ptr(py, ast) {
                 // SAFETY: extract_z3_ast_ptr guarantees non-null on Ok.
-                unsafe { ctx.add_constraint_raw(z3_ast_ptr); }
+                unsafe {
+                    ctx.add_constraint_raw(z3_ast_ptr);
+                }
                 // Also track in RustBV for export (best-effort, non-critical)
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &*ctx) {
                     ctx.assumed_constraints_push(bv, true);
@@ -158,11 +162,7 @@ impl RustSolverContext {
     }
 
     /// Add multiple constraints from claripy ASTs.
-    pub fn add_constraints(
-        &self,
-        py: Python<'_>,
-        asts: &Bound<'_, PyList>,
-    ) -> PyResult<()> {
+    pub fn add_constraints(&self, py: Python<'_>, asts: &Bound<'_, PyList>) -> PyResult<()> {
         for ast in asts.iter() {
             self.add_constraint_ast(py, &ast)?;
         }
@@ -300,8 +300,10 @@ impl RustSolverContext {
             }
         }
 
-        let width: u32 = ast.getattr("length")
-            .and_then(|l| l.extract()).unwrap_or(64);
+        let width: u32 = ast
+            .getattr("length")
+            .and_then(|l| l.extract())
+            .unwrap_or(64);
         let is_wide = width > 128;
 
         let ctx = self.inner.ctx();
@@ -320,7 +322,10 @@ impl RustSolverContext {
                             z3::ast::BV::wrap(&z3_ctx, raw)
                         };
                         RustBV::Symbolic {
-                            id: 0, ast: z3_bv, width, name: Arc::from(""),
+                            id: 0,
+                            ast: z3_bv,
+                            width,
+                            name: Arc::from(""),
                         }
                     } else {
                         return Ok(result_list.into());
@@ -413,12 +418,7 @@ impl RustSolverContext {
     }
 
     /// Check if a specific value is a valid solution for an AST.
-    pub fn solution(
-        &self,
-        py: Python<'_>,
-        ast: &Bound<'_, PyAny>,
-        value: u128,
-    ) -> PyResult<bool> {
+    pub fn solution(&self, py: Python<'_>, ast: &Bound<'_, PyAny>, value: u128) -> PyResult<bool> {
         let ctx = self.inner.ctx();
         let bv = claripy_to_rustbv(py, ast, &*ctx)?;
         Ok(ctx.solution(&bv, value))
@@ -559,9 +559,11 @@ impl RustSolverContext {
     /// constraint info for debugging. The primary sync mechanism is through
     /// the bidirectional constraint flow via add_constraints_to_pending.
     pub fn export_constraint_info(&self) -> Vec<(String, bool)> {
-        self.inner.ctx().get_all_constraints_str()
+        self.inner
+            .ctx()
+            .get_all_constraints_str()
             .into_iter()
-            .map(|s| (s, true))  // All Z3 constraints are trackable
+            .map(|s| (s, true)) // All Z3 constraints are trackable
             .collect()
     }
 
@@ -627,9 +629,10 @@ impl RustSolverContext {
 
     /// Add a constraint from a handle (must be 1-bit).
     pub fn add_constraint_handle(&self, handle_id: u64) -> PyResult<()> {
-        let bv = self.inner.symbol_table.get(handle_id).ok_or_else(|| {
-            PyRuntimeError::new_err(format!("invalid handle id: {}", handle_id))
-        })?;
+        let bv =
+            self.inner.symbol_table.get(handle_id).ok_or_else(|| {
+                PyRuntimeError::new_err(format!("invalid handle id: {}", handle_id))
+            })?;
 
         #[cfg(feature = "vex-engine-z3")]
         {
@@ -669,7 +672,11 @@ impl RustSolverContext {
     /// This is the key optimization for the callback return path: instead of
     /// returning a claripy AST that must be traversed on every use, we convert
     /// once and return a handle for O(1) lookups.
-    pub fn claripy_ast_to_handle(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<RustBVHandle> {
+    pub fn claripy_ast_to_handle(
+        &self,
+        py: Python<'_>,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
         let bv = claripy_to_rustbv(py, ast, &*ctx)?;
         Ok(self.inner.symbol_table.insert(bv))
@@ -682,56 +689,72 @@ impl RustSolverContext {
     /// Add two handles and return a new handle.
     pub fn op_add(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_add(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_add(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Subtract two handles and return a new handle.
     pub fn op_sub(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_sub(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_sub(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Multiply two handles and return a new handle.
     pub fn op_mul(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_mul(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_mul(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Unsigned division of two handles.
     pub fn op_udiv(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_udiv(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_udiv(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Signed division of two handles.
     pub fn op_sdiv(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_sdiv(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_sdiv(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Unsigned remainder of two handles.
     pub fn op_urem(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_urem(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_urem(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Signed remainder of two handles.
     pub fn op_srem(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_srem(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_srem(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Negation of a handle.
     pub fn op_neg(&self, a_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_neg(a_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_neg(a_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
@@ -742,28 +765,36 @@ impl RustSolverContext {
     /// Bitwise AND of two handles.
     pub fn op_and(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_and(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_and(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Bitwise OR of two handles.
     pub fn op_or(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_or(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_or(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Bitwise XOR of two handles.
     pub fn op_xor(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_xor(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_xor(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Bitwise NOT of a handle.
     pub fn op_not(&self, a_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_not(a_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_not(a_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
@@ -774,35 +805,45 @@ impl RustSolverContext {
     /// Left shift.
     pub fn op_shl(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_shl(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_shl(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Logical right shift.
     pub fn op_lshr(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_lshr(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_lshr(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Arithmetic right shift.
     pub fn op_ashr(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_ashr(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_ashr(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Rotate left.
     pub fn op_rotl(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_rotl(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_rotl(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Rotate right.
     pub fn op_rotr(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_rotr(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_rotr(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
@@ -813,70 +854,90 @@ impl RustSolverContext {
     /// Equality comparison (returns 1-bit handle).
     pub fn op_eq(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_eq(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_eq(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Inequality comparison (returns 1-bit handle).
     pub fn op_ne(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_ne(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_ne(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Unsigned less than.
     pub fn op_ult(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_ult(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_ult(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Unsigned less than or equal.
     pub fn op_ule(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_ule(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_ule(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Unsigned greater than.
     pub fn op_ugt(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_ugt(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_ugt(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Unsigned greater than or equal.
     pub fn op_uge(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_uge(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_uge(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Signed less than.
     pub fn op_slt(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_slt(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_slt(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Signed less than or equal.
     pub fn op_sle(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_sle(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_sle(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Signed greater than.
     pub fn op_sgt(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_sgt(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_sgt(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Signed greater than or equal.
     pub fn op_sge(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_sge(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_sge(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
@@ -887,42 +948,54 @@ impl RustSolverContext {
     /// Zero-extend to a wider width.
     pub fn op_zero_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_zero_extend(a_id, to_width, &*ctx)
+        self.inner
+            .symbol_table
+            .op_zero_extend(a_id, to_width, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Sign-extend to a wider width.
     pub fn op_sign_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_sign_extend(a_id, to_width, &*ctx)
+        self.inner
+            .symbol_table
+            .op_sign_extend(a_id, to_width, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Truncate to a narrower width.
     pub fn op_truncate(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_truncate(a_id, to_width, &*ctx)
+        self.inner
+            .symbol_table
+            .op_truncate(a_id, to_width, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Extract bits [high:low] (inclusive).
     pub fn op_extract(&self, a_id: u64, high: u32, low: u32) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_extract(a_id, high, low, &*ctx)
+        self.inner
+            .symbol_table
+            .op_extract(a_id, high, low, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// Concatenate two values (a becomes high bits).
     pub fn op_concat(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_concat(a_id, b_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_concat(a_id, b_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
     /// If-then-else: if cond then then_val else else_val.
     pub fn op_ite(&self, cond_id: u64, then_id: u64, else_id: u64) -> PyResult<RustBVHandle> {
         let ctx = self.inner.ctx();
-        self.inner.symbol_table.op_ite(cond_id, then_id, else_id, &*ctx)
+        self.inner
+            .symbol_table
+            .op_ite(cond_id, then_id, else_id, &*ctx)
             .ok_or_else(|| PyRuntimeError::new_err("invalid handle id"))
     }
 
@@ -967,7 +1040,10 @@ impl RustSolverContext {
     /// Create a RustSolverContext from an existing SymContext with a forked symbol table.
     ///
     /// This preserves both constraints and symbolic variable mappings.
-    pub fn from_sym_context_with_symbols(sym_ctx: SymContext, symbol_table: RustSymbolTable) -> Self {
+    pub fn from_sym_context_with_symbols(
+        sym_ctx: SymContext,
+        symbol_table: RustSymbolTable,
+    ) -> Self {
         RustSolverContext {
             inner: Box::new(SolverInner {
                 sym_ctx: SolverCtxStorage::Owned(sym_ctx),

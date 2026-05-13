@@ -188,8 +188,8 @@ const ALIASES: &[RegEntry] = &[
 ];
 
 const REGISTER_NAMES: &[&str] = &[
-    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
-    "sp", "lr", "pc", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep",
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr",
+    "pc", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep",
 ];
 
 impl Arch for ARM {

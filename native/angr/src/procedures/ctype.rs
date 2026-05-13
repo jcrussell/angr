@@ -8,9 +8,9 @@
 //! mirrors the concrete predicate on bits[7:0] of the argument; the operand
 //! pattern matches the underlying `as u8` truncation in the concrete path.
 
+use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::ProcedureError;
 
 /// Truncate an argument to its low 8 bits, matching the concrete `as u8` path.
 fn arg_byte(arg: &RustBV, ctx: &SymContext) -> RustBV {

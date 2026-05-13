@@ -3,9 +3,9 @@
 //! Handles write(fd, buf, count) for stdout (fd=1) and stderr (fd=2).
 //! Other file descriptors fall back to Python.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_WRITE_SIZE: u64 = 4096;
 
@@ -37,7 +37,8 @@ impl NativeSimProcedure for NativeWrite {
         // Handle stdout (fd=1) and stderr (fd=2) natively
         if fd != 1 && fd != 2 {
             return Err(ProcedureError::Other(format!(
-                "write to fd={} not supported natively", fd
+                "write to fd={} not supported natively",
+                fd
             )));
         }
 
@@ -46,7 +47,8 @@ impl NativeSimProcedure for NativeWrite {
 
         if count > MAX_WRITE_SIZE {
             return Err(ProcedureError::Other(format!(
-                "write count {} exceeds limit", count
+                "write count {} exceeds limit",
+                count
             )));
         }
 
@@ -59,9 +61,10 @@ impl NativeSimProcedure for NativeWrite {
                         bytes.push(val as u8);
                     } else {
                         // Symbolic byte — can't handle natively
-                        return Err(ProcedureError::SymbolicArgument(
-                            format!("symbolic byte at buf+{}", i)
-                        ));
+                        return Err(ProcedureError::SymbolicArgument(format!(
+                            "symbolic byte at buf+{}",
+                            i
+                        )));
                     }
                 }
                 Err(e) => {
@@ -87,10 +90,16 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hello", Permission::RWX);
 
-        let result = NativeWrite.call(
-            &mut state,
-            &[RustBV::concrete(1, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(5, 64)],
-        ).unwrap();
+        let result = NativeWrite
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(1, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(5, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(5));
         assert_eq!(state.stdout_buffer(), b"hello");
@@ -101,10 +110,16 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"err", Permission::RWX);
 
-        let result = NativeWrite.call(
-            &mut state,
-            &[RustBV::concrete(2, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(3, 64)],
-        ).unwrap();
+        let result = NativeWrite
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(2, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(3, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(3));
         assert_eq!(state.fd_buffer(2), b"err");
@@ -115,7 +130,11 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         let result = NativeWrite.call(
             &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(1, 64)],
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+            ],
         );
         assert!(result.is_err());
     }
@@ -125,7 +144,11 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         let result = NativeWrite.call(
             &mut state,
-            &[RustBV::concrete(1, 64), RustBV::concrete(0x1000, 64), RustBV::concrete(5000, 64)],
+            &[
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(5000, 64),
+            ],
         );
         assert!(result.is_err());
     }

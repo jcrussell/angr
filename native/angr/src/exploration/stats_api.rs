@@ -26,8 +26,14 @@ impl RustExplorationManager {
         dict.set_item("find_addrs", self.find_addrs.len())?;
         dict.set_item("avoid_addrs", self.avoid_addrs.len())?;
         dict.set_item("block_cache_size", self.environment.block_cache.len())?;
-        dict.set_item("native_proc_calls", self.profiling.native_proc_stats.native_calls)?;
-        dict.set_item("native_proc_fallbacks", self.profiling.native_proc_stats.python_fallbacks)?;
+        dict.set_item(
+            "native_proc_calls",
+            self.profiling.native_proc_stats.native_calls,
+        )?;
+        dict.set_item(
+            "native_proc_fallbacks",
+            self.profiling.native_proc_stats.python_fallbacks,
+        )?;
         dict.set_item("avoided_count", self.sm.avoided_count)?;
         dict.set_item("pruned_count", self.sm.pruned_count)?;
         dict.set_item("deadended_count", self.sm.deadended_count)?;
@@ -72,8 +78,14 @@ impl RustExplorationManager {
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-        dict.set_item("native_calls", self.profiling.native_proc_stats.native_calls)?;
-        dict.set_item("python_fallbacks", self.profiling.native_proc_stats.python_fallbacks)?;
+        dict.set_item(
+            "native_calls",
+            self.profiling.native_proc_stats.native_calls,
+        )?;
+        dict.set_item(
+            "python_fallbacks",
+            self.profiling.native_proc_stats.python_fallbacks,
+        )?;
 
         let call_counts = PyDict::new(py);
         for (name, count) in &self.profiling.native_proc_stats.call_counts {

@@ -3,40 +3,29 @@
 //! This module provides the core execution engine that interprets VEX IR
 //! statements and expressions, managing registers, memory, and symbolic state.
 
-use crate::arch::{arch_from_vex, RegisterFile};
+use crate::arch::{RegisterFile, arch_from_vex};
 use crate::memory::{MemoryError, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ccall;
-use crate::vex::ir::{IRConst, IRExpr, IRStmt, IRType, JumpKind, TypeEnv, VexArch, IRSB};
+use crate::vex::ir::{IRConst, IRExpr, IRSB, IRStmt, IRType, JumpKind, TypeEnv, VexArch};
 use crate::vex::ops::{OpError, VEXOps};
 
 /// Result of executing a VEX block.
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
     /// Block executed to completion, next address is concrete.
-    BlockEnd {
-        next_addr: u64,
-        jumpkind: JumpKind,
-    },
+    BlockEnd { next_addr: u64, jumpkind: JumpKind },
     /// Encountered a symbolic branch condition.
-    SymbolicBranch {
-        true_target: u64,
-        false_target: u64,
-    },
+    SymbolicBranch { true_target: u64, false_target: u64 },
     /// Syscall encountered.
     Syscall {
         /// Syscall number (may be symbolic).
         num: u64,
     },
     /// Hook address encountered.
-    Hook {
-        addr: u64,
-    },
+    Hook { addr: u64 },
     /// Error during execution.
-    Error {
-        kind: ExecutionError,
-        addr: u64,
-    },
+    Error { kind: ExecutionError, addr: u64 },
 }
 
 /// Errors during VEX execution.
@@ -217,15 +206,13 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Execute a single statement.
-    fn execute_stmt(
-        &mut self,
-        stmt: &IRStmt,
-        irsb: &IRSB,
-    ) -> Result<StmtResult, ExecutionError> {
+    fn execute_stmt(&mut self, stmt: &IRStmt, irsb: &IRSB) -> Result<StmtResult, ExecutionError> {
         match stmt {
             IRStmt::NoOp => Ok(StmtResult::Continue),
 
-            IRStmt::IMark { addr, len: _len, .. } => {
+            IRStmt::IMark {
+                addr, len: _len, ..
+            } => {
                 self.current_insn_addr = *addr;
                 // Check for hooks at this address
                 if self.is_hooked(*addr) {
@@ -344,34 +331,22 @@ impl<'a> VEXInterpreter<'a> {
                 Err(ExecutionError::Unsupported("PutI".to_string()))
             }
 
-            IRStmt::StoreG { .. } => {
-                Err(ExecutionError::Unsupported("guarded store".to_string()))
-            }
+            IRStmt::StoreG { .. } => Err(ExecutionError::Unsupported("guarded store".to_string())),
 
-            IRStmt::LoadG { .. } => {
-                Err(ExecutionError::Unsupported("guarded load".to_string()))
-            }
+            IRStmt::LoadG { .. } => Err(ExecutionError::Unsupported("guarded load".to_string())),
 
-            IRStmt::CAS { .. } => {
-                Err(ExecutionError::Unsupported("compare-and-swap".to_string()))
-            }
+            IRStmt::CAS { .. } => Err(ExecutionError::Unsupported("compare-and-swap".to_string())),
 
-            IRStmt::LLSC { .. } => {
-                Err(ExecutionError::Unsupported("load-linked/store-conditional".to_string()))
-            }
+            IRStmt::LLSC { .. } => Err(ExecutionError::Unsupported(
+                "load-linked/store-conditional".to_string(),
+            )),
 
-            IRStmt::Dirty(_) => {
-                Err(ExecutionError::Unsupported("dirty call".to_string()))
-            }
+            IRStmt::Dirty(_) => Err(ExecutionError::Unsupported("dirty call".to_string())),
         }
     }
 
     /// Evaluate an IR expression.
-    fn eval_expr(
-        &self,
-        expr: &IRExpr,
-        tyenv: &TypeEnv,
-    ) -> Result<RustBV, ExecutionError> {
+    fn eval_expr(&self, expr: &IRExpr, tyenv: &TypeEnv) -> Result<RustBV, ExecutionError> {
         match expr {
             IRExpr::Const(c) => Ok(self.eval_const(c)),
 
@@ -391,7 +366,10 @@ impl<'a> VEXInterpreter<'a> {
             IRExpr::Load { addr, ty, endness } => {
                 let addr_val = self.eval_expr(addr, tyenv)?;
                 let size = ty.bytes();
-                let val = self.memory.load(addr_val, size, self.ctx).map_err(|e| Into::<ExecutionError>::into(e))?;
+                let val = self
+                    .memory
+                    .load(addr_val, size, self.ctx)
+                    .map_err(|e| Into::<ExecutionError>::into(e))?;
                 // If IR endness differs from memory endness, byte-reverse the loaded value
                 if *endness != self.memory.endness() {
                     Ok(val.reverse(self.ctx))
@@ -411,18 +389,27 @@ impl<'a> VEXInterpreter<'a> {
                 VEXOps::binop(*op, left_val, right_val, self.ctx).map_err(|e| e.into())
             }
 
-            IRExpr::ITE { cond, iftrue, iffalse } => {
+            IRExpr::ITE {
+                cond,
+                iftrue,
+                iffalse,
+            } => {
                 let cond_val = self.eval_expr(cond, tyenv)?;
                 let true_val = self.eval_expr(iftrue, tyenv)?;
                 let false_val = self.eval_expr(iffalse, tyenv)?;
                 Ok(cond_val.ite(&true_val, &false_val, self.ctx))
             }
 
-            IRExpr::GetI { .. } => {
-                Err(ExecutionError::Unsupported("GetI (rotating registers)".to_string()))
-            }
+            IRExpr::GetI { .. } => Err(ExecutionError::Unsupported(
+                "GetI (rotating registers)".to_string(),
+            )),
 
-            IRExpr::Triop { op, arg1, arg2, arg3 } => {
+            IRExpr::Triop {
+                op,
+                arg1,
+                arg2,
+                arg3,
+            } => {
                 // VEX Triops are float arithmetic with a rounding mode (rm, a, b).
                 // Drop the rm (arg1) and dispatch via VEXOps::binop. Concrete
                 // float math is correct under default IEEE round-to-nearest;
@@ -430,20 +417,24 @@ impl<'a> VEXInterpreter<'a> {
                 let _rm = self.eval_expr(arg1, tyenv)?;
                 let v2 = self.eval_expr(arg2, tyenv)?;
                 let v3 = self.eval_expr(arg3, tyenv)?;
-                VEXOps::binop(*op, v2, v3, self.ctx).map_err(|_| {
-                    ExecutionError::Unsupported(format!("triop {:?}", op))
-                })
+                VEXOps::binop(*op, v2, v3, self.ctx)
+                    .map_err(|_| ExecutionError::Unsupported(format!("triop {:?}", op)))
             }
 
-            IRExpr::Qop { op, arg1, arg2, arg3, arg4 } => {
+            IRExpr::Qop {
+                op,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+            } => {
                 // VEX Qops are typically fused multiply-add/sub: (rm, a, b, c).
                 let _rm = self.eval_expr(arg1, tyenv)?;
                 let v2 = self.eval_expr(arg2, tyenv)?;
                 let v3 = self.eval_expr(arg3, tyenv)?;
                 let v4 = self.eval_expr(arg4, tyenv)?;
-                VEXOps::qop(*op, v2, v3, v4, self.ctx).map_err(|_| {
-                    ExecutionError::Unsupported(format!("qop {:?}", op))
-                })
+                VEXOps::qop(*op, v2, v3, v4, self.ctx)
+                    .map_err(|_| ExecutionError::Unsupported(format!("qop {:?}", op)))
             }
 
             IRExpr::CCall { cee, retty, args } => {
@@ -491,9 +482,9 @@ impl<'a> VEXInterpreter<'a> {
     /// Evaluate the next address from an IRSB.
     fn eval_next_addr(&self, irsb: &IRSB) -> Result<u64, ExecutionError> {
         let next_val = self.eval_expr(&irsb.next, &irsb.tyenv)?;
-        next_val.as_u64().ok_or_else(|| {
-            ExecutionError::Unsupported("symbolic next address".to_string())
-        })
+        next_val
+            .as_u64()
+            .ok_or_else(|| ExecutionError::Unsupported("symbolic next address".to_string()))
     }
 
     /// Handle the default exit (end of block).
@@ -542,7 +533,7 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_addr: self.current_insn_addr,
             hook_addrs: self.hook_addrs.clone(),
             store_log: Vec::new(), // Fresh store log for fork
-            dirty_registers: 0, // Fresh dirty tracking for fork
+            dirty_registers: 0,    // Fresh dirty tracking for fork
         }
     }
 }
@@ -550,7 +541,7 @@ impl<'a> VEXInterpreter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vex::{Endness, IROp, IRExpr, IRSBBuilder, IRType};
+    use crate::vex::{Endness, IRExpr, IROp, IRSBBuilder, IRType};
 
     #[test]
     fn test_simple_add() {
@@ -571,7 +562,11 @@ mod tests {
         let t1 = builder.new_tmp(IRType::I64);
         builder.wrtmp(
             t1,
-            IRExpr::binop(IROp::Add(IRType::I64), IRExpr::tmp(t0), IRExpr::const_u64(5)),
+            IRExpr::binop(
+                IROp::Add(IRType::I64),
+                IRExpr::tmp(t0),
+                IRExpr::const_u64(5),
+            ),
         );
 
         // PUT(rax) = t1 ; offset 16
@@ -728,7 +723,11 @@ mod tests {
         // Store 0x12345678 at 0x400100
         let t0 = builder.new_tmp(IRType::I64);
         builder.wrtmp(t0, IRExpr::const_u64(0x400100));
-        builder.store(IRExpr::tmp(t0), IRExpr::const_u32(0x12345678), Endness::Little);
+        builder.store(
+            IRExpr::tmp(t0),
+            IRExpr::const_u32(0x12345678),
+            Endness::Little,
+        );
 
         // Load from 0x400100 into t1
         let t1 = builder.new_tmp(IRType::I32);
@@ -777,11 +776,15 @@ mod tests {
 
         // Set XMM0 = 1.0f (as 128-bit value with 1.0f in low 32 bits)
         let f1_bits = 1.0f32.to_bits() as u128;
-        interp.registers.put(xmm0_offset, RustBV::concrete(f1_bits, 128));
+        interp
+            .registers
+            .put(xmm0_offset, RustBV::concrete(f1_bits, 128));
 
         // Set XMM1 = 2.0f
         let f2_bits = 2.0f32.to_bits() as u128;
-        interp.registers.put(xmm1_offset, RustBV::concrete(f2_bits, 128));
+        interp
+            .registers
+            .put(xmm1_offset, RustBV::concrete(f2_bits, 128));
 
         // Build IRSB for ADDSS:
         // t1 = GET:V128(176)  ; xmm1
@@ -789,7 +792,7 @@ mod tests {
         // t0 = Add32F0x4(t2, t1)
         // PUT(160) = t0
         let mut builder = IRSBBuilder::new(0x1000, VexArch::X86);
-        builder.offs_ip(68);  // EIP offset for x86
+        builder.offs_ip(68); // EIP offset for x86
         builder.imark(0x1000, 4);
 
         // t1 = GET:V128(xmm1)
@@ -841,6 +844,9 @@ mod tests {
         println!("Expected low 32 bits: 0x{:08x}", expected);
         println!("Actual low 32 bits: 0x{:08x}", actual);
 
-        assert_eq!(actual, expected, "ADDSS: expected 3.0f, got different value");
+        assert_eq!(
+            actual, expected,
+            "ADDSS: expected 3.0f, got different value"
+        );
     }
 }

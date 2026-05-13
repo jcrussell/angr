@@ -20,37 +20,37 @@
 #[macro_use]
 mod macros;
 
-pub mod strlen;
+pub mod ctype;
+pub mod exit;
+pub mod fgets;
+pub mod fileops;
+pub mod getenv;
+pub mod malloc;
+pub mod memcmp;
 pub mod memcpy;
 pub mod memset;
+pub mod printf;
+pub mod puts;
+pub mod python_proc;
+pub mod rand;
+pub mod read;
+pub mod scanf;
+pub mod sprintf;
+pub mod strcat;
+pub mod strchr;
 pub mod strcmp;
 pub mod strcpy;
-pub mod puts;
-pub mod printf;
-pub mod exit;
-pub mod rand;
-pub mod malloc;
-pub mod read;
-pub mod write;
-pub mod ctype;
-pub mod strchr;
-pub mod strtol;
-pub mod strcat;
-pub mod fgets;
-pub mod sprintf;
-pub mod fileops;
-pub mod memcmp;
+pub mod strlen;
 pub mod strstr;
-pub mod scanf;
-pub mod getenv;
-pub mod python_proc;
+pub mod strtol;
+pub mod write;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::memory::MemoryError;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use crate::memory::MemoryError;
 
 /// Error during native procedure execution.
 ///
@@ -82,7 +82,8 @@ impl From<MemoryError> for ProcedureError {
 
 /// Extract a concrete u64 value from a procedure argument, or return SymbolicArgument error.
 pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, ProcedureError> {
-    arg.as_u64().ok_or_else(|| ProcedureError::SymbolicArgument(name.to_string()))
+    arg.as_u64()
+        .ok_or_else(|| ProcedureError::SymbolicArgument(name.to_string()))
 }
 
 /// Trait for native SimProcedure implementations.

@@ -23,7 +23,11 @@ pub(super) fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec
                     targets.push(addr);
                 }
             }
-            RustBV::Expression { op: BVOp::Ite, operands, .. } if operands.len() == 3 => {
+            RustBV::Expression {
+                op: BVOp::Ite,
+                operands,
+                ..
+            } if operands.len() == 3 => {
                 // ITE: operands[0] = condition, operands[1] = true_val, operands[2] = false_val
                 stack.push(&operands[1]); // true branch
                 stack.push(&operands[2]); // false branch

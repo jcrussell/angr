@@ -40,8 +40,8 @@ pub enum BVOp {
     RotR,
 
     // Conversion operations
-    ZeroExt(u32),   // Number of bits to extend
-    SignExt(u32),   // Number of bits to extend
+    ZeroExt(u32),      // Number of bits to extend
+    SignExt(u32),      // Number of bits to extend
     Extract(u32, u32), // (high, low) bit indices
     Concat,
 
@@ -119,20 +119,33 @@ pub enum FloatOpKind {
     RoundToInt,
     /// Convert int (signed/unsigned 2's complement) BV to FP at `prec`.
     /// operand[0] = src BV at src_bits. RNE rounding implicit.
-    ConvertItoF { src_bits: u8, signed: bool },
+    ConvertItoF {
+        src_bits: u8,
+        signed: bool,
+    },
     /// Convert FP at `prec` to int BV (signed/unsigned 2's complement).
     /// operand[0] = src FP BV at prec.bits(). RNE rounding implicit.
-    ConvertFtoI { dst_bits: u8, signed: bool },
+    ConvertFtoI {
+        dst_bits: u8,
+        signed: bool,
+    },
     /// Convert FP at `prec` to int BV (signed/unsigned 2's complement)
     /// with explicit rounding mode.
     /// operand[0] = rm BV (32-bit), operand[1] = src FP BV at prec.bits().
-    ConvertFtoIRm { dst_bits: u8, signed: bool },
+    ConvertFtoIRm {
+        dst_bits: u8,
+        signed: bool,
+    },
     /// Convert FP at `src_prec` to FP at `prec`. RNE rounding implicit.
     /// operand[0] = src FP BV at src_prec.bits().
-    ConvertFtoF { src_prec: FloatPrec },
+    ConvertFtoF {
+        src_prec: FloatPrec,
+    },
     /// Convert FP at `src_prec` to FP at `prec` with explicit rounding mode.
     /// operand[0] = rm BV (32-bit), operand[1] = src FP BV at src_prec.bits().
-    ConvertFtoFRm { src_prec: FloatPrec },
+    ConvertFtoFRm {
+        src_prec: FloatPrec,
+    },
     /// Binary FP arithmetic with explicit rounding mode.
     /// operand[0] = rm BV (32-bit, VEX rm low-2-bits 0..3),
     /// operand[1] = a BV at prec.bits(), operand[2] = b BV at prec.bits().
@@ -466,13 +479,20 @@ impl RustBV {
 
     /// Create a bitvector with all bits set to 1.
     pub fn ones(width: u32) -> Self {
-        RustBV::Concrete { value: Self::all_ones_mask(width), width }
+        RustBV::Concrete {
+            value: Self::all_ones_mask(width),
+            width,
+        }
     }
 
     /// Return the all-ones mask for a given bit width.
     #[inline]
     fn all_ones_mask(width: u32) -> u128 {
-        if width >= 128 { u128::MAX } else { (1u128 << width) - 1 }
+        if width >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        }
     }
 
     /// Create a symbolic bitvector variable.
@@ -495,11 +515,7 @@ impl RustBV {
         }
         #[cfg(not(feature = "vex-engine-z3"))]
         {
-            RustBV::Symbolic {
-                id,
-                width,
-                name,
-            }
+            RustBV::Symbolic { id, width, name }
         }
     }
 
@@ -522,11 +538,7 @@ impl RustBV {
         }
         #[cfg(not(feature = "vex-engine-z3"))]
         {
-            RustBV::Symbolic {
-                id,
-                width,
-                name,
-            }
+            RustBV::Symbolic { id, width, name }
         }
     }
 
@@ -554,7 +566,10 @@ impl RustBV {
     /// Check if this value is symbolic.
     #[inline]
     pub fn is_symbolic(&self) -> bool {
-        matches!(self, RustBV::Symbolic { .. } | RustBV::Constrained { .. } | RustBV::Expression { .. })
+        matches!(
+            self,
+            RustBV::Symbolic { .. } | RustBV::Constrained { .. } | RustBV::Expression { .. }
+        )
     }
 
     /// Check if this value is an expression (compound symbolic).
@@ -845,7 +860,12 @@ impl RustBV {
             Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
             None => {
                 // neg(neg(x)) → x
-                if let RustBV::Expression { op: BVOp::Neg, operands, .. } = &self {
+                if let RustBV::Expression {
+                    op: BVOp::Neg,
+                    operands,
+                    ..
+                } = &self
+                {
                     return operands[0].clone();
                 }
                 let width = self.width();
@@ -964,7 +984,12 @@ impl RustBV {
             Some(v) => Self::concrete(!v, self.width()),
             None => {
                 // not(not(x)) → x
-                if let RustBV::Expression { op: BVOp::Not, operands, .. } = &self {
+                if let RustBV::Expression {
+                    op: BVOp::Not,
+                    operands,
+                    ..
+                } = &self
+                {
                     return operands[0].clone();
                 }
                 let width = self.width();
@@ -1004,7 +1029,12 @@ impl RustBV {
             }
             None => {
                 // reverse(reverse(x)) → x
-                if let RustBV::Expression { op: BVOp::Reverse, operands, .. } = &self {
+                if let RustBV::Expression {
+                    op: BVOp::Reverse,
+                    operands,
+                    ..
+                } = &self
+                {
                     return operands[0].clone();
                 }
                 RustBV::Expression {
@@ -1535,8 +1565,7 @@ impl RustBV {
 
                 // Rule 3: Extract(Reverse(x)) with byte-aligned bounds
                 // → Extract(width-1-lo, width-1-hi, x) — eliminates the Reverse
-                BVOp::Reverse if operands[0].width() % 8 == 0
-                    && high % 8 == 7 && low % 8 == 0 => {
+                BVOp::Reverse if operands[0].width() % 8 == 0 && high % 8 == 7 && low % 8 == 0 => {
                     let w = operands[0].width();
                     return operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
                 }
@@ -1646,7 +1675,8 @@ impl RustBV {
     /// If-then-else: returns `then_val` if `self` is non-zero, else `else_val`.
     #[inline]
     pub fn ite(&self, then_val: &Self, else_val: &Self, ctx: &SymContext) -> Self {
-        self.clone().ite_into(then_val.clone(), else_val.clone(), ctx)
+        self.clone()
+            .ite_into(then_val.clone(), else_val.clone(), ctx)
     }
 
     /// If-then-else, consuming all three arguments.
@@ -1777,7 +1807,10 @@ impl RustBV {
     /// a tree, rebuilding shared subtrees exponentially. This version caches by
     /// Arc pointer identity, ensuring each unique sub-expression is built once.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn to_z3_ast_cached(&self, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) -> z3::ast::BV {
+    pub fn to_z3_ast_cached(
+        &self,
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
         // For Expression nodes, use pointer identity as cache key
         // (Arc-shared sub-expressions will have the same pointer)
         let cache_key = self as *const RustBV as usize;
@@ -1804,9 +1837,12 @@ impl RustBV {
                     hi.concat(&lo)
                 }
             }
-            RustBV::Expression { op, operands, width, .. } => {
-                Self::build_z3_ast_cached(op, operands, *width, cache)
-            }
+            RustBV::Expression {
+                op,
+                operands,
+                width,
+                ..
+            } => Self::build_z3_ast_cached(op, operands, *width, cache),
         };
         cache.insert(cache_key, result.clone());
         result
@@ -1825,30 +1861,48 @@ impl RustBV {
     }
 
     #[cfg(feature = "vex-engine-z3")]
-    pub fn to_z3_bool_cached(&self, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) -> z3::ast::Bool {
+    pub fn to_z3_bool_cached(
+        &self,
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::Bool {
         match self {
-            RustBV::Concrete { value, .. } => {
-                z3::ast::Bool::from_bool(*value != 0)
-            }
-            RustBV::Constrained { value, .. } => {
-                z3::ast::Bool::from_bool(*value != 0)
-            }
+            RustBV::Concrete { value, .. } => z3::ast::Bool::from_bool(*value != 0),
+            RustBV::Constrained { value, .. } => z3::ast::Bool::from_bool(*value != 0),
             RustBV::Expression { op, operands, .. } => {
                 match op {
-                    BVOp::Eq => operands[0].to_z3_ast_cached(cache).eq(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Ne => operands[0].to_z3_ast_cached(cache).eq(&operands[1].to_z3_ast_cached(cache)).not(),
-                    BVOp::Ult => operands[0].to_z3_ast_cached(cache).bvult(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Ule => operands[0].to_z3_ast_cached(cache).bvule(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Ugt => operands[0].to_z3_ast_cached(cache).bvugt(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Uge => operands[0].to_z3_ast_cached(cache).bvuge(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Slt => operands[0].to_z3_ast_cached(cache).bvslt(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Sle => operands[0].to_z3_ast_cached(cache).bvsle(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Sgt => operands[0].to_z3_ast_cached(cache).bvsgt(&operands[1].to_z3_ast_cached(cache)),
-                    BVOp::Sge => operands[0].to_z3_ast_cached(cache).bvsge(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Eq => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .eq(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Ne => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .eq(&operands[1].to_z3_ast_cached(cache))
+                        .not(),
+                    BVOp::Ult => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvult(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Ule => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvule(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Ugt => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvugt(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Uge => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvuge(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Slt => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvslt(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Sle => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvsle(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Sgt => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvsgt(&operands[1].to_z3_ast_cached(cache)),
+                    BVOp::Sge => operands[0]
+                        .to_z3_ast_cached(cache)
+                        .bvsge(&operands[1].to_z3_ast_cached(cache)),
                     // Not() on a 1-bit comparison: negate the inner bool
-                    BVOp::Not if operands.len() == 1 => {
-                        operands[0].to_z3_bool_cached(cache).not()
-                    }
+                    BVOp::Not if operands.len() == 1 => operands[0].to_z3_bool_cached(cache).not(),
                     // Fallback: convert BV to Bool via _eq(1)
                     _ => {
                         let ast = self.to_z3_ast_cached(cache);
@@ -1962,7 +2016,12 @@ impl RustBV {
                 // (Concat(Concat(Concat(b0,b1),b2),b3)) produce deeper Z3 ASTs.
                 // Collect all leaves, then build right-to-left for better sharing.
                 fn collect_concat_leaves(bv: &RustBV, leaves: &mut Vec<z3::ast::BV>) {
-                    if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                    if let RustBV::Expression {
+                        op: BVOp::Concat,
+                        operands,
+                        ..
+                    } = bv
+                    {
                         collect_concat_leaves(&operands[0], leaves);
                         collect_concat_leaves(&operands[1], leaves);
                     } else {
@@ -1973,7 +2032,9 @@ impl RustBV {
                 collect_concat_leaves(&operands[0], &mut leaves);
                 collect_concat_leaves(&operands[1], &mut leaves);
                 // Build right-associative: leaves[0].concat(leaves[1].concat(...))
-                let mut result = leaves.pop().expect("Concat operands always produce at least one leaf");
+                let mut result = leaves
+                    .pop()
+                    .expect("Concat operands always produce at least one leaf");
                 while let Some(part) = leaves.pop() {
                     result = part.concat(&result);
                 }
@@ -1982,7 +2043,8 @@ impl RustBV {
 
             // Conditional
             BVOp::Ite => {
-                let cond = operands[0].to_z3_ast()
+                let cond = operands[0]
+                    .to_z3_ast()
                     .eq(&z3::ast::BV::from_u64(0, operands[0].width()))
                     .not();
                 cond.ite(&operands[1].to_z3_ast(), &operands[2].to_z3_ast())
@@ -1992,9 +2054,19 @@ impl RustBV {
             BVOp::Reverse => {
                 // Rule 5: Reverse(Concat(a,b)) → Concat(Reverse(b), Reverse(a))
                 // Distribute reverse across concat parts before building Z3 AST
-                if let RustBV::Expression { op: BVOp::Concat, operands: _inner_ops, .. } = &operands[0] {
+                if let RustBV::Expression {
+                    op: BVOp::Concat,
+                    operands: _inner_ops,
+                    ..
+                } = &operands[0]
+                {
                     fn collect_concat_parts(bv: &RustBV, parts: &mut Vec<RustBV>) {
-                        if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                        if let RustBV::Expression {
+                            op: BVOp::Concat,
+                            operands,
+                            ..
+                        } = bv
+                        {
                             collect_concat_parts(&operands[0], parts);
                             collect_concat_parts(&operands[1], parts);
                         } else {
@@ -2005,7 +2077,8 @@ impl RustBV {
                     collect_concat_parts(&operands[0], &mut parts);
                     // Reverse the order, then reverse each part individually
                     parts.reverse();
-                    let reversed_asts: Vec<z3::ast::BV> = parts.iter()
+                    let reversed_asts: Vec<z3::ast::BV> = parts
+                        .iter()
                         .map(|p| {
                             // Build reverse of each part
                             let w = p.width();
@@ -2027,9 +2100,8 @@ impl RustBV {
                 let w = operands[0].width();
                 if w % 8 == 0 && w >= 16 {
                     let bytes = w / 8;
-                    let mut parts: Vec<z3::ast::BV> = (0..bytes)
-                        .map(|i| ast.extract(i * 8 + 7, i * 8))
-                        .collect();
+                    let mut parts: Vec<z3::ast::BV> =
+                        (0..bytes).map(|i| ast.extract(i * 8 + 7, i * 8)).collect();
                     parts.reverse();
                     let mut result = parts[0].clone();
                     for part in &parts[1..] {
@@ -2057,70 +2129,126 @@ impl RustBV {
     /// Build Z3 AST with caching to avoid exponential blowup on DAG expressions.
     /// See `to_z3_ast_cached()` for rationale.
     #[cfg(feature = "vex-engine-z3")]
-    fn build_z3_ast_cached(op: &BVOp, operands: &[RustBV], _width: u32, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) -> z3::ast::BV {
+    fn build_z3_ast_cached(
+        op: &BVOp,
+        operands: &[RustBV],
+        _width: u32,
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
         match op {
             // Arithmetic
-            BVOp::Add => operands[0].to_z3_ast_cached(cache).bvadd(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::Sub => operands[0].to_z3_ast_cached(cache).bvsub(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::Mul => operands[0].to_z3_ast_cached(cache).bvmul(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::UDiv => operands[0].to_z3_ast_cached(cache).bvudiv(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::SDiv => operands[0].to_z3_ast_cached(cache).bvsdiv(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::URem => operands[0].to_z3_ast_cached(cache).bvurem(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::SRem => operands[0].to_z3_ast_cached(cache).bvsrem(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Add => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvadd(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Sub => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvsub(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Mul => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvmul(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::UDiv => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvudiv(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::SDiv => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvsdiv(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::URem => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvurem(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::SRem => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvsrem(&operands[1].to_z3_ast_cached(cache)),
             BVOp::Neg => operands[0].to_z3_ast_cached(cache).bvneg(),
 
             // Bitwise
-            BVOp::And => operands[0].to_z3_ast_cached(cache).bvand(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::Or => operands[0].to_z3_ast_cached(cache).bvor(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::Xor => operands[0].to_z3_ast_cached(cache).bvxor(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::And => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvand(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Or => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvor(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Xor => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvxor(&operands[1].to_z3_ast_cached(cache)),
             BVOp::Not => operands[0].to_z3_ast_cached(cache).bvnot(),
 
             // Shifts
-            BVOp::Shl => operands[0].to_z3_ast_cached(cache).bvshl(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::Lshr => operands[0].to_z3_ast_cached(cache).bvlshr(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::Ashr => operands[0].to_z3_ast_cached(cache).bvashr(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::RotL => operands[0].to_z3_ast_cached(cache).bvrotl(&operands[1].to_z3_ast_cached(cache)),
-            BVOp::RotR => operands[0].to_z3_ast_cached(cache).bvrotr(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Shl => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvshl(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Lshr => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvlshr(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::Ashr => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvashr(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::RotL => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvrotl(&operands[1].to_z3_ast_cached(cache)),
+            BVOp::RotR => operands[0]
+                .to_z3_ast_cached(cache)
+                .bvrotr(&operands[1].to_z3_ast_cached(cache)),
 
             // Comparisons (return 1-bit BV: If(cmp, BV(1,1), BV(0,1)))
             BVOp::Eq => {
-                let cmp = operands[0].to_z3_ast_cached(cache).eq(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .eq(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ne => {
-                let cmp = operands[0].to_z3_ast_cached(cache).eq(&operands[1].to_z3_ast_cached(cache)).not();
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .eq(&operands[1].to_z3_ast_cached(cache))
+                    .not();
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ult => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvult(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvult(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ule => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvule(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvule(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Ugt => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvugt(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvugt(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Uge => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvuge(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvuge(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Slt => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvslt(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvslt(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Sle => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvsle(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvsle(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Sgt => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvsgt(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvsgt(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
             BVOp::Sge => {
-                let cmp = operands[0].to_z3_ast_cached(cache).bvsge(&operands[1].to_z3_ast_cached(cache));
+                let cmp = operands[0]
+                    .to_z3_ast_cached(cache)
+                    .bvsge(&operands[1].to_z3_ast_cached(cache));
                 cmp.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1))
             }
 
@@ -2138,8 +2266,17 @@ impl RustBV {
             }
             BVOp::Extract(high, low) => operands[0].to_z3_ast_cached(cache).extract(*high, *low),
             BVOp::Concat => {
-                fn collect_concat_leaves_cached(bv: &RustBV, leaves: &mut Vec<z3::ast::BV>, cache: &mut std::collections::HashMap<usize, z3::ast::BV>) {
-                    if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                fn collect_concat_leaves_cached(
+                    bv: &RustBV,
+                    leaves: &mut Vec<z3::ast::BV>,
+                    cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+                ) {
+                    if let RustBV::Expression {
+                        op: BVOp::Concat,
+                        operands,
+                        ..
+                    } = bv
+                    {
                         collect_concat_leaves_cached(&operands[0], leaves, cache);
                         collect_concat_leaves_cached(&operands[1], leaves, cache);
                     } else {
@@ -2149,7 +2286,9 @@ impl RustBV {
                 let mut leaves = Vec::new();
                 collect_concat_leaves_cached(&operands[0], &mut leaves, cache);
                 collect_concat_leaves_cached(&operands[1], &mut leaves, cache);
-                let mut result = leaves.pop().expect("Concat operands always produce at least one leaf");
+                let mut result = leaves
+                    .pop()
+                    .expect("Concat operands always produce at least one leaf");
                 while let Some(part) = leaves.pop() {
                     result = part.concat(&result);
                 }
@@ -2158,17 +2297,29 @@ impl RustBV {
 
             // Conditional
             BVOp::Ite => {
-                let cond = operands[0].to_z3_ast_cached(cache)
+                let cond = operands[0]
+                    .to_z3_ast_cached(cache)
                     .eq(&z3::ast::BV::from_u64(0, operands[0].width()))
                     .not();
-                cond.ite(&operands[1].to_z3_ast_cached(cache), &operands[2].to_z3_ast_cached(cache))
+                cond.ite(
+                    &operands[1].to_z3_ast_cached(cache),
+                    &operands[2].to_z3_ast_cached(cache),
+                )
             }
 
             // Byte reverse
             BVOp::Reverse => {
-                if let RustBV::Expression { op: BVOp::Concat, .. } = &operands[0] {
+                if let RustBV::Expression {
+                    op: BVOp::Concat, ..
+                } = &operands[0]
+                {
                     fn collect_concat_parts_cached(bv: &RustBV, parts: &mut Vec<RustBV>) {
-                        if let RustBV::Expression { op: BVOp::Concat, operands, .. } = bv {
+                        if let RustBV::Expression {
+                            op: BVOp::Concat,
+                            operands,
+                            ..
+                        } = bv
+                        {
                             collect_concat_parts_cached(&operands[0], parts);
                             collect_concat_parts_cached(&operands[1], parts);
                         } else {
@@ -2178,7 +2329,8 @@ impl RustBV {
                     let mut parts = Vec::new();
                     collect_concat_parts_cached(&operands[0], &mut parts);
                     parts.reverse();
-                    let reversed_asts: Vec<z3::ast::BV> = parts.iter()
+                    let reversed_asts: Vec<z3::ast::BV> = parts
+                        .iter()
                         .map(|p| {
                             let w = p.width();
                             if w == 8 {
@@ -2199,9 +2351,8 @@ impl RustBV {
                 let w = operands[0].width();
                 if w % 8 == 0 && w >= 16 {
                     let bytes = w / 8;
-                    let mut parts: Vec<z3::ast::BV> = (0..bytes)
-                        .map(|i| ast.extract(i * 8 + 7, i * 8))
-                        .collect();
+                    let mut parts: Vec<z3::ast::BV> =
+                        (0..bytes).map(|i| ast.extract(i * 8 + 7, i * 8)).collect();
                     parts.reverse();
                     let mut result = parts[0].clone();
                     for part in &parts[1..] {
@@ -2243,7 +2394,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, Bool, Float, RoundingMode, BV};
+        use z3::ast::{Ast, BV, Bool, Float, RoundingMode};
         use z3_sys::{
             Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq, Z3_mk_fpa_fma,
             Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul, Z3_mk_fpa_neg, Z3_mk_fpa_sqrt,
@@ -2259,9 +2410,7 @@ impl RustBV {
         // per the split-helper invariant for FloatOpKind metadata operands.
         match kind {
             FloatOpKind::ConvertItoF { src_bits, signed } => {
-                return Self::build_fp_i_to_f_cached(
-                    prec, src_bits, signed, operands, cache,
-                );
+                return Self::build_fp_i_to_f_cached(prec, src_bits, signed, operands, cache);
             }
             FloatOpKind::ConvertFtoI { dst_bits, signed } => {
                 return Self::build_fp_f_to_i_cached(
@@ -2270,7 +2419,12 @@ impl RustBV {
             }
             FloatOpKind::ConvertFtoIRm { dst_bits, signed } => {
                 return Self::build_fp_f_to_i_cached(
-                    prec, dst_bits, signed, Some(()), operands, cache,
+                    prec,
+                    dst_bits,
+                    signed,
+                    Some(()),
+                    operands,
+                    cache,
                 );
             }
             FloatOpKind::ConvertFtoF { src_prec } => {
@@ -2340,8 +2494,8 @@ impl RustBV {
                 FloatOpKind::Fms => {
                     // a*b - c == a*b + (-c). Wrap neg_c in a Float so the
                     // intermediate AST is held while we build the FMA.
-                    let neg_c_raw = Z3_mk_fpa_neg(raw_ctx, raw_c())
-                        .expect("Z3_mk_fpa_neg returned NULL");
+                    let neg_c_raw =
+                        Z3_mk_fpa_neg(raw_ctx, raw_c()).expect("Z3_mk_fpa_neg returned NULL");
                     let neg_c = Float::wrap(&z3_ctx, neg_c_raw);
                     Z3_mk_fpa_fma(raw_ctx, rm_raw, raw_a, raw_b(), neg_c.get_z3_ast())
                 }
@@ -2391,7 +2545,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3::ast::{Ast, BV, Float, RoundingMode};
         use z3_sys::{Z3_mk_fpa_round_to_integral, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv};
 
         debug_assert_eq!(operands.len(), 2);
@@ -2470,7 +2624,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3::ast::{Ast, BV, Float, RoundingMode};
         use z3_sys::{
             Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_mul, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
             Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
@@ -2490,18 +2644,21 @@ impl RustBV {
 
         // Convert FP operand BVs to Z3 Float wrappers; keep them alive across
         // the helper closure since intermediate ASTs may be GC'd otherwise.
-        let to_fp = |bv: &RustBV,
-                     cache: &mut std::collections::HashMap<usize, z3::ast::BV>|
-         -> Float {
-            let z3 = bv.to_z3_ast_cached(cache);
-            let raw = unsafe {
-                Z3_mk_fpa_to_fp_bv(raw_ctx, z3.get_z3_ast(), raw_sort)
-                    .expect("Z3_mk_fpa_to_fp_bv returned NULL")
+        let to_fp =
+            |bv: &RustBV, cache: &mut std::collections::HashMap<usize, z3::ast::BV>| -> Float {
+                let z3 = bv.to_z3_ast_cached(cache);
+                let raw = unsafe {
+                    Z3_mk_fpa_to_fp_bv(raw_ctx, z3.get_z3_ast(), raw_sort)
+                        .expect("Z3_mk_fpa_to_fp_bv returned NULL")
+                };
+                unsafe { Float::wrap(&z3_ctx, raw) }
             };
-            unsafe { Float::wrap(&z3_ctx, raw) }
-        };
         let a_fp = to_fp(&operands[1], cache);
-        let b_fp = if is_unary { None } else { Some(to_fp(&operands[2], cache)) };
+        let b_fp = if is_unary {
+            None
+        } else {
+            Some(to_fp(&operands[2], cache))
+        };
 
         let apply = |vex_rm: u8| -> Float {
             let rm = match vex_rm & 0x3 {
@@ -2515,30 +2672,18 @@ impl RustBV {
             let raw_a = a_fp.get_z3_ast();
             let raw = unsafe {
                 match kind {
-                    FloatOpKind::AddRm => Z3_mk_fpa_add(
-                        raw_ctx,
-                        rm_raw,
-                        raw_a,
-                        b_fp.as_ref().unwrap().get_z3_ast(),
-                    ),
-                    FloatOpKind::SubRm => Z3_mk_fpa_sub(
-                        raw_ctx,
-                        rm_raw,
-                        raw_a,
-                        b_fp.as_ref().unwrap().get_z3_ast(),
-                    ),
-                    FloatOpKind::MulRm => Z3_mk_fpa_mul(
-                        raw_ctx,
-                        rm_raw,
-                        raw_a,
-                        b_fp.as_ref().unwrap().get_z3_ast(),
-                    ),
-                    FloatOpKind::DivRm => Z3_mk_fpa_div(
-                        raw_ctx,
-                        rm_raw,
-                        raw_a,
-                        b_fp.as_ref().unwrap().get_z3_ast(),
-                    ),
+                    FloatOpKind::AddRm => {
+                        Z3_mk_fpa_add(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                    }
+                    FloatOpKind::SubRm => {
+                        Z3_mk_fpa_sub(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                    }
+                    FloatOpKind::MulRm => {
+                        Z3_mk_fpa_mul(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                    }
+                    FloatOpKind::DivRm => {
+                        Z3_mk_fpa_div(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                    }
                     FloatOpKind::SqrtRm => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
                     _ => unreachable!("non-Rm FP arith kind in build_fp_arith_rm_cached"),
                 }
@@ -2584,7 +2729,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3::ast::{Ast, BV, Float, RoundingMode};
         use z3_sys::{Z3_mk_fpa_to_fp_signed, Z3_mk_fpa_to_fp_unsigned, Z3_mk_fpa_to_ieee_bv};
 
         debug_assert_eq!(operands.len(), 1);
@@ -2633,7 +2778,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3::ast::{Ast, BV, Float, RoundingMode};
         use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_sbv, Z3_mk_fpa_to_ubv};
 
         let (rm_bv_opt, value_bv) = if rm_marker.is_some() {
@@ -2718,7 +2863,7 @@ impl RustBV {
         operands: &[RustBV],
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
-        use z3::ast::{Ast, Float, RoundingMode, BV};
+        use z3::ast::{Ast, BV, Float, RoundingMode};
         use z3_sys::{Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_fp_float, Z3_mk_fpa_to_ieee_bv};
 
         let (rm_bv_opt, value_bv) = if has_rm {
@@ -2845,8 +2990,19 @@ impl fmt::Debug for RustBV {
             RustBV::Constrained { value, width, .. } => {
                 write!(f, "Constrained(0x{:x}, {})", value, width)
             }
-            RustBV::Expression { width, op, operands, .. } => {
-                write!(f, "Expression({:?}, {}, {} operands)", op, width, operands.len())
+            RustBV::Expression {
+                width,
+                op,
+                operands,
+                ..
+            } => {
+                write!(
+                    f,
+                    "Expression({:?}, {}, {} operands)",
+                    op,
+                    width,
+                    operands.len()
+                )
             }
         }
     }

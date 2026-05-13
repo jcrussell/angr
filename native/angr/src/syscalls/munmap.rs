@@ -43,10 +43,7 @@ mod tests {
     fn returns_zero_for_concrete_args() {
         let h = NativeMunmapSyscall;
         let mut state = RustSimState::new("amd64").expect("amd64 state");
-        let args = vec![
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x1000, 64),
-        ];
+        let args = vec![RustBV::concrete(0x1000, 64), RustBV::concrete(0x1000, 64)];
         let outcome = h.call(&mut state, &args).expect("ok");
         match outcome {
             SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),

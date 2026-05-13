@@ -8,9 +8,9 @@
 //! - If the size is symbolic, falls back to Python
 //! - Maximum size is 1MB (configurable)
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Maximum memset size before falling back to Python.
 const MAX_MEMSET_SIZE: u64 = 1024 * 1024;
@@ -67,14 +67,16 @@ impl NativeSimProcedure for NativeMemset {
         let mut offset: u64 = 0;
         while offset + 8 <= size {
             let bv = RustBV::concrete(fill_8, 64);
-            state.memory_store(dest.wrapping_add(offset), bv)
+            state
+                .memory_store(dest.wrapping_add(offset), bv)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             offset += 8;
         }
         // Handle remaining bytes
         while offset < size {
             let bv = RustBV::concrete(byte_val as u128, 8);
-            state.memory_store(dest.wrapping_add(offset), bv)
+            state
+                .memory_store(dest.wrapping_add(offset), bv)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             offset += 1;
         }
@@ -98,11 +100,16 @@ mod tests {
         state.map_memory_data(0x1000, &data, Permission::RWX);
 
         let proc = NativeMemset;
-        let result = proc.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0x41, 64),  // 'A'
-            RustBV::concrete(4, 64),
-        ]).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0x41, 64), // 'A'
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .unwrap();
 
         // Should return dest
         assert_eq!(result.unwrap().as_u64(), Some(0x1000));
@@ -120,11 +127,15 @@ mod tests {
         state.map_memory_data(0x1000, &data, Permission::RWX);
 
         let proc = NativeMemset;
-        proc.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(8, 64),
-        ]).unwrap();
+        proc.call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(8, 64),
+            ],
+        )
+        .unwrap();
 
         let loaded = state.memory_load(0x1000, 8).unwrap();
         assert_eq!(loaded.as_u64(), Some(0));

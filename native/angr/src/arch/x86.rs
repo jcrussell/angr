@@ -150,9 +150,9 @@ const ALIASES: &[RegEntry] = &[
 ];
 
 const REGISTER_NAMES: &[&str] = &[
-    "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip",
-    "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag", "idflag", "acflag",
-    "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
+    "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip", "cc_op", "cc_dep1", "cc_dep2",
+    "cc_ndep", "dflag", "idflag", "acflag", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
+    "xmm7",
 ];
 
 impl Arch for X86 {

@@ -3,9 +3,9 @@
 //! These are no-return procedures that terminate the current state.
 //! They don't need Python callbacks since they just deadend the state.
 
+use super::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{NativeSimProcedure, ProcedureError};
 
 /// Native exit implementation.
 ///
@@ -102,7 +102,9 @@ mod tests {
     #[test]
     fn test_exit_returns_none() {
         let mut state = RustSimState::new("amd64").unwrap();
-        let result = NativeExit.call(&mut state, &[RustBV::concrete(0, 32)]).unwrap();
+        let result = NativeExit
+            .call(&mut state, &[RustBV::concrete(0, 32)])
+            .unwrap();
         assert!(result.is_none());
     }
 

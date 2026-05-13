@@ -43,9 +43,7 @@ impl NativeSyscall for NativeBrkSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         if args.is_empty() {
-            return Err(SyscallError::Other(
-                "brk expected 1 arg, got 0".into(),
-            ));
+            return Err(SyscallError::Other("brk expected 1 arg, got 0".into()));
         }
         let new_brk = args[0]
             .as_u64()
@@ -130,14 +128,16 @@ mod tests {
     fn brk_zero_returns_current_brk() {
         let h = NativeBrkSyscall;
         let mut state = fresh_state();
-        let outcome = h
-            .call(&mut state, &[RustBV::concrete(0, 64)])
-            .expect("ok");
+        let outcome = h.call(&mut state, &[RustBV::concrete(0, 64)]).expect("ok");
         match outcome {
             SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_BRK),
             _ => panic!("expected Continue"),
         }
-        assert_eq!(state.posix_brk(), DEFAULT_BRK, "posix_brk unchanged on query");
+        assert_eq!(
+            state.posix_brk(),
+            DEFAULT_BRK,
+            "posix_brk unchanged on query"
+        );
     }
 
     #[test]
@@ -212,7 +212,9 @@ mod tests {
             .expect("ok");
         // Mutate the freshly-mapped page perms to a sentinel so we can
         // detect if the second grow accidentally re-maps over it.
-        state.memory_mut().set_page_permissions(0x1B00, Permission::R);
+        state
+            .memory_mut()
+            .set_page_permissions(0x1B00, Permission::R);
 
         // Second grow: 0x1B01000 → 0x1B02000 (maps page 0x1B01).
         h.call(&mut state, &[RustBV::concrete(0x1B0_2000, 64)])

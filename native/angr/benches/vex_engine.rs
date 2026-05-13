@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --manifest-path native/angr/Cargo.toml
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rustylib::concretize::AddressConcretizer;
 use rustylib::memory::{Permission, SymbolicMemory};
 use rustylib::symbolic::{RustBV, SymContext};
@@ -18,21 +18,15 @@ fn bench_rustbv_concrete_arithmetic(c: &mut Criterion) {
     let b = RustBV::concrete(0xCAFEBABE, 64);
 
     let mut group = c.benchmark_group("rustbv_concrete");
-    group.bench_function("add", |bench| {
-        bench.iter(|| black_box(a.add(&b, &ctx)))
-    });
-    group.bench_function("sub", |bench| {
-        bench.iter(|| black_box(a.sub(&b, &ctx)))
-    });
+    group.bench_function("add", |bench| bench.iter(|| black_box(a.add(&b, &ctx))));
+    group.bench_function("sub", |bench| bench.iter(|| black_box(a.sub(&b, &ctx))));
     group.bench_function("concat", |bench| {
         bench.iter(|| black_box(a.concat(&b, &ctx)))
     });
     group.bench_function("extract_32", |bench| {
         bench.iter(|| black_box(a.extract(31, 0, &ctx)))
     });
-    group.bench_function("reverse", |bench| {
-        bench.iter(|| black_box(a.reverse(&ctx)))
-    });
+    group.bench_function("reverse", |bench| bench.iter(|| black_box(a.reverse(&ctx))));
     group.finish();
 }
 
@@ -42,18 +36,14 @@ fn bench_rustbv_symbolic_arithmetic(c: &mut Criterion) {
     let b = RustBV::symbolic(&ctx, "y", 64);
 
     let mut group = c.benchmark_group("rustbv_symbolic");
-    group.bench_function("add", |bench| {
-        bench.iter(|| black_box(a.add(&b, &ctx)))
-    });
+    group.bench_function("add", |bench| bench.iter(|| black_box(a.add(&b, &ctx))));
     group.bench_function("concat", |bench| {
         bench.iter(|| black_box(a.concat(&b, &ctx)))
     });
     group.bench_function("extract_32", |bench| {
         bench.iter(|| black_box(a.extract(31, 0, &ctx)))
     });
-    group.bench_function("reverse", |bench| {
-        bench.iter(|| black_box(a.reverse(&ctx)))
-    });
+    group.bench_function("reverse", |bench| bench.iter(|| black_box(a.reverse(&ctx))));
     group.finish();
 }
 
@@ -172,7 +162,15 @@ fn bench_memory_concrete(c: &mut Criterion) {
     let ctx = SymContext::new();
     let mut mem = SymbolicMemory::new(Endness::Little);
     let base = 0x400000u64;
-    mem.map(base, 0x1000, Permission { read: true, write: true, execute: false });
+    mem.map(
+        base,
+        0x1000,
+        Permission {
+            read: true,
+            write: true,
+            execute: false,
+        },
+    );
 
     // Pre-store some data
     let val = RustBV::concrete(0xDEADBEEF_CAFEBABE, 64);
@@ -185,7 +183,8 @@ fn bench_memory_concrete(c: &mut Criterion) {
     group.bench_function("store_8bytes", |bench| {
         let v = RustBV::concrete(0x1234567890ABCDEF, 64);
         bench.iter(|| {
-            mem.store_concrete(base + 0x100, black_box(v.clone())).unwrap();
+            mem.store_concrete(base + 0x100, black_box(v.clone()))
+                .unwrap();
         })
     });
     group.bench_function("load_1byte", |bench| {
@@ -199,7 +198,15 @@ fn bench_memory_symbolic_load(c: &mut Criterion) {
     let concretizer = AddressConcretizer::new();
     let mut mem = SymbolicMemory::new(Endness::Little);
     let base = 0x400000u64;
-    mem.map(base, 0x1000, Permission { read: true, write: true, execute: false });
+    mem.map(
+        base,
+        0x1000,
+        Permission {
+            read: true,
+            write: true,
+            execute: false,
+        },
+    );
 
     // Fill with known data
     for i in 0..256u64 {
@@ -219,12 +226,8 @@ fn bench_memory_symbolic_load(c: &mut Criterion) {
     c.bench_function("memory_symbolic_load", |bench| {
         bench.iter(|| {
             ctx.push();
-            let result = mem.load_symbolic_unified(
-                black_box(addr_sym.clone()),
-                1,
-                &ctx,
-                &concretizer,
-            );
+            let result =
+                mem.load_symbolic_unified(black_box(addr_sym.clone()), 1, &ctx, &concretizer);
             ctx.pop();
             black_box(result)
         })
@@ -234,7 +237,15 @@ fn bench_memory_symbolic_load(c: &mut Criterion) {
 fn bench_memory_fork(c: &mut Criterion) {
     let mut mem = SymbolicMemory::new(Endness::Little);
     let base = 0x400000u64;
-    mem.map(base, 0x10000, Permission { read: true, write: true, execute: false });
+    mem.map(
+        base,
+        0x10000,
+        Permission {
+            read: true,
+            write: true,
+            execute: false,
+        },
+    );
 
     // Write to several pages to make fork non-trivial
     for page in 0..16u64 {
@@ -242,9 +253,7 @@ fn bench_memory_fork(c: &mut Criterion) {
         mem.store_concrete(base + page * 0x1000, v).unwrap();
     }
 
-    c.bench_function("memory_fork", |bench| {
-        bench.iter(|| black_box(mem.fork()))
-    });
+    c.bench_function("memory_fork", |bench| bench.iter(|| black_box(mem.fork())));
 }
 
 // ---------------------------------------------------------------------------
@@ -260,9 +269,7 @@ fn bench_state_fork(c: &mut Criterion) {
     state.set_register("rsp", RustBV::concrete(0x7FFF_FFFF_0000, 64));
     state.set_pc(0x401000);
 
-    c.bench_function("state_fork", |bench| {
-        bench.iter(|| black_box(state.fork()))
-    });
+    c.bench_function("state_fork", |bench| bench.iter(|| black_box(state.fork())));
 }
 
 // ---------------------------------------------------------------------------

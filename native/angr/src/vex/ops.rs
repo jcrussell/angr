@@ -24,11 +24,7 @@ fn float_prec_of(ty: IRType) -> Option<FloatPrec> {
 /// Build a symbolic float-op expression. Used by float_* helpers below
 /// when operands are not fully concrete; routes through Z3 FP theory in
 /// `build_fp_z3_ast_cached`.
-fn build_float_expr(
-    kind: FloatOpKind,
-    prec: FloatPrec,
-    operands: Vec<RustBV>,
-) -> RustBV {
+fn build_float_expr(kind: FloatOpKind, prec: FloatPrec, operands: Vec<RustBV>) -> RustBV {
     let width = kind.result_bits(prec);
     RustBV::Expression {
         id: RustBV::EXPRESSION_ID,
@@ -73,55 +69,93 @@ struct FMin;
 struct FMax;
 
 impl FloatLaneOp for FAdd {
-    fn arity(&self) -> usize { 2 }
-    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] + a[1] }
-    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] + a[1] }
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        a[0] + a[1]
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        a[0] + a[1]
+    }
     fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
         build_float_expr(FloatOpKind::Add, prec, args)
     }
 }
 impl FloatLaneOp for FSub {
-    fn arity(&self) -> usize { 2 }
-    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] - a[1] }
-    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] - a[1] }
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        a[0] - a[1]
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        a[0] - a[1]
+    }
     fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
         build_float_expr(FloatOpKind::Sub, prec, args)
     }
 }
 impl FloatLaneOp for FMul {
-    fn arity(&self) -> usize { 2 }
-    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] * a[1] }
-    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] * a[1] }
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        a[0] * a[1]
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        a[0] * a[1]
+    }
     fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
         build_float_expr(FloatOpKind::Mul, prec, args)
     }
 }
 impl FloatLaneOp for FDiv {
-    fn arity(&self) -> usize { 2 }
-    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0] / a[1] }
-    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0] / a[1] }
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        a[0] / a[1]
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        a[0] / a[1]
+    }
     fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
         build_float_expr(FloatOpKind::Div, prec, args)
     }
 }
 impl FloatLaneOp for FSqrt {
-    fn arity(&self) -> usize { 1 }
-    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0].sqrt() }
-    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0].sqrt() }
+    fn arity(&self) -> usize {
+        1
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        a[0].sqrt()
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        a[0].sqrt()
+    }
     fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
         build_float_expr(FloatOpKind::Sqrt, prec, args)
     }
 }
 impl FloatLaneOp for FAbs {
-    fn arity(&self) -> usize { 1 }
-    fn concrete_f32(&self, a: &[f32]) -> f32 { a[0].abs() }
-    fn concrete_f64(&self, a: &[f64]) -> f64 { a[0].abs() }
+    fn arity(&self) -> usize {
+        1
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        a[0].abs()
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        a[0].abs()
+    }
     fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
         build_float_expr(FloatOpKind::Abs, prec, args)
     }
 }
 impl FloatLaneOp for FMin {
-    fn arity(&self) -> usize { 2 }
+    fn arity(&self) -> usize {
+        2
+    }
     fn concrete_f32(&self, a: &[f32]) -> f32 {
         if a[0] < a[1] { a[0] } else { a[1] }
     }
@@ -134,13 +168,17 @@ impl FloatLaneOp for FMin {
         let l_lane = iter.next().expect("FMin arity 2");
         let r_lane = iter.next().expect("FMin arity 2");
         let cond = build_float_expr(
-            FloatOpKind::CmpLt, prec, vec![l_lane.clone(), r_lane.clone()],
+            FloatOpKind::CmpLt,
+            prec,
+            vec![l_lane.clone(), r_lane.clone()],
         );
         cond.ite_into(l_lane, r_lane, ctx)
     }
 }
 impl FloatLaneOp for FMax {
-    fn arity(&self) -> usize { 2 }
+    fn arity(&self) -> usize {
+        2
+    }
     fn concrete_f32(&self, a: &[f32]) -> f32 {
         if a[0] > a[1] { a[0] } else { a[1] }
     }
@@ -153,7 +191,9 @@ impl FloatLaneOp for FMax {
         let l_lane = iter.next().expect("FMax arity 2");
         let r_lane = iter.next().expect("FMax arity 2");
         let cond = build_float_expr(
-            FloatOpKind::CmpLt, prec, vec![r_lane.clone(), l_lane.clone()],
+            FloatOpKind::CmpLt,
+            prec,
+            vec![r_lane.clone(), l_lane.clone()],
         );
         cond.ite_into(l_lane, r_lane, ctx)
     }
@@ -244,11 +284,7 @@ impl VEXOps {
 
     /// Execute a unary operation.
     #[inline]
-    pub fn unop(
-        op: IROp,
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub fn unop(op: IROp, arg: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
         match op {
             IROp::Not(ty) => width_unop!(arg, ty, not_into, ctx),
             IROp::Neg(ty) => width_unop!(arg, ty, neg_into, ctx),
@@ -328,7 +364,9 @@ impl VEXOps {
             IROp::VAbs { elem, count } => Self::vec_int_abs(arg, elem, count, ctx),
 
             // Packed float sqrt / abs (whole vector)
-            IROp::VFSqrt { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FSqrt, ctx),
+            IROp::VFSqrt { elem, count } => {
+                Self::vec_float_lane_op(&[arg], elem, count, &FSqrt, ctx)
+            }
             IROp::VFAbs { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FAbs, ctx),
 
             // NEON scaffolding: fail loudly rather than silently fall back to
@@ -432,10 +470,18 @@ impl VEXOps {
             IROp::RoundF64toInt => Self::round_f64_to_int_with_mode(left, right, ctx),
 
             // Scalar-in-vector float operations (SSE scalar ops)
-            IROp::VFAddS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Add, ctx),
-            IROp::VFSubS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Sub, ctx),
-            IROp::VFMulS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Mul, ctx),
-            IROp::VFDivS { elem } => Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Div, ctx),
+            IROp::VFAddS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Add, ctx)
+            }
+            IROp::VFSubS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Sub, ctx)
+            }
+            IROp::VFMulS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Mul, ctx)
+            }
+            IROp::VFDivS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Div, ctx)
+            }
 
             // Vector bitwise
             IROp::VAnd(ty) => width_binop!(left, right, ty, and_into, ctx),
@@ -472,22 +518,44 @@ impl VEXOps {
             IROp::VSarN { elem, count } => Self::vec_sar_n(left, right, elem, count, ctx),
 
             // Packed integer min/max
-            IROp::VMin { elem, count, signed } => {
-                Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ false, ctx)
+            IROp::VMin {
+                elem,
+                count,
+                signed,
+            } => {
+                Self::vec_int_minmax(
+                    left, right, elem, count, signed, /*is_max=*/ false, ctx,
+                )
             }
-            IROp::VMax { elem, count, signed } => {
+            IROp::VMax {
+                elem,
+                count,
+                signed,
+            } => {
                 Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ true, ctx)
             }
 
             // Packed FP arithmetic
-            IROp::VFAdd { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FAdd, ctx),
-            IROp::VFSub { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FSub, ctx),
-            IROp::VFMul { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FMul, ctx),
-            IROp::VFDiv { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FDiv, ctx),
+            IROp::VFAdd { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FAdd, ctx)
+            }
+            IROp::VFSub { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FSub, ctx)
+            }
+            IROp::VFMul { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FMul, ctx)
+            }
+            IROp::VFDiv { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FDiv, ctx)
+            }
 
             // Packed FP min/max
-            IROp::VFMin { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FMin, ctx),
-            IROp::VFMax { elem, count } => Self::vec_float_lane_op(&[left, right], elem, count, &FMax, ctx),
+            IROp::VFMin { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FMin, ctx)
+            }
+            IROp::VFMax { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FMax, ctx)
+            }
 
             // Raw opcode — try concrete x87 transcendental fast path first
             // (Iop_SinF64, Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_RecpExp*).
@@ -515,24 +583,12 @@ impl VEXOps {
                 // left = rounding mode, right = F64 value
                 Self::f64_to_i32s_rm(left, right, ctx)
             }
-            IROp::F32toI64S => {
-                Self::f32_to_i64s_rm(left, right, ctx)
-            }
-            IROp::F64toI64S => {
-                Self::f64_to_i64s_rm(left, right, ctx)
-            }
-            IROp::F32toI32U => {
-                Self::f32_to_i32u_rm(left, right, ctx)
-            }
-            IROp::F64toI32U => {
-                Self::f64_to_i32u_rm(left, right, ctx)
-            }
-            IROp::F32toI64U => {
-                Self::f32_to_i64u_rm(left, right, ctx)
-            }
-            IROp::F64toI64U => {
-                Self::f64_to_i64u_rm(left, right, ctx)
-            }
+            IROp::F32toI64S => Self::f32_to_i64s_rm(left, right, ctx),
+            IROp::F64toI64S => Self::f64_to_i64s_rm(left, right, ctx),
+            IROp::F32toI32U => Self::f32_to_i32u_rm(left, right, ctx),
+            IROp::F64toI32U => Self::f64_to_i32u_rm(left, right, ctx),
+            IROp::F32toI64U => Self::f32_to_i64u_rm(left, right, ctx),
+            IROp::F64toI64U => Self::f64_to_i64u_rm(left, right, ctx),
 
             // Scalar-in-vector max/min
             IROp::VFMaxS { elem } => Self::vec_float_scalar_max(left, right, elem, ctx),
@@ -649,7 +705,9 @@ impl VEXOps {
                 // Iop_Yl2xp1F64, Iop_ScaleF64. Concrete-only fast path;
                 // symbolic falls through to the existing fresh-symbolic
                 // fallback in expressions.rs::IRExpr::Triop.
-                if let Some(result) = transcendentals::try_concrete_triop_rm(code, &rm, &left, &right) {
+                if let Some(result) =
+                    transcendentals::try_concrete_triop_rm(code, &rm, &left, &right)
+                {
                     return Ok(result);
                 }
                 return Self::binop(op, left, right, ctx);
@@ -988,7 +1046,11 @@ impl VEXOps {
         if let (Some(v), Some(i)) = (vec.as_u128(), idx.as_u128()) {
             let lane = (i as u8) % count;
             let lo = lane as u32 * elem_width;
-            let mask = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+            let mask = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
             let result = (v >> lo) & mask;
             return Ok(RustBV::concrete(result, elem_width));
         }
@@ -1038,7 +1100,11 @@ impl VEXOps {
         if let (Some(v), Some(i), Some(x)) = (vec.as_u128(), idx.as_u128(), val.as_u128()) {
             let lane = (i as u8) % count;
             let lo = lane as u32 * elem_width;
-            let mask_elem = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+            let mask_elem = if elem_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << elem_width) - 1
+            };
             let shifted_mask = mask_elem << lo;
             let cleared = v & !shifted_mask;
             let new_val = cleared | ((x & mask_elem) << lo);
@@ -1469,9 +1535,9 @@ impl VEXOps {
                     let shifted = if shift >= elem_width {
                         // Shift >= width: result is all sign bits
                         if elem_val & sign_bit != 0 {
-                            elem_mask  // All 1s
+                            elem_mask // All 1s
                         } else {
-                            0  // All 0s
+                            0 // All 0s
                         }
                     } else {
                         // Check if negative (sign bit set)
@@ -1512,11 +1578,7 @@ impl VEXOps {
     // Float Operations (using bit manipulation for now)
     // =========================================================================
 
-    fn float_neg(
-        arg: RustBV,
-        ty: IRType,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn float_neg(arg: RustBV, ty: IRType, ctx: &SymContext) -> Result<RustBV, OpError> {
         // Flip the sign bit
         let sign_bit = match ty {
             IRType::F32 => 31,
@@ -1528,11 +1590,7 @@ impl VEXOps {
         Ok(arg.xor_into(mask, ctx))
     }
 
-    fn float_abs(
-        arg: RustBV,
-        ty: IRType,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn float_abs(arg: RustBV, ty: IRType, ctx: &SymContext) -> Result<RustBV, OpError> {
         // Clear the sign bit
         let mask = match ty {
             IRType::F32 => RustBV::concrete(0x7FFFFFFF, 32),
@@ -1543,11 +1601,7 @@ impl VEXOps {
         Ok(arg.and_into(mask, ctx))
     }
 
-    fn float_sqrt(
-        arg: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn float_sqrt(arg: RustBV, ty: IRType, _ctx: &SymContext) -> Result<RustBV, OpError> {
         // For concrete values, compute directly
         if let Some(v) = arg.as_u128() {
             let result = match ty {
@@ -1747,7 +1801,10 @@ impl VEXOps {
         debug_assert_eq!(left.width(), 128);
         debug_assert_eq!(right.width(), 128);
         debug_assert!(
-            matches!(kind, FloatOpKind::Add | FloatOpKind::Sub | FloatOpKind::Mul | FloatOpKind::Div),
+            matches!(
+                kind,
+                FloatOpKind::Add | FloatOpKind::Sub | FloatOpKind::Mul | FloatOpKind::Div
+            ),
             "vec_float_scalar_op only supports Add/Sub/Mul/Div, got {:?}",
             kind,
         );
@@ -1959,7 +2016,11 @@ impl VEXOps {
         if total_width <= 128 {
             if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
                 let mut result: u128 = 0;
-                let elem_mask: u128 = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+                let elem_mask: u128 = if elem_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << elem_width) - 1
+                };
                 let sign_bit: u128 = 1u128 << (elem_width - 1);
 
                 for i in 0..count {
@@ -1979,9 +2040,17 @@ impl VEXOps {
                         } else {
                             r_elem as i128
                         };
-                        if is_max { l_signed >= r_signed } else { l_signed <= r_signed }
+                        if is_max {
+                            l_signed >= r_signed
+                        } else {
+                            l_signed <= r_signed
+                        }
                     } else {
-                        if is_max { l_elem >= r_elem } else { l_elem <= r_elem }
+                        if is_max {
+                            l_elem >= r_elem
+                        } else {
+                            l_elem <= r_elem
+                        }
                     };
 
                     let chosen = if pick_left { l_elem } else { r_elem };
@@ -2028,7 +2097,11 @@ impl VEXOps {
         if total_width <= 128 {
             if let Some(v) = arg.as_u128() {
                 let mut result: u128 = 0;
-                let elem_mask: u128 = if elem_width == 128 { u128::MAX } else { (1u128 << elem_width) - 1 };
+                let elem_mask: u128 = if elem_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << elem_width) - 1
+                };
                 let sign_bit: u128 = 1u128 << (elem_width - 1);
 
                 for i in 0..count {
@@ -2134,11 +2207,7 @@ impl VEXOps {
     }
 
     /// Set low 32 bits of V128.
-    fn set_v128_lo32(
-        vec: RustBV,
-        val: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn set_v128_lo32(vec: RustBV, val: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
         debug_assert_eq!(vec.width(), 128);
         debug_assert_eq!(val.width(), 32);
 
@@ -2154,11 +2223,7 @@ impl VEXOps {
     }
 
     /// Set low 64 bits of V128.
-    fn set_v128_lo64(
-        vec: RustBV,
-        val: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn set_v128_lo64(vec: RustBV, val: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
         debug_assert_eq!(vec.width(), 128);
         debug_assert_eq!(val.width(), 64);
 
@@ -2196,7 +2261,11 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, 1));
         }
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(FloatOpKind::CmpEq, prec, vec![left, right]))
+        Ok(build_float_expr(
+            FloatOpKind::CmpEq,
+            prec,
+            vec![left, right],
+        ))
     }
 
     fn float_cmp_lt(
@@ -2222,7 +2291,11 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, 1));
         }
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(FloatOpKind::CmpLt, prec, vec![left, right]))
+        Ok(build_float_expr(
+            FloatOpKind::CmpLt,
+            prec,
+            vec![left, right],
+        ))
     }
 
     fn float_cmp_le(
@@ -2248,7 +2321,11 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, 1));
         }
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
-        Ok(build_float_expr(FloatOpKind::CmpLe, prec, vec![left, right]))
+        Ok(build_float_expr(
+            FloatOpKind::CmpLe,
+            prec,
+            vec![left, right],
+        ))
     }
 
     /// SSE scalar-lane FP compare (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}).
@@ -2279,17 +2356,17 @@ impl VEXOps {
         if let (Some(l), Some(r)) = (l_lo.as_u128(), r_lo.as_u128()) {
             let truth = match (ty, kind) {
                 (IRType::F32, FCmpKind::Eq) => f32::from_bits(l as u32) == f32::from_bits(r as u32),
-                (IRType::F32, FCmpKind::Lt) => f32::from_bits(l as u32) <  f32::from_bits(r as u32),
+                (IRType::F32, FCmpKind::Lt) => f32::from_bits(l as u32) < f32::from_bits(r as u32),
                 (IRType::F32, FCmpKind::Le) => f32::from_bits(l as u32) <= f32::from_bits(r as u32),
-                (IRType::F32, FCmpKind::Gt) => f32::from_bits(l as u32) >  f32::from_bits(r as u32),
+                (IRType::F32, FCmpKind::Gt) => f32::from_bits(l as u32) > f32::from_bits(r as u32),
                 (IRType::F32, FCmpKind::Ge) => f32::from_bits(l as u32) >= f32::from_bits(r as u32),
                 (IRType::F32, FCmpKind::Un) => {
                     f32::from_bits(l as u32).is_nan() || f32::from_bits(r as u32).is_nan()
                 }
                 (IRType::F64, FCmpKind::Eq) => f64::from_bits(l as u64) == f64::from_bits(r as u64),
-                (IRType::F64, FCmpKind::Lt) => f64::from_bits(l as u64) <  f64::from_bits(r as u64),
+                (IRType::F64, FCmpKind::Lt) => f64::from_bits(l as u64) < f64::from_bits(r as u64),
                 (IRType::F64, FCmpKind::Le) => f64::from_bits(l as u64) <= f64::from_bits(r as u64),
-                (IRType::F64, FCmpKind::Gt) => f64::from_bits(l as u64) >  f64::from_bits(r as u64),
+                (IRType::F64, FCmpKind::Gt) => f64::from_bits(l as u64) > f64::from_bits(r as u64),
                 (IRType::F64, FCmpKind::Ge) => f64::from_bits(l as u64) >= f64::from_bits(r as u64),
                 (IRType::F64, FCmpKind::Un) => {
                     f64::from_bits(l as u64).is_nan() || f64::from_bits(r as u64).is_nan()
@@ -2314,12 +2391,8 @@ impl VEXOps {
             FCmpKind::Un => {
                 // IEEE 754: NaN != NaN. So `(x == x)` is false iff x is NaN.
                 // un = NOT(l_eq_l) OR NOT(r_eq_r)
-                let l_eq_l = build_float_expr(
-                    FloatOpKind::CmpEq, prec, vec![l_lo.clone(), l_lo],
-                );
-                let r_eq_r = build_float_expr(
-                    FloatOpKind::CmpEq, prec, vec![r_lo.clone(), r_lo],
-                );
+                let l_eq_l = build_float_expr(FloatOpKind::CmpEq, prec, vec![l_lo.clone(), l_lo]);
+                let r_eq_r = build_float_expr(FloatOpKind::CmpEq, prec, vec![r_lo.clone(), r_lo]);
                 l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx)
             }
         };
@@ -2364,21 +2437,43 @@ impl VEXOps {
                     let l_bits = (l >> shift) & elem_mask;
                     let r_bits = (r >> shift) & elem_mask;
                     let truth = match (elem, kind) {
-                        (IRType::F32, FCmpKind::Eq) => f32::from_bits(l_bits as u32) == f32::from_bits(r_bits as u32),
-                        (IRType::F32, FCmpKind::Lt) => f32::from_bits(l_bits as u32) <  f32::from_bits(r_bits as u32),
-                        (IRType::F32, FCmpKind::Le) => f32::from_bits(l_bits as u32) <= f32::from_bits(r_bits as u32),
-                        (IRType::F32, FCmpKind::Gt) => f32::from_bits(l_bits as u32) >  f32::from_bits(r_bits as u32),
-                        (IRType::F32, FCmpKind::Ge) => f32::from_bits(l_bits as u32) >= f32::from_bits(r_bits as u32),
-                        (IRType::F32, FCmpKind::Un) => {
-                            f32::from_bits(l_bits as u32).is_nan() || f32::from_bits(r_bits as u32).is_nan()
+                        (IRType::F32, FCmpKind::Eq) => {
+                            f32::from_bits(l_bits as u32) == f32::from_bits(r_bits as u32)
                         }
-                        (IRType::F64, FCmpKind::Eq) => f64::from_bits(l_bits as u64) == f64::from_bits(r_bits as u64),
-                        (IRType::F64, FCmpKind::Lt) => f64::from_bits(l_bits as u64) <  f64::from_bits(r_bits as u64),
-                        (IRType::F64, FCmpKind::Le) => f64::from_bits(l_bits as u64) <= f64::from_bits(r_bits as u64),
-                        (IRType::F64, FCmpKind::Gt) => f64::from_bits(l_bits as u64) >  f64::from_bits(r_bits as u64),
-                        (IRType::F64, FCmpKind::Ge) => f64::from_bits(l_bits as u64) >= f64::from_bits(r_bits as u64),
+                        (IRType::F32, FCmpKind::Lt) => {
+                            f32::from_bits(l_bits as u32) < f32::from_bits(r_bits as u32)
+                        }
+                        (IRType::F32, FCmpKind::Le) => {
+                            f32::from_bits(l_bits as u32) <= f32::from_bits(r_bits as u32)
+                        }
+                        (IRType::F32, FCmpKind::Gt) => {
+                            f32::from_bits(l_bits as u32) > f32::from_bits(r_bits as u32)
+                        }
+                        (IRType::F32, FCmpKind::Ge) => {
+                            f32::from_bits(l_bits as u32) >= f32::from_bits(r_bits as u32)
+                        }
+                        (IRType::F32, FCmpKind::Un) => {
+                            f32::from_bits(l_bits as u32).is_nan()
+                                || f32::from_bits(r_bits as u32).is_nan()
+                        }
+                        (IRType::F64, FCmpKind::Eq) => {
+                            f64::from_bits(l_bits as u64) == f64::from_bits(r_bits as u64)
+                        }
+                        (IRType::F64, FCmpKind::Lt) => {
+                            f64::from_bits(l_bits as u64) < f64::from_bits(r_bits as u64)
+                        }
+                        (IRType::F64, FCmpKind::Le) => {
+                            f64::from_bits(l_bits as u64) <= f64::from_bits(r_bits as u64)
+                        }
+                        (IRType::F64, FCmpKind::Gt) => {
+                            f64::from_bits(l_bits as u64) > f64::from_bits(r_bits as u64)
+                        }
+                        (IRType::F64, FCmpKind::Ge) => {
+                            f64::from_bits(l_bits as u64) >= f64::from_bits(r_bits as u64)
+                        }
                         (IRType::F64, FCmpKind::Un) => {
-                            f64::from_bits(l_bits as u64).is_nan() || f64::from_bits(r_bits as u64).is_nan()
+                            f64::from_bits(l_bits as u64).is_nan()
+                                || f64::from_bits(r_bits as u64).is_nan()
                         }
                         _ => return Err(OpError::InvalidFloatType(elem)),
                     };
@@ -2408,12 +2503,10 @@ impl VEXOps {
                 FCmpKind::Ge => build_float_expr(FloatOpKind::CmpLe, prec, vec![r_lane, l_lane]),
                 FCmpKind::Un => {
                     // IEEE 754: NaN != NaN. So `(x == x)` is false iff x is NaN.
-                    let l_eq_l = build_float_expr(
-                        FloatOpKind::CmpEq, prec, vec![l_lane.clone(), l_lane],
-                    );
-                    let r_eq_r = build_float_expr(
-                        FloatOpKind::CmpEq, prec, vec![r_lane.clone(), r_lane],
-                    );
+                    let l_eq_l =
+                        build_float_expr(FloatOpKind::CmpEq, prec, vec![l_lane.clone(), l_lane]);
+                    let r_eq_r =
+                        build_float_expr(FloatOpKind::CmpEq, prec, vec![r_lane.clone(), r_lane]);
                     l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx)
                 }
             };
@@ -2437,18 +2530,28 @@ impl VEXOps {
                 IRType::F32 => {
                     let lf = f32::from_bits(l as u32);
                     let rf = f32::from_bits(r as u32);
-                    if lf.is_nan() || rf.is_nan() { 0x45 }
-                    else if lf <  rf { 0x01 }
-                    else if lf == rf { 0x40 }
-                    else { 0x00 }
+                    if lf.is_nan() || rf.is_nan() {
+                        0x45
+                    } else if lf < rf {
+                        0x01
+                    } else if lf == rf {
+                        0x40
+                    } else {
+                        0x00
+                    }
                 }
                 IRType::F64 => {
                     let lf = f64::from_bits(l as u64);
                     let rf = f64::from_bits(r as u64);
-                    if lf.is_nan() || rf.is_nan() { 0x45 }
-                    else if lf <  rf { 0x01 }
-                    else if lf == rf { 0x40 }
-                    else { 0x00 }
+                    if lf.is_nan() || rf.is_nan() {
+                        0x45
+                    } else if lf < rf {
+                        0x01
+                    } else if lf == rf {
+                        0x40
+                    } else {
+                        0x00
+                    }
                 }
                 _ => return Err(OpError::InvalidFloatType(ty)),
             };
@@ -2460,16 +2563,10 @@ impl VEXOps {
         // un  = NOT(l == l) OR NOT(r == r)   [IEEE 754 NaN check]
         // lt  = l < r                         [false if either is NaN]
         // eq  = l == r                        [false if either is NaN]
-        let l_eq_l = build_float_expr(
-            FloatOpKind::CmpEq, prec, vec![left.clone(), left.clone()],
-        );
-        let r_eq_r = build_float_expr(
-            FloatOpKind::CmpEq, prec, vec![right.clone(), right.clone()],
-        );
+        let l_eq_l = build_float_expr(FloatOpKind::CmpEq, prec, vec![left.clone(), left.clone()]);
+        let r_eq_r = build_float_expr(FloatOpKind::CmpEq, prec, vec![right.clone(), right.clone()]);
         let un = l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx);
-        let lt = build_float_expr(
-            FloatOpKind::CmpLt, prec, vec![left.clone(), right.clone()],
-        );
+        let lt = build_float_expr(FloatOpKind::CmpLt, prec, vec![left.clone(), right.clone()]);
         let eq = build_float_expr(FloatOpKind::CmpEq, prec, vec![left, right]);
 
         let v_un = RustBV::concrete(0x45, 32);
@@ -2513,7 +2610,10 @@ impl VEXOps {
             return Ok(RustBV::concrete(concrete(v), dst_prec.bits()));
         }
         Ok(build_float_expr(
-            FloatOpKind::ConvertItoF { src_bits: src_bits as u8, signed },
+            FloatOpKind::ConvertItoF {
+                src_bits: src_bits as u8,
+                signed,
+            },
             dst_prec,
             vec![arg],
         ))
@@ -2533,7 +2633,10 @@ impl VEXOps {
             return Ok(RustBV::concrete(concrete(v), dst_bits));
         }
         Ok(build_float_expr(
-            FloatOpKind::ConvertFtoI { dst_bits: dst_bits as u8, signed },
+            FloatOpKind::ConvertFtoI {
+                dst_bits: dst_bits as u8,
+                signed,
+            },
             src_prec,
             vec![arg],
         ))
@@ -2601,11 +2704,11 @@ impl VEXOps {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f32::from_bits(v as u32);
             let rounded = match m & 0x3 {
-                0 => Self::round_ties_to_even_f32(f),  // nearest, ties to even
-                1 => f.floor(),                        // toward -infinity
-                2 => f.ceil(),                         // toward +infinity
-                3 => f.trunc(),                        // toward zero
-                _ => Self::round_ties_to_even_f32(f),  // default to nearest
+                0 => Self::round_ties_to_even_f32(f), // nearest, ties to even
+                1 => f.floor(),                       // toward -infinity
+                2 => f.ceil(),                        // toward +infinity
+                3 => f.trunc(),                       // toward zero
+                _ => Self::round_ties_to_even_f32(f), // default to nearest
             };
             // Normalize -0.0 to +0.0 to match Python VEX behavior
             let normalized = if rounded == 0.0 { 0.0f32 } else { rounded };
@@ -2629,11 +2732,11 @@ impl VEXOps {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f64::from_bits(v as u64);
             let rounded = match m & 0x3 {
-                0 => Self::round_ties_to_even_f64(f),  // nearest, ties to even
-                1 => f.floor(),                        // toward -infinity
-                2 => f.ceil(),                         // toward +infinity
-                3 => f.trunc(),                        // toward zero
-                _ => Self::round_ties_to_even_f64(f),  // default to nearest
+                0 => Self::round_ties_to_even_f64(f), // nearest, ties to even
+                1 => f.floor(),                       // toward -infinity
+                2 => f.ceil(),                        // toward +infinity
+                3 => f.trunc(),                       // toward zero
+                _ => Self::round_ties_to_even_f64(f), // default to nearest
             };
             // Normalize -0.0 to +0.0 to match Python VEX behavior
             let normalized = if rounded == 0.0 { 0.0f64 } else { rounded };
@@ -2691,22 +2794,22 @@ impl VEXOps {
     /// Apply rounding mode to f32 value
     fn apply_rounding_f32(f: f32, rm: u32) -> f32 {
         match rm & 0x3 {
-            0 => Self::round_ties_to_even_f32(f),  // nearest, ties to even (banker's rounding)
-            1 => f.floor(),    // toward negative infinity
-            2 => f.ceil(),     // toward positive infinity
-            3 => f.trunc(),    // toward zero (truncate)
-            _ => Self::round_ties_to_even_f32(f),  // default to nearest
+            0 => Self::round_ties_to_even_f32(f), // nearest, ties to even (banker's rounding)
+            1 => f.floor(),                       // toward negative infinity
+            2 => f.ceil(),                        // toward positive infinity
+            3 => f.trunc(),                       // toward zero (truncate)
+            _ => Self::round_ties_to_even_f32(f), // default to nearest
         }
     }
 
     /// Apply rounding mode to f64 value
     fn apply_rounding_f64(f: f64, rm: u32) -> f64 {
         match rm & 0x3 {
-            0 => Self::round_ties_to_even_f64(f),  // nearest, ties to even (banker's rounding)
-            1 => f.floor(),    // toward negative infinity
-            2 => f.ceil(),     // toward positive infinity
-            3 => f.trunc(),    // toward zero (truncate)
-            _ => Self::round_ties_to_even_f64(f),  // default to nearest
+            0 => Self::round_ties_to_even_f64(f), // nearest, ties to even (banker's rounding)
+            1 => f.floor(),                       // toward negative infinity
+            2 => f.ceil(),                        // toward positive infinity
+            3 => f.trunc(),                       // toward zero (truncate)
+            _ => Self::round_ties_to_even_f64(f), // default to nearest
         }
     }
 
@@ -2725,7 +2828,10 @@ impl VEXOps {
             return Ok(RustBV::concrete(concrete(v, rm_val as u32), dst_bits));
         }
         Ok(build_float_expr(
-            FloatOpKind::ConvertFtoIRm { dst_bits: dst_bits as u8, signed },
+            FloatOpKind::ConvertFtoIRm {
+                dst_bits: dst_bits as u8,
+                signed,
+            },
             src_prec,
             vec![rm, arg],
         ))
@@ -2742,7 +2848,10 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(arg.width(), src_prec.bits());
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            return Ok(RustBV::concrete(concrete(v, rm_val as u32), dst_prec.bits()));
+            return Ok(RustBV::concrete(
+                concrete(v, rm_val as u32),
+                dst_prec.bits(),
+            ));
         }
         Ok(build_float_expr(
             FloatOpKind::ConvertFtoFRm { src_prec },
@@ -2755,40 +2864,49 @@ impl VEXOps {
     fn f64_to_f32_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
         // Note: concrete path ignores rounding mode (uses direct cast); the
         // symbolic path correctly threads rm through Z3 FP.
-        Self::float_to_float_rm(rm, arg, FloatPrec::F64, FloatPrec::F32,
-            |v, _rm| (f64::from_bits(v as u64) as f32).to_bits() as u128)
+        Self::float_to_float_rm(rm, arg, FloatPrec::F64, FloatPrec::F32, |v, _rm| {
+            (f64::from_bits(v as u64) as f32).to_bits() as u128
+        })
     }
     fn f32_to_i32s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 32, true,
-            |v, rm| (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i32 as u32) as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 32, true, |v, rm| {
+            (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i32 as u32) as u128
+        })
     }
     fn f64_to_i32s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 32, true,
-            |v, rm| (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i32 as u32) as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 32, true, |v, rm| {
+            (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i32 as u32) as u128
+        })
     }
     fn f32_to_i64s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 64, true,
-            |v, rm| (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i64 as u64) as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 64, true, |v, rm| {
+            (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i64 as u64) as u128
+        })
     }
     fn f64_to_i64s_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 64, true,
-            |v, rm| (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i64 as u64) as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 64, true, |v, rm| {
+            (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i64 as u64) as u128
+        })
     }
     fn f32_to_i32u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 32, false,
-            |v, rm| Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u32 as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 32, false, |v, rm| {
+            Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u32 as u128
+        })
     }
     fn f64_to_i32u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 32, false,
-            |v, rm| Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u32 as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 32, false, |v, rm| {
+            Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u32 as u128
+        })
     }
     fn f32_to_i64u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 64, false,
-            |v, rm| Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u64 as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F32, 64, false, |v, rm| {
+            Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u64 as u128
+        })
     }
     fn f64_to_i64u_rm(rm: RustBV, arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
-        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 64, false,
-            |v, rm| Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u64 as u128)
+        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 64, false, |v, rm| {
+            Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u64 as u128
+        })
     }
 }
 
@@ -3002,7 +3120,16 @@ mod tests {
         let av = RustBV::concrete(a, 128);
         let bv = RustBV::concrete(b, 128);
 
-        let result = VEXOps::binop(IROp::VAdd { elem: IRType::I32, count: 4 }, av, bv, &ctx).unwrap();
+        let result = VEXOps::binop(
+            IROp::VAdd {
+                elem: IRType::I32,
+                count: 4,
+            },
+            av,
+            bv,
+            &ctx,
+        )
+        .unwrap();
         let rv = result.as_u128().unwrap();
 
         assert_eq!(rv & 0xFFFFFFFF, 11);
@@ -3023,13 +3150,22 @@ mod tests {
         let av = RustBV::concrete(a, 128);
         let bv = RustBV::concrete(b, 128);
 
-        let result = VEXOps::binop(IROp::VCmpEQ { elem: IRType::I32, count: 4 }, av, bv, &ctx).unwrap();
+        let result = VEXOps::binop(
+            IROp::VCmpEQ {
+                elem: IRType::I32,
+                count: 4,
+            },
+            av,
+            bv,
+            &ctx,
+        )
+        .unwrap();
         let rv = result.as_u128().unwrap();
 
         assert_eq!(rv & 0xFFFFFFFF, 0xFFFFFFFF); // 1 == 1
-        assert_eq!((rv >> 32) & 0xFFFFFFFF, 0);  // 2 != 0
+        assert_eq!((rv >> 32) & 0xFFFFFFFF, 0); // 2 != 0
         assert_eq!((rv >> 64) & 0xFFFFFFFF, 0xFFFFFFFF); // 3 == 3
-        assert_eq!((rv >> 96) & 0xFFFFFFFF, 0);  // 4 != 0
+        assert_eq!((rv >> 96) & 0xFFFFFFFF, 0); // 4 != 0
     }
 
     #[test]
@@ -3078,7 +3214,11 @@ mod tests {
         let result_val = result.as_u128().unwrap();
         let result_f32 = f32::from_bits((result_val & 0xFFFFFFFF) as u32);
 
-        assert!((result_f32 - 6.0).abs() < 0.0001, "Expected 6.0, got {}", result_f32);
+        assert!(
+            (result_f32 - 6.0).abs() < 0.0001,
+            "Expected 6.0, got {}",
+            result_f32
+        );
     }
 
     #[test]
@@ -3098,7 +3238,11 @@ mod tests {
         let result_val = result.as_u128().unwrap();
         let result_f32 = f32::from_bits((result_val & 0xFFFFFFFF) as u32);
 
-        assert!((result_f32 - 3.0).abs() < 0.0001, "Expected 3.0, got {}", result_f32);
+        assert!(
+            (result_f32 - 3.0).abs() < 0.0001,
+            "Expected 3.0, got {}",
+            result_f32
+        );
     }
 
     /// Symbolic FAdd: solving `x + 2.0 == 5.0` should yield x == 3.0.
@@ -3168,11 +3312,9 @@ mod tests {
         let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
         // x < 2.0
-        let lt_x_two =
-            VEXOps::binop(IROp::FCmpLT(IRType::F32), x.clone(), two, &ctx).unwrap();
+        let lt_x_two = VEXOps::binop(IROp::FCmpLT(IRType::F32), x.clone(), two, &ctx).unwrap();
         // 1.0 < x
-        let lt_one_x =
-            VEXOps::binop(IROp::FCmpLT(IRType::F32), one, x.clone(), &ctx).unwrap();
+        let lt_one_x = VEXOps::binop(IROp::FCmpLT(IRType::F32), one, x.clone(), &ctx).unwrap();
 
         ctx.assume_true(&lt_x_two);
         ctx.assume_true(&lt_one_x);
@@ -3199,13 +3341,8 @@ mod tests {
         // xmm1 = [2.0f, 0, 0, 0]
         let xmm1 = RustBV::concrete(2.0f32.to_bits() as u128, 128);
 
-        let result = VEXOps::binop(
-            IROp::VFAddS { elem: IRType::F32 },
-            xmm0.clone(),
-            xmm1,
-            &ctx,
-        )
-        .unwrap();
+        let result =
+            VEXOps::binop(IROp::VFAddS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
         assert_eq!(result.width(), 128);
 
         // Constrain low 32 bits of result to bits(5.0).
@@ -3213,7 +3350,10 @@ mod tests {
         let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
         let eq = res_lo.to_z3_ast()._eq(&five.to_z3_ast());
         ctx.add_constraint(eq);
-        assert!(ctx.is_sat(), "expected SAT after VFAddS symbolic constraint");
+        assert!(
+            ctx.is_sat(),
+            "expected SAT after VFAddS symbolic constraint"
+        );
 
         let model_x = ctx.eval(&xmm0).expect("eval(xmm0) returned None");
         let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
@@ -3247,7 +3387,10 @@ mod tests {
         let four = RustBV::concrete(4.0f32.to_bits() as u128, 32);
         let eq = res_lo.to_z3_ast()._eq(&four.to_z3_ast());
         ctx.add_constraint(eq);
-        assert!(ctx.is_sat(), "expected SAT after VFSqrtS symbolic constraint");
+        assert!(
+            ctx.is_sat(),
+            "expected SAT after VFSqrtS symbolic constraint"
+        );
 
         let model_x = ctx.eval(&xmm).expect("eval(xmm) returned None");
         let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
@@ -3271,13 +3414,8 @@ mod tests {
         let xmm0 = RustBV::symbolic(&ctx, "xmm_max", 128);
         let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
-        let result = VEXOps::binop(
-            IROp::VFMaxS { elem: IRType::F32 },
-            xmm0.clone(),
-            xmm1,
-            &ctx,
-        )
-        .unwrap();
+        let result =
+            VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
         assert_eq!(result.width(), 128);
 
         let res_lo = result.extract(31, 0, &ctx);
@@ -3306,13 +3444,8 @@ mod tests {
         let xmm0 = RustBV::symbolic(&ctx, "xmm_min", 128);
         let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
-        let result = VEXOps::binop(
-            IROp::VFMinS { elem: IRType::F32 },
-            xmm0.clone(),
-            xmm1,
-            &ctx,
-        )
-        .unwrap();
+        let result =
+            VEXOps::binop(IROp::VFMinS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
         assert_eq!(result.width(), 128);
 
         let res_lo = result.extract(31, 0, &ctx);
@@ -3346,8 +3479,7 @@ mod tests {
         let rm = RustBV::symbolic(&ctx, "rm_f32", 32);
         let value = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
 
-        let result =
-            VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
+        let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
         let target = RustBV::concrete((-3.0f32).to_bits() as u128, 32);
         let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
         ctx.add_constraint(eq);
@@ -3373,8 +3505,7 @@ mod tests {
         let rm = RustBV::symbolic(&ctx, "rm_f64", 32);
         let value = RustBV::concrete(2.5f64.to_bits() as u128, 64);
 
-        let result =
-            VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();
+        let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();
         let target = RustBV::concrete(3.0f64.to_bits() as u128, 64);
         let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
         ctx.add_constraint(eq);
@@ -3416,8 +3547,7 @@ mod tests {
         let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
         let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-        let result =
-            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rz, one, ten, &ctx).unwrap();
+        let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rz, one, ten, &ctx).unwrap();
         let bits = ctx.eval(&result).expect("eval failed") as u32;
         assert_eq!(bits, 0x3DCCCCCC, "1/10 with RZ rounds toward zero");
     }
@@ -3432,8 +3562,7 @@ mod tests {
         let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
         let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-        let result =
-            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_ru, one, ten, &ctx).unwrap();
+        let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_ru, one, ten, &ctx).unwrap();
         let bits = ctx.eval(&result).expect("eval failed") as u32;
         assert_eq!(bits, 0x3DCCCCCD);
     }
@@ -3448,8 +3577,7 @@ mod tests {
         let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
         let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-        let result =
-            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rd, one, ten, &ctx).unwrap();
+        let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rd, one, ten, &ctx).unwrap();
         let bits = ctx.eval(&result).expect("eval failed") as u32;
         assert_eq!(bits, 0x3DCCCCCC);
     }
@@ -3467,14 +3595,8 @@ mod tests {
         let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
         let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-        let result = VEXOps::binop_with_rm(
-            IROp::FDiv(IRType::F32),
-            rm.clone(),
-            one,
-            ten,
-            &ctx,
-        )
-        .unwrap();
+        let result =
+            VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm.clone(), one, ten, &ctx).unwrap();
         let target = RustBV::concrete(0x3DCCCCCC, 32);
         let eq = result.to_z3_ast()._eq(&target.to_z3_ast());
         ctx.add_constraint(eq);
@@ -3500,8 +3622,7 @@ mod tests {
         let a = RustBV::concrete(0x3F800001, 32);
         let b = RustBV::concrete(0x3F800002, 32);
 
-        let result =
-            VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a, b, &ctx).unwrap();
+        let result = VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a, b, &ctx).unwrap();
         let bits = ctx.eval(&result).expect("eval failed") as u32;
         assert_eq!(bits, 0x40000001, "RZ truncates 1.5ulp tie down");
     }
@@ -3515,8 +3636,7 @@ mod tests {
         let rm_ru = RustBV::concrete(2, 32);
         let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-        let result =
-            VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
+        let result = VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
         let bits = ctx.eval(&result).expect("eval failed") as u32;
         assert_eq!(bits, 0x3FB504F4, "sqrt(2) under RU rounds up one ulp");
     }
@@ -3528,8 +3648,7 @@ mod tests {
         let rm_rne = RustBV::concrete(0, 32);
         let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-        let result =
-            VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_rne, two, &ctx).unwrap();
+        let result = VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_rne, two, &ctx).unwrap();
         assert!(!result.is_symbolic());
         assert_eq!(result.as_u64(), Some(0x3FB504F3));
     }
@@ -3544,8 +3663,7 @@ mod tests {
         let rm_ru = RustBV::concrete(2, 32);
         let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-        let result =
-            VEXOps::binop(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
+        let result = VEXOps::binop(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
         let bits = ctx.eval(&result).expect("eval failed") as u32;
         assert_eq!(bits, 0x3FB504F4, "binop FSqrt+RU rounds up one ulp");
     }
@@ -3557,8 +3675,7 @@ mod tests {
         let rm_rne = RustBV::concrete(0, 32);
         let sixteen = RustBV::concrete(16.0f64.to_bits() as u128, 64);
 
-        let result =
-            VEXOps::binop(IROp::FSqrt(IRType::F64), rm_rne, sixteen, &ctx).unwrap();
+        let result = VEXOps::binop(IROp::FSqrt(IRType::F64), rm_rne, sixteen, &ctx).unwrap();
         assert!(!result.is_symbolic(), "RNE concrete must stay native");
         assert_eq!(result.as_u64(), Some(4.0f64.to_bits()));
     }
@@ -3627,7 +3744,10 @@ mod tests {
         let arg = RustBV::concrete(i32::MIN as u32 as u128, 32);
         let result = VEXOps::unop(IROp::I32StoF32, arg, &ctx).unwrap();
         let f = f32::from_bits(result.as_u64().unwrap() as u32);
-        assert_eq!(f, -2147483648.0f32, "I32_MIN must round-trip to -2^31 as f32");
+        assert_eq!(
+            f, -2147483648.0f32,
+            "I32_MIN must round-trip to -2^31 as f32"
+        );
     }
 
     /// F64→F32 (no-rm unop) precision overflow: 1e300 exceeds f32::MAX.
@@ -3639,7 +3759,11 @@ mod tests {
         let result = VEXOps::unop(IROp::F64toF32, arg, &ctx).unwrap();
         assert_eq!(result.width(), 32);
         let f = f32::from_bits(result.as_u64().unwrap() as u32);
-        assert!(f.is_infinite() && f.is_sign_positive(), "1e300 → +inf, got {}", f);
+        assert!(
+            f.is_infinite() && f.is_sign_positive(),
+            "1e300 → +inf, got {}",
+            f
+        );
     }
 
     /// F64→F32 of NaN: result is still NaN. Just check is_nan; the exact
@@ -3676,12 +3800,19 @@ mod tests {
         let xmm0 = RustBV::concrete(xmm0_bits, 128);
         let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
-        let result =
-            VEXOps::binop(IROp::VFSubS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let result = VEXOps::binop(IROp::VFSubS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
         let rv = result.as_u128().unwrap();
         let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
-        assert!((lane0 - 7.0).abs() < 1e-6, "10.0 - 3.0 == 7.0, got {}", lane0);
-        assert_eq!(rv & !0xFFFF_FFFFu128, upper_pattern, "upper 96 bits must pass through");
+        assert!(
+            (lane0 - 7.0).abs() < 1e-6,
+            "10.0 - 3.0 == 7.0, got {}",
+            lane0
+        );
+        assert_eq!(
+            rv & !0xFFFF_FFFFu128,
+            upper_pattern,
+            "upper 96 bits must pass through"
+        );
     }
 
     /// VFMulS concrete lane isolation: MULSS xmm0, xmm1.
@@ -3694,12 +3825,19 @@ mod tests {
         let xmm0 = RustBV::concrete(xmm0_bits, 128);
         let xmm1 = RustBV::concrete(2.5f32.to_bits() as u128, 128);
 
-        let result =
-            VEXOps::binop(IROp::VFMulS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let result = VEXOps::binop(IROp::VFMulS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
         let rv = result.as_u128().unwrap();
         let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
-        assert!((lane0 - 10.0).abs() < 1e-6, "4.0 * 2.5 == 10.0, got {}", lane0);
-        assert_eq!(rv & !0xFFFF_FFFFu128, upper_pattern, "upper 96 bits must pass through");
+        assert!(
+            (lane0 - 10.0).abs() < 1e-6,
+            "4.0 * 2.5 == 10.0, got {}",
+            lane0
+        );
+        assert_eq!(
+            rv & !0xFFFF_FFFFu128,
+            upper_pattern,
+            "upper 96 bits must pass through"
+        );
     }
 
     /// Concrete coverage for every scalar-in-vector FP IROp at F64 precision.
@@ -3710,9 +3848,7 @@ mod tests {
         let ctx = SymContext::new_mock();
         let upper_pattern: u128 = 0xCAFE_BABE_DEAD_BEEFu128 << 64;
 
-        let xmm0 = |lane0: f64| {
-            RustBV::concrete(upper_pattern | (lane0.to_bits() as u128), 128)
-        };
+        let xmm0 = |lane0: f64| RustBV::concrete(upper_pattern | (lane0.to_bits() as u128), 128);
         let xmm1 = |lane0: f64| RustBV::concrete(lane0.to_bits() as u128, 128);
 
         let cases: Vec<(IROp, f64, f64, f64)> = vec![
@@ -3770,8 +3906,7 @@ mod tests {
         let xmm0 = RustBV::concrete(f32::NAN.to_bits() as u128, 128);
         let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
-        let result =
-            VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+        let result = VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
         let rv = result.as_u128().unwrap();
         let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
         // NaN > 3.0 is false, so max picks 3.0 (the right operand).
@@ -3801,7 +3936,10 @@ mod tests {
         let shift = RustBV::symbolic(&ctx, "shl_amt", 8);
 
         let result = VEXOps::binop(
-            IROp::VShlN { elem: IRType::I16, count: 8 },
+            IROp::VShlN {
+                elem: IRType::I16,
+                count: 8,
+            },
             vec,
             shift.clone(),
             &ctx,
@@ -3819,7 +3957,11 @@ mod tests {
         for i in 0..8u32 {
             let lane = (model >> (i * 16)) & 0xFFFF;
             let expected = ((i as u128 + 1) << 4) & 0xFFFF;
-            assert_eq!(lane, expected, "lane {} expected {:#x}, got {:#x}", i, expected, lane);
+            assert_eq!(
+                lane, expected,
+                "lane {} expected {:#x}, got {:#x}",
+                i, expected, lane
+            );
         }
     }
 
@@ -3842,7 +3984,10 @@ mod tests {
         let shift = RustBV::symbolic(&ctx, "shr_amt", 8);
 
         let result = VEXOps::binop(
-            IROp::VShrN { elem: IRType::I32, count: 4 },
+            IROp::VShrN {
+                elem: IRType::I32,
+                count: 4,
+            },
             vec,
             shift.clone(),
             &ctx,
@@ -3858,7 +4003,11 @@ mod tests {
         for (i, lane) in lanes.iter().enumerate() {
             let got = ((model >> (i * 32)) & 0xFFFF_FFFF) as u32;
             let expected = lane >> 8;
-            assert_eq!(got, expected, "lane {} expected {:#x}, got {:#x}", i, expected, got);
+            assert_eq!(
+                got, expected,
+                "lane {} expected {:#x}, got {:#x}",
+                i, expected, got
+            );
         }
     }
 
@@ -3881,7 +4030,10 @@ mod tests {
         let shift = RustBV::symbolic(&ctx, "sar_amt", 8);
 
         let result = VEXOps::binop(
-            IROp::VSarN { elem: IRType::I16, count: 8 },
+            IROp::VSarN {
+                elem: IRType::I16,
+                count: 8,
+            },
             vec,
             shift.clone(),
             &ctx,
@@ -3896,8 +4048,12 @@ mod tests {
         let model = ctx.eval(&result).expect("eval(result) returned None");
         for (i, lane) in lanes.iter().enumerate() {
             let got = ((model >> (i * 16)) & 0xFFFF) as u16 as i16;
-            let expected = lane >> 4;  // arithmetic shift in Rust on i16
-            assert_eq!(got, expected, "lane {} expected {}, got {}", i, expected, got);
+            let expected = lane >> 4; // arithmetic shift in Rust on i16
+            assert_eq!(
+                got, expected,
+                "lane {} expected {}, got {}",
+                i, expected, got
+            );
         }
     }
 
@@ -3913,7 +4069,10 @@ mod tests {
         let shift = RustBV::symbolic(&ctx, "shl_amt_free", 8);
 
         let result = VEXOps::binop(
-            IROp::VShlN { elem: IRType::I16, count: 4 },
+            IROp::VShlN {
+                elem: IRType::I16,
+                count: 4,
+            },
             vec,
             shift,
             &ctx,
@@ -3931,11 +4090,9 @@ mod tests {
     fn test_vec_int_min_signed_concrete() {
         let ctx = SymContext::new_mock();
 
-        let l: [i16; 8] = [-5, 100,    0, -32768,  1,    -1, 32767, -2];
-        let r: [i16; 8] = [-3, 200, -100, -32767, -1,     0, 32766,  3];
-        let exp: [i16; 8] = [
-            -5, 100, -100, -32768, -1, -1, 32766, -2,
-        ];
+        let l: [i16; 8] = [-5, 100, 0, -32768, 1, -1, 32767, -2];
+        let r: [i16; 8] = [-3, 200, -100, -32767, -1, 0, 32766, 3];
+        let exp: [i16; 8] = [-5, 100, -100, -32768, -1, -1, 32766, -2];
 
         let mut lv: u128 = 0;
         let mut rv: u128 = 0;
@@ -3944,7 +4101,11 @@ mod tests {
             rv |= ((r[i] as u16) as u128) << (i as u32 * 16);
         }
         let result = VEXOps::binop(
-            IROp::VMin { elem: IRType::I16, count: 8, signed: true },
+            IROp::VMin {
+                elem: IRType::I16,
+                count: 8,
+                signed: true,
+            },
             RustBV::concrete(lv, 128),
             RustBV::concrete(rv, 128),
             &ctx,
@@ -3962,8 +4123,10 @@ mod tests {
     fn test_vec_int_max_unsigned_concrete() {
         let ctx = SymContext::new_mock();
 
-        let l: [u8; 16] = [0xFF, 0x00, 0x80, 0x7F,  1,  2,  3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let r: [u8; 16] = [0x00, 0xFF, 0x7F, 0x80,  9,  8,  7, 6, 5, 4, 3, 2, 1,  0,  0,  0];
+        let l: [u8; 16] = [
+            0xFF, 0x00, 0x80, 0x7F, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        ];
+        let r: [u8; 16] = [0x00, 0xFF, 0x7F, 0x80, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 0];
         let mut exp = [0u8; 16];
         for i in 0..16 {
             exp[i] = if l[i] > r[i] { l[i] } else { r[i] };
@@ -3976,7 +4139,11 @@ mod tests {
             rv |= (r[i] as u128) << (i as u32 * 8);
         }
         let result = VEXOps::binop(
-            IROp::VMax { elem: IRType::I8, count: 16, signed: false },
+            IROp::VMax {
+                elem: IRType::I8,
+                count: 16,
+                signed: false,
+            },
             RustBV::concrete(lv, 128),
             RustBV::concrete(rv, 128),
             &ctx,
@@ -3985,7 +4152,11 @@ mod tests {
         let got = result.as_u128().unwrap();
         for i in 0..16 {
             let lane = ((got >> (i as u32 * 8)) & 0xFF) as u8;
-            assert_eq!(lane, exp[i], "lane {} expected {:#x}, got {:#x}", i, exp[i], lane);
+            assert_eq!(
+                lane, exp[i],
+                "lane {} expected {:#x}, got {:#x}",
+                i, exp[i], lane
+            );
         }
     }
 
@@ -4003,7 +4174,10 @@ mod tests {
             bits |= ((v[i] as u16) as u128) << (i as u32 * 16);
         }
         let result = VEXOps::unop(
-            IROp::VAbs { elem: IRType::I16, count: 8 },
+            IROp::VAbs {
+                elem: IRType::I16,
+                count: 8,
+            },
             RustBV::concrete(bits, 128),
             &ctx,
         )
@@ -4011,7 +4185,11 @@ mod tests {
         let got = result.as_u128().unwrap();
         for i in 0..8 {
             let lane = ((got >> (i as u32 * 16)) & 0xFFFF) as u16;
-            assert_eq!(lane, exp[i], "lane {} expected {:#x}, got {:#x}", i, exp[i], lane);
+            assert_eq!(
+                lane, exp[i],
+                "lane {} expected {:#x}, got {:#x}",
+                i, exp[i], lane
+            );
         }
     }
 
@@ -4034,7 +4212,11 @@ mod tests {
         let l = RustBV::symbolic(&ctx, "vmax_l", 128);
 
         let result = VEXOps::binop(
-            IROp::VMax { elem: IRType::I32, count: 4, signed: true },
+            IROp::VMax {
+                elem: IRType::I32,
+                count: 4,
+                signed: true,
+            },
             l.clone(),
             r,
             &ctx,
@@ -4069,7 +4251,10 @@ mod tests {
             rv |= (r[i as usize].to_bits() as u128) << (i * 32);
         }
         let result = VEXOps::binop(
-            IROp::VFAdd { elem: IRType::F32, count: 4 },
+            IROp::VFAdd {
+                elem: IRType::F32,
+                count: 4,
+            },
             RustBV::concrete(lv, 128),
             RustBV::concrete(rv, 128),
             &ctx,
@@ -4104,7 +4289,10 @@ mod tests {
             rv |= (r[i as usize].to_bits() as u128) << (i * 64);
         }
         let result = VEXOps::binop(
-            IROp::VFDiv { elem: IRType::F64, count: 2 },
+            IROp::VFDiv {
+                elem: IRType::F64,
+                count: 2,
+            },
             RustBV::concrete(lv, 128),
             RustBV::concrete(rv, 128),
             &ctx,
@@ -4136,7 +4324,10 @@ mod tests {
             bits |= (v[i as usize].to_bits() as u128) << (i * 32);
         }
         let result = VEXOps::unop(
-            IROp::VFSqrt { elem: IRType::F32, count: 4 },
+            IROp::VFSqrt {
+                elem: IRType::F32,
+                count: 4,
+            },
             RustBV::concrete(bits, 128),
             &ctx,
         )
@@ -4167,7 +4358,10 @@ mod tests {
             bits |= (v[i as usize].to_bits() as u128) << (i * 32);
         }
         let result = VEXOps::unop(
-            IROp::VFAbs { elem: IRType::F32, count: 4 },
+            IROp::VFAbs {
+                elem: IRType::F32,
+                count: 4,
+            },
             RustBV::concrete(bits, 128),
             &ctx,
         )
@@ -4202,7 +4396,10 @@ mod tests {
             rv |= (r[i as usize].to_bits() as u128) << (i * 32);
         }
         let result = VEXOps::binop(
-            IROp::VFMax { elem: IRType::F32, count: 4 },
+            IROp::VFMax {
+                elem: IRType::F32,
+                count: 4,
+            },
             RustBV::concrete(lv, 128),
             RustBV::concrete(rv, 128),
             &ctx,
@@ -4237,7 +4434,10 @@ mod tests {
             rv |= (r[i as usize].to_bits() as u128) << (i * 64);
         }
         let result = VEXOps::binop(
-            IROp::VFMin { elem: IRType::F64, count: 2 },
+            IROp::VFMin {
+                elem: IRType::F64,
+                count: 2,
+            },
             RustBV::concrete(lv, 128),
             RustBV::concrete(rv, 128),
             &ctx,
@@ -4278,10 +4478,16 @@ mod tests {
             lv_target |= (1.0f32.to_bits() as u128) << (i * 32);
         }
         let l = RustBV::symbolic(&ctx, "vfadd_l", 128);
-        ctx.add_constraint(l.to_z3_ast()._eq(&RustBV::concrete(lv_target, 128).to_z3_ast()));
+        ctx.add_constraint(
+            l.to_z3_ast()
+                ._eq(&RustBV::concrete(lv_target, 128).to_z3_ast()),
+        );
 
         let result = VEXOps::binop(
-            IROp::VFAdd { elem: IRType::F32, count: 4 },
+            IROp::VFAdd {
+                elem: IRType::F32,
+                count: 4,
+            },
             l,
             r,
             &ctx,
@@ -4320,13 +4526,18 @@ mod tests {
         // CMPEQSS: lane0(left)==lane0(right) → 0xFFFFFFFF in lane0; upper from left.
         let ctx = SymContext::new_mock();
         let upper = 0xDEAD_BEEF_DEAD_BEEF_DEAD_BEEFu128;
-        let l = RustBV::concrete(
-            make_v128_lane0(2.0f32.to_bits() as u128, upper), 128);
+        let l = RustBV::concrete(make_v128_lane0(2.0f32.to_bits() as u128, upper), 128);
         let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
         let res = VEXOps::binop(
-            IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpScalarLane {
+                kind: FCmpKind::Eq,
+                ty: IRType::F32,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 128);
         let v = res.as_u128().expect("concrete result");
         assert_eq!(v & 0xFFFF_FFFF, 0xFFFF_FFFF, "lane0 should be all-1s");
@@ -4339,9 +4550,15 @@ mod tests {
         let l = RustBV::concrete(1.0f32.to_bits() as u128, 128);
         let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
         let res = VEXOps::binop(
-            IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpScalarLane {
+                kind: FCmpKind::Eq,
+                ty: IRType::F32,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         assert_eq!(v & 0xFFFF_FFFF, 0, "lane0 should be 0 on false");
     }
@@ -4352,9 +4569,15 @@ mod tests {
         let l = RustBV::concrete(1.0f32.to_bits() as u128, 128);
         let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
         let res = VEXOps::binop(
-            IROp::FCmpScalarLane { kind: FCmpKind::Lt, ty: IRType::F32 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpScalarLane {
+                kind: FCmpKind::Lt,
+                ty: IRType::F32,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF, 0xFFFF_FFFF);
     }
 
@@ -4362,13 +4585,18 @@ mod tests {
     fn test_fcmp_scalar_lane_le_f64_concrete_eq() {
         let ctx = SymContext::new_mock();
         let upper = 0x123456789ABCDEF0u128;
-        let l = RustBV::concrete(
-            make_v128_lane0_64(2.5f64.to_bits() as u128, upper), 128);
+        let l = RustBV::concrete(make_v128_lane0_64(2.5f64.to_bits() as u128, upper), 128);
         let r = RustBV::concrete(2.5f64.to_bits() as u128, 128);
         let res = VEXOps::binop(
-            IROp::FCmpScalarLane { kind: FCmpKind::Le, ty: IRType::F64 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpScalarLane {
+                kind: FCmpKind::Le,
+                ty: IRType::F64,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         assert_eq!(v & 0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF);
         assert_eq!(v >> 64, upper, "upper64 passthrough from left");
@@ -4382,9 +4610,15 @@ mod tests {
         let l = RustBV::concrete(nan, 128);
         let r = RustBV::concrete(1.0f32.to_bits() as u128, 128);
         let res = VEXOps::binop(
-            IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F32 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpScalarLane {
+                kind: FCmpKind::Un,
+                ty: IRType::F32,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF, 0xFFFF_FFFF);
     }
 
@@ -4395,9 +4629,15 @@ mod tests {
         let l = RustBV::concrete(1.0f64.to_bits() as u128, 128);
         let r = RustBV::concrete(2.0f64.to_bits() as u128, 128);
         let res = VEXOps::binop(
-            IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F64 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpScalarLane {
+                kind: FCmpKind::Un,
+                ty: IRType::F64,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF_FFFF_FFFF, 0);
     }
 
@@ -4411,18 +4651,31 @@ mod tests {
         let l = RustBV::symbolic(&ctx, "fcmp_lane_l", 128);
         let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
         let res = VEXOps::binop(
-            IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 },
-            l.clone(), r, &ctx,
-        ).unwrap();
+            IROp::FCmpScalarLane {
+                kind: FCmpKind::Eq,
+                ty: IRType::F32,
+            },
+            l.clone(),
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 128);
         let lo32 = res.extract(31, 0, &ctx);
         let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
         ctx.add_constraint(lo32.to_z3_ast()._eq(&true_mask.to_z3_ast()));
-        assert!(ctx.is_sat(), "expected SAT after FCmpScalarLane Eq mask=all1s");
+        assert!(
+            ctx.is_sat(),
+            "expected SAT after FCmpScalarLane Eq mask=all1s"
+        );
 
         let model = ctx.eval(&l).expect("eval(l) returned None");
         let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
-        assert!((lane0 - 2.0).abs() < 1e-6, "expected lane0==2.0, got {}", lane0);
+        assert!(
+            (lane0 - 2.0).abs() < 1e-6,
+            "expected lane0==2.0, got {}",
+            lane0
+        );
     }
 
     // ---- FComCC (Iop_CmpF32, Iop_CmpF64, x87 FCOM) ----
@@ -4479,7 +4732,11 @@ mod tests {
         assert!(ctx.is_sat(), "expected SAT for FComCC(x, 5.0) == LT");
         let model_x = ctx.eval(&x).expect("eval(x) None");
         let xf = f64::from_bits(model_x as u64);
-        assert!(!xf.is_nan() && xf < 5.0, "expected x < 5.0 and not NaN, got {}", xf);
+        assert!(
+            !xf.is_nan() && xf < 5.0,
+            "expected x < 5.0 and not NaN, got {}",
+            xf
+        );
     }
 
     // ---- FCmpVecPacked (Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,64Fx2}) ----
@@ -4507,9 +4764,16 @@ mod tests {
         let l = RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128);
         let r = RustBV::concrete(pack_4xf32(1.0, 5.0, 3.0, 7.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F32, count: 4 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Eq,
+                elem: IRType::F32,
+                count: 4,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 128);
         let v = res.as_u128().unwrap();
         // Expect lane 0 = 0xFFFFFFFF, lane 1 = 0, lane 2 = 0xFFFFFFFF, lane 3 = 0.
@@ -4523,11 +4787,18 @@ mod tests {
         // CMPLTPS: 1.0 < 2.0 (T), 5.0 < 3.0 (F), -1.0 < 0.0 (T), 4.0 < 4.0 (F).
         let ctx = SymContext::new_mock();
         let l = RustBV::concrete(pack_4xf32(1.0, 5.0, -1.0, 4.0), 128);
-        let r = RustBV::concrete(pack_4xf32(2.0, 3.0,  0.0, 4.0), 128);
+        let r = RustBV::concrete(pack_4xf32(2.0, 3.0, 0.0, 4.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Lt, elem: IRType::F32, count: 4 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Lt,
+                elem: IRType::F32,
+                count: 4,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         let expected: u128 = 0xFFFF_FFFFu128 | (0xFFFF_FFFFu128 << 64);
         assert_eq!(v, expected);
@@ -4540,9 +4811,16 @@ mod tests {
         let l = RustBV::concrete(pack_4xf32(5.0, 1.0, 4.0, 9.0), 128);
         let r = RustBV::concrete(pack_4xf32(2.0, 3.0, 4.0, 0.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Gt, elem: IRType::F32, count: 4 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Gt,
+                elem: IRType::F32,
+                count: 4,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         let expected: u128 = 0xFFFF_FFFFu128 | (0xFFFF_FFFFu128 << 96);
         assert_eq!(v, expected);
@@ -4555,9 +4833,16 @@ mod tests {
         let l = RustBV::concrete(pack_4xf32(5.0, 3.0, 1.0, 4.0), 128);
         let r = RustBV::concrete(pack_4xf32(2.0, 3.0, 2.0, 4.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Ge, elem: IRType::F32, count: 4 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Ge,
+                elem: IRType::F32,
+                count: 4,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         let expected: u128 =
             0xFFFF_FFFFu128 | (0xFFFF_FFFFu128 << 32) | (0u128 << 64) | (0xFFFF_FFFFu128 << 96);
@@ -4571,9 +4856,16 @@ mod tests {
         let l = RustBV::concrete(pack_2xf64(1.0, 3.0), 128);
         let r = RustBV::concrete(pack_2xf64(2.0, 3.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Le, elem: IRType::F64, count: 2 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Le,
+                elem: IRType::F64,
+                count: 2,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         let expected: u128 = 0xFFFF_FFFF_FFFF_FFFFu128 | (0xFFFF_FFFF_FFFF_FFFFu128 << 64);
         assert_eq!(v, expected);
@@ -4586,9 +4878,16 @@ mod tests {
         let l = RustBV::concrete(pack_4xf32(1.0, f32::NAN, 3.0, 4.0), 128);
         let r = RustBV::concrete(pack_4xf32(2.0, 5.0, 3.0, 4.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Un, elem: IRType::F32, count: 4 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Un,
+                elem: IRType::F32,
+                count: 4,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         let expected: u128 = 0xFFFF_FFFFu128 << 32;
         assert_eq!(v, expected);
@@ -4601,9 +4900,16 @@ mod tests {
         let l = RustBV::concrete(pack_2xf64(1.0, 3.0), 128);
         let r = RustBV::concrete(pack_2xf64(f64::NAN, 4.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Un, elem: IRType::F64, count: 2 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Un,
+                elem: IRType::F64,
+                count: 2,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         let v = res.as_u128().unwrap();
         let expected: u128 = 0xFFFF_FFFF_FFFF_FFFFu128;
         assert_eq!(v, expected);
@@ -4616,9 +4922,16 @@ mod tests {
         let l = RustBV::concrete(pack_2xf32_64(1.0, 2.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
         let r = RustBV::concrete(pack_2xf32_64(1.0, 5.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F32, count: 2 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Eq,
+                elem: IRType::F32,
+                count: 2,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 64);
         let v = res.as_u128().unwrap();
         // Lane 0 equal → 0xFFFFFFFF; lane 1 unequal → 0.
@@ -4632,9 +4945,16 @@ mod tests {
         let l = RustBV::concrete(pack_2xf32_64(5.0, 1.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
         let r = RustBV::concrete(pack_2xf32_64(2.0, 3.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Gt, elem: IRType::F32, count: 2 },
-            l, r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Gt,
+                elem: IRType::F32,
+                count: 2,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 64);
         let v = res.as_u128().unwrap();
         assert_eq!(v as u64, 0xFFFF_FFFFu64);
@@ -4650,9 +4970,16 @@ mod tests {
         let l = RustBV::symbolic(&ctx, "fpkd_lt_l", 128);
         let r = RustBV::concrete(pack_4xf32(5.0, 1.0, 1.0, 1.0), 128);
         let res = VEXOps::binop(
-            IROp::FCmpVecPacked { kind: FCmpKind::Lt, elem: IRType::F32, count: 4 },
-            l.clone(), r, &ctx,
-        ).unwrap();
+            IROp::FCmpVecPacked {
+                kind: FCmpKind::Lt,
+                elem: IRType::F32,
+                count: 4,
+            },
+            l.clone(),
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 128);
         let lane0_mask = res.extract(31, 0, &ctx);
         let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
@@ -4660,7 +4987,11 @@ mod tests {
         assert!(ctx.is_sat(), "expected SAT for lane0 LT");
         let model = ctx.eval(&l).expect("eval(l) None");
         let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
-        assert!(lane0 < 5.0 && !lane0.is_nan(), "expected lane0 < 5.0 and not NaN, got {}", lane0);
+        assert!(
+            lane0 < 5.0 && !lane0.is_nan(),
+            "expected lane0 < 5.0 and not NaN, got {}",
+            lane0
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -4674,7 +5005,16 @@ mod tests {
         // l = 0x0706050403020100, r = same. result lane i = i*i.
         let l = RustBV::concrete(0x0706_0504_0302_0100u128, 64);
         let r = RustBV::concrete(0x0706_0504_0302_0100u128, 64);
-        let res = VEXOps::binop(IROp::VMul { elem: IRType::I8, count: 8 }, l, r, &ctx).unwrap();
+        let res = VEXOps::binop(
+            IROp::VMul {
+                elem: IRType::I8,
+                count: 8,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 64);
         let v = res.as_u128().unwrap();
         // lane i (bits [8i+7:8i]) should equal i*i.
@@ -4692,7 +5032,16 @@ mod tests {
         let l = RustBV::concrete(lo64 | (lo64 << 64), 128);
         let lo5 = 0x0505_0505_0505_0505u128;
         let r = RustBV::concrete(lo5 | (lo5 << 64), 128);
-        let res = VEXOps::binop(IROp::VMul { elem: IRType::I8, count: 16 }, l, r, &ctx).unwrap();
+        let res = VEXOps::binop(
+            IROp::VMul {
+                elem: IRType::I8,
+                count: 16,
+            },
+            l,
+            r,
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(res.width(), 128);
         let v = res.as_u128().unwrap();
         for i in 0..16 {
@@ -4706,12 +5055,22 @@ mod tests {
         let ctx = SymContext::new_mock();
         let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
         // Lane 0 = 0x11, lane 7 = 0x88.
-        for (lane, expected) in
-            [(0u128, 0x11), (1, 0x22), (2, 0x33), (3, 0x44), (4, 0x55), (5, 0x66), (6, 0x77), (7, 0x88)]
-        {
+        for (lane, expected) in [
+            (0u128, 0x11),
+            (1, 0x22),
+            (2, 0x33),
+            (3, 0x44),
+            (4, 0x55),
+            (5, 0x66),
+            (6, 0x77),
+            (7, 0x88),
+        ] {
             let idx = RustBV::concrete(lane, 8);
             let res = VEXOps::binop(
-                IROp::VGetElem { elem: IRType::I8, count: 8 },
+                IROp::VGetElem {
+                    elem: IRType::I8,
+                    count: 8,
+                },
                 vec.clone(),
                 idx,
                 &ctx,
@@ -4731,7 +5090,10 @@ mod tests {
         payload |= (0xBEEF as u128) << (7 * 16);
         let vec = RustBV::concrete(payload, 128);
         let res = VEXOps::binop(
-            IROp::VGetElem { elem: IRType::I16, count: 8 },
+            IROp::VGetElem {
+                elem: IRType::I16,
+                count: 8,
+            },
             vec.clone(),
             RustBV::concrete(3, 8),
             &ctx,
@@ -4741,7 +5103,10 @@ mod tests {
         assert_eq!(res.as_u128().unwrap(), 0xDEAD);
 
         let res = VEXOps::binop(
-            IROp::VGetElem { elem: IRType::I16, count: 8 },
+            IROp::VGetElem {
+                elem: IRType::I16,
+                count: 8,
+            },
             vec,
             RustBV::concrete(7, 8),
             &ctx,
@@ -4757,7 +5122,10 @@ mod tests {
         let hi = 0x1111_2222_3333_4444u128;
         let vec = RustBV::concrete(lo | (hi << 64), 128);
         let r0 = VEXOps::binop(
-            IROp::VGetElem { elem: IRType::I64, count: 2 },
+            IROp::VGetElem {
+                elem: IRType::I64,
+                count: 2,
+            },
             vec.clone(),
             RustBV::concrete(0, 8),
             &ctx,
@@ -4765,7 +5133,10 @@ mod tests {
         .unwrap();
         assert_eq!(r0.as_u128().unwrap(), lo);
         let r1 = VEXOps::binop(
-            IROp::VGetElem { elem: IRType::I64, count: 2 },
+            IROp::VGetElem {
+                elem: IRType::I64,
+                count: 2,
+            },
             vec,
             RustBV::concrete(1, 8),
             &ctx,
@@ -4780,7 +5151,10 @@ mod tests {
         let vec = RustBV::concrete(0x0u128, 64);
         // Set lane 3 to 0xFF.
         let res = VEXOps::binop_with_rm(
-            IROp::VSetElem { elem: IRType::I8, count: 8 },
+            IROp::VSetElem {
+                elem: IRType::I8,
+                count: 8,
+            },
             vec,
             RustBV::concrete(3, 8),
             RustBV::concrete(0xFF, 8),
@@ -4797,7 +5171,10 @@ mod tests {
         let vec = RustBV::concrete(0u128, 128);
         // Set lane 5 to 0xCAFE in a 16x8 vector.
         let res = VEXOps::binop_with_rm(
-            IROp::VSetElem { elem: IRType::I16, count: 8 },
+            IROp::VSetElem {
+                elem: IRType::I16,
+                count: 8,
+            },
             vec,
             RustBV::concrete(5, 8),
             RustBV::concrete(0xCAFE, 16),
@@ -4814,7 +5191,10 @@ mod tests {
         let vec = RustBV::concrete(0xDEAD_BEEF_CAFE_F00Du128, 64);
         // Overwrite lane 2 (byte 2) with 0x77.
         let res = VEXOps::binop_with_rm(
-            IROp::VSetElem { elem: IRType::I8, count: 8 },
+            IROp::VSetElem {
+                elem: IRType::I8,
+                count: 8,
+            },
             vec,
             RustBV::concrete(2, 8),
             RustBV::concrete(0x77, 8),
@@ -4832,7 +5212,10 @@ mod tests {
         let ctx = SymContext::new_mock();
         let vec = RustBV::concrete(0u128, 128);
         let inserted = VEXOps::binop_with_rm(
-            IROp::VSetElem { elem: IRType::I32, count: 4 },
+            IROp::VSetElem {
+                elem: IRType::I32,
+                count: 4,
+            },
             vec,
             RustBV::concrete(2, 8),
             RustBV::concrete(0x1234_5678, 32),
@@ -4840,7 +5223,10 @@ mod tests {
         )
         .unwrap();
         let lane = VEXOps::binop(
-            IROp::VGetElem { elem: IRType::I32, count: 4 },
+            IROp::VGetElem {
+                elem: IRType::I32,
+                count: 4,
+            },
             inserted,
             RustBV::concrete(2, 8),
             &ctx,
@@ -4859,7 +5245,10 @@ mod tests {
         let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
         let sym_idx = RustBV::symbolic(&ctx, "get_idx", 8);
         let res = VEXOps::binop(
-            IROp::VGetElem { elem: IRType::I8, count: 8 },
+            IROp::VGetElem {
+                elem: IRType::I8,
+                count: 8,
+            },
             vec,
             sym_idx.clone(),
             &ctx,

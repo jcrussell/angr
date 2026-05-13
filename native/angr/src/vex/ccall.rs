@@ -110,19 +110,19 @@ pub mod x86_cc_op {
 
 /// Condition types (same for x86 and AMD64)
 pub mod cond_type {
-    pub const COND_O: u64 = 0;   // Overflow
-    pub const COND_NO: u64 = 1;  // Not overflow
-    pub const COND_B: u64 = 2;   // Below (CF=1)
-    pub const COND_NB: u64 = 3;  // Not below (CF=0)
-    pub const COND_Z: u64 = 4;   // Zero (ZF=1)
-    pub const COND_NZ: u64 = 5;  // Not zero (ZF=0)
-    pub const COND_BE: u64 = 6;  // Below or equal (CF=1 or ZF=1)
+    pub const COND_O: u64 = 0; // Overflow
+    pub const COND_NO: u64 = 1; // Not overflow
+    pub const COND_B: u64 = 2; // Below (CF=1)
+    pub const COND_NB: u64 = 3; // Not below (CF=0)
+    pub const COND_Z: u64 = 4; // Zero (ZF=1)
+    pub const COND_NZ: u64 = 5; // Not zero (ZF=0)
+    pub const COND_BE: u64 = 6; // Below or equal (CF=1 or ZF=1)
     pub const COND_NBE: u64 = 7; // Not below or equal (CF=0 and ZF=0)
-    pub const COND_S: u64 = 8;   // Sign (SF=1)
-    pub const COND_NS: u64 = 9;  // Not sign (SF=0)
-    pub const COND_P: u64 = 10;  // Parity even (PF=1)
+    pub const COND_S: u64 = 8; // Sign (SF=1)
+    pub const COND_NS: u64 = 9; // Not sign (SF=0)
+    pub const COND_P: u64 = 10; // Parity even (PF=1)
     pub const COND_NP: u64 = 11; // Parity odd (PF=0)
-    pub const COND_L: u64 = 12;  // Less (SF != OF)
+    pub const COND_L: u64 = 12; // Less (SF != OF)
     pub const COND_NL: u64 = 13; // Not less (SF == OF)
     pub const COND_LE: u64 = 14; // Less or equal (ZF=1 or SF != OF)
     pub const COND_NLE: u64 = 15; // Not less or equal (ZF=0 and SF == OF)
@@ -184,8 +184,14 @@ fn symbolic_parity(result: &RustBV, ctx: &SymContext) -> RustBV {
     let b5 = result.extract(5, 5, ctx);
     let b6 = result.extract(6, 6, ctx);
     let b7 = result.extract(7, 7, ctx);
-    let xor_all = b0.xor(&b1, ctx).xor(&b2, ctx).xor(&b3, ctx)
-        .xor(&b4, ctx).xor(&b5, ctx).xor(&b6, ctx).xor(&b7, ctx);
+    let xor_all = b0
+        .xor(&b1, ctx)
+        .xor(&b2, ctx)
+        .xor(&b3, ctx)
+        .xor(&b4, ctx)
+        .xor(&b5, ctx)
+        .xor(&b6, ctx)
+        .xor(&b7, ctx);
     // PF=1 means even parity (even number of set bits), so NOT the XOR
     xor_all.not(ctx)
 }
@@ -193,8 +199,13 @@ fn symbolic_parity(result: &RustBV, ctx: &SymContext) -> RustBV {
 /// Pack individual 1-bit flags into EFLAGS format bitvector.
 /// Bit positions: OF@11, SF@7, ZF@6, PF@2, CF@0
 fn symbolic_pack_eflags(
-    of: &RustBV, sf: &RustBV, zf: &RustBV, pf: &RustBV, cf: &RustBV,
-    ret_bits: u32, ctx: &SymContext,
+    of: &RustBV,
+    sf: &RustBV,
+    zf: &RustBV,
+    pf: &RustBV,
+    cf: &RustBV,
+    ret_bits: u32,
+    ctx: &SymContext,
 ) -> RustBV {
     let of_ext = of.zero_extend(ret_bits, ctx);
     let sf_ext = sf.zero_extend(ret_bits, ctx);
@@ -207,7 +218,8 @@ fn symbolic_pack_eflags(
     let shift_6 = RustBV::concrete(6, ret_bits);
     let shift_2 = RustBV::concrete(2, ret_bits);
 
-    of_ext.shl(&shift_11, ctx)
+    of_ext
+        .shl(&shift_11, ctx)
         .or(&sf_ext.shl(&shift_7, ctx), ctx)
         .or(&zf_ext.shl(&shift_6, ctx), ctx)
         .or(&pf_ext.shl(&shift_2, ctx), ctx)
@@ -215,7 +227,13 @@ fn symbolic_pack_eflags(
 }
 
 /// Symbolic eflags computation for SUB/CMP: flags from dep1 - dep2
-fn symbolic_eflags_sub(nbits: u32, dep1: &RustBV, dep2: &RustBV, ctx: &SymContext, ret_bits: u32) -> RustBV {
+fn symbolic_eflags_sub(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ctx: &SymContext,
+    ret_bits: u32,
+) -> RustBV {
     let d1 = extract_to_nbits(dep1, nbits, ctx);
     let d2 = extract_to_nbits(dep2, nbits, ctx);
     let result = d1.sub(&d2, ctx);
@@ -228,7 +246,10 @@ fn symbolic_eflags_sub(nbits: u32, dep1: &RustBV, dep2: &RustBV, ctx: &SymContex
     // CF = (dep1 < dep2) unsigned — borrow
     let cf = d1.ult(&d2, ctx);
     // OF = ((dep1 ^ dep2) & (dep1 ^ result))[msb] — different signs & result sign differs from dep1
-    let of = d1.xor(&d2, ctx).and(&d1.xor(&result, ctx), ctx).extract(nbits - 1, nbits - 1, ctx);
+    let of = d1
+        .xor(&d2, ctx)
+        .and(&d1.xor(&result, ctx), ctx)
+        .extract(nbits - 1, nbits - 1, ctx);
     // PF = parity of low byte of result
     let pf = symbolic_parity(&result, ctx);
 
@@ -236,7 +257,13 @@ fn symbolic_eflags_sub(nbits: u32, dep1: &RustBV, dep2: &RustBV, ctx: &SymContex
 }
 
 /// Symbolic eflags computation for ADD: flags from dep1 + dep2
-fn symbolic_eflags_add(nbits: u32, dep1: &RustBV, dep2: &RustBV, ctx: &SymContext, ret_bits: u32) -> RustBV {
+fn symbolic_eflags_add(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ctx: &SymContext,
+    ret_bits: u32,
+) -> RustBV {
     let d1 = extract_to_nbits(dep1, nbits, ctx);
     let d2 = extract_to_nbits(dep2, nbits, ctx);
     let result = d1.add(&d2, ctx);
@@ -247,7 +274,11 @@ fn symbolic_eflags_add(nbits: u32, dep1: &RustBV, dep2: &RustBV, ctx: &SymContex
     // CF = (result < dep1) unsigned — carry out
     let cf = result.ult(&d1, ctx);
     // OF = (~(dep1 ^ dep2) & (dep1 ^ result))[msb] — same sign operands, different sign result
-    let of = d1.xor(&d2, ctx).not(ctx).and(&d1.xor(&result, ctx), ctx).extract(nbits - 1, nbits - 1, ctx);
+    let of = d1
+        .xor(&d2, ctx)
+        .not(ctx)
+        .and(&d1.xor(&result, ctx), ctx)
+        .extract(nbits - 1, nbits - 1, ctx);
     let pf = symbolic_parity(&result, ctx);
 
     symbolic_pack_eflags(&of, &sf, &zf, &pf, &cf, ret_bits, ctx)
@@ -282,7 +313,11 @@ fn calc_parity(val: u64) -> u8 {
 /// Get bitmask for an n-bit value (e.g., nbits=32 -> 0xFFFFFFFF).
 #[inline]
 fn get_mask(nbits: u32) -> u64 {
-    if nbits == 64 { u64::MAX } else { (1u64 << nbits) - 1 }
+    if nbits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << nbits) - 1
+    }
 }
 
 /// Get the sign bit for an n-bit value (e.g., nbits=32 -> 0x80000000).
@@ -309,7 +344,11 @@ fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
 
     // OF: set if signed overflow
     // Overflow occurs if: (arg_l ^ arg_r) & (arg_l ^ res) has sign bit set
-    let of = if ((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0 { 1 } else { 0 };
+    let of = if ((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0 {
+        1
+    } else {
+        0
+    };
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -337,7 +376,11 @@ fn calc_flags_add(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     // For addition: overflow if both operands have same sign and result has different sign
     // OF = ((arg_l ^ arg_r ^ mask) & (arg_l ^ res)) has sign bit set
     // Simplified: same sign operands, different sign result
-    let of = if ((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0 { 1 } else { 0 };
+    let of = if ((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0 {
+        1
+    } else {
+        0
+    };
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -527,7 +570,11 @@ fn calc_flags_adc(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Flags
     let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
 
     // OF: signed overflow
-    let of = if ((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0 { 1 } else { 0 };
+    let of = if ((!(arg_l ^ arg_r)) & (arg_l ^ res) & sign_bit) != 0 {
+        1
+    } else {
+        0
+    };
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -559,7 +606,11 @@ fn calc_flags_sbb(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Flags
     let sf = if (res & sign_bit) != 0 { 1 } else { 0 };
 
     // OF: signed overflow
-    let of = if ((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0 { 1 } else { 0 };
+    let of = if ((arg_l ^ arg_r) & (arg_l ^ res) & sign_bit) != 0 {
+        1
+    } else {
+        0
+    };
 
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
@@ -648,21 +699,21 @@ fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
 fn amd64_op_to_nbits(cc_op: u64) -> Option<u32> {
     use amd64_cc_op::*;
     match cc_op {
-        G_CC_OP_ADDB | G_CC_OP_SUBB | G_CC_OP_ADCB | G_CC_OP_SBBB | G_CC_OP_LOGICB |
-        G_CC_OP_INCB | G_CC_OP_DECB | G_CC_OP_SHLB | G_CC_OP_SHRB | G_CC_OP_ROLB |
-        G_CC_OP_RORB | G_CC_OP_UMULB | G_CC_OP_SMULB => Some(8),
+        G_CC_OP_ADDB | G_CC_OP_SUBB | G_CC_OP_ADCB | G_CC_OP_SBBB | G_CC_OP_LOGICB
+        | G_CC_OP_INCB | G_CC_OP_DECB | G_CC_OP_SHLB | G_CC_OP_SHRB | G_CC_OP_ROLB
+        | G_CC_OP_RORB | G_CC_OP_UMULB | G_CC_OP_SMULB => Some(8),
 
-        G_CC_OP_ADDW | G_CC_OP_SUBW | G_CC_OP_ADCW | G_CC_OP_SBBW | G_CC_OP_LOGICW |
-        G_CC_OP_INCW | G_CC_OP_DECW | G_CC_OP_SHLW | G_CC_OP_SHRW | G_CC_OP_ROLW |
-        G_CC_OP_RORW | G_CC_OP_UMULW | G_CC_OP_SMULW => Some(16),
+        G_CC_OP_ADDW | G_CC_OP_SUBW | G_CC_OP_ADCW | G_CC_OP_SBBW | G_CC_OP_LOGICW
+        | G_CC_OP_INCW | G_CC_OP_DECW | G_CC_OP_SHLW | G_CC_OP_SHRW | G_CC_OP_ROLW
+        | G_CC_OP_RORW | G_CC_OP_UMULW | G_CC_OP_SMULW => Some(16),
 
-        G_CC_OP_ADDL | G_CC_OP_SUBL | G_CC_OP_ADCL | G_CC_OP_SBBL | G_CC_OP_LOGICL |
-        G_CC_OP_INCL | G_CC_OP_DECL | G_CC_OP_SHLL | G_CC_OP_SHRL | G_CC_OP_ROLL |
-        G_CC_OP_RORL | G_CC_OP_UMULL | G_CC_OP_SMULL => Some(32),
+        G_CC_OP_ADDL | G_CC_OP_SUBL | G_CC_OP_ADCL | G_CC_OP_SBBL | G_CC_OP_LOGICL
+        | G_CC_OP_INCL | G_CC_OP_DECL | G_CC_OP_SHLL | G_CC_OP_SHRL | G_CC_OP_ROLL
+        | G_CC_OP_RORL | G_CC_OP_UMULL | G_CC_OP_SMULL => Some(32),
 
-        G_CC_OP_ADDQ | G_CC_OP_SUBQ | G_CC_OP_ADCQ | G_CC_OP_SBBQ | G_CC_OP_LOGICQ |
-        G_CC_OP_INCQ | G_CC_OP_DECQ | G_CC_OP_SHLQ | G_CC_OP_SHRQ | G_CC_OP_ROLQ |
-        G_CC_OP_RORQ | G_CC_OP_UMULQ | G_CC_OP_SMULQ => Some(64),
+        G_CC_OP_ADDQ | G_CC_OP_SUBQ | G_CC_OP_ADCQ | G_CC_OP_SBBQ | G_CC_OP_LOGICQ
+        | G_CC_OP_INCQ | G_CC_OP_DECQ | G_CC_OP_SHLQ | G_CC_OP_SHRQ | G_CC_OP_ROLQ
+        | G_CC_OP_RORQ | G_CC_OP_UMULQ | G_CC_OP_SMULQ => Some(64),
 
         G_CC_OP_COPY => Some(64), // COPY uses native size
 
@@ -674,17 +725,17 @@ fn amd64_op_to_nbits(cc_op: u64) -> Option<u32> {
 fn x86_op_to_nbits(cc_op: u64) -> Option<u32> {
     use x86_cc_op::*;
     match cc_op {
-        G_CC_OP_ADDB | G_CC_OP_SUBB | G_CC_OP_ADCB | G_CC_OP_SBBB | G_CC_OP_LOGICB |
-        G_CC_OP_INCB | G_CC_OP_DECB | G_CC_OP_SHLB | G_CC_OP_SHRB | G_CC_OP_ROLB |
-        G_CC_OP_RORB | G_CC_OP_UMULB | G_CC_OP_SMULB => Some(8),
+        G_CC_OP_ADDB | G_CC_OP_SUBB | G_CC_OP_ADCB | G_CC_OP_SBBB | G_CC_OP_LOGICB
+        | G_CC_OP_INCB | G_CC_OP_DECB | G_CC_OP_SHLB | G_CC_OP_SHRB | G_CC_OP_ROLB
+        | G_CC_OP_RORB | G_CC_OP_UMULB | G_CC_OP_SMULB => Some(8),
 
-        G_CC_OP_ADDW | G_CC_OP_SUBW | G_CC_OP_ADCW | G_CC_OP_SBBW | G_CC_OP_LOGICW |
-        G_CC_OP_INCW | G_CC_OP_DECW | G_CC_OP_SHLW | G_CC_OP_SHRW | G_CC_OP_ROLW |
-        G_CC_OP_RORW | G_CC_OP_UMULW | G_CC_OP_SMULW => Some(16),
+        G_CC_OP_ADDW | G_CC_OP_SUBW | G_CC_OP_ADCW | G_CC_OP_SBBW | G_CC_OP_LOGICW
+        | G_CC_OP_INCW | G_CC_OP_DECW | G_CC_OP_SHLW | G_CC_OP_SHRW | G_CC_OP_ROLW
+        | G_CC_OP_RORW | G_CC_OP_UMULW | G_CC_OP_SMULW => Some(16),
 
-        G_CC_OP_ADDL | G_CC_OP_SUBL | G_CC_OP_ADCL | G_CC_OP_SBBL | G_CC_OP_LOGICL |
-        G_CC_OP_INCL | G_CC_OP_DECL | G_CC_OP_SHLL | G_CC_OP_SHRL | G_CC_OP_ROLL |
-        G_CC_OP_RORL | G_CC_OP_UMULL | G_CC_OP_SMULL => Some(32),
+        G_CC_OP_ADDL | G_CC_OP_SUBL | G_CC_OP_ADCL | G_CC_OP_SBBL | G_CC_OP_LOGICL
+        | G_CC_OP_INCL | G_CC_OP_DECL | G_CC_OP_SHLL | G_CC_OP_SHRL | G_CC_OP_ROLL
+        | G_CC_OP_RORL | G_CC_OP_UMULL | G_CC_OP_SMULL => Some(32),
 
         G_CC_OP_COPY => Some(32), // COPY uses native size
 
@@ -719,7 +770,9 @@ fn amd64_op_to_category(cc_op: u64) -> Option<OpCategory> {
         G_CC_OP_SUBB | G_CC_OP_SUBW | G_CC_OP_SUBL | G_CC_OP_SUBQ => Some(OpCategory::Sub),
         G_CC_OP_ADCB | G_CC_OP_ADCW | G_CC_OP_ADCL | G_CC_OP_ADCQ => Some(OpCategory::Adc),
         G_CC_OP_SBBB | G_CC_OP_SBBW | G_CC_OP_SBBL | G_CC_OP_SBBQ => Some(OpCategory::Sbb),
-        G_CC_OP_LOGICB | G_CC_OP_LOGICW | G_CC_OP_LOGICL | G_CC_OP_LOGICQ => Some(OpCategory::Logic),
+        G_CC_OP_LOGICB | G_CC_OP_LOGICW | G_CC_OP_LOGICL | G_CC_OP_LOGICQ => {
+            Some(OpCategory::Logic)
+        }
         G_CC_OP_INCB | G_CC_OP_INCW | G_CC_OP_INCL | G_CC_OP_INCQ => Some(OpCategory::Inc),
         G_CC_OP_DECB | G_CC_OP_DECW | G_CC_OP_DECL | G_CC_OP_DECQ => Some(OpCategory::Dec),
         G_CC_OP_SHLB | G_CC_OP_SHLW | G_CC_OP_SHLL | G_CC_OP_SHLQ => Some(OpCategory::Shl),
@@ -910,11 +963,11 @@ fn calculate_eflags_c_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) 
 
 /// Pack flags into the standard EFLAGS format.
 fn pack_eflags(flags: &Flags) -> u64 {
-    ((flags.of as u64) << flag_shift::G_CC_SHIFT_O) |
-    ((flags.sf as u64) << flag_shift::G_CC_SHIFT_S) |
-    ((flags.zf as u64) << flag_shift::G_CC_SHIFT_Z) |
-    ((flags.pf as u64) << flag_shift::G_CC_SHIFT_P) |
-    ((flags.cf as u64) << flag_shift::G_CC_SHIFT_C)
+    ((flags.of as u64) << flag_shift::G_CC_SHIFT_O)
+        | ((flags.sf as u64) << flag_shift::G_CC_SHIFT_S)
+        | ((flags.zf as u64) << flag_shift::G_CC_SHIFT_Z)
+        | ((flags.pf as u64) << flag_shift::G_CC_SHIFT_P)
+        | ((flags.cf as u64) << flag_shift::G_CC_SHIFT_C)
 }
 
 /// Calculate all eflags for AMD64.
@@ -924,9 +977,15 @@ fn calculate_eflags_all_amd64(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u
 
     if category == OpCategory::Copy {
         // For COPY, cc_dep1 already contains the flags
-        return Some(cc_dep1 & (flag_mask::G_CC_MASK_O | flag_mask::G_CC_MASK_S |
-                               flag_mask::G_CC_MASK_Z | flag_mask::G_CC_MASK_P |
-                               flag_mask::G_CC_MASK_C | flag_mask::G_CC_MASK_A));
+        return Some(
+            cc_dep1
+                & (flag_mask::G_CC_MASK_O
+                    | flag_mask::G_CC_MASK_S
+                    | flag_mask::G_CC_MASK_Z
+                    | flag_mask::G_CC_MASK_P
+                    | flag_mask::G_CC_MASK_C
+                    | flag_mask::G_CC_MASK_A),
+        );
     }
 
     let flags = match category {
@@ -955,9 +1014,15 @@ fn calculate_eflags_all_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64
     let category = x86_op_to_category(cc_op)?;
 
     if category == OpCategory::Copy {
-        return Some(cc_dep1 & (flag_mask::G_CC_MASK_O | flag_mask::G_CC_MASK_S |
-                               flag_mask::G_CC_MASK_Z | flag_mask::G_CC_MASK_P |
-                               flag_mask::G_CC_MASK_C | flag_mask::G_CC_MASK_A));
+        return Some(
+            cc_dep1
+                & (flag_mask::G_CC_MASK_O
+                    | flag_mask::G_CC_MASK_S
+                    | flag_mask::G_CC_MASK_Z
+                    | flag_mask::G_CC_MASK_P
+                    | flag_mask::G_CC_MASK_C
+                    | flag_mask::G_CC_MASK_A),
+        );
     }
 
     let flags = match category {
@@ -986,28 +1051,28 @@ fn calculate_eflags_all_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64
 
 /// ARM CC_OP values (from VEX's libvex_guest_arm.h)
 pub mod arm_cc_op {
-    pub const ARMG_CC_OP_COPY: u64 = 0;  // DEP1 = NZCV in 31:28
-    pub const ARMG_CC_OP_ADD: u64 = 1;   // DEP1 = argL, DEP2 = argR
-    pub const ARMG_CC_OP_SUB: u64 = 2;   // DEP1 = argL, DEP2 = argR
-    pub const ARMG_CC_OP_ADC: u64 = 3;   // DEP1 = argL, DEP2 = argR, NDEP = oldC
-    pub const ARMG_CC_OP_SBB: u64 = 4;   // DEP1 = argL, DEP2 = argR, NDEP = oldC
+    pub const ARMG_CC_OP_COPY: u64 = 0; // DEP1 = NZCV in 31:28
+    pub const ARMG_CC_OP_ADD: u64 = 1; // DEP1 = argL, DEP2 = argR
+    pub const ARMG_CC_OP_SUB: u64 = 2; // DEP1 = argL, DEP2 = argR
+    pub const ARMG_CC_OP_ADC: u64 = 3; // DEP1 = argL, DEP2 = argR, NDEP = oldC
+    pub const ARMG_CC_OP_SBB: u64 = 4; // DEP1 = argL, DEP2 = argR, NDEP = oldC
     pub const ARMG_CC_OP_LOGIC: u64 = 5; // DEP1 = result, DEP2 = shifter_carry_out, NDEP = oldV
-    pub const ARMG_CC_OP_MUL: u64 = 6;   // DEP1 = result, NDEP = oldC:oldV
-    pub const ARMG_CC_OP_MULL: u64 = 7;  // DEP1 = resLO32, DEP2 = resHI32, NDEP = oldC:oldV
+    pub const ARMG_CC_OP_MUL: u64 = 6; // DEP1 = result, NDEP = oldC:oldV
+    pub const ARMG_CC_OP_MULL: u64 = 7; // DEP1 = resLO32, DEP2 = resHI32, NDEP = oldC:oldV
 }
 
 /// ARM condition codes
 pub mod arm_cond {
-    pub const ARM_COND_EQ: u64 = 0;  // Z=1
-    pub const ARM_COND_NE: u64 = 1;  // Z=0
-    pub const ARM_COND_HS: u64 = 2;  // C=1
-    pub const ARM_COND_LO: u64 = 3;  // C=0
-    pub const ARM_COND_MI: u64 = 4;  // N=1
-    pub const ARM_COND_PL: u64 = 5;  // N=0
-    pub const ARM_COND_VS: u64 = 6;  // V=1
-    pub const ARM_COND_VC: u64 = 7;  // V=0
-    pub const ARM_COND_HI: u64 = 8;  // C=1 && Z=0
-    pub const ARM_COND_LS: u64 = 9;  // C=0 || Z=1
+    pub const ARM_COND_EQ: u64 = 0; // Z=1
+    pub const ARM_COND_NE: u64 = 1; // Z=0
+    pub const ARM_COND_HS: u64 = 2; // C=1
+    pub const ARM_COND_LO: u64 = 3; // C=0
+    pub const ARM_COND_MI: u64 = 4; // N=1
+    pub const ARM_COND_PL: u64 = 5; // N=0
+    pub const ARM_COND_VS: u64 = 6; // V=1
+    pub const ARM_COND_VC: u64 = 7; // V=0
+    pub const ARM_COND_HI: u64 = 8; // C=1 && Z=0
+    pub const ARM_COND_LS: u64 = 9; // C=0 || Z=1
     pub const ARM_COND_GE: u64 = 10; // N=V
     pub const ARM_COND_LT: u64 = 11; // N!=V
     pub const ARM_COND_GT: u64 = 12; // Z=0 && N=V
@@ -1063,12 +1128,12 @@ fn armg_calc_flag_z(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> 
             let res = dep1.wrapping_sub(dep2).wrapping_sub(ndep ^ 1) & 0xFFFFFFFF;
             Some(if res == 0 { 1 } else { 0 })
         }
-        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => {
-            Some(if (dep1 & 0xFFFFFFFF) == 0 { 1 } else { 0 })
-        }
-        ARMG_CC_OP_MULL => {
-            Some(if (dep1 | dep2) & 0xFFFFFFFF == 0 { 1 } else { 0 })
-        }
+        ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => Some(if (dep1 & 0xFFFFFFFF) == 0 { 1 } else { 0 }),
+        ARMG_CC_OP_MULL => Some(if (dep1 | dep2) & 0xFFFFFFFF == 0 {
+            1
+        } else {
+            0
+        }),
         _ => None,
     }
 }
@@ -1085,9 +1150,7 @@ fn armg_calc_flag_c(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> 
             let res = dep1.wrapping_add(dep2) & 0xFFFFFFFF;
             Some(if res < dep1 { 1 } else { 0 })
         }
-        ARMG_CC_OP_SUB => {
-            Some(if dep1 >= dep2 { 1 } else { 0 })
-        }
+        ARMG_CC_OP_SUB => Some(if dep1 >= dep2 { 1 } else { 0 }),
         ARMG_CC_OP_ADC => {
             let res = dep1.wrapping_add(dep2).wrapping_add(ndep) & 0xFFFFFFFF;
             if ndep != 0 {
@@ -1143,9 +1206,7 @@ fn armg_calc_flag_v(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> 
 ///
 /// `cond_n_op` encodes: cond in bits [7:4], cc_op in bits [3:0].
 /// Returns 1 if condition is true, 0 if false, None if unsupported.
-pub fn armg_calculate_condition(
-    cond_n_op: u64, dep1: u64, dep2: u64, ndep: u64,
-) -> Option<u64> {
+pub fn armg_calculate_condition(cond_n_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
     let cond = (cond_n_op >> 4) & 0xF;
     let cc_op = cond_n_op & 0xF;
     let inv = cond & 1;
@@ -1196,9 +1257,7 @@ pub fn armg_calculate_condition(
 }
 
 /// Compute all ARM NZCV flags and pack into bits [31:28].
-pub fn armg_calculate_flags_nzcv(
-    cc_op: u64, dep1: u64, dep2: u64, ndep: u64,
-) -> Option<u64> {
+pub fn armg_calculate_flags_nzcv(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
     let n = armg_calc_flag_n(cc_op, dep1, dep2, ndep)?;
     let z = armg_calc_flag_z(cc_op, dep1, dep2, ndep)?;
     let c = armg_calc_flag_c(cc_op, dep1, dep2, ndep)?;
@@ -1214,11 +1273,7 @@ pub fn armg_calculate_flags_nzcv(
 /// Handle a CCall expression.
 ///
 /// Returns Some(result) if the call was handled, None if not supported.
-pub fn handle_ccall(
-    name: &str,
-    args: &[RustBV],
-    ret_bits: u32,
-) -> Option<RustBV> {
+pub fn handle_ccall(name: &str, args: &[RustBV], ret_bits: u32) -> Option<RustBV> {
     handle_ccall_with_ctx(name, args, ret_bits, None)
 }
 
@@ -1238,8 +1293,11 @@ pub fn handle_ccall_with_ctx(
 
         // Try concrete path first
         if let (Some(cond), Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
-            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(),
-            args[3].as_u64(), args[4].as_u64(),
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
+            args[4].as_u64(),
         ) {
             let result = if name == "amd64g_calculate_condition" {
                 amd64g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
@@ -1251,7 +1309,8 @@ pub fn handle_ccall_with_ctx(
 
         // Symbolic path: handle SUB/LOGIC with symbolic deps
         // This enables symbolic branch detection for comparisons
-        if let (Some(cond), Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), args[1].as_u64(), ctx) {
+        if let (Some(cond), Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), args[1].as_u64(), ctx)
+        {
             let dep1 = &args[2];
             let dep2 = &args[3];
             let category = if name == "amd64g_calculate_condition" {
@@ -1374,8 +1433,11 @@ pub fn handle_ccall_with_ctx(
 
     // Check for eflags_c / rflags_c CCall.
     // Handle both "eflags" and "rflags" naming variants.
-    if name == "amd64g_calculate_eflags_c" || name == "amd64g_calculate_rflags_c"
-        || name == "x86g_calculate_eflags_c" || name == "x86g_calculate_rflags_c" {
+    if name == "amd64g_calculate_eflags_c"
+        || name == "amd64g_calculate_rflags_c"
+        || name == "x86g_calculate_eflags_c"
+        || name == "x86g_calculate_rflags_c"
+    {
         // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
         if args.len() < 4 {
             return None;
@@ -1383,7 +1445,10 @@ pub fn handle_ccall_with_ctx(
 
         // Try concrete path first
         if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
-            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
         ) {
             let is_amd64 = name.starts_with("amd64g");
             let result = if is_amd64 {
@@ -1397,15 +1462,29 @@ pub fn handle_ccall_with_ctx(
         // Symbolic path for carry flag
         if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
             let is_amd64 = name.starts_with("amd64g");
-            let category = if is_amd64 { amd64_op_to_category(cc_op) } else { x86_op_to_category(cc_op) };
-            let nbits = if is_amd64 { amd64_op_to_nbits(cc_op) } else { x86_op_to_nbits(cc_op) };
+            let category = if is_amd64 {
+                amd64_op_to_category(cc_op)
+            } else {
+                x86_op_to_category(cc_op)
+            };
+            let nbits = if is_amd64 {
+                amd64_op_to_nbits(cc_op)
+            } else {
+                x86_op_to_nbits(cc_op)
+            };
             if let (Some(cat), Some(nb)) = (category, nbits) {
                 let cf = match cat {
                     OpCategory::Copy => {
                         // CF = (dep1 >> SHIFT_C) & 1
-                        let shift = RustBV::concrete(flag_shift::G_CC_SHIFT_C as u128, args[1].width());
+                        let shift =
+                            RustBV::concrete(flag_shift::G_CC_SHIFT_C as u128, args[1].width());
                         let one = RustBV::concrete(1, args[1].width());
-                        Some(args[1].lshr(&shift, sym_ctx).and(&one, sym_ctx).extract(0, 0, sym_ctx))
+                        Some(
+                            args[1]
+                                .lshr(&shift, sym_ctx)
+                                .and(&one, sym_ctx)
+                                .extract(0, 0, sym_ctx),
+                        )
                     }
                     OpCategory::Sub => {
                         let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
@@ -1433,8 +1512,11 @@ pub fn handle_ccall_with_ctx(
     // Check for eflags_all / rflags_all CCall.
     // VEX emits both "amd64g_calculate_rflags_all" and "amd64g_calculate_eflags_all"
     // depending on the context. We need to handle both names.
-    if name == "amd64g_calculate_eflags_all" || name == "amd64g_calculate_rflags_all"
-        || name == "x86g_calculate_eflags_all" || name == "x86g_calculate_rflags_all" {
+    if name == "amd64g_calculate_eflags_all"
+        || name == "amd64g_calculate_rflags_all"
+        || name == "x86g_calculate_eflags_all"
+        || name == "x86g_calculate_rflags_all"
+    {
         // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
         if args.len() < 4 {
             return None;
@@ -1442,7 +1524,10 @@ pub fn handle_ccall_with_ctx(
 
         // Try concrete path first
         if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
-            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
         ) {
             let is_amd64 = name.starts_with("amd64g");
             let result = if is_amd64 {
@@ -1470,13 +1555,27 @@ pub fn handle_ccall_with_ctx(
 
             // Symbolic SUB/ADD/LOGIC eflags computation
             let is_amd64 = name.starts_with("amd64g");
-            let category = if is_amd64 { amd64_op_to_category(cc_op) } else { x86_op_to_category(cc_op) };
-            let nbits = if is_amd64 { amd64_op_to_nbits(cc_op) } else { x86_op_to_nbits(cc_op) };
+            let category = if is_amd64 {
+                amd64_op_to_category(cc_op)
+            } else {
+                x86_op_to_category(cc_op)
+            };
+            let nbits = if is_amd64 {
+                amd64_op_to_nbits(cc_op)
+            } else {
+                x86_op_to_nbits(cc_op)
+            };
             if let (Some(cat), Some(nb)) = (category, nbits) {
                 let result = match cat {
-                    OpCategory::Sub => Some(symbolic_eflags_sub(nb, &args[1], &args[2], sym_ctx, ret_bits)),
-                    OpCategory::Add => Some(symbolic_eflags_add(nb, &args[1], &args[2], sym_ctx, ret_bits)),
-                    OpCategory::Logic => Some(symbolic_eflags_logic(nb, &args[1], sym_ctx, ret_bits)),
+                    OpCategory::Sub => Some(symbolic_eflags_sub(
+                        nb, &args[1], &args[2], sym_ctx, ret_bits,
+                    )),
+                    OpCategory::Add => Some(symbolic_eflags_add(
+                        nb, &args[1], &args[2], sym_ctx, ret_bits,
+                    )),
+                    OpCategory::Logic => {
+                        Some(symbolic_eflags_logic(nb, &args[1], sym_ctx, ret_bits))
+                    }
                     _ => None,
                 };
                 if result.is_some() {
@@ -1500,7 +1599,10 @@ pub fn handle_ccall_with_ctx(
             return None;
         }
         if let (Some(ldt_val), Some(gdt_val), Some(ss_val), Some(va_val)) = (
-            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
         ) {
             // Bad selector: high bits set above 16. Match Python's bad() return.
             if ss_val & !0xFFFFu64 != 0 {
@@ -1508,7 +1610,11 @@ pub fn handle_ccall_with_ctx(
             }
             // Pick the descriptor table (tiBit = bit 2 of seg_selector).
             let ti_bit = (ss_val >> 2) & 1;
-            let table_empty = if ti_bit == 0 { gdt_val == 0 } else { ldt_val == 0 };
+            let table_empty = if ti_bit == 0 {
+                gdt_val == 0
+            } else {
+                ldt_val == 0
+            };
             if table_empty {
                 let linear = ((ss_val & 0xFFFF) << 16).wrapping_add(va_val & 0xFFFFFFFF);
                 return Some(RustBV::concrete(linear as u128, ret_bits));
@@ -1526,7 +1632,10 @@ pub fn handle_ccall_with_ctx(
 
         // Concrete path
         if let (Some(cond_n_op), Some(dep1), Some(dep2), Some(ndep)) = (
-            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
         ) {
             let result = armg_calculate_condition(cond_n_op, dep1, dep2, ndep)?;
             return Some(RustBV::concrete(result as u128, ret_bits));
@@ -1538,8 +1647,8 @@ pub fn handle_ccall_with_ctx(
             let cc_op = cond_n_op & 0xF;
             let inv = (cond & 1) != 0;
 
-            use arm_cond::*;
             use arm_cc_op::*;
+            use arm_cond::*;
 
             // AL: always true
             if cond == ARM_COND_AL {
@@ -1645,7 +1754,10 @@ pub fn handle_ccall_with_ctx(
         }
 
         if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
-            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
         ) {
             let result = armg_calculate_flags_nzcv(cc_op, dep1, dep2, ndep)?;
             return Some(RustBV::concrete(result as u128, ret_bits));
@@ -1655,15 +1767,20 @@ pub fn handle_ccall_with_ctx(
     }
 
     // ARM: individual flag calculations
-    if name == "armg_calculate_flag_n" || name == "armg_calculate_flag_z"
-        || name == "armg_calculate_flag_c" || name == "armg_calculate_flag_v"
+    if name == "armg_calculate_flag_n"
+        || name == "armg_calculate_flag_z"
+        || name == "armg_calculate_flag_c"
+        || name == "armg_calculate_flag_v"
     {
         if args.len() < 4 {
             return None;
         }
 
         if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
-            args[0].as_u64(), args[1].as_u64(), args[2].as_u64(), args[3].as_u64(),
+            args[0].as_u64(),
+            args[1].as_u64(),
+            args[2].as_u64(),
+            args[3].as_u64(),
         ) {
             let result = match name {
                 "armg_calculate_flag_n" => armg_calc_flag_n(cc_op, dep1, dep2, ndep)?,
@@ -1819,8 +1936,8 @@ mod tests {
 
     #[test]
     fn test_x86_condition_setz() {
-        use x86_cc_op::G_CC_OP_SUBL;
         use cond_type::COND_Z;
+        use x86_cc_op::G_CC_OP_SUBL;
 
         let result = x86g_calculate_condition(COND_Z, G_CC_OP_SUBL, 5, 5, 0);
         assert_eq!(result, Some(1));
@@ -1836,8 +1953,8 @@ mod tests {
     #[test]
     fn test_arm_cond_eq_sub_equal() {
         // CMP 5, 5 (SUB) → EQ should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_SUB), 5, 5, 0);
         assert_eq!(result, Some(1));
     }
@@ -1845,8 +1962,8 @@ mod tests {
     #[test]
     fn test_arm_cond_ne_sub_equal() {
         // CMP 5, 5 (SUB) → NE should be 0
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_NE, ARMG_CC_OP_SUB), 5, 5, 0);
         assert_eq!(result, Some(0));
     }
@@ -1854,8 +1971,8 @@ mod tests {
     #[test]
     fn test_arm_cond_ne_sub_different() {
         // CMP 5, 3 (SUB) → NE should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_NE, ARMG_CC_OP_SUB), 5, 3, 0);
         assert_eq!(result, Some(1));
     }
@@ -1863,8 +1980,8 @@ mod tests {
     #[test]
     fn test_arm_cond_hs_sub() {
         // CMP 5, 3 → HS (unsigned >=) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_HS, ARMG_CC_OP_SUB), 5, 3, 0);
         assert_eq!(result, Some(1));
     }
@@ -1872,8 +1989,8 @@ mod tests {
     #[test]
     fn test_arm_cond_lo_sub() {
         // CMP 3, 5 → LO (unsigned <) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LO, ARMG_CC_OP_SUB), 3, 5, 0);
         assert_eq!(result, Some(1));
     }
@@ -1881,8 +1998,8 @@ mod tests {
     #[test]
     fn test_arm_cond_mi_sub() {
         // CMP 3, 5 → MI (negative) should be 1 (3-5 = -2, N set)
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_MI, ARMG_CC_OP_SUB), 3, 5, 0);
         assert_eq!(result, Some(1));
     }
@@ -1890,8 +2007,8 @@ mod tests {
     #[test]
     fn test_arm_cond_pl_sub() {
         // CMP 5, 3 → PL (positive) should be 1 (5-3 = 2, N clear)
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_PL, ARMG_CC_OP_SUB), 5, 3, 0);
         assert_eq!(result, Some(1));
     }
@@ -1899,8 +2016,8 @@ mod tests {
     #[test]
     fn test_arm_cond_gt_sub() {
         // CMP 5, 3 → GT (signed >) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_GT, ARMG_CC_OP_SUB), 5, 3, 0);
         assert_eq!(result, Some(1));
     }
@@ -1908,8 +2025,8 @@ mod tests {
     #[test]
     fn test_arm_cond_le_sub() {
         // CMP 3, 5 → LE (signed <=) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LE, ARMG_CC_OP_SUB), 3, 5, 0);
         assert_eq!(result, Some(1));
     }
@@ -1917,8 +2034,8 @@ mod tests {
     #[test]
     fn test_arm_cond_ge_sub_equal() {
         // CMP 5, 5 → GE (signed >=) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_GE, ARMG_CC_OP_SUB), 5, 5, 0);
         assert_eq!(result, Some(1));
     }
@@ -1926,17 +2043,18 @@ mod tests {
     #[test]
     fn test_arm_cond_lt_sub_signed() {
         // CMP -1 (0xFFFFFFFF), 1 → LT (signed <) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
-        let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LT, ARMG_CC_OP_SUB), 0xFFFFFFFF, 1, 0);
+        use arm_cond::*;
+        let result =
+            armg_calculate_condition(arm_cond_n_op(ARM_COND_LT, ARMG_CC_OP_SUB), 0xFFFFFFFF, 1, 0);
         assert_eq!(result, Some(1));
     }
 
     #[test]
     fn test_arm_cond_hi_sub() {
         // CMP 5, 3 → HI (unsigned >) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_HI, ARMG_CC_OP_SUB), 5, 3, 0);
         assert_eq!(result, Some(1));
     }
@@ -1944,8 +2062,8 @@ mod tests {
     #[test]
     fn test_arm_cond_ls_sub() {
         // CMP 3, 5 → LS (unsigned <=) should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_LS, ARMG_CC_OP_SUB), 3, 5, 0);
         assert_eq!(result, Some(1));
     }
@@ -1953,8 +2071,8 @@ mod tests {
     #[test]
     fn test_arm_cond_al() {
         // AL (always) → 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(arm_cond_n_op(ARM_COND_AL, ARMG_CC_OP_SUB), 0, 0, 0);
         assert_eq!(result, Some(1));
     }
@@ -1962,11 +2080,13 @@ mod tests {
     #[test]
     fn test_arm_cond_add_eq() {
         // ADD 5+(-5) = 0, EQ should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let result = armg_calculate_condition(
             arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_ADD),
-            5, 0xFFFFFFFB, 0, // 5 + (-5) = 0
+            5,
+            0xFFFFFFFB,
+            0, // 5 + (-5) = 0
         );
         assert_eq!(result, Some(1));
     }
@@ -1974,11 +2094,10 @@ mod tests {
     #[test]
     fn test_arm_cond_logic_eq() {
         // LOGIC result=0, EQ should be 1
-        use arm_cond::*;
         use arm_cc_op::*;
-        let result = armg_calculate_condition(
-            arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_LOGIC), 0, 0, 0,
-        );
+        use arm_cond::*;
+        let result =
+            armg_calculate_condition(arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_LOGIC), 0, 0, 0);
         assert_eq!(result, Some(1));
     }
 
@@ -2007,8 +2126,8 @@ mod tests {
     #[test]
     fn test_arm_handle_ccall_concrete() {
         // Test via handle_ccall dispatch
-        use arm_cond::*;
         use arm_cc_op::*;
+        use arm_cond::*;
         let cond_n_op = arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_SUB);
         let args = vec![
             RustBV::concrete(cond_n_op as u128, 32),

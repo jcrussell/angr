@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::extract_ite_targets;
+use super::*;
 
 impl<'a> CallbackInterpreter<'a> {
     /// Evaluate the next address from an IRSB.
@@ -25,13 +25,15 @@ impl<'a> CallbackInterpreter<'a> {
                 _ => {
                     // For Exit statements mid-block, we can't easily fork
                     // Return error to fall back to Python handling
-                    return Err(CbExecutionError::Unsupported("symbolic next address".to_string()));
+                    return Err(CbExecutionError::Unsupported(
+                        "symbolic next address".to_string(),
+                    ));
                 }
             }
         }
-        next_val.as_u64().ok_or_else(|| {
-            CbExecutionError::Unsupported("non-concrete next address".to_string())
-        })
+        next_val
+            .as_u64()
+            .ok_or_else(|| CbExecutionError::Unsupported("non-concrete next address".to_string()))
     }
 
     /// Evaluate and concretize the jump target for the default exit.
@@ -89,7 +91,11 @@ impl<'a> CallbackInterpreter<'a> {
                     })
                 }
             }
-            ConcretizationResult::Strided { base, stride, count } => {
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
                 // Convert strided to explicit list, but check limit first
                 let num_targets = count as usize;
                 if num_targets > self.config.max_symbolic_ip_targets {
@@ -107,29 +113,26 @@ impl<'a> CallbackInterpreter<'a> {
                     })
                 }
             }
-            ConcretizationResult::TooLarge { min, max, limit: _ } => {
-                Ok(ConcretizedJump::TooMany {
-                    min,
-                    max,
-                    limit: self.config.max_symbolic_ip_targets,
-                })
-            }
-            ConcretizationResult::Failed(msg) => {
-                Err(CbExecutionError::Unsupported(format!(
-                    "jump target concretization failed: {}",
-                    msg
-                )))
-            }
+            ConcretizationResult::TooLarge { min, max, limit: _ } => Ok(ConcretizedJump::TooMany {
+                min,
+                max,
+                limit: self.config.max_symbolic_ip_targets,
+            }),
+            ConcretizationResult::Failed(msg) => Err(CbExecutionError::Unsupported(format!(
+                "jump target concretization failed: {}",
+                msg
+            ))),
         }
     }
 
     /// Handle the default exit (end of block).
-    pub(super) fn handle_default_exit(&mut self, irsb: &IRSB) -> Result<BlockResult, CbExecutionError> {
+    pub(super) fn handle_default_exit(
+        &mut self,
+        irsb: &IRSB,
+    ) -> Result<BlockResult, CbExecutionError> {
         let concretized = self.eval_next_addr_concretized(irsb)?;
         match concretized {
-            ConcretizedJump::Single(addr) => {
-                Ok(self.handle_exit(addr, irsb.jumpkind))
-            }
+            ConcretizedJump::Single(addr) => Ok(self.handle_exit(addr, irsb.jumpkind)),
             ConcretizedJump::Multiple { targets, expr } => {
                 // Store the expression for constraint addition later
                 let condition_id = self.next_condition_id;
@@ -143,14 +146,12 @@ impl<'a> CallbackInterpreter<'a> {
                     jumpkind: irsb.jumpkind,
                 })
             }
-            ConcretizedJump::TooMany { min, max, limit } => {
-                Ok(BlockResult::UnconstrainedJump {
-                    min_target: min,
-                    max_target: max,
-                    limit,
-                    jumpkind: irsb.jumpkind,
-                })
-            }
+            ConcretizedJump::TooMany { min, max, limit } => Ok(BlockResult::UnconstrainedJump {
+                min_target: min,
+                max_target: max,
+                limit,
+                jumpkind: irsb.jumpkind,
+            }),
         }
     }
 
@@ -226,6 +227,9 @@ impl<'a> CallbackInterpreter<'a> {
             return 0;
         };
         let size = arch.bytes();
-        self.registers.get(offset, size, self.ctx).as_u64().unwrap_or(0)
+        self.registers
+            .get(offset, size, self.ctx)
+            .as_u64()
+            .unwrap_or(0)
     }
 }

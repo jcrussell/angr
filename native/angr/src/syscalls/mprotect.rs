@@ -52,15 +52,15 @@ impl NativeSyscall for NativeMprotectSyscall {
                 args.len()
             )));
         }
-        let addr = args[0].as_u64().ok_or_else(|| {
-            SyscallError::SymbolicArgument("mprotect addr".into())
-        })?;
-        let length = args[1].as_u64().ok_or_else(|| {
-            SyscallError::SymbolicArgument("mprotect length".into())
-        })?;
-        let prot = args[2].as_u64().ok_or_else(|| {
-            SyscallError::SymbolicArgument("mprotect prot".into())
-        })?;
+        let addr = args[0]
+            .as_u64()
+            .ok_or_else(|| SyscallError::SymbolicArgument("mprotect addr".into()))?;
+        let length = args[1]
+            .as_u64()
+            .ok_or_else(|| SyscallError::SymbolicArgument("mprotect length".into()))?;
+        let prot = args[2]
+            .as_u64()
+            .ok_or_else(|| SyscallError::SymbolicArgument("mprotect prot".into()))?;
 
         // Linux: misaligned addr → EINVAL. Python returns -1 here too.
         if addr & PAGE_MASK != 0 {
@@ -168,7 +168,10 @@ mod tests {
         let h = NativeMprotectSyscall;
         let mut state = mk_state_with_page(0x1000, Permission::RW);
         // Sanity check pre-state.
-        assert_eq!(state.memory().page_permissions(0x1000 >> 12), Some(Permission::RW));
+        assert_eq!(
+            state.memory().page_permissions(0x1000 >> 12),
+            Some(Permission::RW)
+        );
 
         let args = vec![
             RustBV::concrete(0x1000, 64),

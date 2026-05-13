@@ -20,7 +20,7 @@ mod store;
 mod symbolic_objects;
 #[cfg(test)]
 mod tests;
-pub use page::{MemoryPage, Permission, BITMAP_WORDS, PAGE_MASK, PAGE_SIZE};
+pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
 
 /// A deferred symbolic store. Instead of eagerly concretizing symbolic addresses
 /// and building ITE chains at store time (275 Z3 calls for sym-write), we record
@@ -232,7 +232,8 @@ impl SymbolicMemory {
         for page_num in start_page..end_page {
             let base = page_num << 12;
             if !self.pages.contains_key(&page_num) {
-                self.pages.insert(page_num, MemoryPage::new(base, permissions));
+                self.pages
+                    .insert(page_num, MemoryPage::new(base, permissions));
             }
         }
     }
@@ -251,9 +252,10 @@ impl SymbolicMemory {
             let bytes_in_page = (PAGE_SIZE as usize - page_offset).min(remaining.len());
 
             // Get or create page, modify in place (COW handled by Arc::make_mut in store_concrete)
-            let page = self.pages.entry(page_num).or_insert_with(|| {
-                MemoryPage::new(page_num << 12, permissions)
-            });
+            let page = self
+                .pages
+                .entry(page_num)
+                .or_insert_with(|| MemoryPage::new(page_num << 12, permissions));
             page.store_concrete(page_offset as u16, &remaining[..bytes_in_page]);
 
             remaining = &remaining[bytes_in_page..];
@@ -282,11 +284,7 @@ impl SymbolicMemory {
     /// or unmapped byte. `None` is returned only if the very first byte is
     /// unmapped or symbolic. The lifter accepts a partial buffer and stops
     /// at the byte boundary, so a short read is still useful.
-    pub fn read_concrete_bytes_for_lift(
-        &self,
-        addr: u64,
-        max_size: usize,
-    ) -> Option<Vec<u8>> {
+    pub fn read_concrete_bytes_for_lift(&self, addr: u64, max_size: usize) -> Option<Vec<u8>> {
         if max_size == 0 {
             return Some(Vec::new());
         }
@@ -300,8 +298,7 @@ impl SymbolicMemory {
             };
             let offset_in_page = (current & PAGE_MASK) as u16;
             let remaining = max_size - result.len();
-            let to_read = remaining
-                .min((PAGE_SIZE - (current & PAGE_MASK)) as usize);
+            let to_read = remaining.min((PAGE_SIZE - (current & PAGE_MASK)) as usize);
             // Stop at the first symbolic byte; native lift can't use it.
             let mut concrete_run = 0usize;
             for i in 0..to_read {
@@ -414,7 +411,11 @@ impl SymbolicMemory {
                         self.store_concrete_lazy(candidate, ite_val)?;
                     }
                 }
-                ConcretizationResult::Strided { base, stride, count } => {
+                ConcretizationResult::Strided {
+                    base,
+                    stride,
+                    count,
+                } => {
                     for i in 0..count {
                         let candidate = base + i * stride;
                         let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
@@ -467,7 +468,10 @@ impl SymbolicMemory {
         if let Some(page) = self.pages.get(&page_num) {
             Ok(page.load_concrete(0, PAGE_SIZE as u16))
         } else {
-            Err(MemoryError::Unmapped { addr: page_addr, size: PAGE_SIZE })
+            Err(MemoryError::Unmapped {
+                addr: page_addr,
+                size: PAGE_SIZE,
+            })
         }
     }
 
@@ -485,7 +489,10 @@ impl SymbolicMemory {
     /// Returns (data, permissions) for the page, or None if not mapped.
     pub fn get_page_data(&self, page_num: u64) -> Option<(Vec<u8>, u8)> {
         self.pages.get(&page_num).map(|p| {
-            (p.load_concrete(0, PAGE_SIZE as u16), p.permissions().to_bits())
+            (
+                p.load_concrete(0, PAGE_SIZE as u16),
+                p.permissions().to_bits(),
+            )
         })
     }
 
@@ -567,11 +574,17 @@ impl SymbolicMemory {
     ///
     /// # Returns
     /// List of page addresses to fetch, or None if the page is not in a lazy region.
-    pub fn get_region_prefetch_list(&self, trigger_page_addr: u64, max_pages: usize) -> Option<Vec<u64>> {
+    pub fn get_region_prefetch_list(
+        &self,
+        trigger_page_addr: u64,
+        max_pages: usize,
+    ) -> Option<Vec<u64>> {
         let trigger_page_num = trigger_page_addr >> 12;
 
         // Find the lazy region containing this page
-        let region = self.lazy_regions.iter()
+        let region = self
+            .lazy_regions
+            .iter()
             .find(|&&(start, end)| trigger_page_num >= start && trigger_page_num < end)?;
 
         let (region_start, region_end) = *region;
@@ -581,7 +594,7 @@ impl SymbolicMemory {
 
         for page_num in region_start..region_end {
             if !self.pages.contains_key(&page_num) {
-                pages_to_fetch.push(page_num << 12);  // Convert to page address
+                pages_to_fetch.push(page_num << 12); // Convert to page address
                 if pages_to_fetch.len() >= max_pages {
                     break;
                 }
@@ -704,7 +717,8 @@ impl SymbolicMemory {
         // Collect all page numbers from both memories
         let self_pages: std::collections::HashSet<u64> = self.pages.keys().copied().collect();
         let other_pages: std::collections::HashSet<u64> = other.pages.keys().copied().collect();
-        let all_pages: std::collections::HashSet<u64> = self_pages.union(&other_pages).copied().collect();
+        let all_pages: std::collections::HashSet<u64> =
+            self_pages.union(&other_pages).copied().collect();
 
         // Collect merge operations first to avoid borrow conflicts
         let mut merge_ops: Vec<(u64, u64, RustBV)> = Vec::new(); // (page_num, addr, ite_val)
@@ -808,4 +822,3 @@ impl Clone for SymbolicMemory {
         self.fork()
     }
 }
-

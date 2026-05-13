@@ -393,9 +393,7 @@ mod tests {
     fn time_null_pointer_returns_symbolic_and_does_not_store() {
         let h = NativeTimeSyscall;
         let mut state = fresh_state();
-        let outcome = h
-            .call(&mut state, &[RustBV::concrete(0, 64)])
-            .expect("ok");
+        let outcome = h.call(&mut state, &[RustBV::concrete(0, 64)]).expect("ok");
         match outcome {
             SyscallOutcome::ContinueSymbolic { ret } => {
                 assert!(ret.is_symbolic(), "time return must be symbolic");
@@ -429,9 +427,7 @@ mod tests {
     fn time_first_call_constrains_nonnegative() {
         let h = NativeTimeSyscall;
         let mut state = fresh_state();
-        let outcome = h
-            .call(&mut state, &[RustBV::concrete(0, 64)])
-            .expect("ok");
+        let outcome = h.call(&mut state, &[RustBV::concrete(0, 64)]).expect("ok");
         let ret = match outcome {
             SyscallOutcome::ContinueSymbolic { ret } => ret,
             _ => panic!("expected ContinueSymbolic"),
@@ -463,7 +459,10 @@ mod tests {
         };
         // second >= first, and first is pinned to 100, so second >= 100.
         let min = state.min(&second, true).expect("min computable");
-        assert!(min as i64 >= 100, "second time() must be >= first; got min={min}");
+        assert!(
+            min as i64 >= 100,
+            "second time() must be >= first; got min={min}"
+        );
     }
 
     #[test]

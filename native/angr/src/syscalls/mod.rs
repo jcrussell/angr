@@ -93,8 +93,16 @@ impl NativeSyscallRegistry {
         // amd64: write (1) — stdout (fd=1) and stderr (fd=2); concrete bytes only.
         r.register("AMD64", 1, Arc::new(write::NativeWriteSyscall));
         // amd64: exit (60), exit_group (231) -> deadend.
-        r.register("AMD64", 60, Arc::new(exit::NativeExitSyscall { name: "exit" }));
-        r.register("AMD64", 231, Arc::new(exit::NativeExitSyscall { name: "exit_group" }));
+        r.register(
+            "AMD64",
+            60,
+            Arc::new(exit::NativeExitSyscall { name: "exit" }),
+        );
+        r.register(
+            "AMD64",
+            231,
+            Arc::new(exit::NativeExitSyscall { name: "exit_group" }),
+        );
         // amd64: mprotect (10) — set page perms; -1 on misalign / unmapped.
         r.register("AMD64", 10, Arc::new(mprotect::NativeMprotectSyscall));
         // amd64: brk (12) — grow/query the program break.
@@ -173,19 +181,55 @@ mod tests {
     fn default_registry_has_amd64_exit_handlers() {
         let r = NativeSyscallRegistry::new();
         assert!(r.get("AMD64", 0).is_some(), "read (0) should be registered");
-        assert!(r.get("AMD64", 1).is_some(), "write (1) should be registered");
-        assert!(r.get("AMD64", 60).is_some(), "exit (60) should be registered");
-        assert!(r.get("AMD64", 231).is_some(), "exit_group (231) should be registered");
-        assert!(r.get("AMD64", 10).is_some(), "mprotect (10) should be registered");
-        assert!(r.get("AMD64", 12).is_some(), "brk (12) should be registered");
-        assert!(r.get("AMD64", 11).is_some(), "munmap (11) should be registered");
+        assert!(
+            r.get("AMD64", 1).is_some(),
+            "write (1) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 60).is_some(),
+            "exit (60) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 231).is_some(),
+            "exit_group (231) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 10).is_some(),
+            "mprotect (10) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 12).is_some(),
+            "brk (12) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 11).is_some(),
+            "munmap (11) should be registered"
+        );
         assert!(r.get("AMD64", 9).is_some(), "mmap (9) should be registered");
-        assert!(r.get("AMD64", 13).is_some(), "rt_sigaction (13) should be registered");
-        assert!(r.get("AMD64", 96).is_some(), "gettimeofday (96) should be registered");
-        assert!(r.get("AMD64", 158).is_some(), "arch_prctl (158) should be registered");
-        assert!(r.get("AMD64", 201).is_some(), "time (201) should be registered");
-        assert!(r.get("AMD64", 228).is_some(), "clock_gettime (228) should be registered");
-        assert!(r.get("X86", 60).is_none(), "amd64 numbers don't apply to x86");
+        assert!(
+            r.get("AMD64", 13).is_some(),
+            "rt_sigaction (13) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 96).is_some(),
+            "gettimeofday (96) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 158).is_some(),
+            "arch_prctl (158) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 201).is_some(),
+            "time (201) should be registered"
+        );
+        assert!(
+            r.get("AMD64", 228).is_some(),
+            "clock_gettime (228) should be registered"
+        );
+        assert!(
+            r.get("X86", 60).is_none(),
+            "amd64 numbers don't apply to x86"
+        );
     }
 
     #[test]
@@ -217,4 +261,3 @@ mod tests {
         assert_eq!(h.num_args(), 0);
     }
 }
-

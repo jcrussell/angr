@@ -201,11 +201,10 @@ const ALIASES: &[RegEntry] = &[
 ];
 
 const REGISTER_NAMES: &[&str] = &[
-    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
-    "r12", "r13", "r14", "r15", "rip", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag",
-    "acflag", "idflag", "fs_const", "gs_const", "sseround", "xmm0", "xmm1", "xmm2",
-    "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12",
-    "xmm13", "xmm14", "xmm15",
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15", "rip", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag", "acflag", "idflag",
+    "fs_const", "gs_const", "sseround", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
+    "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
 ];
 
 impl Arch for AMD64 {

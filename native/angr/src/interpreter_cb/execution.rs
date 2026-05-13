@@ -14,7 +14,11 @@ impl<'a> CallbackInterpreter<'a> {
         callbacks: &PythonCallbacks,
         max_blocks: u32,
     ) -> (RunResult, u32, Vec<DeferredFork>) {
-        let total_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        let total_start = if self.profiling_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let mut blocks_executed = 0u32;
 
         // Sort concrete memory regions for binary search if needed
@@ -52,7 +56,11 @@ impl<'a> CallbackInterpreter<'a> {
                 && self.deferred_forks.len() >= self.config.max_deferred_forks as usize
             {
                 let forks = self.take_deferred_forks();
-                return (RunResult::MaxDeferredForks { pc: self.pc }, blocks_executed, forks);
+                return (
+                    RunResult::MaxDeferredForks { pc: self.pc },
+                    blocks_executed,
+                    forks,
+                );
             }
 
             // Try to get or lift the block
@@ -72,7 +80,11 @@ impl<'a> CallbackInterpreter<'a> {
             };
 
             // Execute the block
-            let block_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+            let block_start = if self.profiling_enabled {
+                Some(Instant::now())
+            } else {
+                None
+            };
             match self.execute_block_with_callbacks(py, callbacks, &irsb) {
                 Ok(result) => {
                     blocks_executed += 1;
@@ -85,14 +97,21 @@ impl<'a> CallbackInterpreter<'a> {
                             self.pc = next_addr;
                             // Continue to next block
                         }
-                        BlockResult::BlockEnd { next_addr, jumpkind } => {
+                        BlockResult::BlockEnd {
+                            next_addr,
+                            jumpkind,
+                        } => {
                             // Track call stack before updating PC
                             if jumpkind.is_call() {
-                                let sp_val = self.registers.get(
-                                    self.registers.arch().sp_offset(),
-                                    self.calling_convention.pointer_size(),
-                                    self.ctx,
-                                ).as_u64().unwrap_or(0);
+                                let sp_val = self
+                                    .registers
+                                    .get(
+                                        self.registers.arch().sp_offset(),
+                                        self.calling_convention.pointer_size(),
+                                        self.ctx,
+                                    )
+                                    .as_u64()
+                                    .unwrap_or(0);
                                 let ret_addr = self.get_return_addr().unwrap_or(0);
                                 self.call_stack.push(crate::state::CallStackEntry {
                                     call_site_addr: self.current_insn_addr,
@@ -131,7 +150,9 @@ impl<'a> CallbackInterpreter<'a> {
                                 // Update PC before extracting args (so SP/ret addr are correct)
                                 self.pc = next_addr;
                                 // Check if this is a registered SimProcedure
-                                if let Some(info) = self.simprocedure_registry.get(&next_addr).cloned() {
+                                if let Some(info) =
+                                    self.simprocedure_registry.get(&next_addr).cloned()
+                                {
                                     let return_addr = self.get_return_addr().unwrap_or(0);
                                     return (
                                         RunResult::SimProcedure {
@@ -144,7 +165,11 @@ impl<'a> CallbackInterpreter<'a> {
                                         forks,
                                     );
                                 }
-                                return (RunResult::Hook { addr: next_addr }, blocks_executed, forks);
+                                return (
+                                    RunResult::Hook { addr: next_addr },
+                                    blocks_executed,
+                                    forks,
+                                );
                             }
                             // Otherwise, continue execution
                         }
@@ -260,9 +285,10 @@ impl<'a> CallbackInterpreter<'a> {
                     // Adding a CbExecutionError variant requires choosing a
                     // strategy in mod.rs; that decision lands here.
                     let result = match e.strategy() {
-                        FallbackStrategy::PythonCallback => {
-                            RunResult::NeedPythonVEX { addr: self.pc, reason: e.to_string() }
-                        }
+                        FallbackStrategy::PythonCallback => RunResult::NeedPythonVEX {
+                            addr: self.pc,
+                            reason: e.to_string(),
+                        },
                         FallbackStrategy::Panic => RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
@@ -328,7 +354,11 @@ impl<'a> CallbackInterpreter<'a> {
             self.stats.cache_miss_count += 1;
         }
 
-        let lift_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        let lift_start = if self.profiling_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
 
         // Try native lifting if available
         #[cfg(feature = "native-lift")]
@@ -350,8 +380,12 @@ impl<'a> CallbackInterpreter<'a> {
                                 }
                             }
                         }
-                        if let Some(bytes) = rust_mem.read_concrete_bytes_for_lift(addr, max_bytes) {
-                            let native_opt_level = self.vex_opt_level_overrides.get(&addr).copied()
+                        if let Some(bytes) = rust_mem.read_concrete_bytes_for_lift(addr, max_bytes)
+                        {
+                            let native_opt_level = self
+                                .vex_opt_level_overrides
+                                .get(&addr)
+                                .copied()
                                 .or(self.vex_opt_level)
                                 .unwrap_or(1);
                             match crate::vex::libpyvex_ffi::lift_native(
@@ -363,9 +397,13 @@ impl<'a> CallbackInterpreter<'a> {
                                 native_opt_level,
                             ) {
                                 Ok(irsb) => {
-                                    log::trace!("Native lift from rust_memory (SMC) at 0x{:x}", addr);
+                                    log::trace!(
+                                        "Native lift from rust_memory (SMC) at 0x{:x}",
+                                        addr
+                                    );
                                     if let Some(start) = lift_start {
-                                        self.stats.lift_time_ns += start.elapsed().as_nanos() as u64;
+                                        self.stats.lift_time_ns +=
+                                            start.elapsed().as_nanos() as u64;
                                     }
                                     let arc_irsb = Arc::new(irsb);
                                     self.block_cache.put(addr, Arc::clone(&arc_irsb));
@@ -382,88 +420,98 @@ impl<'a> CallbackInterpreter<'a> {
                         addr
                     );
                 } else {
-                // Try to get bytes from concrete memory for native lifting
-                // Look for a region containing this address with enough bytes
-                for region in self.concrete_memory.iter() {
-                    if addr >= region.base && addr < region.base + region.size {
-                        let offset = (addr - region.base) as usize;
-                        let available = region.size as usize - offset;
-                        // Limit block size to stop at hook/avoid/find addresses.
-                        // Without this, blocks can span past these addresses,
-                        // and the hook check at block boundaries misses them.
-                        let mut max_bytes = available.min(4096);
-                        for &hook_addr in self.hook_addrs.iter() {
-                            if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
-                                let limit = (hook_addr - addr) as usize;
-                                if limit > 0 && limit < max_bytes {
-                                    max_bytes = limit;
-                                }
-                            }
-                        }
-                        if max_bytes >= 1 {
-                            let bytes = &region.data[offset..offset + max_bytes];
-                            // Resolve VEX opt_level for native lifting
-                            let native_opt_level = self.vex_opt_level_overrides.get(&addr).copied()
-                                .or(self.vex_opt_level)
-                                .unwrap_or(1);  // pyvex default is 1
-                            match crate::vex::libpyvex_ffi::lift_native(
-                                bytes,
-                                addr,
-                                self.arch,
-                                99,  // max_insns
-                                max_bytes as u32,
-                                native_opt_level,
-                            ) {
-                                Ok(irsb) => {
-                                    // Native lift succeeded!
-                                    log::trace!("Native lift succeeded at 0x{:x}", addr);
-                                    if let Some(start) = lift_start {
-                                        self.stats.lift_time_ns += start.elapsed().as_nanos() as u64;
+                    // Try to get bytes from concrete memory for native lifting
+                    // Look for a region containing this address with enough bytes
+                    for region in self.concrete_memory.iter() {
+                        if addr >= region.base && addr < region.base + region.size {
+                            let offset = (addr - region.base) as usize;
+                            let available = region.size as usize - offset;
+                            // Limit block size to stop at hook/avoid/find addresses.
+                            // Without this, blocks can span past these addresses,
+                            // and the hook check at block boundaries misses them.
+                            let mut max_bytes = available.min(4096);
+                            for &hook_addr in self.hook_addrs.iter() {
+                                if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
+                                    let limit = (hook_addr - addr) as usize;
+                                    if limit > 0 && limit < max_bytes {
+                                        max_bytes = limit;
                                     }
-                                    let arc_irsb = Arc::new(irsb);
-                                    self.block_cache.put(addr, Arc::clone(&arc_irsb));
-                                    return Ok(arc_irsb);
-                                }
-                                Err(e) => {
-                                    log::trace!("Native lift failed at 0x{:x}: {}", addr, e);
-                                    // Fall through to Python callback
                                 }
                             }
+                            if max_bytes >= 1 {
+                                let bytes = &region.data[offset..offset + max_bytes];
+                                // Resolve VEX opt_level for native lifting
+                                let native_opt_level = self
+                                    .vex_opt_level_overrides
+                                    .get(&addr)
+                                    .copied()
+                                    .or(self.vex_opt_level)
+                                    .unwrap_or(1); // pyvex default is 1
+                                match crate::vex::libpyvex_ffi::lift_native(
+                                    bytes,
+                                    addr,
+                                    self.arch,
+                                    99, // max_insns
+                                    max_bytes as u32,
+                                    native_opt_level,
+                                ) {
+                                    Ok(irsb) => {
+                                        // Native lift succeeded!
+                                        log::trace!("Native lift succeeded at 0x{:x}", addr);
+                                        if let Some(start) = lift_start {
+                                            self.stats.lift_time_ns +=
+                                                start.elapsed().as_nanos() as u64;
+                                        }
+                                        let arc_irsb = Arc::new(irsb);
+                                        self.block_cache.put(addr, Arc::clone(&arc_irsb));
+                                        return Ok(arc_irsb);
+                                    }
+                                    Err(e) => {
+                                        log::trace!("Native lift failed at 0x{:x}: {}", addr, e);
+                                        // Fall through to Python callback
+                                    }
+                                }
+                            }
+                            break;
                         }
-                        break;
                     }
-                }
                 }
             }
         }
 
         // Fall back to lifting via Python callback
-        let callback_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        let callback_start = if self.profiling_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
         // Resolve VEX opt_level: per-address override > global > None (pyvex default)
-        let opt_level = self.vex_opt_level_overrides.get(&addr).copied()
+        let opt_level = self
+            .vex_opt_level_overrides
+            .get(&addr)
+            .copied()
             .or(self.vex_opt_level);
 
         // SMC: when this lift range overlaps a dirtied page, the cle binary
         // bytes that the Python lifter would normally read are stale. Try
         // to read fresh bytes from rust_memory and pass them via byte_string=
         // so the Python lift sees the post-store program.
-        let dirty_bytes: Option<Vec<u8>> =
-            if self.is_code_range_dirtied(addr, 4096) {
-                self.rust_memory.as_ref().and_then(|rust_mem| {
-                    let mut max_bytes = 4096usize;
-                    for &hook_addr in self.hook_addrs.iter() {
-                        if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
-                            let limit = (hook_addr - addr) as usize;
-                            if limit > 0 && limit < max_bytes {
-                                max_bytes = limit;
-                            }
+        let dirty_bytes: Option<Vec<u8>> = if self.is_code_range_dirtied(addr, 4096) {
+            self.rust_memory.as_ref().and_then(|rust_mem| {
+                let mut max_bytes = 4096usize;
+                for &hook_addr in self.hook_addrs.iter() {
+                    if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
+                        let limit = (hook_addr - addr) as usize;
+                        if limit > 0 && limit < max_bytes {
+                            max_bytes = limit;
                         }
                     }
-                    rust_mem.read_concrete_bytes_for_lift(addr, max_bytes)
-                })
-            } else {
-                None
-            };
+                }
+                rust_mem.read_concrete_bytes_for_lift(addr, max_bytes)
+            })
+        } else {
+            None
+        };
 
         let irsb_json = callbacks
             .call_lift_block(py, addr, opt_level, dirty_bytes.as_deref())
@@ -473,8 +521,9 @@ impl<'a> CallbackInterpreter<'a> {
             self.stats.python_callback_time_ns += start.elapsed().as_nanos() as u64;
         }
 
-        let irsb = deserialize_irsb(&irsb_json)
-            .map_err(|e| CbExecutionError::LiftError(format!("IRSB deserialization failed: {}", e)))?;
+        let irsb = deserialize_irsb(&irsb_json).map_err(|e| {
+            CbExecutionError::LiftError(format!("IRSB deserialization failed: {}", e))
+        })?;
 
         if let Some(start) = lift_start {
             self.stats.lift_time_ns += start.elapsed().as_nanos() as u64;
@@ -511,7 +560,11 @@ impl<'a> CallbackInterpreter<'a> {
         self.current_insn_addr = irsb.addr;
 
         // Prefetch loads for this block (reduces individual FFI calls)
-        let prefetch_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+        let prefetch_start = if self.profiling_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
         self.prefetch_loads_for_block(py, callbacks, irsb)?;
         if let Some(start) = prefetch_start {
             self.stats.prefetch_time_ns += start.elapsed().as_nanos() as u64;
@@ -520,16 +573,28 @@ impl<'a> CallbackInterpreter<'a> {
         // Execute statements
         let mut stmt_total_ns: u64 = 0;
         for stmt in &irsb.statements {
-            if self.profiling_enabled { self.stats.stmt_count += 1; }
-            let stmt_start = if self.profiling_enabled { Some(Instant::now()) } else { None };
+            if self.profiling_enabled {
+                self.stats.stmt_count += 1;
+            }
+            let stmt_start = if self.profiling_enabled {
+                Some(Instant::now())
+            } else {
+                None
+            };
             match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {
                 StmtResult::Continue => {
                     if let Some(start) = stmt_start {
                         let elapsed = start.elapsed().as_nanos() as u64;
                         stmt_total_ns += elapsed;
                         #[cfg(debug_assertions)]
-                        if elapsed > 50_000_000 { // >50ms
-                            log::warn!("  SLOW STMT at 0x{:x}: {}ms {:?}", self.current_insn_addr, elapsed / 1_000_000, stmt);
+                        if elapsed > 50_000_000 {
+                            // >50ms
+                            log::warn!(
+                                "  SLOW STMT at 0x{:x}: {}ms {:?}",
+                                self.current_insn_addr,
+                                elapsed / 1_000_000,
+                                stmt
+                            );
                         }
                     }
                     continue;
@@ -557,7 +622,7 @@ impl<'a> CallbackInterpreter<'a> {
                     self.last_branch_condition = Some(condition);
 
                     return Ok(BlockResult::SymbolicBranch {
-                        condition_id: cond_id,  // Fixed: use proper unique ID
+                        condition_id: cond_id, // Fixed: use proper unique ID
                         true_target,
                         false_target,
                     });
@@ -568,8 +633,14 @@ impl<'a> CallbackInterpreter<'a> {
         if self.profiling_enabled {
             self.stats.run_loop_time_ns += stmt_total_ns;
             #[cfg(debug_assertions)]
-            if stmt_total_ns > 100_000_000 { // >100ms
-                log::warn!("SLOW BLOCK at 0x{:x}: {}ms for {} stmts", irsb.addr, stmt_total_ns / 1_000_000, irsb.statements.len());
+            if stmt_total_ns > 100_000_000 {
+                // >100ms
+                log::warn!(
+                    "SLOW BLOCK at 0x{:x}: {}ms for {} stmts",
+                    irsb.addr,
+                    stmt_total_ns / 1_000_000,
+                    irsb.statements.len()
+                );
             }
         }
 

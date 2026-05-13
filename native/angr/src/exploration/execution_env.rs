@@ -23,7 +23,7 @@ use std::sync::Arc;
 use lru::LruCache;
 
 use crate::arch::CallingConvention;
-use crate::vex::{VexArch, IRSB};
+use crate::vex::{IRSB, VexArch};
 
 pub(crate) struct ExecutionEnvironment {
     pub(crate) arch_name: String,

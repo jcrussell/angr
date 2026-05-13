@@ -7,9 +7,9 @@
 //!
 //! Falls back to Python when the format address is symbolic.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_PRINTF_LEN: usize = 4096;
 
@@ -76,7 +76,9 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
 
-        let result = NativePrintf.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = NativePrintf
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(11));
         assert_eq!(state.stdout_buffer(), b"hello world");
     }
@@ -86,7 +88,9 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"\x00", Permission::RWX);
 
-        let result = NativePrintf.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = NativePrintf
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         // Returns 1 for empty format
         assert_eq!(result.unwrap().as_u64(), Some(1));
         assert_eq!(state.stdout_buffer(), b"");

@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
-use super::{RustBV, SymContext};
 use super::handle::RustBVHandle;
+use super::{RustBV, SymContext};
 
 /// Global symbol table for storing RustBV values.
 ///
@@ -403,7 +403,12 @@ impl RustSymbolTable {
     // =========================================================================
 
     /// Zero-extend to a wider width.
-    pub fn op_zero_extend(&self, a_id: u64, to_width: u32, ctx: &SymContext) -> Option<RustBVHandle> {
+    pub fn op_zero_extend(
+        &self,
+        a_id: u64,
+        to_width: u32,
+        ctx: &SymContext,
+    ) -> Option<RustBVHandle> {
         let symbols = self.symbols.read();
         let a = symbols.get(&a_id)?;
         let result = a.zero_extend(to_width, ctx);
@@ -412,7 +417,12 @@ impl RustSymbolTable {
     }
 
     /// Sign-extend to a wider width.
-    pub fn op_sign_extend(&self, a_id: u64, to_width: u32, ctx: &SymContext) -> Option<RustBVHandle> {
+    pub fn op_sign_extend(
+        &self,
+        a_id: u64,
+        to_width: u32,
+        ctx: &SymContext,
+    ) -> Option<RustBVHandle> {
         let symbols = self.symbols.read();
         let a = symbols.get(&a_id)?;
         let result = a.sign_extend(to_width, ctx);
@@ -430,7 +440,13 @@ impl RustSymbolTable {
     }
 
     /// Extract bits [high:low] (inclusive).
-    pub fn op_extract(&self, a_id: u64, high: u32, low: u32, ctx: &SymContext) -> Option<RustBVHandle> {
+    pub fn op_extract(
+        &self,
+        a_id: u64,
+        high: u32,
+        low: u32,
+        ctx: &SymContext,
+    ) -> Option<RustBVHandle> {
         let symbols = self.symbols.read();
         let a = symbols.get(&a_id)?;
         let result = a.extract(high, low, ctx);
@@ -449,7 +465,13 @@ impl RustSymbolTable {
     }
 
     /// If-then-else.
-    pub fn op_ite(&self, cond_id: u64, then_id: u64, else_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
+    pub fn op_ite(
+        &self,
+        cond_id: u64,
+        then_id: u64,
+        else_id: u64,
+        ctx: &SymContext,
+    ) -> Option<RustBVHandle> {
         let symbols = self.symbols.read();
         let cond = symbols.get(&cond_id)?;
         let then_val = symbols.get(&then_id)?;

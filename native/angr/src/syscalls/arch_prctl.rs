@@ -51,18 +51,26 @@ impl NativeSyscall for NativeArchPrctlSyscall {
         match code {
             ARCH_SET_FS => {
                 if !state.set_register("fs_const", args[1].clone()) {
-                    return Err(SyscallError::Other("arch_prctl: fs_const not writable".into()));
+                    return Err(SyscallError::Other(
+                        "arch_prctl: fs_const not writable".into(),
+                    ));
                 }
                 Ok(SyscallOutcome::Continue { ret: 0 })
             }
             ARCH_SET_GS => {
                 if !state.set_register("gs_const", args[1].clone()) {
-                    return Err(SyscallError::Other("arch_prctl: gs_const not writable".into()));
+                    return Err(SyscallError::Other(
+                        "arch_prctl: gs_const not writable".into(),
+                    ));
                 }
                 Ok(SyscallOutcome::Continue { ret: 0 })
             }
             ARCH_GET_FS | ARCH_GET_GS => {
-                let reg = if code == ARCH_GET_FS { "fs_const" } else { "gs_const" };
+                let reg = if code == ARCH_GET_FS {
+                    "fs_const"
+                } else {
+                    "gs_const"
+                };
                 let addr = args[1]
                     .as_u64()
                     .ok_or_else(|| SyscallError::SymbolicArgument("arch_prctl addr".into()))?;

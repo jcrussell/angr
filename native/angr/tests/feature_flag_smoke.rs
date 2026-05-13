@@ -26,7 +26,10 @@ fn smoke_concrete_arithmetic() {
     let a = RustBV::concrete(7, 32);
     let b = RustBV::concrete(35, 32);
     let sum = a.add(&b, &ctx);
-    assert!(sum.is_concrete(), "add of two concrete BVs should be concrete");
+    assert!(
+        sum.is_concrete(),
+        "add of two concrete BVs should be concrete"
+    );
     assert_eq!(sum.as_u128(), Some(42));
     assert_eq!(sum.width(), 32);
 }

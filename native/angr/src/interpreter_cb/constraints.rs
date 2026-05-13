@@ -8,9 +8,11 @@ impl<'a> CallbackInterpreter<'a> {
     pub fn track_concretization_constraint(&mut self, addr_expr: &RustBV, concrete_addr: u64) {
         // Only track if the address was actually symbolic
         if addr_expr.is_symbolic() {
-            self.pending_python_constraints.push(
-                PendingConstraint::address_concretization(addr_expr.clone(), concrete_addr)
-            );
+            self.pending_python_constraints
+                .push(PendingConstraint::address_concretization(
+                    addr_expr.clone(),
+                    concrete_addr,
+                ));
         }
     }
 
@@ -18,9 +20,11 @@ impl<'a> CallbackInterpreter<'a> {
     pub fn track_branch_constraint(&mut self, cond: &RustBV, took_true_branch: bool) {
         if cond.is_symbolic() {
             if took_true_branch {
-                self.pending_python_constraints.push(PendingConstraint::branch_true(cond.clone()));
+                self.pending_python_constraints
+                    .push(PendingConstraint::branch_true(cond.clone()));
             } else {
-                self.pending_python_constraints.push(PendingConstraint::branch_false(cond.clone()));
+                self.pending_python_constraints
+                    .push(PendingConstraint::branch_false(cond.clone()));
             }
         }
     }
@@ -60,7 +64,14 @@ impl<'a> CallbackInterpreter<'a> {
     pub fn export_constraints_for_python(&self) -> Vec<(String, u32, u128, Option<u64>)> {
         self.pending_python_constraints
             .iter()
-            .map(|c| (c.description.clone(), c.expression.width(), c.concrete_value, c.handle_id))
+            .map(|c| {
+                (
+                    c.description.clone(),
+                    c.expression.width(),
+                    c.concrete_value,
+                    c.handle_id,
+                )
+            })
             .collect()
     }
 
@@ -78,10 +89,11 @@ impl<'a> CallbackInterpreter<'a> {
     ) -> Result<(), CbExecutionError> {
         if self.has_pending_constraints() {
             let constraints = self.export_constraints_for_python();
-            callbacks.call_sync_constraints(py, &constraints)
-                .map_err(|e| CbExecutionError::Callback(format!(
-                    "constraint sync failed: {}", e
-                )))?;
+            callbacks
+                .call_sync_constraints(py, &constraints)
+                .map_err(|e| {
+                    CbExecutionError::Callback(format!("constraint sync failed: {}", e))
+                })?;
             self.clear_pending_constraints();
         }
         Ok(())

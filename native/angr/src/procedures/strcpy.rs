@@ -6,9 +6,9 @@
 //! - If any source byte is symbolic, falls back to Python
 //! - Maximum string length is 4096 bytes
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_STRLEN: usize = 4096;
 
@@ -39,7 +39,8 @@ impl NativeSimProcedure for NativeStrcpy {
         // Read source string until null terminator
         let mut buf = Vec::with_capacity(256);
         for i in 0..MAX_STRLEN as u64 {
-            let byte_val = state.memory_load(src.wrapping_add(i), 1)
+            let byte_val = state
+                .memory_load(src.wrapping_add(i), 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
             buf.push(byte);
@@ -54,7 +55,8 @@ impl NativeSimProcedure for NativeStrcpy {
         // Write to destination byte-by-byte (including null terminator)
         for (i, &byte) in buf.iter().enumerate() {
             let bv = RustBV::concrete(byte as u128, 8);
-            state.memory_store(dest.wrapping_add(i as u64), bv)
+            state
+                .memory_store(dest.wrapping_add(i as u64), bv)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         }
 
@@ -98,9 +100,11 @@ impl NativeSimProcedure for NativeStrncpy {
             if null_found {
                 buf.push(0);
             } else {
-                let byte_val = state.memory_load(src.wrapping_add(i), 1)
+                let byte_val = state
+                    .memory_load(src.wrapping_add(i), 1)
                     .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-                let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
+                let byte =
+                    extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
                 buf.push(byte);
                 if byte == 0 {
                     null_found = true;
@@ -111,7 +115,8 @@ impl NativeSimProcedure for NativeStrncpy {
         // Write to destination byte-by-byte
         for (i, &byte) in buf.iter().enumerate() {
             let bv = RustBV::concrete(byte as u128, 8);
-            state.memory_store(dest.wrapping_add(i as u64), bv)
+            state
+                .memory_store(dest.wrapping_add(i as u64), bv)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         }
 
@@ -148,7 +153,8 @@ impl NativeSimProcedure for NativeStrdup {
         // Read source string until null terminator
         let mut buf = Vec::with_capacity(256);
         for i in 0..MAX_STRLEN as u64 {
-            let byte_val = state.memory_load(src.wrapping_add(i), 1)
+            let byte_val = state
+                .memory_load(src.wrapping_add(i), 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
             buf.push(byte);
@@ -166,7 +172,8 @@ impl NativeSimProcedure for NativeStrdup {
         // Copy bytes to new allocation
         for (i, &byte) in buf.iter().enumerate() {
             let bv = RustBV::concrete(byte as u128, 8);
-            state.memory_store(new_addr.wrapping_add(i as u64), bv)
+            state
+                .memory_store(new_addr.wrapping_add(i as u64), bv)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         }
 
@@ -190,10 +197,12 @@ mod tests {
         state.map_memory_data(0x2000, &vec![0u8; 16], Permission::RWX);
 
         let proc = NativeStrcpy;
-        let result = proc.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-        ]).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64)],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0x2000));
 
@@ -210,10 +219,12 @@ mod tests {
         state.map_memory_data(0x1000, b"\x00", Permission::RWX);
         state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
 
-        NativeStrcpy.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-        ]).unwrap();
+        NativeStrcpy
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x1000, 64)],
+            )
+            .unwrap();
 
         // First byte should be null
         let first = state.memory_load(0x2000, 1).unwrap();
@@ -226,11 +237,16 @@ mod tests {
         state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
         state.map_memory_data(0x2000, &[0xFFu8; 16], Permission::RWX);
 
-        NativeStrncpy.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(5, 64),
-        ]).unwrap();
+        NativeStrncpy
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(5, 64),
+                ],
+            )
+            .unwrap();
 
         // Should copy exactly 5 bytes: "hello"
         for (i, &expected) in b"hello".iter().enumerate() {
@@ -245,11 +261,16 @@ mod tests {
         state.map_memory_data(0x1000, b"hi\x00", Permission::RWX);
         state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX);
 
-        NativeStrncpy.call(&mut state, &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(6, 64),
-        ]).unwrap();
+        NativeStrncpy
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(6, 64),
+                ],
+            )
+            .unwrap();
 
         // Bytes after null should also be null-padded
         for i in 2..6u64 {
@@ -264,7 +285,9 @@ mod tests {
         state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
 
-        let result = NativeStrdup.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = NativeStrdup
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         let new_addr = result.unwrap().as_u64().unwrap();
         assert!(new_addr >= 0xC000_0000);
 
@@ -285,7 +308,9 @@ mod tests {
         state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
         state.map_memory_data(0x1000, b"\x00", Permission::RWX);
 
-        let result = NativeStrdup.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = NativeStrdup
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         let new_addr = result.unwrap().as_u64().unwrap();
 
         // Should allocate 1 byte for null terminator

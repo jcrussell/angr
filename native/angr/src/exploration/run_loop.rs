@@ -24,15 +24,21 @@ impl RustExplorationManager {
         let max_steps = n.unwrap_or(self.max_steps_per_run);
 
         // Ensure callbacks are set and clone to avoid borrow issues
-        let callbacks = self.callbacks.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("callbacks not set")
-        })?.clone();
+        let callbacks = self
+            .callbacks
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("callbacks not set"))?
+            .clone();
 
         if !callbacks.is_ready() {
             return Err(PyRuntimeError::new_err("callbacks not ready"));
         }
 
-        let run_loop_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+        let run_loop_start = if self.profiling.profiling_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         for _ in 0..max_steps {
             // Check if we have enough solutions
@@ -48,9 +54,9 @@ impl RustExplorationManager {
             // P9 fix: Use LIFO (pop_back) for DFS or FIFO (pop_front) for BFS
             let mut state = match self.sm.get_mut(STASH_ACTIVE).and_then(|s| {
                 if self.use_lifo {
-                    s.pop_back()  // DFS: LIFO (most recent state first)
+                    s.pop_back() // DFS: LIFO (most recent state first)
                 } else {
-                    s.pop_front()  // BFS: FIFO (oldest state first)
+                    s.pop_front() // BFS: FIFO (oldest state first)
                 }
             }) {
                 Some(s) => {
@@ -58,15 +64,11 @@ impl RustExplorationManager {
                     self.current_stepping_state_id = Some(sid);
                     STEPPING_STATE_ID.with(|cell| cell.set(Some(sid)));
                     s
-                },
+                }
                 None => {
                     // No active states
                     if self.found_count() > 0 {
-                        return Ok(ExplorationEvent::found(
-                            self.found_count(),
-                            0,
-                            self.steps,
-                        ));
+                        return Ok(ExplorationEvent::found(self.found_count(), 0, self.steps));
                     } else {
                         return Ok(ExplorationEvent::active_empty(
                             self.found_count(),
@@ -86,30 +88,34 @@ impl RustExplorationManager {
             // sets skip_avoid_predicate_states to prevent infinite loop).
             if self.avoid_needs_python {
                 let state_id = state.state_id();
-                if self.constraint_tracker.skip_avoid_predicate_states.remove(&state_id) {
+                if self
+                    .constraint_tracker
+                    .skip_avoid_predicate_states
+                    .remove(&state_id)
+                {
                     // Fall through — predicate already checked at this PC
                 } else {
-                self.pending_callback = Some(PendingCallback::lightweight(
-                    state,
-                    CallbackReason::AvoidPredicate { addr: pc },
-                ));
+                    self.pending_callback = Some(PendingCallback::lightweight(
+                        state,
+                        CallbackReason::AvoidPredicate { addr: pc },
+                    ));
 
-                return Ok(ExplorationEvent {
-                    event_type: "need_callback".to_string(),
-                    callback_reason: Some("avoid_predicate".to_string()),
-                    callback_addr: Some(pc),
-                    callback_state_id: Some(state_id),
-                    found_count: self.found_count(),
-                    active_count: self.active_count(),
-                    steps_taken: self.steps,
-                    callback_name: None,
-                    callback_syscall_num: None,
-                    callback_return_addr: None,
-                    callback_num_args: None,
-                    branch_true_target: None,
-                    branch_false_target: None,
-                    branch_condition_id: None,
-                });
+                    return Ok(ExplorationEvent {
+                        event_type: "need_callback".to_string(),
+                        callback_reason: Some("avoid_predicate".to_string()),
+                        callback_addr: Some(pc),
+                        callback_state_id: Some(state_id),
+                        found_count: self.found_count(),
+                        active_count: self.active_count(),
+                        steps_taken: self.steps,
+                        callback_name: None,
+                        callback_syscall_num: None,
+                        callback_return_addr: None,
+                        callback_num_args: None,
+                        branch_true_target: None,
+                        branch_false_target: None,
+                        branch_condition_id: None,
+                    });
                 }
             }
 
@@ -126,30 +132,34 @@ impl RustExplorationManager {
             // sets skip_find_predicate_state to avoid infinite loop).
             if self.find_needs_python {
                 let state_id = state.state_id();
-                if self.constraint_tracker.skip_find_predicate_states.remove(&state_id) {
+                if self
+                    .constraint_tracker
+                    .skip_find_predicate_states
+                    .remove(&state_id)
+                {
                     // Fall through to hooks/stepping — predicate already checked
                 } else {
-                self.pending_callback = Some(PendingCallback::lightweight(
-                    state,
-                    CallbackReason::FindPredicate { addr: pc },
-                ));
+                    self.pending_callback = Some(PendingCallback::lightweight(
+                        state,
+                        CallbackReason::FindPredicate { addr: pc },
+                    ));
 
-                return Ok(ExplorationEvent {
-                    event_type: "need_callback".to_string(),
-                    callback_reason: Some("find_predicate".to_string()),
-                    callback_addr: Some(pc),
-                    callback_state_id: Some(state_id),
-                    found_count: self.found_count(),
-                    active_count: self.active_count(),
-                    steps_taken: self.steps,
-                    callback_name: None,
-                    callback_syscall_num: None,
-                    callback_return_addr: None,
-                    callback_num_args: None,
-                    branch_true_target: None,
-                    branch_false_target: None,
-                    branch_condition_id: None,
-                });
+                    return Ok(ExplorationEvent {
+                        event_type: "need_callback".to_string(),
+                        callback_reason: Some("find_predicate".to_string()),
+                        callback_addr: Some(pc),
+                        callback_state_id: Some(state_id),
+                        found_count: self.found_count(),
+                        active_count: self.active_count(),
+                        steps_taken: self.steps,
+                        callback_name: None,
+                        callback_syscall_num: None,
+                        callback_return_addr: None,
+                        callback_num_args: None,
+                        branch_true_target: None,
+                        branch_false_target: None,
+                        branch_condition_id: None,
+                    });
                 } // else (not skip_find_predicate_state)
             }
 
@@ -158,7 +168,8 @@ impl RustExplorationManager {
                 // Only add to found if the state is satisfiable
                 // (UNSAT states reached the address via infeasible paths)
                 if self.constraint_solver.lazy_solves || state.satisfiable() {
-                    self.sm.stashes_mut()
+                    self.sm
+                        .stashes_mut()
                         .entry(STASH_FOUND.to_string())
                         .or_insert_with(VecDeque::new)
                         .push_back(state);
@@ -172,103 +183,122 @@ impl RustExplorationManager {
             // Check hooks (SimProcedures)
             // GAP 6: Stack-based skip tracking for zero-length hooks
             // Clean up expired skip entries before checking
-            self.skip_hook_stack.retain(|&(_, expiry)| expiry > self.steps);
+            self.skip_hook_stack
+                .retain(|&(_, expiry)| expiry > self.steps);
 
             // Check if this address is in the skip stack
             let should_skip_hook = self.skip_hook_stack.iter().any(|&(addr, _)| addr == pc);
             if should_skip_hook {
                 // Remove this address from the skip stack (consumed)
                 self.skip_hook_stack.retain(|&(addr, _)| addr != pc);
-                log::debug!("Skipping hook at 0x{:x} (zero-length hook, step {})", pc, self.steps);
+                log::debug!(
+                    "Skipping hook at 0x{:x} (zero-length hook, step {})",
+                    pc,
+                    self.steps
+                );
             }
             if self.hooks.contains(&pc) && !should_skip_hook {
                 // Check if this is a registered SimProcedure
                 if let Some((name, num_args, no_return)) = self.simprocedures.get(&pc).cloned() {
                     // Skip native for addresses inside the binary (user-placed hooks)
-                    let is_in_binary = self.environment.binary_regions.iter().any(|(base, data)| {
-                        pc >= *base && pc < *base + data.len() as u64
-                    });
+                    let is_in_binary = self
+                        .environment
+                        .binary_regions
+                        .iter()
+                        .any(|(base, data)| pc >= *base && pc < *base + data.len() as u64);
                     // Try native procedure first (only for external/library hooks)
                     if !is_in_binary {
-                    if let Some(native_proc) = self.native_procedures.get(&name) {
-                        // Extract arguments from state registers and stack
-                        let args = self.extract_procedure_args(&state, num_args);
+                        if let Some(native_proc) = self.native_procedures.get(&name) {
+                            // Extract arguments from state registers and stack
+                            let args = self.extract_procedure_args(&state, num_args);
 
-                        // Try to execute native procedure
-                        match native_proc.call(&mut state, &args) {
-                            Ok(ret_val) => {
-                                // Native execution succeeded
-                                self.profiling.native_proc_stats.native_calls += 1;
-                                *self.profiling.native_proc_stats.call_counts
-                                    .entry(name.clone())
-                                    .or_insert(0) += 1;
+                            // Try to execute native procedure
+                            match native_proc.call(&mut state, &args) {
+                                Ok(ret_val) => {
+                                    // Native execution succeeded
+                                    self.profiling.native_proc_stats.native_calls += 1;
+                                    *self
+                                        .profiling
+                                        .native_proc_stats
+                                        .call_counts
+                                        .entry(name.clone())
+                                        .or_insert(0) += 1;
 
-                                // For no-return procedures (exit/abort), skip
-                                // the return-address dance and deadend directly.
-                                // Setting PC to a stack-derived return address
-                                // can produce a spurious successor (e.g. when
-                                // exit is called from rejected() in fauxware,
-                                // the post-call address happens to overlap
-                                // main's start, causing infinite re-entry).
-                                if no_return {
-                                    self.push_or_drop_terminal(STASH_DEADENDED, state);
-                                    continue;
-                                }
-
-                                // Set return value if present
-                                if let Some(rv) = ret_val {
-                                    let ret_reg = self.environment.calling_convention.return_register();
-                                    state.set_register_by_offset(ret_reg, rv);
-                                }
-
-                                // Get return address and set PC. Use the
-                                // state's real register file so that LR/X30/$ra
-                                // overrides see actual values; passing a blank
-                                // RegisterFile here used to make ARM/ARM64/MIPS
-                                // read LR=0 and set PC to 0.
-                                let ctx = state.solver().borrow();
-                                let ret_addr_opt = self.environment.calling_convention.get_return_addr(
-                                    state.registers(),
-                                    None,
-                                    &ctx,
-                                );
-                                let pops_return_addr = self.environment.calling_convention.pops_return_addr();
-                                drop(ctx);
-                                if let Some(ret_addr) = ret_addr_opt {
-                                    // Only adjust SP for stack-based ABIs
-                                    // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
-                                    // in a register and leave SP untouched.
-                                    if pops_return_addr {
-                                        let sp = state.get_sp().as_u64().unwrap_or(0);
-                                        let ptr_size = state.arch().bytes() as u64;
-                                        state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
+                                    // For no-return procedures (exit/abort), skip
+                                    // the return-address dance and deadend directly.
+                                    // Setting PC to a stack-derived return address
+                                    // can produce a spurious successor (e.g. when
+                                    // exit is called from rejected() in fauxware,
+                                    // the post-call address happens to overlap
+                                    // main's start, causing infinite re-entry).
+                                    if no_return {
+                                        self.push_or_drop_terminal(STASH_DEADENDED, state);
+                                        continue;
                                     }
-                                    state.set_pc(ret_addr);
-                                } else if pops_return_addr {
-                                    // Fallback: read ret addr from [sp] for
-                                    // stack-based ABIs (only useful when the
-                                    // calling convention's get_return_addr
-                                    // declined to read memory itself).
-                                    if let Some(sp) = state.get_sp().as_u64() {
-                                        if let Ok(ret_bv) = state.memory_load(sp, state.arch().bytes()) {
-                                            if let Some(ret_addr) = ret_bv.as_u64() {
-                                                let ptr_size = state.arch().bytes() as u64;
-                                                state.set_sp(RustBV::concrete((sp + ptr_size) as u128, state.arch().bits()));
-                                                state.set_pc(ret_addr);
+
+                                    // Set return value if present
+                                    if let Some(rv) = ret_val {
+                                        let ret_reg =
+                                            self.environment.calling_convention.return_register();
+                                        state.set_register_by_offset(ret_reg, rv);
+                                    }
+
+                                    // Get return address and set PC. Use the
+                                    // state's real register file so that LR/X30/$ra
+                                    // overrides see actual values; passing a blank
+                                    // RegisterFile here used to make ARM/ARM64/MIPS
+                                    // read LR=0 and set PC to 0.
+                                    let ctx = state.solver().borrow();
+                                    let ret_addr_opt = self
+                                        .environment
+                                        .calling_convention
+                                        .get_return_addr(state.registers(), None, &ctx);
+                                    let pops_return_addr =
+                                        self.environment.calling_convention.pops_return_addr();
+                                    drop(ctx);
+                                    if let Some(ret_addr) = ret_addr_opt {
+                                        // Only adjust SP for stack-based ABIs
+                                        // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
+                                        // in a register and leave SP untouched.
+                                        if pops_return_addr {
+                                            let sp = state.get_sp().as_u64().unwrap_or(0);
+                                            let ptr_size = state.arch().bytes() as u64;
+                                            state.set_sp(RustBV::concrete(
+                                                (sp + ptr_size) as u128,
+                                                state.arch().bits(),
+                                            ));
+                                        }
+                                        state.set_pc(ret_addr);
+                                    } else if pops_return_addr {
+                                        // Fallback: read ret addr from [sp] for
+                                        // stack-based ABIs (only useful when the
+                                        // calling convention's get_return_addr
+                                        // declined to read memory itself).
+                                        if let Some(sp) = state.get_sp().as_u64() {
+                                            if let Ok(ret_bv) =
+                                                state.memory_load(sp, state.arch().bytes())
+                                            {
+                                                if let Some(ret_addr) = ret_bv.as_u64() {
+                                                    let ptr_size = state.arch().bytes() as u64;
+                                                    state.set_sp(RustBV::concrete(
+                                                        (sp + ptr_size) as u128,
+                                                        state.arch().bits(),
+                                                    ));
+                                                    state.set_pc(ret_addr);
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                self.push_to_active_or_drop(state);
-                                continue;
-                            }
-                            Err(_e) => {
-                                // Native execution failed, fall back to Python
-                                self.profiling.native_proc_stats.python_fallbacks += 1;
+                                    self.push_to_active_or_drop(state);
+                                    continue;
+                                }
+                                Err(_e) => {
+                                    // Native execution failed, fall back to Python
+                                    self.profiling.native_proc_stats.python_fallbacks += 1;
+                                }
                             }
                         }
-                    }
                     } // if !is_in_binary
 
                     // Fall back to Python for SimProcedure execution
@@ -320,8 +350,11 @@ impl RustExplorationManager {
                         let spc = successor.pc();
                         if self.find_addrs.contains(&spc) {
                             if self.constraint_solver.lazy_solves || successor.satisfiable() {
-                                self.sm.stashes_mut().entry(STASH_FOUND.to_string())
-                                    .or_insert_with(VecDeque::new).push_back(successor);
+                                self.sm
+                                    .stashes_mut()
+                                    .entry(STASH_FOUND.to_string())
+                                    .or_insert_with(VecDeque::new)
+                                    .push_back(successor);
                             }
                         } else if self.avoid_addrs.contains(&spc) {
                             self.push_or_drop_terminal(STASH_AVOID, successor);
@@ -344,12 +377,23 @@ impl RustExplorationManager {
                             // Process deferred forks BEFORE handling the find/avoid state.
                             // These represent unexplored branches that diverged before
                             // reaching the find/avoid address and must not be dropped.
-                            let fork_base = pending.pre_callback_snapshot.unwrap_or_else(|| pending.state.fork());
+                            let fork_base = pending
+                                .pre_callback_snapshot
+                                .unwrap_or_else(|| pending.state.fork());
                             let original_state_id = pending.state.state_id();
-                            let root_state_id = self.sm.roots().get(&original_state_id).copied().unwrap_or(original_state_id);
+                            let root_state_id = self
+                                .sm
+                                .roots()
+                                .get(&original_state_id)
+                                .copied()
+                                .unwrap_or(original_state_id);
 
                             let mut snapshots = pending.fork_snapshots;
-                            let cb_fork_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                            let cb_fork_start = if self.profiling.profiling_enabled {
+                                Some(std::time::Instant::now())
+                            } else {
+                                None
+                            };
                             let cb_fork_total = pending.deferred_forks.len() as u64;
                             for fork in pending.deferred_forks {
                                 let condition = pending.stored_conditions.get(&fork.condition_id);
@@ -361,8 +405,12 @@ impl RustExplorationManager {
                                             let ctx: &SymContext = &*solver_ref.borrow();
                                             claripy_to_rustbv(py, ast, ctx).ok()
                                         })
-                                    } else { None }
-                                } else { None };
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
 
                                 if let Some(cond) = condition.or(reconstructed.as_ref()) {
                                     // Add the taken-path constraint to the main state
@@ -372,8 +420,14 @@ impl RustExplorationManager {
                                     } else {
                                         pending.state.solver().borrow().assume_false(cond);
                                     }
-                                    let fork_op_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
-                                    let forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
+                                    let fork_op_start = if self.profiling.profiling_enabled {
+                                        Some(std::time::Instant::now())
+                                    } else {
+                                        None
+                                    };
+                                    let forked = if let Some(snapshot) =
+                                        snapshots.remove(&fork.condition_id)
+                                    {
                                         let mut f = fork_base.fork_from_snapshot(snapshot);
                                         if fork.path_taken {
                                             f.solver().borrow().assume_false(cond);
@@ -392,36 +446,51 @@ impl RustExplorationManager {
                                         f
                                     };
                                     if let Some(start) = fork_op_start {
-                                        self.profiling.accumulated_stats.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                                        self.profiling.accumulated_stats.solver_fork_time_ns +=
+                                            start.elapsed().as_nanos() as u64;
                                         self.profiling.accumulated_stats.solver_fork_count += 1;
                                     }
                                     self.sm.set_root(forked.state_id(), root_state_id);
-                                    let sat_start = if self.profiling.profiling_enabled { Some(std::time::Instant::now()) } else { None };
+                                    let sat_start = if self.profiling.profiling_enabled {
+                                        Some(std::time::Instant::now())
+                                    } else {
+                                        None
+                                    };
                                     if self.constraint_solver.lazy_solves || forked.satisfiable() {
                                         if let Some(start) = sat_start {
-                                            self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                            self.profiling.accumulated_stats.solver_sat_time_ns +=
+                                                start.elapsed().as_nanos() as u64;
                                             self.profiling.accumulated_stats.solver_sat_count += 1;
                                         }
                                         self.push_to_active_or_drop(forked);
                                     } else if let Some(start) = sat_start {
-                                        self.profiling.accumulated_stats.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                                        self.profiling.accumulated_stats.solver_sat_time_ns +=
+                                            start.elapsed().as_nanos() as u64;
                                         self.profiling.accumulated_stats.solver_sat_count += 1;
                                     }
                                 }
                             }
                             if let Some(start) = cb_fork_start {
-                                self.profiling.accumulated_stats.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
-                                self.profiling.accumulated_stats.deferred_fork_count += cb_fork_total;
+                                self.profiling.accumulated_stats.deferred_fork_time_ns +=
+                                    start.elapsed().as_nanos() as u64;
+                                self.profiling.accumulated_stats.deferred_fork_count +=
+                                    cb_fork_total;
                             }
 
                             // Now handle the main state
                             if is_find {
-                                if self.constraint_solver.lazy_solves || pending.state.satisfiable() {
-                                    self.sm.stashes_mut().entry(STASH_FOUND.to_string())
+                                if self.constraint_solver.lazy_solves || pending.state.satisfiable()
+                                {
+                                    self.sm
+                                        .stashes_mut()
+                                        .entry(STASH_FOUND.to_string())
                                         .or_insert_with(VecDeque::new)
                                         .push_back(pending.state);
                                 } else {
-                                    log::debug!("State at find address 0x{:x} is UNSAT, pruning", addr);
+                                    log::debug!(
+                                        "State at find address 0x{:x} is UNSAT, pruning",
+                                        addr
+                                    );
                                     self.push_or_drop_terminal(STASH_PRUNED, pending.state);
                                 }
                             } else {
@@ -434,48 +503,54 @@ impl RustExplorationManager {
                     // Need Python callback
                     let state_id = pending.state.state_id();
                     let event = match &pending.reason {
-                        CallbackReason::SimProcedure { addr, name, num_args, return_addr } => {
-                            ExplorationEvent::need_simprocedure(
-                                state_id,
-                                *addr,
-                                name.clone(),
-                                *num_args,
-                                *return_addr,
-                                self.found_count(),
-                                self.active_count(),
-                                self.steps,
-                            )
-                        }
-                        CallbackReason::Syscall { num } => {
-                            ExplorationEvent::need_syscall(
-                                state_id,
-                                *num,
-                                self.found_count(),
-                                self.active_count(),
-                                self.steps,
-                            )
-                        }
-                        CallbackReason::SymbolicBranch { condition_id, true_target, false_target } => {
-                            ExplorationEvent::need_symbolic_branch(
-                                state_id,
-                                *condition_id,
-                                *true_target,
-                                *false_target,
-                                self.found_count(),
-                                self.active_count(),
-                                self.steps,
-                            )
-                        }
+                        CallbackReason::SimProcedure {
+                            addr,
+                            name,
+                            num_args,
+                            return_addr,
+                        } => ExplorationEvent::need_simprocedure(
+                            state_id,
+                            *addr,
+                            name.clone(),
+                            *num_args,
+                            *return_addr,
+                            self.found_count(),
+                            self.active_count(),
+                            self.steps,
+                        ),
+                        CallbackReason::Syscall { num } => ExplorationEvent::need_syscall(
+                            state_id,
+                            *num,
+                            self.found_count(),
+                            self.active_count(),
+                            self.steps,
+                        ),
+                        CallbackReason::SymbolicBranch {
+                            condition_id,
+                            true_target,
+                            false_target,
+                        } => ExplorationEvent::need_symbolic_branch(
+                            state_id,
+                            *condition_id,
+                            *true_target,
+                            *false_target,
+                            self.found_count(),
+                            self.active_count(),
+                            self.steps,
+                        ),
                         CallbackReason::PythonVEXFallback { addr, reason } => {
                             self.vex_fallback_count += 1;
-                            self.vex_fallback_addrs.entry(*addr).or_insert_with(|| reason.clone());
+                            self.vex_fallback_addrs
+                                .entry(*addr)
+                                .or_insert_with(|| reason.clone());
                             if reason.contains(DCAS_UNSUPPORTED_REASON) {
                                 self.dcas_unsupported_count += 1;
                                 if self.dcas_warned_states.insert(state_id) {
                                     log::warn!(
                                         "DCAS (cmpxchg16b) unsupported in Rust interpreter at \
                                          0x{:x} (state {}); falling back to Python VEX engine",
-                                        addr, state_id
+                                        addr,
+                                        state_id
                                     );
                                 }
                             }
@@ -488,22 +563,18 @@ impl RustExplorationManager {
                                 self.steps,
                             )
                         }
-                        CallbackReason::Error { message } => {
-                            ExplorationEvent::error(
-                                message.clone(),
-                                self.found_count(),
-                                self.active_count(),
-                                self.steps,
-                            )
-                        }
-                        _ => {
-                            ExplorationEvent::error(
-                                "unhandled callback reason".to_string(),
-                                self.found_count(),
-                                self.active_count(),
-                                self.steps,
-                            )
-                        }
+                        CallbackReason::Error { message } => ExplorationEvent::error(
+                            message.clone(),
+                            self.found_count(),
+                            self.active_count(),
+                            self.steps,
+                        ),
+                        _ => ExplorationEvent::error(
+                            "unhandled callback reason".to_string(),
+                            self.found_count(),
+                            self.active_count(),
+                            self.steps,
+                        ),
                     };
 
                     self.pending_callback = Some(pending);
@@ -516,7 +587,8 @@ impl RustExplorationManager {
                     let pc = state.pc();
                     let state_id = state.state_id();
                     self.errors.push((pc, message, state_id));
-                    self.sm.stashes_mut()
+                    self.sm
+                        .stashes_mut()
                         .entry(STASH_ERRORED.to_string())
                         .or_insert_with(VecDeque::new)
                         .push_back(state);

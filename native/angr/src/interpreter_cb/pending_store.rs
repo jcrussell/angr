@@ -91,9 +91,7 @@ impl PendingStoreBuffer {
         // The most recent store covering addr is smaller than the load.
         // Fall back to reverse scan to find an earlier fully-covering store.
         for (s_addr, s_data) in self.stores.iter().rev() {
-            if *s_addr <= addr
-                && addr + size as u64 <= *s_addr + s_data.len() as u64
-            {
+            if *s_addr <= addr && addr + size as u64 <= *s_addr + s_data.len() as u64 {
                 let off = (addr - *s_addr) as usize;
                 return Some(&s_data[off..off + size]);
             }
@@ -160,7 +158,7 @@ mod tests {
         // Old semantics: reverse scan finds earlier fully-covering store first.
         let mut buf = PendingStoreBuffer::with_capacity(8);
         buf.push(0x100, vec![1, 2, 3, 4]); // idx 0
-        buf.push(0x100, vec![9]);          // idx 1, partial
+        buf.push(0x100, vec![9]); // idx 1, partial
         // Load size 4 at 0x100: idx 1 doesn't fully cover; reverse scan finds idx 0.
         assert_eq!(buf.try_load(0x100, 4).unwrap(), &[1, 2, 3, 4]);
     }
@@ -187,7 +185,10 @@ mod tests {
     fn try_load_exact_requires_base_match() {
         let mut buf = PendingStoreBuffer::with_capacity(8);
         buf.push(0x100, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(buf.try_load_exact(0x100, 8).unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            buf.try_load_exact(0x100, 8).unwrap(),
+            &[1, 2, 3, 4, 5, 6, 7, 8]
+        );
         // Loading at offset within the store should fail (not an exact base match).
         assert!(buf.try_load_exact(0x101, 4).is_none());
     }

@@ -189,14 +189,17 @@ mod tests {
         let err = h
             .call(
                 &mut state,
-                &[sym_fd, RustBV::concrete(0x1000, 64), RustBV::concrete(1, 64)],
+                &[
+                    sym_fd,
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(1, 64),
+                ],
             )
             .expect_err("must fall back");
         match err {
-            SyscallError::SymbolicArgument(msg) => assert!(
-                msg.contains("fd"),
-                "message should name fd, got {msg:?}",
-            ),
+            SyscallError::SymbolicArgument(msg) => {
+                assert!(msg.contains("fd"), "message should name fd, got {msg:?}",)
+            }
             other => panic!("expected SymbolicArgument, got {other:?}"),
         }
     }

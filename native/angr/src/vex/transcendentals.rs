@@ -51,12 +51,7 @@ pub fn try_concrete_binop_rm(opcode: u32, _rm: &RustBV, x: &RustBV) -> Option<Ru
 
 /// Concrete Triop transcendental: (rm, a, b) → result.
 /// Returns None if any value operand is symbolic or the opcode is unknown.
-pub fn try_concrete_triop_rm(
-    opcode: u32,
-    _rm: &RustBV,
-    a: &RustBV,
-    b: &RustBV,
-) -> Option<RustBV> {
+pub fn try_concrete_triop_rm(opcode: u32, _rm: &RustBV, a: &RustBV, b: &RustBV) -> Option<RustBV> {
     let av = a.as_u128()? as u64;
     let bv = b.as_u128()? as u64;
     let af = f64::from_bits(av);
@@ -145,13 +140,15 @@ mod tests {
 
     #[test]
     fn sin_cos_tan_concrete() {
-        let r = try_concrete_binop_rm(IOP_SIN_F64, &rm(), &bv64(std::f64::consts::PI / 6.0)).unwrap();
+        let r =
+            try_concrete_binop_rm(IOP_SIN_F64, &rm(), &bv64(std::f64::consts::PI / 6.0)).unwrap();
         assert!(approx_eq(extract_f64(r), 0.5, 1e-12));
 
         let r = try_concrete_binop_rm(IOP_COS_F64, &rm(), &bv64(0.0)).unwrap();
         assert_eq!(extract_f64(r), 1.0);
 
-        let r = try_concrete_binop_rm(IOP_TAN_F64, &rm(), &bv64(std::f64::consts::PI / 4.0)).unwrap();
+        let r =
+            try_concrete_binop_rm(IOP_TAN_F64, &rm(), &bv64(std::f64::consts::PI / 4.0)).unwrap();
         assert!(approx_eq(extract_f64(r), 1.0, 1e-12));
     }
 
@@ -199,7 +196,11 @@ mod tests {
     fn atan_concrete() {
         // atan2(1, 1) = pi/4
         let r = try_concrete_triop_rm(IOP_ATAN_F64, &rm(), &bv64(1.0), &bv64(1.0)).unwrap();
-        assert!(approx_eq(extract_f64(r), std::f64::consts::FRAC_PI_4, 1e-12));
+        assert!(approx_eq(
+            extract_f64(r),
+            std::f64::consts::FRAC_PI_4,
+            1e-12
+        ));
         // atan2(0, 1) = 0
         let r = try_concrete_triop_rm(IOP_ATAN_F64, &rm(), &bv64(0.0), &bv64(1.0)).unwrap();
         assert_eq!(extract_f64(r), 0.0);

@@ -3,9 +3,9 @@
 //! Handles read(fd, buf, count) for stdin (fd=0) by creating symbolic bytes.
 //! Other file descriptors fall back to Python.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -43,7 +43,8 @@ impl NativeSimProcedure for NativeRead {
         // Only handle stdin natively
         if fd != 0 {
             return Err(ProcedureError::Other(format!(
-                "read from fd={} not supported natively", fd
+                "read from fd={} not supported natively",
+                fd
             )));
         }
 
@@ -52,7 +53,8 @@ impl NativeSimProcedure for NativeRead {
 
         if count > MAX_READ_SIZE {
             return Err(ProcedureError::Other(format!(
-                "read count {} exceeds limit", count
+                "read count {} exceeds limit",
+                count
             )));
         }
 
@@ -77,7 +79,8 @@ impl NativeSimProcedure for NativeRead {
 
         // Then store them (needs mutable state, solver borrow released)
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state.memory_store(buf.wrapping_add(i as u64), sym_byte)
+            state
+                .memory_store(buf.wrapping_add(i as u64), sym_byte)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         }
 
@@ -97,10 +100,16 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory(0x2000, 0x1000, Permission::RWX);
 
-        let result = NativeRead.call(
-            &mut state,
-            &[RustBV::concrete(0, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(4, 64)],
-        ).unwrap();
+        let result = NativeRead
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .unwrap();
 
         // Should return count
         assert_eq!(result.unwrap().as_u64(), Some(4));
@@ -115,10 +124,16 @@ mod tests {
     #[test]
     fn test_read_zero_count() {
         let mut state = RustSimState::new("amd64").unwrap();
-        let result = NativeRead.call(
-            &mut state,
-            &[RustBV::concrete(0, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        let result = NativeRead
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
 
@@ -127,7 +142,11 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         let result = NativeRead.call(
             &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(4, 64)],
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
         );
         assert!(result.is_err());
     }
@@ -137,7 +156,11 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         let result = NativeRead.call(
             &mut state,
-            &[RustBV::concrete(0, 64), RustBV::concrete(0x2000, 64), RustBV::concrete(5000, 64)],
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(5000, 64),
+            ],
         );
         assert!(result.is_err());
     }

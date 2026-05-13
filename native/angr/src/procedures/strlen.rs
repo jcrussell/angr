@@ -16,9 +16,9 @@
 //!   reachable in MAX_STRLEN bytes the result will saturate at MAX_STRLEN.
 //! - Maximum string length is 4096 bytes (configurable).
 
+use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::ProcedureError;
 
 /// Maximum string length before falling back to Python.
 const MAX_STRLEN: usize = 4096;
@@ -61,7 +61,8 @@ fn scan_for_null(
 
     for i in 0..max_scan {
         let byte_addr = addr.wrapping_add(i);
-        let byte_val = state.memory_load(byte_addr, 1)
+        let byte_val = state
+            .memory_load(byte_addr, 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
         if !symbolic_seen {
@@ -133,7 +134,9 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"test\x00", Permission::RWX);
         let proc = NativeStrlen;
-        let result = proc.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = proc
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(4));
     }
 
@@ -142,7 +145,9 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"\x00", Permission::RWX);
         let proc = NativeStrlen;
-        let result = proc.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = proc
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
 
@@ -151,7 +156,9 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
         let proc = NativeStrlen;
-        let result = proc.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = proc
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(11));
     }
 
@@ -160,10 +167,12 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
         let proc = NativeStrnlen;
-        let result = proc.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(10, 64),
-        ]).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(10, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(5));
     }
 
@@ -172,10 +181,12 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
         let proc = NativeStrnlen;
-        let result = proc.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(5, 64),
-        ]).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(5, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(5));
     }
 
@@ -184,10 +195,12 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
         let proc = NativeStrnlen;
-        let result = proc.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0, 64),
-        ]).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
 
@@ -196,10 +209,12 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"\x00rest", Permission::RWX);
         let proc = NativeStrnlen;
-        let result = proc.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(10, 64),
-        ]).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(10, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
     }
 
@@ -231,7 +246,10 @@ mod tests {
         let _sym = place_symbolic_byte(&mut state, 0x1001, "b1");
 
         let proc = NativeStrlen;
-        let result = proc.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap().unwrap();
+        let result = proc
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap()
+            .unwrap();
         assert_eq!(result.width(), 64);
         assert!(result.as_u64().is_none(), "expected symbolic length");
     }
@@ -249,7 +267,10 @@ mod tests {
         drop(ctx);
 
         let proc = NativeStrlen;
-        let result = proc.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap().unwrap();
+        let result = proc
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(1));
@@ -269,7 +290,10 @@ mod tests {
         drop(ctx);
 
         let proc = NativeStrlen;
-        let result = proc.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap().unwrap();
+        let result = proc
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(3));
@@ -285,10 +309,13 @@ mod tests {
         let _s1 = place_symbolic_byte(&mut state, 0x1001, "b1");
 
         let proc = NativeStrnlen;
-        let result = proc.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(2, 64),
-        ]).unwrap().unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(2, 64)],
+            )
+            .unwrap()
+            .unwrap();
         let ctx = state.solver().borrow();
         // result must be in [0, 2].
         let min = ctx.min(&result, false).unwrap();

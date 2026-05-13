@@ -33,7 +33,9 @@ impl RustExplorationManager {
         permissions: u8,
     ) -> PyResult<()> {
         self.with_pending_mut(|pending| {
-            pending.state.map_memory_data(addr, data, Permission::from_bits(permissions));
+            pending
+                .state
+                .map_memory_data(addr, data, Permission::from_bits(permissions));
             Ok(())
         })
     }
@@ -54,13 +56,22 @@ impl RustExplorationManager {
         self.with_pending(|pending| {
             let condition_id = match &pending.reason {
                 CallbackReason::SymbolicBranch { condition_id, .. } => *condition_id,
-                _ => return Err(PyValueError::new_err("pending callback is not a symbolic branch")),
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "pending callback is not a symbolic branch",
+                    ));
+                }
             };
 
-            let condition = pending.stored_conditions.get(&condition_id)
-                .ok_or_else(|| PyValueError::new_err(
-                    format!("condition {} not found in stored_conditions", condition_id)
-                ))?;
+            let condition = pending
+                .stored_conditions
+                .get(&condition_id)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "condition {} not found in stored_conditions",
+                        condition_id
+                    ))
+                })?;
 
             let claripy = py.import("claripy")?;
             rustbv_to_claripy(py, condition, claripy.as_any())
@@ -70,15 +81,23 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_pending_register(&self, name: &str) -> PyResult<Option<u128>> {
         self.with_pending(|pending| {
-            pending.state.get_register(name)
+            pending
+                .state
+                .get_register(name)
                 .map(|bv| bv.as_u128())
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))
         })
     }
 
-    pub(crate) fn _get_pending_register_ast(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    pub(crate) fn _get_pending_register_ast(
+        &self,
+        py: Python<'_>,
+        name: &str,
+    ) -> PyResult<Py<PyAny>> {
         self.with_pending(|pending| {
-            let bv = pending.state.get_register(name)
+            let bv = pending
+                .state
+                .get_register(name)
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
             let claripy = py.import("claripy")?;
             rustbv_to_claripy(py, &bv, claripy.as_any())
@@ -92,38 +111,55 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_pending_jumpkind(&self) -> PyResult<String> {
         self.with_pending(|pending| {
-            Ok(pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))
+            Ok(pending
+                .jumpkind
+                .clone()
+                .unwrap_or_else(|| "Ijk_Boring".to_string()))
         })
     }
 
     pub(crate) fn _set_pending_register(&mut self, name: &str, value: u128) -> PyResult<()> {
         self.with_pending_mut(|pending| {
-            let size = pending.state.arch().register_size(name)
+            let size = pending
+                .state
+                .arch()
+                .register_size(name)
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?;
             let bv = crate::symbolic::RustBV::concrete(value, size * 8);
             if pending.state.set_register(name, bv) {
                 Ok(())
             } else {
-                Err(PyValueError::new_err(format!("failed to set register: {}", name)))
+                Err(PyValueError::new_err(format!(
+                    "failed to set register: {}",
+                    name
+                )))
             }
         })
     }
 
-    pub(crate) fn _set_pending_register_symbolic(&mut self, name: &str, handle_id: u64) -> PyResult<()> {
+    pub(crate) fn _set_pending_register_symbolic(
+        &mut self,
+        name: &str,
+        handle_id: u64,
+    ) -> PyResult<()> {
         self.with_pending_mut(|pending| {
             let bv = if let Some(ref solver) = pending.solver_ctx {
-                solver.symbol_table().get(handle_id)
-                    .ok_or_else(|| PyValueError::new_err(format!(
-                        "invalid handle id: {}", handle_id
-                    )))?
+                solver.symbol_table().get(handle_id).ok_or_else(|| {
+                    PyValueError::new_err(format!("invalid handle id: {}", handle_id))
+                })?
             } else {
-                return Err(PyRuntimeError::new_err("no solver context in pending state"));
+                return Err(PyRuntimeError::new_err(
+                    "no solver context in pending state",
+                ));
             };
 
             if pending.state.set_register(name, bv) {
                 Ok(())
             } else {
-                Err(PyValueError::new_err(format!("failed to set register: {}", name)))
+                Err(PyValueError::new_err(format!(
+                    "failed to set register: {}",
+                    name
+                )))
             }
         })
     }
@@ -148,7 +184,10 @@ impl RustExplorationManager {
                 log::debug!("Set symbolic register {} from claripy AST", reg_name);
                 Ok(())
             } else {
-                Err(PyValueError::new_err(format!("failed to set register: {}", reg_name)))
+                Err(PyValueError::new_err(format!(
+                    "failed to set register: {}",
+                    reg_name
+                )))
             }
         })
     }
@@ -188,7 +227,10 @@ impl RustExplorationManager {
                 .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {}", e)))?;
             drop(sym_ctx);
 
-            pending.state.memory_mut().import_symbolic_value(addr, bv, None);
+            pending
+                .state
+                .memory_mut()
+                .import_symbolic_value(addr, bv, None);
             log::debug!("Imported symbolic memory at 0x{:x}", addr);
             Ok(())
         })
@@ -200,7 +242,9 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_pending_memory(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
         self.with_pending(|pending| {
-            let bv = pending.state.memory_load(addr, size)
+            let bv = pending
+                .state
+                .memory_load(addr, size)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
             let value = bv.to_u128();
@@ -219,7 +263,9 @@ impl RustExplorationManager {
                 value |= (b as u128) << (i * 8);
             }
             let bv = crate::symbolic::RustBV::concrete(value, width);
-            pending.state.memory_store(addr, bv)
+            pending
+                .state
+                .memory_store(addr, bv)
                 .map_err(|e| PyValueError::new_err(e.to_string()))
         })
     }
@@ -348,8 +394,13 @@ impl RustExplorationManager {
 
             dict.set_item("history", pending.state.history().to_vec())?;
 
-            dict.set_item("jumpkind",
-                pending.jumpkind.clone().unwrap_or_else(|| "Ijk_Boring".to_string()))?;
+            dict.set_item(
+                "jumpkind",
+                pending
+                    .jumpkind
+                    .clone()
+                    .unwrap_or_else(|| "Ijk_Boring".to_string()),
+            )?;
 
             dict.set_item("stdout", pending.state.stdout_buffer().to_vec())?;
 
@@ -424,13 +475,22 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_pending_mapped_pages(&self) -> PyResult<Vec<u64>> {
         self.with_pending(|pending| {
-            Ok(pending.state.memory().pages().keys().map(|&pn| pn << 12).collect())
+            Ok(pending
+                .state
+                .memory()
+                .pages()
+                .keys()
+                .map(|&pn| pn << 12)
+                .collect())
         })
     }
 
     pub(crate) fn _pending_memory_load_page(&self, page_addr: u64) -> PyResult<Vec<u8>> {
         self.with_pending(|pending| {
-            pending.state.memory().load_page_concrete(page_addr)
+            pending
+                .state
+                .memory()
+                .load_page_concrete(page_addr)
                 .map_err(|e| PyValueError::new_err(format!("page load failed: {}", e)))
         })
     }
@@ -460,7 +520,8 @@ impl RustExplorationManager {
                     Err(e) => {
                         log::debug!(
                             "symbolic-page replay: failed to convert AST at 0x{:x}: {}",
-                            addr, e
+                            addr,
+                            e
                         );
                     }
                 }
@@ -498,17 +559,29 @@ impl RustExplorationManager {
         self.with_pending_mut(|pending| {
             let mut value: u128 = 0;
             for (i, &byte) in data.iter().enumerate() {
-                if i < 16 { value |= (byte as u128) << (i * 8); }
+                if i < 16 {
+                    value |= (byte as u128) << (i * 8);
+                }
             }
             let bv = RustBV::concrete(value, (data.len() * 8) as u32);
-            pending.state.memory_mut().store_concrete(addr, bv)
+            pending
+                .state
+                .memory_mut()
+                .store_concrete(addr, bv)
                 .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {}", e)))
         })
     }
 
-    pub(crate) fn _pending_memory_map_data(&mut self, addr: u64, data: &[u8], perm: u8) -> PyResult<()> {
+    pub(crate) fn _pending_memory_map_data(
+        &mut self,
+        addr: u64,
+        data: &[u8],
+        perm: u8,
+    ) -> PyResult<()> {
         self.with_pending_mut(|pending| {
-            pending.state.map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));
+            pending
+                .state
+                .map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));
             Ok(())
         })
     }

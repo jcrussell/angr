@@ -5,9 +5,9 @@
 //! dup/dup2 duplicate a fd; pipe creates a (read_fd, write_fd) pair.
 //! Only handles concrete arguments; symbolic arguments fall back to Python.
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Native open implementation.
 ///
@@ -48,7 +48,7 @@ impl NativeSimProcedure for NativeOpen {
                         name.push(val as u8);
                     } else {
                         return Err(ProcedureError::SymbolicArgument(
-                            "symbolic byte in pathname".to_string()
+                            "symbolic byte in pathname".to_string(),
                         ));
                     }
                 }
@@ -92,7 +92,11 @@ impl NativeSimProcedure for NativeClose {
 
         let success = state.file_system().close(fd as u32);
         let bits = state.arch().bits();
-        let ret = if success { 0u128 } else { (-1i64 as u64) as u128 };
+        let ret = if success {
+            0u128
+        } else {
+            (-1i64 as u64) as u128
+        };
         Ok(Some(RustBV::concrete(ret, bits)))
     }
 }
@@ -125,7 +129,10 @@ impl NativeSimProcedure for NativeLseek {
         let whence = extract_concrete_arg(&args[2], "whence")?;
 
         let bits = state.arch().bits();
-        match state.file_system().seek(fd as u32, offset as i64, whence as u32) {
+        match state
+            .file_system()
+            .seek(fd as u32, offset as i64, whence as u32)
+        {
             Some(new_pos) => Ok(Some(RustBV::concrete(new_pos as u128, bits))),
             None => {
                 let ret = (-1i64 as u64) as u128;
@@ -247,10 +254,16 @@ impl NativeSimProcedure for NativePipe {
             (write_fd as u32).to_be_bytes()
         };
         for (i, b) in read_bytes.iter().enumerate() {
-            state.memory_store(pipefd_addr.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))?;
+            state.memory_store(
+                pipefd_addr.wrapping_add(i as u64),
+                RustBV::concrete(*b as u128, 8),
+            )?;
         }
         for (i, b) in write_bytes.iter().enumerate() {
-            state.memory_store(pipefd_addr.wrapping_add(4 + i as u64), RustBV::concrete(*b as u128, 8))?;
+            state.memory_store(
+                pipefd_addr.wrapping_add(4 + i as u64),
+                RustBV::concrete(*b as u128, 8),
+            )?;
         }
 
         let bits = state.arch().bits();
@@ -269,10 +282,12 @@ mod tests {
         // Write pathname "test.txt\0" to memory
         state.map_memory_data(0x1000, b"test.txt\0", Permission::RWX);
 
-        let result = NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        let result = NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
 
         // Should return fd 3 (first user fd after stdin/stdout/stderr)
         assert_eq!(result.unwrap().as_u64(), Some(3));
@@ -289,14 +304,18 @@ mod tests {
         state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
         state.map_memory_data(0x2000, b"b.txt\0", Permission::RWX);
 
-        let r1 = NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
-        let r2 = NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        let r1 = NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
+        let r2 = NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
 
         assert_eq!(r1.unwrap().as_u64(), Some(3));
         assert_eq!(r2.unwrap().as_u64(), Some(4));
@@ -308,16 +327,17 @@ mod tests {
         state.map_memory_data(0x1000, b"test.txt\0", Permission::RWX);
 
         // Open a file
-        NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
 
         // Close it
-        let result = NativeClose.call(
-            &mut state,
-            &[RustBV::concrete(3, 64)],
-        ).unwrap();
+        let result = NativeClose
+            .call(&mut state, &[RustBV::concrete(3, 64)])
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0)); // success
         assert!(!state.file_system_ref().is_open(3));
@@ -327,10 +347,9 @@ mod tests {
     fn test_close_not_open() {
         let mut state = RustSimState::new("amd64").unwrap();
 
-        let result = NativeClose.call(
-            &mut state,
-            &[RustBV::concrete(99, 64)],
-        ).unwrap();
+        let result = NativeClose
+            .call(&mut state, &[RustBV::concrete(99, 64)])
+            .unwrap();
 
         // Should return -1 (not open)
         let val = result.unwrap().as_u64().unwrap();
@@ -348,10 +367,16 @@ mod tests {
         );
 
         // SEEK_SET to position 42
-        let result = NativeLseek.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(42, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        let result = NativeLseek
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(42, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(42));
     }
@@ -366,16 +391,28 @@ mod tests {
         );
 
         // Seek to 10
-        NativeLseek.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(10, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        NativeLseek
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(10, 64),
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         // SEEK_CUR +5
-        let result = NativeLseek.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(5, 64), RustBV::concrete(1, 64)],
-        ).unwrap();
+        let result = NativeLseek
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(5, 64),
+                    RustBV::concrete(1, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(15));
     }
@@ -390,10 +427,16 @@ mod tests {
         );
 
         // SEEK_END + 0
-        let result = NativeLseek.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(0, 64), RustBV::concrete(2, 64)],
-        ).unwrap();
+        let result = NativeLseek
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(2, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(100));
     }
@@ -403,13 +446,17 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
         // Open fd=3
-        NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
 
         // dup(3) should allocate fd=4
-        let result = NativeDup.call(&mut state, &[RustBV::concrete(3, 64)]).unwrap();
+        let result = NativeDup
+            .call(&mut state, &[RustBV::concrete(3, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(4));
 
         // Both fds should be open and refer to the same name.
@@ -422,7 +469,9 @@ mod tests {
     fn test_dup_closed_fd() {
         let mut state = RustSimState::new("amd64").unwrap();
         // dup of a never-opened fd returns -1.
-        let result = NativeDup.call(&mut state, &[RustBV::concrete(99, 64)]).unwrap();
+        let result = NativeDup
+            .call(&mut state, &[RustBV::concrete(99, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
     }
 
@@ -430,14 +479,20 @@ mod tests {
     fn test_dup_after_close() {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
-        NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
-        NativeClose.call(&mut state, &[RustBV::concrete(3, 64)]).unwrap();
+        NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
+        NativeClose
+            .call(&mut state, &[RustBV::concrete(3, 64)])
+            .unwrap();
 
         // dup of a closed fd returns -1.
-        let result = NativeDup.call(&mut state, &[RustBV::concrete(3, 64)]).unwrap();
+        let result = NativeDup
+            .call(&mut state, &[RustBV::concrete(3, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
     }
 
@@ -445,16 +500,20 @@ mod tests {
     fn test_dup2_basic() {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
-        NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
 
         // dup2(3, 7) — newfd=7 was not open
-        let result = NativeDup2.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(7, 64)],
-        ).unwrap();
+        let result = NativeDup2
+            .call(
+                &mut state,
+                &[RustBV::concrete(3, 64), RustBV::concrete(7, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(7));
         assert!(state.file_system_ref().is_open(7));
         assert_eq!(state.file_system_ref().fd_info(7).unwrap().0, "a.txt");
@@ -469,20 +528,26 @@ mod tests {
         state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
         state.map_memory_data(0x2000, b"b.txt\0", Permission::RWX);
         // Open two fds: 3=a.txt, 4=b.txt
-        NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
-        NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
+        NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
 
         // dup2(3, 4) — overwrite fd=4 with a duplicate of fd=3
-        let result = NativeDup2.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(4, 64)],
-        ).unwrap();
+        let result = NativeDup2
+            .call(
+                &mut state,
+                &[RustBV::concrete(3, 64), RustBV::concrete(4, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(4));
         // fd=4 now refers to a.txt (the old b.txt is overwritten).
         assert_eq!(state.file_system_ref().fd_info(4).unwrap().0, "a.txt");
@@ -492,16 +557,20 @@ mod tests {
     fn test_dup2_same_fd() {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
-        NativeOpen.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        NativeOpen
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
 
         // dup2(3, 3) is a no-op when oldfd is open; returns 3.
-        let result = NativeDup2.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(3, 64)],
-        ).unwrap();
+        let result = NativeDup2
+            .call(
+                &mut state,
+                &[RustBV::concrete(3, 64), RustBV::concrete(3, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(3));
         assert!(state.file_system_ref().is_open(3));
     }
@@ -509,10 +578,12 @@ mod tests {
     #[test]
     fn test_dup2_oldfd_not_open() {
         let mut state = RustSimState::new("amd64").unwrap();
-        let result = NativeDup2.call(
-            &mut state,
-            &[RustBV::concrete(99, 64), RustBV::concrete(7, 64)],
-        ).unwrap();
+        let result = NativeDup2
+            .call(
+                &mut state,
+                &[RustBV::concrete(99, 64), RustBV::concrete(7, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
         assert!(!state.file_system_ref().is_open(7));
     }
@@ -523,10 +594,9 @@ mod tests {
         state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
 
         // pipe(pipefd) — should return 0 and allocate two fds at 3 and 4.
-        let result = NativePipe.call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64)],
-        ).unwrap();
+        let result = NativePipe
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
 
         // Read pipefd[0] (4 bytes at 0x1000) and pipefd[1] (4 bytes at 0x1004).
@@ -551,14 +621,18 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
 
-        NativePipe.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        NativePipe
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         // pipefd[0] = 3, pipefd[1] = 4
 
         // dup2(3, 0): redirect stdin.
-        let result = NativeDup2.call(
-            &mut state,
-            &[RustBV::concrete(3, 64), RustBV::concrete(0, 64)],
-        ).unwrap();
+        let result = NativeDup2
+            .call(
+                &mut state,
+                &[RustBV::concrete(3, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(0));
 
         // fd=0 is now the pipe read end, not the original stdin.

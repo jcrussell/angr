@@ -10,9 +10,9 @@
 //! Concrete addresses are still required (symbolic addresses fall back to
 //! Python via SymbolicArgument).
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_SCAN: usize = 4096;
 
@@ -74,7 +74,8 @@ fn scan_for_byte(
         let mut symbolic_seen = false;
         for i in 0..max_scan {
             let byte_addr = addr.wrapping_add(i);
-            let byte_val = state.memory_load(byte_addr, 1)
+            let byte_val = state
+                .memory_load(byte_addr, 1)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             if !symbolic_seen {
                 if let Some(b) = byte_val.as_u64() {
@@ -95,8 +96,8 @@ fn scan_for_byte(
             }
             // Symbolic-mode: collect the load. For strchr, stop scanning once
             // we hit a concrete null since later positions are unreachable.
-            let stop_scan = stop_at_null
-                && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
+            let stop_scan =
+                stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
             byte_loads.push((byte_addr, byte_val));
             if stop_scan {
                 break;
@@ -124,10 +125,10 @@ fn scan_for_byte(
     let mut byte_loads: Vec<(u64, RustBV)> = Vec::new();
     for i in 0..max_scan {
         let byte_addr = addr.wrapping_add(i);
-        let byte_val = state.memory_load(byte_addr, 1)
+        let byte_val = state
+            .memory_load(byte_addr, 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-        let stop_scan = stop_at_null
-            && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
+        let stop_scan = stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
         byte_loads.push((byte_addr, byte_val));
         if stop_scan {
             break;
@@ -150,8 +151,12 @@ fn scan_for_byte(
 pub struct NativeStrchr;
 
 impl NativeSimProcedure for NativeStrchr {
-    fn name(&self) -> &'static str { "strchr" }
-    fn num_args(&self) -> usize { 2 }
+    fn name(&self) -> &'static str {
+        "strchr"
+    }
+    fn num_args(&self) -> usize {
+        2
+    }
 
     fn call(
         &self,
@@ -159,7 +164,13 @@ impl NativeSimProcedure for NativeStrchr {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         let addr = extract_concrete_arg(&args[0], "s")?;
-        scan_for_byte(state, addr, &args[1], MAX_SCAN as u64, /*stop_at_null=*/true)
+        scan_for_byte(
+            state,
+            addr,
+            &args[1],
+            MAX_SCAN as u64,
+            /*stop_at_null=*/ true,
+        )
     }
 }
 
@@ -173,8 +184,12 @@ impl NativeSimProcedure for NativeStrchr {
 pub struct NativeMemchr;
 
 impl NativeSimProcedure for NativeMemchr {
-    fn name(&self) -> &'static str { "memchr" }
-    fn num_args(&self) -> usize { 3 }
+    fn name(&self) -> &'static str {
+        "memchr"
+    }
+    fn num_args(&self) -> usize {
+        3
+    }
 
     fn call(
         &self,
@@ -187,7 +202,9 @@ impl NativeSimProcedure for NativeMemchr {
         // currently push onto the Python fallback path.
         let n = extract_concrete_arg(&args[2], "n")?;
         let scan_len = n.min(MAX_SCAN as u64);
-        scan_for_byte(state, addr, &args[1], scan_len, /*stop_at_null=*/false)
+        scan_for_byte(
+            state, addr, &args[1], scan_len, /*stop_at_null=*/ false,
+        )
     }
 }
 
@@ -202,10 +219,16 @@ mod tests {
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
 
         let p = NativeStrchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(b'l' as u128, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(b'l' as u128, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1002));
     }
 
@@ -215,10 +238,16 @@ mod tests {
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
 
         let p = NativeStrchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(b'z' as u128, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(b'z' as u128, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0)); // NULL
     }
 
@@ -228,10 +257,13 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hi\x00", Permission::RWX);
         let p = NativeStrchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0u128, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0u128, 64)],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1002));
     }
 
@@ -241,11 +273,17 @@ mod tests {
         state.map_memory_data(0x1000, b"\x01\x02\x03\x04", Permission::RWX);
 
         let p = NativeMemchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(3, 64),
-            RustBV::concrete(4, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(3, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0x1002));
     }
 
@@ -255,11 +293,17 @@ mod tests {
         state.map_memory_data(0x1000, b"\x01\x02\x03\x04", Permission::RWX);
 
         let p = NativeMemchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0xFF, 64),
-            RustBV::concrete(4, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0xFF, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(result.as_u64(), Some(0)); // NULL
     }
 
@@ -272,10 +316,10 @@ mod tests {
         let sym = RustBV::symbolic(&ctx, "c", 64);
         drop(ctx);
         let p = NativeStrchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            sym,
-        ]).unwrap().unwrap();
+        let result = p
+            .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
+            .unwrap()
+            .unwrap();
         assert_eq!(result.width(), 64);
         assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
     }
@@ -291,10 +335,10 @@ mod tests {
         let eq = sym.eq(&target, &ctx);
         drop(ctx);
         let p = NativeStrchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            sym,
-        ]).unwrap().unwrap();
+        let result = p
+            .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(0x1001));
@@ -312,10 +356,10 @@ mod tests {
         let eq = sym.eq(&zero, &ctx);
         drop(ctx);
         let p = NativeStrchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            sym,
-        ]).unwrap().unwrap();
+        let result = p
+            .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(0x1003));
@@ -333,10 +377,10 @@ mod tests {
         let eq = sym.eq(&target, &ctx);
         drop(ctx);
         let p = NativeStrchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            sym,
-        ]).unwrap().unwrap();
+        let result = p
+            .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(0));
@@ -353,11 +397,13 @@ mod tests {
         let eq = sym.eq(&target, &ctx);
         drop(ctx);
         let p = NativeMemchr;
-        let result = p.call(&mut state, &[
-            RustBV::concrete(0x1000, 64),
-            sym,
-            RustBV::concrete(4, 64),
-        ]).unwrap().unwrap();
+        let result = p
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), sym, RustBV::concrete(4, 64)],
+            )
+            .unwrap()
+            .unwrap();
         state.add_constraint(eq);
         let ctx = state.solver().borrow();
         assert_eq!(ctx.min(&result, false), Some(0x1002));

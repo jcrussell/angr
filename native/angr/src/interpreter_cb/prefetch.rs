@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::bytes_to_bv;
+use super::*;
 
 impl<'a> CallbackInterpreter<'a> {
     /// Enable or disable load prefetching.
@@ -150,7 +150,9 @@ impl<'a> CallbackInterpreter<'a> {
     /// up to `max_prefetch_batch` pages.
     fn get_eager_prefetch_list(&self, page_addr: u64) -> Vec<u64> {
         if let Some(ref rust_mem) = self.rust_memory {
-            if let Some(pages) = rust_mem.get_region_prefetch_list(page_addr, self.config.max_prefetch_batch) {
+            if let Some(pages) =
+                rust_mem.get_region_prefetch_list(page_addr, self.config.max_prefetch_batch)
+            {
                 return pages;
             }
         }
@@ -173,7 +175,7 @@ impl<'a> CallbackInterpreter<'a> {
             // Stack region: addresses from RSP - 1MB to RSP + 64KB
             // (stack grows down, but we allow some upward margin for locals)
             let stack_base = sp.saturating_sub(1024 * 1024); // 1MB below RSP
-            let stack_limit = sp.saturating_add(64 * 1024);   // 64KB above RSP
+            let stack_limit = sp.saturating_add(64 * 1024); // 64KB above RSP
             addr >= stack_base && addr <= stack_limit
         } else {
             false
@@ -304,7 +306,12 @@ impl<'a> CallbackInterpreter<'a> {
                 self.scan_loads_in_expr(left, irsb, loads);
                 self.scan_loads_in_expr(right, irsb, loads);
             }
-            IRExpr::ITE { cond, iftrue, iffalse, .. } => {
+            IRExpr::ITE {
+                cond,
+                iftrue,
+                iffalse,
+                ..
+            } => {
                 self.scan_loads_in_expr(cond, irsb, loads);
                 self.scan_loads_in_expr(iftrue, irsb, loads);
                 self.scan_loads_in_expr(iffalse, irsb, loads);
@@ -324,15 +331,13 @@ impl<'a> CallbackInterpreter<'a> {
     /// operations. It doesn't evaluate temps since we're scanning before execution.
     fn try_eval_expr_concrete(&self, expr: &IRExpr, _tyenv: &TypeEnv) -> Option<u64> {
         match expr {
-            IRExpr::Const(c) => {
-                match c {
-                    IRConst::U8(v) => Some(*v as u64),
-                    IRConst::U16(v) => Some(*v as u64),
-                    IRConst::U32(v) => Some(*v as u64),
-                    IRConst::U64(v) => Some(*v),
-                    _ => None,
-                }
-            }
+            IRExpr::Const(c) => match c {
+                IRConst::U8(v) => Some(*v as u64),
+                IRConst::U16(v) => Some(*v as u64),
+                IRConst::U32(v) => Some(*v as u64),
+                IRConst::U64(v) => Some(*v),
+                _ => None,
+            },
             IRExpr::Get { offset, ty } => {
                 // Try to get a concrete register value
                 let size = ty.bytes();
@@ -470,5 +475,4 @@ impl<'a> CallbackInterpreter<'a> {
 
         Ok(())
     }
-
 }

@@ -17,29 +17,29 @@ pub struct MIPS64;
 // MIPS32 VEX guest state offsets (from VEX/pub/libvex_guest_mips32.h)
 #[allow(dead_code)]
 mod offsets32 {
-    pub const R0: u32 = 8;    // zero
-    pub const R1: u32 = 12;   // at
-    pub const R2: u32 = 16;   // v0
-    pub const R3: u32 = 20;   // v1
-    pub const R4: u32 = 24;   // a0
-    pub const R5: u32 = 28;   // a1
-    pub const R6: u32 = 32;   // a2
-    pub const R7: u32 = 36;   // a3
-    pub const R8: u32 = 40;   // t0
-    pub const R9: u32 = 44;   // t1
-    pub const R10: u32 = 48;  // t2
-    pub const R11: u32 = 52;  // t3
-    pub const R12: u32 = 56;  // t4
-    pub const R13: u32 = 60;  // t5
-    pub const R14: u32 = 64;  // t6
-    pub const R15: u32 = 68;  // t7
-    pub const R16: u32 = 72;  // s0
-    pub const R17: u32 = 76;  // s1
-    pub const R18: u32 = 80;  // s2
-    pub const R19: u32 = 84;  // s3
-    pub const R20: u32 = 88;  // s4
-    pub const R21: u32 = 92;  // s5
-    pub const R22: u32 = 96;  // s6
+    pub const R0: u32 = 8; // zero
+    pub const R1: u32 = 12; // at
+    pub const R2: u32 = 16; // v0
+    pub const R3: u32 = 20; // v1
+    pub const R4: u32 = 24; // a0
+    pub const R5: u32 = 28; // a1
+    pub const R6: u32 = 32; // a2
+    pub const R7: u32 = 36; // a3
+    pub const R8: u32 = 40; // t0
+    pub const R9: u32 = 44; // t1
+    pub const R10: u32 = 48; // t2
+    pub const R11: u32 = 52; // t3
+    pub const R12: u32 = 56; // t4
+    pub const R13: u32 = 60; // t5
+    pub const R14: u32 = 64; // t6
+    pub const R15: u32 = 68; // t7
+    pub const R16: u32 = 72; // s0
+    pub const R17: u32 = 76; // s1
+    pub const R18: u32 = 80; // s2
+    pub const R19: u32 = 84; // s3
+    pub const R20: u32 = 88; // s4
+    pub const R21: u32 = 92; // s5
+    pub const R22: u32 = 96; // s6
     pub const R23: u32 = 100; // s7
     pub const R24: u32 = 104; // t8
     pub const R25: u32 = 108; // t9
@@ -100,17 +100,17 @@ mod offsets32 {
 // MIPS64 VEX guest state offsets (from VEX/pub/libvex_guest_mips64.h)
 #[allow(dead_code)]
 mod offsets64 {
-    pub const R0: u32 = 16;   // zero
-    pub const R1: u32 = 24;   // at
-    pub const R2: u32 = 32;   // v0
-    pub const R3: u32 = 40;   // v1
-    pub const R4: u32 = 48;   // a0
-    pub const R5: u32 = 56;   // a1
-    pub const R6: u32 = 64;   // a2
-    pub const R7: u32 = 72;   // a3
-    pub const R8: u32 = 80;   // t0/a4
-    pub const R9: u32 = 88;   // t1/a5
-    pub const R10: u32 = 96;  // t2/a6
+    pub const R0: u32 = 16; // zero
+    pub const R1: u32 = 24; // at
+    pub const R2: u32 = 32; // v0
+    pub const R3: u32 = 40; // v1
+    pub const R4: u32 = 48; // a0
+    pub const R5: u32 = 56; // a1
+    pub const R6: u32 = 64; // a2
+    pub const R7: u32 = 72; // a3
+    pub const R8: u32 = 80; // t0/a4
+    pub const R9: u32 = 88; // t1/a5
+    pub const R10: u32 = 96; // t2/a6
     pub const R11: u32 = 104; // t3/a7
     pub const R12: u32 = 112; // t4
     pub const R13: u32 = 120; // t5
@@ -362,9 +362,9 @@ const ALIASES_MIPS32: &[RegEntry] = &[
 ];
 
 const REGISTER_NAMES_MIPS32: &[&str] = &[
-    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4",
-    "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
-    "k0", "k1", "gp", "sp", "fp", "ra", "pc", "hi", "lo",
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
+    "ra", "pc", "hi", "lo",
 ];
 
 // MIPS64 canonical: preserves the original (intentionally narrow) reverse
@@ -483,9 +483,9 @@ const ALIASES_MIPS64: &[RegEntry] = &[
 ];
 
 const REGISTER_NAMES_MIPS64: &[&str] = &[
-    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t4",
-    "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
-    "k0", "k1", "gp", "sp", "fp", "ra", "pc", "hi", "lo",
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t4", "t5", "t6",
+    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
+    "ra", "pc", "hi", "lo",
 ];
 
 impl Arch for MIPS32 {
@@ -521,12 +521,7 @@ impl Arch for MIPS32 {
 
     fn argument_registers(&self) -> &[u32] {
         // O32 ABI: a0-a3
-        &[
-            offsets32::R4,
-            offsets32::R5,
-            offsets32::R6,
-            offsets32::R7,
-        ]
+        &[offsets32::R4, offsets32::R5, offsets32::R6, offsets32::R7]
     }
 
     fn return_register(&self) -> u32 {

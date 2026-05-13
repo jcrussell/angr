@@ -9,31 +9,40 @@
 //! - Copies data byte-by-byte, preserving symbolic values
 //! - Maximum copy size is 1MB (configurable)
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 /// Maximum copy size before falling back to Python.
 const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
 
 /// Copy `size` bytes forward from `src` to `dst` using 8-byte chunks.
-fn copy_forward(state: &mut RustSimState, src: u64, dst: u64, size: usize) -> Result<(), ProcedureError> {
+fn copy_forward(
+    state: &mut RustSimState,
+    src: u64,
+    dst: u64,
+    size: usize,
+) -> Result<(), ProcedureError> {
     let mut offset: usize = 0;
 
     // Copy in 8-byte chunks where possible
     while offset + 8 <= size {
-        let value = state.memory_load(src.wrapping_add(offset as u64), 8)
+        let value = state
+            .memory_load(src.wrapping_add(offset as u64), 8)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-        state.memory_store(dst.wrapping_add(offset as u64), value)
+        state
+            .memory_store(dst.wrapping_add(offset as u64), value)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         offset += 8;
     }
 
     // Copy remaining bytes
     while offset < size {
-        let value = state.memory_load(src.wrapping_add(offset as u64), 1)
+        let value = state
+            .memory_load(src.wrapping_add(offset as u64), 1)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
-        state.memory_store(dst.wrapping_add(offset as u64), value)
+        state
+            .memory_store(dst.wrapping_add(offset as u64), value)
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         offset += 1;
     }
@@ -127,10 +136,12 @@ impl NativeSimProcedure for NativeMemmove {
                 let src_addr = src.wrapping_add(i as u64);
                 let dst_addr = dst.wrapping_add(i as u64);
 
-                let value = state.memory_load(src_addr, 1)
+                let value = state
+                    .memory_load(src_addr, 1)
                     .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
-                state.memory_store(dst_addr, value)
+                state
+                    .memory_store(dst_addr, value)
                     .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
             }
         } else {
@@ -160,14 +171,16 @@ mod tests {
         state.map_memory(0x2000, 0x1000, Permission::RWX);
 
         let proc = NativeMemcpy;
-        let result = proc.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),  // dst
-                RustBV::concrete(0x1000, 64),  // src
-                RustBV::concrete(12, 64),      // size
-            ],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64), // dst
+                    RustBV::concrete(0x1000, 64), // src
+                    RustBV::concrete(12, 64),     // size
+                ],
+            )
+            .unwrap();
 
         // Result should be dst pointer
         assert_eq!(result.unwrap().as_u64(), Some(0x2000));
@@ -187,14 +200,16 @@ mod tests {
         state.map_memory(0x1000, 0x2000, Permission::RWX);
 
         let proc = NativeMemcpy;
-        let result = proc.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0, 64),  // zero size
-            ],
-        ).unwrap();
+        let result = proc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64), // zero size
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0x2000));
     }
@@ -230,14 +245,16 @@ mod tests {
 
         // Move from offset 2 to offset 0 (overlapping, should work)
         let proc = NativeMemmove;
-        let _result = proc.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x1000, 64),      // dst
-                RustBV::concrete(0x1002, 64),      // src (overlapping)
-                RustBV::concrete(6, 64),           // size
-            ],
-        ).unwrap();
+        let _result = proc
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64), // dst
+                    RustBV::concrete(0x1002, 64), // src (overlapping)
+                    RustBV::concrete(6, 64),      // size
+                ],
+            )
+            .unwrap();
 
         // Should have "cdefghgh" now
         let val = state.memory_load(0x1000, 1).unwrap();

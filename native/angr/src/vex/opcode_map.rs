@@ -184,30 +184,90 @@ fn parse_shift(op_str: &str) -> Option<IROp> {
         "Iop_Sar64" => Some(IROp::Sar(IRType::I64)),
 
         // Vector shift left by immediate (ShlN) - count is parsed at runtime
-        "Iop_ShlN8x8" => Some(IROp::VShlN { elem: IRType::I8, count: 8 }),
-        "Iop_ShlN8x16" => Some(IROp::VShlN { elem: IRType::I8, count: 16 }),
-        "Iop_ShlN16x4" => Some(IROp::VShlN { elem: IRType::I16, count: 4 }),
-        "Iop_ShlN16x8" => Some(IROp::VShlN { elem: IRType::I16, count: 8 }),
-        "Iop_ShlN32x2" => Some(IROp::VShlN { elem: IRType::I32, count: 2 }),
-        "Iop_ShlN32x4" => Some(IROp::VShlN { elem: IRType::I32, count: 4 }),
-        "Iop_ShlN64x2" => Some(IROp::VShlN { elem: IRType::I64, count: 2 }),
+        "Iop_ShlN8x8" => Some(IROp::VShlN {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_ShlN8x16" => Some(IROp::VShlN {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_ShlN16x4" => Some(IROp::VShlN {
+            elem: IRType::I16,
+            count: 4,
+        }),
+        "Iop_ShlN16x8" => Some(IROp::VShlN {
+            elem: IRType::I16,
+            count: 8,
+        }),
+        "Iop_ShlN32x2" => Some(IROp::VShlN {
+            elem: IRType::I32,
+            count: 2,
+        }),
+        "Iop_ShlN32x4" => Some(IROp::VShlN {
+            elem: IRType::I32,
+            count: 4,
+        }),
+        "Iop_ShlN64x2" => Some(IROp::VShlN {
+            elem: IRType::I64,
+            count: 2,
+        }),
 
         // Vector shift right logical by immediate (ShrN)
-        "Iop_ShrN8x8" => Some(IROp::VShrN { elem: IRType::I8, count: 8 }),
-        "Iop_ShrN8x16" => Some(IROp::VShrN { elem: IRType::I8, count: 16 }),
-        "Iop_ShrN16x4" => Some(IROp::VShrN { elem: IRType::I16, count: 4 }),
-        "Iop_ShrN16x8" => Some(IROp::VShrN { elem: IRType::I16, count: 8 }),
-        "Iop_ShrN32x2" => Some(IROp::VShrN { elem: IRType::I32, count: 2 }),
-        "Iop_ShrN32x4" => Some(IROp::VShrN { elem: IRType::I32, count: 4 }),
-        "Iop_ShrN64x2" => Some(IROp::VShrN { elem: IRType::I64, count: 2 }),
+        "Iop_ShrN8x8" => Some(IROp::VShrN {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_ShrN8x16" => Some(IROp::VShrN {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_ShrN16x4" => Some(IROp::VShrN {
+            elem: IRType::I16,
+            count: 4,
+        }),
+        "Iop_ShrN16x8" => Some(IROp::VShrN {
+            elem: IRType::I16,
+            count: 8,
+        }),
+        "Iop_ShrN32x2" => Some(IROp::VShrN {
+            elem: IRType::I32,
+            count: 2,
+        }),
+        "Iop_ShrN32x4" => Some(IROp::VShrN {
+            elem: IRType::I32,
+            count: 4,
+        }),
+        "Iop_ShrN64x2" => Some(IROp::VShrN {
+            elem: IRType::I64,
+            count: 2,
+        }),
 
         // Vector shift right arithmetic by immediate (SarN)
-        "Iop_SarN8x8" => Some(IROp::VSarN { elem: IRType::I8, count: 8 }),
-        "Iop_SarN8x16" => Some(IROp::VSarN { elem: IRType::I8, count: 16 }),
-        "Iop_SarN16x4" => Some(IROp::VSarN { elem: IRType::I16, count: 4 }),
-        "Iop_SarN16x8" => Some(IROp::VSarN { elem: IRType::I16, count: 8 }),
-        "Iop_SarN32x2" => Some(IROp::VSarN { elem: IRType::I32, count: 2 }),
-        "Iop_SarN32x4" => Some(IROp::VSarN { elem: IRType::I32, count: 4 }),
+        "Iop_SarN8x8" => Some(IROp::VSarN {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_SarN8x16" => Some(IROp::VSarN {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_SarN16x4" => Some(IROp::VSarN {
+            elem: IRType::I16,
+            count: 4,
+        }),
+        "Iop_SarN16x8" => Some(IROp::VSarN {
+            elem: IRType::I16,
+            count: 8,
+        }),
+        "Iop_SarN32x2" => Some(IROp::VSarN {
+            elem: IRType::I32,
+            count: 2,
+        }),
+        "Iop_SarN32x4" => Some(IROp::VSarN {
+            elem: IRType::I32,
+            count: 4,
+        }),
 
         _ => None,
     }
@@ -473,38 +533,134 @@ fn parse_float(op_str: &str) -> Option<IROp> {
         "Iop_Min64F0x2" => Some(IROp::VFMinS { elem: IRType::F64 }),
 
         // Packed (whole-vector) float ops — SSE / AVX
-        "Iop_Add32Fx4" => Some(IROp::VFAdd { elem: IRType::F32, count: 4 }),
-        "Iop_Add64Fx2" => Some(IROp::VFAdd { elem: IRType::F64, count: 2 }),
-        "Iop_Add32Fx8" => Some(IROp::VFAdd { elem: IRType::F32, count: 8 }),
-        "Iop_Add64Fx4" => Some(IROp::VFAdd { elem: IRType::F64, count: 4 }),
-        "Iop_Sub32Fx4" => Some(IROp::VFSub { elem: IRType::F32, count: 4 }),
-        "Iop_Sub64Fx2" => Some(IROp::VFSub { elem: IRType::F64, count: 2 }),
-        "Iop_Sub32Fx8" => Some(IROp::VFSub { elem: IRType::F32, count: 8 }),
-        "Iop_Sub64Fx4" => Some(IROp::VFSub { elem: IRType::F64, count: 4 }),
-        "Iop_Mul32Fx4" => Some(IROp::VFMul { elem: IRType::F32, count: 4 }),
-        "Iop_Mul64Fx2" => Some(IROp::VFMul { elem: IRType::F64, count: 2 }),
-        "Iop_Mul32Fx8" => Some(IROp::VFMul { elem: IRType::F32, count: 8 }),
-        "Iop_Mul64Fx4" => Some(IROp::VFMul { elem: IRType::F64, count: 4 }),
-        "Iop_Div32Fx4" => Some(IROp::VFDiv { elem: IRType::F32, count: 4 }),
-        "Iop_Div64Fx2" => Some(IROp::VFDiv { elem: IRType::F64, count: 2 }),
-        "Iop_Div32Fx8" => Some(IROp::VFDiv { elem: IRType::F32, count: 8 }),
-        "Iop_Div64Fx4" => Some(IROp::VFDiv { elem: IRType::F64, count: 4 }),
-        "Iop_Sqrt32Fx4" => Some(IROp::VFSqrt { elem: IRType::F32, count: 4 }),
-        "Iop_Sqrt64Fx2" => Some(IROp::VFSqrt { elem: IRType::F64, count: 2 }),
-        "Iop_Sqrt32Fx8" => Some(IROp::VFSqrt { elem: IRType::F32, count: 8 }),
-        "Iop_Sqrt64Fx4" => Some(IROp::VFSqrt { elem: IRType::F64, count: 4 }),
-        "Iop_Abs32Fx4" => Some(IROp::VFAbs { elem: IRType::F32, count: 4 }),
-        "Iop_Abs64Fx2" => Some(IROp::VFAbs { elem: IRType::F64, count: 2 }),
-        "Iop_Abs32Fx8" => Some(IROp::VFAbs { elem: IRType::F32, count: 8 }),
-        "Iop_Abs64Fx4" => Some(IROp::VFAbs { elem: IRType::F64, count: 4 }),
-        "Iop_Min32Fx4" => Some(IROp::VFMin { elem: IRType::F32, count: 4 }),
-        "Iop_Min64Fx2" => Some(IROp::VFMin { elem: IRType::F64, count: 2 }),
-        "Iop_Min32Fx8" => Some(IROp::VFMin { elem: IRType::F32, count: 8 }),
-        "Iop_Min64Fx4" => Some(IROp::VFMin { elem: IRType::F64, count: 4 }),
-        "Iop_Max32Fx4" => Some(IROp::VFMax { elem: IRType::F32, count: 4 }),
-        "Iop_Max64Fx2" => Some(IROp::VFMax { elem: IRType::F64, count: 2 }),
-        "Iop_Max32Fx8" => Some(IROp::VFMax { elem: IRType::F32, count: 8 }),
-        "Iop_Max64Fx4" => Some(IROp::VFMax { elem: IRType::F64, count: 4 }),
+        "Iop_Add32Fx4" => Some(IROp::VFAdd {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Add64Fx2" => Some(IROp::VFAdd {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Add32Fx8" => Some(IROp::VFAdd {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Add64Fx4" => Some(IROp::VFAdd {
+            elem: IRType::F64,
+            count: 4,
+        }),
+        "Iop_Sub32Fx4" => Some(IROp::VFSub {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Sub64Fx2" => Some(IROp::VFSub {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Sub32Fx8" => Some(IROp::VFSub {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Sub64Fx4" => Some(IROp::VFSub {
+            elem: IRType::F64,
+            count: 4,
+        }),
+        "Iop_Mul32Fx4" => Some(IROp::VFMul {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Mul64Fx2" => Some(IROp::VFMul {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Mul32Fx8" => Some(IROp::VFMul {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Mul64Fx4" => Some(IROp::VFMul {
+            elem: IRType::F64,
+            count: 4,
+        }),
+        "Iop_Div32Fx4" => Some(IROp::VFDiv {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Div64Fx2" => Some(IROp::VFDiv {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Div32Fx8" => Some(IROp::VFDiv {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Div64Fx4" => Some(IROp::VFDiv {
+            elem: IRType::F64,
+            count: 4,
+        }),
+        "Iop_Sqrt32Fx4" => Some(IROp::VFSqrt {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Sqrt64Fx2" => Some(IROp::VFSqrt {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Sqrt32Fx8" => Some(IROp::VFSqrt {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Sqrt64Fx4" => Some(IROp::VFSqrt {
+            elem: IRType::F64,
+            count: 4,
+        }),
+        "Iop_Abs32Fx4" => Some(IROp::VFAbs {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Abs64Fx2" => Some(IROp::VFAbs {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Abs32Fx8" => Some(IROp::VFAbs {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Abs64Fx4" => Some(IROp::VFAbs {
+            elem: IRType::F64,
+            count: 4,
+        }),
+        "Iop_Min32Fx4" => Some(IROp::VFMin {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Min64Fx2" => Some(IROp::VFMin {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Min32Fx8" => Some(IROp::VFMin {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Min64Fx4" => Some(IROp::VFMin {
+            elem: IRType::F64,
+            count: 4,
+        }),
+        "Iop_Max32Fx4" => Some(IROp::VFMax {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_Max64Fx2" => Some(IROp::VFMax {
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_Max32Fx8" => Some(IROp::VFMax {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_Max64Fx4" => Some(IROp::VFMax {
+            elem: IRType::F64,
+            count: 4,
+        }),
 
         // SetV128lo operations
         "Iop_SetV128lo32" => Some(IROp::SetV128lo32),
@@ -516,31 +672,107 @@ fn parse_float(op_str: &str) -> Option<IROp> {
 
         // SSE scalar-lane compares: lane 0 → all-1s/0 mask, upper lanes pass-through.
         // Result type is V128 — distinct from the I1-returning FCmpEQ/LT/LE.
-        "Iop_CmpEQ32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F32 }),
-        "Iop_CmpEQ64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Eq, ty: IRType::F64 }),
-        "Iop_CmpLT32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Lt, ty: IRType::F32 }),
-        "Iop_CmpLT64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Lt, ty: IRType::F64 }),
-        "Iop_CmpLE32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Le, ty: IRType::F32 }),
-        "Iop_CmpLE64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Le, ty: IRType::F64 }),
-        "Iop_CmpUN32F0x4" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F32 }),
-        "Iop_CmpUN64F0x2" => Some(IROp::FCmpScalarLane { kind: FCmpKind::Un, ty: IRType::F64 }),
+        "Iop_CmpEQ32F0x4" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Eq,
+            ty: IRType::F32,
+        }),
+        "Iop_CmpEQ64F0x2" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Eq,
+            ty: IRType::F64,
+        }),
+        "Iop_CmpLT32F0x4" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Lt,
+            ty: IRType::F32,
+        }),
+        "Iop_CmpLT64F0x2" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Lt,
+            ty: IRType::F64,
+        }),
+        "Iop_CmpLE32F0x4" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Le,
+            ty: IRType::F32,
+        }),
+        "Iop_CmpLE64F0x2" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Le,
+            ty: IRType::F64,
+        }),
+        "Iop_CmpUN32F0x4" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Un,
+            ty: IRType::F32,
+        }),
+        "Iop_CmpUN64F0x2" => Some(IROp::FCmpScalarLane {
+            kind: FCmpKind::Un,
+            ty: IRType::F64,
+        }),
 
         // Packed FP compares (SSE cmpps/cmppd, ARM NEON 32Fx2). Per-lane mask:
         // each lane independently produces all-1s (true) or 0 (false).
         // 32Fx2 returns I64 (ARM NEON), 32Fx4 / 64Fx2 return V128 (SSE).
-        "Iop_CmpEQ32Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F32, count: 2 }),
-        "Iop_CmpGT32Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Gt, elem: IRType::F32, count: 2 }),
-        "Iop_CmpGE32Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Ge, elem: IRType::F32, count: 2 }),
-        "Iop_CmpEQ32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F32, count: 4 }),
-        "Iop_CmpLT32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Lt, elem: IRType::F32, count: 4 }),
-        "Iop_CmpLE32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Le, elem: IRType::F32, count: 4 }),
-        "Iop_CmpGT32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Gt, elem: IRType::F32, count: 4 }),
-        "Iop_CmpGE32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Ge, elem: IRType::F32, count: 4 }),
-        "Iop_CmpUN32Fx4" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Un, elem: IRType::F32, count: 4 }),
-        "Iop_CmpEQ64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Eq, elem: IRType::F64, count: 2 }),
-        "Iop_CmpLT64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Lt, elem: IRType::F64, count: 2 }),
-        "Iop_CmpLE64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Le, elem: IRType::F64, count: 2 }),
-        "Iop_CmpUN64Fx2" => Some(IROp::FCmpVecPacked { kind: FCmpKind::Un, elem: IRType::F64, count: 2 }),
+        "Iop_CmpEQ32Fx2" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Eq,
+            elem: IRType::F32,
+            count: 2,
+        }),
+        "Iop_CmpGT32Fx2" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Gt,
+            elem: IRType::F32,
+            count: 2,
+        }),
+        "Iop_CmpGE32Fx2" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Ge,
+            elem: IRType::F32,
+            count: 2,
+        }),
+        "Iop_CmpEQ32Fx4" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Eq,
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_CmpLT32Fx4" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Lt,
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_CmpLE32Fx4" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Le,
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_CmpGT32Fx4" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Gt,
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_CmpGE32Fx4" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Ge,
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_CmpUN32Fx4" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Un,
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_CmpEQ64Fx2" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Eq,
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_CmpLT64Fx2" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Lt,
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_CmpLE64Fx2" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Le,
+            elem: IRType::F64,
+            count: 2,
+        }),
+        "Iop_CmpUN64Fx2" => Some(IROp::FCmpVecPacked {
+            kind: FCmpKind::Un,
+            elem: IRType::F64,
+            count: 2,
+        }),
 
         // FP conversions
         "Iop_F32toF64" => Some(IROp::F32toF64),
@@ -726,22 +958,64 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         }),
 
         // NEON lane extract — Iop_GetElem{N}x{M}: (vec, idx) -> scalar lane
-        "Iop_GetElem8x8"  => Some(IROp::VGetElem { elem: IRType::I8,  count: 8 }),
-        "Iop_GetElem16x4" => Some(IROp::VGetElem { elem: IRType::I16, count: 4 }),
-        "Iop_GetElem32x2" => Some(IROp::VGetElem { elem: IRType::I32, count: 2 }),
-        "Iop_GetElem8x16" => Some(IROp::VGetElem { elem: IRType::I8,  count: 16 }),
-        "Iop_GetElem16x8" => Some(IROp::VGetElem { elem: IRType::I16, count: 8 }),
-        "Iop_GetElem32x4" => Some(IROp::VGetElem { elem: IRType::I32, count: 4 }),
-        "Iop_GetElem64x2" => Some(IROp::VGetElem { elem: IRType::I64, count: 2 }),
+        "Iop_GetElem8x8" => Some(IROp::VGetElem {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_GetElem16x4" => Some(IROp::VGetElem {
+            elem: IRType::I16,
+            count: 4,
+        }),
+        "Iop_GetElem32x2" => Some(IROp::VGetElem {
+            elem: IRType::I32,
+            count: 2,
+        }),
+        "Iop_GetElem8x16" => Some(IROp::VGetElem {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_GetElem16x8" => Some(IROp::VGetElem {
+            elem: IRType::I16,
+            count: 8,
+        }),
+        "Iop_GetElem32x4" => Some(IROp::VGetElem {
+            elem: IRType::I32,
+            count: 4,
+        }),
+        "Iop_GetElem64x2" => Some(IROp::VGetElem {
+            elem: IRType::I64,
+            count: 2,
+        }),
 
         // NEON lane insert — Iop_SetElem{N}x{M}: (vec, idx, val) -> vec
-        "Iop_SetElem8x8"  => Some(IROp::VSetElem { elem: IRType::I8,  count: 8 }),
-        "Iop_SetElem16x4" => Some(IROp::VSetElem { elem: IRType::I16, count: 4 }),
-        "Iop_SetElem32x2" => Some(IROp::VSetElem { elem: IRType::I32, count: 2 }),
-        "Iop_SetElem8x16" => Some(IROp::VSetElem { elem: IRType::I8,  count: 16 }),
-        "Iop_SetElem16x8" => Some(IROp::VSetElem { elem: IRType::I16, count: 8 }),
-        "Iop_SetElem32x4" => Some(IROp::VSetElem { elem: IRType::I32, count: 4 }),
-        "Iop_SetElem64x2" => Some(IROp::VSetElem { elem: IRType::I64, count: 2 }),
+        "Iop_SetElem8x8" => Some(IROp::VSetElem {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_SetElem16x4" => Some(IROp::VSetElem {
+            elem: IRType::I16,
+            count: 4,
+        }),
+        "Iop_SetElem32x2" => Some(IROp::VSetElem {
+            elem: IRType::I32,
+            count: 2,
+        }),
+        "Iop_SetElem8x16" => Some(IROp::VSetElem {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_SetElem16x8" => Some(IROp::VSetElem {
+            elem: IRType::I16,
+            count: 8,
+        }),
+        "Iop_SetElem32x4" => Some(IROp::VSetElem {
+            elem: IRType::I32,
+            count: 4,
+        }),
+        "Iop_SetElem64x2" => Some(IROp::VSetElem {
+            elem: IRType::I64,
+            count: 2,
+        }),
 
         // Vector multiply keeping low half (PMULLD - SSE4.1)
         "Iop_MullS32x4" => Some(IROp::VMulLo {
@@ -810,92 +1084,301 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         }),
 
         // Vector interleave
-        "Iop_InterleaveLO8x8" | "Iop_InterleaveLO8x16" => Some(IROp::VInterleaveLO {
-            elem: IRType::I8,
-        }),
-        "Iop_InterleaveLO16x4" | "Iop_InterleaveLO16x8" => Some(IROp::VInterleaveLO {
-            elem: IRType::I16,
-        }),
-        "Iop_InterleaveLO32x2" | "Iop_InterleaveLO32x4" => Some(IROp::VInterleaveLO {
-            elem: IRType::I32,
-        }),
+        "Iop_InterleaveLO8x8" | "Iop_InterleaveLO8x16" => {
+            Some(IROp::VInterleaveLO { elem: IRType::I8 })
+        }
+        "Iop_InterleaveLO16x4" | "Iop_InterleaveLO16x8" => {
+            Some(IROp::VInterleaveLO { elem: IRType::I16 })
+        }
+        "Iop_InterleaveLO32x2" | "Iop_InterleaveLO32x4" => {
+            Some(IROp::VInterleaveLO { elem: IRType::I32 })
+        }
         "Iop_InterleaveLO64x2" => Some(IROp::VInterleaveLO { elem: IRType::I64 }),
 
-        "Iop_InterleaveHI8x8" | "Iop_InterleaveHI8x16" => Some(IROp::VInterleaveHI {
-            elem: IRType::I8,
-        }),
-        "Iop_InterleaveHI16x4" | "Iop_InterleaveHI16x8" => Some(IROp::VInterleaveHI {
-            elem: IRType::I16,
-        }),
-        "Iop_InterleaveHI32x2" | "Iop_InterleaveHI32x4" => Some(IROp::VInterleaveHI {
-            elem: IRType::I32,
-        }),
+        "Iop_InterleaveHI8x8" | "Iop_InterleaveHI8x16" => {
+            Some(IROp::VInterleaveHI { elem: IRType::I8 })
+        }
+        "Iop_InterleaveHI16x4" | "Iop_InterleaveHI16x8" => {
+            Some(IROp::VInterleaveHI { elem: IRType::I16 })
+        }
+        "Iop_InterleaveHI32x2" | "Iop_InterleaveHI32x4" => {
+            Some(IROp::VInterleaveHI { elem: IRType::I32 })
+        }
         "Iop_InterleaveHI64x2" => Some(IROp::VInterleaveHI { elem: IRType::I64 }),
 
         // Packed integer min — signed
-        "Iop_Min8Sx8"  => Some(IROp::VMin { elem: IRType::I8,  count: 8,  signed: true }),
-        "Iop_Min8Sx16" => Some(IROp::VMin { elem: IRType::I8,  count: 16, signed: true }),
-        "Iop_Min8Sx32" => Some(IROp::VMin { elem: IRType::I8,  count: 32, signed: true }),
-        "Iop_Min16Sx4" => Some(IROp::VMin { elem: IRType::I16, count: 4,  signed: true }),
-        "Iop_Min16Sx8" => Some(IROp::VMin { elem: IRType::I16, count: 8,  signed: true }),
-        "Iop_Min16Sx16"=> Some(IROp::VMin { elem: IRType::I16, count: 16, signed: true }),
-        "Iop_Min32Sx2" => Some(IROp::VMin { elem: IRType::I32, count: 2,  signed: true }),
-        "Iop_Min32Sx4" => Some(IROp::VMin { elem: IRType::I32, count: 4,  signed: true }),
-        "Iop_Min32Sx8" => Some(IROp::VMin { elem: IRType::I32, count: 8,  signed: true }),
-        "Iop_Min64Sx2" => Some(IROp::VMin { elem: IRType::I64, count: 2,  signed: true }),
-        "Iop_Min64Sx4" => Some(IROp::VMin { elem: IRType::I64, count: 4,  signed: true }),
+        "Iop_Min8Sx8" => Some(IROp::VMin {
+            elem: IRType::I8,
+            count: 8,
+            signed: true,
+        }),
+        "Iop_Min8Sx16" => Some(IROp::VMin {
+            elem: IRType::I8,
+            count: 16,
+            signed: true,
+        }),
+        "Iop_Min8Sx32" => Some(IROp::VMin {
+            elem: IRType::I8,
+            count: 32,
+            signed: true,
+        }),
+        "Iop_Min16Sx4" => Some(IROp::VMin {
+            elem: IRType::I16,
+            count: 4,
+            signed: true,
+        }),
+        "Iop_Min16Sx8" => Some(IROp::VMin {
+            elem: IRType::I16,
+            count: 8,
+            signed: true,
+        }),
+        "Iop_Min16Sx16" => Some(IROp::VMin {
+            elem: IRType::I16,
+            count: 16,
+            signed: true,
+        }),
+        "Iop_Min32Sx2" => Some(IROp::VMin {
+            elem: IRType::I32,
+            count: 2,
+            signed: true,
+        }),
+        "Iop_Min32Sx4" => Some(IROp::VMin {
+            elem: IRType::I32,
+            count: 4,
+            signed: true,
+        }),
+        "Iop_Min32Sx8" => Some(IROp::VMin {
+            elem: IRType::I32,
+            count: 8,
+            signed: true,
+        }),
+        "Iop_Min64Sx2" => Some(IROp::VMin {
+            elem: IRType::I64,
+            count: 2,
+            signed: true,
+        }),
+        "Iop_Min64Sx4" => Some(IROp::VMin {
+            elem: IRType::I64,
+            count: 4,
+            signed: true,
+        }),
 
         // Packed integer min — unsigned
-        "Iop_Min8Ux8"  => Some(IROp::VMin { elem: IRType::I8,  count: 8,  signed: false }),
-        "Iop_Min8Ux16" => Some(IROp::VMin { elem: IRType::I8,  count: 16, signed: false }),
-        "Iop_Min8Ux32" => Some(IROp::VMin { elem: IRType::I8,  count: 32, signed: false }),
-        "Iop_Min16Ux4" => Some(IROp::VMin { elem: IRType::I16, count: 4,  signed: false }),
-        "Iop_Min16Ux8" => Some(IROp::VMin { elem: IRType::I16, count: 8,  signed: false }),
-        "Iop_Min16Ux16"=> Some(IROp::VMin { elem: IRType::I16, count: 16, signed: false }),
-        "Iop_Min32Ux2" => Some(IROp::VMin { elem: IRType::I32, count: 2,  signed: false }),
-        "Iop_Min32Ux4" => Some(IROp::VMin { elem: IRType::I32, count: 4,  signed: false }),
-        "Iop_Min32Ux8" => Some(IROp::VMin { elem: IRType::I32, count: 8,  signed: false }),
-        "Iop_Min64Ux2" => Some(IROp::VMin { elem: IRType::I64, count: 2,  signed: false }),
-        "Iop_Min64Ux4" => Some(IROp::VMin { elem: IRType::I64, count: 4,  signed: false }),
+        "Iop_Min8Ux8" => Some(IROp::VMin {
+            elem: IRType::I8,
+            count: 8,
+            signed: false,
+        }),
+        "Iop_Min8Ux16" => Some(IROp::VMin {
+            elem: IRType::I8,
+            count: 16,
+            signed: false,
+        }),
+        "Iop_Min8Ux32" => Some(IROp::VMin {
+            elem: IRType::I8,
+            count: 32,
+            signed: false,
+        }),
+        "Iop_Min16Ux4" => Some(IROp::VMin {
+            elem: IRType::I16,
+            count: 4,
+            signed: false,
+        }),
+        "Iop_Min16Ux8" => Some(IROp::VMin {
+            elem: IRType::I16,
+            count: 8,
+            signed: false,
+        }),
+        "Iop_Min16Ux16" => Some(IROp::VMin {
+            elem: IRType::I16,
+            count: 16,
+            signed: false,
+        }),
+        "Iop_Min32Ux2" => Some(IROp::VMin {
+            elem: IRType::I32,
+            count: 2,
+            signed: false,
+        }),
+        "Iop_Min32Ux4" => Some(IROp::VMin {
+            elem: IRType::I32,
+            count: 4,
+            signed: false,
+        }),
+        "Iop_Min32Ux8" => Some(IROp::VMin {
+            elem: IRType::I32,
+            count: 8,
+            signed: false,
+        }),
+        "Iop_Min64Ux2" => Some(IROp::VMin {
+            elem: IRType::I64,
+            count: 2,
+            signed: false,
+        }),
+        "Iop_Min64Ux4" => Some(IROp::VMin {
+            elem: IRType::I64,
+            count: 4,
+            signed: false,
+        }),
 
         // Packed integer max — signed
-        "Iop_Max8Sx8"  => Some(IROp::VMax { elem: IRType::I8,  count: 8,  signed: true }),
-        "Iop_Max8Sx16" => Some(IROp::VMax { elem: IRType::I8,  count: 16, signed: true }),
-        "Iop_Max8Sx32" => Some(IROp::VMax { elem: IRType::I8,  count: 32, signed: true }),
-        "Iop_Max16Sx4" => Some(IROp::VMax { elem: IRType::I16, count: 4,  signed: true }),
-        "Iop_Max16Sx8" => Some(IROp::VMax { elem: IRType::I16, count: 8,  signed: true }),
-        "Iop_Max16Sx16"=> Some(IROp::VMax { elem: IRType::I16, count: 16, signed: true }),
-        "Iop_Max32Sx2" => Some(IROp::VMax { elem: IRType::I32, count: 2,  signed: true }),
-        "Iop_Max32Sx4" => Some(IROp::VMax { elem: IRType::I32, count: 4,  signed: true }),
-        "Iop_Max32Sx8" => Some(IROp::VMax { elem: IRType::I32, count: 8,  signed: true }),
-        "Iop_Max64Sx2" => Some(IROp::VMax { elem: IRType::I64, count: 2,  signed: true }),
-        "Iop_Max64Sx4" => Some(IROp::VMax { elem: IRType::I64, count: 4,  signed: true }),
+        "Iop_Max8Sx8" => Some(IROp::VMax {
+            elem: IRType::I8,
+            count: 8,
+            signed: true,
+        }),
+        "Iop_Max8Sx16" => Some(IROp::VMax {
+            elem: IRType::I8,
+            count: 16,
+            signed: true,
+        }),
+        "Iop_Max8Sx32" => Some(IROp::VMax {
+            elem: IRType::I8,
+            count: 32,
+            signed: true,
+        }),
+        "Iop_Max16Sx4" => Some(IROp::VMax {
+            elem: IRType::I16,
+            count: 4,
+            signed: true,
+        }),
+        "Iop_Max16Sx8" => Some(IROp::VMax {
+            elem: IRType::I16,
+            count: 8,
+            signed: true,
+        }),
+        "Iop_Max16Sx16" => Some(IROp::VMax {
+            elem: IRType::I16,
+            count: 16,
+            signed: true,
+        }),
+        "Iop_Max32Sx2" => Some(IROp::VMax {
+            elem: IRType::I32,
+            count: 2,
+            signed: true,
+        }),
+        "Iop_Max32Sx4" => Some(IROp::VMax {
+            elem: IRType::I32,
+            count: 4,
+            signed: true,
+        }),
+        "Iop_Max32Sx8" => Some(IROp::VMax {
+            elem: IRType::I32,
+            count: 8,
+            signed: true,
+        }),
+        "Iop_Max64Sx2" => Some(IROp::VMax {
+            elem: IRType::I64,
+            count: 2,
+            signed: true,
+        }),
+        "Iop_Max64Sx4" => Some(IROp::VMax {
+            elem: IRType::I64,
+            count: 4,
+            signed: true,
+        }),
 
         // Packed integer max — unsigned
-        "Iop_Max8Ux8"  => Some(IROp::VMax { elem: IRType::I8,  count: 8,  signed: false }),
-        "Iop_Max8Ux16" => Some(IROp::VMax { elem: IRType::I8,  count: 16, signed: false }),
-        "Iop_Max8Ux32" => Some(IROp::VMax { elem: IRType::I8,  count: 32, signed: false }),
-        "Iop_Max16Ux4" => Some(IROp::VMax { elem: IRType::I16, count: 4,  signed: false }),
-        "Iop_Max16Ux8" => Some(IROp::VMax { elem: IRType::I16, count: 8,  signed: false }),
-        "Iop_Max16Ux16"=> Some(IROp::VMax { elem: IRType::I16, count: 16, signed: false }),
-        "Iop_Max32Ux2" => Some(IROp::VMax { elem: IRType::I32, count: 2,  signed: false }),
-        "Iop_Max32Ux4" => Some(IROp::VMax { elem: IRType::I32, count: 4,  signed: false }),
-        "Iop_Max32Ux8" => Some(IROp::VMax { elem: IRType::I32, count: 8,  signed: false }),
-        "Iop_Max64Ux2" => Some(IROp::VMax { elem: IRType::I64, count: 2,  signed: false }),
-        "Iop_Max64Ux4" => Some(IROp::VMax { elem: IRType::I64, count: 4,  signed: false }),
+        "Iop_Max8Ux8" => Some(IROp::VMax {
+            elem: IRType::I8,
+            count: 8,
+            signed: false,
+        }),
+        "Iop_Max8Ux16" => Some(IROp::VMax {
+            elem: IRType::I8,
+            count: 16,
+            signed: false,
+        }),
+        "Iop_Max8Ux32" => Some(IROp::VMax {
+            elem: IRType::I8,
+            count: 32,
+            signed: false,
+        }),
+        "Iop_Max16Ux4" => Some(IROp::VMax {
+            elem: IRType::I16,
+            count: 4,
+            signed: false,
+        }),
+        "Iop_Max16Ux8" => Some(IROp::VMax {
+            elem: IRType::I16,
+            count: 8,
+            signed: false,
+        }),
+        "Iop_Max16Ux16" => Some(IROp::VMax {
+            elem: IRType::I16,
+            count: 16,
+            signed: false,
+        }),
+        "Iop_Max32Ux2" => Some(IROp::VMax {
+            elem: IRType::I32,
+            count: 2,
+            signed: false,
+        }),
+        "Iop_Max32Ux4" => Some(IROp::VMax {
+            elem: IRType::I32,
+            count: 4,
+            signed: false,
+        }),
+        "Iop_Max32Ux8" => Some(IROp::VMax {
+            elem: IRType::I32,
+            count: 8,
+            signed: false,
+        }),
+        "Iop_Max64Ux2" => Some(IROp::VMax {
+            elem: IRType::I64,
+            count: 2,
+            signed: false,
+        }),
+        "Iop_Max64Ux4" => Some(IROp::VMax {
+            elem: IRType::I64,
+            count: 4,
+            signed: false,
+        }),
 
         // Packed integer absolute value
-        "Iop_Abs8x8"   => Some(IROp::VAbs { elem: IRType::I8,  count: 8  }),
-        "Iop_Abs8x16"  => Some(IROp::VAbs { elem: IRType::I8,  count: 16 }),
-        "Iop_Abs8x32"  => Some(IROp::VAbs { elem: IRType::I8,  count: 32 }),
-        "Iop_Abs16x4"  => Some(IROp::VAbs { elem: IRType::I16, count: 4  }),
-        "Iop_Abs16x8"  => Some(IROp::VAbs { elem: IRType::I16, count: 8  }),
-        "Iop_Abs16x16" => Some(IROp::VAbs { elem: IRType::I16, count: 16 }),
-        "Iop_Abs32x2"  => Some(IROp::VAbs { elem: IRType::I32, count: 2  }),
-        "Iop_Abs32x4"  => Some(IROp::VAbs { elem: IRType::I32, count: 4  }),
-        "Iop_Abs32x8"  => Some(IROp::VAbs { elem: IRType::I32, count: 8  }),
-        "Iop_Abs64x2"  => Some(IROp::VAbs { elem: IRType::I64, count: 2  }),
-        "Iop_Abs64x4"  => Some(IROp::VAbs { elem: IRType::I64, count: 4  }),
+        "Iop_Abs8x8" => Some(IROp::VAbs {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_Abs8x16" => Some(IROp::VAbs {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_Abs8x32" => Some(IROp::VAbs {
+            elem: IRType::I8,
+            count: 32,
+        }),
+        "Iop_Abs16x4" => Some(IROp::VAbs {
+            elem: IRType::I16,
+            count: 4,
+        }),
+        "Iop_Abs16x8" => Some(IROp::VAbs {
+            elem: IRType::I16,
+            count: 8,
+        }),
+        "Iop_Abs16x16" => Some(IROp::VAbs {
+            elem: IRType::I16,
+            count: 16,
+        }),
+        "Iop_Abs32x2" => Some(IROp::VAbs {
+            elem: IRType::I32,
+            count: 2,
+        }),
+        "Iop_Abs32x4" => Some(IROp::VAbs {
+            elem: IRType::I32,
+            count: 4,
+        }),
+        "Iop_Abs32x8" => Some(IROp::VAbs {
+            elem: IRType::I32,
+            count: 8,
+        }),
+        "Iop_Abs64x2" => Some(IROp::VAbs {
+            elem: IRType::I64,
+            count: 2,
+        }),
+        "Iop_Abs64x4" => Some(IROp::VAbs {
+            elem: IRType::I64,
+            count: 4,
+        }),
 
         // V128/V256 to/from conversions
         "Iop_V128to64" => Some(IROp::Truncate {
@@ -1417,64 +1900,154 @@ pub fn parse_opcode_from_u32(code: u32) -> Option<IROp> {
 
         // Conversions (approximate locations, exact values from libvex_ir.h)
         // 8Uto16: 0x1479, 8Uto32: 0x147A, 8Uto64: 0x147B
-        0x1479 => Some(IROp::ZeroExtend { from: IRType::I8, to: IRType::I16 }),
-        0x147A => Some(IROp::ZeroExtend { from: IRType::I8, to: IRType::I32 }),
-        0x147B => Some(IROp::ZeroExtend { from: IRType::I8, to: IRType::I64 }),
+        0x1479 => Some(IROp::ZeroExtend {
+            from: IRType::I8,
+            to: IRType::I16,
+        }),
+        0x147A => Some(IROp::ZeroExtend {
+            from: IRType::I8,
+            to: IRType::I32,
+        }),
+        0x147B => Some(IROp::ZeroExtend {
+            from: IRType::I8,
+            to: IRType::I64,
+        }),
 
         // 16Uto32: 0x147C, 16Uto64: 0x147D
-        0x147C => Some(IROp::ZeroExtend { from: IRType::I16, to: IRType::I32 }),
-        0x147D => Some(IROp::ZeroExtend { from: IRType::I16, to: IRType::I64 }),
+        0x147C => Some(IROp::ZeroExtend {
+            from: IRType::I16,
+            to: IRType::I32,
+        }),
+        0x147D => Some(IROp::ZeroExtend {
+            from: IRType::I16,
+            to: IRType::I64,
+        }),
 
         // 32Uto64: 0x147E
-        0x147E => Some(IROp::ZeroExtend { from: IRType::I32, to: IRType::I64 }),
+        0x147E => Some(IROp::ZeroExtend {
+            from: IRType::I32,
+            to: IRType::I64,
+        }),
 
         // 8Sto16: 0x147F, 8Sto32: 0x1480, 8Sto64: 0x1481
-        0x147F => Some(IROp::SignExtend { from: IRType::I8, to: IRType::I16 }),
-        0x1480 => Some(IROp::SignExtend { from: IRType::I8, to: IRType::I32 }),
-        0x1481 => Some(IROp::SignExtend { from: IRType::I8, to: IRType::I64 }),
+        0x147F => Some(IROp::SignExtend {
+            from: IRType::I8,
+            to: IRType::I16,
+        }),
+        0x1480 => Some(IROp::SignExtend {
+            from: IRType::I8,
+            to: IRType::I32,
+        }),
+        0x1481 => Some(IROp::SignExtend {
+            from: IRType::I8,
+            to: IRType::I64,
+        }),
 
         // 16Sto32: 0x1482, 16Sto64: 0x1483
-        0x1482 => Some(IROp::SignExtend { from: IRType::I16, to: IRType::I32 }),
-        0x1483 => Some(IROp::SignExtend { from: IRType::I16, to: IRType::I64 }),
+        0x1482 => Some(IROp::SignExtend {
+            from: IRType::I16,
+            to: IRType::I32,
+        }),
+        0x1483 => Some(IROp::SignExtend {
+            from: IRType::I16,
+            to: IRType::I64,
+        }),
 
         // 32Sto64: 0x1484
-        0x1484 => Some(IROp::SignExtend { from: IRType::I32, to: IRType::I64 }),
+        0x1484 => Some(IROp::SignExtend {
+            from: IRType::I32,
+            to: IRType::I64,
+        }),
 
         // Truncations
         // 64to8: 0x1485, 64to16: 0x1486
-        0x1485 => Some(IROp::Truncate { from: IRType::I64, to: IRType::I8 }),
-        0x1486 => Some(IROp::Truncate { from: IRType::I64, to: IRType::I16 }),
+        0x1485 => Some(IROp::Truncate {
+            from: IRType::I64,
+            to: IRType::I8,
+        }),
+        0x1486 => Some(IROp::Truncate {
+            from: IRType::I64,
+            to: IRType::I16,
+        }),
 
         // 64to32: 0x1487
-        0x1487 => Some(IROp::Truncate { from: IRType::I64, to: IRType::I32 }),
+        0x1487 => Some(IROp::Truncate {
+            from: IRType::I64,
+            to: IRType::I32,
+        }),
 
         // 32to8: 0x1488, 32to16: 0x1489 (mapped as truncate from I32)
-        0x1488 => Some(IROp::Truncate { from: IRType::I32, to: IRType::I8 }),
-        0x1489 => Some(IROp::Truncate { from: IRType::I32, to: IRType::I16 }),
+        0x1488 => Some(IROp::Truncate {
+            from: IRType::I32,
+            to: IRType::I8,
+        }),
+        0x1489 => Some(IROp::Truncate {
+            from: IRType::I32,
+            to: IRType::I16,
+        }),
 
         // 64HIto32: 0x148A - extract high 32 bits
-        0x148A => Some(IROp::Extract { from: IRType::I64, to: IRType::I32, low_bit: 32 }),
+        0x148A => Some(IROp::Extract {
+            from: IRType::I64,
+            to: IRType::I32,
+            low_bit: 32,
+        }),
 
         // 32HIto16: 0x148B - extract high 16 bits
-        0x148B => Some(IROp::Extract { from: IRType::I32, to: IRType::I16, low_bit: 16 }),
+        0x148B => Some(IROp::Extract {
+            from: IRType::I32,
+            to: IRType::I16,
+            low_bit: 16,
+        }),
 
         // 16HIto8: 0x148C - extract high 8 bits
-        0x148C => Some(IROp::Extract { from: IRType::I16, to: IRType::I8, low_bit: 8 }),
+        0x148C => Some(IROp::Extract {
+            from: IRType::I16,
+            to: IRType::I8,
+            low_bit: 8,
+        }),
 
         // 1Uto8, 1Uto32, 1Uto64
-        0x148D => Some(IROp::ZeroExtend { from: IRType::I1, to: IRType::I8 }),
-        0x148E => Some(IROp::ZeroExtend { from: IRType::I1, to: IRType::I32 }),
-        0x148F => Some(IROp::ZeroExtend { from: IRType::I1, to: IRType::I64 }),
+        0x148D => Some(IROp::ZeroExtend {
+            from: IRType::I1,
+            to: IRType::I8,
+        }),
+        0x148E => Some(IROp::ZeroExtend {
+            from: IRType::I1,
+            to: IRType::I32,
+        }),
+        0x148F => Some(IROp::ZeroExtend {
+            from: IRType::I1,
+            to: IRType::I64,
+        }),
 
         // 1Sto8, 1Sto16, 1Sto32, 1Sto64
-        0x1490 => Some(IROp::SignExtend { from: IRType::I1, to: IRType::I8 }),
-        0x1491 => Some(IROp::SignExtend { from: IRType::I1, to: IRType::I16 }),
-        0x1492 => Some(IROp::SignExtend { from: IRType::I1, to: IRType::I32 }),
-        0x1493 => Some(IROp::SignExtend { from: IRType::I1, to: IRType::I64 }),
+        0x1490 => Some(IROp::SignExtend {
+            from: IRType::I1,
+            to: IRType::I8,
+        }),
+        0x1491 => Some(IROp::SignExtend {
+            from: IRType::I1,
+            to: IRType::I16,
+        }),
+        0x1492 => Some(IROp::SignExtend {
+            from: IRType::I1,
+            to: IRType::I32,
+        }),
+        0x1493 => Some(IROp::SignExtend {
+            from: IRType::I1,
+            to: IRType::I64,
+        }),
 
         // 32to1, 64to1
-        0x1494 => Some(IROp::Truncate { from: IRType::I32, to: IRType::I1 }),
-        0x1495 => Some(IROp::Truncate { from: IRType::I64, to: IRType::I1 }),
+        0x1494 => Some(IROp::Truncate {
+            from: IRType::I32,
+            to: IRType::I1,
+        }),
+        0x1495 => Some(IROp::Truncate {
+            from: IRType::I64,
+            to: IRType::I1,
+        }),
 
         // 8to32, 8to64 (narrowing, but actually same as truncate conceptually)
 
@@ -1485,14 +2058,33 @@ pub fn parse_opcode_from_u32(code: u32) -> Option<IROp> {
         0x1499 => Some(IROp::Concat { ty: IRType::I128 }),
 
         // 128to64, 128HIto64
-        0x149A => Some(IROp::Truncate { from: IRType::I128, to: IRType::I64 }),
-        0x149B => Some(IROp::Extract { from: IRType::I128, to: IRType::I64, low_bit: 64 }),
+        0x149A => Some(IROp::Truncate {
+            from: IRType::I128,
+            to: IRType::I64,
+        }),
+        0x149B => Some(IROp::Extract {
+            from: IRType::I128,
+            to: IRType::I64,
+            low_bit: 64,
+        }),
 
         // MulHi32U, MulHi64U, MulHi32S, MulHi64S
-        0x149C => Some(IROp::MulHi { ty: IRType::I32, signed: false }),
-        0x149D => Some(IROp::MulHi { ty: IRType::I64, signed: false }),
-        0x149E => Some(IROp::MulHi { ty: IRType::I32, signed: true }),
-        0x149F => Some(IROp::MulHi { ty: IRType::I64, signed: true }),
+        0x149C => Some(IROp::MulHi {
+            ty: IRType::I32,
+            signed: false,
+        }),
+        0x149D => Some(IROp::MulHi {
+            ty: IRType::I64,
+            signed: false,
+        }),
+        0x149E => Some(IROp::MulHi {
+            ty: IRType::I32,
+            signed: true,
+        }),
+        0x149F => Some(IROp::MulHi {
+            ty: IRType::I64,
+            signed: true,
+        }),
 
         // Any other code - return Raw
         _ => None,
@@ -1569,7 +2161,10 @@ mod tests {
 
     #[test]
     fn test_parse_jumpkind() {
-        assert_eq!(parse_jumpkind("Ijk_Boring"), super::super::ir::JumpKind::Boring);
+        assert_eq!(
+            parse_jumpkind("Ijk_Boring"),
+            super::super::ir::JumpKind::Boring
+        );
         assert_eq!(parse_jumpkind("Ijk_Call"), super::super::ir::JumpKind::Call);
         assert_eq!(parse_jumpkind("Ijk_Ret"), super::super::ir::JumpKind::Ret);
     }
@@ -1614,16 +2209,37 @@ mod tests {
         // must not be intercepted by the NEON-unimplemented scaffold.
         assert!(matches!(parse_opcode("Iop_Add8x8"), IROp::VAdd { .. }));
         assert!(matches!(parse_opcode("Iop_ShlN32x4"), IROp::VShlN { .. }));
-        assert!(matches!(parse_opcode("Iop_CmpEQ32Fx4"), IROp::FCmpVecPacked { .. }));
+        assert!(matches!(
+            parse_opcode("Iop_CmpEQ32Fx4"),
+            IROp::FCmpVecPacked { .. }
+        ));
         // angr-bkcs.2: Mul8x{8,16} + GetElem/SetElem are real ops, not
         // NeonUnimplemented placeholders.
         assert!(matches!(parse_opcode("Iop_Mul8x8"), IROp::VMul { .. }));
         assert!(matches!(parse_opcode("Iop_Mul8x16"), IROp::VMul { .. }));
-        assert!(matches!(parse_opcode("Iop_GetElem8x8"), IROp::VGetElem { .. }));
-        assert!(matches!(parse_opcode("Iop_GetElem32x4"), IROp::VGetElem { .. }));
-        assert!(matches!(parse_opcode("Iop_GetElem64x2"), IROp::VGetElem { .. }));
-        assert!(matches!(parse_opcode("Iop_SetElem8x8"), IROp::VSetElem { .. }));
-        assert!(matches!(parse_opcode("Iop_SetElem32x4"), IROp::VSetElem { .. }));
-        assert!(matches!(parse_opcode("Iop_SetElem64x2"), IROp::VSetElem { .. }));
+        assert!(matches!(
+            parse_opcode("Iop_GetElem8x8"),
+            IROp::VGetElem { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_GetElem32x4"),
+            IROp::VGetElem { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_GetElem64x2"),
+            IROp::VGetElem { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_SetElem8x8"),
+            IROp::VSetElem { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_SetElem32x4"),
+            IROp::VSetElem { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_SetElem64x2"),
+            IROp::VSetElem { .. }
+        ));
     }
 }

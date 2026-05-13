@@ -11,9 +11,9 @@
 //! - getchar: equivalent to fgetc(stdin)
 //! - Non-stdin FILE* streams fall back to Python
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -61,7 +61,8 @@ impl NativeSimProcedure for NativeFgets {
 
         if size > MAX_FGETS_SIZE {
             return Err(ProcedureError::Other(format!(
-                "fgets size {} exceeds limit", size
+                "fgets size {} exceeds limit",
+                size
             )));
         }
 
@@ -75,7 +76,8 @@ impl NativeSimProcedure for NativeFgets {
 
         let sym_bytes: Vec<RustBV> = {
             let ctx = state.solver().borrow();
-            names.iter()
+            names
+                .iter()
                 .map(|name| RustBV::symbolic(&ctx, name, 8))
                 .collect()
         };
@@ -87,12 +89,14 @@ impl NativeSimProcedure for NativeFgets {
 
         // Store symbolic bytes to buffer
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state.memory_store(buf.wrapping_add(i as u64), sym_byte)
+            state
+                .memory_store(buf.wrapping_add(i as u64), sym_byte)
                 .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
         }
 
         // Store NUL terminator
-        state.memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))
+        state
+            .memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))
             .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
 
         // Return buffer address
@@ -210,14 +214,16 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory(0x2000, 0x1000, Permission::RWX);
 
-        let result = NativeFgets.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),  // buf
-                RustBV::concrete(10, 64),       // size
-                RustBV::concrete(0, 64),        // stream (stdin)
-            ],
-        ).unwrap();
+        let result = NativeFgets
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64), // buf
+                    RustBV::concrete(10, 64),     // size
+                    RustBV::concrete(0, 64),      // stream (stdin)
+                ],
+            )
+            .unwrap();
 
         // Should return buf address
         assert_eq!(result.unwrap().as_u64(), Some(0x2000));
@@ -238,14 +244,16 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory(0x2000, 0x1000, Permission::RWX);
 
-        let result = NativeFgets.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(1, 64),   // size=1 means only NUL
-                RustBV::concrete(0, 64),
-            ],
-        ).unwrap();
+        let result = NativeFgets
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(1, 64), // size=1 means only NUL
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0x2000));
 
@@ -258,14 +266,16 @@ mod tests {
     fn test_fgets_size_0() {
         let mut state = RustSimState::new("amd64").unwrap();
 
-        let result = NativeFgets.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64),   // size=0 returns NULL
-                RustBV::concrete(0, 64),
-            ],
-        ).unwrap();
+        let result = NativeFgets
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(0, 64), // size=0 returns NULL
+                    RustBV::concrete(0, 64),
+                ],
+            )
+            .unwrap();
 
         assert_eq!(result.unwrap().as_u64(), Some(0)); // NULL
     }
@@ -288,10 +298,12 @@ mod tests {
     fn test_fgetc_basic() {
         let mut state = RustSimState::new("amd64").unwrap();
 
-        let result = NativeFgetc.call(
-            &mut state,
-            &[RustBV::concrete(0, 64)],  // stream (stdin)
-        ).unwrap();
+        let result = NativeFgetc
+            .call(
+                &mut state,
+                &[RustBV::concrete(0, 64)], // stream (stdin)
+            )
+            .unwrap();
 
         let val = result.unwrap();
         // Should be symbolic (can't get concrete value)
@@ -312,10 +324,9 @@ mod tests {
     fn test_getc_basic() {
         let mut state = RustSimState::new("amd64").unwrap();
 
-        let result = NativeGetc.call(
-            &mut state,
-            &[RustBV::concrete(0, 64)],
-        ).unwrap();
+        let result = NativeGetc
+            .call(&mut state, &[RustBV::concrete(0, 64)])
+            .unwrap();
         let val = result.unwrap();
         assert!(val.as_u64().is_none());
     }

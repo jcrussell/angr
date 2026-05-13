@@ -130,9 +130,7 @@ pub fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
     }
 
     // Fall back to thread-local cache
-    CLARIPY_AST_CACHE.with(|cache| {
-        cache.borrow().get(&symbol_id).cloned()
-    })
+    CLARIPY_AST_CACHE.with(|cache| cache.borrow().get(&symbol_id).cloned())
 }
 
 /// Look up a symbol by its Python hash.
@@ -152,7 +150,10 @@ pub fn lookup_symbol_by_name(name: &str) -> Option<crate::symbolic::SymbolInfo> 
 /// Look up symbol info by name and width.
 ///
 /// This is the preferred method after D2 fix which uses width-qualified names.
-pub fn lookup_symbol_by_name_and_width(name: &str, width: u32) -> Option<crate::symbolic::SymbolInfo> {
+pub fn lookup_symbol_by_name_and_width(
+    name: &str,
+    width: u32,
+) -> Option<crate::symbolic::SymbolInfo> {
     global_registry().lookup_by_name_and_width(name, width)
 }
 
@@ -167,9 +168,7 @@ pub fn store_expression_ast(expr_hash: u64, ast: Py<PyAny>) {
 /// Retrieve a claripy AST from the expression cache by expression hash.
 /// Called when converting RustBV→claripy to return the original AST.
 pub fn get_expression_ast(expr_hash: u64) -> Option<Py<PyAny>> {
-    EXPRESSION_CACHE.with(|cache| {
-        cache.borrow_mut().get(&expr_hash).cloned()
-    })
+    EXPRESSION_CACHE.with(|cache| cache.borrow_mut().get(&expr_hash).cloned())
 }
 
 /// Store the original claripy AST keyed by an imported Expression's
@@ -185,7 +184,10 @@ pub fn store_expression_ast_by_operands(operands_ptr: usize, bv: RustBV, ast: Py
 /// Arc pointer. Returns None on miss.
 pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Option<Py<PyAny>> {
     EXPRESSION_BY_OPERANDS_PTR.with(|cache| {
-        cache.borrow_mut().get(&operands_ptr).map(|(_, ast)| ast.clone_ref(py))
+        cache
+            .borrow_mut()
+            .get(&operands_ptr)
+            .map(|(_, ast)| ast.clone_ref(py))
     })
 }
 
@@ -297,7 +299,9 @@ pub fn python_to_rustbv(
     if is_claripy_ast(obj) {
         claripy_to_rustbv(py, obj, ctx)
     } else {
-        let type_name = obj.get_type().name()
+        let type_name = obj
+            .get_type()
+            .name()
             .map(|s| s.to_string())
             .unwrap_or_else(|_| "unknown".to_string());
         Err(BridgeError::TypeMismatch(format!(
@@ -355,9 +359,7 @@ pub fn claripy_to_rustbv(
 
     // Check LRU cache for previously converted AST
     if use_cache {
-        let cached = AST_CACHE.with(|cache| {
-            cache.borrow_mut().get(&ast_hash).cloned()
-        });
+        let cached = AST_CACHE.with(|cache| cache.borrow_mut().get(&ast_hash).cloned());
         if let Some(cached_bv) = cached {
             // Defensive width check — claripy hashes are content-addressed and
             // already include length, so collisions are exceedingly rare, but
@@ -401,7 +403,9 @@ pub fn claripy_to_rustbv(
             // Width might be in args[1] or in .length attribute
             let width: u32 = if args_tuple.len() > 1 {
                 args_tuple.get_item(1)?.extract().unwrap_or_else(|_| {
-                    ast.getattr("length").and_then(|l| l.extract()).unwrap_or(64)
+                    ast.getattr("length")
+                        .and_then(|l| l.extract())
+                        .unwrap_or(64)
                 })
             } else {
                 ast.getattr("length")?.extract()?
@@ -556,7 +560,9 @@ pub fn claripy_to_rustbv(
         "__lshift__" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__lshift__ requires 2 args".into()));
+                return Err(BridgeError::InvalidArgs(
+                    "__lshift__ requires 2 args".into(),
+                ));
             }
             let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
             let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
@@ -576,7 +582,9 @@ pub fn claripy_to_rustbv(
         "__rshift__" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__rshift__ requires 2 args".into()));
+                return Err(BridgeError::InvalidArgs(
+                    "__rshift__ requires 2 args".into(),
+                ));
             }
             let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
             let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
@@ -586,7 +594,9 @@ pub fn claripy_to_rustbv(
         "RotateLeft" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("RotateLeft requires 2 args".into()));
+                return Err(BridgeError::InvalidArgs(
+                    "RotateLeft requires 2 args".into(),
+                ));
             }
             let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
             let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
@@ -596,7 +606,9 @@ pub fn claripy_to_rustbv(
         "RotateRight" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("RotateRight requires 2 args".into()));
+                return Err(BridgeError::InvalidArgs(
+                    "RotateRight requires 2 args".into(),
+                ));
             }
             let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
             let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
@@ -639,12 +651,14 @@ pub fn claripy_to_rustbv(
             // P5 fix: Validate Extract bounds to prevent runtime errors
             if high >= val_width {
                 return Err(BridgeError::InvalidArgs(format!(
-                    "Extract high={} >= width={}", high, val_width
+                    "Extract high={} >= width={}",
+                    high, val_width
                 )));
             }
             if low > high {
                 return Err(BridgeError::InvalidArgs(format!(
-                    "Extract low={} > high={}", low, high
+                    "Extract low={} > high={}",
+                    low, high
                 )));
             }
 
@@ -654,7 +668,9 @@ pub fn claripy_to_rustbv(
         "Concat" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
             if args_list.is_empty() {
-                return Err(BridgeError::InvalidArgs("Concat requires at least 1 arg".into()));
+                return Err(BridgeError::InvalidArgs(
+                    "Concat requires at least 1 arg".into(),
+                ));
             }
             let mut result = claripy_to_rustbv(py, &args_list[0], ctx)?;
             for arg in &args_list[1..] {
@@ -890,7 +906,9 @@ fn ensure_claripy_ast(
             return Ok(obj.clone());
         }
         Ok(false) => {
-            let type_name = bound.get_type().name()
+            let type_name = bound
+                .get_type()
+                .name()
                 .map(|n| n.to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
             log::debug!(
@@ -906,7 +924,9 @@ fn ensure_claripy_ast(
     // Check the actual Python type to distinguish bool from int
     // IMPORTANT: In Python, bool is a subclass of int, so we must check bool FIRST
     // but use is_instance_of, not extract, because extract::<bool>() succeeds for ints too
-    let type_name = bound.get_type().name()
+    let type_name = bound
+        .get_type()
+        .name()
         .map(|n| n.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
@@ -919,7 +939,9 @@ fn ensure_claripy_ast(
                 let val: i64 = if bool_val { 1 } else { 0 };
                 return claripy_mod.call_method1("BVV", (val, w)).map(|o| o.into());
             }
-            return claripy_mod.call_method1("BoolV", (bool_val,)).map(|o| o.into());
+            return claripy_mod
+                .call_method1("BoolV", (bool_val,))
+                .map(|o| o.into());
         }
     }
 
@@ -929,22 +951,38 @@ fn ensure_claripy_ast(
         let width = width_hint.unwrap_or(64);
         // Try to extract as i128 for larger values
         if let Ok(int_val) = bound.extract::<i128>() {
-            log::debug!("ensure_claripy_ast: wrapping int {} in BVV with width {}", int_val, width);
+            log::debug!(
+                "ensure_claripy_ast: wrapping int {} in BVV with width {}",
+                int_val,
+                width
+            );
             // For values that fit in i64, use that (more compatible)
             if int_val >= i64::MIN as i128 && int_val <= i64::MAX as i128 {
-                return claripy_mod.call_method1("BVV", (int_val as i64, width)).map(|o| o.into());
+                return claripy_mod
+                    .call_method1("BVV", (int_val as i64, width))
+                    .map(|o| o.into());
             } else {
                 // For larger values, pass as Python int directly
-                return claripy_mod.call_method1("BVV", (&bound, width)).map(|o| o.into());
+                return claripy_mod
+                    .call_method1("BVV", (&bound, width))
+                    .map(|o| o.into());
             }
         }
         // Fallback: pass the Python object directly and let claripy handle it
-        log::debug!("ensure_claripy_ast: wrapping large int in BVV with width {}", width);
-        return claripy_mod.call_method1("BVV", (&bound, width)).map(|o| o.into());
+        log::debug!(
+            "ensure_claripy_ast: wrapping large int in BVV with width {}",
+            width
+        );
+        return claripy_mod
+            .call_method1("BVV", (&bound, width))
+            .map(|o| o.into());
     }
 
     // Otherwise return as-is and hope for the best
-    log::warn!("ensure_claripy_ast: unknown type {}, returning as-is", type_name);
+    log::warn!(
+        "ensure_claripy_ast: unknown type {}, returning as-is",
+        type_name
+    );
     Ok(obj.clone())
 }
 
@@ -1035,7 +1073,9 @@ fn rustbv_to_claripy_memo(
                     .map(|obj| obj.into())
             }
         }
-        RustBV::Symbolic { id: _, name, width, .. } => {
+        RustBV::Symbolic {
+            id: _, name, width, ..
+        } => {
             // Cache was already checked above, so this is a symbol created purely in Rust
             // Create new claripy.BVS(name, width)
             claripy_mod
@@ -1072,7 +1112,9 @@ fn rustbv_to_claripy_memo(
                 .collect::<Result<_, _>>()?;
 
             // Validate all args to ensure they're claripy ASTs with correct widths
-            let args: Vec<Py<PyAny>> = raw_args.iter().enumerate()
+            let args: Vec<Py<PyAny>> = raw_args
+                .iter()
+                .enumerate()
                 .map(|(i, arg)| {
                     let width = operands.get(i).map(|o| o.width());
                     ensure_claripy_ast(py, arg, claripy_mod, width)
@@ -1089,47 +1131,77 @@ fn rustbv_to_claripy_memo(
                 let (w0, w1) = match (w0, w1) {
                     (None, Some(w)) => {
                         // arg0 is Bool, arg1 is BV — convert Bool to BV(1)
-                        let bv = claripy_mod.call_method1("If", (
-                            &args[0],
-                            claripy_mod.call_method1("BVV", (1i32, w))?,
-                            claripy_mod.call_method1("BVV", (0i32, w))?,
-                        ))?;
+                        let bv = claripy_mod.call_method1(
+                            "If",
+                            (
+                                &args[0],
+                                claripy_mod.call_method1("BVV", (1i32, w))?,
+                                claripy_mod.call_method1("BVV", (0i32, w))?,
+                            ),
+                        )?;
                         return {
                             // Redo the operation with the converted operand
                             let args_fixed = vec![bv.unbind(), args[1].clone()];
                             // Fall through to the match op block below
                             // by replacing args
                             match op {
-                                BVOp::And => args_fixed[0].bind(py).call_method1("__and__", (&args_fixed[1],)).map(|o| o.into()),
-                                BVOp::Or => args_fixed[0].bind(py).call_method1("__or__", (&args_fixed[1],)).map(|o| o.into()),
-                                BVOp::Xor => args_fixed[0].bind(py).call_method1("__xor__", (&args_fixed[1],)).map(|o| o.into()),
+                                BVOp::And => args_fixed[0]
+                                    .bind(py)
+                                    .call_method1("__and__", (&args_fixed[1],))
+                                    .map(|o| o.into()),
+                                BVOp::Or => args_fixed[0]
+                                    .bind(py)
+                                    .call_method1("__or__", (&args_fixed[1],))
+                                    .map(|o| o.into()),
+                                BVOp::Xor => args_fixed[0]
+                                    .bind(py)
+                                    .call_method1("__xor__", (&args_fixed[1],))
+                                    .map(|o| o.into()),
                                 _ => {
                                     // For other ops, just use the converted args
                                     let a = args_fixed[0].bind(py);
-                                    a.call_method1("__add__", (&args_fixed[1],)).map(|o| o.into())
+                                    a.call_method1("__add__", (&args_fixed[1],))
+                                        .map(|o| o.into())
                                 }
                             }
                         };
                     }
                     (Some(w), None) => {
                         // arg0 is BV, arg1 is Bool
-                        let bv = claripy_mod.call_method1("If", (
-                            &args[1],
-                            claripy_mod.call_method1("BVV", (1i32, w))?,
-                            claripy_mod.call_method1("BVV", (0i32, w))?,
-                        ))?;
+                        let bv = claripy_mod.call_method1(
+                            "If",
+                            (
+                                &args[1],
+                                claripy_mod.call_method1("BVV", (1i32, w))?,
+                                claripy_mod.call_method1("BVV", (0i32, w))?,
+                            ),
+                        )?;
                         return {
                             let args_fixed = vec![args[0].clone(), bv.unbind()];
                             match op {
-                                BVOp::And => args_fixed[0].bind(py).call_method1("__and__", (&args_fixed[1],)).map(|o| o.into()),
-                                BVOp::Or => args_fixed[0].bind(py).call_method1("__or__", (&args_fixed[1],)).map(|o| o.into()),
-                                BVOp::Xor => args_fixed[0].bind(py).call_method1("__xor__", (&args_fixed[1],)).map(|o| o.into()),
-                                _ => args_fixed[0].bind(py).call_method1("__add__", (&args_fixed[1],)).map(|o| o.into()),
+                                BVOp::And => args_fixed[0]
+                                    .bind(py)
+                                    .call_method1("__and__", (&args_fixed[1],))
+                                    .map(|o| o.into()),
+                                BVOp::Or => args_fixed[0]
+                                    .bind(py)
+                                    .call_method1("__or__", (&args_fixed[1],))
+                                    .map(|o| o.into()),
+                                BVOp::Xor => args_fixed[0]
+                                    .bind(py)
+                                    .call_method1("__xor__", (&args_fixed[1],))
+                                    .map(|o| o.into()),
+                                _ => args_fixed[0]
+                                    .bind(py)
+                                    .call_method1("__add__", (&args_fixed[1],))
+                                    .map(|o| o.into()),
                             }
                         };
                     }
                     (Some(a), Some(b)) => (a, b),
-                    (None, None) => { return Ok(args[0].clone()); }  // Both Bool — just return first
+                    (None, None) => {
+                        return Ok(args[0].clone());
+                    } // Both Bool — just return first
                 };
                 if w0 != w1 {
                     if w0 < w1 {
@@ -1161,18 +1233,18 @@ fn rustbv_to_claripy_memo(
                     let arg0 = args[0].bind(py);
                     arg0.call_method1("__mul__", (&args[1],)).map(|o| o.into())
                 }
-                BVOp::UDiv => {
-                    claripy_mod.call_method1("UDiv", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::SDiv => {
-                    claripy_mod.call_method1("SDiv", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::URem => {
-                    claripy_mod.call_method1("URem", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::SRem => {
-                    claripy_mod.call_method1("SMod", (&args[0], &args[1])).map(|o| o.into())
-                }
+                BVOp::UDiv => claripy_mod
+                    .call_method1("UDiv", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::SDiv => claripy_mod
+                    .call_method1("SDiv", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::URem => claripy_mod
+                    .call_method1("URem", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::SRem => claripy_mod
+                    .call_method1("SMod", (&args[0], &args[1]))
+                    .map(|o| o.into()),
                 BVOp::Neg => {
                     let arg0 = args[0].bind(py);
                     arg0.call_method0("__neg__").map(|o| o.into())
@@ -1183,29 +1255,68 @@ fn rustbv_to_claripy_memo(
                     let arg0 = args[0].bind(py);
                     let result = arg0.call_method1("__and__", (&args[1],))?;
                     // Check for NotImplemented (width mismatch etc)
-                    if result.is_none() || result.get_type().name().map_or(false, |n| n == "NotImplementedType") {
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err("__and__ returned NotImplemented"));
+                    if result.is_none()
+                        || result
+                            .get_type()
+                            .name()
+                            .map_or(false, |n| n == "NotImplementedType")
+                    {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "__and__ returned NotImplemented",
+                        ));
                     }
                     Ok(result.into())
                 }
                 BVOp::Or => {
                     let arg0 = args[0].bind(py);
                     let result = arg0.call_method1("__or__", (&args[1],))?;
-                    if result.is_none() || result.get_type().name().map_or(false, |n| n == "NotImplementedType") {
-                        let t0 = args[0].bind(py).get_type().name().map(|n| n.to_string()).unwrap_or("?".into());
-                        let t1 = args[1].bind(py).get_type().name().map(|n| n.to_string()).unwrap_or("?".into());
-                        let w0: String = args[0].bind(py).getattr("length").map(|l| format!("{}", l)).unwrap_or("?".into());
-                        let w1: String = args[1].bind(py).getattr("length").map(|l| format!("{}", l)).unwrap_or("?".into());
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                            format!("__or__ NotImpl: {}(w={}) | {}(w={})", t0, w0, t1, w1)));
+                    if result.is_none()
+                        || result
+                            .get_type()
+                            .name()
+                            .map_or(false, |n| n == "NotImplementedType")
+                    {
+                        let t0 = args[0]
+                            .bind(py)
+                            .get_type()
+                            .name()
+                            .map(|n| n.to_string())
+                            .unwrap_or("?".into());
+                        let t1 = args[1]
+                            .bind(py)
+                            .get_type()
+                            .name()
+                            .map(|n| n.to_string())
+                            .unwrap_or("?".into());
+                        let w0: String = args[0]
+                            .bind(py)
+                            .getattr("length")
+                            .map(|l| format!("{}", l))
+                            .unwrap_or("?".into());
+                        let w1: String = args[1]
+                            .bind(py)
+                            .getattr("length")
+                            .map(|l| format!("{}", l))
+                            .unwrap_or("?".into());
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "__or__ NotImpl: {}(w={}) | {}(w={})",
+                            t0, w0, t1, w1
+                        )));
                     }
                     Ok(result.into())
                 }
                 BVOp::Xor => {
                     let arg0 = args[0].bind(py);
                     let result = arg0.call_method1("__xor__", (&args[1],))?;
-                    if result.is_none() || result.get_type().name().map_or(false, |n| n == "NotImplementedType") {
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err("__xor__ returned NotImplemented"));
+                    if result.is_none()
+                        || result
+                            .get_type()
+                            .name()
+                            .map_or(false, |n| n == "NotImplementedType")
+                    {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "__xor__ returned NotImplemented",
+                        ));
                     }
                     Ok(result.into())
                 }
@@ -1217,25 +1328,30 @@ fn rustbv_to_claripy_memo(
                 // Shift operations
                 BVOp::Shl => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__lshift__", (&args[1],)).map(|o| o.into())
+                    arg0.call_method1("__lshift__", (&args[1],))
+                        .map(|o| o.into())
                 }
-                BVOp::Lshr => {
-                    claripy_mod.call_method1("LShR", (&args[0], &args[1])).map(|o| o.into())
-                }
+                BVOp::Lshr => claripy_mod
+                    .call_method1("LShR", (&args[0], &args[1]))
+                    .map(|o| o.into()),
                 BVOp::Ashr => {
                     let arg0 = args[0].bind(py);
-                    arg0.call_method1("__rshift__", (&args[1],)).map(|o| o.into())
+                    arg0.call_method1("__rshift__", (&args[1],))
+                        .map(|o| o.into())
                 }
-                BVOp::RotL => {
-                    claripy_mod.call_method1("RotateLeft", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::RotR => {
-                    claripy_mod.call_method1("RotateRight", (&args[0], &args[1])).map(|o| o.into())
-                }
+                BVOp::RotL => claripy_mod
+                    .call_method1("RotateLeft", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::RotR => claripy_mod
+                    .call_method1("RotateRight", (&args[0], &args[1]))
+                    .map(|o| o.into()),
 
                 // Extension operations (args already validated)
                 BVOp::ZeroExt(extend_bits) => {
-                    let arg0_type = args[0].bind(py).get_type().name()
+                    let arg0_type = args[0]
+                        .bind(py)
+                        .get_type()
+                        .name()
                         .map(|n| n.to_string())
                         .unwrap_or_else(|_| "unknown".to_string());
 
@@ -1246,13 +1362,20 @@ fn rustbv_to_claripy_memo(
                         let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
                         let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
                         let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
-                        claripy_mod.call_method1("ZeroExt", (*extend_bits, bv1)).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("ZeroExt", (*extend_bits, bv1))
+                            .map(|o| o.into())
                     } else {
-                        claripy_mod.call_method1("ZeroExt", (*extend_bits, &args[0])).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("ZeroExt", (*extend_bits, &args[0]))
+                            .map(|o| o.into())
                     }
                 }
                 BVOp::SignExt(extend_bits) => {
-                    let arg0_type = args[0].bind(py).get_type().name()
+                    let arg0_type = args[0]
+                        .bind(py)
+                        .get_type()
+                        .name()
                         .map(|n| n.to_string())
                         .unwrap_or_else(|_| "unknown".to_string());
 
@@ -1262,13 +1385,20 @@ fn rustbv_to_claripy_memo(
                         let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
                         let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
                         let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
-                        claripy_mod.call_method1("SignExt", (*extend_bits, bv1)).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("SignExt", (*extend_bits, bv1))
+                            .map(|o| o.into())
                     } else {
-                        claripy_mod.call_method1("SignExt", (*extend_bits, &args[0])).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("SignExt", (*extend_bits, &args[0]))
+                            .map(|o| o.into())
                     }
                 }
                 BVOp::Extract(high, low) => {
-                    let arg0_type = args[0].bind(py).get_type().name()
+                    let arg0_type = args[0]
+                        .bind(py)
+                        .get_type()
+                        .name()
                         .map(|n| n.to_string())
                         .unwrap_or_else(|_| "unknown".to_string());
 
@@ -1278,19 +1408,27 @@ fn rustbv_to_claripy_memo(
                         let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
                         let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
                         let bv1 = claripy_mod.call_method1("If", (&args[0], one, zero))?;
-                        claripy_mod.call_method1("Extract", (*high, *low, bv1)).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("Extract", (*high, *low, bv1))
+                            .map(|o| o.into())
                     } else {
-                        claripy_mod.call_method1("Extract", (*high, *low, &args[0])).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("Extract", (*high, *low, &args[0]))
+                            .map(|o| o.into())
                     }
                 }
                 BVOp::Concat => {
                     // Concat takes multiple args (already validated)
                     if args.len() == 2 {
-                        claripy_mod.call_method1("Concat", (&args[0], &args[1])).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("Concat", (&args[0], &args[1]))
+                            .map(|o| o.into())
                     } else {
                         // For multi-arg concat, build a tuple
                         let args_tuple = pyo3::types::PyTuple::new(py, &args)?;
-                        claripy_mod.call_method1("Concat", args_tuple).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("Concat", args_tuple)
+                            .map(|o| o.into())
                     }
                 }
 
@@ -1304,7 +1442,9 @@ fn rustbv_to_claripy_memo(
                     // wrap it in claripy.BoolV. Use extract::<bool> which works for
                     // both PyBool and PyInt (True/False are ints in Python).
                     if let Ok(bool_val) = result.extract::<bool>() {
-                        claripy_mod.call_method1("BoolV", (bool_val,)).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("BoolV", (bool_val,))
+                            .map(|o| o.into())
                     } else {
                         Ok(result.into())
                     }
@@ -1316,46 +1456,50 @@ fn rustbv_to_claripy_memo(
                     // wrap it in claripy.BoolV. Use extract::<bool> which works for
                     // both PyBool and PyInt (True/False are ints in Python).
                     if let Ok(bool_val) = result.extract::<bool>() {
-                        claripy_mod.call_method1("BoolV", (bool_val,)).map(|o| o.into())
+                        claripy_mod
+                            .call_method1("BoolV", (bool_val,))
+                            .map(|o| o.into())
                     } else {
                         Ok(result.into())
                     }
                 }
-                BVOp::Ult => {
-                    claripy_mod.call_method1("ULT", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::Ule => {
-                    claripy_mod.call_method1("ULE", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::Ugt => {
-                    claripy_mod.call_method1("UGT", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::Uge => {
-                    claripy_mod.call_method1("UGE", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::Slt => {
-                    claripy_mod.call_method1("SLT", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::Sle => {
-                    claripy_mod.call_method1("SLE", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::Sgt => {
-                    claripy_mod.call_method1("SGT", (&args[0], &args[1])).map(|o| o.into())
-                }
-                BVOp::Sge => {
-                    claripy_mod.call_method1("SGE", (&args[0], &args[1])).map(|o| o.into())
-                }
+                BVOp::Ult => claripy_mod
+                    .call_method1("ULT", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::Ule => claripy_mod
+                    .call_method1("ULE", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::Ugt => claripy_mod
+                    .call_method1("UGT", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::Uge => claripy_mod
+                    .call_method1("UGE", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::Slt => claripy_mod
+                    .call_method1("SLT", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::Sle => claripy_mod
+                    .call_method1("SLE", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::Sgt => claripy_mod
+                    .call_method1("SGT", (&args[0], &args[1]))
+                    .map(|o| o.into()),
+                BVOp::Sge => claripy_mod
+                    .call_method1("SGE", (&args[0], &args[1]))
+                    .map(|o| o.into()),
 
                 // Conditional
                 BVOp::Ite => {
                     // If(cond, then_val, else_val)
-                    claripy_mod.call_method1("If", (&args[0], &args[1], &args[2])).map(|o| o.into())
+                    claripy_mod
+                        .call_method1("If", (&args[0], &args[1], &args[2]))
+                        .map(|o| o.into())
                 }
 
                 // Utility operations
-                BVOp::Reverse => {
-                    claripy_mod.call_method1("Reverse", (&args[0],)).map(|o| o.into())
-                }
+                BVOp::Reverse => claripy_mod
+                    .call_method1("Reverse", (&args[0],))
+                    .map(|o| o.into()),
                 BVOp::Clz | BVOp::Ctz | BVOp::Popcount => {
                     let op_name = match op {
                         BVOp::Clz => "clz",
@@ -1393,7 +1537,9 @@ fn rustbv_to_claripy_memo(
                                 }
                                 _ => unreachable!(),
                             };
-                            return claripy_mod.call_method1("BVV", (result as i64, width)).map(|o| o.into());
+                            return claripy_mod
+                                .call_method1("BVV", (result as i64, width))
+                                .map(|o| o.into());
                         }
                     }
 
@@ -1455,10 +1601,7 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
     }
 
     // For larger values, use Python's int.to_bytes
-    let bit_length: usize = obj
-        .call_method0("bit_length")?
-        .extract()
-        .unwrap_or(128);
+    let bit_length: usize = obj.call_method0("bit_length")?.extract().unwrap_or(128);
     let byte_length = (bit_length + 7) / 8;
     let byte_length = byte_length.max(1).min(16); // Clamp to 1-16 bytes
 
@@ -1476,10 +1619,7 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
 }
 
 /// Byte-reverse a RustBV value.
-fn reverse_bytes(
-    bv: &RustBV,
-    ctx: &SymContext,
-) -> Result<RustBV, BridgeError> {
+fn reverse_bytes(bv: &RustBV, ctx: &SymContext) -> Result<RustBV, BridgeError> {
     let width = bv.width();
     if width % 8 != 0 {
         return Err(BridgeError::InvalidArgs(
@@ -1539,7 +1679,8 @@ pub fn get_stable_ast_id(ast: &Bound<'_, PyAny>) -> Result<i64, BridgeError> {
     }
 
     // Fall back to PyAny.hash() which calls Python's hash()
-    ast.hash().map(|h| h as i64)
+    ast.hash()
+        .map(|h| h as i64)
         .map_err(|e| BridgeError::PythonError(format!("hash failed: {}", e)))
 }
 

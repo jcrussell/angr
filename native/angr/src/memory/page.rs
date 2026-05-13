@@ -15,7 +15,10 @@ pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
 /// Number of u64 words in the per-page symbolic bitmap.
 /// One bit per byte: PAGE_SIZE bytes / 64 bits per u64 = PAGE_SIZE / 64 words.
 pub const BITMAP_WORDS: usize = (PAGE_SIZE / 64) as usize;
-const _: () = assert!(BITMAP_WORDS * 64 == PAGE_SIZE as usize, "bitmap must cover one bit per page byte");
+const _: () = assert!(
+    BITMAP_WORDS * 64 == PAGE_SIZE as usize,
+    "bitmap must cover one bit per page byte"
+);
 
 /// Bits per bitmap word (u64).
 const BITMAP_BITS_PER_WORD: u16 = 64;
@@ -163,7 +166,9 @@ impl MemoryPage {
         };
         let mut offsets = Vec::new();
         for (word_idx, &word) in bitmap.iter().enumerate() {
-            if word == 0 { continue; }
+            if word == 0 {
+                continue;
+            }
             let base = (word_idx as u16) * BITMAP_BITS_PER_WORD;
             let mut bits = word;
             while bits != 0 {
@@ -187,7 +192,9 @@ impl MemoryPage {
         debug_assert!(
             (offset as usize + bytes.len()) <= PAGE_SIZE as usize,
             "store_concrete: offset {} + len {} exceeds PAGE_SIZE {}",
-            offset, bytes.len(), PAGE_SIZE
+            offset,
+            bytes.len(),
+            PAGE_SIZE
         );
         // Copy-on-write: if shared, make a unique copy
         let data = Arc::make_mut(&mut self.data);
@@ -215,9 +222,13 @@ impl MemoryPage {
         debug_assert!(
             (offset as usize + size as usize) <= PAGE_SIZE as usize,
             "mark_symbolic: offset {} + size {} exceeds PAGE_SIZE {}",
-            offset, size, PAGE_SIZE
+            offset,
+            size,
+            PAGE_SIZE
         );
-        let bitmap = self.symbolic_bitmap.get_or_insert_with(|| Box::new([0u64; BITMAP_WORDS]));
+        let bitmap = self
+            .symbolic_bitmap
+            .get_or_insert_with(|| Box::new([0u64; BITMAP_WORDS]));
         let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
         for i in offset..loop_end {
             let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;

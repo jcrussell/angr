@@ -7,8 +7,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 use smallvec::SmallVec;
@@ -82,14 +82,26 @@ static Z3_TIMEOUT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Indexed by `CheckSite as usize`.
 const NUM_CHECK_SITES: usize = 9;
 static Z3_CHECK_SITE_COUNT: [AtomicU64; NUM_CHECK_SITES] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 static Z3_CHECK_SITE_TIME_NS: [AtomicU64; NUM_CHECK_SITES] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 
 /// Distinguishes which call site invoked solver.check() for profiling.
@@ -123,20 +135,59 @@ const SITE_NAMES: [&str; NUM_CHECK_SITES] = [
 /// Get all solver profiling stats as a HashMap.
 pub fn get_solver_stats() -> HashMap<String, u64> {
     let mut stats = HashMap::new();
-    stats.insert("z3_check_count".into(), Z3_CHECK_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_check_time_ns".into(), Z3_CHECK_TIME_NS.load(Ordering::Relaxed));
-    stats.insert("z3_materialize_count".into(), Z3_MATERIALIZE_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_materialize_time_ns".into(), Z3_MATERIALIZE_TIME_NS.load(Ordering::Relaxed));
-    stats.insert("z3_assume_concrete".into(), Z3_ASSUME_CONCRETE_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_assume_symbolic".into(), Z3_ASSUME_SYMBOLIC_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_branch_check".into(), Z3_BRANCH_CHECK_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_branch_concrete".into(), Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_branch_model_hit".into(), Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_branch_model_miss".into(), Z3_BRANCH_MODEL_MISS_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_ast_build".into(), Z3_AST_BUILD_COUNT.load(Ordering::Relaxed));
+    stats.insert(
+        "z3_check_count".into(),
+        Z3_CHECK_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_check_time_ns".into(),
+        Z3_CHECK_TIME_NS.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_materialize_count".into(),
+        Z3_MATERIALIZE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_materialize_time_ns".into(),
+        Z3_MATERIALIZE_TIME_NS.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_assume_concrete".into(),
+        Z3_ASSUME_CONCRETE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_assume_symbolic".into(),
+        Z3_ASSUME_SYMBOLIC_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_branch_check".into(),
+        Z3_BRANCH_CHECK_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_branch_concrete".into(),
+        Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_branch_model_hit".into(),
+        Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_branch_model_miss".into(),
+        Z3_BRANCH_MODEL_MISS_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_ast_build".into(),
+        Z3_AST_BUILD_COUNT.load(Ordering::Relaxed),
+    );
     stats.insert("z3_sat_count".into(), Z3_SAT_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_unsat_count".into(), Z3_UNSAT_COUNT.load(Ordering::Relaxed));
-    stats.insert("z3_timeout_count".into(), Z3_TIMEOUT_COUNT.load(Ordering::Relaxed));
+    stats.insert(
+        "z3_unsat_count".into(),
+        Z3_UNSAT_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_timeout_count".into(),
+        Z3_TIMEOUT_COUNT.load(Ordering::Relaxed),
+    );
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
         let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
@@ -395,7 +446,10 @@ impl SymContext {
             Z3_MATERIALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
             Z3_MATERIALIZE_TIME_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
-        parking_lot::MutexGuard::map(guard, |opt| opt.as_mut().expect("solver was just initialized in the None branch above"))
+        parking_lot::MutexGuard::map(guard, |opt| {
+            opt.as_mut()
+                .expect("solver was just initialized in the None branch above")
+        })
     }
 
     /// Get the next unique ID for a symbolic variable.
@@ -479,7 +533,10 @@ impl SymContext {
             z3::ast::Ast::wrap(&ctx, raw_ast)
         };
         // Cache Z3 Bool for fast fork replay
-        self.local_constraints.lock().z3_assertions.push(constraint.clone());
+        self.local_constraints
+            .lock()
+            .z3_assertions
+            .push(constraint.clone());
         self.solver().assert(&constraint);
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
@@ -575,7 +632,10 @@ impl SymContext {
         // record it for Python export).
         if let Some(v) = cond.as_u128() {
             if v != 0 {
-                self.local_constraints.lock().assumed.push((cond.clone(), true));
+                self.local_constraints
+                    .lock()
+                    .assumed
+                    .push((cond.clone(), true));
                 Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
                 return; // Asserting True is a no-op
             }
@@ -601,7 +661,10 @@ impl SymContext {
         // Fast path: concrete false (== 0) means not(False) = True — skip Z3
         if let Some(v) = cond.as_u128() {
             if v == 0 {
-                self.local_constraints.lock().assumed.push((cond.clone(), false));
+                self.local_constraints
+                    .lock()
+                    .assumed
+                    .push((cond.clone(), false));
                 Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
                 return; // Asserting not(False) = True is a no-op
             }
@@ -632,7 +695,10 @@ impl SymContext {
         }
         // Perform actual SAT check
         let solver = self.solver();
-        let result = matches!(timed_check(&solver, CheckSite::Satisfiable), z3::SatResult::Sat);
+        let result = matches!(
+            timed_check(&solver, CheckSite::Satisfiable),
+            z3::SatResult::Sat
+        );
         self.sat_cache.set(Some(result));
         // Populate model_cache if SAT — get_model is essentially free after
         // a successful check, and the model lets check_branch_feasibility
@@ -732,8 +798,10 @@ impl SymContext {
                 // direction (¬cond) with Z3.
                 solver.push();
                 solver.assert(&bool_ast.not());
-                let can_false =
-                    matches!(timed_check(&solver, CheckSite::BranchFalse), z3::SatResult::Sat);
+                let can_false = matches!(
+                    timed_check(&solver, CheckSite::BranchFalse),
+                    z3::SatResult::Sat
+                );
                 solver.pop(1);
                 (true, can_false)
             }
@@ -742,8 +810,10 @@ impl SymContext {
                 // can_be_false=true is proven by the model. Check cond.
                 solver.push();
                 solver.assert(&bool_ast);
-                let can_true =
-                    matches!(timed_check(&solver, CheckSite::BranchTrue), z3::SatResult::Sat);
+                let can_true = matches!(
+                    timed_check(&solver, CheckSite::BranchTrue),
+                    z3::SatResult::Sat
+                );
                 solver.pop(1);
                 (can_true, true)
             }
@@ -752,8 +822,10 @@ impl SymContext {
                 // No cached model: do the original two-check flow.
                 solver.push();
                 solver.assert(&bool_ast);
-                let can_true =
-                    matches!(timed_check(&solver, CheckSite::BranchTrue), z3::SatResult::Sat);
+                let can_true = matches!(
+                    timed_check(&solver, CheckSite::BranchTrue),
+                    z3::SatResult::Sat
+                );
                 solver.pop(1);
 
                 if !can_true {
@@ -762,8 +834,10 @@ impl SymContext {
 
                 solver.push();
                 solver.assert(&bool_ast.not());
-                let can_false =
-                    matches!(timed_check(&solver, CheckSite::BranchFalse), z3::SatResult::Sat);
+                let can_false = matches!(
+                    timed_check(&solver, CheckSite::BranchFalse),
+                    z3::SatResult::Sat
+                );
                 solver.pop(1);
 
                 (can_true, can_false)
@@ -1114,7 +1188,8 @@ impl SymContext {
             solver.push();
             let zero = Self::make_bv_const(0, width);
             solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
-            let has_negative = matches!(timed_check(&solver, CheckSite::MinInit), z3::SatResult::Sat);
+            let has_negative =
+                matches!(timed_check(&solver, CheckSite::MinInit), z3::SatResult::Sat);
             solver.pop(1);
 
             if has_negative {
@@ -1136,7 +1211,10 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be <= mid (signed comparison)
                     solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(timed_check(&solver, CheckSite::MinSearch), z3::SatResult::Sat);
+                    let can_be_le_mid = matches!(
+                        timed_check(&solver, CheckSite::MinSearch),
+                        z3::SatResult::Sat
+                    );
                     solver.pop(1);
 
                     if can_be_le_mid {
@@ -1159,7 +1237,10 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be <= mid (signed comparison)
                     solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(timed_check(&solver, CheckSite::MinSearch), z3::SatResult::Sat);
+                    let can_be_le_mid = matches!(
+                        timed_check(&solver, CheckSite::MinSearch),
+                        z3::SatResult::Sat
+                    );
                     solver.pop(1);
 
                     if can_be_le_mid {
@@ -1178,7 +1259,10 @@ impl SymContext {
                 let mid_ast = Self::make_bv_const(mid, width);
                 // Check if bv can be <= mid (unsigned comparison)
                 solver.assert(&ast.bvule(&mid_ast));
-                let can_be_le_mid = matches!(timed_check(&solver, CheckSite::MinSearch), z3::SatResult::Sat);
+                let can_be_le_mid = matches!(
+                    timed_check(&solver, CheckSite::MinSearch),
+                    z3::SatResult::Sat
+                );
                 solver.pop(1);
 
                 if can_be_le_mid {
@@ -1224,7 +1308,8 @@ impl SymContext {
 
             solver.push();
             solver.assert(&ast.bvsge(&zero)); // bv >= 0 (signed)
-            let has_non_negative = matches!(timed_check(&solver, CheckSite::MaxInit), z3::SatResult::Sat);
+            let has_non_negative =
+                matches!(timed_check(&solver, CheckSite::MaxInit), z3::SatResult::Sat);
             solver.pop(1);
 
             if has_non_negative {
@@ -1242,7 +1327,10 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be >= mid (signed comparison)
                     solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(timed_check(&solver, CheckSite::MaxSearch), z3::SatResult::Sat);
+                    let can_be_ge_mid = matches!(
+                        timed_check(&solver, CheckSite::MaxSearch),
+                        z3::SatResult::Sat
+                    );
                     solver.pop(1);
 
                     if can_be_ge_mid {
@@ -1271,7 +1359,10 @@ impl SymContext {
                     let mid_ast = Self::make_bv_const(mid, width);
                     // Check if bv can be >= mid (signed comparison)
                     solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(timed_check(&solver, CheckSite::MaxSearch), z3::SatResult::Sat);
+                    let can_be_ge_mid = matches!(
+                        timed_check(&solver, CheckSite::MaxSearch),
+                        z3::SatResult::Sat
+                    );
                     solver.pop(1);
 
                     if can_be_ge_mid {
@@ -1299,7 +1390,10 @@ impl SymContext {
                 let mid_ast = Self::make_bv_const(mid, width);
                 // Check if bv can be >= mid (unsigned comparison)
                 solver.assert(&ast.bvuge(&mid_ast));
-                let can_be_ge_mid = matches!(timed_check(&solver, CheckSite::MaxSearch), z3::SatResult::Sat);
+                let can_be_ge_mid = matches!(
+                    timed_check(&solver, CheckSite::MaxSearch),
+                    z3::SatResult::Sat
+                );
                 solver.pop(1);
 
                 if can_be_ge_mid {
@@ -1440,7 +1534,10 @@ impl SymContext {
         let solver = self.solver();
         solver.push();
         solver.assert(&constraint);
-        let result = matches!(timed_check(&solver, CheckSite::Satisfiable), z3::SatResult::Sat);
+        let result = matches!(
+            timed_check(&solver, CheckSite::Satisfiable),
+            z3::SatResult::Sat
+        );
         solver.pop(1);
 
         result
@@ -1482,7 +1579,9 @@ impl SymContext {
             (local.z3_assertions.len(), local.assumed.len())
         };
         self.push_local_cache_lengths.lock().push(local_len);
-        self.push_assumed_local_lengths.lock().push(assumed_local_len);
+        self.push_assumed_local_lengths
+            .lock()
+            .push(assumed_local_len);
         self.push_level.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -1627,7 +1726,11 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn get_all_constraints_str(&self) -> Vec<String> {
         let solver = self.solver();
-        solver.get_assertions().iter().map(|a| format!("{}", a)).collect()
+        solver
+            .get_assertions()
+            .iter()
+            .map(|a| format!("{}", a))
+            .collect()
     }
 
     /// Check the total number of assertions in the Z3 solver.
@@ -1769,13 +1872,19 @@ impl SymContext {
     pub fn assume_true(&self, cond: &RustBV) {
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python; no Z3 to assert against.
-        self.local_constraints.lock().assumed.push((cond.clone(), true));
+        self.local_constraints
+            .lock()
+            .assumed
+            .push((cond.clone(), true));
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn assume_false(&self, cond: &RustBV) {
         debug_assert_eq!(cond.width(), 1);
-        self.local_constraints.lock().assumed.push((cond.clone(), false));
+        self.local_constraints
+            .lock()
+            .assumed
+            .push((cond.clone(), false));
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
@@ -1990,7 +2099,9 @@ impl SymContext {
         // For each input context, guard its constraints with the merge condition:
         //   merge_cond_i => (constraint_1 AND constraint_2 AND ...)
         // Which is equivalent to: NOT(merge_cond_i) OR (constraint_1 AND constraint_2 AND ...)
-        let all_contexts: Vec<&SymContext> = std::iter::once(self).chain(others.iter().copied()).collect();
+        let all_contexts: Vec<&SymContext> = std::iter::once(self)
+            .chain(others.iter().copied())
+            .collect();
         let mut all_z3_conditions = Vec::new();
 
         for (ctx, cond) in all_contexts.iter().zip(merge_conditions.iter()) {
@@ -2010,7 +2121,11 @@ impl SymContext {
             // This means: if this merge path is active, all its constraints hold
             for assertion in shared.iter().chain(ctx_local.z3_assertions.iter()) {
                 let guarded = z3::ast::Bool::or(&[&not_cond, assertion]);
-                merged.local_constraints.lock().z3_assertions.push(guarded.clone());
+                merged
+                    .local_constraints
+                    .lock()
+                    .z3_assertions
+                    .push(guarded.clone());
                 merged.add_constraint(guarded);
             }
 
@@ -2018,14 +2133,20 @@ impl SymContext {
             {
                 let mut merged_local = merged.local_constraints.lock();
                 merged_local.assumed.extend(assumed_shared.iter().cloned());
-                merged_local.assumed.extend(ctx_local.assumed.iter().cloned());
+                merged_local
+                    .assumed
+                    .extend(ctx_local.assumed.iter().cloned());
             }
         }
 
         // Assert that at least one merge condition is true
         let cond_refs: Vec<&z3::ast::Bool> = all_z3_conditions.iter().collect();
         let or_conds = z3::ast::Bool::or(&cond_refs);
-        merged.local_constraints.lock().z3_assertions.push(or_conds.clone());
+        merged
+            .local_constraints
+            .lock()
+            .z3_assertions
+            .push(or_conds.clone());
         merged.add_constraint(or_conds);
 
         merged
@@ -2060,11 +2181,15 @@ impl SymContext {
             let mut merged_local = merged.local_constraints.lock();
             let self_shared = Arc::clone(&self.assumed_constraints_shared.lock());
             merged_local.assumed.extend(self_shared.iter().cloned());
-            merged_local.assumed.extend(self.local_constraints.lock().assumed.iter().cloned());
+            merged_local
+                .assumed
+                .extend(self.local_constraints.lock().assumed.iter().cloned());
             for other in others {
                 let other_shared = Arc::clone(&other.assumed_constraints_shared.lock());
                 merged_local.assumed.extend(other_shared.iter().cloned());
-                merged_local.assumed.extend(other.local_constraints.lock().assumed.iter().cloned());
+                merged_local
+                    .assumed
+                    .extend(other.local_constraints.lock().assumed.iter().cloned());
             }
         }
 
@@ -2128,11 +2253,7 @@ fn freeze_into_shared<T: Clone>(
 #[cfg(feature = "vex-engine-z3")]
 fn parse_wide_hex_low128(s: &str) -> Option<u128> {
     // For values > 128 bits (> 32 hex chars), take low 32 chars
-    let low_hex = if s.len() > 32 {
-        &s[s.len() - 32..]
-    } else {
-        s
-    };
+    let low_hex = if s.len() > 32 { &s[s.len() - 32..] } else { s };
     u128::from_str_radix(low_hex, 16).ok()
 }
 
@@ -2185,11 +2306,14 @@ fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     let mut result = vec![0u8; byte_len];
 
     // Parse bits from right to left
-    let bits: Vec<u8> = s.chars().filter_map(|c| match c {
-        '0' => Some(0),
-        '1' => Some(1),
-        _ => None,
-    }).collect();
+    let bits: Vec<u8> = s
+        .chars()
+        .filter_map(|c| match c {
+            '0' => Some(0),
+            '1' => Some(1),
+            _ => None,
+        })
+        .collect();
 
     // Build bytes from bits (big-endian)
     let bit_offset = byte_len * 8 - bits.len();
@@ -2288,7 +2412,7 @@ mod tests {
 
         // Verify constraint is enforced
         assert!(ctx.solution(&x, 15)); // 15 > 10, should be true
-        assert!(!ctx.solution(&x, 5));  // 5 > 10 is false, should be unsat
+        assert!(!ctx.solution(&x, 5)); // 5 > 10 is false, should be unsat
 
         // Now add constraint: x < 20
         let twenty = RustBV::concrete(20, 32);
@@ -2296,9 +2420,9 @@ mod tests {
         ctx.assume_true(&lt_twenty);
 
         // Verify both constraints are enforced
-        assert!(ctx.solution(&x, 15));  // 10 < 15 < 20
-        assert!(!ctx.solution(&x, 5));   // 5 < 10
-        assert!(!ctx.solution(&x, 25));  // 25 > 20
+        assert!(ctx.solution(&x, 15)); // 10 < 15 < 20
+        assert!(!ctx.solution(&x, 5)); // 5 < 10
+        assert!(!ctx.solution(&x, 25)); // 25 > 20
     }
 
     #[cfg(feature = "vex-engine-z3")]
@@ -2354,6 +2478,9 @@ mod tests {
         let can_be_five = ctx.is_sat();
         ctx.pop();
 
-        assert!(!can_be_five, "x2 should have same constraints as x1 since same name");
+        assert!(
+            !can_be_five,
+            "x2 should have same constraints as x1 since same name"
+        );
     }
 }

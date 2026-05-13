@@ -32,9 +32,9 @@ pub mod procedures;
 #[cfg(feature = "vex-engine")]
 pub mod solver;
 #[cfg(feature = "vex-engine")]
-pub mod state;
-#[cfg(feature = "vex-engine")]
 pub mod stash;
+#[cfg(feature = "vex-engine")]
+pub mod state;
 pub mod symbolic;
 #[cfg(feature = "vex-engine")]
 pub mod syscalls;

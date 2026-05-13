@@ -12,7 +12,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::arch::arch_from_name;
-use crate::callbacks::{BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks};
+use crate::callbacks::{
+    BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks,
+};
 use crate::claripy_bridge::claripy_to_rustbv;
 use crate::concretize::AddressConcretizer;
 use crate::interpreter::{ExecutionResult, VEXInterpreter};
@@ -20,7 +22,7 @@ use crate::interpreter_cb::CallbackInterpreter;
 use crate::memory::{Permission, SymbolicMemory};
 use crate::solver::RustSolverContext;
 use crate::symbolic::{RustBV, SymContext};
-use crate::vex::{deserialize_irsb, Endness, VexArch, IRSB};
+use crate::vex::{Endness, IRSB, VexArch, deserialize_irsb};
 
 /// Execution event returned to Python.
 #[pyclass]
@@ -52,7 +54,10 @@ pub struct ExecutionEvent {
 impl ExecutionEvent {
     fn from_result(result: ExecutionResult) -> Self {
         match result {
-            ExecutionResult::BlockEnd { next_addr, jumpkind } => ExecutionEvent {
+            ExecutionResult::BlockEnd {
+                next_addr,
+                jumpkind,
+            } => ExecutionEvent {
                 event_type: "block_end".to_string(),
                 next_addr: Some(next_addr),
                 jumpkind: Some(format!("{:?}", jumpkind)),
@@ -212,9 +217,8 @@ impl RustVEXEngine {
     #[new]
     #[pyo3(signature = (arch="amd64"))]
     pub fn new(arch: &str) -> PyResult<Self> {
-        let arch_info = arch_from_name(arch).ok_or_else(|| {
-            PyValueError::new_err(format!("unsupported architecture: {}", arch))
-        })?;
+        let arch_info = arch_from_name(arch)
+            .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {}", arch)))?;
 
         let vex_arch = arch_info.vex_arch();
         let state_size = arch_info.state_size();
@@ -281,7 +285,8 @@ impl RustVEXEngine {
     /// * `range_limit` - Optional custom range limit (default: 1024)
     #[pyo3(signature = (use_approximate, range_limit=None))]
     pub fn configure_concretization(&mut self, use_approximate: bool, range_limit: Option<u64>) {
-        self.concretizer_config.configure(use_approximate, range_limit);
+        self.concretizer_config
+            .configure(use_approximate, range_limit);
     }
 
     /// Configure address concretization with full Python strategy configuration.
@@ -404,7 +409,13 @@ impl RustVEXEngine {
     /// - num_args: Number of arguments to extract
     /// - no_return: Whether this procedure never returns (e.g., "exit")
     #[pyo3(signature = (addr, name, num_args=0, no_return=false))]
-    pub fn register_simprocedure(&mut self, addr: u64, name: String, num_args: usize, no_return: bool) {
+    pub fn register_simprocedure(
+        &mut self,
+        addr: u64,
+        name: String,
+        num_args: usize,
+        no_return: bool,
+    ) {
         self.hooks.insert(addr);
         self.simprocedures.insert(addr, (name, num_args, no_return));
         self.hooks_version += 1;
@@ -527,12 +538,14 @@ impl RustVEXEngine {
     /// Returns u128 to handle XMM and other large registers (Python BigInt handles this).
     pub fn get_register(&self, name: &str) -> PyResult<u128> {
         let arch = arch_from_name(&self.arch_name).expect("arch validated at construction");
-        let offset = arch.register_offset(name).ok_or_else(|| {
-            PyValueError::new_err(format!("unknown register: {}", name))
-        })? as usize;
-        let size = arch.register_size(name).ok_or_else(|| {
-            PyValueError::new_err(format!("unknown register size: {}", name))
-        })? as usize;
+        let offset = arch
+            .register_offset(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?
+            as usize;
+        let size = arch
+            .register_size(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register size: {}", name)))?
+            as usize;
 
         if offset + size > self.registers.len() {
             return Err(PyValueError::new_err("register out of bounds"));
@@ -549,12 +562,14 @@ impl RustVEXEngine {
     /// Accepts u128 to handle XMM and other large registers (Python BigInt handles this).
     pub fn set_register(&mut self, name: &str, value: u128) -> PyResult<()> {
         let arch = arch_from_name(&self.arch_name).expect("arch validated at construction");
-        let offset = arch.register_offset(name).ok_or_else(|| {
-            PyValueError::new_err(format!("unknown register: {}", name))
-        })? as usize;
-        let size = arch.register_size(name).ok_or_else(|| {
-            PyValueError::new_err(format!("unknown register size: {}", name))
-        })? as usize;
+        let offset = arch
+            .register_offset(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {}", name)))?
+            as usize;
+        let size = arch
+            .register_size(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown register size: {}", name)))?
+            as usize;
 
         if offset + size > self.registers.len() {
             return Err(PyValueError::new_err("register out of bounds"));
@@ -642,7 +657,9 @@ impl RustVEXEngine {
         if offset + size > self.registers.len() {
             return Err(PyValueError::new_err(format!(
                 "register offset {} + size {} exceeds register file size {}",
-                offset, size, self.registers.len()
+                offset,
+                size,
+                self.registers.len()
             )));
         }
 
@@ -709,12 +726,19 @@ impl RustVEXEngine {
 
     /// Add an IMark statement to the current block.
     #[pyo3(signature = (block_addr, ins_addr, len, delta=0))]
-    pub fn add_imark(&mut self, block_addr: u64, ins_addr: u64, len: u32, delta: u8) -> PyResult<()> {
+    pub fn add_imark(
+        &mut self,
+        block_addr: u64,
+        ins_addr: u64,
+        len: u32,
+        delta: u8,
+    ) -> PyResult<()> {
         use crate::vex::ir::IRStmt;
 
-        let irsb = self.block_cache.get_mut(&block_addr).ok_or_else(|| {
-            PyValueError::new_err(format!("no block at 0x{:x}", block_addr))
-        })?;
+        let irsb = self
+            .block_cache
+            .get_mut(&block_addr)
+            .ok_or_else(|| PyValueError::new_err(format!("no block at 0x{:x}", block_addr)))?;
 
         irsb.statements.push(IRStmt::IMark {
             addr: ins_addr,
@@ -726,12 +750,18 @@ impl RustVEXEngine {
 
     /// Set the default exit for a block.
     #[pyo3(signature = (block_addr, next_addr, jumpkind))]
-    pub fn set_block_exit(&mut self, block_addr: u64, next_addr: u64, jumpkind: &str) -> PyResult<()> {
+    pub fn set_block_exit(
+        &mut self,
+        block_addr: u64,
+        next_addr: u64,
+        jumpkind: &str,
+    ) -> PyResult<()> {
         use crate::vex::ir::{IRConst, IRExpr, JumpKind};
 
-        let irsb = self.block_cache.get_mut(&block_addr).ok_or_else(|| {
-            PyValueError::new_err(format!("no block at 0x{:x}", block_addr))
-        })?;
+        let irsb = self
+            .block_cache
+            .get_mut(&block_addr)
+            .ok_or_else(|| PyValueError::new_err(format!("no block at 0x{:x}", block_addr)))?;
 
         irsb.next = IRExpr::Const(IRConst::U64(next_addr));
         irsb.jumpkind = match jumpkind {
@@ -844,7 +874,10 @@ impl RustVEXEngine {
             log::info!(
                 "Loaded {} binary regions for native lifting ({} total bytes)",
                 self.binary_regions.len(),
-                self.binary_regions.iter().map(|(_, b)| b.len()).sum::<usize>()
+                self.binary_regions
+                    .iter()
+                    .map(|(_, b)| b.len())
+                    .sum::<usize>()
             );
         }
 
@@ -932,11 +965,8 @@ impl RustVEXEngine {
         };
 
         // Create the callback-aware interpreter with config
-        let mut interp = CallbackInterpreter::with_config(
-            self.vex_arch,
-            ctx,
-            self.execution_config.clone(),
-        );
+        let mut interp =
+            CallbackInterpreter::with_config(self.vex_arch, ctx, self.execution_config.clone());
 
         // Enable profiling on interpreter if enabled on engine
         if self.profiling_enabled {
@@ -996,7 +1026,8 @@ impl RustVEXEngine {
         }
 
         // Run the execution loop
-        let (result, blocks_executed, deferred_forks) = interp.run_until_event(py, callbacks, max_blocks);
+        let (result, blocks_executed, deferred_forks) =
+            interp.run_until_event(py, callbacks, max_blocks);
 
         // Sync any pending constraints to Python before returning
         // This ensures Python's solver knows about any concretization decisions Rust made
@@ -1030,7 +1061,12 @@ impl RustVEXEngine {
         }
 
         // Convert to Python event with deferred forks and push level
-        Ok(LoopExecutionEvent::from_run_result_with_forks(result, blocks_executed, deferred_forks, push_level))
+        Ok(LoopExecutionEvent::from_run_result_with_forks(
+            result,
+            blocks_executed,
+            deferred_forks,
+            push_level,
+        ))
     }
 
     /// Run a single block with callbacks and return the event.
@@ -1047,9 +1083,8 @@ impl RustVEXEngine {
     /// The IRSB is deserialized from JSON and executed directly.
     pub fn execute_irsb_json(&mut self, irsb_json: &str) -> PyResult<ExecutionEvent> {
         // Deserialize the IRSB
-        let irsb = deserialize_irsb(irsb_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to deserialize IRSB: {}", e))
-        })?;
+        let irsb = deserialize_irsb(irsb_json)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to deserialize IRSB: {}", e)))?;
 
         // Cache it for potential re-execution
         let addr = irsb.addr;
@@ -1113,7 +1148,10 @@ impl RustVEXEngine {
                 let offset = offset as usize;
                 let size = size as usize;
                 if offset + size <= self.registers.len() {
-                    registers.insert(name.to_string(), self.registers[offset..offset + size].to_vec());
+                    registers.insert(
+                        name.to_string(),
+                        self.registers[offset..offset + size].to_vec(),
+                    );
                 }
             }
         }
@@ -1157,7 +1195,11 @@ impl RustVEXEngine {
     ///     little_endian: If True, use little-endian byte order (default True).
     #[pyo3(signature = (little_endian=true))]
     pub fn create_rust_memory(&mut self, little_endian: bool) -> PyResult<()> {
-        let endness = if little_endian { Endness::Little } else { Endness::Big };
+        let endness = if little_endian {
+            Endness::Little
+        } else {
+            Endness::Big
+        };
         self.symbolic_memory = Some(SymbolicMemory::new(endness));
         Ok(())
     }
@@ -1192,7 +1234,9 @@ impl RustVEXEngine {
             mem.map(addr, size, Permission::from_bits(permissions));
             Ok(())
         } else {
-            Err(PyValueError::new_err("Rust memory not created - call create_rust_memory() first"))
+            Err(PyValueError::new_err(
+                "Rust memory not created - call create_rust_memory() first",
+            ))
         }
     }
 
@@ -1203,12 +1247,19 @@ impl RustVEXEngine {
     ///     data: Initial data bytes.
     ///     permissions: Permission bits (R=4, W=2, X=1).
     #[pyo3(signature = (addr, data, permissions=7))]
-    pub fn map_rust_memory_data(&mut self, addr: u64, data: &[u8], permissions: u8) -> PyResult<()> {
+    pub fn map_rust_memory_data(
+        &mut self,
+        addr: u64,
+        data: &[u8],
+        permissions: u8,
+    ) -> PyResult<()> {
         if let Some(ref mut mem) = self.symbolic_memory {
             mem.map_data(addr, data, Permission::from_bits(permissions));
             Ok(())
         } else {
-            Err(PyValueError::new_err("Rust memory not created - call create_rust_memory() first"))
+            Err(PyValueError::new_err(
+                "Rust memory not created - call create_rust_memory() first",
+            ))
         }
     }
 
@@ -1247,7 +1298,8 @@ impl RustVEXEngine {
 
         if let Some(ref mem) = self.symbolic_memory {
             let ctx = SymContext::new_mock();
-            let bv = mem.load_concrete(addr, size as u32, &ctx)
+            let bv = mem
+                .load_concrete(addr, size as u32, &ctx)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
             // Convert to bytes
@@ -1331,7 +1383,9 @@ impl RustVEXEngine {
             mem.add_lazy_region(start_addr, size);
             Ok(())
         } else {
-            Err(PyValueError::new_err("Rust memory not created - call create_rust_memory() first"))
+            Err(PyValueError::new_err(
+                "Rust memory not created - call create_rust_memory() first",
+            ))
         }
     }
 
@@ -1407,12 +1461,17 @@ impl RustVEXEngine {
                     let page_num = page_addr >> 12;
                     if let Some((page_data, _perms)) = interp.memory.get_page_data(page_num) {
                         // Find the region containing this page and update it
-                        for (region_addr, region_size, _region_perms, region_data) in &mut self.memory_regions {
-                            if page_addr >= *region_addr && page_addr < *region_addr + *region_size {
+                        for (region_addr, region_size, _region_perms, region_data) in
+                            &mut self.memory_regions
+                        {
+                            if page_addr >= *region_addr && page_addr < *region_addr + *region_size
+                            {
                                 let offset = (page_addr - *region_addr) as usize;
-                                let copy_len = std::cmp::min(page_data.len(), region_data.len() - offset);
+                                let copy_len =
+                                    std::cmp::min(page_data.len(), region_data.len() - offset);
                                 if copy_len > 0 && offset < region_data.len() {
-                                    region_data[offset..offset + copy_len].copy_from_slice(&page_data[..copy_len]);
+                                    region_data[offset..offset + copy_len]
+                                        .copy_from_slice(&page_data[..copy_len]);
                                 }
                                 break;
                             }
@@ -1476,10 +1535,17 @@ fn reset_shared_z3_context() -> PyResult<()> {
 struct StderrLogger;
 
 impl log::Log for StderrLogger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool { true }
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            eprintln!("[rust:{}] {}: {}", record.level(), record.target(), record.args());
+            eprintln!(
+                "[rust:{}] {}: {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
         }
     }
     fn flush(&self) {}
@@ -1507,9 +1573,12 @@ fn set_rust_log_level(level: &str) -> PyResult<()> {
         "debug" => log::LevelFilter::Debug,
         "trace" => log::LevelFilter::Trace,
         "off" => log::LevelFilter::Off,
-        _ => return Err(PyValueError::new_err(
-            format!("invalid log level '{}': use error/warn/info/debug/trace/off", level)
-        )),
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "invalid log level '{}': use error/warn/info/debug/trace/off",
+                level
+            )));
+        }
     };
     log::set_max_level(filter);
     Ok(())
@@ -1633,13 +1702,19 @@ mod tests {
             engine.set_register("xmm0", f1_bits).unwrap();
             engine.set_register("xmm1", f2_bits).unwrap();
 
-            println!("Before: xmm0 = 0x{:x}", engine.get_register("xmm0").unwrap());
-            println!("Before: xmm1 = 0x{:x}", engine.get_register("xmm1").unwrap());
+            println!(
+                "Before: xmm0 = 0x{:x}",
+                engine.get_register("xmm0").unwrap()
+            );
+            println!(
+                "Before: xmm1 = 0x{:x}",
+                engine.get_register("xmm1").unwrap()
+            );
             println!("Engine registers size: {}", engine.registers.len());
 
             // Map memory for the instruction
             engine.map_memory(0x1000, 0x1000, 7);
-            engine.map_memory_data(0x1000, &[0xf3, 0x0f, 0x58, 0xc1], 7);  // ADDSS xmm0, xmm1
+            engine.map_memory_data(0x1000, &[0xf3, 0x0f, 0x58, 0xc1], 7); // ADDSS xmm0, xmm1
 
             // Set PC
             engine.pc = 0x1000;
@@ -1670,14 +1745,21 @@ mod tests {
 
             // Execute
             let result = engine.execute_irsb_json(irsb_json).unwrap();
-            println!("Result: event_type={}, error={:?}", result.event_type, result.error);
+            println!(
+                "Result: event_type={}, error={:?}",
+                result.event_type, result.error
+            );
 
             // Check result
             let xmm0_after = engine.get_register("xmm0").unwrap();
             println!("After: xmm0 = 0x{:x}", xmm0_after);
 
             let expected = 3.0f32.to_bits() as u128;
-            assert_eq!(xmm0_after & 0xFFFFFFFF, expected, "ADDSS should produce 3.0f");
+            assert_eq!(
+                xmm0_after & 0xFFFFFFFF,
+                expected,
+                "ADDSS should produce 3.0f"
+            );
         });
     }
 }

@@ -11,9 +11,9 @@
 //! - Returns length + 1 (for the appended newline)
 //! - Falls back to Python if address is symbolic
 
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use super::{extract_concrete_arg, NativeSimProcedure, ProcedureError};
 
 const MAX_PUTS_LEN: usize = 4096;
 
@@ -160,7 +160,9 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
 
-        let result = NativePuts.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = NativePuts
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(6)); // 5 + newline
         assert_eq!(state.stdout_buffer(), b"hello\n");
     }
@@ -170,7 +172,9 @@ mod tests {
         let mut state = RustSimState::new("amd64").unwrap();
         state.map_memory_data(0x1000, b"\x00", Permission::RWX);
 
-        let result = NativePuts.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
+        let result = NativePuts
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(1)); // just newline
         assert_eq!(state.stdout_buffer(), b"\n");
     }
@@ -181,8 +185,12 @@ mod tests {
         state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
         state.map_memory_data(0x2000, b"def\x00", Permission::RWX);
 
-        NativePuts.call(&mut state, &[RustBV::concrete(0x1000, 64)]).unwrap();
-        NativePuts.call(&mut state, &[RustBV::concrete(0x2000, 64)]).unwrap();
+        NativePuts
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap();
+        NativePuts
+            .call(&mut state, &[RustBV::concrete(0x2000, 64)])
+            .unwrap();
         assert_eq!(state.stdout_buffer(), b"abc\ndef\n");
     }
 
@@ -199,7 +207,9 @@ mod tests {
     #[test]
     fn test_putchar_basic() {
         let mut state = RustSimState::new("amd64").unwrap();
-        let result = NativePutchar.call(&mut state, &[RustBV::concrete(b'A' as u128, 32)]).unwrap();
+        let result = NativePutchar
+            .call(&mut state, &[RustBV::concrete(b'A' as u128, 32)])
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(b'A' as u64));
         assert_eq!(state.stdout_buffer(), b"A");
     }
@@ -207,8 +217,12 @@ mod tests {
     #[test]
     fn test_putchar_multiple() {
         let mut state = RustSimState::new("amd64").unwrap();
-        NativePutchar.call(&mut state, &[RustBV::concrete(b'H' as u128, 32)]).unwrap();
-        NativePutchar.call(&mut state, &[RustBV::concrete(b'i' as u128, 32)]).unwrap();
+        NativePutchar
+            .call(&mut state, &[RustBV::concrete(b'H' as u128, 32)])
+            .unwrap();
+        NativePutchar
+            .call(&mut state, &[RustBV::concrete(b'i' as u128, 32)])
+            .unwrap();
         assert_eq!(state.stdout_buffer(), b"Hi");
     }
 
@@ -225,10 +239,12 @@ mod tests {
     #[test]
     fn test_fputc_basic() {
         let mut state = RustSimState::new("amd64").unwrap();
-        let result = NativeFputc.call(
-            &mut state,
-            &[RustBV::concrete(b'X' as u128, 32), RustBV::concrete(0, 64)],
-        ).unwrap();
+        let result = NativeFputc
+            .call(
+                &mut state,
+                &[RustBV::concrete(b'X' as u128, 32), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
         assert_eq!(result.unwrap().as_u64(), Some(b'X' as u64));
         assert_eq!(state.stdout_buffer(), b"X");
     }

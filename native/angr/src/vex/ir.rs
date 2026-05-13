@@ -115,9 +115,11 @@ impl VexArch {
     pub fn endness(&self) -> Endness {
         match self {
             VexArch::X86 | VexArch::AMD64 | VexArch::ARM | VexArch::ARM64 => Endness::Little,
-            VexArch::MIPS32 | VexArch::MIPS64 | VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X => {
-                Endness::Big
-            }
+            VexArch::MIPS32
+            | VexArch::MIPS64
+            | VexArch::PPC32
+            | VexArch::PPC64
+            | VexArch::S390X => Endness::Big,
         }
     }
 }
@@ -483,10 +485,7 @@ impl IRType {
 
     /// Check if this is a float type.
     pub fn is_float(&self) -> bool {
-        matches!(
-            self,
-            IRType::F16 | IRType::F32 | IRType::F64 | IRType::F80
-        )
+        matches!(self, IRType::F16 | IRType::F32 | IRType::F64 | IRType::F80)
     }
 
     /// Check if this is a vector type.
@@ -548,9 +547,9 @@ pub enum IROp {
     // =========================================================================
     // Shifts (parameterized by width)
     // =========================================================================
-    Shl(IRType),  // Logical left shift
-    Shr(IRType),  // Logical right shift
-    Sar(IRType),  // Arithmetic right shift
+    Shl(IRType), // Logical left shift
+    Shr(IRType), // Logical right shift
+    Sar(IRType), // Arithmetic right shift
 
     // =========================================================================
     // Comparisons (return I1)
@@ -566,11 +565,20 @@ pub enum IROp {
     // Conversions
     // =========================================================================
     /// Widen with sign extension.
-    SignExtend { from: IRType, to: IRType },
+    SignExtend {
+        from: IRType,
+        to: IRType,
+    },
     /// Widen with zero extension.
-    ZeroExtend { from: IRType, to: IRType },
+    ZeroExtend {
+        from: IRType,
+        to: IRType,
+    },
     /// Narrow (truncate).
-    Truncate { from: IRType, to: IRType },
+    Truncate {
+        from: IRType,
+        to: IRType,
+    },
 
     // =========================================================================
     // Bit manipulation
@@ -604,13 +612,20 @@ pub enum IROp {
     /// (e.g. 0xFFFFFFFF for F32, 0xFFFFFFFFFFFFFFFF for F64) on true and 0
     /// on false. Upper lanes are passed through from the left operand.
     /// `Un` is the unordered (NaN-detect) compare.
-    FCmpScalarLane { kind: FCmpKind, ty: IRType },
+    FCmpScalarLane {
+        kind: FCmpKind,
+        ty: IRType,
+    },
 
     /// Packed FP compare (Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,64Fx2}).
     /// Each lane independently produces 0 (false) or all-ones (true).
     /// Result width = elem.bits() * count: 32Fx2 -> I64, 32Fx4 / 64Fx2 -> V128.
     /// `Un` is the unordered (NaN-detect) compare.
-    FCmpVecPacked { kind: FCmpKind, elem: IRType, count: u8 },
+    FCmpVecPacked {
+        kind: FCmpKind,
+        elem: IRType,
+        count: u8,
+    },
 
     /// x87 FCOM-style compare (Iop_CmpF32/F64/F128).
     /// Returns I32 encoded as 0x00 = GT, 0x01 = LT, 0x40 = EQ, 0x45 = UN.
@@ -645,19 +660,33 @@ pub enum IROp {
     // These operate on element 0 only, passing through other elements.
     // =========================================================================
     /// Scalar float add in vector (e.g., Add32F0x4 for ADDSS)
-    VFAddS { elem: IRType },
+    VFAddS {
+        elem: IRType,
+    },
     /// Scalar float sub in vector (e.g., Sub32F0x4 for SUBSS)
-    VFSubS { elem: IRType },
+    VFSubS {
+        elem: IRType,
+    },
     /// Scalar float mul in vector (e.g., Mul32F0x4 for MULSS)
-    VFMulS { elem: IRType },
+    VFMulS {
+        elem: IRType,
+    },
     /// Scalar float div in vector (e.g., Div32F0x4 for DIVSS)
-    VFDivS { elem: IRType },
+    VFDivS {
+        elem: IRType,
+    },
     /// Scalar float sqrt in vector (e.g., Sqrt32F0x4 for SQRTSS)
-    VFSqrtS { elem: IRType },
+    VFSqrtS {
+        elem: IRType,
+    },
     /// Scalar float max in vector (e.g., Max32F0x4 for MAXSS)
-    VFMaxS { elem: IRType },
+    VFMaxS {
+        elem: IRType,
+    },
     /// Scalar float min in vector (e.g., Min32F0x4 for MINSS)
-    VFMinS { elem: IRType },
+    VFMinS {
+        elem: IRType,
+    },
     /// Set low 32 bits of V128 (used by SSE scalar ops)
     SetV128lo32,
     /// Set low 64 bits of V128
@@ -667,13 +696,25 @@ pub enum IROp {
     // SIMD / Vector operations (parameterized)
     // =========================================================================
     /// Vector add: (element_type, num_elements)
-    VAdd { elem: IRType, count: u8 },
+    VAdd {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector sub
-    VSub { elem: IRType, count: u8 },
+    VSub {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector mul
-    VMul { elem: IRType, count: u8 },
+    VMul {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector multiply keeping low half (PMULLD)
-    VMulLo { elem: IRType, count: u8 },
+    VMulLo {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector and
     VAnd(IRType), // V128 or V256
     /// Vector or
@@ -683,69 +724,139 @@ pub enum IROp {
     /// Vector not
     VNot(IRType),
     /// Vector shift left (by immediate)
-    VShlN { elem: IRType, count: u8 },
+    VShlN {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector shift right logical
-    VShrN { elem: IRType, count: u8 },
+    VShrN {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector shift right arithmetic
-    VSarN { elem: IRType, count: u8 },
+    VSarN {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector compare equal
-    VCmpEQ { elem: IRType, count: u8 },
+    VCmpEQ {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector compare greater than
-    VCmpGT { elem: IRType, count: u8 },
+    VCmpGT {
+        elem: IRType,
+        count: u8,
+    },
     /// Interleave high
-    VInterleaveLO { elem: IRType },
-    VInterleaveHI { elem: IRType },
+    VInterleaveLO {
+        elem: IRType,
+    },
+    VInterleaveHI {
+        elem: IRType,
+    },
     /// Permute/shuffle
-    VPerm { elem: IRType },
+    VPerm {
+        elem: IRType,
+    },
     /// NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> scalar lane.
     /// Binop; idx is Ity_I8. Result width = elem.bits().
-    VGetElem { elem: IRType, count: u8 },
+    VGetElem {
+        elem: IRType,
+        count: u8,
+    },
     /// NEON lane insert (Iop_SetElem{N}x{M}): (vec, idx, val) -> vec.
     /// Triop in VEX, but not rm-bearing — dispatched through
     /// binop_with_rm by reinterpreting (rm, left, right) as (vec, idx, val).
-    VSetElem { elem: IRType, count: u8 },
+    VSetElem {
+        elem: IRType,
+        count: u8,
+    },
 
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
     /// Packed integer min (PMINSB/PMINSW/PMINSD/PMINUB/PMINUW/PMINUD)
-    VMin { elem: IRType, count: u8, signed: bool },
+    VMin {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
     /// Packed integer max (PMAXSB/PMAXSW/PMAXSD/PMAXUB/PMAXUW/PMAXUD)
-    VMax { elem: IRType, count: u8, signed: bool },
+    VMax {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
     /// Packed integer absolute value (PABSB/PABSW/PABSD/PABSQ)
-    VAbs { elem: IRType, count: u8 },
+    VAbs {
+        elem: IRType,
+        count: u8,
+    },
 
     // =========================================================================
     // Packed FP arithmetic (whole-vector — *not* the scalar-lane VF*S variants)
     // =========================================================================
     /// Packed float add (ADDPS/ADDPD)
-    VFAdd { elem: IRType, count: u8 },
+    VFAdd {
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float sub (SUBPS/SUBPD)
-    VFSub { elem: IRType, count: u8 },
+    VFSub {
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float mul (MULPS/MULPD)
-    VFMul { elem: IRType, count: u8 },
+    VFMul {
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float div (DIVPS/DIVPD)
-    VFDiv { elem: IRType, count: u8 },
+    VFDiv {
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float sqrt (SQRTPS/SQRTPD)
-    VFSqrt { elem: IRType, count: u8 },
+    VFSqrt {
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float abs (Iop_Abs32Fx4/Iop_Abs64Fx2)
-    VFAbs { elem: IRType, count: u8 },
+    VFAbs {
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float min (MINPS/MINPD)
-    VFMin { elem: IRType, count: u8 },
+    VFMin {
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float max (MAXPS/MAXPD)
-    VFMax { elem: IRType, count: u8 },
+    VFMax {
+        elem: IRType,
+        count: u8,
+    },
 
     // =========================================================================
     // Special operations
     // =========================================================================
     /// Reinterpret bits as different type.
-    Reinterpret { from: IRType, to: IRType },
+    Reinterpret {
+        from: IRType,
+        to: IRType,
+    },
 
     /// High half of multiplication result.
-    MulHi { ty: IRType, signed: bool },
+    MulHi {
+        ty: IRType,
+        signed: bool,
+    },
 
     /// Concatenate two values.
-    Concat { ty: IRType },
+    Concat {
+        ty: IRType,
+    },
 
     /// Extract bits.
     Extract {
@@ -872,10 +983,13 @@ impl IROp {
             IROp::FComCC(_) => Some(IRType::I32),
 
             // Scalar-in-vector float ops return V128
-            IROp::VFAddS { elem: _elem } | IROp::VFSubS { elem: _elem } | IROp::VFMulS { elem: _elem } | IROp::VFDivS { elem: _elem }
-            | IROp::VFSqrtS { elem: _elem } | IROp::VFMaxS { elem: _elem } | IROp::VFMinS { elem: _elem } => {
-                Some(IRType::V128)
-            }
+            IROp::VFAddS { elem: _elem }
+            | IROp::VFSubS { elem: _elem }
+            | IROp::VFMulS { elem: _elem }
+            | IROp::VFDivS { elem: _elem }
+            | IROp::VFSqrtS { elem: _elem }
+            | IROp::VFMaxS { elem: _elem }
+            | IROp::VFMinS { elem: _elem } => Some(IRType::V128),
 
             // SetV128lo ops return V128
             IROp::SetV128lo32 | IROp::SetV128lo64 => Some(IRType::V128),
@@ -909,9 +1023,9 @@ impl IROp {
             | IROp::VSarN { .. }
             | IROp::VCmpEQ { .. }
             | IROp::VCmpGT { .. } => Some(IRType::V128),
-            IROp::VInterleaveLO { .. }
-            | IROp::VInterleaveHI { .. }
-            | IROp::VPerm { .. } => Some(IRType::V128),
+            IROp::VInterleaveLO { .. } | IROp::VInterleaveHI { .. } | IROp::VPerm { .. } => {
+                Some(IRType::V128)
+            }
 
             // GetElem returns one lane.
             IROp::VGetElem { elem, .. } => Some(*elem),

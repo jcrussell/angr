@@ -74,9 +74,11 @@ impl ConcretizationResult {
         match self {
             ConcretizationResult::Single(addr) => Some(vec![*addr]),
             ConcretizationResult::Multiple(addrs) => Some(addrs.clone()),
-            ConcretizationResult::Strided { base, stride, count } => {
-                Some((0..*count).map(|i| base + i * stride).collect())
-            }
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => Some((0..*count).map(|i| base + i * stride).collect()),
             _ => None,
         }
     }
@@ -97,7 +99,11 @@ impl ConcretizationResult {
     /// Get strided pattern parameters if this is a Strided result.
     pub fn strided_params(&self) -> Option<(u64, u64, u64)> {
         match self {
-            ConcretizationResult::Strided { base, stride, count } => Some((*base, *stride, *count)),
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => Some((*base, *stride, *count)),
             _ => None,
         }
     }
@@ -145,17 +151,17 @@ pub struct AddressConcretizer {
 impl Default for AddressConcretizer {
     fn default() -> Self {
         AddressConcretizer {
-            read_range_limit: 1024,     // Match Python's default read range
-            write_range_limit: 128,     // Match Python's default write range
+            read_range_limit: 1024, // Match Python's default read range
+            write_range_limit: 128, // Match Python's default write range
             max_solutions: 256,
-            max_stride_count: 16384,    // Max 16K elements in strided access
+            max_stride_count: 16384, // Max 16K elements in strided access
             enable_stride_detection: true,
-            stride_sample_count: 4,     // Sample 4 solutions for stride detection
-            use_approximate: false,     // Default to precise concretization
+            stride_sample_count: 4, // Sample 4 solutions for stride detection
+            use_approximate: false, // Default to precise concretization
             symbolic_write_addresses: false, // Python default
-            read_fallback_any: true,    // Match Python: Any() fallback for reads
-            write_fallback_max: true,   // Match Python: Max() fallback for writes
-            max_range: 1024,            // Legacy, kept in sync with read_range_limit
+            read_fallback_any: true, // Match Python: Any() fallback for reads
+            write_fallback_max: true, // Match Python: Max() fallback for writes
+            max_range: 1024,        // Legacy, kept in sync with read_range_limit
         }
     }
 }
@@ -397,7 +403,11 @@ impl AddressConcretizer {
             Some((min, max)) => (min as u64, max as u64),
             None => {
                 // Range failed but we have solutions from fast enum — use them
-                let mut addrs: Vec<u64> = fast_solutions.iter().take(FAST_ENUM_LIMIT).map(|&v| v as u64).collect();
+                let mut addrs: Vec<u64> = fast_solutions
+                    .iter()
+                    .take(FAST_ENUM_LIMIT)
+                    .map(|&v| v as u64)
+                    .collect();
                 addrs.sort_unstable();
                 return ConcretizationResult::Multiple(addrs);
             }
@@ -662,7 +672,12 @@ mod tests {
         let addrs = vec![0x1000, 0x1004, 0x1008, 0x100c, 0x1010];
         let result = concretizer.detect_stride_from_solutions(&addrs);
         assert!(result.is_some());
-        if let Some(ConcretizationResult::Strided { base, stride, count }) = result {
+        if let Some(ConcretizationResult::Strided {
+            base,
+            stride,
+            count,
+        }) = result
+        {
             assert_eq!(base, 0x1000);
             assert_eq!(stride, 4);
             assert_eq!(count, 5);
@@ -677,9 +692,9 @@ mod tests {
     #[test]
     fn test_default_config() {
         let concretizer = AddressConcretizer::default();
-        assert_eq!(concretizer.read_range_limit, 1024);  // Match Python default
-        assert_eq!(concretizer.write_range_limit, 128);   // Match Python default
-        assert_eq!(concretizer.max_range, 1024);           // Legacy compatibility
+        assert_eq!(concretizer.read_range_limit, 1024); // Match Python default
+        assert_eq!(concretizer.write_range_limit, 128); // Match Python default
+        assert_eq!(concretizer.max_range, 1024); // Legacy compatibility
         assert_eq!(concretizer.max_solutions, 256);
         assert_eq!(concretizer.max_stride_count, 16384);
         assert!(concretizer.enable_stride_detection);
