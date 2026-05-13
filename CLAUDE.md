@@ -1,5 +1,27 @@
 # Claude Code Notes
 
+## Makefile Shortcuts
+
+Common dev workflows are wired up in the repo-root `Makefile`. Run `make help`
+for the full list. Most-used targets:
+
+| Target | What it does |
+|--------|--------------|
+| `make rebuild` | Incremental Rust .so rebuild via pip editable install. |
+| `make rebuild-cargo` | Cargo-direct rebuild (broken-venv fallback). |
+| `make check` | `cargo check --release` — fast type/borrow check. |
+| `make test` (`test-quick`) | Run `tests/engines/test_rust_exploration.py` (~1-2 min). |
+| `make test-full` | Full angr test suite (long). |
+| `make bench-regression` | Fast-tier benchmark regression check. |
+| `make bench-single EXAMPLE=fauxware ARGS="--both"` | Run one bench in a subprocess. |
+| `make profile-bench FILTER=... SECS=... TOOL=...` | Wrap the criterion bench with a profiler. |
+| `make lint` | `pre-commit run --all-files` (ruff, pyupgrade, formatters). |
+| `make fmt` | Apply pre-commit autofixes + `cargo fmt`. |
+
+The Makefile is a thin shell over `tools/rebuild-rust.sh`,
+`tests/benchmarks/run_*.py`, and `profile_rust_bench.sh` — the sections below
+remain the authoritative docs for those scripts.
+
 ## Building the Rust Extension
 
 This project uses **setuptools-rust** (not maturin) to build the Rust native extension.

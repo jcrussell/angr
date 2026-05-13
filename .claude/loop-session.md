@@ -1,52 +1,52 @@
-## Session log: 2026-05-13 — angr-govb + angr-wvxj (auto-memory housekeeping)
+## Session log: 2026-05-13 — angr-4ffe (Add Makefile)
 
-Two related memory-housekeeping tasks closed in the same session.
+### Task
+P2 DX: Add a repo-root Makefile of canonical targets (rebuild, test,
+profile-bench, lint, …) so contributors do not have to remember script
+paths in `tools/` and `tests/benchmarks/`. Cross-reference from CLAUDE.md.
 
-### angr-govb — project_rust_engine.md refresh
-P1 chore. Auto-memory `project_rust_engine.md` was 32 days old and
-claimed "14/14 tests passing" (real count: 389 tests, 22 benchmarks,
-17/22 faster than Python). Rewrote as a thin pointer to CLAUDE.md
-(the live doc). Rationale: snapshots in memory rot; pointers do not.
-Updated MEMORY.md index entry to match.
+### What was done
+- New `Makefile` at the repo root. Targets:
+  - Build:  `rebuild`, `rebuild-clean`, `rebuild-cargo`, `check`, `clean`
+  - Tests:  `test` / `test-quick` (alias), `test-verbose`, `test-full`
+  - Bench:  `bench-regression`, `bench-single EXAMPLE=… ARGS=…`,
+            `profile-bench FILTER=… SECS=… TOOL=…`
+  - Lint:   `lint`, `lint-changed`, `fmt`, `fmt-check`
+  - `make help` auto-generates the menu from `##` comments.
+- `CLAUDE.md` gained a "Makefile Shortcuts" table near the top that
+  forwards to the existing tools/scripts docs (those remain
+  authoritative).
 
-### angr-wvxj — endianness_bug distillation
-P1 chore. Auto-memory `project_endianness_bug.md` documented three
-bugs (wide symbolic import endianness, Rust solver eval fallback,
-pre-pinning overconstrain) that are all FIXED in code. Verified the
-three referenced commits exist (bb1a908dc, 1f823ba68, 2f0e8164f) and
-that `_attach_rust_solver_fallback` is still wired (rust_state_export,
-rust_state_proxy, rust_state_cache).
+### Design choices
+- Thin Makefile — every target shells out to the existing
+  `tools/rebuild-rust.sh`, `tests/benchmarks/run_*.py`, or
+  `profile_rust_bench.sh`. The Makefile is an index, not a build
+  system.
+- PY points at `.venv/bin/python` so `make` works without a manual
+  `source .venv/bin/activate`.
+- Python lint/format routes through `pre-commit` (the canonical tool
+  per `.pre-commit-config.yaml`) rather than installing ruff
+  separately. This matches CI exactly.
+- `fmt-check` only checks cargo fmt (Python is covered by `make lint`).
 
-Replaced with `feedback_constraint_export.md`, framed as a lesson:
-- Rule: don't pre-pin tracked symbols with ast==BVV during export.
-- Why: pre-pinning overconstrains because get_state_memory() concrete
-  values can disagree with the actual model — broke fauxware and
-  flareon2015_5 in the rolled-back attempt.
-- How to apply: ensure `_attach_rust_solver_fallback` is wired on
-  every new export path; Rust eval returns LE bytes (reverse for
-  cast_to=bytes); wide symbolic loads need Iend_BE + Reverse().
+### Validation
+- `make help` — lists all targets cleanly.
+- `make check` — clean (release cargo check, ~7s after warm cache).
+- `make fmt-check` — clean (cargo fmt --check passes).
+- `make rebuild-cargo` — succeeded (pip is broken in this venv, the
+  documented fallback path works).
+- `make test` — 389 passed, 3 pre-existing failures
+  (`test_pipe_native_dispatch_creates_two_fds`,
+   `test_dup2_native_dispatch_redirects_stdin`,
+   `test_dcas_cmpxchg16b_no_match_keeps_memory`). Matches baseline.
+- `make bench-single EXAMPLE=fauxware ARGS="--engine rust"` — ran.
+- `make bench-regression` — ran 12 benches, 2 noise regressions on
+  defcamp_r100 (unrelated to this change).
 
-Deleted the original .md, updated MEMORY.md index, cross-ref in
-project_rust_engine.md.
-
-### Verification
-No code changes. Memory files live outside the repo. `git status`
-clean (only untracked `.venv/`). No build/test required.
-
-### Memories saved this session
-- `invariant-memory-pointer-vs-snapshot` — snapshots in memory rot;
-  prefer pointers to CLAUDE.md for live state.
-- `avoid-prepinning-export-constraints` — the pre-pinning anti-pattern
-  with the rollback history.
+### Memories to save
+- (none — this is plumbing; nothing surprising. The pre-existing
+  `avoid-pip-install-broken-venv` memory already covers the pip
+  failure mode that drove `make rebuild-cargo`.)
 
 ### Prior session
-`angr-w2je` (unsat_core FFI) closed at 190186a32.
-
-### Next ready work
-- `angr-7ylc` (P1, contributor guide: native SimProcedures) — has
-  comment redirecting output to .rst tree.
-- `angr-2bjx` (P1, contributor guide: VEX ops) — also redirected to
-  .rst.
-- `angr-zv0a` (P1, migrate docs/RUST_*.md into Sphinx tree).
-- `angr-qdwt` (P1, pre-PR docs sweep) — runs LAST, blocked on
-  in-flight docs/test work.
+`angr-govb + angr-wvxj` (auto-memory housekeeping) closed at 226590a10.
