@@ -1711,12 +1711,17 @@ class RustExplorationManager(
 
     @staticmethod
     def _state_has_user_symbolic(state) -> bool:
-        """Check if state has user-created symbolic data in memory.
+        """Check if state has user-created symbolic data in memory or registers.
 
-        Detects symbolic argv, symbolic input buffers, etc. by scanning:
+        Detects symbolic argv, symbolic input buffers, ``state.regs.a0 =
+        BVS(...)``-style register mutations, etc. by scanning:
         1. The stack page near SP for BVS variables that aren't unconstrained fill.
         2. All memory pages with symbolic_data for user-created variables
            (e.g., state.memory.store(addr, BVS(...))).
+        3. Architectural registers for user-set symbolic values
+           (e.g., state.regs.a0 = BVS(...)). Without this, the disk init
+           cache silently replaces the user's state with a cached blank_state,
+           losing the user's symbolic register mutations — see angr-g9hy.
         """
         _user_prefixes = ('mem_', 'reg_', 'unconstrained')
         try:
@@ -1750,6 +1755,29 @@ class RustExplorationManager(
         except (AttributeError, KeyError, TypeError):
             # cat-(a) EXPECTED CONTROL FLOW: per-page symbolic-data scan hit
             # missing attribute; conclude no user symbolic data, return False.
+            pass
+        # Check the register file for user-set symbolic values. blank_state's
+        # default symbol-fill is lazy (BVS allocated only on first read), so
+        # uninitialized registers do NOT appear in `symbolic_data`. The
+        # values that DO appear are either initialization writes or user
+        # mutations like `state.regs.a0 = BVS(...)`. A non-default variable
+        # prefix on any of these is treated as user-supplied — the cache
+        # can't round-trip it.
+        try:
+            regs_mem = state.registers
+            for _page_num, page in regs_mem._pages.items():
+                sd = getattr(page, 'symbolic_data', None)
+                if not sd:
+                    continue
+                for _offset, bv in sd.items():
+                    if hasattr(bv, 'variables'):
+                        for name in bv.variables:
+                            if not name.startswith(_user_prefixes):
+                                return True
+        except (AttributeError, KeyError, TypeError):
+            # cat-(a) EXPECTED CONTROL FLOW: registers storage lacks _pages
+            # (non-DefaultMemory plugin?); skip — caller treats False as "no
+            # user symbolic registers detected".
             pass
         return False
 

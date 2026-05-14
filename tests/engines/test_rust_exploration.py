@@ -4428,6 +4428,97 @@ class TestMultiArchSupport:
             f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
         )
 
+    def test_mips32_symbolic_register_survives_disk_init_cache(self, tmp_path):
+        """User-set symbolic registers must survive the disk init cache (angr-g9hy).
+
+        Bug: `_state_has_user_symbolic` only scanned memory, so a user mutation
+        like ``state.regs.a0 = claripy.BVS("a0", 32)`` did not invalidate the
+        cache. The cached blank_state replaced the user's state, dropping the
+        symbolic ``a0`` — Rust saw concrete 0 for every read. The chain
+        ``$t0 = $t0 + $a0`` over many MIPS blocks then collapsed ``$t0`` to
+        concrete 0, the comparator BEQ became concrete-false, and the test
+        binary never reached its FOUND address.
+
+        Reproduces by running the failing-before-fix multi-block accumulator
+        layout: N=30 blocks each doing ``ADDU $t0,$t0,$a0; B +1; NOP`` followed
+        by a comparator ``BEQ $t0, N*5``. Before the fix, FOUND was empty for
+        N>=30 (deterministic).
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        def addiu(rt, rs, imm):
+            return 0x24000000 | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+        def addu(rd, rs, rt):
+            return (rs << 21) | (rt << 16) | (rd << 11) | 0x21
+
+        def beq(rs, rt, off):
+            return 0x10000000 | (rs << 21) | (rt << 16) | (off & 0xFFFF)
+
+        def b_(off):
+            return beq(0, 0, off)
+
+        N = 30
+        code = [addiu(8, 0, 0)]  # init: t0 = 0
+        for _ in range(N):
+            code.append(addu(8, 8, 4))  # addu t0, t0, a0
+            code.append(b_(1))          # b +1 -> skip nop_pad
+            code.append(0)              # nop (delay slot)
+            code.append(0)              # nop_pad (B target)
+        target = N * 5
+        code.append(addiu(9, 0, target))  # addiu t1, zero, N*5
+        code.append(beq(8, 9, 3))         # beq t0, t1, +3 -> FOUND
+        code.append(0)                    # delay
+        code.append(b_(2))                # b +2 -> AVOID
+        code.append(0)                    # delay
+        found_idx = len(code)
+        code.append(0)                    # FOUND
+        avoid_idx = len(code)
+        code.append(0)                    # AVOID
+
+        code_bytes = struct.pack("<" + "I" * len(code), *code)
+        BASE = 0x400000
+        EHDR_SIZE = 52
+        PHDR_SIZE = 32
+        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code_bytes)
+        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
+
+        ehdr = b"\x7fELF" + bytes([1, 1, 1, 0, 0]) + b"\x00" * 7
+        ehdr += struct.pack(
+            "<HHIIIIIHHHHHH",
+            2, 0x08, 1, ENTRY, EHDR_SIZE, 0, 0x50001000,
+            EHDR_SIZE, PHDR_SIZE, 1, 0, 0, 0,
+        )
+        phdr = struct.pack(
+            "<IIIIIIII",
+            1, 0, BASE, BASE, TOTAL, TOTAL, 5, 0x1000,
+        )
+        elf_path = tmp_path / "mips32_accum.elf"
+        elf_path.write_bytes(ehdr + phdr + code_bytes)
+
+        proj = angr.Project(str(elf_path), auto_load_libs=False)
+        assert proj.arch.name == "MIPS32"
+
+        state = proj.factory.blank_state(addr=proj.entry)
+        a0 = claripy.BVS("a0", 32)
+        state.regs.a0 = a0
+
+        mgr = RustExplorationManager(proj, [state])
+        find_addr = ENTRY + 4 * found_idx
+        avoid_addr = ENTRY + 4 * avoid_idx
+        mgr.explore(find=find_addr, avoid=avoid_addr, num_find=1, max_steps=500)
+
+        assert mgr.found, (
+            f"Symbolic accumulator collapsed before reaching find — "
+            f"stashes={mgr.stash_counts()}"
+        )
+        result = mgr.found[0].solver.eval(a0)
+        assert result == 5, (
+            f"Expected a0==5 (so t0 == N*5 satisfies BEQ), got {result}"
+        )
+
     def test_mips64_explore_le_real_elf(self, tmp_path):
         """End-to-end MIPS64 little-endian exploration on a hand-assembled ELF.
 

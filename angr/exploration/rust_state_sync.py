@@ -117,6 +117,12 @@ class RustStateSyncMixin:
             precomputed_regs: Optional dict of {reg_name: concrete_value}.
                 When provided (e.g. from disk cache), skips reading registers
                 from the SimState, saving ~0.5ms of angr register plugin overhead.
+                The disk cache extractor skips symbolic registers, so the
+                caller (RustExplorationManager._compute_disk_init_key /
+                _state_has_user_symbolic) must invalidate the cache key when
+                the state holds any user-set symbolic register — otherwise
+                Rust would see the cached concrete value instead of the
+                user's symbolic. See angr-g9hy.
         """
         arch = angr_state.arch
         reg_names = self._supported_register_names(arch)
