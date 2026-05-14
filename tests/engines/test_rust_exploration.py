@@ -3204,6 +3204,87 @@ class TestExplorationIntegration:
         finally:
             proj.unhook(hook_addr)
 
+    def test_hook_copies_symbolic_memory_preserves_symbolicity(self):
+        """Hook that copies symbolic memory must preserve symbolicity at the dest.
+
+        Regression for angr-ctct (sokohashv2's do_repmovsd pattern). The hook
+        runs ``state.memory.load(src, 32) -> state.memory.store(dst, ...)``,
+        mirroring the manual ``rep movsd`` in solve.py. After resume, the
+        Rust engine must read symbolic bytes from ``dst``, not concrete
+        witnesses. The shellcode's ``mov rax, [rdi]`` is interpreted by
+        Rust's VEX engine, so an concrete-witness load shows up as a
+        non-symbolic ``rax`` that cannot be constrained to alternate values.
+
+        Source bytes are not pre-stored; they're left to angr's
+        ``default_filler_mixin`` so the copy operates on a Concat of small
+        per-byte/per-chunk symbolic fillers — the exact shape sokohashv2's
+        do_repmovsd encounters.
+        """
+        import claripy
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        # 0x1000: nop                (hooked, length=1)
+        # 0x1001: mov rax, [rdi]     ; 48 8b 07 — Rust VEX load
+        # 0x1004: ret                ; c3
+        shellcode = bytes.fromhex("90488b07c3")
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        SRC_ADDR = 0x3000
+        DST_ADDR = 0x2000
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rdi = DST_ADDR
+        state.regs.rsi = SRC_ADDR
+        state.regs.rsp = 0x7FFFFE00
+        state.memory.store(0x7FFFFE00, b"\x00" * 8)
+
+        # Dest starts concrete zero; src bytes are not pre-stored so the
+        # filler creates per-chunk unconstrained symbols at SRC_ADDR.
+        state.memory.store(DST_ADDR, b"\x00" * 32)
+
+        hook_fired = []
+
+        def copy_hook(state):
+            buf = state.memory.load(state.regs.rsi, 32)
+            state.memory.store(state.regs.rdi, buf)
+            hook_fired.append(True)
+
+        proj.hook(0x1000, hook=copy_hook, length=1)
+        try:
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=4)
+        finally:
+            proj.unhook(0x1000)
+
+        assert hook_fired, "hook never fired"
+
+        all_states = (
+            list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
+        )
+        assert all_states, "expected at least one state after run"
+        final = all_states[0]
+
+        # rax should reflect the 8 low bytes of dst (=src after copy),
+        # symbolic and constrainable. If the hook's copy preserved symbolic
+        # identity through to the Rust VEX load, rax can be constrained to
+        # any 64-bit value; if dst was concrete-witnessed during resume,
+        # rax is fixed and one of the alternatives below is unsatisfiable.
+        rax = final.regs.rax
+        assert final.solver.satisfiable(
+            extra_constraints=[rax == 0xDEADBEEFCAFEBABE]
+        ), (
+            "rax not constrainable to 0xDEADBEEFCAFEBABE — Rust load at "
+            "dst returned a concrete witness rather than the hook-copied "
+            "symbolic value (angr-ctct)"
+        )
+        assert final.solver.satisfiable(
+            extra_constraints=[rax == 0x1111222233334444]
+        ), (
+            "rax not constrainable to 0x1111222233334444 — Rust load at "
+            "dst was concretized (angr-ctct)"
+        )
+
     def test_hook_length_advances_pc_userhook(self, fauxware_project):
         """proj.hook(addr, fn, length=N>0) on a UserHook must skip N bytes.
 

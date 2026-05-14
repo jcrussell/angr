@@ -1564,7 +1564,21 @@ class RustStateSyncMixin:
         return False
 
     def _extract_from_ultrapage(self, state, page, page_addr: int, out: dict) -> bool:
-        """UltraPage: changed-byte segments filtered by symbolic_bitmap."""
+        """UltraPage: changed-byte segments filtered by symbolic_bitmap, plus
+        a symbolic_data fallback for filler-materialised values.
+
+        ``all_bytes_changed_in_history`` only sees bytes touched by ``store``.
+        Values materialised via the ``SYMBOL_FILL_UNCONSTRAINED_MEMORY``
+        filler at load time (e.g. ``init.memory.load(addr, 8)`` used to
+        capture a symbolic input variable, as in sokohashv2's solve.py)
+        live in ``symbolic_data`` but never make it into the changed-history
+        list. When the history view is empty but ``symbolic_data`` is
+        non-empty and small, fall back to iterating the SortedDict
+        directly so those user-seeded symbolic values still survive the
+        Python↔Rust round trip (angr-ctct). The size cap keeps the cost
+        bounded: pages with hundreds of filler entries from binary
+        execution would otherwise burn time re-importing each one.
+        """
         if not (hasattr(page, 'all_bytes_changed_in_history') and hasattr(page, 'symbolic_bitmap')):
             return False
         sb = page.symbolic_bitmap
@@ -1575,7 +1589,9 @@ class RustStateSyncMixin:
             return True
         try:
             changed = page.all_bytes_changed_in_history()
+            had_changed = False
             for segment in changed:
+                had_changed = True
                 start = getattr(segment, 'start', None)
                 end = getattr(segment, 'end', None)
                 if start is None or end is None:
@@ -1586,6 +1602,19 @@ class RustStateSyncMixin:
                         val = self._load_symbolic_byte(state, addr)
                         if val is not None:
                             self._record_symbolic(out, addr, val)
+            # angr-ctct: changed-history misses filler-materialised symbols.
+            # Fall back to symbolic_data only when no store-driven changes
+            # were seen (typical of the user-setup page) and the dict is
+            # small enough that walking it can't dominate per-state cost.
+            if not had_changed:
+                sd = getattr(page, 'symbolic_data', None)
+                if sd is not None and 0 < len(sd) <= 64:
+                    for offset in list(sd.keys()):
+                        if offset < len(sb) and sb[offset]:
+                            addr = page_addr + offset
+                            val = self._load_symbolic_byte(state, addr)
+                            if val is not None:
+                                self._record_symbolic(out, addr, val)
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: page-level walk failed.
             pass

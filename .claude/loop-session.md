@@ -1,32 +1,35 @@
-## Session log: 2026-05-14 (cont) — angr-qz16 audit rust_only=True candidates
+## Session log: 2026-05-14 — angr-ctct partial fix (extract_symbolic_pages misses filler-materialised values)
 
-### Status: completed
+### Status: partial fix shipped
 
 ### Outcome
-Property-fuzzer-driven audit identified 6 FAST_SUITE entries that consistently
-pass output comparison (10/10 trials with mixed bfs/dfs strategies). Promoted
-those entries (rust_only=False) so future regression runs without --rust-only
-will reinstate Python output diff.
+Identified the root cause of angr-ctct sokohashv2 bug: `_extract_symbolic_pages`
+walked `all_bytes_changed_in_history()`, which only sees bytes touched by
+`store()`. Values materialised by the `SYMBOL_FILL_UNCONSTRAINED_MEMORY` filler
+at load time (e.g. `init.memory.load(addr, 8)` in solve.py to capture symbolic
+input variables) live in the UltraPage's `symbolic_data` SortedDict but never
+get added to changed-history. As a result, the symbolic input vars at
+0x7fff0080..0x7fff009F were NEVER cached, never imported to Rust, and never
+restored on the Python callback path. The do_repmovsd hook read 32 CONCRETE
+witnesses from [esi] (the source area), stored them concretely to [edi], and
+the hash routine then operated on zeros.
 
-### Promoted (FAST_SUITE, rust_only False)
-- defcamp_r100 (bfs+dfs)
-- ais3_crackme
-- google2016_unbreakable_0
-- strcpy_find
-- flareon2015_2
-- defcon2016quals_baby-re
+### Fix shipped
+In `_extract_from_ultrapage` (angr/exploration/rust_state_sync.py): when
+`all_bytes_changed_in_history` returns no segments but `symbolic_data` is
+small (≤ 64 entries), walk the SortedDict directly. This covers user-seeded
+filler-materialised symbols at init time without burning per-state cost when
+the dict is full of runtime filler entries.
 
-### Kept rust_only=True (consistent output divergence)
-- fauxware (rust outputs empty — Python finds SOSNEAKY)
-- google2016_unbreakable_1 (bimodal)
-- unmapped_analysis (exact-mismatch 3/3)
-- csgames2018 (exact-mismatch 3/3)
-- whitehatvn2015_re400 (exact-mismatch 3/3)
+### Verified
+- All 394 unit tests pass.
+- Benchmark suite has same 10 pre-existing regressions; my fix only adds
+  ~3% to defcamp_r100 (within noise).
+- Sokohashv2 now fails differently: was AssertionError (hash mismatch),
+  now IndexError (no found state) — exposes a downstream bug, not the
+  same root cause.
 
-### MEDIUM_SUITE audit
-None of the 4 non-bimodal candidates pass: flareon2015_5, ekopartyctf2016_rev250,
-csaw_wyvern, codegate_2017-angrybird all show consistent exact-mismatch.
-
-### Pre-state notes
-- Reverted previous session's angr-ctct debug logs (no fix shipped).
-- angr-ctct released back to open.
+### Regression test added
+`test_hook_copies_symbolic_memory_preserves_symbolicity` in
+TestExplorationIntegration — proves that a hook copying filler-symbolic
+memory preserves symbolic identity at the destination.
