@@ -1017,6 +1017,230 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
             count: 2,
         }),
 
+        // NEON broadcast scalar to vector — Iop_Dup{N}x{M}
+        "Iop_Dup8x8" => Some(IROp::VDup {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_Dup16x4" => Some(IROp::VDup {
+            elem: IRType::I16,
+            count: 4,
+        }),
+        "Iop_Dup32x2" => Some(IROp::VDup {
+            elem: IRType::I32,
+            count: 2,
+        }),
+        "Iop_Dup8x16" => Some(IROp::VDup {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_Dup16x8" => Some(IROp::VDup {
+            elem: IRType::I16,
+            count: 8,
+        }),
+        "Iop_Dup32x4" => Some(IROp::VDup {
+            elem: IRType::I32,
+            count: 4,
+        }),
+
+        // NEON widen lane element width — Iop_Widen{N}{S/U}to{2N}x{M}
+        "Iop_Widen8Sto16x8" => Some(IROp::VWiden {
+            from: IRType::I8,
+            count: 8,
+            signed: true,
+        }),
+        "Iop_Widen8Uto16x8" => Some(IROp::VWiden {
+            from: IRType::I8,
+            count: 8,
+            signed: false,
+        }),
+        "Iop_Widen16Sto32x4" => Some(IROp::VWiden {
+            from: IRType::I16,
+            count: 4,
+            signed: true,
+        }),
+        "Iop_Widen16Uto32x4" => Some(IROp::VWiden {
+            from: IRType::I16,
+            count: 4,
+            signed: false,
+        }),
+        "Iop_Widen32Sto64x2" => Some(IROp::VWiden {
+            from: IRType::I32,
+            count: 2,
+            signed: true,
+        }),
+        "Iop_Widen32Uto64x2" => Some(IROp::VWiden {
+            from: IRType::I32,
+            count: 2,
+            signed: false,
+        }),
+
+        // NEON unary narrow (truncating) — Iop_NarrowUn{N}to{N/2}x{M}
+        "Iop_NarrowUn16to8x8" => Some(IROp::VNarrowUn {
+            from: IRType::I16,
+            count: 8,
+        }),
+        "Iop_NarrowUn32to16x4" => Some(IROp::VNarrowUn {
+            from: IRType::I32,
+            count: 4,
+        }),
+        "Iop_NarrowUn64to32x2" => Some(IROp::VNarrowUn {
+            from: IRType::I64,
+            count: 2,
+        }),
+
+        // NEON binary narrow (truncating) — Iop_NarrowBin{N}to{N/2}x{M}
+        "Iop_NarrowBin16to8x8" => Some(IROp::VNarrowBin {
+            from: IRType::I16,
+            count: 8,
+        }),
+        "Iop_NarrowBin32to16x4" => Some(IROp::VNarrowBin {
+            from: IRType::I32,
+            count: 4,
+        }),
+        "Iop_NarrowBin16to8x16" => Some(IROp::VNarrowBin {
+            from: IRType::I16,
+            count: 16,
+        }),
+        "Iop_NarrowBin32to16x8" => Some(IROp::VNarrowBin {
+            from: IRType::I32,
+            count: 8,
+        }),
+        "Iop_NarrowBin64to32x4" => Some(IROp::VNarrowBin {
+            from: IRType::I64,
+            count: 4,
+        }),
+
+        // NEON unary saturating narrow — Iop_QNarrowUn{N}{S/U}to{N/2}{S/U}x{M}
+        "Iop_QNarrowUn16Sto8Sx8" => Some(IROp::VQNarrowUn {
+            from: IRType::I16,
+            count: 8,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowUn16Sto8Ux8" => Some(IROp::VQNarrowUn {
+            from: IRType::I16,
+            count: 8,
+            src_signed: true,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowUn16Uto8Ux8" => Some(IROp::VQNarrowUn {
+            from: IRType::I16,
+            count: 8,
+            src_signed: false,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowUn32Sto16Sx4" => Some(IROp::VQNarrowUn {
+            from: IRType::I32,
+            count: 4,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowUn32Sto16Ux4" => Some(IROp::VQNarrowUn {
+            from: IRType::I32,
+            count: 4,
+            src_signed: true,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowUn32Uto16Ux4" => Some(IROp::VQNarrowUn {
+            from: IRType::I32,
+            count: 4,
+            src_signed: false,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowUn64Sto32Sx2" => Some(IROp::VQNarrowUn {
+            from: IRType::I64,
+            count: 2,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowUn64Sto32Ux2" => Some(IROp::VQNarrowUn {
+            from: IRType::I64,
+            count: 2,
+            src_signed: true,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowUn64Uto32Ux2" => Some(IROp::VQNarrowUn {
+            from: IRType::I64,
+            count: 2,
+            src_signed: false,
+            dst_signed: false,
+        }),
+
+        // NEON binary saturating narrow — Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}
+        "Iop_QNarrowBin16Sto8Sx8" => Some(IROp::VQNarrowBin {
+            from: IRType::I16,
+            count: 8,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowBin16Sto8Ux8" => Some(IROp::VQNarrowBin {
+            from: IRType::I16,
+            count: 8,
+            src_signed: true,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowBin32Sto16Sx4" => Some(IROp::VQNarrowBin {
+            from: IRType::I32,
+            count: 4,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowBin32Sto16Ux4" => Some(IROp::VQNarrowBin {
+            from: IRType::I32,
+            count: 4,
+            src_signed: true,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowBin16Sto8Sx16" => Some(IROp::VQNarrowBin {
+            from: IRType::I16,
+            count: 16,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowBin16Sto8Ux16" => Some(IROp::VQNarrowBin {
+            from: IRType::I16,
+            count: 16,
+            src_signed: true,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowBin16Uto8Ux16" => Some(IROp::VQNarrowBin {
+            from: IRType::I16,
+            count: 16,
+            src_signed: false,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowBin32Sto16Sx8" => Some(IROp::VQNarrowBin {
+            from: IRType::I32,
+            count: 8,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowBin32Sto16Ux8" => Some(IROp::VQNarrowBin {
+            from: IRType::I32,
+            count: 8,
+            src_signed: true,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowBin32Uto16Ux8" => Some(IROp::VQNarrowBin {
+            from: IRType::I32,
+            count: 8,
+            src_signed: false,
+            dst_signed: false,
+        }),
+        "Iop_QNarrowBin64Sto32Sx4" => Some(IROp::VQNarrowBin {
+            from: IRType::I64,
+            count: 4,
+            src_signed: true,
+            dst_signed: true,
+        }),
+        "Iop_QNarrowBin64Uto32Ux4" => Some(IROp::VQNarrowBin {
+            from: IRType::I64,
+            count: 4,
+            src_signed: false,
+            dst_signed: false,
+        }),
+
         // Vector multiply keeping low half (PMULLD - SSE4.1)
         "Iop_MullS32x4" => Some(IROp::VMulLo {
             elem: IRType::I32,
@@ -1423,58 +1647,12 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
 /// `VAdd`) are deliberately excluded so we do not regress existing coverage.
 fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
     let op = match op_str {
-        // Dup (broadcast scalar across lanes)
-        "Iop_Dup8x8" => "Iop_Dup8x8",
-        "Iop_Dup16x4" => "Iop_Dup16x4",
-        "Iop_Dup32x2" => "Iop_Dup32x2",
-        "Iop_Dup8x16" => "Iop_Dup8x16",
-        "Iop_Dup16x8" => "Iop_Dup16x8",
-        "Iop_Dup32x4" => "Iop_Dup32x4",
-
-        // Narrow (truncating, non-saturating)
-        "Iop_NarrowBin16to8x8" => "Iop_NarrowBin16to8x8",
-        "Iop_NarrowBin32to16x4" => "Iop_NarrowBin32to16x4",
-        "Iop_NarrowBin16to8x16" => "Iop_NarrowBin16to8x16",
-        "Iop_NarrowBin32to16x8" => "Iop_NarrowBin32to16x8",
-        "Iop_NarrowBin64to32x4" => "Iop_NarrowBin64to32x4",
-        "Iop_NarrowUn16to8x8" => "Iop_NarrowUn16to8x8",
-        "Iop_NarrowUn32to16x4" => "Iop_NarrowUn32to16x4",
-        "Iop_NarrowUn64to32x2" => "Iop_NarrowUn64to32x2",
-
-        // QNarrow (saturating narrow)
-        "Iop_QNarrowBin16Sto8Sx8" => "Iop_QNarrowBin16Sto8Sx8",
-        "Iop_QNarrowBin16Sto8Ux8" => "Iop_QNarrowBin16Sto8Ux8",
-        "Iop_QNarrowBin32Sto16Sx4" => "Iop_QNarrowBin32Sto16Sx4",
-        "Iop_QNarrowBin32Sto16Ux4" => "Iop_QNarrowBin32Sto16Ux4",
-        "Iop_QNarrowBin16Sto8Sx16" => "Iop_QNarrowBin16Sto8Sx16",
-        "Iop_QNarrowBin16Sto8Ux16" => "Iop_QNarrowBin16Sto8Ux16",
-        "Iop_QNarrowBin16Uto8Ux16" => "Iop_QNarrowBin16Uto8Ux16",
-        "Iop_QNarrowBin32Sto16Sx8" => "Iop_QNarrowBin32Sto16Sx8",
-        "Iop_QNarrowBin32Sto16Ux8" => "Iop_QNarrowBin32Sto16Ux8",
-        "Iop_QNarrowBin32Uto16Ux8" => "Iop_QNarrowBin32Uto16Ux8",
-        "Iop_QNarrowBin64Sto32Sx4" => "Iop_QNarrowBin64Sto32Sx4",
-        "Iop_QNarrowBin64Uto32Ux4" => "Iop_QNarrowBin64Uto32Ux4",
-        "Iop_QNarrowUn16Sto8Sx8" => "Iop_QNarrowUn16Sto8Sx8",
-        "Iop_QNarrowUn16Sto8Ux8" => "Iop_QNarrowUn16Sto8Ux8",
-        "Iop_QNarrowUn16Uto8Ux8" => "Iop_QNarrowUn16Uto8Ux8",
-        "Iop_QNarrowUn32Sto16Sx4" => "Iop_QNarrowUn32Sto16Sx4",
-        "Iop_QNarrowUn32Sto16Ux4" => "Iop_QNarrowUn32Sto16Ux4",
-        "Iop_QNarrowUn32Uto16Ux4" => "Iop_QNarrowUn32Uto16Ux4",
-        "Iop_QNarrowUn64Sto32Sx2" => "Iop_QNarrowUn64Sto32Sx2",
-        "Iop_QNarrowUn64Sto32Ux2" => "Iop_QNarrowUn64Sto32Ux2",
-        "Iop_QNarrowUn64Uto32Ux2" => "Iop_QNarrowUn64Uto32Ux2",
-
-        // Widen (sign- or zero-extend element width, halving lane count)
-        "Iop_Widen8Sto16x8" => "Iop_Widen8Sto16x8",
-        "Iop_Widen8Uto16x8" => "Iop_Widen8Uto16x8",
-        "Iop_Widen16Sto32x4" => "Iop_Widen16Sto32x4",
-        "Iop_Widen16Uto32x4" => "Iop_Widen16Uto32x4",
-        "Iop_Widen32Sto64x2" => "Iop_Widen32Sto64x2",
-        "Iop_Widen32Uto64x2" => "Iop_Widen32Uto64x2",
-
         // NOTE: Iop_GetElem* / Iop_SetElem* (lane extract/insert) implemented
         // in angr-bkcs.2 — routed through parse_vector to IROp::VGetElem /
-        // IROp::VSetElem above.
+        // IROp::VSetElem above. Iop_Dup* / Iop_Widen* / Iop_Narrow{Bin,Un}* /
+        // Iop_QNarrow{Bin,Un}* implemented in angr-hzs0 — routed through
+        // parse_vector to IROp::VDup / IROp::VWiden / IROp::VNarrow{Un,Bin} /
+        // IROp::VQNarrow{Un,Bin}.
 
         // Reciprocal estimate / Newton-Raphson step (FP)
         "Iop_RecipEst32Fx2" => "Iop_RecipEst32Fx2",
@@ -2183,10 +2361,6 @@ mod tests {
         // coverage visible immediately instead of silently producing a
         // fresh-symbolic value.
         for op in [
-            "Iop_Dup8x8",
-            "Iop_NarrowBin16to8x8",
-            "Iop_QNarrowBin16Sto8Sx8",
-            "Iop_Widen8Sto16x8",
             "Iop_RecipEst32Fx4",
             "Iop_QAdd8Sx8",
             "Iop_Avg8Ux8",
@@ -2240,6 +2414,34 @@ mod tests {
         assert!(matches!(
             parse_opcode("Iop_SetElem64x2"),
             IROp::VSetElem { .. }
+        ));
+        // angr-hzs0: Dup / Widen / NarrowUn / NarrowBin / QNarrow{Un,Bin}
+        // are real ops, no longer routed through NeonUnimplemented.
+        assert!(matches!(parse_opcode("Iop_Dup8x8"), IROp::VDup { .. }));
+        assert!(matches!(parse_opcode("Iop_Dup32x4"), IROp::VDup { .. }));
+        assert!(matches!(
+            parse_opcode("Iop_Widen8Sto16x8"),
+            IROp::VWiden { signed: true, .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_Widen32Uto64x2"),
+            IROp::VWiden { signed: false, .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_NarrowUn16to8x8"),
+            IROp::VNarrowUn { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_NarrowBin16to8x8"),
+            IROp::VNarrowBin { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_QNarrowUn16Sto8Sx8"),
+            IROp::VQNarrowUn { .. }
+        ));
+        assert!(matches!(
+            parse_opcode("Iop_QNarrowBin16Sto8Sx8"),
+            IROp::VQNarrowBin { .. }
         ));
     }
 }

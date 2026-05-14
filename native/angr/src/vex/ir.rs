@@ -773,6 +773,59 @@ pub enum IROp {
         count: u8,
     },
 
+    /// NEON broadcast scalar to vector (Iop_Dup{N}x{M}): (scalar) -> vec.
+    /// Unop. Input width = elem.bits(); result width = elem.bits() * count.
+    VDup {
+        elem: IRType,
+        count: u8,
+    },
+
+    /// NEON widen each lane (Iop_Widen{N}{S/U}to{2N}x{M}): (vec) -> vec.
+    /// Unop. Input has `count` lanes of width `from`; result has `count` lanes
+    /// of width `from.bits()*2`. `signed` selects sign- vs zero-extension.
+    VWiden {
+        from: IRType,
+        count: u8,
+        signed: bool,
+    },
+
+    /// NEON unary narrow (Iop_NarrowUn{N}to{N/2}x{M}): (vec) -> vec.
+    /// Unop. Input has `count` lanes of width `from`; result has `count` lanes
+    /// of width `from.bits()/2` (low bits truncated).
+    VNarrowUn {
+        from: IRType,
+        count: u8,
+    },
+
+    /// NEON binary narrow (Iop_NarrowBin{N}to{N/2}x{M}): (lo, hi) -> vec.
+    /// Binop. `count` is the result lane count; each input has `count/2` lanes
+    /// of width `from`. Result has `count` lanes of width `from.bits()/2`.
+    VNarrowBin {
+        from: IRType,
+        count: u8,
+    },
+
+    /// NEON unary saturating narrow (Iop_QNarrowUn{N}{S/U}to{N/2}{S/U}x{M}).
+    /// Unop. Same shape as VNarrowUn but saturates instead of truncating.
+    /// `src_signed` reflects the source interpretation; `dst_signed` the
+    /// saturation range (signed -> [-2^(w-1), 2^(w-1)-1], unsigned -> [0, 2^w-1]).
+    VQNarrowUn {
+        from: IRType,
+        count: u8,
+        src_signed: bool,
+        dst_signed: bool,
+    },
+
+    /// NEON binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}).
+    /// Binop variant of VQNarrowUn; `count` is total result lanes (each input
+    /// contributes `count/2` lanes).
+    VQNarrowBin {
+        from: IRType,
+        count: u8,
+        src_signed: bool,
+        dst_signed: bool,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1033,6 +1086,43 @@ impl IROp {
             // SetElem returns the full vector — width = elem * count.
             IROp::VSetElem { elem, count } => {
                 let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    256 => Some(IRType::V256),
+                    _ => None,
+                }
+            }
+
+            // Dup: total width = elem * count.
+            IROp::VDup { elem, count } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    256 => Some(IRType::V256),
+                    _ => None,
+                }
+            }
+
+            // Widen: each lane doubles in width; total = (from.bits()*2) * count.
+            IROp::VWiden { from, count, .. } => {
+                let total = from.bits() * 2 * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    256 => Some(IRType::V256),
+                    _ => None,
+                }
+            }
+
+            // Narrow (unary or binary, saturating or not): each lane halves;
+            // total = (from.bits()/2) * count.
+            IROp::VNarrowUn { from, count }
+            | IROp::VNarrowBin { from, count }
+            | IROp::VQNarrowUn { from, count, .. }
+            | IROp::VQNarrowBin { from, count, .. } => {
+                let total = (from.bits() / 2) * (*count as u32);
                 match total {
                     64 => Some(IRType::I64),
                     128 => Some(IRType::V128),

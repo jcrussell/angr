@@ -369,6 +369,27 @@ impl VEXOps {
             }
             IROp::VFAbs { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FAbs, ctx),
 
+            // NEON broadcast scalar to vector
+            IROp::VDup { elem, count } => Self::vec_dup(arg, elem, count, ctx),
+
+            // NEON widen each lane (sign- or zero-extend)
+            IROp::VWiden {
+                from,
+                count,
+                signed,
+            } => Self::vec_widen(arg, from, count, signed, ctx),
+
+            // NEON unary narrow (truncating)
+            IROp::VNarrowUn { from, count } => Self::vec_narrow_un(arg, from, count, ctx),
+
+            // NEON unary saturating narrow
+            IROp::VQNarrowUn {
+                from,
+                count,
+                src_signed,
+                dst_signed,
+            } => Self::vec_qnarrow_un(arg, from, count, src_signed, dst_signed, ctx),
+
             // NEON scaffolding: fail loudly rather than silently fall back to
             // a fresh-symbolic result. Implementations land in angr-bkcs.2.
             IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
@@ -507,6 +528,19 @@ impl VEXOps {
 
             // NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> lane.
             IROp::VGetElem { elem, count } => Self::vec_get_elem(left, right, elem, count, ctx),
+
+            // NEON binary narrow (truncating)
+            IROp::VNarrowBin { from, count } => {
+                Self::vec_narrow_bin(left, right, from, count, ctx)
+            }
+
+            // NEON binary saturating narrow
+            IROp::VQNarrowBin {
+                from,
+                count,
+                src_signed,
+                dst_signed,
+            } => Self::vec_qnarrow_bin(left, right, from, count, src_signed, dst_signed, ctx),
 
             // Vector interleave
             IROp::VInterleaveLO { elem } => Self::vec_interleave_lo(left, right, elem, ctx),
@@ -1140,6 +1174,405 @@ impl VEXOps {
             elements.push(chosen);
         }
         Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON broadcast scalar to vector (Iop_Dup{N}x{M}). Replicates `arg` into
+    /// `count` lanes of width `elem.bits()`.
+    fn vec_dup(
+        arg: RustBV,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(arg.width(), elem_width);
+
+        // Concrete fast path.
+        if total_width <= 128 {
+            if let Some(v) = arg.as_u128() {
+                let mask: u128 = if elem_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << elem_width) - 1
+                };
+                let lane = v & mask;
+                let mut result: u128 = 0;
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    result |= lane << lo;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic: concat the same value `count` times.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            elements.push(arg.clone());
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON widen each lane (Iop_Widen{N}{S/U}to{2N}x{M}). Sign- or
+    /// zero-extends each lane from `from.bits()` to `from.bits()*2`.
+    fn vec_widen(
+        arg: RustBV,
+        from: IRType,
+        count: u8,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let from_width = from.bits();
+        let to_width = from_width * 2;
+        let in_total = from_width * count as u32;
+        debug_assert_eq!(arg.width(), in_total);
+
+        // Concrete fast path.
+        if in_total <= 128 && (to_width * count as u32) <= 128 {
+            if let Some(v) = arg.as_u128() {
+                let in_mask: u128 = if from_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << from_width) - 1
+                };
+                let out_mask: u128 = if to_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << to_width) - 1
+                };
+                let sign_bit: u128 = 1u128 << (from_width - 1);
+                let mut result: u128 = 0;
+                for i in 0..count {
+                    let lo = (i as u32) * from_width;
+                    let lane = (v >> lo) & in_mask;
+                    let widened = if signed && (lane & sign_bit != 0) {
+                        // Sign-extend: fill upper (to_width - from_width) bits with 1s.
+                        (lane | !in_mask) & out_mask
+                    } else {
+                        lane
+                    };
+                    let out_lo = (i as u32) * to_width;
+                    result |= widened << out_lo;
+                }
+                return Ok(RustBV::concrete(result, to_width * count as u32));
+            }
+        }
+
+        // Symbolic: extract each lane, extend, concat.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * from_width;
+            let hi = lo + from_width - 1;
+            let lane = arg.extract(hi, lo, ctx);
+            let widened = if signed {
+                lane.sign_extend_into(to_width, ctx)
+            } else {
+                lane.zero_extend_into(to_width, ctx)
+            };
+            elements.push(widened);
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON unary narrow (Iop_NarrowUn{N}to{N/2}x{M}). Truncates each lane
+    /// from `from.bits()` to `from.bits()/2`.
+    fn vec_narrow_un(
+        arg: RustBV,
+        from: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let from_width = from.bits();
+        let to_width = from_width / 2;
+        let in_total = from_width * count as u32;
+        debug_assert_eq!(arg.width(), in_total);
+
+        // Concrete fast path.
+        if in_total <= 128 {
+            if let Some(v) = arg.as_u128() {
+                let to_mask: u128 = (1u128 << to_width) - 1;
+                let mut result: u128 = 0;
+                for i in 0..count {
+                    let lo = (i as u32) * from_width;
+                    let lane = (v >> lo) & to_mask;
+                    let out_lo = (i as u32) * to_width;
+                    result |= lane << out_lo;
+                }
+                return Ok(RustBV::concrete(result, to_width * count as u32));
+            }
+        }
+
+        // Symbolic: extract each low half-lane, concat.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * from_width;
+            let hi = lo + to_width - 1;
+            elements.push(arg.extract(hi, lo, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON binary narrow (Iop_NarrowBin{N}to{N/2}x{M}). Each input has
+    /// `count/2` lanes of width `from`; result has `count` lanes of width
+    /// `from/2` with `left` providing the low half and `right` the high half.
+    fn vec_narrow_bin(
+        left: RustBV,
+        right: RustBV,
+        from: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let from_width = from.bits();
+        let to_width = from_width / 2;
+        let per_input = (count / 2) as u32;
+        let in_total = from_width * per_input;
+        debug_assert_eq!(left.width(), in_total);
+        debug_assert_eq!(right.width(), in_total);
+
+        // Concrete fast path.
+        if in_total <= 128 && (to_width * count as u32) <= 128 {
+            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+                let to_mask: u128 = (1u128 << to_width) - 1;
+                let mut result: u128 = 0;
+                for i in 0..per_input {
+                    let lo = i * from_width;
+                    let lane_l = (l >> lo) & to_mask;
+                    let lane_r = (r >> lo) & to_mask;
+                    let out_lo_l = i * to_width;
+                    let out_lo_r = (per_input + i) * to_width;
+                    result |= lane_l << out_lo_l;
+                    result |= lane_r << out_lo_r;
+                }
+                return Ok(RustBV::concrete(result, to_width * count as u32));
+            }
+        }
+
+        // Symbolic: extract each low half-lane from both operands, concat.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..per_input {
+            let lo = i * from_width;
+            let hi = lo + to_width - 1;
+            elements.push(left.extract(hi, lo, ctx));
+        }
+        for i in 0..per_input {
+            let lo = i * from_width;
+            let hi = lo + to_width - 1;
+            elements.push(right.extract(hi, lo, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Saturate one concrete `from_width`-bit lane into a `to_width`-bit
+    /// result. `src_signed` interprets the input; `dst_signed` selects the
+    /// output range. Returns the truncated unsigned bit pattern.
+    #[inline]
+    fn saturate_lane(
+        lane: u128,
+        from_width: u32,
+        to_width: u32,
+        src_signed: bool,
+        dst_signed: bool,
+    ) -> u128 {
+        let to_mask: u128 = (1u128 << to_width) - 1;
+        // Reinterpret the source lane as i128.
+        let val_i: i128 = if src_signed {
+            Self::sign_extend_low_to_i128(lane, from_width)
+        } else {
+            // unsigned source — masking width-bits into i128 keeps it
+            // non-negative because from_width <= 64 in all NEON QNarrow ops.
+            (lane & if from_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << from_width) - 1
+            }) as i128
+        };
+        let (min_i, max_i): (i128, i128) = if dst_signed {
+            let half = 1i128 << (to_width - 1);
+            (-half, half - 1)
+        } else {
+            (0i128, ((1u128 << to_width) - 1) as i128)
+        };
+        let clamped = val_i.clamp(min_i, max_i);
+        (clamped as u128) & to_mask
+    }
+
+    /// NEON unary saturating narrow (Iop_QNarrowUn{N}{S/U}to{N/2}{S/U}x{M}).
+    fn vec_qnarrow_un(
+        arg: RustBV,
+        from: IRType,
+        count: u8,
+        src_signed: bool,
+        dst_signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let from_width = from.bits();
+        let to_width = from_width / 2;
+        let in_total = from_width * count as u32;
+        debug_assert_eq!(arg.width(), in_total);
+
+        // Concrete fast path.
+        if in_total <= 128 {
+            if let Some(v) = arg.as_u128() {
+                let in_mask: u128 = if from_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << from_width) - 1
+                };
+                let mut result: u128 = 0;
+                for i in 0..count {
+                    let lo = (i as u32) * from_width;
+                    let lane = (v >> lo) & in_mask;
+                    let sat =
+                        Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed);
+                    let out_lo = (i as u32) * to_width;
+                    result |= sat << out_lo;
+                }
+                return Ok(RustBV::concrete(result, to_width * count as u32));
+            }
+        }
+
+        // Symbolic: per-lane ITE clamp.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * from_width;
+            let hi = lo + from_width - 1;
+            let lane = arg.extract(hi, lo, ctx);
+            elements.push(Self::saturate_lane_symbolic(
+                lane, from_width, to_width, src_signed, dst_signed, ctx,
+            ));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}).
+    fn vec_qnarrow_bin(
+        left: RustBV,
+        right: RustBV,
+        from: IRType,
+        count: u8,
+        src_signed: bool,
+        dst_signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let from_width = from.bits();
+        let to_width = from_width / 2;
+        let per_input = (count / 2) as u32;
+        let in_total = from_width * per_input;
+        debug_assert_eq!(left.width(), in_total);
+        debug_assert_eq!(right.width(), in_total);
+
+        // Concrete fast path.
+        if in_total <= 128 && (to_width * count as u32) <= 128 {
+            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+                let in_mask: u128 = if from_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << from_width) - 1
+                };
+                let mut result: u128 = 0;
+                for i in 0..per_input {
+                    let lo = i * from_width;
+                    let lane_l = (l >> lo) & in_mask;
+                    let lane_r = (r >> lo) & in_mask;
+                    let sat_l = Self::saturate_lane(
+                        lane_l, from_width, to_width, src_signed, dst_signed,
+                    );
+                    let sat_r = Self::saturate_lane(
+                        lane_r, from_width, to_width, src_signed, dst_signed,
+                    );
+                    let out_lo_l = i * to_width;
+                    let out_lo_r = (per_input + i) * to_width;
+                    result |= sat_l << out_lo_l;
+                    result |= sat_r << out_lo_r;
+                }
+                return Ok(RustBV::concrete(result, to_width * count as u32));
+            }
+        }
+
+        // Symbolic: per-lane clamp from each operand, concatenate.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..per_input {
+            let lo = i * from_width;
+            let hi = lo + from_width - 1;
+            let lane = left.extract(hi, lo, ctx);
+            elements.push(Self::saturate_lane_symbolic(
+                lane, from_width, to_width, src_signed, dst_signed, ctx,
+            ));
+        }
+        for i in 0..per_input {
+            let lo = i * from_width;
+            let hi = lo + from_width - 1;
+            let lane = right.extract(hi, lo, ctx);
+            elements.push(Self::saturate_lane_symbolic(
+                lane, from_width, to_width, src_signed, dst_signed, ctx,
+            ));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// Symbolic clamp of one `from_width`-bit lane into `to_width` bits.
+    /// Builds an ITE: `if lane > max -> max; else if lane < min -> min; else lane[low to_width]`.
+    fn saturate_lane_symbolic(
+        lane: RustBV,
+        from_width: u32,
+        to_width: u32,
+        src_signed: bool,
+        dst_signed: bool,
+        ctx: &SymContext,
+    ) -> RustBV {
+        debug_assert_eq!(lane.width(), from_width);
+
+        // Build the saturation range constants in `from_width` bits so the
+        // comparison ops have matching widths.
+        let (max_val, min_val): (u128, u128) = if dst_signed {
+            let half = 1u128 << (to_width - 1);
+            // max = 2^(to_width-1) - 1, min = -2^(to_width-1)
+            // In `from_width` bits (two's complement): min = (-half) & mask
+            let from_mask = if from_width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << from_width) - 1
+            };
+            let max = half - 1;
+            let min = (!(half - 1) + 1) & from_mask; // -half in from_width bits
+            (max, min)
+        } else {
+            // Unsigned dst: [0, 2^to_width - 1]
+            let max = (1u128 << to_width) - 1;
+            (max, 0)
+        };
+
+        let max_bv = RustBV::concrete(max_val, from_width);
+        let min_bv = RustBV::concrete(min_val, from_width);
+
+        // gt_max: compare with src_signed semantics
+        let gt_max = if src_signed {
+            lane.sgt(&max_bv, ctx)
+        } else {
+            lane.ugt(&max_bv, ctx)
+        };
+
+        // lt_min: only meaningful when min could be < lane. If src is unsigned
+        // and dst is unsigned, min == 0 so lt_min is always false; skip to
+        // truncate the upper-clamped value.
+        let truncated = lane.extract(to_width - 1, 0, ctx);
+        let max_truncated = max_bv.extract(to_width - 1, 0, ctx);
+
+        let upper_clamped = gt_max.ite(&max_truncated, &truncated, ctx);
+
+        if !src_signed && !dst_signed {
+            return upper_clamped;
+        }
+
+        let lt_min = if src_signed {
+            lane.slt(&min_bv, ctx)
+        } else {
+            lane.ult(&min_bv, ctx)
+        };
+        let min_truncated = min_bv.extract(to_width - 1, 0, ctx);
+
+        lt_min.ite(&min_truncated, &upper_clamped, ctx)
     }
 
     /// Vector multiply keeping low half (PMULLD).
@@ -5233,6 +5666,388 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lane.as_u128().unwrap(), 0x1234_5678);
+    }
+
+    // -------------------------------------------------------------------
+    // NEON Dup / Widen / Narrow / QNarrow tests (angr-hzs0)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_vdup_8x8_concrete() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0xABu128, 8);
+        let res = VEXOps::unop(
+            IROp::VDup {
+                elem: IRType::I8,
+                count: 8,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 64);
+        assert_eq!(res.as_u128().unwrap(), 0xABAB_ABAB_ABAB_ABABu128);
+    }
+
+    #[test]
+    fn test_vdup_16x8_concrete() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0xCAFEu128, 16);
+        let res = VEXOps::unop(
+            IROp::VDup {
+                elem: IRType::I16,
+                count: 8,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 128);
+        let expected: u128 = (0..8).fold(0u128, |acc, i| acc | ((0xCAFE as u128) << (i * 16)));
+        assert_eq!(res.as_u128().unwrap(), expected);
+    }
+
+    #[test]
+    fn test_vdup_32x4_concrete() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0xDEAD_BEEFu128, 32);
+        let res = VEXOps::unop(
+            IROp::VDup {
+                elem: IRType::I32,
+                count: 4,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 128);
+        let expected: u128 =
+            (0..4).fold(0u128, |acc, i| acc | ((0xDEAD_BEEF as u128) << (i * 32)));
+        assert_eq!(res.as_u128().unwrap(), expected);
+    }
+
+    #[test]
+    fn test_vwiden_8sto16x8_signed() {
+        let ctx = SymContext::new_mock();
+        // 8 lanes of I8: lane 0 = 0xFF (= -1 signed), lane 1 = 0x7F (= 127),
+        // lane 2 = 0x80 (= -128), rest = 0.
+        let arg_val: u128 = 0xFFu128 | (0x7Fu128 << 8) | (0x80u128 << 16);
+        let arg = RustBV::concrete(arg_val, 64);
+        let res = VEXOps::unop(
+            IROp::VWiden {
+                from: IRType::I8,
+                count: 8,
+                signed: true,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 128);
+        let v = res.as_u128().unwrap();
+        // Lane 0: 0xFFFF (sign-ext of 0xFF), Lane 1: 0x007F, Lane 2: 0xFF80.
+        assert_eq!(v & 0xFFFF, 0xFFFF, "lane 0");
+        assert_eq!((v >> 16) & 0xFFFF, 0x007F, "lane 1");
+        assert_eq!((v >> 32) & 0xFFFF, 0xFF80, "lane 2");
+        assert_eq!((v >> 48) & 0xFFFF, 0x0000, "lane 3");
+    }
+
+    #[test]
+    fn test_vwiden_8uto16x8_unsigned() {
+        let ctx = SymContext::new_mock();
+        let arg_val: u128 = 0xFFu128 | (0x80u128 << 8);
+        let arg = RustBV::concrete(arg_val, 64);
+        let res = VEXOps::unop(
+            IROp::VWiden {
+                from: IRType::I8,
+                count: 8,
+                signed: false,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        let v = res.as_u128().unwrap();
+        assert_eq!(v & 0xFFFF, 0x00FF, "lane 0 zero-extended");
+        assert_eq!((v >> 16) & 0xFFFF, 0x0080, "lane 1 zero-extended");
+    }
+
+    #[test]
+    fn test_vwiden_32sto64x2_signed() {
+        let ctx = SymContext::new_mock();
+        // Lane 0 = 0x80000000 (= INT_MIN signed), Lane 1 = 0x12345678.
+        let arg_val: u128 = 0x8000_0000u128 | (0x1234_5678u128 << 32);
+        let arg = RustBV::concrete(arg_val, 64);
+        let res = VEXOps::unop(
+            IROp::VWiden {
+                from: IRType::I32,
+                count: 2,
+                signed: true,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 128);
+        let v = res.as_u128().unwrap();
+        let lo = v as u64;
+        let hi = (v >> 64) as u64;
+        assert_eq!(lo, 0xFFFF_FFFF_8000_0000u64, "lane 0 sign-extended");
+        assert_eq!(hi, 0x0000_0000_1234_5678u64, "lane 1 zero-positive");
+    }
+
+    #[test]
+    fn test_vnarrow_un_16to8x8_concrete() {
+        let ctx = SymContext::new_mock();
+        // Input V128 = 8 lanes of I16: 0x1122, 0x3344, 0x5566, 0x7788, 0x99AA,
+        // 0xBBCC, 0xDDEE, 0xFF00.
+        let lanes_in: [u16; 8] = [
+            0x1122, 0x3344, 0x5566, 0x7788, 0x99AA, 0xBBCC, 0xDDEE, 0xFF00,
+        ];
+        let mut v: u128 = 0;
+        for (i, &lane) in lanes_in.iter().enumerate() {
+            v |= (lane as u128) << (i * 16);
+        }
+        let arg = RustBV::concrete(v, 128);
+        let res = VEXOps::unop(
+            IROp::VNarrowUn {
+                from: IRType::I16,
+                count: 8,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 64);
+        let out = res.as_u128().unwrap();
+        // Each output lane = low byte of input lane.
+        for (i, &lane) in lanes_in.iter().enumerate() {
+            let got = (out >> (i * 8)) & 0xFF;
+            assert_eq!(got, (lane & 0xFF) as u128, "out lane {}", i);
+        }
+    }
+
+    #[test]
+    fn test_vnarrow_bin_16to8x16_concrete() {
+        let ctx = SymContext::new_mock();
+        // Each input is V128 with 8 lanes of I16. left lanes -> output lanes 0..8;
+        // right lanes -> output lanes 8..16.
+        let lanes_l: [u16; 8] = [
+            0x0011, 0x0022, 0x0033, 0x0044, 0x0055, 0x0066, 0x0077, 0x0088,
+        ];
+        let lanes_r: [u16; 8] = [
+            0x0099, 0x00AA, 0x00BB, 0x00CC, 0x00DD, 0x00EE, 0x00FF, 0x0001,
+        ];
+        let mut l: u128 = 0;
+        let mut r: u128 = 0;
+        for i in 0..8 {
+            l |= (lanes_l[i] as u128) << (i * 16);
+            r |= (lanes_r[i] as u128) << (i * 16);
+        }
+        let res = VEXOps::binop(
+            IROp::VNarrowBin {
+                from: IRType::I16,
+                count: 16,
+            },
+            RustBV::concrete(l, 128),
+            RustBV::concrete(r, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 128);
+        let out = res.as_u128().unwrap();
+        for i in 0..8 {
+            let got = (out >> (i * 8)) & 0xFF;
+            assert_eq!(got, (lanes_l[i] & 0xFF) as u128, "left lane {}", i);
+        }
+        for i in 0..8 {
+            let got = (out >> ((8 + i) * 8)) & 0xFF;
+            assert_eq!(got, (lanes_r[i] & 0xFF) as u128, "right lane {}", i);
+        }
+    }
+
+    #[test]
+    fn test_vqnarrow_un_16sto8sx8_saturates() {
+        let ctx = SymContext::new_mock();
+        // signed I16 source, signed I8 target. Range [-128, 127].
+        // Lane 0 = 1000 (clamps to 127), lane 1 = -200 (clamps to -128 = 0x80),
+        // lane 2 = 50 (passes through), lane 3 = -50 (passes through).
+        let v: u128 = (1000i16 as u16 as u128)
+            | ((-200i16 as u16 as u128) << 16)
+            | ((50i16 as u16 as u128) << 32)
+            | ((-50i16 as u16 as u128) << 48);
+        let arg = RustBV::concrete(v, 128);
+        let res = VEXOps::unop(
+            IROp::VQNarrowUn {
+                from: IRType::I16,
+                count: 8,
+                src_signed: true,
+                dst_signed: true,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 64);
+        let out = res.as_u128().unwrap();
+        assert_eq!((out & 0xFF) as u8, 127, "lane 0 saturated to 127");
+        assert_eq!(((out >> 8) & 0xFF) as u8, 0x80, "lane 1 saturated to -128");
+        assert_eq!(((out >> 16) & 0xFF) as u8, 50, "lane 2 unchanged");
+        assert_eq!(
+            ((out >> 24) & 0xFF) as u8,
+            (-50i8) as u8,
+            "lane 3 unchanged"
+        );
+    }
+
+    #[test]
+    fn test_vqnarrow_un_16sto8ux8_signed_to_unsigned() {
+        let ctx = SymContext::new_mock();
+        // Signed source -> unsigned dst. Range [0, 255].
+        // -1 (0xFFFF) -> 0; 300 -> 255; 100 -> 100.
+        let v: u128 = (0xFFFFu128) | ((300u128) << 16) | ((100u128) << 32);
+        let arg = RustBV::concrete(v, 128);
+        let res = VEXOps::unop(
+            IROp::VQNarrowUn {
+                from: IRType::I16,
+                count: 8,
+                src_signed: true,
+                dst_signed: false,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        let out = res.as_u128().unwrap();
+        assert_eq!((out & 0xFF) as u8, 0, "negative -> 0");
+        assert_eq!(((out >> 8) & 0xFF) as u8, 255, "300 -> 255");
+        assert_eq!(((out >> 16) & 0xFF) as u8, 100, "passes through");
+    }
+
+    #[test]
+    fn test_vqnarrow_un_16uto8ux8_unsigned() {
+        let ctx = SymContext::new_mock();
+        // Unsigned source -> unsigned dst. Range [0, 255]. 256 saturates to 255.
+        let v: u128 = (256u128) | ((100u128) << 16) | ((0u128) << 32) | ((0xFFFFu128) << 48);
+        let arg = RustBV::concrete(v, 128);
+        let res = VEXOps::unop(
+            IROp::VQNarrowUn {
+                from: IRType::I16,
+                count: 8,
+                src_signed: false,
+                dst_signed: false,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        let out = res.as_u128().unwrap();
+        assert_eq!((out & 0xFF) as u8, 255, "256 -> 255");
+        assert_eq!(((out >> 8) & 0xFF) as u8, 100);
+        assert_eq!(((out >> 16) & 0xFF) as u8, 0);
+        assert_eq!(((out >> 24) & 0xFF) as u8, 255, "0xFFFF -> 255");
+    }
+
+    #[test]
+    fn test_vqnarrow_bin_16sto8sx16_two_inputs() {
+        let ctx = SymContext::new_mock();
+        // 8 lanes per input of signed I16. Left lane 0 = 200 (>127 -> 127),
+        // right lane 7 = -300 (< -128 -> -128).
+        let mut l: u128 = 0;
+        let mut r: u128 = 0;
+        l |= 200u128;
+        l |= (50i16 as u16 as u128) << 16;
+        r |= (5i16 as u16 as u128);
+        r |= ((-300i16) as u16 as u128) << (7 * 16);
+
+        let res = VEXOps::binop(
+            IROp::VQNarrowBin {
+                from: IRType::I16,
+                count: 16,
+                src_signed: true,
+                dst_signed: true,
+            },
+            RustBV::concrete(l, 128),
+            RustBV::concrete(r, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(res.width(), 128);
+        let out = res.as_u128().unwrap();
+        // Left lane 0 -> output byte 0: 127.
+        assert_eq!((out & 0xFF) as u8, 127, "left lane 0 sat to 127");
+        // Left lane 1 -> output byte 1: 50.
+        assert_eq!(((out >> 8) & 0xFF) as u8, 50, "left lane 1 unchanged");
+        // Right lane 0 -> output byte 8: 5.
+        assert_eq!(((out >> 64) & 0xFF) as u8, 5, "right lane 0 unchanged");
+        // Right lane 7 -> output byte 15: -128.
+        assert_eq!(
+            ((out >> (15 * 8)) & 0xFF) as u8,
+            0x80,
+            "right lane 7 sat to -128"
+        );
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vdup_symbolic_arg() {
+        // Symbolic 8-bit value, dup to 8x8. Constrain the output to a known
+        // pattern and check the solver picks the right scalar.
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::symbolic(&ctx, "dup_arg", 8);
+        let res = VEXOps::unop(
+            IROp::VDup {
+                elem: IRType::I8,
+                count: 8,
+            },
+            arg.clone(),
+            &ctx,
+        )
+        .unwrap();
+        let target = RustBV::concrete(0x4242_4242_4242_4242u128, 64);
+        ctx.add_constraint(res.to_z3_ast()._eq(&target.to_z3_ast()));
+        assert!(ctx.is_sat(), "expected SAT for dup to 0x42 broadcast");
+        let model_arg = ctx.eval(&arg).expect("eval(arg) None");
+        assert_eq!(model_arg, 0x42);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vqnarrow_un_symbolic_saturates() {
+        // Symbolic I16 saturating to signed I8. Constrain output lane to 127
+        // and require source > 127 to confirm saturation kicked in.
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::symbolic(&ctx, "qn_arg", 128); // 8 lanes I16
+        let res = VEXOps::unop(
+            IROp::VQNarrowUn {
+                from: IRType::I16,
+                count: 8,
+                src_signed: true,
+                dst_signed: true,
+            },
+            arg.clone(),
+            &ctx,
+        )
+        .unwrap();
+        // Constrain output lane 0 = 127 AND source lane 0 = 200.
+        let out_lane0 = res.extract(7, 0, &ctx);
+        ctx.add_constraint(
+            out_lane0
+                .to_z3_ast()
+                ._eq(&RustBV::concrete(127, 8).to_z3_ast()),
+        );
+        let src_lane0 = arg.extract(15, 0, &ctx);
+        ctx.add_constraint(
+            src_lane0
+                .to_z3_ast()
+                ._eq(&RustBV::concrete(200, 16).to_z3_ast()),
+        );
+        assert!(
+            ctx.is_sat(),
+            "expected SAT: src lane 0 = 200 saturates to 127"
+        );
     }
 
     #[cfg(feature = "vex-engine-z3")]
