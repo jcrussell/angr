@@ -520,6 +520,21 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        // Phase 1.2 (angr-n082): Multi-cell lazy load. When any byte in
+        // [addr, addr+size) carries lazy alternatives, fall through to a
+        // per-byte reconstruction that folds the alternatives into an
+        // ITE chain. Multi supersedes plain Symbolic per
+        // memory `invariant-multi-vs-symbolic-cell-states`, so this
+        // check runs BEFORE the symbolic_objects fast path.
+        if !self.multi_objects.is_empty()
+            && (0..size as u64).any(|i| self.multi_objects.contains_key(&(addr + i)))
+        {
+            let start_page = addr >> 12;
+            let end_page = (addr + size as u64 - 1) >> 12;
+            self.check_perms_range(start_page, end_page, Permission::R)?;
+            return self.assemble_load_with_multi(addr, size, ctx);
+        }
+
         // Check for stored symbolic object first
         if let Some(sym) = self.symbolic_objects.get(&addr) {
             if sym.width() == size * 8 {
@@ -677,6 +692,127 @@ impl SymbolicMemory {
         };
 
         Ok(RustBV::concrete(value, size * 8))
+    }
+
+    /// Per-byte reconstruction for loads that touch at least one Multi cell
+    /// (Phase 1.2 of angr-czph, bead angr-n082). For each byte in
+    /// `[addr, addr + size)`:
+    ///   * Multi byte: right-fold the payload's `(cond, value)` pairs into
+    ///     an ITE chain whose final `else` is the page's concrete byte.
+    ///     Calls `crate::symbolic::record_mem_ite_depth(payload.len())`
+    ///     per memory `invariant-mem-ite-depth-counter`.
+    ///   * Plain Symbolic byte: extract from `symbolic_objects` /
+    ///     `symbolic_spans` mirroring `try_byte_merge_load`.
+    ///   * Concrete byte: read the page byte into an 8-bit `RustBV`.
+    /// The per-byte parts are concatenated endianness-correctly to match
+    /// `try_byte_merge_load`. The caller is responsible for permission
+    /// checks; this helper only handles unmapped pages by returning the
+    /// usual `MemoryError`.
+    pub(super) fn assemble_load_with_multi(
+        &self,
+        addr: u64,
+        size: u32,
+        ctx: &SymContext,
+    ) -> Result<RustBV, MemoryError> {
+        let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
+        for i in 0..size {
+            let byte_addr = addr + i as u64;
+            let page_num = byte_addr >> 12;
+            let offset = (byte_addr & PAGE_MASK) as u16;
+            let page = match self.pages.get(&page_num) {
+                Some(p) => p,
+                None => {
+                    if self.is_in_lazy_region(page_num) {
+                        return Err(MemoryError::UnmappedPageInRegion {
+                            page_addr: page_num << 12,
+                        });
+                    } else {
+                        return Err(MemoryError::Unmapped {
+                            addr: byte_addr,
+                            size: 1,
+                        });
+                    }
+                }
+            };
+
+            let part = if let Some(payload) = self.multi_objects.get(&byte_addr) {
+                // Right-fold so the first alternative ends up at the
+                // outermost ITE: alt[0].cond ? alt[0].value : (alt[1].cond ? ... : default).
+                // The default else is the page's concrete byte — by
+                // invariant exactly one alt's cond is true under any
+                // model, but ITE construction needs a leaf either way.
+                let concrete_byte = page.load_concrete(offset, 1);
+                let default = RustBV::concrete(
+                    concrete_byte.first().copied().unwrap_or(0) as u128,
+                    8,
+                );
+                crate::symbolic::record_mem_ite_depth(payload.len() as u32);
+                let mut acc = default;
+                for alt in payload.alternatives().iter().rev() {
+                    acc = alt.cond.ite(&alt.value, &acc, ctx);
+                }
+                acc
+            } else if page.is_symbolic(offset) {
+                if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
+                    Self::extract_byte_lane(sym, 0, self.endness, ctx).ok_or_else(|| {
+                        MemoryError::SymbolicAddress {
+                            description: "symbolic byte lane out of range".to_string(),
+                        }
+                    })?
+                } else if let Some(&(base_addr, base_width)) =
+                    self.symbolic_spans.get(&byte_addr)
+                {
+                    let sym = self.symbolic_objects.get(&base_addr).ok_or(
+                        MemoryError::SymbolicAddress {
+                            description: "stale symbolic span".to_string(),
+                        },
+                    )?;
+                    if sym.width() != base_width {
+                        return Err(MemoryError::SymbolicAddress {
+                            description: "symbolic span width mismatch".to_string(),
+                        });
+                    }
+                    let off_in_sym = (byte_addr - base_addr) as u32;
+                    Self::extract_byte_lane(sym, off_in_sym, self.endness, ctx).ok_or_else(
+                        || MemoryError::SymbolicAddress {
+                            description: "symbolic span byte offset out of range".to_string(),
+                        },
+                    )?
+                } else {
+                    return Err(MemoryError::SymbolicAddress {
+                        description: "symbolic byte without tracked object".to_string(),
+                    });
+                }
+            } else {
+                let concrete_byte = page.load_concrete(offset, 1);
+                RustBV::concrete(concrete_byte.first().copied().unwrap_or(0) as u128, 8)
+            };
+            byte_parts.push(part);
+        }
+
+        // Concatenate per endianness:
+        //   LE: byte[0] is the LSB → fold from high byte to low byte.
+        //   BE: byte[0] is the MSB → fold from low byte to high byte.
+        // In both folds, the accumulator is the high half of each `concat`.
+        let result = match self.endness {
+            Endness::Little => {
+                let mut iter = byte_parts.into_iter().rev();
+                let mut acc = iter.next().expect("size > 0");
+                for b in iter {
+                    acc = acc.concat(&b, ctx);
+                }
+                acc
+            }
+            Endness::Big => {
+                let mut iter = byte_parts.into_iter();
+                let mut acc = iter.next().expect("size > 0");
+                for b in iter {
+                    acc = acc.concat(&b, ctx);
+                }
+                acc
+            }
+        };
+        Ok(result)
     }
 
     /// Reconstruct a load by per-byte lookup against `symbolic_objects` and
