@@ -3285,6 +3285,68 @@ class TestExplorationIntegration:
             "dst was concretized (angr-ctct)"
         )
 
+    def test_filler_materialised_multibyte_symbolic_preserved(self):
+        """Init-time ``memory.load(addr, N>1)`` must round-trip every byte.
+
+        Regression for angr-fv81 (sokohashv2 hash routine). When solve.py
+        does ``init.memory.load(addr, 8)`` to capture a symbolic input var,
+        ``SYMBOL_FILL_UNCONSTRAINED_MEMORY`` materialises an 8-byte symbol
+        but ``UltraPage.symbolic_data`` stores ONE entry keyed by the
+        region's start offset (the bitmap marks all 8 bytes symbolic, but
+        the dict has only the head). The previous angr-ctct fallback
+        walked dict keys only, so bytes 1..7 silently became concrete
+        zeros on the Rust side — the hash AST collapsed to 4 terms
+        (low-byte-only) instead of the expected 15 (all 16-bit halves).
+
+        This test loads an 8-byte symbol at init, then runs a 1-byte ``mov
+        al, [rdi+5]`` to verify byte offset 5 is still symbolic after the
+        Python↔Rust round trip.
+        """
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        # 0x1000: mov al, [rdi+5]    ; 8a 47 05
+        # 0x1003: ret                ; c3
+        shellcode = bytes.fromhex("8a4705c3")
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        SYM_ADDR = 0x4000
+
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+                         angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS},
+        )
+        state.regs.rdi = SYM_ADDR
+        state.regs.rsp = 0x7FFFFE00
+        state.memory.store(0x7FFFFE00, b"\x00" * 8)
+
+        # User-style symbolic capture: load 8 bytes to materialise a
+        # filler-backed symbol covering [SYM_ADDR, SYM_ADDR+8). NO store
+        # follows — so changed-history is empty and the fallback path
+        # is the only way these bytes make it to Rust.
+        _ = state.memory.load(SYM_ADDR, 8)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=4)
+
+        all_states = list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
+        assert all_states, "expected at least one state after run"
+        final = all_states[0]
+
+        # rax low byte = byte 5 of the symbolic region. If only byte 0
+        # made it across, byte 5 would be concrete zero, and the Rust
+        # VEX load would store a concrete zero into rax's low byte.
+        # solver.satisfiable() ignores extra_constraints on this path,
+        # so check symbolicity directly: byte at SYM_ADDR+5 must still
+        # carry an AST after the Python↔Rust round trip.
+        byte5 = final.memory.load(SYM_ADDR + 5, 1)
+        assert byte5.symbolic, (
+            f"byte 5 of filler-materialised symbol lost symbolicity "
+            f"(got {byte5}) — fallback extracted only the region-head "
+            f"byte (angr-fv81)"
+        )
+
     def test_hook_length_advances_pc_userhook(self, fauxware_project):
         """proj.hook(addr, fn, length=N>0) on a UserHook must skip N bytes.
 

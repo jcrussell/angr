@@ -1606,12 +1606,39 @@ class RustStateSyncMixin:
             # Fall back to symbolic_data only when no store-driven changes
             # were seen (typical of the user-setup page) and the dict is
             # small enough that walking it can't dominate per-state cost.
+            # angr-fv81: walk each entry's full byte extent — symbolic_data
+            # is keyed only by region-start offset, so an 8-byte filler load
+            # produces a single dict entry but marks 8 bitmap bits. The
+            # earlier per-key extraction caught only byte 0 of each region;
+            # bytes 1..N silently became concrete on the Rust side.
+            #
+            # Per-entry extent cap: skip entries spanning > MAX_EXTENT bytes.
+            # SYMBOL_FILL_UNCONSTRAINED_MEMORY can produce single entries
+            # covering whole 4 KB pages (one fill per page-touch); extracting
+            # those byte-by-byte would dominate sync cost on benchmarks that
+            # symbolically index untouched pages (ais3_crackme,
+            # google2016_unbreakable_0). User-seeded symbolic input vars are
+            # almost always <= 64 bytes, so this cap preserves correctness
+            # for the sokohashv2 / similar pattern without paying the
+            # whole-page tax.
+            MAX_EXTENT = 64
             if not had_changed:
                 sd = getattr(page, 'symbolic_data', None)
                 if sd is not None and 0 < len(sd) <= 64:
-                    for offset in list(sd.keys()):
-                        if offset < len(sb) and sb[offset]:
-                            addr = page_addr + offset
+                    keys = list(sd.keys())
+                    sb_len = len(sb)
+                    for i, offset in enumerate(keys):
+                        if offset >= sb_len or not sb[offset]:
+                            continue
+                        next_key = keys[i + 1] if i + 1 < len(keys) else sb_len
+                        end = offset
+                        limit = min(offset + MAX_EXTENT, next_key, sb_len)
+                        while end < limit and sb[end]:
+                            end += 1
+                        if end - offset >= MAX_EXTENT:
+                            continue  # likely a page-fill — skip
+                        for byte_off in range(offset, end):
+                            addr = page_addr + byte_off
                             val = self._load_symbolic_byte(state, addr)
                             if val is not None:
                                 self._record_symbolic(out, addr, val)
