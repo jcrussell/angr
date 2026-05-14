@@ -1606,9 +1606,19 @@ class RustExplorationManager(
         memory model natively supports symbolic addresses via angr's
         SimConcretizationStrategy chain, which is the whole reason the *_full
         callback exists.
+
+        Phase 1.4 (angr-5zw8): if ``addr_ast`` carries a
+        ``MultiwriteAnnotation`` (attached by ``libc/strchr.py``,
+        ``libc/gets.py``, ``libc/fgets.py``), route the store through the
+        Rust Multi-cell lazy path on the current state before falling back
+        to Python's memory model. On success the write lands directly in
+        Rust memory and the Python state is skipped; on failure we fall
+        through to the existing Python path so the write is not lost.
         """
         state = self._get_per_fork_state()
         if state is None or addr_ast is None or data_ast is None:
+            return
+        if self._try_multi_cell_store(addr_ast, data_ast):
             return
         try:
             state.memory.store(addr_ast, data_ast, endness=state.arch.memory_endness,
@@ -1618,6 +1628,51 @@ class RustExplorationManager(
             # cat-(c) WRONG-ANSWER RISK: symbolic-address store failed; Python
             # memory model could not apply the symbolic write. Debug-logs.
             l.debug(f"Symbolic-address store failed: {e}")
+
+    def _try_multi_cell_store(self, addr_ast, data_ast) -> bool:
+        """Phase 1.4 (angr-5zw8): route MultiwriteAnnotation-tagged stores
+        to Rust's ``state_memory_store_symbolic_multi`` instead of Python.
+
+        Returns True iff the store landed in Rust memory. Caller must fall
+        back to the Python store path on False so writes are not lost.
+        """
+        try:
+            has_anno = getattr(addr_ast, "has_annotation_type", None)
+            if has_anno is None:
+                return False
+            from angr.storage.memory_mixins.address_concretization_mixin import (
+                MultiwriteAnnotation,
+            )
+            if not has_anno(MultiwriteAnnotation):
+                return False
+        except (ImportError, AttributeError, Exception) as e:
+            # cat-(a) EXPECTED CONTROL FLOW: annotation introspection failed
+            # (claripy API drift, exotic AST). Fall through to Python path.
+            l.debug(f"MultiwriteAnnotation probe failed: {e}")
+            return False
+
+        sid = self._get_stepping_state_id() if self._get_stepping_state_id else None
+        if sid is None:
+            return False
+        try:
+            ok = self._rust_state_memory_store_symbolic_multi(sid, addr_ast, data_ast)
+        except AttributeError:
+            # cat-(a) EXPECTED CONTROL FLOW: older Rust build without the
+            # Phase 1.4 entry point — keep the Python path.
+            return False
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust side raised; debug-log and
+            # let the Python fallback try.
+            l.debug(f"state_memory_store_symbolic_multi raised: {e}")
+            return False
+        if ok:
+            self._register_handle(id(data_ast), data_ast)
+        return bool(ok)
+
+    def _rust_state_memory_store_symbolic_multi(self, state_id: int, addr_ast, data_ast) -> bool:
+        """Thin Python wrapper around the read-only PyO3 method so tests can
+        monkey-patch the routing without touching the Rust manager."""
+        return self._rust_mgr.state_memory_store_symbolic_multi(state_id, addr_ast, data_ast)
 
     def _cb_memory_load_symbolic_full(self, addr_ast, size: int):
         """Load `size` bytes at a *symbolic* address, returning a claripy AST.

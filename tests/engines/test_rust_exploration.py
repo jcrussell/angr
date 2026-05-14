@@ -5894,6 +5894,165 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected symbolic-address load bug"):
             mgr._cb_memory_load_symbolic_full(addr, 4)
 
+    # Phase 1.4 (angr-5zw8): _cb_memory_store_symbolic_full must route
+    # MultiwriteAnnotation-tagged addresses through the Rust Multi-cell
+    # store path (state_memory_store_symbolic_multi) instead of falling
+    # back to Python's state.memory.store.  These tests pin the routing
+    # contract.  End-to-end correctness of the Rust Multi-cell helpers
+    # themselves is covered by Rust unit tests in
+    # native/angr/src/memory/tests.rs (Phase 1.3 / angr-aija).
+
+    def test_try_multi_cell_store_skips_when_no_annotation(self):
+        """No MultiwriteAnnotation on addr → fall through (return False).
+        This is the common case: every other symbolic-store callback hits
+        this path and the existing Python state.memory.store handles it."""
+        import claripy
+        mgr, _ = self._build_load_store_manager()
+        addr = claripy.BVS("plain_addr", 64)
+        data = claripy.BVV(0xCAFEBABE, 32)
+        assert mgr._try_multi_cell_store(addr, data) is False
+
+    def test_try_multi_cell_store_skips_when_state_id_unknown(self):
+        """MultiwriteAnnotation present but no stepping state id → fall
+        through (return False).  Outside an active step there is no
+        Rust state to apply the Multi-cell store to."""
+        import claripy
+        from angr.storage.memory_mixins.address_concretization_mixin import (
+            MultiwriteAnnotation,
+        )
+        mgr, _ = self._build_load_store_manager()
+        # Force no stepping state id (mirrors the off-path callback case).
+        mgr._get_stepping_state_id = lambda: None
+        addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
+        data = claripy.BVV(0xCAFEBABE, 32)
+        assert mgr._try_multi_cell_store(addr, data) is False
+
+    def test_try_multi_cell_store_routes_to_pyo3_when_annotated(self):
+        """MultiwriteAnnotation present AND a stepping state id is
+        available → call into Rust's state_memory_store_symbolic_multi
+        with the original addr/data ASTs.  Asserts the routing only;
+        the Rust side is unit-tested separately."""
+        import claripy
+        from angr.storage.memory_mixins.address_concretization_mixin import (
+            MultiwriteAnnotation,
+        )
+        mgr, _ = self._build_load_store_manager()
+        captured = []
+
+        def fake_store(state_id, addr_ast, data_ast):
+            captured.append((state_id, addr_ast, data_ast))
+            return True
+
+        mgr._get_stepping_state_id = lambda: 1234
+        mgr._rust_state_memory_store_symbolic_multi = fake_store
+
+        addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
+        data = claripy.BVV(0xCAFEBABE, 32)
+        assert mgr._try_multi_cell_store(addr, data) is True
+        assert len(captured) == 1
+        sid, fwd_addr, fwd_data = captured[0]
+        assert sid == 1234
+        # Identity check: forwarded ASTs are the exact ones we passed in
+        # (the annotation lives on the AST; identity preserves it).
+        assert fwd_addr is addr
+        assert fwd_data is data
+
+    def test_try_multi_cell_store_falls_through_on_pyo3_failure(self):
+        """If state_memory_store_symbolic_multi returns False the caller
+        must fall through to the Python state path so the write is not
+        silently lost.  _try_multi_cell_store returns False in that case."""
+        import claripy
+        from angr.storage.memory_mixins.address_concretization_mixin import (
+            MultiwriteAnnotation,
+        )
+        mgr, _ = self._build_load_store_manager()
+        mgr._get_stepping_state_id = lambda: 1234
+        mgr._rust_state_memory_store_symbolic_multi = (
+            lambda *_args, **_kw: False
+        )
+
+        addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
+        data = claripy.BVV(0xCAFEBABE, 32)
+        assert mgr._try_multi_cell_store(addr, data) is False
+
+    def test_try_multi_cell_store_falls_through_on_pyo3_exception(self):
+        """Errors from the Rust side must be swallowed so the Python
+        fallback can still apply the store."""
+        import claripy
+        from angr.storage.memory_mixins.address_concretization_mixin import (
+            MultiwriteAnnotation,
+        )
+        mgr, _ = self._build_load_store_manager()
+        mgr._get_stepping_state_id = lambda: 1234
+
+        def boom(*_args, **_kw):
+            raise RuntimeError("simulated Rust-side failure")
+
+        mgr._rust_state_memory_store_symbolic_multi = boom
+
+        addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
+        data = claripy.BVV(0xCAFEBABE, 32)
+        assert mgr._try_multi_cell_store(addr, data) is False
+
+    def test_cb_memory_store_symbolic_full_routes_through_multi(self):
+        """Integration: _cb_memory_store_symbolic_full must hand
+        annotated stores to _try_multi_cell_store; on success it must
+        return without invoking state.memory.store.  Pinned via a stub
+        state.memory.store that would otherwise record a call."""
+        import claripy
+        from angr.storage.memory_mixins.address_concretization_mixin import (
+            MultiwriteAnnotation,
+        )
+        mgr, state = self._build_load_store_manager()
+        mgr._set_callback_state(state)
+        mgr._get_stepping_state_id = lambda: 1234
+        mgr._rust_state_memory_store_symbolic_multi = (
+            lambda *_args, **_kw: True
+        )
+
+        store_calls = []
+        original_store = state.memory.store
+        state.memory.store = lambda *a, **kw: store_calls.append((a, kw))
+
+        try:
+            addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
+            data = claripy.BVV(0xCAFEBABE, 32)
+            mgr._cb_memory_store_symbolic_full(addr, data)
+            assert store_calls == [], (
+                "MultiwriteAnnotation-tagged store leaked to Python "
+                "state.memory.store"
+            )
+        finally:
+            state.memory.store = original_store
+
+    def test_cb_memory_store_symbolic_full_falls_back_when_multi_fails(self):
+        """If the Multi-cell PyO3 path returns False, the Python state
+        path must still receive the store so the write is preserved."""
+        import claripy
+        from angr.storage.memory_mixins.address_concretization_mixin import (
+            MultiwriteAnnotation,
+        )
+        mgr, state = self._build_load_store_manager()
+        mgr._set_callback_state(state)
+        mgr._get_stepping_state_id = lambda: 1234
+        mgr._rust_state_memory_store_symbolic_multi = (
+            lambda *_args, **_kw: False
+        )
+
+        store_calls = []
+        original_store = state.memory.store
+        state.memory.store = lambda *a, **kw: store_calls.append((a, kw))
+
+        try:
+            addr = claripy.BVS("sym_addr", 64).annotate(MultiwriteAnnotation())
+            data = claripy.BVV(0xCAFEBABE, 32)
+            mgr._cb_memory_store_symbolic_full(addr, data)
+            assert len(store_calls) == 1, (
+                "Phase 1.4 fallback dropped the store on Multi-cell False"
+            )
+        finally:
+            state.memory.store = original_store
+
     # angr-2q5k: targeted coverage for LoadG with symbolic address.
     # Commit 0c90d4962 added resolve_loadg_load (expressions.rs:546) which
     # routes the three not-Single concretization shapes — Strided / TooLarge /

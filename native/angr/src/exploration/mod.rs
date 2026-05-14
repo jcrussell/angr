@@ -1763,6 +1763,26 @@ impl RustExplorationManager {
         self._get_state_memory(state_id, addr, size)
     }
 
+    /// Phase 1.4 (angr-5zw8): route a symbolic-address store through the
+    /// Multi-cell lazy path on the given state. Used by
+    /// `_cb_memory_store_symbolic_full` when the address AST carries a
+    /// `MultiwriteAnnotation` — the SimProcedures in `libc/strchr.py`,
+    /// `libc/gets.py`, `libc/fgets.py` tag returned addresses with this
+    /// annotation so Range concretization picks up >1 candidate.
+    ///
+    /// Returns `true` on success. Returns `false` if conversion or store
+    /// fails (caller should fall back to the existing Python state path
+    /// to keep progress).
+    pub fn state_memory_store_symbolic_multi<'py>(
+        &mut self,
+        py: Python<'py>,
+        state_id: u64,
+        addr_ast: &Bound<'py, PyAny>,
+        data_ast: &Bound<'py, PyAny>,
+    ) -> PyResult<bool> {
+        self._state_memory_store_symbolic_multi(py, state_id, addr_ast, data_ast)
+    }
+
     /// Check if a state has stdout output (dirty flag check, no allocation).
     pub fn has_state_stdout(&self, state_id: u64) -> bool {
         self._has_state_stdout(state_id)

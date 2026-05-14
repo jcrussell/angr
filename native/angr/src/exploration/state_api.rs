@@ -523,6 +523,61 @@ impl RustExplorationManager {
         })
     }
 
+    /// Phase 1.4 (angr-5zw8): perform a symbolic-address store on `state_id`
+    /// via the lazy Multi-cell path. Mirrors the eager fallback in
+    /// `_cb_memory_store_symbolic_full` but installs Multi alternatives at
+    /// each concretized byte instead of folding eager ITE chains.
+    ///
+    /// Returns `true` if the store landed in Rust memory. Returns `false`
+    /// when conversion fails or the address concretization yields
+    /// TooLarge / Failed — caller should fall back to the Python path so
+    /// the write is not silently lost.
+    pub(crate) fn _state_memory_store_symbolic_multi<'py>(
+        &mut self,
+        py: Python<'py>,
+        state_id: u64,
+        addr_ast: &Bound<'py, PyAny>,
+        data_ast: &Bound<'py, PyAny>,
+    ) -> PyResult<bool> {
+        self.with_state_mut(state_id, |state| {
+            // Scope the immutable solver borrow so the subsequent mutable
+            // memory_store_symbolic_multi call can take its own borrow.
+            let (addr_bv, data_bv) = {
+                let solver_ref = state.solver();
+                let sym_ctx = solver_ref.borrow();
+                let ctx: &SymContext = &*sym_ctx;
+                let addr_bv = match claripy_to_rustbv(py, addr_ast, ctx) {
+                    Ok(bv) => bv,
+                    Err(e) => {
+                        log::debug!(
+                            "state_memory_store_symbolic_multi: addr convert failed: {}",
+                            e
+                        );
+                        return Ok(false);
+                    }
+                };
+                let data_bv = match claripy_to_rustbv(py, data_ast, ctx) {
+                    Ok(bv) => bv,
+                    Err(e) => {
+                        log::debug!(
+                            "state_memory_store_symbolic_multi: data convert failed: {}",
+                            e
+                        );
+                        return Ok(false);
+                    }
+                };
+                (addr_bv, data_bv)
+            };
+            match state.memory_store_symbolic_multi(addr_bv, data_bv) {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    log::debug!("state_memory_store_symbolic_multi: store failed: {:?}", e);
+                    Ok(false)
+                }
+            }
+        })
+    }
+
     // -------------------------------------------------------------------------
     // stdout / stdin / file descriptor inspection
     // -------------------------------------------------------------------------

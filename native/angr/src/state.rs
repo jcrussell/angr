@@ -1376,6 +1376,23 @@ impl RustSimState {
             .map(|_| ())
     }
 
+    /// Store to a symbolic address using the lazy Multi-cell path
+    /// (Phase 1.3/1.4 of angr-czph). Mirrors `memory_store_symbolic` but
+    /// routes Multiple/Strided concretization results to per-byte Multi
+    /// alternatives instead of eager ITE chains. Single addresses still
+    /// short-circuit to the eager concrete store; TooLarge / Failed surface
+    /// the same errors so callers can fall back identically.
+    pub fn memory_store_symbolic_multi(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let ctx = self.solver.borrow();
+        self.memory
+            .store_symbolic_unified_multi(addr, value, &ctx, &self.concretizer)
+            .map(|_| ())
+    }
+
     /// Add a lazy region for on-demand page fetching.
     pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
         self.memory.add_lazy_region(start_addr, size);
