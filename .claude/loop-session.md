@@ -1,53 +1,67 @@
-## Session log: 2026-05-14 (later)
+## Session log: 2026-05-14 (Phase 0 instrumentation)
 
-### Task: angr-pogf — RESEARCH: Design lazy symbolic memory model — CLOSED
+### Task: angr-0nme — Phase 0: mem_ite_depth_max counter — CLOSED
 
-Wrote `docs/advanced-topics/rust_lazy_memory_design.rst` and linked it
-into the toctree. The doc is the design-phase deliverable that
-unblocks the implementation children:
-- angr-czph (lazy LOAD)
-- angr-qh5u (lazy STORE)
+Added two global atomics (`mem_ite_depth_max`, `mem_ite_depth_total`)
+to `native/angr/src/symbolic/context.rs`, plumbed through the existing
+`get_solver_stats()` / `reset_solver_stats()` API. Wired
+`record_mem_ite_depth(depth)` into the three eager symbolic-store
+sites that produce ITE chains:
 
-### Key design decisions captured in the doc
+- `store_strided` (memory/store.rs) — depth = `count`
+- `store_conditional_multiple` (memory/store.rs) — depth = `addrs.len()`
+- `store_symbolic` Multiple branch (memory/store.rs) — depth = `addrs.len()`
 
-1. Recommend **Option A** (per-byte MultiValues port, Python-equivalent)
-   over Option B (Z3 array primitive) and Option C (Python fallback
-   hybrid). Reuses existing balanced ITE builder, concretization
-   strategy chain, and fork/merge plumbing; only the page byte cell
-   representation changes.
+`run_single.py` now prints any non-zero `mem_ite_*` keys under a new
+"symbolic memory ite-depth:" section. Baseline numbers captured:
 
-2. Two-phase plan:
-   - Phase 0: ite_depth_max counter as gate metric
-   - Phase 1 (angr-czph): Multi cell variant + read-time collapse;
-     wire one annotated SimProcedure (strchr) as test driver
-   - Phase 2 (angr-qh5u): make store_symbolic_unified emit Multi
-     cells by default for Multiple/Strided results
-   - Phase 3 (Z3 arrays): only if Phase 2 doesn't close the gap
+| Workload     | mem_ite_depth_max | mem_ite_depth_total |
+|--------------|------------------:|--------------------:|
+| sym-write    | 2                 | 16                  |
+| strcpy_find  | 0                 | 0                   |
+| fauxware     | 0                 | 0                   |
 
-3. Acceptance criteria per phase, with sym-write ≥ 2x current Rust
-   time as the Phase 2 soft blocker.
-
-### Findings worth remembering across sessions
-- Python is NOT actually lazy on address resolution; it uses the
-  same Range→Any/Range→Max strategy chain Rust mirrors. The laziness
-  is at the PAGE level: MultiValues stores a set of alternative
-  values per byte, collapsed to ITE only at LOAD time.
-- PendingWrite is scaffolded but inactive in execution paths (only
-  drained on export). The lazy-load-overlay-fails memory explains
-  why this scaffolding is not the path forward.
-- z3-rs 0.19 (already in Cargo.toml) does expose Array::store/select
-  — no version bump needed for Option B if Phase 3 ever runs.
-- Existing strcpy_find is now 2.3x (was 0.21x) after the CFG fix in
-  angr-3tek; the lazy memory work targets sym-write (6.9x slower)
-  primarily.
+Two new Rust unit tests in memory/tests.rs cover the wiring and the
+helper. Both use delta-based assertions — the atomics are
+process-global and cargo test runs in parallel.
 
 ### Files modified
-- docs/advanced-topics/rust_lazy_memory_design.rst (new, 488 lines)
-- docs/advanced-topics/index.rst (added to toctree)
 
-### Status at session end
-- Doc passes manual heading-length check (Python script confirmed
-  underlines match titles; em-dashes count as 1 char correctly).
-- No sphinx in venv; couldn't render. Manual eyeball of RST cross-
-  references (:doc:`rust_engine`, etc.) matches existing patterns.
-- Nothing else changed; no tests need to run.
+- native/angr/src/symbolic/context.rs (counters + record_mem_ite_depth + reset/get)
+- native/angr/src/symbolic/mod.rs (re-export)
+- native/angr/src/memory/store.rs (3 call sites)
+- native/angr/src/memory/tests.rs (2 new tests)
+- tests/benchmarks/run_single.py (print mem_ite_* keys)
+
+### Validation
+
+- `cargo check --release` clean
+- `cargo test --lib memory::` 36/36 pass
+- `pytest tests/engines/test_rust_exploration.py` 396/396 pass
+- Counters confirmed reachable via Python `_REM.get_solver_stats()`
+
+### Commit
+
+0b959b98c feat(rust-symex): mem_ite_depth_max counter for lazy-memory baseline (angr-0nme)
+
+### What this unblocks
+
+- angr-czph (lazy LOAD, Phase 1) — Multi-cell inserts must also call
+  `record_mem_ite_depth()` so before/after comparison is direct. The
+  bd memory `invariant-mem-ite-depth-counter` captures this contract.
+- angr-qh5u (lazy STORE, Phase 2) — same requirement.
+
+### Findings worth remembering
+
+- Eager ITE chain depths from current sym-write are surprisingly
+  shallow (max 2, total 16) — the workload's slowdown vs Python is
+  likely driven more by sheer NUMBER of stores than per-chain depth.
+  Phase 1 may need an additional metric (e.g. count of Multi
+  insertions, or per-cell average) before claiming improvement.
+- `strcpy_find` triggers zero eager multi-stores under Rust — its
+  2.3× speedup is already captured by other paths.
+- Venv's pip is currently broken (`ImportError: RequirementInformation
+  from pip._vendor.resolvelib.structs` — pip 24.0 bytecode cache
+  mismatch). Use `tools/rebuild-rust.sh --cargo-only` to rebuild the
+  .so directly. CLAUDE.md's "venv-rebuild-cargo-direct-copy" warned
+  about this exact path.
