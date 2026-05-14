@@ -736,22 +736,17 @@ impl SymbolicMemory {
             };
 
             let part = if let Some(payload) = self.multi_objects.get(&byte_addr) {
-                // Right-fold so the first alternative ends up at the
-                // outermost ITE: alt[0].cond ? alt[0].value : (alt[1].cond ? ... : default).
-                // The default else is the page's concrete byte — by
-                // invariant exactly one alt's cond is true under any
-                // model, but ITE construction needs a leaf either way.
-                let concrete_byte = page.load_concrete(offset, 1);
-                let default = RustBV::concrete(
-                    concrete_byte.first().copied().unwrap_or(0) as u128,
-                    8,
-                );
+                // Phase 3 (angr-j0n4): MultiPayload::collapse memoizes the
+                // right-folded ITE keyed on the page's concrete default byte.
+                // Cache hits skip the alt-by-alt Z3 ITE build, eliminating
+                // the per-load cost that gated Phase 2.
+                let concrete_byte = page
+                    .load_concrete(offset, 1)
+                    .first()
+                    .copied()
+                    .unwrap_or(0);
                 crate::symbolic::record_mem_ite_depth(payload.len() as u32);
-                let mut acc = default;
-                for alt in payload.alternatives().iter().rev() {
-                    acc = alt.cond.ite(&alt.value, &acc, ctx);
-                }
-                acc
+                payload.collapse(concrete_byte, ctx)
             } else if page.is_symbolic(offset) {
                 if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
                     Self::extract_byte_lane(sym, 0, self.endness, ctx).ok_or_else(|| {

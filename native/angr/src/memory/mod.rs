@@ -127,13 +127,17 @@ pub struct SymbolicMemory {
     enforce_permissions: bool,
     /// Phase 2 (angr-qh5u): route Multiple / Strided symbolic-address stores
     /// through the Multi-cell lazy path instead of building eager ITE chains.
-    /// Default off — the load-time collapse cost regresses sym-write 4×
-    /// (1.8s vs 0.42s baseline, measured 2026-05-14) and likely other
-    /// read-heavy symbolic-memory workloads. Kept as an opt-in switch
-    /// per the design doc soft-blocker rule (see
-    /// `docs/advanced-topics/rust_lazy_memory_design.rst` Phase 2). Phase 3
-    /// follow-up will investigate per-load caching of the collapsed BV
-    /// before flipping the default.
+    /// Default off — even after the Phase 3 (angr-j0n4) per-load collapse
+    /// cache landed, gate-on still regresses sym-write ~10% (1.72s vs 1.57s
+    /// gate-off baseline, measured 2026-05-14). The collapse cache itself
+    /// works (1.76s → 1.72s on gate-on after caching), but the residual
+    /// overhead is per-byte assembly in `assemble_load_with_multi` and
+    /// downstream state-export of per-byte symbolic_objects entries — not
+    /// load-time ITE rebuild. Flipping the default requires further work
+    /// (wider-load collapse cache and/or skipping byte-by-byte iteration
+    /// when a load is fully covered by a single Multi block). Kept as an
+    /// opt-in switch per the design doc soft-blocker rule (see
+    /// `docs/advanced-topics/rust_lazy_memory_design.rst` Phase 2).
     use_multi_cell_stores: bool,
 }
 

@@ -2088,3 +2088,129 @@ fn test_phase2_fork_independence_via_safe_install() {
     assert_eq!(parent_a.len(), 1, "parent must keep its single alternative");
     assert_eq!(child_a.len(), 2, "child accumulates appended alternative");
 }
+
+// ============================================================================
+// Phase 3 (angr-j0n4): per-load Multi-cell collapse cache
+// ============================================================================
+
+/// After a single load of a Multi byte, the payload's collapse cache must
+/// be populated. A second load returns the cached BV unchanged.
+#[test]
+fn test_phase3_collapse_cache_hit_after_load() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p3_hit_addr".to_string(), 64);
+    let value = RustBV::concrete(0x77, 8);
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+        .unwrap();
+
+    // Before any load, the cache is empty.
+    let payload = mem.get_multi_alternatives(0x1000).unwrap();
+    assert!(!payload.has_cached_collapse(), "cache must start empty");
+
+    // First load populates the cache.
+    let first = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    let payload = mem.get_multi_alternatives(0x1000).unwrap();
+    assert!(payload.has_cached_collapse(), "first load must cache");
+
+    // Second load returns the same BV (we can't compare Z3 AST identity
+    // directly, but the model-eval result must match).
+    let second = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    assert_eq!(probe.eval(&first), Some(0x77));
+    assert_eq!(probe.eval(&second), Some(0x77));
+}
+
+/// Appending an alternative via `MultiPayload::push` must invalidate the
+/// collapse cache so the next load rebuilds the ITE.
+#[test]
+fn test_phase3_collapse_cache_invalidated_on_push() {
+    let ctx = SymContext::new_mock();
+    let mut payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
+        RustBV::concrete(1, 1),
+        RustBV::concrete(0xAA, 8),
+    )]);
+    let _ = payload.collapse(0, &ctx);
+    assert!(payload.has_cached_collapse(), "collapse must populate cache");
+
+    payload.push(MultiAlternative::new(
+        RustBV::concrete(0, 1),
+        RustBV::concrete(0xBB, 8),
+    ));
+    assert!(
+        !payload.has_cached_collapse(),
+        "push must invalidate cached collapse"
+    );
+}
+
+/// `MultiPayload::collapse` must rebuild when the page's concrete default
+/// byte changes between loads. Otherwise a concrete overwrite of the cell's
+/// page byte (which does not currently clear the Multi marker) would serve
+/// a stale ITE.
+#[test]
+fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
+    let ctx = SymContext::new_mock();
+    let payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
+        RustBV::symbolic(&ctx, "p3_default_change_cond".to_string(), 1),
+        RustBV::concrete(0xAA, 8),
+    )]);
+
+    let collapsed_0 = payload.collapse(0x00, &ctx);
+    assert!(payload.has_cached_collapse());
+    let collapsed_again = payload.collapse(0x00, &ctx);
+    assert_eq!(
+        ctx.eval(&collapsed_0),
+        ctx.eval(&collapsed_again),
+        "cache hit must return equivalent BV"
+    );
+
+    // A different default byte must produce a different ELSE leaf.
+    let collapsed_ff = payload.collapse(0xFF, &ctx);
+    // Force the cond=false branch so the ELSE leaf is observable.
+    let probe = ctx.fork();
+    probe.assume_true(
+        &payload.alternatives()[0]
+            .cond
+            .eq(&RustBV::concrete(0, 1), &probe),
+    );
+    assert_eq!(
+        probe.eval(&collapsed_ff),
+        Some(0xFF),
+        "rebuilt collapse must reflect the new default byte"
+    );
+}
+
+/// After fork, the parent and child each hold an independent payload. If
+/// the parent's cache is populated, the child's clone carries it forward
+/// (the BV is referentially safe — Z3 ASTs are immutable / refcounted).
+#[test]
+fn test_phase3_collapse_cache_clones_with_payload() {
+    let ctx = SymContext::new_mock();
+    let mut payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
+        RustBV::concrete(1, 1),
+        RustBV::concrete(0x33, 8),
+    )]);
+    let _ = payload.collapse(0x00, &ctx);
+    assert!(payload.has_cached_collapse());
+
+    let cloned = payload.clone();
+    assert!(
+        cloned.has_cached_collapse(),
+        "clone must carry the cached collapse forward"
+    );
+
+    // Independence: pushing on the clone does not touch the original.
+    let mut cloned_mut = cloned;
+    cloned_mut.push(MultiAlternative::new(
+        RustBV::concrete(0, 1),
+        RustBV::concrete(0x44, 8),
+    ));
+    assert!(!cloned_mut.has_cached_collapse());
+    assert!(
+        payload.has_cached_collapse(),
+        "original payload must retain its cache after clone mutation"
+    );
+}

@@ -15,8 +15,10 @@
 //! `memory/load.rs` (Phase 1.2, bead angr-n082); store helpers that emit
 //! Multi cells live in `memory/store.rs` (Phase 1.3, bead angr-aija).
 
+use std::cell::RefCell;
+
 use super::{MemoryPage, PAGE_MASK, Permission, SymbolicMemory};
-use crate::symbolic::{RustBV, record_mem_ite_depth};
+use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
 
 /// One alternative inside a `MultiPayload`. `cond` is a boolean BV (width 1)
 /// that selects this alternative; `value` is the byte stored when `cond`
@@ -43,6 +45,18 @@ impl MultiAlternative {
     }
 }
 
+/// Memoized result of collapsing a `MultiPayload` to a single BV. The
+/// collapse is keyed on the page's concrete byte at the time of computation
+/// because that byte is the final `else` leaf of the right-fold ITE chain.
+/// If a later concrete store mutates the underlying page byte without
+/// clearing the Multi marker, the cache must be rebuilt — that is what the
+/// `default_byte` field detects.
+#[derive(Debug, Clone)]
+struct CachedCollapse {
+    default_byte: u8,
+    bv: RustBV,
+}
+
 /// A set of alternatives for a single byte cell.
 ///
 /// # Invariants (caller-enforced)
@@ -62,16 +76,40 @@ impl MultiAlternative {
 /// `crate::symbolic::record_mem_ite_depth(payload.len() as u32)` so the Phase
 /// 0 baseline comparison stays direct. The public setter handles this
 /// automatically; private mutation paths must not bypass it.
-#[derive(Debug, Clone, Default)]
+///
+/// # Collapse cache (Phase 3, bead angr-j0n4)
+///
+/// `cached_collapse` memoizes the right-folded ITE BV produced by
+/// `collapse`. Reads (e.g. `assemble_load_with_multi`) reuse the cached BV
+/// when the page's concrete default byte is unchanged. Any append-mutation
+/// (`push`) invalidates the cache; `set_multi_alternatives` always installs
+/// a fresh payload (cache starts as `None`) so the merge path in
+/// `install_multi_for_candidates` is automatically safe.
+#[derive(Debug, Default)]
 pub struct MultiPayload {
     alternatives: Vec<MultiAlternative>,
+    cached_collapse: RefCell<Option<CachedCollapse>>,
+}
+
+impl Clone for MultiPayload {
+    fn clone(&self) -> Self {
+        MultiPayload {
+            alternatives: self.alternatives.clone(),
+            // BVs are refcounted on the Z3 side, so cloning the cache is
+            // cheap. The fork path benefits from carrying it forward.
+            cached_collapse: RefCell::new(self.cached_collapse.borrow().clone()),
+        }
+    }
 }
 
 impl MultiPayload {
     /// Build a payload from a list of alternatives. Caller is responsible for
     /// the invariants documented on the type.
     pub fn from_alternatives(alternatives: Vec<MultiAlternative>) -> Self {
-        MultiPayload { alternatives }
+        MultiPayload {
+            alternatives,
+            cached_collapse: RefCell::new(None),
+        }
     }
 
     /// Number of alternatives in this cell.
@@ -91,7 +129,7 @@ impl MultiPayload {
         &self.alternatives
     }
 
-    /// Append one alternative to the payload.
+    /// Append one alternative to the payload. Invalidates the collapse cache.
     ///
     /// This is the lazy-store primitive: emitting a `Multi` cell from a
     /// symbolic-address store appends the candidate's `(addr == cand, value)`
@@ -99,6 +137,37 @@ impl MultiPayload {
     /// time instead.
     pub fn push(&mut self, alt: MultiAlternative) {
         self.alternatives.push(alt);
+        self.cached_collapse.get_mut().take();
+    }
+
+    /// Right-fold the alternatives into an ITE BV with `default_byte` as the
+    /// final `else` leaf. Reuses the memoized BV when the cached default byte
+    /// matches; otherwise recomputes and stores the result.
+    ///
+    /// Returns an 8-bit `RustBV`. The caller must ensure all alternative
+    /// `value` BVs are 8 bits (the type invariant).
+    pub fn collapse(&self, default_byte: u8, ctx: &SymContext) -> RustBV {
+        if let Some(cached) = self.cached_collapse.borrow().as_ref() {
+            if cached.default_byte == default_byte {
+                return cached.bv.clone();
+            }
+        }
+        let default = RustBV::concrete(default_byte as u128, 8);
+        let mut acc = default;
+        for alt in self.alternatives.iter().rev() {
+            acc = alt.cond.ite(&alt.value, &acc, ctx);
+        }
+        *self.cached_collapse.borrow_mut() = Some(CachedCollapse {
+            default_byte,
+            bv: acc.clone(),
+        });
+        acc
+    }
+
+    /// True if the collapse cache currently holds a value. Test-only helper.
+    #[cfg(test)]
+    pub(crate) fn has_cached_collapse(&self) -> bool {
+        self.cached_collapse.borrow().is_some()
     }
 }
 
@@ -216,13 +285,10 @@ impl SymbolicMemory {
                 }
             };
 
-            // Right-fold so alt[0] ends up at the outermost ITE — same
-            // shape as assemble_load_with_multi.
-            let default = RustBV::concrete(concrete_byte as u128, 8);
-            let mut acc = default;
-            for alt in payload.alternatives().iter().rev() {
-                acc = alt.cond.ite(&alt.value, &acc, ctx);
-            }
+            // Phase 3 collapse cache: identical right-fold shape as the
+            // load path, so a load that already populated the cache pays
+            // zero extra Z3 work here.
+            let acc = payload.collapse(concrete_byte, ctx);
 
             // Update the page bitmap: clear Multi, set Symbolic.
             // Keep a single mutable borrow for both updates.
