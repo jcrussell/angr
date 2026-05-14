@@ -1,77 +1,47 @@
-## Session log: 2026-05-14 (Phase 1.1 — angr-me3z CLOSED)
+## Session log: 2026-05-14 — angr-n082 CLOSED (Phase 1.2 Multi-cell collapse)
 
-### Task: angr-me3z — Phase 1.1: MultiPayload data structure + sidecar storage
+### Closed task
 
-CLOSED. Lands the data-structure foundation for lazy symbolic memory
-(parent angr-czph). Load-side collapse and store helpers are follow-up
-sub-beads (see "What this unblocks" below).
+**angr-n082** — Phase 1.2: Multi-cell collapse in load_concrete_lazy_inner.
+Commit `5030e0989` ("feat(rust-symex): Multi-cell collapse in
+load_concrete_lazy_inner (angr-n082)").
 
-### Sub-bead split for angr-czph
+### What landed
 
-Phase 1 was too large for a single session. Split into four sequential
-sub-beads, dependency-wired so `bd ready` surfaces them in order:
-
-- angr-me3z (this session)  — MultiPayload data structure       ✓ CLOSED
-- angr-n082 — load_concrete_lazy_inner Multi-cell collapse      next
-- angr-aija — store helpers + flush_pending_writes update
-- angr-5zw8 — wire strchr SimProcedure (closes angr-czph)
-
-### Files modified / added
-
-- native/angr/src/memory/multi.rs        (NEW — MultiAlternative, MultiPayload, SymbolicMemory public API)
-- native/angr/src/memory/mod.rs          (mod multi; multi_objects sidecar field; fork() clones it)
-- native/angr/src/memory/page.rs         (multi_bitmap field; mark_multi/is_multi/clear_multi; store_concrete clears bit; fork() copies bitmap)
-- native/angr/src/memory/tests.rs        (6 new Phase 1.1 tests)
-
-### Architecture decision (logged as memory `lazy-memory-sidecar-architecture`)
-
-Design doc said "Add Multi variant to byte-cell enum in memory/page.rs"
-but page.rs has no byte enum — it stores concrete bytes + a separate
-bitmap, with symbolic data in a SymbolicMemory sidecar map. Phase 1.1
-mirrors that pattern instead of refactoring to an enum:
-
-- `SymbolicMemory.multi_objects: FxHashMap<u64, MultiPayload>` —
-  sidecar parallel to `symbolic_objects`.
-- `MemoryPage.multi_bitmap` — parallel to `symbolic_bitmap`,
-  Option<Box<[u64; BITMAP_WORDS]>> for zero-cost when unused.
-
-Four valid cell states (memory `invariant-multi-vs-symbolic-cell-states`):
-Concrete / Symbolic / Multi / inconsistent (bug). set_multi_alternatives
-enforces "Multi supersedes Symbolic" by clearing the symbolic_objects /
-symbolic_spans entries before installing.
-
-### Counter contract
-
-Per memory `invariant-mem-ite-depth-counter`,
-set_multi_alternatives calls record_mem_ite_depth(payload.len()) on
-every insertion. Empty payload is a no-op (clears the cell, does not
-bump the counter). Verified by test_multi_payload_records_ite_depth.
+- `native/angr/src/memory/load.rs`:
+  * `load_concrete_lazy_inner` now detects any Multi byte in
+    `[addr, addr+size)` (cheap `multi_objects.is_empty()` short-circuit
+    in the common case). On hit, runs `check_perms_range` and
+    dispatches to the new helper.
+  * `assemble_load_with_multi` walks each byte:
+    - Multi byte: right-fold over `payload.alternatives()` building an
+      ITE chain with the page's concrete byte as the final `else`.
+      Calls `record_mem_ite_depth(payload.len())` per memory
+      `invariant-mem-ite-depth-counter`.
+    - Plain Symbolic byte: extract via symbolic_objects or
+      symbolic_spans (mirrors `try_byte_merge_load`).
+    - Concrete byte: 8-bit `RustBV::concrete`.
+    - Concatenate endianness-correctly: LE folds high→low, BE folds
+      low→high.
+- `native/angr/src/memory/tests.rs`:
+  * 4 new tests (`test_multi_cell_load_*`): single-byte LE, 4-byte
+    mixed LE, 4-byte mixed BE, two Multi bytes in one load.
 
 ### Validation
 
-- `cargo check --release` clean
-- `cargo test --lib memory::` 42/42 pass (36 prior + 6 new)
-- `pytest tests/engines/test_rust_exploration.py` 396/396 pass
+- `cargo test --release --lib`: 751 / 751 passing.
+- `pytest tests/engines/test_rust_exploration.py`: 396 / 396 passing.
 
-### Commit
+### Memories saved this session
 
-ca509f925 feat(rust-symex): MultiPayload data structure for lazy symbolic memory (angr-me3z)
+- `invariant-multi-load-collapse` — right-fold construction details,
+  page-byte default else, endianness concat pattern.
+- `invariant-multi-load-not-in-load_concrete` — load_concrete (the
+  sibling fn at line 37) was NOT patched; Phase 1.3+ will need a
+  parallel detection block there once production stores emit Multi.
 
-### Notes for the next session
+### Suggested next work
 
-- Pip is still broken (`ImportError: RequirementInformation from
-  pip._vendor.resolvelib.structs`). Use `tools/rebuild-rust.sh
-  --cargo-only --keep-cargo-cache` to rebuild the .so. The script
-  works fine — it copies the .so into angr/ directly.
-- Phase 1.2 (angr-n082) is next-ready. Scope: teach
-  `load_concrete_lazy_inner` (memory/load.rs:517) to detect Multi
-  cells via `page.is_multi(offset)`, look up the payload in
-  `multi_objects`, and collapse via the existing balanced ITE builder
-  in memory/ite_builder.rs. Per-byte. End-of-load record
-  `record_mem_ite_depth(alternatives.len())` on each collapse.
-- The Multi-cell entry-count counter on `MemoryPage` is currently per
-  byte, not per cell. That is fine for the data structure but the
-  baseline metric `mem_ite_depth_max` is process-global; Phase 0
-  baseline numbers (sym-write max=2, total=16) come from
-  `store_conditional_multiple` not Multi cells, so they remain valid
-  baselines to compare against once Phase 1.4 wires the strchr path.
+- `bd ready` for follow-on tasks. Phase 1.3 (`angr-aija` — store
+  helpers) and Phase 1.4 (`angr-5zw8` — strchr wiring) both block on
+  this commit landing.
