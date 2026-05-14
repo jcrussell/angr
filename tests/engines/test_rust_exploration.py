@@ -8239,5 +8239,53 @@ class TestUnconstrainedRet:
         )
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustConcreteMemoryStoreRoundTrip:
+    """angr-7vcx: A concrete store at an absolute non-stack address inside
+    the Rust engine must propagate back to Python state.memory.load() after
+    exploration completes. Previously, writes via 'mov [abs], imm' to BSS-
+    style pages were lost — sokohashv2 hash bytes read back as zeros.
+    """
+
+    def test_concrete_store_to_absolute_addr_propagates(self):
+        import angr
+        import angr.sim_options as o
+        from angr.exploration import RustExplorationManager
+
+        # AMD64:
+        #   c7 04 25 c0 16 42 00  78 56 34 12   mov dword [0x4216c0], 0x12345678
+        #   c3                                   ret
+        shellcode = bytes.fromhex("c70425c016420078563412") + b"\xc3"
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x401000)
+        state = proj.factory.blank_state(
+            addr=0x401000,
+            add_options={
+                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+            },
+        )
+        # Set up a clean return target so the ret deadends predictably.
+        state.regs.rsp = 0x7FFF_0000
+        state.memory.store(0x7FFF_0000, b"\x00" * 8)
+        # Map the destination page so the Rust engine's store hits a
+        # writable page (otherwise it would unmap-fault).
+        state.memory.map_region(0x421000, 0x1000, 7)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=10)
+
+        all_states = list(mgr.found) + list(mgr.active) + list(mgr.deadended) + list(mgr.unconstrained)
+        assert all_states, "expected at least one state after run"
+        s = all_states[0]
+        loaded = s.memory.load(0x4216C0, 4, endness=s.arch.memory_endness,
+                               inspect=False, disable_actions=True)
+        val = s.solver.eval(loaded)
+        assert val == 0x12345678, (
+            f"expected 0x12345678 at 0x4216c0, got 0x{val:x}. "
+            f"Rust engine memory store to absolute address did not "
+            f"propagate to Python state.memory.load."
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -265,13 +265,22 @@ class RustStateSyncMixin:
                 # populate symbolic_pages, so this is a graceful fallback.
                 pass
         if not symbolic_pages and hasattr(angr_state.memory, '_pages'):
+            # angr-7vcx: scan UltraPage.symbolic_data (the dict of explicit
+            # symbolic stores), NOT symbolic_bitmap. A freshly map_region'd
+            # page initialises symbolic_bitmap to all-ones (every byte will
+            # default-fill via SYMBOL_FILL_UNCONSTRAINED_MEMORY on read), so
+            # `any(sb)` overflags pages that have NO user-stored symbolic
+            # data — those pages then get skipped by both _overlay and
+            # _sync_extra paths, leaving Rust without the mapping and
+            # silently dropping concrete stores.
             mem_page_size = getattr(angr_state.memory, 'page_size', page_size)
             for page_num in list(angr_state.memory._pages.keys()):
                 page = angr_state.memory._pages.get(page_num)
-                if page is not None and hasattr(page, 'symbolic_bitmap'):
-                    sb = page.symbolic_bitmap
-                    if sb is not None and any(sb):
-                        symbolic_pages.add(page_num * mem_page_size)
+                if page is None:
+                    continue
+                sd = getattr(page, 'symbolic_data', None)
+                if sd is not None and len(sd) > 0:
+                    symbolic_pages.add(page_num * mem_page_size)
         return symbolic_pages
 
     def _map_loader_pages(self, rust_state: "_RustSimState",
@@ -563,7 +572,11 @@ class RustStateSyncMixin:
                     continue
                 try:
                     concrete = bytes(page_obj.concrete_load(0, page_size))
-                    if len(concrete) == page_size and any(concrete):
+                    if len(concrete) == page_size:
+                        # angr-7vcx: map even all-zero pages. Dropping zero
+                        # pages here silently de-maps user `map_region` calls
+                        # — Rust then faults on the first store and the
+                        # value is lost in flush_stores' Unmapped path.
                         # Stack region gets RW, others RWX
                         perms = 6 if stack_start <= page_addr < stack_base else 7
                         rust_state.map_memory_data(page_addr, concrete, perms)
