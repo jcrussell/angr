@@ -879,7 +879,7 @@ impl SymbolicMemory {
     ///   LE: byte 0 is the LSB → bits `[off*8+7 : off*8]`.
     ///   BE: byte 0 is the MSB → bits `[total-off*8-1 : total-off*8-8]`.
     /// Returns `None` if the offset is out of range.
-    fn extract_byte_lane(
+    pub(super) fn extract_byte_lane(
         sym: &RustBV,
         byte_offset: u32,
         endness: Endness,

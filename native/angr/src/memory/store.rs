@@ -8,6 +8,7 @@ use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
 use crate::vex::Endness;
 
+use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
 use super::{MemoryError, SymbolicMemory};
 
@@ -398,6 +399,150 @@ impl SymbolicMemory {
         record_mem_ite_depth(addrs.len() as u32);
 
         Ok(())
+    }
+
+    /// Lazy alternative to `store_conditional_multiple`: instead of folding
+    /// one ITE chain per candidate cell at store time, append per-byte
+    /// alternatives to each candidate's `MultiPayload`. The load-time
+    /// collapse (Phase 1.2 `assemble_load_with_multi`) materializes the
+    /// ITE only for the bytes a subsequent load actually touches.
+    ///
+    /// Splits `value` into bytes (endianness-aware), then for each
+    /// candidate `c` and each byte offset `b`, appends
+    /// `(addr_expr == c, byte_b)` to `multi_objects[c + b]`. Existing
+    /// alternatives at the same byte address are preserved — new ones
+    /// are appended after. By the Multi-payload invariant (disjoint
+    /// conds), order does not affect the load result.
+    ///
+    /// Per memory `invariant-mem-ite-depth-counter`, each per-byte
+    /// `set_multi_alternatives` call records the payload length.
+    pub(super) fn install_multi_for_candidates(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        addrs: &[u64],
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+        let endness = self.endness;
+
+        // Auto-map all candidate byte addresses before installing — matches
+        // what set_multi_alternatives does per-byte, but we batch it so the
+        // permission check happens up-front for every page.
+        for &cand in addrs {
+            let start_page = cand >> 12;
+            let end_page = (cand + size as u64 - 1) >> 12;
+            for page_num in start_page..=end_page {
+                self.pages
+                    .entry(page_num)
+                    .or_insert_with(|| MemoryPage::new(page_num << 12, Permission::RW));
+            }
+        }
+
+        // For each candidate, build cond once and per-byte split.
+        // Accumulate by byte address so payloads merge cleanly with
+        // existing alternatives.
+        for &cand in addrs {
+            let addr_const = RustBV::concrete(cand as u128, addr_expr.width());
+            let cond = addr_expr.eq(&addr_const, ctx);
+            for b in 0..size {
+                let byte_addr = cand + b as u64;
+                let byte_value = Self::extract_byte_lane(value, b, endness, ctx).ok_or(
+                    MemoryError::SymbolicAddress {
+                        description: "value byte offset out of range".to_string(),
+                    },
+                )?;
+                let alt = MultiAlternative::new(cond.clone(), byte_value);
+
+                // Merge with any existing payload at this byte. New alt
+                // goes after existing ones; conds are disjoint so order
+                // is semantically irrelevant.
+                let merged: Vec<MultiAlternative> = match self.multi_objects.get(&byte_addr) {
+                    Some(p) => {
+                        let mut v = p.alternatives().to_vec();
+                        v.push(alt);
+                        v
+                    }
+                    None => vec![alt],
+                };
+                self.set_multi_alternatives(byte_addr, MultiPayload::from_alternatives(merged));
+            }
+        }
+        Ok(())
+    }
+
+    /// Test-rig helper: install Multi alternatives for a multi-byte value
+    /// across a known list of candidate addresses without going through
+    /// the address concretizer. Pure wrapper around
+    /// `install_multi_for_candidates`. Useful for round-trip tests that
+    /// drive the Phase 1.2 load path.
+    pub fn store_concrete_multi(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        candidates: &[u64],
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        self.install_multi_for_candidates(addr_expr, value, candidates, ctx)
+    }
+
+    /// Lazy variant of `store_symbolic_unified`. For Multiple / Strided
+    /// concretization results, installs per-byte Multi alternatives
+    /// instead of folding eager ITE chains. The Single case falls
+    /// through to the existing concrete store path; TooLarge / Failed
+    /// surface the same errors as the eager unified path so callers
+    /// (Python fallback / SimProcedures) can react identically.
+    ///
+    /// This helper is the production-side entry for Phase 1+ lazy
+    /// symbolic memory. It is NOT wired into the default store path —
+    /// that is Phase 2 (angr-qh5u). Phase 1.4 (angr-5zw8) will route
+    /// the strchr SimProcedure through this.
+    pub fn store_symbolic_unified_multi(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+    ) -> Result<Option<ConcretizationResult>, MemoryError> {
+        // Fast path: concrete address — eager store, no Multi cells needed.
+        if let Some(concrete_addr) = addr.as_u64() {
+            self.store_concrete_automap(concrete_addr, value)?;
+            return Ok(Some(ConcretizationResult::Single(concrete_addr)));
+        }
+
+        let result = concretizer.concretize_write(&addr, ctx);
+        match &result {
+            ConcretizationResult::Single(concrete_addr) => {
+                self.store_concrete_automap(*concrete_addr, value)?;
+                Ok(Some(result))
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                let addrs_v: Vec<u64> = addrs.clone();
+                self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
+                Ok(Some(result))
+            }
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
+                let (base, stride, count) = (*base, *stride, *count);
+                let addrs_v: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
+                Ok(Some(result))
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                Err(MemoryError::SymbolicAddress {
+                    description: format!(
+                        "address range too large for concretization: 0x{:x} - 0x{:x}",
+                        min, max
+                    ),
+                })
+            }
+            ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
+                description: reason.clone(),
+            }),
+        }
     }
 
     /// Store to a concrete address, returning UnmappedPageInRegion for lazy regions.

@@ -1712,3 +1712,180 @@ fn test_concrete_overwrite_clears_multi_bit() {
         "concrete overwrite must clear the multi_bitmap bit"
     );
 }
+
+// ============================================================================
+// Phase 1.3 (angr-aija): store_concrete_multi / store_symbolic_unified_multi
+// helpers. These exercise the store -> Multi -> load round-trip.
+// ============================================================================
+
+/// Round-trip a multi-byte LE store through `store_concrete_multi` and
+/// the Phase 1.2 load path. With two candidates {A, B}, the load at A
+/// should yield the full stored value, and the load at B likewise.
+#[test]
+fn test_store_concrete_multi_le_round_trip() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "smc_addr".to_string(), 64);
+    let value = RustBV::concrete(0xDEAD_BEEF, 32);
+
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
+    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+        .expect("store_concrete_multi must succeed");
+
+    // Multi cells were installed at every byte of both candidates.
+    assert_eq!(mem.multi_cell_count(), 8);
+
+    // Read back under each candidate concretization.
+    let loaded_a = mem
+        .load_concrete_lazy(0x1000, 4, &ctx)
+        .expect("LE load at candidate A must succeed");
+    let loaded_b = mem
+        .load_concrete_lazy(0x2000, 4, &ctx)
+        .expect("LE load at candidate B must succeed");
+
+    let probe_a = ctx.fork();
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
+    assert_eq!(probe_a.eval(&loaded_a), Some(0xDEAD_BEEF));
+    // The B cell was also written under the cond addr==B; under addr==A
+    // its load should fall back to the default else (concrete 0).
+    assert_eq!(probe_a.eval(&loaded_b), Some(0x0));
+
+    let probe_b = ctx.fork();
+    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x2000, 64), &probe_b));
+    assert_eq!(probe_b.eval(&loaded_b), Some(0xDEAD_BEEF));
+    assert_eq!(probe_b.eval(&loaded_a), Some(0x0));
+}
+
+/// Big-endian variant of the round-trip. byte 0 is the MSB so the
+/// per-byte split must mirror that orientation.
+#[test]
+fn test_store_concrete_multi_be_round_trip() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Big);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "smc_be_addr".to_string(), 64);
+    let value = RustBV::concrete(0xCAFE_BABE, 32);
+
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
+    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+        .expect("BE store_concrete_multi must succeed");
+
+    let loaded_a = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let probe_a = ctx.fork();
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
+    assert_eq!(probe_a.eval(&loaded_a), Some(0xCAFE_BABE));
+}
+
+/// Fork independence: installing Multi cells in a child must not bleed
+/// into the parent, even when the child later mutates them again.
+#[test]
+fn test_store_concrete_multi_fork_independence() {
+    let ctx = SymContext::new_mock();
+    let mut parent = SymbolicMemory::new(Endness::Little);
+    parent.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "smc_fork_addr".to_string(), 64);
+    let value = RustBV::concrete(0x11_22_33_44, 32);
+    parent
+        .store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+        .unwrap();
+    let parent_count_before = parent.multi_cell_count();
+    assert_eq!(parent_count_before, 8);
+
+    let mut child = parent.fork();
+    assert_eq!(child.multi_cell_count(), parent_count_before);
+
+    // Child overwrites byte 0 of the first candidate with a concrete byte.
+    // store_concrete clears the corresponding multi bit AND the
+    // multi_objects entry (per test_concrete_overwrite_clears_multi_bit).
+    child
+        .store_concrete(0x1000, RustBV::concrete(0xFF, 8))
+        .unwrap();
+    child.clear_multi_at(0x1000);
+
+    assert_eq!(parent.multi_cell_count(), parent_count_before);
+    assert_eq!(child.multi_cell_count(), parent_count_before - 1);
+
+    // Parent's load still sees the original Multi alts.
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
+    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let parent_loaded = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    assert_eq!(probe.eval(&parent_loaded), Some(0x11_22_33_44));
+}
+
+/// End-to-end: `store_symbolic_unified_multi` with an address constrained
+/// to two solutions concretizes to Multiple, installs Multi cells, and
+/// `load_concrete_lazy` materializes the correct value for each candidate.
+#[test]
+fn test_store_symbolic_unified_multi_multiple_round_trip() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "ssm_addr".to_string(), 64);
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
+    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+
+    let value = RustBV::concrete(0x1122_3344, 32);
+    let conc_result = mem
+        .store_symbolic_unified_multi(addr_var.clone(), value, &ctx, &concretizer)
+        .expect("Multi unified store must succeed");
+    // Two candidates with a regular delta get detected as Strided by
+    // the concretizer; either Multiple or Strided routes through
+    // install_multi_for_candidates and must install per-byte Multi cells.
+    assert!(matches!(
+        conc_result,
+        Some(ConcretizationResult::Multiple(_)) | Some(ConcretizationResult::Strided { .. })
+    ));
+
+    // Per-byte Multi cells should exist for both candidates.
+    assert_eq!(mem.multi_cell_count(), 8);
+
+    let loaded_a = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let probe_a = ctx.fork();
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
+    assert_eq!(probe_a.eval(&loaded_a), Some(0x1122_3344));
+}
+
+/// `store_symbolic_unified_multi` with a fully-concrete address must
+/// short-circuit to the eager `store_concrete_automap` path (no Multi
+/// cells installed). Counter the lazy-vs-eager distinction at the entry.
+#[test]
+fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let addr = RustBV::concrete(0x1000, 64);
+    let value = RustBV::concrete(0xAABB_CCDD, 32);
+
+    let pre_multi = mem.multi_cell_count();
+    let result = mem
+        .store_symbolic_unified_multi(addr, value, &ctx, &concretizer)
+        .expect("concrete-address unified-multi store must succeed");
+    assert!(matches!(result, Some(ConcretizationResult::Single(_))));
+    assert_eq!(
+        mem.multi_cell_count(),
+        pre_multi,
+        "concrete-address path must NOT install Multi cells"
+    );
+
+    // Standard load must read the concretely-stored value.
+    let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
+    assert_eq!(loaded.as_u64(), Some(0xAABB_CCDD));
+}
