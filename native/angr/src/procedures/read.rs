@@ -66,16 +66,24 @@ impl NativeSimProcedure for NativeRead {
         // Create symbolic bytes and store to buffer
         let read_id = READ_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-        // First, create all symbolic bytes (needs solver borrow)
+        // First, create all symbolic byte names + bitvectors (needs solver borrow)
+        let names: Vec<String> = (0..count)
+            .map(|i| format!("stdin_{}_{}", read_id, i))
+            .collect();
         let sym_bytes: Vec<RustBV> = {
             let ctx = state.solver().borrow();
-            (0..count)
-                .map(|i| {
-                    let name = format!("stdin_{}_{}", read_id, i);
-                    RustBV::symbolic(&ctx, &name, 8)
-                })
+            names
+                .iter()
+                .map(|name| RustBV::symbolic(&ctx, name, 8))
                 .collect()
         };
+
+        // Record stdin symbols so the Python state export can inject them
+        // back into posix.dumps(0). Without this, sm.active[i].posix.dumps(0)
+        // returns b'' because stdin_stream.content stays empty.
+        for name in &names {
+            state.record_stdin_symbol(name.clone(), 8);
+        }
 
         // Then store them (needs mutable state, solver borrow released)
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
@@ -118,6 +126,30 @@ mod tests {
         for i in 0..4u64 {
             let byte = state.memory_load(0x2000 + i, 1).unwrap();
             assert!(byte.as_u64().is_none()); // symbolic
+        }
+    }
+
+    #[test]
+    fn test_read_records_stdin_symbols() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory(0x2000, 0x1000, Permission::RWX);
+
+        assert!(!state.has_stdin_symbols());
+        let _ = NativeRead
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(3, 64),
+                ],
+            )
+            .unwrap();
+
+        let symbols = state.stdin_symbols();
+        assert_eq!(symbols.len(), 3);
+        for (_, bits) in symbols {
+            assert_eq!(*bits, 8);
         }
     }
 

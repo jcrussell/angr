@@ -1,41 +1,40 @@
-## Session log: 2026-05-14 — angr-jzn8 (ARM64 promotion benchmark)
+## Session log: 2026-05-14 — angr-q7ij (fauxware Rust empty output)
 
-### Status: complete (commit e0d2746d1, bd angr-jzn8 closed)
+### Status: complete
 
 ### Outcome
-Added 1 AArch64 LE inline-ELF synthetic benchmark to the FAST_SUITE.
-- Test bench: `aarch64_le_branch` — 10-instruction AArch64 program: ADD +
-  ADD imm + MOVZ + CMP chain with symbolic w0; expected w0=42.
-- baseline_timings.json now has 24 entries (was 23). Only the new
-  `aarch64_le_branch` is added — every other entry is untouched.
-- ARM64 promoted Experimental → Supported in the arch matrix.
+Fixed: NativeRead now records the symbolic stdin bytes it creates, so
+state export's `_inject_rust_stdin` can evaluate them and inject the
+concrete bytes back into `posix.stdin.content` — fauxware's
+`posix.dumps(0)` now contains the satisfying `SOSNEAKY` bytes.
 
-### Design rationale
-- Same shape as angr-2xfz (mips32_le_branch): 10 instructions, find +
-  avoid via cmp/branch on a symbolic register.
-- Avoids NEON ops (still NeonUnimplemented scaffold per
-  invariant-neon-scaffolding-panic-not-fallback memory) — only base
-  scalar ops (ADD, MOVZ, CMP, B.cond, B, NOP).
-- Marked `rust_only=True`. Reason: 10 instructions is too short to
-  amortize Rust's ~250 ms PyO3 init tax. python_time=null skips the
-  SLA gate; the 15% threshold gate against rust_time=0.51 still catches
-  AArch64 lift/exec regressions.
-- 5 trial repeats on Rust: stable rust_time=0.51s, w0=42 every time.
+### Root cause
+`native/angr/src/procedures/read.rs::NativeRead::call` created
+`stdin_{read_id}_{i}` symbolic bytes and stored them to the buffer,
+but never called `state.record_stdin_symbol(name, 8)`. The state
+export path in `_inject_rust_stdin` short-circuits on
+`!self._rust_mgr.has_state_stdin_symbols(state_id)`, so Python's
+`posix.stdin.content` stayed empty and `posix.dumps(0)` returned `b''`.
 
-### Files changed (commit e0d2746d1)
-- `tests/benchmarks/synthetic_examples/aarch64_le_branch/solve.py` (new)
-- `tests/benchmarks/synthetic_examples/aarch64_le_branch/.gitignore` (new — ignores generated .elf)
-- `tests/benchmarks/run_regression.py` (FAST_SUITE += aarch64_le_branch)
-- `tests/benchmarks/baseline_timings.json` (add aarch64_le_branch entry)
-- `docs/advanced-topics/rust_engine.rst` (ARM64: Experimental → Supported)
-- `CLAUDE.md` (benchmark count 23 → 24)
+Other native stdin sources (fgets/fgetc/getchar/scanf) already record
+symbols; only read.rs was missing this line. Probably an oversight from
+when NativeRead was first added (angr-3tek.2).
+
+### Fix
+`native/angr/src/procedures/read.rs:67-76` — collect names up front,
+then `state.record_stdin_symbol(name.clone(), 8)` for each. Added a
+unit test `test_read_records_stdin_symbols` covering this.
 
 ### Verified
-- 394/395 unit tests pass — 1 flake (`test_model_stability_constraint_order`,
-  pre-existing Z3 order-stability flake, unrelated; passes when re-run).
-- `run_single.py aarch64_le_branch --both` → Python OK (x0=42),
-  Rust OK (x0=42).
-- 5 trial repeats on Rust: stable x0=42 every time.
-- CI-mode regression run (`--rust-only --skip-bimodal --threshold 0.15`):
-  `aarch64_le_branch` not in failures list; failures are pre-existing
-  SLA / threshold drift on local machine that don't reflect CI machine.
+- All 395 Rust-exploration unit tests pass.
+- `python tests/benchmarks/run_single.py fauxware --both`:
+  python output `         SOSNEAKY `, rust output now contains
+  `SOSNEAKY` (was empty before).
+- ais3_crackme smoke test: still finds `b'ais3{I_tak3_g00d_n0t3s}'`.
+- Property fuzzer still reports `exact-mismatch` (different padding
+  between python/rust stdin layouts), but the SOSNEAKY content is
+  present — the "empty Rust output" bug from angr-q7ij is resolved.
+  Promoting fauxware to rust_only=False is a separate decision.
+
+### Files changed
+- `native/angr/src/procedures/read.rs` (record_stdin_symbol + test)
