@@ -15,11 +15,13 @@ use crate::vex::Endness;
 mod concretize_glue;
 mod ite_builder;
 mod load;
+mod multi;
 mod page;
 mod store;
 mod symbolic_objects;
 #[cfg(test)]
 mod tests;
+pub use multi::{MultiAlternative, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
 
 /// A deferred symbolic store. Instead of eagerly concretizing symbolic addresses
@@ -95,6 +97,18 @@ pub struct SymbolicMemory {
     /// symbolic object to (base_addr, width_bits). Enables O(1) lookup when
     /// loading a byte that falls inside a wider symbolic object.
     symbolic_spans: FxHashMap<u64, (u64, u32)>,
+    /// Multi-cell side table indexed by byte address. A byte is "Multi"
+    /// (has an entry here) when a symbolic-address store emitted lazy
+    /// alternatives at that cell instead of folding into an ITE chain.
+    ///
+    /// Parallel to `symbolic_objects` but distinct: a byte may be marked
+    /// Multi *or* Symbolic but not both at the same time. Load-time
+    /// collapse (Phase 1.2, angr-n082) prefers Multi when both happen to
+    /// be set, and store-side helpers (Phase 1.3, angr-aija) clear any
+    /// stale Symbolic entry before installing a Multi.
+    ///
+    /// See `memory/multi.rs` for the `MultiPayload` invariants.
+    multi_objects: FxHashMap<u64, MultiPayload>,
     /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
     /// addresses at store time, we append here and materialize on load.
     pending_writes: Vec<PendingWrite>,
@@ -138,6 +152,7 @@ impl SymbolicMemory {
             dirty_pages: FxHashSet::default(),
             lazy_regions: Vec::new(),
             symbolic_spans: FxHashMap::default(),
+            multi_objects: FxHashMap::default(),
             pending_writes: Vec::new(),
             zero_fill_unconstrained: false,
             imported_addrs: FxHashSet::default(),
@@ -342,6 +357,7 @@ impl SymbolicMemory {
             dirty_pages: FxHashSet::default(), // Fresh dirty tracking for fork
             lazy_regions: self.lazy_regions.clone(), // Share lazy regions
             symbolic_spans: self.symbolic_spans.clone(),
+            multi_objects: self.multi_objects.clone(),
             pending_writes: self.pending_writes.clone(),
             zero_fill_unconstrained: self.zero_fill_unconstrained,
             imported_addrs: self.imported_addrs.clone(),

@@ -110,6 +110,13 @@ pub struct MemoryPage {
     /// BITMAP_WORDS u64s = PAGE_SIZE bits = one bit per byte in a page.
     /// Boxed to keep MemoryPage small when not needed (None = fully concrete).
     symbolic_bitmap: Option<Box<[u64; BITMAP_WORDS]>>,
+    /// Bitmap tracking Multi-cell bytes: bit i set means byte i carries
+    /// lazy alternatives in `SymbolicMemory::multi_objects` (Phase 1 of
+    /// angr-czph). Parallel to `symbolic_bitmap`; a byte may be marked in
+    /// at most one of the two bitmaps at a time. `None` means no Multi
+    /// cells on this page — common case, so we pay one Option discriminant
+    /// rather than a 512-byte bitmap allocation.
+    multi_bitmap: Option<Box<[u64; BITMAP_WORDS]>>,
 }
 
 impl MemoryPage {
@@ -120,6 +127,7 @@ impl MemoryPage {
             permissions,
             base_addr,
             symbolic_bitmap: None,
+            multi_bitmap: None,
         }
     }
 
@@ -134,6 +142,7 @@ impl MemoryPage {
             permissions,
             base_addr,
             symbolic_bitmap: None,
+            multi_bitmap: None,
         }
     }
 
@@ -202,9 +211,9 @@ impl MemoryPage {
         let end = (start + bytes.len()).min(PAGE_SIZE as usize);
         data[start..end].copy_from_slice(&bytes[..(end - start)]);
 
+        let loop_end = (offset as usize + bytes.len()).min(PAGE_SIZE as usize) as u16;
         // Clear symbolic bitmap bits for overwritten bytes
         if let Some(ref mut bitmap) = self.symbolic_bitmap {
-            let loop_end = (offset as usize + bytes.len()).min(PAGE_SIZE as usize) as u16;
             for i in offset..loop_end {
                 let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
                 let bit_idx = i % BITMAP_BITS_PER_WORD;
@@ -213,6 +222,20 @@ impl MemoryPage {
             // If bitmap is now empty, drop it
             if bitmap.iter().all(|&w| w == 0) {
                 self.symbolic_bitmap = None;
+            }
+        }
+        // A concrete overwrite also clears any Multi-cell marker — the cell
+        // is no longer carrying lazy alternatives. The owning
+        // `SymbolicMemory::multi_objects` entries must be dropped by the
+        // caller (the page does not own that map).
+        if let Some(ref mut bitmap) = self.multi_bitmap {
+            for i in offset..loop_end {
+                let word_idx = (i / BITMAP_BITS_PER_WORD) as usize;
+                let bit_idx = i % BITMAP_BITS_PER_WORD;
+                bitmap[word_idx] &= !(1u64 << bit_idx);
+            }
+            if bitmap.iter().all(|&w| w == 0) {
+                self.multi_bitmap = None;
             }
         }
     }
@@ -250,6 +273,52 @@ impl MemoryPage {
         }
     }
 
+    /// Mark a single byte as Multi (carrying lazy alternatives in
+    /// `SymbolicMemory::multi_objects`). The byte stops being treated as
+    /// plain Symbolic — the caller is responsible for clearing the
+    /// symbolic bit and the `symbolic_objects` entry at this address.
+    pub fn mark_multi(&mut self, offset: u16) {
+        debug_assert!(
+            (offset as usize) < PAGE_SIZE as usize,
+            "mark_multi: offset {} out of range",
+            offset
+        );
+        let bitmap = self
+            .multi_bitmap
+            .get_or_insert_with(|| Box::new([0u64; BITMAP_WORDS]));
+        let word_idx = (offset / BITMAP_BITS_PER_WORD) as usize;
+        let bit_idx = offset % BITMAP_BITS_PER_WORD;
+        bitmap[word_idx] |= 1u64 << bit_idx;
+    }
+
+    /// Check if a byte carries lazy Multi alternatives.
+    #[inline]
+    pub fn is_multi(&self, offset: u16) -> bool {
+        match &self.multi_bitmap {
+            None => false,
+            Some(bitmap) => {
+                let word_idx = (offset / BITMAP_BITS_PER_WORD) as usize;
+                let bit_idx = offset % BITMAP_BITS_PER_WORD;
+                bitmap[word_idx] & (1u64 << bit_idx) != 0
+            }
+        }
+    }
+
+    /// Clear the Multi marker on a single byte. The caller is responsible
+    /// for removing the corresponding entry from
+    /// `SymbolicMemory::multi_objects`. Drops the page-level bitmap when
+    /// it becomes empty.
+    pub fn clear_multi(&mut self, offset: u16) {
+        if let Some(ref mut bitmap) = self.multi_bitmap {
+            let word_idx = (offset / BITMAP_BITS_PER_WORD) as usize;
+            let bit_idx = offset % BITMAP_BITS_PER_WORD;
+            bitmap[word_idx] &= !(1u64 << bit_idx);
+            if bitmap.iter().all(|&w| w == 0) {
+                self.multi_bitmap = None;
+            }
+        }
+    }
+
     /// Fork this page (O(1) for concrete pages, bitmap clone for symbolic).
     pub fn fork(&self) -> Self {
         MemoryPage {
@@ -257,6 +326,7 @@ impl MemoryPage {
             permissions: self.permissions,
             base_addr: self.base_addr,
             symbolic_bitmap: self.symbolic_bitmap.clone(),
+            multi_bitmap: self.multi_bitmap.clone(),
         }
     }
 }

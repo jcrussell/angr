@@ -1,0 +1,175 @@
+//! Multi-cell byte storage for lazy symbolic memory (Phase 1 of angr-czph).
+//!
+//! When a symbolic-address store concretizes to multiple candidate addresses,
+//! the existing eager path builds an `ITE(addr == cand_i, new, current)` chain
+//! per candidate cell and writes it back. Each subsequent overlapping store
+//! nests another ITE layer — the bottleneck behind `sym-write` (memory
+//! `symwrite-eager-vs-lazy-memory`).
+//!
+//! `MultiPayload` is the lazy alternative: instead of folding into an ITE at
+//! store time, each candidate cell records its alternatives as a flat list of
+//! `(cond, value)` pairs. The collapse to an ITE happens at load time, scoped
+//! to only the bytes the load actually touches.
+//!
+//! This module defines the data structures only. Load-time collapse lives in
+//! `memory/load.rs` (Phase 1.2, bead angr-n082); store helpers that emit
+//! Multi cells live in `memory/store.rs` (Phase 1.3, bead angr-aija).
+
+use super::{MemoryPage, PAGE_MASK, Permission, SymbolicMemory};
+use crate::symbolic::{RustBV, record_mem_ite_depth};
+
+/// One alternative inside a `MultiPayload`. `cond` is a boolean BV (width 1)
+/// that selects this alternative; `value` is the byte stored when `cond`
+/// holds.
+///
+/// Invariants the producers must uphold (enforced by callers, not by this
+/// type) — see `MultiPayload` doc comment.
+#[derive(Debug, Clone)]
+pub struct MultiAlternative {
+    /// Boolean BV (width 1) under which `value` is the chosen byte.
+    pub cond: RustBV,
+    /// Byte value (width 8) for this alternative.
+    pub value: RustBV,
+}
+
+impl MultiAlternative {
+    pub fn new(cond: RustBV, value: RustBV) -> Self {
+        debug_assert_eq!(
+            value.width(),
+            8,
+            "MultiAlternative::value must be a single byte (width 8)"
+        );
+        MultiAlternative { cond, value }
+    }
+}
+
+/// A set of alternatives for a single byte cell.
+///
+/// # Invariants (caller-enforced)
+///
+/// * Conditions are pairwise distinct concretized address equalities
+///   (e.g. `addr == 0x1000`, `addr == 0x1004`) so that under any model
+///   exactly one alternative's `cond` evaluates to true. Producers in
+///   `memory/store.rs` construct these from `ConcretizationResult::Multiple`
+///   /`Strided` results.
+/// * All `value` BVs have width 8 (one byte). Wider values must be split
+///   per byte before populating the payload.
+///
+/// # Counter contract
+///
+/// Per memory `invariant-mem-ite-depth-counter`, code that inserts a payload
+/// via `SymbolicMemory::set_multi_alternatives` MUST call
+/// `crate::symbolic::record_mem_ite_depth(payload.len() as u32)` so the Phase
+/// 0 baseline comparison stays direct. The public setter handles this
+/// automatically; private mutation paths must not bypass it.
+#[derive(Debug, Clone, Default)]
+pub struct MultiPayload {
+    alternatives: Vec<MultiAlternative>,
+}
+
+impl MultiPayload {
+    /// Build a payload from a list of alternatives. Caller is responsible for
+    /// the invariants documented on the type.
+    pub fn from_alternatives(alternatives: Vec<MultiAlternative>) -> Self {
+        MultiPayload { alternatives }
+    }
+
+    /// Number of alternatives in this cell.
+    pub fn len(&self) -> usize {
+        self.alternatives.len()
+    }
+
+    /// True if the payload holds no alternatives. An empty payload should not
+    /// be stored in `multi_objects`; callers should drop or replace the cell.
+    pub fn is_empty(&self) -> bool {
+        self.alternatives.is_empty()
+    }
+
+    /// Read-only view of the alternatives, in insertion order. Load-time
+    /// collapse iterates this list to build the ITE.
+    pub fn alternatives(&self) -> &[MultiAlternative] {
+        &self.alternatives
+    }
+
+    /// Append one alternative to the payload.
+    ///
+    /// This is the lazy-store primitive: emitting a `Multi` cell from a
+    /// symbolic-address store appends the candidate's `(addr == cand, value)`
+    /// pair without rebuilding any ITE. The collapse cost is paid at load
+    /// time instead.
+    pub fn push(&mut self, alt: MultiAlternative) {
+        self.alternatives.push(alt);
+    }
+}
+
+impl SymbolicMemory {
+    /// Install lazy alternatives at a single byte address.
+    ///
+    /// Marks the byte's page as Multi (via `MemoryPage::mark_multi`), clears
+    /// any conflicting plain-Symbolic state at the same address, and stores
+    /// the payload in `multi_objects`. Auto-maps the containing page if it
+    /// is not yet present, matching the behavior of `import_symbolic_value`
+    /// so callers do not have to pre-map stack regions.
+    ///
+    /// Per memory `invariant-mem-ite-depth-counter`, this records the
+    /// alternative count via `crate::symbolic::record_mem_ite_depth` so the
+    /// Phase 0 baseline comparison reflects every Multi insertion.
+    ///
+    /// A payload with zero alternatives clears the cell instead of
+    /// installing an empty entry.
+    pub fn set_multi_alternatives(&mut self, addr: u64, payload: MultiPayload) {
+        if payload.is_empty() {
+            self.clear_multi_at(addr);
+            return;
+        }
+
+        let depth = payload.len() as u32;
+
+        // Auto-map the page if missing. Matches import_symbolic_value's
+        // policy so callers (test rigs, future SimProcedure wiring) do not
+        // need to pre-map stack regions.
+        let page_num = addr >> 12;
+        let offset = (addr & PAGE_MASK) as u16;
+        let page_addr = page_num << 12;
+        let page = self
+            .pages
+            .entry(page_num)
+            .or_insert_with(|| MemoryPage::new(page_addr, Permission::RW));
+
+        // Clear any prior plain-Symbolic state at this byte: a Multi cell
+        // supersedes single-symbolic. The page bitmap and symbolic_objects
+        // sidecar must stay in sync.
+        page.clear_multi(offset); // no-op if not currently Multi
+        page.mark_multi(offset);
+
+        self.symbolic_objects.remove(&addr);
+        self.symbolic_spans.remove(&addr);
+
+        self.multi_objects.insert(addr, payload);
+        // Counter contract: callers can't bypass this — this is the only
+        // public path that installs a Multi cell.
+        record_mem_ite_depth(depth);
+    }
+
+    /// Read-only access to the lazy alternatives at a byte address, if any.
+    pub fn get_multi_alternatives(&self, addr: u64) -> Option<&MultiPayload> {
+        self.multi_objects.get(&addr)
+    }
+
+    /// Remove lazy alternatives at a byte address and clear the page bit.
+    /// Safe to call on a byte that is not currently Multi (no-op).
+    pub fn clear_multi_at(&mut self, addr: u64) {
+        self.multi_objects.remove(&addr);
+        let page_num = addr >> 12;
+        let offset = (addr & PAGE_MASK) as u16;
+        if let Some(page) = self.pages.get_mut(&page_num) {
+            page.clear_multi(offset);
+        }
+    }
+
+    /// Count of byte addresses currently carrying lazy Multi alternatives.
+    /// Used by tests and by future profiling to track the Phase 1 footprint.
+    pub fn multi_cell_count(&self) -> usize {
+        self.multi_objects.len()
+    }
+}
