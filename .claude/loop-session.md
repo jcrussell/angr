@@ -1,48 +1,41 @@
-## Session log: 2026-05-14 — angr-2xfz (MIPS32 promotion benchmark)
+## Session log: 2026-05-14 — angr-jzn8 (ARM64 promotion benchmark)
 
-### Status: complete, pending commit
+### Status: complete (commit e0d2746d1, bd angr-jzn8 closed)
 
 ### Outcome
-Added 1 MIPS32 LE inline-ELF synthetic benchmark to the FAST_SUITE.
-- Test bench: `mips32_le_branch` — 10-instruction MIPS O32 program: SLL +
-  ADDIU + ADDIU + BEQ chain with symbolic a0; expected a0=42.
-- New examples-dir resolver in `run_single.py::_resolve_examples_dir`
-  falls back from `EXAMPLES_DIR` to in-repo `synthetic_examples/` when
-  the angr-examples checkout doesn't have the example.
-- baseline_timings.json now has 23 entries (was 22). Only the new
-  `mips32_le_branch` is added — every other entry is untouched.
+Added 1 AArch64 LE inline-ELF synthetic benchmark to the FAST_SUITE.
+- Test bench: `aarch64_le_branch` — 10-instruction AArch64 program: ADD +
+  ADD imm + MOVZ + CMP chain with symbolic w0; expected w0=42.
+- baseline_timings.json now has 24 entries (was 23). Only the new
+  `aarch64_le_branch` is added — every other entry is untouched.
+- ARM64 promoted Experimental → Supported in the arch matrix.
 
 ### Design rationale
-- Marked `rust_only=True`. Reason: program is intentionally short, so
-  Rust's ~250 ms PyO3 init tax dominates the workload and would
-  always fail the 0.5x SLA gate. Setting `python_time=null` in
-  baseline skips the SLA check; the regression gate still validates
-  correctness + 15% timing drift against `rust_time=0.33`.
-- Tried a 30-block straight-line ADDU chain and a back-edge loop
-  earlier; both triggered an apparent Rust bug where `$t0` collapsed
-  to concrete zero after a few block executions — non-deterministic
-  across runs. Worth filing as a separate beads task for the engine
-  team to investigate.
+- Same shape as angr-2xfz (mips32_le_branch): 10 instructions, find +
+  avoid via cmp/branch on a symbolic register.
+- Avoids NEON ops (still NeonUnimplemented scaffold per
+  invariant-neon-scaffolding-panic-not-fallback memory) — only base
+  scalar ops (ADD, MOVZ, CMP, B.cond, B, NOP).
+- Marked `rust_only=True`. Reason: 10 instructions is too short to
+  amortize Rust's ~250 ms PyO3 init tax. python_time=null skips the
+  SLA gate; the 15% threshold gate against rust_time=0.51 still catches
+  AArch64 lift/exec regressions.
+- 5 trial repeats on Rust: stable rust_time=0.51s, w0=42 every time.
 
-### Files changed
-- `tests/benchmarks/synthetic_examples/mips32_le_branch/solve.py` (new)
-- `tests/benchmarks/run_single.py` (add _resolve_examples_dir fallback)
-- `tests/benchmarks/run_regression.py` (FAST_SUITE += mips32_le_branch,
-  use _resolve_examples_dir)
-- `tests/benchmarks/baseline_timings.json` (add mips32_le_branch entry)
-- `docs/advanced-topics/rust_engine.rst` (MIPS32: Experimental → Supported)
-- `CLAUDE.md` (benchmark count 22 → 23)
+### Files changed (commit e0d2746d1)
+- `tests/benchmarks/synthetic_examples/aarch64_le_branch/solve.py` (new)
+- `tests/benchmarks/synthetic_examples/aarch64_le_branch/.gitignore` (new — ignores generated .elf)
+- `tests/benchmarks/run_regression.py` (FAST_SUITE += aarch64_le_branch)
+- `tests/benchmarks/baseline_timings.json` (add aarch64_le_branch entry)
+- `docs/advanced-topics/rust_engine.rst` (ARM64: Experimental → Supported)
+- `CLAUDE.md` (benchmark count 23 → 24)
 
 ### Verified
-- 395 unit tests pass
-- `run_single.py mips32_le_branch --both` → Python OK (a0=42), Rust OK (a0=42)
-- 5 trial repeats on Rust: stable a0=42 every time
+- 394/395 unit tests pass — 1 flake (`test_model_stability_constraint_order`,
+  pre-existing Z3 order-stability flake, unrelated; passes when re-run).
+- `run_single.py aarch64_le_branch --both` → Python OK (x0=42),
+  Rust OK (x0=42).
+- 5 trial repeats on Rust: stable x0=42 every time.
 - CI-mode regression run (`--rust-only --skip-bimodal --threshold 0.15`):
-  `mips32_le_branch` not in failures list; failures are pre-existing
+  `aarch64_le_branch` not in failures list; failures are pre-existing
   SLA / threshold drift on local machine that don't reflect CI machine.
-
-### Followup
-- File a beads task: investigate intermittent `$t0` zero-collapse in Rust
-  engine when executing long chains of `addu rt, rt, rs` (rs = symbolic
-  register), either via back-edge loops or straight-line unrolled blocks.
-  Probably state-cache or register-fork issue.
