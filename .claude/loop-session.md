@@ -1,67 +1,77 @@
-## Session log: 2026-05-14 (Phase 0 instrumentation)
+## Session log: 2026-05-14 (Phase 1.1 — angr-me3z CLOSED)
 
-### Task: angr-0nme — Phase 0: mem_ite_depth_max counter — CLOSED
+### Task: angr-me3z — Phase 1.1: MultiPayload data structure + sidecar storage
 
-Added two global atomics (`mem_ite_depth_max`, `mem_ite_depth_total`)
-to `native/angr/src/symbolic/context.rs`, plumbed through the existing
-`get_solver_stats()` / `reset_solver_stats()` API. Wired
-`record_mem_ite_depth(depth)` into the three eager symbolic-store
-sites that produce ITE chains:
+CLOSED. Lands the data-structure foundation for lazy symbolic memory
+(parent angr-czph). Load-side collapse and store helpers are follow-up
+sub-beads (see "What this unblocks" below).
 
-- `store_strided` (memory/store.rs) — depth = `count`
-- `store_conditional_multiple` (memory/store.rs) — depth = `addrs.len()`
-- `store_symbolic` Multiple branch (memory/store.rs) — depth = `addrs.len()`
+### Sub-bead split for angr-czph
 
-`run_single.py` now prints any non-zero `mem_ite_*` keys under a new
-"symbolic memory ite-depth:" section. Baseline numbers captured:
+Phase 1 was too large for a single session. Split into four sequential
+sub-beads, dependency-wired so `bd ready` surfaces them in order:
 
-| Workload     | mem_ite_depth_max | mem_ite_depth_total |
-|--------------|------------------:|--------------------:|
-| sym-write    | 2                 | 16                  |
-| strcpy_find  | 0                 | 0                   |
-| fauxware     | 0                 | 0                   |
+- angr-me3z (this session)  — MultiPayload data structure       ✓ CLOSED
+- angr-n082 — load_concrete_lazy_inner Multi-cell collapse      next
+- angr-aija — store helpers + flush_pending_writes update
+- angr-5zw8 — wire strchr SimProcedure (closes angr-czph)
 
-Two new Rust unit tests in memory/tests.rs cover the wiring and the
-helper. Both use delta-based assertions — the atomics are
-process-global and cargo test runs in parallel.
+### Files modified / added
 
-### Files modified
+- native/angr/src/memory/multi.rs        (NEW — MultiAlternative, MultiPayload, SymbolicMemory public API)
+- native/angr/src/memory/mod.rs          (mod multi; multi_objects sidecar field; fork() clones it)
+- native/angr/src/memory/page.rs         (multi_bitmap field; mark_multi/is_multi/clear_multi; store_concrete clears bit; fork() copies bitmap)
+- native/angr/src/memory/tests.rs        (6 new Phase 1.1 tests)
 
-- native/angr/src/symbolic/context.rs (counters + record_mem_ite_depth + reset/get)
-- native/angr/src/symbolic/mod.rs (re-export)
-- native/angr/src/memory/store.rs (3 call sites)
-- native/angr/src/memory/tests.rs (2 new tests)
-- tests/benchmarks/run_single.py (print mem_ite_* keys)
+### Architecture decision (logged as memory `lazy-memory-sidecar-architecture`)
+
+Design doc said "Add Multi variant to byte-cell enum in memory/page.rs"
+but page.rs has no byte enum — it stores concrete bytes + a separate
+bitmap, with symbolic data in a SymbolicMemory sidecar map. Phase 1.1
+mirrors that pattern instead of refactoring to an enum:
+
+- `SymbolicMemory.multi_objects: FxHashMap<u64, MultiPayload>` —
+  sidecar parallel to `symbolic_objects`.
+- `MemoryPage.multi_bitmap` — parallel to `symbolic_bitmap`,
+  Option<Box<[u64; BITMAP_WORDS]>> for zero-cost when unused.
+
+Four valid cell states (memory `invariant-multi-vs-symbolic-cell-states`):
+Concrete / Symbolic / Multi / inconsistent (bug). set_multi_alternatives
+enforces "Multi supersedes Symbolic" by clearing the symbolic_objects /
+symbolic_spans entries before installing.
+
+### Counter contract
+
+Per memory `invariant-mem-ite-depth-counter`,
+set_multi_alternatives calls record_mem_ite_depth(payload.len()) on
+every insertion. Empty payload is a no-op (clears the cell, does not
+bump the counter). Verified by test_multi_payload_records_ite_depth.
 
 ### Validation
 
 - `cargo check --release` clean
-- `cargo test --lib memory::` 36/36 pass
+- `cargo test --lib memory::` 42/42 pass (36 prior + 6 new)
 - `pytest tests/engines/test_rust_exploration.py` 396/396 pass
-- Counters confirmed reachable via Python `_REM.get_solver_stats()`
 
 ### Commit
 
-0b959b98c feat(rust-symex): mem_ite_depth_max counter for lazy-memory baseline (angr-0nme)
+ca509f925 feat(rust-symex): MultiPayload data structure for lazy symbolic memory (angr-me3z)
 
-### What this unblocks
+### Notes for the next session
 
-- angr-czph (lazy LOAD, Phase 1) — Multi-cell inserts must also call
-  `record_mem_ite_depth()` so before/after comparison is direct. The
-  bd memory `invariant-mem-ite-depth-counter` captures this contract.
-- angr-qh5u (lazy STORE, Phase 2) — same requirement.
-
-### Findings worth remembering
-
-- Eager ITE chain depths from current sym-write are surprisingly
-  shallow (max 2, total 16) — the workload's slowdown vs Python is
-  likely driven more by sheer NUMBER of stores than per-chain depth.
-  Phase 1 may need an additional metric (e.g. count of Multi
-  insertions, or per-cell average) before claiming improvement.
-- `strcpy_find` triggers zero eager multi-stores under Rust — its
-  2.3× speedup is already captured by other paths.
-- Venv's pip is currently broken (`ImportError: RequirementInformation
-  from pip._vendor.resolvelib.structs` — pip 24.0 bytecode cache
-  mismatch). Use `tools/rebuild-rust.sh --cargo-only` to rebuild the
-  .so directly. CLAUDE.md's "venv-rebuild-cargo-direct-copy" warned
-  about this exact path.
+- Pip is still broken (`ImportError: RequirementInformation from
+  pip._vendor.resolvelib.structs`). Use `tools/rebuild-rust.sh
+  --cargo-only --keep-cargo-cache` to rebuild the .so. The script
+  works fine — it copies the .so into angr/ directly.
+- Phase 1.2 (angr-n082) is next-ready. Scope: teach
+  `load_concrete_lazy_inner` (memory/load.rs:517) to detect Multi
+  cells via `page.is_multi(offset)`, look up the payload in
+  `multi_objects`, and collapse via the existing balanced ITE builder
+  in memory/ite_builder.rs. Per-byte. End-of-load record
+  `record_mem_ite_depth(alternatives.len())` on each collapse.
+- The Multi-cell entry-count counter on `MemoryPage` is currently per
+  byte, not per cell. That is fine for the data structure but the
+  baseline metric `mem_ite_depth_max` is process-global; Phase 0
+  baseline numbers (sym-write max=2, total=16) come from
+  `store_conditional_multiple` not Multi cells, so they remain valid
+  baselines to compare against once Phase 1.4 wires the strchr path.
