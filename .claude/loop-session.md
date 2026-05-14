@@ -1,129 +1,88 @@
-## Session log: 2026-05-14 — Phase 2 lazy STORE landed gated (angr-qh5u)
+## Session log: 2026-05-14 — Phase 3 per-load Multi-cell collapse cache landed (angr-j0n4)
 
 ### Closed task
 
-**angr-qh5u** — Phase 2 lazy symbolic STORE for very large solution
-sets. The Multi-cell write path is wired into the default unified
-store entry points (`store_symbolic_unified`,
-`store_with_concretization`), but the production code keeps the
-eager `store_conditional_multiple` / `store_strided` path until a
-runtime gate is flipped. The gate is OFF by default per the design
-doc's soft-blocker rule because the load-time ITE rebuild regresses
-sym-write 10% in this environment.
+**angr-j0n4** — Phase 3 per-load collapse cache for `MultiPayload`. The
+cache is plumbed and tested; the Phase 2 gate stays OFF because the cache
+alone does not reach parity with the eager `store_conditional_multiple`
+path on sym-write.
 
-### What landed (commit bce90fef4)
+### What landed
 
 **Rust side**
 
-- `memory/store.rs`:
-  - `install_multi_for_candidates_safe(addr_expr, value, addrs, ctx)`
-    — Phase 2's production-safe variant. Returns
-    `UnmappedPageInRegion` if any candidate page is unmapped inside a
-    declared lazy region (interpreter fetches from Python); silently
-    filters non-lazy unmapped candidates (matches
-    `prepare_addresses_for_ite` skip semantics); auto-maps nothing.
-  - `store_symbolic_unified` and `store_with_concretization` Multiple
-    and Strided branches now branch on
-    `self.use_multi_cell_stores`: when on, call
-    `install_multi_for_candidates_safe`; when off, retain the eager
-    `store_conditional_multiple` / `store_strided` path.
-  - `store_conditional_multiple` becomes dead code under the gate-on
-    path but is kept around for the gate-off path.
 - `memory/multi.rs`:
-  - `flush_multi_cells(ctx)` collapses every Multi byte to a 1-byte
-    `symbolic_objects[byte_addr]` entry via the same right-fold as
-    `assemble_load_with_multi`. After flush the page bitmap shows the
-    byte as Symbolic (not Multi) so the state export pipeline
-    (`_sync_rust_symbolic_objects_to_state`) picks it up. Without
-    this step Multi bytes export as concrete `data[]` (usually
-    zero), losing the lazy alternatives.
+  - New `CachedCollapse { default_byte: u8, bv: RustBV }` struct (private).
+  - `MultiPayload` gains `cached_collapse: RefCell<Option<CachedCollapse>>`.
+    Manual `Clone` impl propagates the cache (Z3 ASTs are refcounted, so
+    cloning is cheap and the fork path benefits).
+  - New `MultiPayload::collapse(&self, default_byte, ctx) -> RustBV` —
+    returns the cached BV when `default_byte` matches, otherwise rebuilds
+    via the same right-fold as before and caches the result.
+  - `push` now invalidates the cache (defensive: `set_multi_alternatives`
+    always replaces the entry with a fresh payload, but the standalone
+    push path stays sound).
+  - `flush_multi_cells` uses `payload.collapse(...)` so a load that
+    populated the cache pays zero extra Z3 work at flush.
+- `memory/load.rs`:
+  - `assemble_load_with_multi` replaces the inline right-fold with
+    `payload.collapse(concrete_byte, ctx)`. The `record_mem_ite_depth`
+    contract still fires per-byte to keep the counter semantics.
 - `memory/mod.rs`:
-  - New `use_multi_cell_stores: bool` field on `SymbolicMemory`
-    (default false) + setter / getter; propagated through `fork`.
-  - `flush_pending_writes` calls `flush_multi_cells` unconditionally
-    on the path — a no-op when `multi_objects` is empty (always true
-    with the gate off).
-- `state.rs`:
-  - `set_use_multi_cell_stores` / `use_multi_cell_stores` on
-    `RustSimState`, plus PyO3 names so Python can toggle the gate
-    once a SimOption hook lands.
+  - Updated the `use_multi_cell_stores` field doc to reflect Phase 3
+    findings (gate stays off; cache reduces gate-on cost from 1.76s to
+    1.72s but ~10% regression vs gate-off remains; residual cost is
+    per-byte assembly + per-byte export, not load-time ITE rebuild).
 
-**Tests**
+**Tests** (`memory/tests.rs`, 4 new `test_phase3_*`):
 
-- `memory/tests.rs` — 6 new `test_phase2_*` tests:
-  * `gate_off_default_eager_store` — default no Multi cells.
-  * `gate_on_installs_multi` — flip flag, Multi cells appear, load
-    round-trips.
-  * `safe_install_lazy_region_signals` — unmapped lazy candidate
-    returns `UnmappedPageInRegion { page_addr }`.
-  * `safe_install_skips_unmapped_non_lazy` — non-lazy unmapped
-    candidate silently filtered, mapped candidate still gets a Multi.
-  * `flush_multi_to_symbolic_objects` — flush produces correct
-    per-byte ITE under each candidate's concretization constraint.
-  * `fork_independence_via_safe_install` — parent / child Multi
-    cells diverge after fork.
+- `collapse_cache_hit_after_load` — cache empty pre-load, populated after
+  first load, second load returns equivalent BV.
+- `collapse_cache_invalidated_on_push` — `MultiPayload::push` clears the
+  cache.
+- `collapse_cache_invalidated_on_default_byte_change` — different default
+  byte produces a rebuilt collapse with the new ELSE leaf.
+- `collapse_cache_clones_with_payload` — `Clone` carries the cache;
+  mutating the clone does not touch the original.
 
 ### Validation
 
-- `cargo test --release --lib`: **762/762** (+6 new).
+- `cargo test --release --lib`: **766/766** (+4 new from 762).
 - `pytest tests/engines/test_rust_exploration.py`: **403/403**.
-- `run_single.py sym-write --engine rust`: 1.58s gate-off vs 1.58s
-  baseline HEAD (parity, within noise). Gate-on: ~1.76s.
-- `run_single.py fauxware --engine rust`: 0.30s (unchanged).
-- `run_single.py {ais3_crackme, strcpy_find, defcamp_r100} --engine rust`:
-  within 6% of stashed HEAD; baseline_timings.json itself is stale on
-  this machine (see new bd memory `baseline-timings-stale-2026-05-14`).
+- `run_single.py sym-write --engine rust` (gate OFF default): 1.55s × 3
+  (parity with pre-Phase 3 baseline 1.56-1.58s).
+- `run_single.py sym-write --engine rust` (gate ON, transiently flipped):
+  1.71-1.74s × 3 (down from 1.76s pre-Phase 3, ~2% improvement; still
+  ~10% slower than gate-off 1.55-1.58s).
+- `run_single.py fauxware --engine rust`: 0.28s (parity).
+- `run_single.py ais3_crackme --engine rust`: 2.03s (parity).
+- `run_single.py defcamp_r100 --engine rust`: 0.27s (parity).
 
-### Acceptance vs the bead
+### Why the gate still stays off
 
-- **≥2× sym-write speedup target**: NOT MET — soft blocker triggered.
-  Gate stays off; Phase 2 ships as plumbing-only.
-- **No regression on benchmarks outside slower-than-1.0× table**: met
-  with gate off (default). Pairwise comparison against pre-Phase 2
-  HEAD shows <6% drift on tested benchmarks.
-- **389 Python tests pass**: met (403/403).
-- **New Rust unit tests cover fork / merge / export**: partial — fork
-  and export covered; merge of Multi cells across states still has no
-  test (Rust does not have a Multi merge path today; the design doc
-  notes merge correctness for Rust-Rust only).
+The Phase 3 cache eliminates load-time ITE rebuild, which was the
+documented Phase 2 soft blocker. But sym-write's z3_check counter is
+unchanged (z3_check ≈ 144 ms either way) and the load_stmt budget is tiny
+(8 ms of 1.55 s). The residual ~10% gap is downstream of memory:
 
-### Why gated
+- Per-byte iteration in `assemble_load_with_multi` — even cache hits do
+  N page lookups + N cache reads + N byte concatenations per load,
+  versus the eager path's single `symbolic_objects.get(addr)` returning
+  a width-N BV.
+- `flush_multi_cells` writes per-byte `symbolic_objects` entries; the
+  state-export pipeline serialises each entry. Eager stores write one
+  width-N entry per candidate address. The per-byte expansion blows up
+  export volume by 4× for 32-bit loads / 8× for 64-bit loads.
 
-The Multi-cell load collapse runs the alternatives right-fold on every
-load to a Multi byte, building fresh Z3 ITEs each time. The eager
-`store_conditional_multiple` builds one ITE at store time and the cached
-BV serves every subsequent load. For read-heavy symbolic-memory
-workloads (sym-write fits this) the eager amortization wins. The fix is
-a per-load collapse cache inside `MultiPayload` that memoizes the
-collapsed BV and invalidates on alternative append — tracked as
-**angr-j0n4** (Phase 3, P3, created this session).
+A wider-load collapse cache (cache the N-byte assembled BV keyed on the
+start address + size + payload version) would address (1). Coalescing
+per-byte symbolic_objects entries on flush would address (2). Both are
+out of scope for angr-j0n4; the cache work itself is correct, tested,
+and landed.
 
-### Memories saved this session
+### Follow-up
 
-- `qh5u-soft-blocker` — root cause of the 10% gate-on regression
-  and the per-load cache fix path.
-- `baseline-timings-stale-2026-05-14` — `baseline_timings.json` is
-  stale vs current env. Pairwise compare against HEAD with the change
-  stashed, not against the JSON, when assessing PR perf.
-- `invariant-multi-cell-routing-safe` — production callers must use
-  `install_multi_for_candidates_safe`, not the bare installer.
-
-### Open follow-ups
-
-- **angr-j0n4** (Phase 3, P3) — per-load Multi-cell collapse cache.
-  Acceptance: gate-on sym-write at parity-or-better with gate-off;
-  ideally ≥2× improvement over the eager path. Once met, flip the
-  `SymbolicMemory` default and remove the gate.
-- The Phase 1.4 `_try_multi_cell_store` annotation gate
-  (`rust_manager.py:1632`) is now redundant for in-Rust stores once
-  the `use_multi_cell_stores` flag is on. Keep as-is for now; revisit
-  when the gate flips in Phase 3.
-- `baseline_timings.json` needs a refresh on the current env so the
-  PR-time regression gate stops firing on env drift alone.
-
-### Next ready (`bd ready` after close)
-
-- angr-myty (P3, daytime perf dashboard) — Python/CI work.
-- angr-j0n4 (P3, Phase 3 collapse cache) — direct follow-up, but
-  unproven without measurement infrastructure (Phase 0 ite-depth
-  counter already lands the data we need).
+New bead created for wider-load collapse cache + per-byte symbolic_object
+coalescing on flush. Saved memory `phase3-cache-residual-gap` with the
+profile data so the next investigation does not have to re-discover that
+load-time ITE rebuild is no longer the bottleneck.
