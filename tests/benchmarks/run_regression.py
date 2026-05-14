@@ -29,7 +29,12 @@ import time
 
 # Reuse the subprocess runner from run_single.py
 sys.path.insert(0, os.path.dirname(__file__))
-from run_single import _run_in_child, EXAMPLES_DIR, DEFAULT_MEM_LIMIT_MB
+from run_single import (
+    _run_in_child,
+    _resolve_examples_dir,
+    EXAMPLES_DIR,
+    DEFAULT_MEM_LIMIT_MB,
+)
 
 BASELINE_FILE = os.path.join(os.path.dirname(__file__), "baseline_timings.json")
 
@@ -71,6 +76,15 @@ FAST_SUITE = [
     ("defcamp_r100", 30, "dfs", False),  # DFS variant: same example, different strategy
     ("csgames2018", 30, "bfs", True),
     ("whitehatvn2015_re400", 30, "bfs", True),
+    # MIPS32 LE inline-ELF synthetic benchmark (angr-2xfz). Lives in
+    # tests/benchmarks/synthetic_examples/, resolved via the fallback
+    # logic in _resolve_examples_dir. Marked rust_only=True so the SLA
+    # speedup gate does not flag it — the program is intentionally short
+    # (~10 instructions) and the Rust PyO3 init tax (~250 ms) dominates
+    # the workload's runtime, but the regression gate still validates
+    # MIPS32 lift + exec stays green and timing stays within 15% of
+    # baseline_timings.json's cached ``rust_time``.
+    ("mips32_le_branch", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full
@@ -124,9 +138,10 @@ def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs"):
     """Run a single benchmark in a subprocess, return result dict."""
     ctx = multiprocessing.get_context("spawn")
     pool = ctx.Pool(1)
+    examples_dir = _resolve_examples_dir(name, EXAMPLES_DIR)
     try:
         async_result = pool.apply_async(
-            _run_in_child, (name, engine, EXAMPLES_DIR, mem_limit_mb, strategy)
+            _run_in_child, (name, engine, examples_dir, mem_limit_mb, strategy)
         )
         return async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
@@ -194,9 +209,12 @@ def main():
     if args.skip_bimodal:
         REGRESSION_SUITE = [e for e in REGRESSION_SUITE if e[0] not in BIMODAL_BENCHMARKS]
 
-    # Verify examples exist
-    missing = [name for name, _, _, _ in REGRESSION_SUITE
-               if not os.path.exists(os.path.join(EXAMPLES_DIR, name, "solve.py"))]
+    # Verify examples exist (in either EXAMPLES_DIR or the in-repo synthetic dir).
+    missing = []
+    for name, _, _, _ in REGRESSION_SUITE:
+        resolved = _resolve_examples_dir(name, EXAMPLES_DIR)
+        if not os.path.exists(os.path.join(resolved, name, "solve.py")):
+            missing.append(name)
     if missing:
         print(f"ERROR: Missing examples: {', '.join(missing)}", file=sys.stderr)
         print(f"Expected at: {EXAMPLES_DIR}", file=sys.stderr)

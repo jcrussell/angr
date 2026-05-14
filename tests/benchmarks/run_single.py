@@ -17,7 +17,25 @@ import sys
 
 
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
+# Synthetic examples shipped in-repo (e.g. inline-ELF benchmarks for arches
+# without binaries in angr-examples — MIPS, ARM64, etc.). Searched as a
+# fallback when EXAMPLES_DIR/<name>/solve.py does not exist.
+SYNTHETIC_EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetic_examples")
 DEFAULT_MEM_LIMIT_MB = 4096  # 4 GB — leaves 4 GB for parent + OS on 8GB machine
+
+
+def _resolve_examples_dir(example_name, examples_dir):
+    """Return the directory containing ``example_name/solve.py``.
+
+    Falls back to SYNTHETIC_EXAMPLES_DIR when the primary path is missing
+    so in-repo synthetic benchmarks work without configuring
+    ANGR_EXAMPLES_DIR to also include this repo.
+    """
+    if os.path.exists(os.path.join(examples_dir, example_name, "solve.py")):
+        return examples_dir
+    if os.path.exists(os.path.join(SYNTHETIC_EXAMPLES_DIR, example_name, "solve.py")):
+        return SYNTHETIC_EXAMPLES_DIR
+    return examples_dir
 
 # Catalog of tested examples with expected behavior
 # tier: "fast" (<5s), "medium" (5-30s), "slow" (30-120s), "very_slow" (>120s)
@@ -88,6 +106,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
 
     import angr
 
+    examples_dir = _resolve_examples_dir(example_name, examples_dir)
     solve_script = os.path.join(examples_dir, example_name, "solve.py")
     if not os.path.exists(solve_script):
         return {"ok": False, "error": f"solve.py not found: {solve_script}"}
@@ -226,7 +245,8 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
 def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB, strategy="bfs",
                 diff_state=False, diff_interval=1, diff_max_snapshots=200):
     """Run an example in an isolated subprocess and print results."""
-    solve_script = os.path.join(EXAMPLES_DIR, example_name, "solve.py")
+    examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
+    solve_script = os.path.join(examples_dir, example_name, "solve.py")
     if not os.path.exists(solve_script):
         print(f"ERROR: solve.py not found: {solve_script}")
         return None
@@ -236,7 +256,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
     try:
         async_result = pool.apply_async(
             _run_in_child,
-            (example_name, engine, EXAMPLES_DIR, mem_limit_mb, strategy,
+            (example_name, engine, examples_dir, mem_limit_mb, strategy,
              diff_state, diff_interval, diff_max_snapshots),
         )
         result = async_result.get(timeout=timeout)

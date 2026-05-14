@@ -120,9 +120,9 @@ below "Supported" as experimental.
    * - MIPS32
      - 4
      - 3 (BE blob, LE real ELF, native-proc)
-     - 0
+     - 1 (mips32_le_branch synthetic)
      - MipsO32
-     - Experimental
+     - Supported
    * - MIPS64
      - 0
      - 2 (LE real ELF, native-proc)

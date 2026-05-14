@@ -212,8 +212,8 @@ Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via 
 ## Current Status
 
 **Tests:** 389/389 passing (`grep -c 'def test_' tests/engines/test_rust_exploration.py`)
-**Benchmarks:** 22 benchmarks tracked in `tests/benchmarks/baseline_timings.json`
-**Performance:** 17/22 faster than Python (≥1.0x)
+**Benchmarks:** 23 benchmarks tracked in `tests/benchmarks/baseline_timings.json` (22 angr-examples + 1 in-repo synthetic MIPS32)
+**Performance:** 17/22 faster than Python (≥1.0x; mips32_le_branch is a synthetic rust_only MIPS32 smoke benchmark)
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
