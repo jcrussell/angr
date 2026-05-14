@@ -48,17 +48,27 @@ TRACKED_METRICS = [
 # divergence (multiple valid solutions to the same find/avoid set). In either
 # case the regression check still tracks Rust timing and algorithmic metrics.
 # Fast tier: < 10s, always run
+# rust_only=True/False audited via property_fuzzer (angr-qz16, 2026-05-14):
+# Promoted (rust_only=False, pass 10/10 trials, mixed bfs/dfs):
+#   defcamp_r100 (bfs+dfs), ais3_crackme, google2016_unbreakable_0,
+#   strcpy_find, flareon2015_2, defcon2016quals_baby-re
+# Kept rust_only=True (consistent output divergence):
+#   fauxware, google2016_unbreakable_1, unmapped_analysis, csgames2018,
+#   whitehatvn2015_re400.
+# MEDIUM_SUITE audit: all four non-bimodal candidates tested
+# (flareon2015_5, ekopartyctf2016_rev250, csaw_wyvern, codegate_2017-angrybird)
+# diverge — no MEDIUM promotions.
 FAST_SUITE = [
     ("fauxware", 30, "bfs", True),
-    ("defcamp_r100", 30, "bfs", True),
-    ("ais3_crackme", 30, "bfs", True),
-    ("google2016_unbreakable_0", 30, "bfs", True),
+    ("defcamp_r100", 30, "bfs", False),
+    ("ais3_crackme", 30, "bfs", False),
+    ("google2016_unbreakable_0", 30, "bfs", False),
     ("google2016_unbreakable_1", 30, "bfs", True),
-    ("strcpy_find", 30, "bfs", True),
-    ("flareon2015_2", 30, "bfs", True),
+    ("strcpy_find", 30, "bfs", False),
+    ("flareon2015_2", 30, "bfs", False),
     ("unmapped_analysis", 30, "bfs", True),
-    ("defcon2016quals_baby-re", 30, "bfs", True),
-    ("defcamp_r100", 30, "dfs", True),  # DFS variant: same example, different strategy
+    ("defcon2016quals_baby-re", 30, "bfs", False),
+    ("defcamp_r100", 30, "dfs", False),  # DFS variant: same example, different strategy
     ("csgames2018", 30, "bfs", True),
     ("whitehatvn2015_re400", 30, "bfs", True),
 ]
