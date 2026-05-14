@@ -10,6 +10,7 @@ Advanced Topics
    speed
    rust_engine
    rust_bimodal_variance
+   rust_lazy_memory_design
    file_system
    ir
    structured_data

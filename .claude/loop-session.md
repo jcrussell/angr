@@ -1,70 +1,53 @@
-## Session log: 2026-05-14 (afternoon)
+## Session log: 2026-05-14 (later)
 
-### Completed this session
+### Task: angr-pogf — RESEARCH: Design lazy symbolic memory model — CLOSED
 
-**angr-g9hy (MIPS32 $t0 symbolic accumulation bug) — CLOSED**
-in commit ceba7816b.
+Wrote `docs/advanced-topics/rust_lazy_memory_design.rst` and linked it
+into the toctree. The doc is the design-phase deliverable that
+unblocks the implementation children:
+- angr-czph (lazy LOAD)
+- angr-qh5u (lazy STORE)
 
-Despite the bead title pointing at MIPS32 symbolic register collapse,
-the root cause was NOT in the Rust engine at all. It was in the disk
-init cache invalidation gate `_state_has_user_symbolic` (rust_manager.py),
-which only scanned MEMORY for user symbolic data and ignored REGISTERS.
+### Key design decisions captured in the doc
 
-Repro flow:
-1. User: `state = proj.factory.blank_state(addr=entry)`
-2. User: `state.regs.a0 = claripy.BVS("a0", 32)`
-3. User: `RustExplorationManager(proj, [state])`
+1. Recommend **Option A** (per-byte MultiValues port, Python-equivalent)
+   over Option B (Z3 array primitive) and Option C (Python fallback
+   hybrid). Reuses existing balanced ITE builder, concretization
+   strategy chain, and fork/merge plumbing; only the page byte cell
+   representation changes.
 
-`_state_has_user_symbolic(state)` returned False (memory clean), so
-`_compute_disk_init_key` returned a valid cache key. The cached state
-(with concrete a0=0 — `_extract_register_snapshot` skips symbolics)
-silently replaced the user's state. `_sync_registers_to_rust` then ran
-the fast precomputed_regs path, pushing a0=0 to Rust. The user's
-symbolic a0 BVS was lost. Rust ran the entire MIPS32 chain with
-concrete a0=0, producing concrete t0=0, BEQ concrete-false, no FOUND.
+2. Two-phase plan:
+   - Phase 0: ite_depth_max counter as gate metric
+   - Phase 1 (angr-czph): Multi cell variant + read-time collapse;
+     wire one annotated SimProcedure (strchr) as test driver
+   - Phase 2 (angr-qh5u): make store_symbolic_unified emit Multi
+     cells by default for Multiple/Strided results
+   - Phase 3 (Z3 arrays): only if Phase 2 doesn't close the gap
 
-Fix: extended `_state_has_user_symbolic` to iterate
-`state.registers._pages.items()` for `symbolic_data` entries whose
-variable names don't start with `(mem_, reg_, unconstrained)` — the
-default symbol-fill prefixes. User-named BVSes are detected and the
-cache key returns '' (caching disabled), so the slow
-`_sync_registers_to_rust` path runs and pushes symbolic a0 properly.
+3. Acceptance criteria per phase, with sym-write ≥ 2x current Rust
+   time as the Phase 2 soft blocker.
 
-False-start: first attempt also iterated `getattr(state.regs, X)` over
-all arch registers in the precomputed_regs fast path of
-`_sync_registers_to_rust`. That triggered the default fill (BVS alloc +
-warning log per uninitialized register) for ~80 x86_64 regs, causing
-20-130% regression on ais3/csgames/defcamp/etc. Reverted. The cache
-invalidation in `_state_has_user_symbolic` already suffices because it
-forces the slow path which iterates `state.regs.*` ONCE (the original
-behavior); the fast path doesn't need to handle symbolic regs.
+### Findings worth remembering across sessions
+- Python is NOT actually lazy on address resolution; it uses the
+  same Range→Any/Range→Max strategy chain Rust mirrors. The laziness
+  is at the PAGE level: MultiValues stores a set of alternative
+  values per byte, collapsed to ITE only at LOAD time.
+- PendingWrite is scaffolded but inactive in execution paths (only
+  drained on export). The lazy-load-overlay-fails memory explains
+  why this scaffolding is not the path forward.
+- z3-rs 0.19 (already in Cargo.toml) does expose Array::store/select
+  — no version bump needed for Option B if Phase 3 ever runs.
+- Existing strcpy_find is now 2.3x (was 0.21x) after the CFG fix in
+  angr-3tek; the lazy memory work targets sym-write (6.9x slower)
+  primarily.
 
-Regression test added: `test_mips32_symbolic_register_survives_disk_init_cache`
-in `TestMultiArchSupport`. N=30 multi-block accumulator, fails
-deterministically pre-fix, passes post-fix.
+### Files modified
+- docs/advanced-topics/rust_lazy_memory_design.rst (new, 488 lines)
+- docs/advanced-topics/index.rst (added to toctree)
 
-Memories saved:
-- `disk-init-cache-symbolic-reg-invariant` — rule for cache designers
-- `g9hy-root-cause-not-mips` — root cause is not arch-specific
-- `avoid-state-regs-iter-in-init` — anti-pattern for hot init paths
-- `avoid-rust-mips-symbolic-accumulation-bench` — updated to FIXED
-
-### Tests / Build state at session end
-- Rust: cargo check clean.
-- Python: 396/396 passing (test_rust_exploration.py, includes the new
-  regression test). One test (test_model_stability_constraint_order)
-  fails intermittently when the full suite runs — Z3 model-picker order
-  flake, predates this session, not introduced by my changes (passes
-  in isolation pre and post fix).
-- Benchmarks: post-fix timings flat vs pre-fix on fauxware/defcamp_r100/
-  ais3_crackme/csgames2018 (within noise). Baseline JSON values in
-  baseline_timings.json don't match this machine, so run_regression.py
-  reports false-positive regressions for those benchmarks — unrelated.
-
-### Next picks
-- angr-myty (perf dashboard) — substantial CI/Pages work.
-- angr-pogf (lazy memory design) — research/design.
-- The "non-determinism" description in the original bead was misleading
-  (it was actually deterministic disk-cache replacement); future bead
-  reports describing non-deterministic correctness on the Rust engine
-  may also turn out to be disk-cache or fast-sync issues.
+### Status at session end
+- Doc passes manual heading-length check (Python script confirmed
+  underlines match titles; em-dashes count as 1 char correctly).
+- No sphinx in venv; couldn't render. Manual eyeball of RST cross-
+  references (:doc:`rust_engine`, etc.) matches existing patterns.
+- Nothing else changed; no tests need to run.
