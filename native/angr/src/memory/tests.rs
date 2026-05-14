@@ -1889,3 +1889,202 @@ fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {
     let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xAABB_CCDD));
 }
+
+// ============================================================================
+// Phase 2 (angr-qh5u): default-store gate, lazy-region safety, and Multi
+// flush on export.
+// ============================================================================
+
+/// With the gate OFF (default), `store_symbolic_unified` must use the
+/// eager `store_conditional_multiple` path — no Multi cells installed.
+#[test]
+fn test_phase2_gate_off_default_eager_store() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+    assert!(!mem.use_multi_cell_stores(), "gate must default to off");
+
+    let addr_var = RustBV::symbolic(&ctx, "p2_off_addr".to_string(), 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
+        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
+        &ctx,
+    ));
+    let value = RustBV::concrete(0xDEAD_BEEF, 32);
+
+    mem.store_symbolic_unified(addr_var, value, &ctx, &concretizer)
+        .expect("gated-off eager store must succeed");
+
+    // Eager path stores ITE BVs into symbolic_objects; no Multi cells.
+    assert_eq!(
+        mem.multi_cell_count(),
+        0,
+        "gate off must not install Multi cells"
+    );
+}
+
+/// With the gate ON, `store_symbolic_unified` must route Multiple to
+/// Multi cells — same end-state as `store_symbolic_unified_multi`.
+#[test]
+fn test_phase2_gate_on_installs_multi() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+    mem.set_use_multi_cell_stores(true);
+
+    let addr_var = RustBV::symbolic(&ctx, "p2_on_addr".to_string(), 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
+        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
+        &ctx,
+    ));
+    let value = RustBV::concrete(0xCAFEBABE, 32);
+
+    mem.store_symbolic_unified(addr_var.clone(), value, &ctx, &concretizer)
+        .expect("gated-on Multi store must succeed");
+    assert_eq!(mem.multi_cell_count(), 8);
+
+    // Load under the addr==A constraint reads back the value.
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    let loaded = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(probe.eval(&loaded), Some(0xCAFEBABE));
+}
+
+/// The Phase 2 safe installer must return `UnmappedPageInRegion` when a
+/// candidate page lives in a declared lazy region — the interpreter
+/// fetches the page from Python rather than letting Rust auto-map a
+/// zero page that diverges from Python's backer data.
+#[test]
+fn test_phase2_safe_install_lazy_region_signals() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.set_use_multi_cell_stores(true);
+
+    // Map page 0x1000; leave page 0x2000 unmapped but inside a lazy region.
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    mem.add_lazy_region(0x2000, 0x1000);
+
+    let addr_var = RustBV::symbolic(&ctx, "p2_lazy_addr".to_string(), 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
+        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
+        &ctx,
+    ));
+    let value = RustBV::concrete(0x11, 8);
+
+    let err = mem
+        .store_symbolic_unified(addr_var, value, &ctx, &concretizer)
+        .expect_err("lazy unmapped candidate must error to interpreter");
+    match err {
+        MemoryError::UnmappedPageInRegion { page_addr } => {
+            assert_eq!(page_addr, 0x2000, "must point at the lazy page");
+        }
+        other => panic!("expected UnmappedPageInRegion, got {:?}", other),
+    }
+    // No Multi cells installed on the partial run.
+    assert_eq!(mem.multi_cell_count(), 0);
+}
+
+/// The Phase 2 safe installer must silently skip candidates whose pages
+/// are unmapped and NOT in any lazy region (matches
+/// `prepare_addresses_for_ite`'s skip-unmapped behavior).
+#[test]
+fn test_phase2_safe_install_skips_unmapped_non_lazy() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.set_use_multi_cell_stores(true);
+
+    // Only page 0x1000 is mapped. Page 0x2000 is unmapped and NOT lazy.
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p2_skip_addr".to_string(), 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
+        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
+        &ctx,
+    ));
+    let value = RustBV::concrete(0xAB, 8);
+
+    mem.store_symbolic_unified(addr_var.clone(), value, &ctx, &concretizer)
+        .expect("non-lazy unmapped candidate must be silently skipped");
+
+    // Only the mapped candidate (0x1000) got a Multi cell.
+    assert_eq!(mem.multi_cell_count(), 1);
+    assert!(mem.get_multi_alternatives(0x1000).is_some());
+    assert!(mem.get_multi_alternatives(0x2000).is_none());
+}
+
+/// `flush_multi_cells` must collapse every Multi byte into a per-byte
+/// symbolic_objects entry and mark the page-level symbolic bit so the
+/// state export pipeline picks it up. This is the export-correctness
+/// invariant called out in `rust_lazy_memory_design.rst` Phase 2.
+#[test]
+fn test_phase2_flush_multi_to_symbolic_objects() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p2_flush_addr".to_string(), 64);
+    let value = RustBV::concrete(0xAA, 8);
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+        .expect("test setup install must succeed");
+    assert_eq!(mem.multi_cell_count(), 2);
+
+    mem.flush_multi_cells(&ctx);
+
+    // Multi cells are gone, symbolic_objects has 1-byte entries at each
+    // flushed address.
+    assert_eq!(mem.multi_cell_count(), 0);
+    assert!(mem.get_symbolic_object(0x1000).is_some());
+    assert!(mem.get_symbolic_object(0x2000).is_some());
+
+    // The 1-byte symbolic_object at 0x1000 evaluates to 0xAA under
+    // addr==0x1000 (because cond=(addr==0x1000) is true, picking value 0xAA).
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    let sym = mem.get_symbolic_object(0x1000).unwrap();
+    assert_eq!(probe.eval(sym), Some(0xAA));
+
+    // The 1-byte symbolic_object at 0x2000 evaluates to 0 (concrete else)
+    // under addr==0x1000 because its cond fires only when addr==0x2000.
+    let sym2 = mem.get_symbolic_object(0x2000).unwrap();
+    assert_eq!(probe.eval(sym2), Some(0));
+}
+
+/// After fork, mutating Multi cells in the parent must not leak into
+/// the child via the new safe-install path. Pairs with
+/// `test_store_concrete_multi_fork_independence` but exercises the
+/// Phase 2 entry point.
+#[test]
+fn test_phase2_fork_independence_via_safe_install() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut parent = SymbolicMemory::new(Endness::Little);
+    parent.map(0x1000, 0x4000, Permission::RWX);
+    parent.set_use_multi_cell_stores(true);
+
+    let addr_var = RustBV::symbolic(&ctx, "p2_fork_addr".to_string(), 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
+        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
+        &ctx,
+    ));
+    parent
+        .store_symbolic_unified(addr_var.clone(), RustBV::concrete(0x12, 8), &ctx, &concretizer)
+        .unwrap();
+    let parent_count = parent.multi_cell_count();
+    assert_eq!(parent_count, 2);
+
+    let mut child = parent.fork();
+    assert_eq!(child.multi_cell_count(), parent_count);
+
+    // Child stores another value at the same symbolic addr — appends
+    // a second alternative to each Multi cell. Parent must not see it.
+    child
+        .store_symbolic_unified(addr_var, RustBV::concrete(0x34, 8), &ctx, &concretizer)
+        .unwrap();
+    let child_a = child.get_multi_alternatives(0x1000).unwrap();
+    let parent_a = parent.get_multi_alternatives(0x1000).unwrap();
+    assert_eq!(parent_a.len(), 1, "parent must keep its single alternative");
+    assert_eq!(child_a.len(), 2, "child accumulates appended alternative");
+}

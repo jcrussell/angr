@@ -125,6 +125,16 @@ pub struct SymbolicMemory {
     /// callers (which often map all memory as RWX or rely on Python perms)
     /// working unchanged.
     enforce_permissions: bool,
+    /// Phase 2 (angr-qh5u): route Multiple / Strided symbolic-address stores
+    /// through the Multi-cell lazy path instead of building eager ITE chains.
+    /// Default off — the load-time collapse cost regresses sym-write 4×
+    /// (1.8s vs 0.42s baseline, measured 2026-05-14) and likely other
+    /// read-heavy symbolic-memory workloads. Kept as an opt-in switch
+    /// per the design doc soft-blocker rule (see
+    /// `docs/advanced-topics/rust_lazy_memory_design.rst` Phase 2). Phase 3
+    /// follow-up will investigate per-load caching of the collapsed BV
+    /// before flipping the default.
+    use_multi_cell_stores: bool,
 }
 
 impl PendingWrite {
@@ -157,7 +167,20 @@ impl SymbolicMemory {
             zero_fill_unconstrained: false,
             imported_addrs: FxHashSet::default(),
             enforce_permissions: false,
+            use_multi_cell_stores: false,
         }
+    }
+
+    /// Enable or disable Phase 2 (angr-qh5u) Multi-cell lazy stores for
+    /// `Multiple` / `Strided` concretization results. Default off — see
+    /// the `use_multi_cell_stores` field doc for the rationale.
+    pub fn set_use_multi_cell_stores(&mut self, enabled: bool) {
+        self.use_multi_cell_stores = enabled;
+    }
+
+    /// Whether Multi-cell lazy stores are enabled.
+    pub fn use_multi_cell_stores(&self) -> bool {
+        self.use_multi_cell_stores
     }
 
     /// Enable or disable strict per-page permission enforcement on load/store.
@@ -362,6 +385,7 @@ impl SymbolicMemory {
             zero_fill_unconstrained: self.zero_fill_unconstrained,
             imported_addrs: self.imported_addrs.clone(),
             enforce_permissions: self.enforce_permissions,
+            use_multi_cell_stores: self.use_multi_cell_stores,
         }
     }
 
@@ -388,11 +412,25 @@ impl SymbolicMemory {
     /// Flush all pending writes by materializing ITE chains into memory.
     /// This must be called before exporting state to Python to ensure
     /// memory pages contain all written values.
+    ///
+    /// Phase 2 (angr-qh5u): also flushes Multi cells installed by the
+    /// lazy STORE path (`install_multi_for_candidates_safe`). Each Multi
+    /// byte collapses to a 1-byte symbolic_object so the existing
+    /// `_sync_rust_symbolic_objects_to_state` exporter picks it up.
+    /// Without this step Multi bytes would be invisible to Python on
+    /// state export — their pages would be exported as if the bytes
+    /// were concrete.
     pub fn flush_pending_writes(
         &mut self,
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
     ) -> Result<(), MemoryError> {
+        // Flush Multi cells regardless of pending_writes status — Phase 2
+        // makes Multi cells the default for symbolic-address stores, so
+        // export correctness depends on flushing them even when the
+        // pending_writes queue (a separate, scaffolded path) is empty.
+        self.flush_multi_cells(ctx);
+
         if self.pending_writes.is_empty() {
             return Ok(());
         }

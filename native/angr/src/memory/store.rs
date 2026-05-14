@@ -287,11 +287,15 @@ impl SymbolicMemory {
                 Ok(Some(result))
             }
             ConcretizationResult::Multiple(addrs) => {
-                // Prepare addresses by auto-mapping
-                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
-
-                // Perform conditional stores for each ready address
-                self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)?;
+                // Phase 2 (angr-qh5u): install Multi cells when the
+                // use_multi_cell_stores gate is on; otherwise fall back to
+                // the eager `store_conditional_multiple` path.
+                if self.use_multi_cell_stores {
+                    self.install_multi_for_candidates_safe(&addr, &value, addrs, ctx)?;
+                } else {
+                    let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
+                    self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)?;
+                }
                 Ok(Some(result))
             }
             ConcretizationResult::Strided {
@@ -300,10 +304,13 @@ impl SymbolicMemory {
                 count,
             } => {
                 let (base, stride, count) = (*base, *stride, *count);
-                // Prepare strided region
-                self.prepare_strided_region(base, stride, count, value.width() / 8);
-                // Use existing strided store
-                self.store_strided(&addr, &value, base, stride, count, ctx)?;
+                if self.use_multi_cell_stores {
+                    let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                    self.install_multi_for_candidates_safe(&addr, &value, &addrs, ctx)?;
+                } else {
+                    self.prepare_strided_region(base, stride, count, value.width() / 8);
+                    self.store_strided(&addr, &value, base, stride, count, ctx)?;
+                }
                 Ok(Some(result))
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
@@ -323,8 +330,12 @@ impl SymbolicMemory {
     }
 
     /// Store using a pre-computed concretization result.
-    /// Single addresses store concretely. All other symbolic results are deferred
-    /// to pending_writes for lazy materialization on load.
+    ///
+    /// Phase 2 (angr-qh5u): Multiple / Strided results install Multi cells
+    /// via `install_multi_for_candidates` rather than folding eager ITE
+    /// chains at store time. Load-time collapse handles the cost only for
+    /// bytes that are actually re-read (see `assemble_load_with_multi`).
+    /// `Single` and `TooLarge` / `Failed` paths are unchanged.
     pub fn store_with_concretization(
         &mut self,
         addr: &RustBV,
@@ -337,16 +348,28 @@ impl SymbolicMemory {
                 self.store_concrete_automap(*concrete_addr, value)
             }
             ConcretizationResult::Multiple(addrs) => {
-                let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
-                self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
+                // Phase 2 (angr-qh5u): see `store_symbolic_unified` for the
+                // same gate. Default off; Multi cells regress sym-write.
+                if self.use_multi_cell_stores {
+                    let addrs_v: Vec<u64> = addrs.clone();
+                    self.install_multi_for_candidates_safe(addr, &value, &addrs_v, ctx)
+                } else {
+                    let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
+                    self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
+                }
             }
             ConcretizationResult::Strided {
                 base,
                 stride,
                 count,
             } => {
-                self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
-                self.store_strided(addr, &value, *base, *stride, *count, ctx)
+                if self.use_multi_cell_stores {
+                    let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
+                    self.install_multi_for_candidates_safe(addr, &value, &addrs, ctx)
+                } else {
+                    self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
+                    self.store_strided(addr, &value, *base, *stride, *count, ctx)
+                }
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
                 // Return error so caller can fall back to Python's memory model,
@@ -471,6 +494,66 @@ impl SymbolicMemory {
         Ok(())
     }
 
+    /// Production-safe Multi-cell install.
+    ///
+    /// Phase 2 (angr-qh5u) entry point used by `store_symbolic_unified` and
+    /// `store_with_concretization`. Mirrors the eager safety semantics of
+    /// `store_conditional_multiple` / `store_strided` so a Phase 2 flip
+    /// can't lose Python backer data:
+    ///
+    /// * If any candidate page is in a lazy region, return
+    ///   `UnmappedPageInRegion { page_addr: first_missing }` so the
+    ///   interpreter can fetch the page and retry. Auto-mapping zero
+    ///   pages here would diverge state from Python (which has the
+    ///   backer data) — same invariant that
+    ///   `prepare_addresses_for_ite` and `store_concrete_lazy` enforce.
+    /// * Otherwise filter `addrs` down to candidates whose pages are
+    ///   already mapped (mirrors `prepare_addresses_for_ite`'s skip
+    ///   behavior for non-lazy unmapped pages — those are treated as
+    ///   unreachable since the symbolic address could not validly
+    ///   resolve to them) and pass to `install_multi_for_candidates`.
+    pub(super) fn install_multi_for_candidates_safe(
+        &mut self,
+        addr_expr: &RustBV,
+        value: &RustBV,
+        addrs: &[u64],
+        ctx: &SymContext,
+    ) -> Result<(), MemoryError> {
+        let size = value.width() / 8;
+
+        // Probe every candidate's pages first. Lazy-region misses must
+        // surface so the interpreter fetches the page; non-lazy misses
+        // are silently filtered (matches eager `prepare_addresses_for_ite`).
+        let mut ready: Vec<u64> = Vec::with_capacity(addrs.len());
+        for &cand in addrs {
+            let start_page = cand >> 12;
+            let end_page = (cand + size as u64 - 1) >> 12;
+            let mut all_mapped = true;
+            for page_num in start_page..=end_page {
+                if !self.pages.contains_key(&page_num) {
+                    if self.is_in_lazy_region(page_num) {
+                        return Err(MemoryError::UnmappedPageInRegion {
+                            page_addr: page_num << 12,
+                        });
+                    }
+                    all_mapped = false;
+                    break;
+                }
+            }
+            if all_mapped {
+                ready.push(cand);
+            }
+        }
+
+        if ready.is_empty() {
+            // No candidate page is currently mapped and none are lazy.
+            // Match eager semantics: silently no-op rather than error.
+            return Ok(());
+        }
+
+        self.install_multi_for_candidates(addr_expr, value, &ready, ctx)
+    }
+
     /// Test-rig helper: install Multi alternatives for a multi-byte value
     /// across a known list of candidate addresses without going through
     /// the address concretizer. Pure wrapper around
@@ -486,17 +569,18 @@ impl SymbolicMemory {
         self.install_multi_for_candidates(addr_expr, value, candidates, ctx)
     }
 
-    /// Lazy variant of `store_symbolic_unified`. For Multiple / Strided
-    /// concretization results, installs per-byte Multi alternatives
-    /// instead of folding eager ITE chains. The Single case falls
-    /// through to the existing concrete store path; TooLarge / Failed
-    /// surface the same errors as the eager unified path so callers
-    /// (Python fallback / SimProcedures) can react identically.
+    /// Lazy variant of `store_symbolic_unified`. After Phase 2 (angr-qh5u)
+    /// the default `store_symbolic_unified` also installs Multi cells for
+    /// Multiple / Strided, so this is now an alias kept for the Python
+    /// `_try_multi_cell_store` wiring (Phase 1.4, angr-5zw8) and for
+    /// existing tests that monkey-patch routing. Behavior is identical to
+    /// the default unified path.
     ///
-    /// This helper is the production-side entry for Phase 1+ lazy
-    /// symbolic memory. It is NOT wired into the default store path —
-    /// that is Phase 2 (angr-qh5u). Phase 1.4 (angr-5zw8) will route
-    /// the strchr SimProcedure through this.
+    /// Unlike the default path, this variant uses the bare
+    /// `install_multi_for_candidates` helper (which auto-maps unmapped
+    /// pages as zero RW), matching the original Phase 1.3 contract used
+    /// by SimProcedure-originated stores. The default path uses the
+    /// `_safe` variant which preserves Python backer data.
     pub fn store_symbolic_unified_multi(
         &mut self,
         addr: RustBV,

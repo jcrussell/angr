@@ -172,4 +172,66 @@ impl SymbolicMemory {
     pub fn multi_cell_count(&self) -> usize {
         self.multi_objects.len()
     }
+
+    /// Materialize every Multi cell into a per-byte symbolic_object so the
+    /// state export pipeline (`_sync_rust_symbolic_objects_to_state` in
+    /// `rust_state_export.py`) sees the lazy alternatives.
+    ///
+    /// Phase 2 (angr-qh5u): flips the default symbolic-address store to
+    /// install Multi cells. Multi bytes are tracked in a parallel
+    /// `multi_bitmap`, not `symbolic_bitmap`, so `symbolic_offsets()`
+    /// does not list them. Without this flush the page exporter writes
+    /// the underlying concrete `data[]` byte (usually zero), losing the
+    /// alternative values entirely.
+    ///
+    /// Per byte:
+    ///   1. Right-fold alternatives into an ITE chain with the page's
+    ///      current concrete byte as the default else. Same construction
+    ///      as `assemble_load_with_multi` for a 1-byte load.
+    ///   2. Insert the ITE BV at `symbolic_objects[byte_addr]` (width 8).
+    ///   3. Mark the byte symbolic on the page; drop the Multi marker.
+    ///   4. Remove the `multi_objects` entry.
+    /// The result is byte-equivalent to an eager store: every later load
+    /// of that byte will see the same ITE result through the regular
+    /// symbolic_objects path.
+    pub fn flush_multi_cells(&mut self, ctx: &crate::symbolic::SymContext) {
+        if self.multi_objects.is_empty() {
+            return;
+        }
+
+        let multi = std::mem::take(&mut self.multi_objects);
+        for (byte_addr, payload) in multi {
+            let page_num = byte_addr >> 12;
+            let offset = (byte_addr & PAGE_MASK) as u16;
+
+            let concrete_byte: u8 = match self.pages.get(&page_num) {
+                Some(page) => page.load_concrete(offset, 1).first().copied().unwrap_or(0),
+                None => {
+                    // Page was unmapped after the Multi cell was installed.
+                    // Drop the cell — there is no byte to merge it with and
+                    // no page to mark symbolic. Matches the eager path's
+                    // behavior when a candidate page becomes unmapped
+                    // mid-execution.
+                    continue;
+                }
+            };
+
+            // Right-fold so alt[0] ends up at the outermost ITE — same
+            // shape as assemble_load_with_multi.
+            let default = RustBV::concrete(concrete_byte as u128, 8);
+            let mut acc = default;
+            for alt in payload.alternatives().iter().rev() {
+                acc = alt.cond.ite(&alt.value, &acc, ctx);
+            }
+
+            // Update the page bitmap: clear Multi, set Symbolic.
+            // Keep a single mutable borrow for both updates.
+            if let Some(page) = self.pages.get_mut(&page_num) {
+                page.clear_multi(offset);
+                page.mark_symbolic(offset, 1);
+            }
+            self.symbolic_objects.insert(byte_addr, acc);
+            self.dirty_pages.insert(page_num);
+        }
+    }
 }
