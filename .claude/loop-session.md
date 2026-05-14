@@ -1,107 +1,129 @@
-## Session log: 2026-05-14 — Phase 1.4 wired (angr-5zw8)
+## Session log: 2026-05-14 — Phase 2 lazy STORE landed gated (angr-qh5u)
 
 ### Closed task
 
-**angr-5zw8** — Phase 1.4: wire MultiwriteAnnotation detection in
-`_cb_memory_store_symbolic_full` to the Rust Multi-cell store path
-(`store_symbolic_unified_multi`). This closes the last sub-bead of
-angr-czph (parent Phase 1 lazy LOAD).
+**angr-qh5u** — Phase 2 lazy symbolic STORE for very large solution
+sets. The Multi-cell write path is wired into the default unified
+store entry points (`store_symbolic_unified`,
+`store_with_concretization`), but the production code keeps the
+eager `store_conditional_multiple` / `store_strided` path until a
+runtime gate is flipped. The gate is OFF by default per the design
+doc's soft-blocker rule because the load-time ITE rebuild regresses
+sym-write 10% in this environment.
 
-### What landed
+### What landed (commit bce90fef4)
 
 **Rust side**
 
-- `native/angr/src/state.rs` — added
-  `memory_store_symbolic_multi(addr, value)` mirroring
-  `memory_store_symbolic` but dispatching to
-  `store_symbolic_unified_multi`.
-- `native/angr/src/exploration/state_api.rs` — added
-  `_state_memory_store_symbolic_multi(py, state_id, addr_ast, data_ast)`.
-  Returns `bool` (true on success). Converts addr/data via
-  `claripy_to_rustbv` inside a scoped immutable solver borrow, then
-  drops the borrow so the mutable `memory_store_symbolic_multi` call
-  is borrow-checker clean.
-- `native/angr/src/exploration/mod.rs` — pyclass method
-  `state_memory_store_symbolic_multi(state_id, addr_ast, data_ast)`
-  wrapping the above. Documents the strchr / gets / fgets
-  MultiwriteAnnotation use case.
-
-**Python side**
-
-- `angr/exploration/rust_manager.py`:
-  - `_cb_memory_store_symbolic_full` now first tries
-    `_try_multi_cell_store(addr_ast, data_ast)`. On True the Rust
-    Multi-cell write took the data; on False we fall through to the
-    existing `state.memory.store(...)` Python path so writes are not
-    lost.
-  - `_try_multi_cell_store`: detects `MultiwriteAnnotation` via
-    `addr_ast.has_annotation_type(...)`. Gates on
-    `_get_stepping_state_id()` (no current Rust state → fall through).
-    Routes via `_rust_state_memory_store_symbolic_multi`. Swallows
-    AttributeError (old Rust build) and generic exceptions (Rust-side
-    failures) so the Python fallback path can retry.
-  - `_rust_state_memory_store_symbolic_multi` is a thin Python wrapper
-    around the pyclass method — solely so tests can monkey-patch
-    routing (PyO3 methods are read-only at the binding level).
+- `memory/store.rs`:
+  - `install_multi_for_candidates_safe(addr_expr, value, addrs, ctx)`
+    — Phase 2's production-safe variant. Returns
+    `UnmappedPageInRegion` if any candidate page is unmapped inside a
+    declared lazy region (interpreter fetches from Python); silently
+    filters non-lazy unmapped candidates (matches
+    `prepare_addresses_for_ite` skip semantics); auto-maps nothing.
+  - `store_symbolic_unified` and `store_with_concretization` Multiple
+    and Strided branches now branch on
+    `self.use_multi_cell_stores`: when on, call
+    `install_multi_for_candidates_safe`; when off, retain the eager
+    `store_conditional_multiple` / `store_strided` path.
+  - `store_conditional_multiple` becomes dead code under the gate-on
+    path but is kept around for the gate-off path.
+- `memory/multi.rs`:
+  - `flush_multi_cells(ctx)` collapses every Multi byte to a 1-byte
+    `symbolic_objects[byte_addr]` entry via the same right-fold as
+    `assemble_load_with_multi`. After flush the page bitmap shows the
+    byte as Symbolic (not Multi) so the state export pipeline
+    (`_sync_rust_symbolic_objects_to_state`) picks it up. Without
+    this step Multi bytes export as concrete `data[]` (usually
+    zero), losing the lazy alternatives.
+- `memory/mod.rs`:
+  - New `use_multi_cell_stores: bool` field on `SymbolicMemory`
+    (default false) + setter / getter; propagated through `fork`.
+  - `flush_pending_writes` calls `flush_multi_cells` unconditionally
+    on the path — a no-op when `multi_objects` is empty (always true
+    with the gate off).
+- `state.rs`:
+  - `set_use_multi_cell_stores` / `use_multi_cell_stores` on
+    `RustSimState`, plus PyO3 names so Python can toggle the gate
+    once a SimOption hook lands.
 
 **Tests**
 
-- `tests/engines/test_rust_exploration.py` — 7 new tests in the
-  `TestErrorRecovery` block:
-  * `test_try_multi_cell_store_skips_when_no_annotation`
-  * `test_try_multi_cell_store_skips_when_state_id_unknown`
-  * `test_try_multi_cell_store_routes_to_pyo3_when_annotated`
-  * `test_try_multi_cell_store_falls_through_on_pyo3_failure`
-  * `test_try_multi_cell_store_falls_through_on_pyo3_exception`
-  * `test_cb_memory_store_symbolic_full_routes_through_multi`
-  * `test_cb_memory_store_symbolic_full_falls_back_when_multi_fails`
+- `memory/tests.rs` — 6 new `test_phase2_*` tests:
+  * `gate_off_default_eager_store` — default no Multi cells.
+  * `gate_on_installs_multi` — flip flag, Multi cells appear, load
+    round-trips.
+  * `safe_install_lazy_region_signals` — unmapped lazy candidate
+    returns `UnmappedPageInRegion { page_addr }`.
+  * `safe_install_skips_unmapped_non_lazy` — non-lazy unmapped
+    candidate silently filtered, mapped candidate still gets a Multi.
+  * `flush_multi_to_symbolic_objects` — flush produces correct
+    per-byte ITE under each candidate's concretization constraint.
+  * `fork_independence_via_safe_install` — parent / child Multi
+    cells diverge after fork.
 
 ### Validation
 
-- `pytest tests/engines/test_rust_exploration.py`: **403/403** (up
-  from 396 — +7 new tests).
-- `cargo test --release --lib`: 756/756.
-- `run_single.py fauxware --engine rust`: still solves, finds
-  SOSNEAKY password.
+- `cargo test --release --lib`: **762/762** (+6 new).
+- `pytest tests/engines/test_rust_exploration.py`: **403/403**.
+- `run_single.py sym-write --engine rust`: 1.58s gate-off vs 1.58s
+  baseline HEAD (parity, within noise). Gate-on: ~1.76s.
+- `run_single.py fauxware --engine rust`: 0.30s (unchanged).
+- `run_single.py {ais3_crackme, strcpy_find, defcamp_r100} --engine rust`:
+  within 6% of stashed HEAD; baseline_timings.json itself is stale on
+  this machine (see new bd memory `baseline-timings-stale-2026-05-14`).
 
-### Why this is the right scope for Phase 1.4
+### Acceptance vs the bead
 
-The bead description called for "wire one Python SimProcedure path
-... via the existing memory_store_symbolic_full callback bypass."
-With Rust's default write_range_limit=128 matching Python's
-MultiwriteAnnotation default, in practice the callback rarely fires
-for strchr-style stores in production today — Rust hits `Multiple`
-internally and goes eager. The Phase 1.4 wiring lands the plumbing
-contract so that when Phase 2 (angr-qh5u) flips the default
-store path to use Multi cells (or when a user widens
-write_range_limit past the threshold and TooLarge fires), the
-MultiwriteAnnotation routing is in place and tested.
+- **≥2× sym-write speedup target**: NOT MET — soft blocker triggered.
+  Gate stays off; Phase 2 ships as plumbing-only.
+- **No regression on benchmarks outside slower-than-1.0× table**: met
+  with gate off (default). Pairwise comparison against pre-Phase 2
+  HEAD shows <6% drift on tested benchmarks.
+- **389 Python tests pass**: met (403/403).
+- **New Rust unit tests cover fork / merge / export**: partial — fork
+  and export covered; merge of Multi cells across states still has no
+  test (Rust does not have a Multi merge path today; the design doc
+  notes merge correctness for Rust-Rust only).
 
-The annotation IS preserved across the bridge for SimProcedure-
-originated ASTs via `EXPRESSION_BY_OPERANDS_PTR` reverse cache
-(`native/angr/src/claripy_bridge.rs:80-83, 1030-1034`). So the
-Python-side `has_annotation_type` check on `addr_ast` works without
-needing to teach the RustBV layer about annotations.
+### Why gated
+
+The Multi-cell load collapse runs the alternatives right-fold on every
+load to a Multi byte, building fresh Z3 ITEs each time. The eager
+`store_conditional_multiple` builds one ITE at store time and the cached
+BV serves every subsequent load. For read-heavy symbolic-memory
+workloads (sym-write fits this) the eager amortization wins. The fix is
+a per-load collapse cache inside `MultiPayload` that memoizes the
+collapsed BV and invalidates on alternative append — tracked as
+**angr-j0n4** (Phase 3, P3, created this session).
 
 ### Memories saved this session
 
-(See bd remember section below.)
+- `qh5u-soft-blocker` — root cause of the 10% gate-on regression
+  and the per-load cache fix path.
+- `baseline-timings-stale-2026-05-14` — `baseline_timings.json` is
+  stale vs current env. Pairwise compare against HEAD with the change
+  stashed, not against the JSON, when assessing PR perf.
+- `invariant-multi-cell-routing-safe` — production callers must use
+  `install_multi_for_candidates_safe`, not the bare installer.
 
-### Open follow-up
+### Open follow-ups
 
-- Phase 2 (angr-qh5u): flip `store_symbolic_unified`
-  Multiple/Strided branches to call `store_symbolic_unified_multi`
-  unconditionally. Will trigger the load-side Multi collapse on
-  every symbolic store automatically and should be where the
-  sym-write 2× speedup target lands.
-- Phase 1.4 baseline measurement is moot in practice (callback
-  rarely fires today, see above). Real before/after numbers will
-  surface when Phase 2 lands.
+- **angr-j0n4** (Phase 3, P3) — per-load Multi-cell collapse cache.
+  Acceptance: gate-on sym-write at parity-or-better with gate-off;
+  ideally ≥2× improvement over the eager path. Once met, flip the
+  `SymbolicMemory` default and remove the gate.
+- The Phase 1.4 `_try_multi_cell_store` annotation gate
+  (`rust_manager.py:1632`) is now redundant for in-Rust stores once
+  the `use_multi_cell_stores` flag is on. Keep as-is for now; revisit
+  when the gate flips in Phase 3.
+- `baseline_timings.json` needs a refresh on the current env so the
+  PR-time regression gate stops firing on env drift alone.
 
-### Next ready (`bd ready` after close):
+### Next ready (`bd ready` after close)
 
-- angr-myty (P3, daytime perf dashboard) — Python/CI work
-- angr-qh5u (P3, Phase 2 lazy STORE) — direct successor; flips
-  the default store path to Multi cells. Significantly larger
-  surface than Phase 1.4 (touches store_conditional_multiple,
-  store_strided, the eager ITE path). Plan for a fresh session.
+- angr-myty (P3, daytime perf dashboard) — Python/CI work.
+- angr-j0n4 (P3, Phase 3 collapse cache) — direct follow-up, but
+  unproven without measurement infrastructure (Phase 0 ite-depth
+  counter already lands the data we need).
