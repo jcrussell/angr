@@ -1,40 +1,32 @@
-## Session log: 2026-05-14 — angr-q7ij (fauxware Rust empty output)
+## Session log: 2026-05-14
 
-### Status: complete
+### Completed this session
 
-### Outcome
-Fixed: NativeRead now records the symbolic stdin bytes it creates, so
-state export's `_inject_rust_stdin` can evaluate them and inject the
-concrete bytes back into `posix.stdin.content` — fauxware's
-`posix.dumps(0)` now contains the satisfying `SOSNEAKY` bytes.
+1. **angr-hzs0** (NEON Dup/Widen/Narrow ops) — CLOSED in commit 7630b1d66.
+   12 unit tests + 2 Z3 symbolic tests covering VDup/VWiden/VNarrowUn/
+   VNarrowBin/VQNarrowUn/VQNarrowBin. Updated test_neon_unimplemented_routing
+   and test_neon_does_not_shadow_existing_mappings.
+   Memories: invariant-neon-routing-tests, vex-qnarrow-naming.
 
-### Root cause
-`native/angr/src/procedures/read.rs::NativeRead::call` created
-`stdin_{read_id}_{i}` symbolic bytes and stored them to the buffer,
-but never called `state.record_stdin_symbol(name, 8)`. The state
-export path in `_inject_rust_stdin` short-circuits on
-`!self._rust_mgr.has_state_stdin_symbols(state_id)`, so Python's
-`posix.stdin.content` stayed empty and `posix.dumps(0)` returned `b''`.
+2. **angr-7xms** (Native syscall ABI dispatchers) — CLOSED in commit 33dbc05fa.
+   Registered existing arch-agnostic handlers (read/write/exit/exit_group/
+   brk/mprotect/munmap/gettimeofday/time/clock_gettime/rt_sigaction; ARM64
+   gets mmap) for X86, ARM, ARM64, MIPS32. Added Cdecl::syscall_arg_registers
+   override (EBX/ECX/EDX/ESI/EDI/EBP) and ARMEABI::syscall_arg_registers
+   override (R0-R5). 5 per-arch dispatch tests + 2 CC tests.
+   Memories: syscall-cc-override-needed, syscall-handlers-arch-agnostic.
 
-Other native stdin sources (fgets/fgetc/getchar/scanf) already record
-symbols; only read.rs was missing this line. Probably an oversight from
-when NativeRead was first added (angr-3tek.2).
+### Tests / Build state at session end
+- Rust: 739/739 passing (full suite, with vex-engine-z3).
+- Python: 395/395 passing (test_rust_exploration.py).
+- Pre-existing flaky tests: syscalls::brk::tests::fork_preserves_posix_brk,
+  syscalls::mmap::tests::fork_preserves_mmap_base. Both fail on HEAD with
+  pyo3 Python interpreter init errors when run individually — order-dependent.
+  Not introduced this session.
 
-### Fix
-`native/angr/src/procedures/read.rs:67-76` — collect names up front,
-then `state.record_stdin_symbol(name.clone(), 8)` for each. Added a
-unit test `test_read_records_stdin_symbols` covering this.
-
-### Verified
-- All 395 Rust-exploration unit tests pass.
-- `python tests/benchmarks/run_single.py fauxware --both`:
-  python output `         SOSNEAKY `, rust output now contains
-  `SOSNEAKY` (was empty before).
-- ais3_crackme smoke test: still finds `b'ais3{I_tak3_g00d_n0t3s}'`.
-- Property fuzzer still reports `exact-mismatch` (different padding
-  between python/rust stdin layouts), but the SOSNEAKY content is
-  present — the "empty Rust output" bug from angr-q7ij is resolved.
-  Promoting fauxware to rust_only=False is a separate decision.
-
-### Files changed
-- `native/angr/src/procedures/read.rs` (record_stdin_symbol + test)
+### Next picks
+- angr-g9hy (MIPS32 $t0 symbolic accumulation bug) — non-deterministic;
+  investigate stepping.rs symbolic register fork/cache path. Workaround
+  documented; bench unblocked. Likely needs careful repro setup.
+- angr-myty (perf dashboard) — substantial CI/Pages work.
+- angr-pogf (lazy memory design) — research/design task.
