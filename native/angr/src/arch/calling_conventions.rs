@@ -254,6 +254,14 @@ impl CallingConvention for Cdecl {
         &[]
     }
 
+    fn syscall_arg_registers(&self) -> &[u32] {
+        // Linux i386 syscall ABI (int 0x80): EBX, ECX, EDX, ESI, EDI, EBP.
+        // The C ABI is empty (cdecl is stack-only) but syscalls bypass
+        // libc, so we must define the kernel ABI explicitly here.
+        // x86 VEX offsets: EBX=20, ECX=12, EDX=16, ESI=32, EDI=36, EBP=28.
+        &[20, 12, 16, 32, 36, 28]
+    }
+
     fn fp_arg_registers(&self) -> &[u32] {
         // No register FP arguments
         &[]
@@ -298,6 +306,15 @@ impl CallingConvention for ARMEABI {
     fn arg_registers(&self) -> &[u32] {
         // R0-R3 (ARM VEX offsets: R0=8, R1=12, R2=16, R3=20)
         &[8, 12, 16, 20]
+    }
+
+    fn syscall_arg_registers(&self) -> &[u32] {
+        // Linux ARM EABI syscall ABI: R0-R5 hold args (R7 holds the
+        // syscall number). The C ABI only uses R0-R3, so syscalls with
+        // 4+ args (e.g. mmap2 with 6, rt_sigaction with 4) need the
+        // wider window or extracted args would be zero-padded.
+        // ARM VEX offsets: R0=8, R1=12, R2=16, R3=20, R4=24, R5=28.
+        &[8, 12, 16, 20, 24, 28]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
@@ -604,9 +621,50 @@ mod tests {
     #[test]
     fn test_default_syscall_args_match_arg_registers() {
         // CCs that don't override syscall_arg_registers should fall back to
-        // the C ABI registers. Verify on a non-amd64 CC.
-        let cc = Cdecl;
+        // the C ABI registers. AArch64 and MipsO32 don't override (their
+        // C ABI register windows X0-X7 / $a0-$a3 cover the syscall ABI).
+        // Cdecl/SystemV_AMD64/ARMEABI all override, so don't use them here.
+        let cc = AArch64CC;
         assert_eq!(cc.syscall_arg_registers(), cc.arg_registers());
+        let cc = MipsO32;
+        assert_eq!(cc.syscall_arg_registers(), cc.arg_registers());
+    }
+
+    #[test]
+    fn test_cdecl_syscall_args_use_linux_i386_abi() {
+        // Linux i386 syscall ABI (int 0x80): EBX, ECX, EDX, ESI, EDI, EBP.
+        // The C ABI cdecl is empty (stack-only), so this MUST be overridden
+        // or extract_syscall_args would zero-pad every arg. x86 VEX offsets:
+        // EBX=20, ECX=12, EDX=16, ESI=32, EDI=36, EBP=28.
+        let cc = Cdecl;
+        assert_eq!(
+            cc.syscall_arg_registers(),
+            &[20, 12, 16, 32, 36, 28][..],
+            "x86 syscall ABI must be EBX, ECX, EDX, ESI, EDI, EBP",
+        );
+        assert!(
+            cc.arg_registers().is_empty(),
+            "C ABI sanity check (cdecl is stack-only)"
+        );
+    }
+
+    #[test]
+    fn test_arm_eabi_syscall_args_extend_to_r5() {
+        // Linux ARM EABI syscall ABI: R0-R5 hold args (R7 holds the syscall
+        // number). The C ABI only uses R0-R3, so syscalls with 4+ args
+        // (mmap2 with 6, rt_sigaction with 4) require the wider register
+        // window. ARM VEX offsets: R0=8, R1=12, R2=16, R3=20, R4=24, R5=28.
+        let cc = ARMEABI;
+        assert_eq!(
+            cc.syscall_arg_registers(),
+            &[8, 12, 16, 20, 24, 28][..],
+            "ARM Linux syscall ABI must extend the C ABI window to R5",
+        );
+        assert_eq!(
+            cc.arg_registers(),
+            &[8, 12, 16, 20][..],
+            "C ABI sanity check (R0-R3 only)"
+        );
     }
 
     #[test]
