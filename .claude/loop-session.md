@@ -1,32 +1,70 @@
-## Session log: 2026-05-14
+## Session log: 2026-05-14 (afternoon)
 
 ### Completed this session
 
-1. **angr-hzs0** (NEON Dup/Widen/Narrow ops) — CLOSED in commit 7630b1d66.
-   12 unit tests + 2 Z3 symbolic tests covering VDup/VWiden/VNarrowUn/
-   VNarrowBin/VQNarrowUn/VQNarrowBin. Updated test_neon_unimplemented_routing
-   and test_neon_does_not_shadow_existing_mappings.
-   Memories: invariant-neon-routing-tests, vex-qnarrow-naming.
+**angr-g9hy (MIPS32 $t0 symbolic accumulation bug) — CLOSED**
+in commit ceba7816b.
 
-2. **angr-7xms** (Native syscall ABI dispatchers) — CLOSED in commit 33dbc05fa.
-   Registered existing arch-agnostic handlers (read/write/exit/exit_group/
-   brk/mprotect/munmap/gettimeofday/time/clock_gettime/rt_sigaction; ARM64
-   gets mmap) for X86, ARM, ARM64, MIPS32. Added Cdecl::syscall_arg_registers
-   override (EBX/ECX/EDX/ESI/EDI/EBP) and ARMEABI::syscall_arg_registers
-   override (R0-R5). 5 per-arch dispatch tests + 2 CC tests.
-   Memories: syscall-cc-override-needed, syscall-handlers-arch-agnostic.
+Despite the bead title pointing at MIPS32 symbolic register collapse,
+the root cause was NOT in the Rust engine at all. It was in the disk
+init cache invalidation gate `_state_has_user_symbolic` (rust_manager.py),
+which only scanned MEMORY for user symbolic data and ignored REGISTERS.
+
+Repro flow:
+1. User: `state = proj.factory.blank_state(addr=entry)`
+2. User: `state.regs.a0 = claripy.BVS("a0", 32)`
+3. User: `RustExplorationManager(proj, [state])`
+
+`_state_has_user_symbolic(state)` returned False (memory clean), so
+`_compute_disk_init_key` returned a valid cache key. The cached state
+(with concrete a0=0 — `_extract_register_snapshot` skips symbolics)
+silently replaced the user's state. `_sync_registers_to_rust` then ran
+the fast precomputed_regs path, pushing a0=0 to Rust. The user's
+symbolic a0 BVS was lost. Rust ran the entire MIPS32 chain with
+concrete a0=0, producing concrete t0=0, BEQ concrete-false, no FOUND.
+
+Fix: extended `_state_has_user_symbolic` to iterate
+`state.registers._pages.items()` for `symbolic_data` entries whose
+variable names don't start with `(mem_, reg_, unconstrained)` — the
+default symbol-fill prefixes. User-named BVSes are detected and the
+cache key returns '' (caching disabled), so the slow
+`_sync_registers_to_rust` path runs and pushes symbolic a0 properly.
+
+False-start: first attempt also iterated `getattr(state.regs, X)` over
+all arch registers in the precomputed_regs fast path of
+`_sync_registers_to_rust`. That triggered the default fill (BVS alloc +
+warning log per uninitialized register) for ~80 x86_64 regs, causing
+20-130% regression on ais3/csgames/defcamp/etc. Reverted. The cache
+invalidation in `_state_has_user_symbolic` already suffices because it
+forces the slow path which iterates `state.regs.*` ONCE (the original
+behavior); the fast path doesn't need to handle symbolic regs.
+
+Regression test added: `test_mips32_symbolic_register_survives_disk_init_cache`
+in `TestMultiArchSupport`. N=30 multi-block accumulator, fails
+deterministically pre-fix, passes post-fix.
+
+Memories saved:
+- `disk-init-cache-symbolic-reg-invariant` — rule for cache designers
+- `g9hy-root-cause-not-mips` — root cause is not arch-specific
+- `avoid-state-regs-iter-in-init` — anti-pattern for hot init paths
+- `avoid-rust-mips-symbolic-accumulation-bench` — updated to FIXED
 
 ### Tests / Build state at session end
-- Rust: 739/739 passing (full suite, with vex-engine-z3).
-- Python: 395/395 passing (test_rust_exploration.py).
-- Pre-existing flaky tests: syscalls::brk::tests::fork_preserves_posix_brk,
-  syscalls::mmap::tests::fork_preserves_mmap_base. Both fail on HEAD with
-  pyo3 Python interpreter init errors when run individually — order-dependent.
-  Not introduced this session.
+- Rust: cargo check clean.
+- Python: 396/396 passing (test_rust_exploration.py, includes the new
+  regression test). One test (test_model_stability_constraint_order)
+  fails intermittently when the full suite runs — Z3 model-picker order
+  flake, predates this session, not introduced by my changes (passes
+  in isolation pre and post fix).
+- Benchmarks: post-fix timings flat vs pre-fix on fauxware/defcamp_r100/
+  ais3_crackme/csgames2018 (within noise). Baseline JSON values in
+  baseline_timings.json don't match this machine, so run_regression.py
+  reports false-positive regressions for those benchmarks — unrelated.
 
 ### Next picks
-- angr-g9hy (MIPS32 $t0 symbolic accumulation bug) — non-deterministic;
-  investigate stepping.rs symbolic register fork/cache path. Workaround
-  documented; bench unblocked. Likely needs careful repro setup.
 - angr-myty (perf dashboard) — substantial CI/Pages work.
-- angr-pogf (lazy memory design) — research/design task.
+- angr-pogf (lazy memory design) — research/design.
+- The "non-determinism" description in the original bead was misleading
+  (it was actually deterministic disk-cache replacement); future bead
+  reports describing non-deterministic correctness on the Rust engine
+  may also turn out to be disk-cache or fast-sync issues.
