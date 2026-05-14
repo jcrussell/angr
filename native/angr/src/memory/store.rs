@@ -5,7 +5,7 @@
 //! blocks across files are fine — Rust permits inherent impls to be split.
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
 use crate::vex::Endness;
 
 use super::page::{MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
@@ -195,6 +195,8 @@ impl SymbolicMemory {
                     let conditional_value = cond.ite(&value, &current, ctx);
                     self.store_concrete_lazy(candidate, conditional_value)?;
                 }
+                // Phase 0 instrumentation: eager ITE chain depth = #candidates.
+                record_mem_ite_depth(addrs.len() as u32);
                 Ok(())
             }
             ConcretizationResult::TooLarge { min, max, .. } => Err(MemoryError::SymbolicAddress {
@@ -240,6 +242,11 @@ impl SymbolicMemory {
             // Store the conditional value
             self.store_concrete_lazy(candidate, conditional_value)?;
         }
+
+        // Phase 0 instrumentation: record the depth of the eager ITE chain
+        // produced by this strided store. Phase 1+ Multi cells will record
+        // the same metric on Multi insertion for direct comparison.
+        record_mem_ite_depth(count as u32);
 
         Ok(())
     }
@@ -384,6 +391,11 @@ impl SymbolicMemory {
             // Store the conditional value with auto-mapping
             self.store_concrete_automap(candidate, conditional_value)?;
         }
+
+        // Phase 0 instrumentation: record the depth of the eager ITE chain
+        // produced by this conditional-multiple store. Phase 1+ Multi cells
+        // will record the same metric on Multi insertion for direct comparison.
+        record_mem_ite_depth(addrs.len() as u32);
 
         Ok(())
     }

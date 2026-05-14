@@ -1195,3 +1195,99 @@ fn test_permission_enforcement_wide_load_three_pages_middle_writeonly() {
         other => panic!("expected Permission error, got {:?}", other),
     }
 }
+
+/// angr-0nme Phase 0: an eager symbolic store with N candidate addresses
+/// produces an ITE chain of depth N. `record_mem_ite_depth` must bump the
+/// `mem_ite_depth_max` watermark and add to the cumulative total. This is
+/// the baseline metric that Phase 1 (Multi cells, angr-czph) will be
+/// compared against.
+///
+/// The two `mem_ite_depth_*` counters are process-global atomics shared
+/// with `cargo test` parallel runners, so this asserts on **deltas**
+/// from a captured baseline rather than absolute values. The pre/post
+/// difference for `mem_ite_depth_total` must be at least 3 (one
+/// 3-candidate eager store from this test); for `mem_ite_depth_max` the
+/// post-store watermark must be at least 3 (it can only climb).
+#[test]
+fn test_mem_ite_depth_counter_records_eager_multi_store() {
+    use crate::concretize::AddressConcretizer;
+    use crate::symbolic::get_solver_stats;
+
+    let pre = get_solver_stats();
+    let pre_total = pre.get("mem_ite_depth_total").copied().unwrap_or(0);
+    assert!(
+        pre.contains_key("mem_ite_depth_max"),
+        "mem_ite_depth_max key must be reported by get_solver_stats"
+    );
+    assert!(
+        pre.contains_key("mem_ite_depth_total"),
+        "mem_ite_depth_total key must be reported by get_solver_stats"
+    );
+
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // Build a symbolic address constrained to {0x1000, 0x1004, 0x1008}.
+    let addr = RustBV::symbolic(&ctx, "addr".to_string(), 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let a1 = addr.eq(&RustBV::concrete(0x1004, 64), &ctx);
+    let a2 = addr.eq(&RustBV::concrete(0x1008, 64), &ctx);
+    let or_01 = a0.or(&a1, &ctx);
+    let or_all = or_01.or(&a2, &ctx);
+    ctx.assume_true(&or_all);
+    assert!(ctx.is_sat(), "candidate-address context must be SAT");
+
+    let value = RustBV::concrete(0xDEAD, 32);
+    mem.store_symbolic(addr, value, &ctx, &concretizer)
+        .expect("symbolic store with multi solutions must succeed");
+
+    let post = get_solver_stats();
+    let post_max = post.get("mem_ite_depth_max").copied().unwrap();
+    let post_total = post.get("mem_ite_depth_total").copied().unwrap();
+    assert!(
+        post_max >= 3,
+        "expected mem_ite_depth_max >= 3 (got {post_max}) after a 3-candidate eager store"
+    );
+    assert!(
+        post_total >= pre_total + 3,
+        "expected mem_ite_depth_total delta >= 3 (pre={pre_total}, post={post_total})"
+    );
+}
+
+/// angr-0nme Phase 0: direct calls to `record_mem_ite_depth` increment the
+/// cumulative total and lift the max watermark monotonically. A 0-depth
+/// call is a no-op. Verified via deltas because the underlying atomics
+/// are process-global and may be touched by other parallel tests.
+#[test]
+fn test_record_mem_ite_depth_helper() {
+    use crate::symbolic::{get_solver_stats, record_mem_ite_depth};
+
+    let baseline = get_solver_stats();
+    let base_total = baseline.get("mem_ite_depth_total").copied().unwrap_or(0);
+    let base_max = baseline.get("mem_ite_depth_max").copied().unwrap_or(0);
+
+    record_mem_ite_depth(0); // no-op
+    let after_zero = get_solver_stats();
+    assert_eq!(
+        after_zero.get("mem_ite_depth_total").copied().unwrap_or(0),
+        base_total,
+        "record_mem_ite_depth(0) must not change the total"
+    );
+
+    record_mem_ite_depth(5);
+    record_mem_ite_depth(8);
+    record_mem_ite_depth(3);
+    let after = get_solver_stats();
+    let after_total = after.get("mem_ite_depth_total").copied().unwrap();
+    let after_max = after.get("mem_ite_depth_max").copied().unwrap();
+    assert!(
+        after_total >= base_total + 16,
+        "expected total delta of 16 (5+8+3); base={base_total} after={after_total}"
+    );
+    assert!(
+        after_max >= base_max.max(8),
+        "expected max to reach at least 8; base={base_max} after={after_max}"
+    );
+}

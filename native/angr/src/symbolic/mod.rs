@@ -13,7 +13,9 @@ pub mod registry;
 mod table;
 mod value;
 
-pub use context::{ConstraintSyncError, SymContext, get_solver_stats, reset_solver_stats};
+pub use context::{
+    ConstraintSyncError, SymContext, get_solver_stats, record_mem_ite_depth, reset_solver_stats,
+};
 pub use handle::RustBVHandle;
 pub use registry::{SymbolInfo, SymbolicIdentityRegistry, clear_global_registry, global_registry};
 pub use table::RustSymbolTable;

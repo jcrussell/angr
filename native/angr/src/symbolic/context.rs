@@ -77,6 +77,16 @@ static Z3_SAT_COUNT: AtomicU64 = AtomicU64::new(0);
 static Z3_UNSAT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Unknown (timeout / resource limit).
 static Z3_TIMEOUT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Deepest ITE chain ever stored as a symbolic memory cell value.
+///
+/// Recorded by the eager symbolic-store paths (`store_conditional_multiple`,
+/// `store_strided`) on every batch they produce. Future lazy-memory work
+/// (angr-czph / angr-qh5u Multi cells) will record the same metric on Multi
+/// insertion, so before/after comparison is direct.
+static MEM_ITE_DEPTH_MAX: AtomicU32 = AtomicU32::new(0);
+/// Cumulative count of conditional iterations added to ITE chains in symbolic
+/// stores. Sum, not max — surfaces total ITE-chain work across a run.
+static MEM_ITE_DEPTH_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Per-site counters and timers for solver.check() calls.
 /// Indexed by `CheckSite as usize`.
@@ -188,6 +198,14 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "z3_timeout_count".into(),
         Z3_TIMEOUT_COUNT.load(Ordering::Relaxed),
     );
+    stats.insert(
+        "mem_ite_depth_max".into(),
+        MEM_ITE_DEPTH_MAX.load(Ordering::Relaxed) as u64,
+    );
+    stats.insert(
+        "mem_ite_depth_total".into(),
+        MEM_ITE_DEPTH_TOTAL.load(Ordering::Relaxed),
+    );
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
         let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
@@ -216,10 +234,28 @@ pub fn reset_solver_stats() {
     Z3_SAT_COUNT.store(0, Ordering::Relaxed);
     Z3_UNSAT_COUNT.store(0, Ordering::Relaxed);
     Z3_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
+    MEM_ITE_DEPTH_MAX.store(0, Ordering::Relaxed);
+    MEM_ITE_DEPTH_TOTAL.store(0, Ordering::Relaxed);
     for i in 0..NUM_CHECK_SITES {
         Z3_CHECK_SITE_COUNT[i].store(0, Ordering::Relaxed);
         Z3_CHECK_SITE_TIME_NS[i].store(0, Ordering::Relaxed);
     }
+}
+
+/// Record that a symbolic store wrote an ITE chain of `depth` alternatives.
+///
+/// Bumps the cumulative total and lifts the max watermark via `fetch_max`.
+/// Called from `memory/store.rs` after `store_conditional_multiple` /
+/// `store_strided` build their chains. Future Multi-cell (Phase 1+) code
+/// should call this on Multi cell insertion as well so before/after
+/// comparison is direct.
+#[inline]
+pub fn record_mem_ite_depth(depth: u32) {
+    if depth == 0 {
+        return;
+    }
+    MEM_ITE_DEPTH_MAX.fetch_max(depth, Ordering::Relaxed);
+    MEM_ITE_DEPTH_TOTAL.fetch_add(depth as u64, Ordering::Relaxed);
 }
 
 /// Increment Z3 AST build counter (called from value.rs).
