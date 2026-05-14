@@ -85,6 +85,11 @@ FAST_SUITE = [
     # MIPS32 lift + exec stays green and timing stays within 15% of
     # baseline_timings.json's cached ``rust_time``.
     ("mips32_le_branch", 30, "bfs", True),
+    # AArch64 LE inline-ELF synthetic benchmark (angr-jzn8). Same shape
+    # and rationale as mips32_le_branch — promotes ARM64 from
+    # Experimental to Supported in the arch matrix. Avoids NEON ops
+    # (those still use the NeonUnimplemented scaffold and would panic).
+    ("aarch64_le_branch", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full

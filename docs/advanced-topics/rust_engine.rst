@@ -114,9 +114,9 @@ below "Supported" as experimental.
    * - ARM64
      - 1
      - 4 (blob branch, NEON mla, real ELF, native-proc)
-     - 0
+     - 1 (aarch64_le_branch synthetic)
      - AArch64
-     - Experimental
+     - Supported
    * - MIPS32
      - 4
      - 3 (BE blob, LE real ELF, native-proc)
