@@ -1,109 +1,119 @@
-## Session log: 2026-05-15 — Phase 4.1 wider-load collapse cache (angr-mmdh.1)
+## Session log: 2026-05-15 — Phase 4.2 flush_multi_cells coalescing (angr-mmdh.2)
 
 ### Closed task
 
-**angr-mmdh.1** — Wider-load collapse cache in `assemble_load_with_multi`.
-Phase 4.1 of the Multi-cell lazy memory work (parent `angr-mmdh`).
-Landed at commit `a1d9f5593`.
+**angr-mmdh.2** — Coalesce per-byte symbolic_objects on flush_multi_cells.
+Phase 4.2 of the Multi-cell lazy memory work (parent `angr-mmdh`).
+Landed at commit `278fc5223`.
 
 ### What landed
 
-**New types in `native/angr/src/memory/mod.rs`**
+**Core change in `native/angr/src/memory/multi.rs`**
 
-- `ByteFingerprint::{Multi { version, default_byte }, Concrete { byte }}`
-  — per-byte snapshot used to detect whether a cached wider-load result
-  is still valid. Plain Symbolic bytes are not cached (return None
-  from `compute_wider_load_fingerprint` → bypass cache).
-- `CachedWiderLoad { byte_fingerprints, total_ite_depth, bv }` — cache
-  entry. `total_ite_depth` replays `record_mem_ite_depth` on hits to
-  preserve `invariant-mem-ite-depth-counter`.
-- `WIDER_LOAD_CACHE_CAP = 1024` — soft cap; on insertion past cap we
-  evict an arbitrary entry (`HashMap::keys().next()`).
+- `flush_multi_cells` now scans `multi_objects` in address order and
+  greedily extends runs of consecutive byte addresses whose
+  `MultiPayload` cond fingerprints match. For runs >= 2 bytes (capped
+  at `COALESCE_MAX_RUN = 16`):
+  - Per-candidate wider value = endian-aware concat of per-byte
+    `MultiAlternative::value` BVs.
+  - Wider default = endian-aware concat of page bytes.
+  - Right-fold (cond, wider_value) into one ITE BV of width 8*N.
+  - Insert at `symbolic_objects[run_start]`; populate
+    `symbolic_spans` for interior bytes.
+- Singletons and runs with any unmapped page fall through to the
+  byte-identical pre-Phase-4.2 per-byte path.
+- New helpers: `cond_fingerprint(&RustBV) -> u64` (Arc-ptr identity
+  for Expression; value/id hash for the other variants);
+  `payload_cond_fingerprint(&MultiPayload) -> Vec<u64>`;
+  `build_wider_value(&[RustBV], Endness, &SymContext) -> RustBV`.
 
-**Cache state on `SymbolicMemory`**
+**Key invariant**
 
-- `multi_versions: FxHashMap<u64, u64>` — per-byte monotonic version
-  counter, bumped by `set_multi_alternatives`, `clear_multi_at` (only
-  when a payload was present), and per byte inside `flush_multi_cells`.
-- `wider_load_cache: RefCell<FxHashMap<(u64, u32), CachedWiderLoad>>`.
-- `fork()` and `new()` updated; cache cloned on fork (refcounted BVs
-  make the clone cheap).
-
-**Load-path change in `memory/load.rs::assemble_load_with_multi`**
-
-1. Compute fingerprint (returns `None` if any byte is plain Symbolic
-   or any page is unmapped — falls through to existing build+error
-   handling).
-2. If fingerprint exists AND cache has an entry at `(addr, size)`
-   whose fingerprints match, replay
-   `record_mem_ite_depth(cached.total_ite_depth)` and return
-   `cached.bv.clone()`.
-3. Otherwise: existing per-byte build (tracking `total_ite_depth`
-   along the way), then on success insert into cache.
-4. `size==1` bypasses the cache (no concat to amortize).
+`install_multi_for_candidates` builds one cond per candidate then
+clones it into each byte — so neighbouring bytes from the same
+store-call share `Arc::as_ptr(operands)`. Future store paths that
+emit Multi bytes must follow this "build cond once, clone into each
+byte" pattern or coalescing will silently fall back to per-byte
+(correctness preserved, perf only).
 
 **Tests** (`memory/tests.rs`, 5 new):
 
-- `test_phase4_wider_load_cache_hit`: prime cache, second load reuses.
-- `test_phase4_wider_load_cache_skips_size_one`: size==1 not cached.
-- `test_phase4_wider_load_cache_invalidated_on_multi_install`: bumps
-  version → fingerprint mismatch → rebuild (uses two independent
-  addr vars so eval pins the new alt).
-- `test_phase4_wider_load_cache_skips_symbolic_bytes`: plain Symbolic
-  byte in range → not cached.
-- `test_phase4_wider_load_cache_fork_independence`: parent cache
-  survives child mutation.
+- `test_phase42_flush_coalesces_le_multi_byte_run`: 4-byte LE store
+  at 2 candidates -> 2 wider symbolic_objects (width 32) + interior
+  spans; load round-trips correctly under each concretization.
+- `test_phase42_flush_coalesces_be_multi_byte_run`: BE variant.
+- `test_phase42_flush_singleton_no_coalesce`: 1-byte store -> 2
+  per-byte entries unchanged.
+- `test_phase42_flush_fingerprint_mismatch_breaks_run`: a later
+  partial store appends an extra alt to byte 0x1002 -> run is broken
+  there; expected output is 1 coalesced width-16 entry at 0x1000
+  plus 2 singleton width-8 entries at 0x1002/0x1003.
+- `test_phase42_flush_run_length_cap`: 24-byte store coalesces into
+  one width-128 entry at 0x1000 + one width-64 entry at 0x1010.
 
 ### Validation
 
-- `cargo test --lib memory::` — 66/66 pass.
+- `cargo test --lib memory::` — 71/71 pass.
 - `python -m pytest tests/engines/test_rust_exploration.py` — 403/403
   pass.
-- `tests/benchmarks/run_regression.py --rust-only --skip-bimodal`
-  failures verified pre-existing (same failures with identical
-  baseline_timings.json before and after the change).
+- Regression-suite failures verified pre-existing: ran
+  `run_regression.py --rust-only --skip-bimodal` both with stash
+  popped and unpopped; same set of failures and near-identical times
+  on both.
 
-### Benchmarks (sym-write, --engine rust)
+### Benchmarks (sym-write, --engine rust, avg of 4 runs)
 
-| Config | Wall | load_stmt | z3_check | z3_site_eval_upto |
-|---|---|---|---|---|
-| Gate OFF | 1.62s avg | 9ms | 86ms | 55ms |
-| Gate ON (Phase 4.1) | 1.78s avg | 10ms | 158ms | 136ms |
+| Config | Wall | z3_check | z3_site_eval_upto |
+|---|---|---|---|
+| Gate OFF (Phase 4.2 dormant) | 1.55s | 86ms  | 55ms  |
+| Gate ON (Phase 4.1 baseline) | 1.78s | 158ms | 136ms |
+| Gate ON (Phase 4.2)          | 1.70s | 147ms | 125ms |
 
-Phase 4.1's stated goal — "load-time portion no longer dominates the
-gate-on regression vs gate-off (~1.55s baseline)" — is met. `load_stmt`
-gap is now 1ms. The remaining wall-time gap is downstream Z3 work in
-`z3_check` + `z3_site_eval_upto` driven by per-byte `symbolic_objects`
-entries from `flush_multi_cells`. That is Phase 4.2's scope (`angr-mmdh.2`).
+Phase 4.2 closes ~35% of the prior gate-on/gate-off gap (1.78->1.70
+of 1.78->1.62 baseline). Residual ~10% gap (1.70 vs 1.55) is in
+state-export downstream evals: `z3_check_count` and
+`z3_site_eval_upto_count` were unchanged (310/303 both Phase 4.1 and
+Phase 4.2) — coalescing reduced per-eval cost, not eval count.
+
+Gate-off remains unchanged at 1.55s (Phase 4.2 code path is dormant
+when `use_multi_cell_stores=false`, which is still the default).
 
 ### Memory updates
 
-- `phase41-bottleneck` — Phase 4.1 closes load-time portion; residual
-  is in Z3 work (state-export concretization), Phase 4.2 territory.
-- `invariant-multi-versions` — any future write path that mutates
-  `multi_objects` must call `self.bump_multi_version(addr)` or the
-  wider-load cache will serve stale BVs.
-- `benchmark-phase41-symwrite` — before/after numbers.
+- `phase42-bottleneck` — what Phase 4.2 does, the residual gap, the
+  metric deltas.
+- `invariant-coalesce-fingerprint` — Arc-ptr identity contract and
+  the 16-byte cap rationale.
+- `benchmark-phase42-symwrite` — before/after numbers and which
+  counts moved vs which stayed flat.
 
 ### Files modified
 
-- `native/angr/src/memory/mod.rs` (+150 -7)
-- `native/angr/src/memory/load.rs` (+48 -2)
-- `native/angr/src/memory/multi.rs` (+15 -3)
-- `native/angr/src/memory/tests.rs` (+191 -0)
+- `native/angr/src/memory/multi.rs` (+218 -40 net)
+- `native/angr/src/memory/tests.rs` (+211 -0)
 
 ### Caveats / follow-ups
 
 - The `use_multi_cell_stores` default stays `false`. Flipping it
-  (Phase 4.3, `angr-mmdh.3`) is blocked on Phase 4.2.
-- Wider-load cache benefit on the sym-write bench is small because
-  the gate-on regression isn't bottlenecked on load-time anyway. The
-  cache will likely show up more clearly on workloads with heavy
-  repeated loads over the same Multi regions.
-- Cache eviction is arbitrary (no LRU). At cap=1024 entries per state,
-  this should not matter; if a future workload trips it, add LRU
-  bookkeeping.
-- `.venv/bin/pip` is missing on this machine (only `python` and
-  `python3.12` symlinks). Used `tools/rebuild-rust.sh --cargo-only` as
-  the build path — same pattern as the recorded `env-venv-corruption`
-  / `venv-rebuild-cargo-direct-copy` memories.
+  (Phase 4.3, `angr-mmdh.3`) is the next bead but the ~10% residual
+  on sym-write may still gate it; downstream eval reductions
+  (state-export eval coalescing, or Rust-side
+  `_get_state_symbolic_z3_asts` early-out) are the next likely lever.
+- `z3_check_count` did NOT drop after coalescing — interesting; the
+  state-export pipeline appears to issue a similar number of evals
+  regardless of `symbolic_objects` entry count. Worth profiling
+  with `--rust-profile` and a Python-side trace before designing
+  Phase 4.3.
+- Run cap of 16 bytes is conservative; `RustBV::concat_into`
+  silently truncates widths > 120+8 via its u128 fast path. Lifting
+  the cap requires auditing `concat_into` for wider-than-128
+  safety.
+- `.venv/bin/pip` still missing on this machine; used
+  `tools/rebuild-rust.sh --cargo-only`. Same pattern as recorded in
+  `env-venv-corruption` / `venv-rebuild-cargo-direct-copy` memories.
+
+### Quick smoke verification (gate-off, post-change)
+
+- ais3_crackme: 2.00s (matches pre-existing regression-baseline
+  failure list)
+- defcamp_r100: 0.27s (matches baseline)
