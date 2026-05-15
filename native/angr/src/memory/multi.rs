@@ -215,6 +215,10 @@ impl SymbolicMemory {
         self.symbolic_spans.remove(&addr);
 
         self.multi_objects.insert(addr, payload);
+        // Phase 4.1: bump per-byte version so the wider-load cache notices
+        // this installation. Must run regardless of whether a prior
+        // payload existed at this address.
+        self.bump_multi_version(addr);
         // Counter contract: callers can't bypass this — this is the only
         // public path that installs a Multi cell.
         record_mem_ite_depth(depth);
@@ -228,11 +232,16 @@ impl SymbolicMemory {
     /// Remove lazy alternatives at a byte address and clear the page bit.
     /// Safe to call on a byte that is not currently Multi (no-op).
     pub fn clear_multi_at(&mut self, addr: u64) {
-        self.multi_objects.remove(&addr);
+        let had_payload = self.multi_objects.remove(&addr).is_some();
         let page_num = addr >> 12;
         let offset = (addr & PAGE_MASK) as u16;
         if let Some(page) = self.pages.get_mut(&page_num) {
             page.clear_multi(offset);
+        }
+        // Phase 4.1: bump version only when a payload was actually present
+        // so the no-op case stays free.
+        if had_payload {
+            self.bump_multi_version(addr);
         }
     }
 
@@ -270,6 +279,10 @@ impl SymbolicMemory {
 
         let multi = std::mem::take(&mut self.multi_objects);
         for (byte_addr, payload) in multi {
+            // Phase 4.1: this byte is leaving Multi state — bump its
+            // version so any cached wider-load entry whose fingerprint
+            // snapshotted Multi at this address is invalidated.
+            self.bump_multi_version(byte_addr);
             let page_num = byte_addr >> 12;
             let offset = (byte_addr & PAGE_MASK) as u16;
 

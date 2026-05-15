@@ -2214,3 +2214,194 @@ fn test_phase3_collapse_cache_clones_with_payload() {
         "original payload must retain its cache after clone mutation"
     );
 }
+
+// ============================================================================
+// Phase 4.1 (angr-mmdh.1): wider-load collapse cache in
+// `assemble_load_with_multi`
+// ============================================================================
+
+/// A wider load that touches a Multi byte must populate the wider-load
+/// cache. A second identical load must hit and return an equivalent BV.
+#[test]
+fn test_phase4_wider_load_cache_hit() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p41_hit_addr".to_string(), 64);
+    let value = RustBV::concrete(0xAA, 8);
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+        .unwrap();
+
+    assert_eq!(mem.wider_load_cache_len(), 0, "cache starts empty");
+
+    // First load (size 4 = wider than 1): populates the cache.
+    let first = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(mem.wider_load_cache_len(), 1, "first load populates cache");
+
+    // Second identical load: returns from cache.
+    let second = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    assert_eq!(probe.eval(&first), probe.eval(&second));
+    assert_eq!(mem.wider_load_cache_len(), 1, "second load reuses entry");
+}
+
+/// Size==1 loads bypass the wider-load cache (no concat to amortize).
+#[test]
+fn test_phase4_wider_load_cache_skips_size_one() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p41_size1_addr".to_string(), 64);
+    mem.store_concrete_multi(
+        &addr_var,
+        &RustBV::concrete(0x55, 8),
+        &[0x1000, 0x2000],
+        &ctx,
+    )
+    .unwrap();
+
+    let _ = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    assert_eq!(
+        mem.wider_load_cache_len(),
+        0,
+        "size==1 must not populate the wider-load cache"
+    );
+}
+
+/// Installing a new Multi alternative at a byte covered by a cached load
+/// must invalidate the cached entry (fingerprint mismatch on next read).
+/// Uses two independent address vars so the second store contributes an
+/// alternative whose cond can be made true while the first is false —
+/// letting eval pin the rebuilt result to the new value and fail loudly
+/// if the cache returned the stale BV.
+#[test]
+fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var1 = RustBV::symbolic(&ctx, "p41_inval_addr1".to_string(), 64);
+    let addr_var2 = RustBV::symbolic(&ctx, "p41_inval_addr2".to_string(), 64);
+
+    // First install: byte 0x1000 gets alt (addr_var1 == 0x1000, 0xAA).
+    mem.store_concrete_multi(
+        &addr_var1,
+        &RustBV::concrete(0xAA, 8),
+        &[0x1000, 0x2000],
+        &ctx,
+    )
+    .unwrap();
+
+    // Prime the cache under a probe where addr_var1==0x1000 (alt 0 fires
+    // → result byte is 0xAA).
+    let first_probe = ctx.fork();
+    first_probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x1000, 64), &first_probe));
+    let first = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(mem.wider_load_cache_len(), 1);
+    assert_eq!(first_probe.eval(&first), Some(0xAA));
+
+    // Second install at byte 0x1000 — independent cond (addr_var2 == 0x1000)
+    // bumps the per-byte version so the cached fingerprint mismatches.
+    mem.store_concrete_multi(
+        &addr_var2,
+        &RustBV::concrete(0xBB, 8),
+        &[0x1000, 0x3000],
+        &ctx,
+    )
+    .unwrap();
+
+    // Probe where alt 0's cond is false (addr_var1==0x9999) but alt 1's
+    // cond is true (addr_var2==0x1000). Right-fold ITE:
+    //   alt 0 (outermost): cond false → fall to ELSE
+    //   alt 1: cond true → 0xBB
+    // If the cache returns the stale BV from the first load (which lacks
+    // the alt 1 branch), eval here would NOT be 0xBB.
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x9999, 64), &probe));
+    probe.assume_true(&addr_var2.eq(&RustBV::concrete(0x1000, 64), &probe));
+    let after = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(
+        mem.wider_load_cache_len(),
+        1,
+        "rebuilt entry replaces the stale one, cache size unchanged"
+    );
+    assert_eq!(
+        probe.eval(&after),
+        Some(0xBB),
+        "rebuilt load must include the alt installed after the cache prime"
+    );
+}
+
+/// Loads that touch any plain Symbolic byte must not be cached.
+#[test]
+fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p41_sym_byte_addr".to_string(), 64);
+    // One Multi byte at 0x1000…
+    mem.store_concrete_multi(
+        &addr_var,
+        &RustBV::concrete(0xAA, 8),
+        &[0x1000, 0x2000],
+        &ctx,
+    )
+    .unwrap();
+
+    // …and a plain Symbolic byte at 0x1001 (via concrete store with a
+    // symbolic value).
+    let sym_val = RustBV::symbolic(&ctx, "p41_sym_byte_val".to_string(), 8);
+    mem.store_concrete(0x1001, sym_val).unwrap();
+
+    // A 4-byte load at 0x1000 covers both — must NOT cache.
+    let _ = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(
+        mem.wider_load_cache_len(),
+        0,
+        "loads touching plain Symbolic bytes must not be cached"
+    );
+}
+
+/// Forks must carry the wider-load cache forward (cheap BV refcount clone)
+/// and remain independent under child-side mutation.
+#[test]
+fn test_phase4_wider_load_cache_fork_independence() {
+    let ctx = SymContext::new_mock();
+    let mut parent = SymbolicMemory::new(Endness::Little);
+    parent.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p41_fork_addr".to_string(), 64);
+    parent
+        .store_concrete_multi(
+            &addr_var,
+            &RustBV::concrete(0xAA, 8),
+            &[0x1000, 0x2000],
+            &ctx,
+        )
+        .unwrap();
+    let _ = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(parent.wider_load_cache_len(), 1);
+
+    let mut child = parent.fork();
+    assert_eq!(child.wider_load_cache_len(), 1, "fork carries cache forward");
+
+    // Child mutation must not affect parent.
+    child
+        .store_concrete_multi(
+            &addr_var,
+            &RustBV::concrete(0xBB, 8),
+            &[0x1000, 0x3000],
+            &ctx,
+        )
+        .unwrap();
+    let _ = child.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    // Parent's cache still valid (size unchanged, fingerprint still matches
+    // its own copy of multi_versions).
+    let _ = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(parent.wider_load_cache_len(), 1);
+    assert_eq!(child.wider_load_cache_len(), 1);
+}

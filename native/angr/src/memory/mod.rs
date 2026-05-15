@@ -5,6 +5,8 @@
 //! - Mixed concrete/symbolic value storage
 //! - Efficient symbolic address handling
 
+use std::cell::RefCell;
+
 use im::OrdMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -128,18 +130,62 @@ pub struct SymbolicMemory {
     /// Phase 2 (angr-qh5u): route Multiple / Strided symbolic-address stores
     /// through the Multi-cell lazy path instead of building eager ITE chains.
     /// Default off — even after the Phase 3 (angr-j0n4) per-load collapse
-    /// cache landed, gate-on still regresses sym-write ~10% (1.72s vs 1.57s
-    /// gate-off baseline, measured 2026-05-14). The collapse cache itself
-    /// works (1.76s → 1.72s on gate-on after caching), but the residual
-    /// overhead is per-byte assembly in `assemble_load_with_multi` and
-    /// downstream state-export of per-byte symbolic_objects entries — not
-    /// load-time ITE rebuild. Flipping the default requires further work
-    /// (wider-load collapse cache and/or skipping byte-by-byte iteration
-    /// when a load is fully covered by a single Multi block). Kept as an
-    /// opt-in switch per the design doc soft-blocker rule (see
-    /// `docs/advanced-topics/rust_lazy_memory_design.rst` Phase 2).
+    /// cache and the Phase 4.1 (angr-mmdh.1) wider-load cache landed,
+    /// gate-on still regresses sym-write ~10% (1.78s vs 1.62s gate-off
+    /// baseline, measured 2026-05-15). Phase 4.1 closed the load-time
+    /// portion of the gap: gate-on `load_stmt` is now 10ms vs gate-off
+    /// 9ms — load-time no longer dominates the regression. The residual
+    /// cost is in Z3 work driven by per-byte `symbolic_objects` entries
+    /// produced by `flush_multi_cells` on state export: gate-on
+    /// `z3_site_eval_upto` 55ms → 136ms, `z3_check` 86ms → 158ms.
+    /// Closing that gap is Phase 4.2's job (per-byte flush coalescing).
+    /// Kept as an opt-in switch per the design doc soft-blocker rule
+    /// (see `docs/advanced-topics/rust_lazy_memory_design.rst` Phase 2).
     use_multi_cell_stores: bool,
+    /// Per-byte monotonic version counter for Multi cells. Bumped on every
+    /// `set_multi_alternatives` and `clear_multi_at` so the Phase 4.1
+    /// wider-load cache (`wider_load_cache`) can detect any installation
+    /// change at a byte address without comparing payload contents.
+    /// Versions persist across flush/reinstall so the fingerprint of a
+    /// post-flush Multi byte differs from the cached pre-flush snapshot
+    /// even when both happen to have the same alternative count.
+    pub(super) multi_versions: FxHashMap<u64, u64>,
+    /// Phase 4.1 (angr-mmdh.1): cached results from
+    /// `assemble_load_with_multi`, keyed by `(addr, size)`. Each entry
+    /// stores a per-byte fingerprint (Multi version+default_byte, or the
+    /// concrete byte for non-Multi cells) and the assembled `RustBV`.
+    /// Lookups rebuild the fingerprint and reuse the cached BV when it
+    /// matches — skipping the per-byte concat + ITE-rebuild that
+    /// dominated Phase 2 gate-on cost. RefCell because the cache lives
+    /// on the load path (`&self`).
+    wider_load_cache: RefCell<FxHashMap<(u64, u32), CachedWiderLoad>>,
 }
+
+/// Phase 4.1: one byte's role in a cached wider-load result. Loads that
+/// touch any plain Symbolic byte (`page.is_symbolic()` true but not Multi)
+/// are not cached — `symbolic_objects` and `symbolic_spans` have a
+/// different mutation profile this cache does not track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ByteFingerprint {
+    Multi { version: u64, default_byte: u8 },
+    Concrete { byte: u8 },
+}
+
+/// Phase 4.1: cached wider-load result. `total_ite_depth` replays the
+/// `record_mem_ite_depth` calls the existing per-byte path would have
+/// made — required by memory `invariant-mem-ite-depth-counter`.
+#[derive(Debug, Clone)]
+pub(super) struct CachedWiderLoad {
+    pub(super) byte_fingerprints: Vec<ByteFingerprint>,
+    pub(super) total_ite_depth: u32,
+    pub(super) bv: RustBV,
+}
+
+/// Soft cap on the wider-load cache to bound memory across long
+/// explorations. Loads with a distinct `(addr, size)` key fill this — at
+/// 1024 entries with ~10 bytes of fingerprint + one BV handle each, total
+/// memory stays in the tens of KB per state.
+pub(super) const WIDER_LOAD_CACHE_CAP: usize = 1024;
 
 impl PendingWrite {
     /// Check if a concrete address could possibly overlap with this pending write.
@@ -172,7 +218,87 @@ impl SymbolicMemory {
             imported_addrs: FxHashSet::default(),
             enforce_permissions: false,
             use_multi_cell_stores: false,
+            multi_versions: FxHashMap::default(),
+            wider_load_cache: RefCell::new(FxHashMap::default()),
         }
+    }
+
+    /// Bump the Multi-cell version counter at `addr`. Called by both
+    /// `set_multi_alternatives` and `clear_multi_at` (and by
+    /// `flush_multi_cells` for each byte it converts to Symbolic) so the
+    /// Phase 4.1 wider-load cache fingerprint changes on any Multi
+    /// installation/removal. Versions monotonically increase per addr; the
+    /// entry persists even after the Multi cell is cleared so a later
+    /// reinstall still produces a fresh version distinct from any cached
+    /// snapshot.
+    pub(super) fn bump_multi_version(&mut self, addr: u64) {
+        let v = self.multi_versions.entry(addr).or_insert(0);
+        *v = v.wrapping_add(1);
+    }
+
+    /// Phase 4.1: compute the per-byte fingerprint for a wider load.
+    /// Returns `None` when any byte is plain Symbolic (the wider-load
+    /// cache only covers Multi + Concrete bytes) or when a byte's page
+    /// is unmapped (the caller's existing error path handles that).
+    pub(super) fn compute_wider_load_fingerprint(
+        &self,
+        addr: u64,
+        size: u32,
+    ) -> Option<Vec<ByteFingerprint>> {
+        let mut fp = Vec::with_capacity(size as usize);
+        for i in 0..size {
+            let byte_addr = addr + i as u64;
+            let page_num = byte_addr >> 12;
+            let offset = (byte_addr & PAGE_MASK) as u16;
+            let page = self.pages.get(&page_num)?;
+            if self.multi_objects.contains_key(&byte_addr) {
+                let version = self.multi_versions.get(&byte_addr).copied().unwrap_or(0);
+                let default_byte = page
+                    .load_concrete(offset, 1)
+                    .first()
+                    .copied()
+                    .unwrap_or(0);
+                fp.push(ByteFingerprint::Multi {
+                    version,
+                    default_byte,
+                });
+            } else if page.is_symbolic(offset) {
+                return None;
+            } else {
+                let byte = page
+                    .load_concrete(offset, 1)
+                    .first()
+                    .copied()
+                    .unwrap_or(0);
+                fp.push(ByteFingerprint::Concrete { byte });
+            }
+        }
+        Some(fp)
+    }
+
+    /// Phase 4.1: write a wider-load cache entry, evicting an arbitrary
+    /// existing entry if the cache is at capacity. Eviction picks the
+    /// `HashMap::keys().next()` (arbitrary, no LRU bookkeeping); the cap
+    /// is high enough that this only matters for explorations that touch
+    /// thousands of distinct load shapes.
+    pub(super) fn insert_wider_load_cache(
+        &self,
+        key: (u64, u32),
+        entry: CachedWiderLoad,
+    ) {
+        let mut cache = self.wider_load_cache.borrow_mut();
+        if cache.len() >= WIDER_LOAD_CACHE_CAP && !cache.contains_key(&key) {
+            if let Some(victim) = cache.keys().next().copied() {
+                cache.remove(&victim);
+            }
+        }
+        cache.insert(key, entry);
+    }
+
+    /// Phase 4.1: test-only helper — current cache size.
+    #[cfg(test)]
+    pub(crate) fn wider_load_cache_len(&self) -> usize {
+        self.wider_load_cache.borrow().len()
     }
 
     /// Enable or disable Phase 2 (angr-qh5u) Multi-cell lazy stores for
@@ -390,6 +516,10 @@ impl SymbolicMemory {
             imported_addrs: self.imported_addrs.clone(),
             enforce_permissions: self.enforce_permissions,
             use_multi_cell_stores: self.use_multi_cell_stores,
+            multi_versions: self.multi_versions.clone(),
+            // Cloning the cache is cheap (Arc-refcounted BVs) and lets the
+            // child reuse parent loads until the first divergent store.
+            wider_load_cache: RefCell::new(self.wider_load_cache.borrow().clone()),
         }
     }
 

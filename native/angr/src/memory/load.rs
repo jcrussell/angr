@@ -714,6 +714,36 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        // Phase 4.1 (angr-mmdh.1): wider-load collapse cache. When a load
+        // spans the same Multi/Concrete byte mix as a previous load and
+        // none of those bytes have changed (per-byte versions for Multi,
+        // concrete byte values for Concrete), reuse the assembled BV
+        // directly — skipping the N page lookups + N collapse + N concat
+        // sequence that dominates gate-on cost for sym-write. Loads
+        // touching plain Symbolic bytes are not cached.
+        //
+        // The cache is bypassed for size=1 because there is no concat to
+        // skip — the cost is exactly one `MultiPayload::collapse` call,
+        // which Phase 3 already memoizes.
+        let fingerprint = if size > 1 {
+            self.compute_wider_load_fingerprint(addr, size)
+        } else {
+            None
+        };
+        if let Some(fp) = &fingerprint {
+            if let Some(cached) = self.wider_load_cache.borrow().get(&(addr, size)) {
+                if cached.byte_fingerprints == *fp {
+                    // invariant-mem-ite-depth-counter: replay the same
+                    // count the per-byte miss path would have recorded.
+                    if cached.total_ite_depth > 0 {
+                        crate::symbolic::record_mem_ite_depth(cached.total_ite_depth);
+                    }
+                    return Ok(cached.bv.clone());
+                }
+            }
+        }
+
+        let mut total_ite_depth: u32 = 0;
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {
             let byte_addr = addr + i as u64;
@@ -745,7 +775,9 @@ impl SymbolicMemory {
                     .first()
                     .copied()
                     .unwrap_or(0);
-                crate::symbolic::record_mem_ite_depth(payload.len() as u32);
+                let depth = payload.len() as u32;
+                total_ite_depth = total_ite_depth.saturating_add(depth);
+                crate::symbolic::record_mem_ite_depth(depth);
                 payload.collapse(concrete_byte, ctx)
             } else if page.is_symbolic(offset) {
                 if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
@@ -807,6 +839,22 @@ impl SymbolicMemory {
                 acc
             }
         };
+
+        // Phase 4.1: cache the assembled BV when the load is fully covered
+        // by Multi + Concrete bytes (fingerprint is Some). The hit path
+        // above already returned for size==1, so insertion here is only
+        // for size>1.
+        if let Some(fp) = fingerprint {
+            self.insert_wider_load_cache(
+                (addr, size),
+                crate::memory::CachedWiderLoad {
+                    byte_fingerprints: fp,
+                    total_ite_depth,
+                    bv: result.clone(),
+                },
+            );
+        }
+
         Ok(result)
     }
 
