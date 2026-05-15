@@ -1341,18 +1341,6 @@ impl RustSimState {
         self.memory.enforce_permissions()
     }
 
-    /// Toggle Phase 2 (angr-qh5u) Multi-cell lazy stores. Default off.
-    /// See `SymbolicMemory::set_use_multi_cell_stores` for the rationale
-    /// (sym-write regresses without per-load collapse caching).
-    pub fn set_use_multi_cell_stores(&mut self, enabled: bool) {
-        self.memory.set_use_multi_cell_stores(enabled);
-    }
-
-    /// Whether Multi-cell lazy stores are enabled on this state's memory.
-    pub fn use_multi_cell_stores(&self) -> bool {
-        self.memory.use_multi_cell_stores()
-    }
-
     /// Map memory with initial data.
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
         self.memory.map_data(addr, data, permissions);
@@ -2119,19 +2107,6 @@ impl PyRustSimState {
     #[pyo3(name = "enforce_permissions")]
     pub fn py_enforce_permissions(&self) -> bool {
         self.inner.enforce_permissions()
-    }
-
-    /// Enable or disable Phase 2 (angr-qh5u) Multi-cell lazy stores.
-    /// Default off; see `SymbolicMemory::set_use_multi_cell_stores`.
-    #[pyo3(name = "set_use_multi_cell_stores")]
-    pub fn py_set_use_multi_cell_stores(&mut self, enabled: bool) {
-        self.inner.set_use_multi_cell_stores(enabled);
-    }
-
-    /// Whether Multi-cell lazy stores are enabled.
-    #[pyo3(name = "use_multi_cell_stores")]
-    pub fn py_use_multi_cell_stores(&self) -> bool {
-        self.inner.use_multi_cell_stores()
     }
 
     /// Load from memory.

@@ -127,21 +127,6 @@ pub struct SymbolicMemory {
     /// callers (which often map all memory as RWX or rely on Python perms)
     /// working unchanged.
     enforce_permissions: bool,
-    /// Phase 2 (angr-qh5u): route Multiple / Strided symbolic-address stores
-    /// through the Multi-cell lazy path instead of building eager ITE chains.
-    /// Default off — even after the Phase 3 (angr-j0n4) per-load collapse
-    /// cache and the Phase 4.1 (angr-mmdh.1) wider-load cache landed,
-    /// gate-on still regresses sym-write ~10% (1.78s vs 1.62s gate-off
-    /// baseline, measured 2026-05-15). Phase 4.1 closed the load-time
-    /// portion of the gap: gate-on `load_stmt` is now 10ms vs gate-off
-    /// 9ms — load-time no longer dominates the regression. The residual
-    /// cost is in Z3 work driven by per-byte `symbolic_objects` entries
-    /// produced by `flush_multi_cells` on state export: gate-on
-    /// `z3_site_eval_upto` 55ms → 136ms, `z3_check` 86ms → 158ms.
-    /// Closing that gap is Phase 4.2's job (per-byte flush coalescing).
-    /// Kept as an opt-in switch per the design doc soft-blocker rule
-    /// (see `docs/advanced-topics/rust_lazy_memory_design.rst` Phase 2).
-    use_multi_cell_stores: bool,
     /// Per-byte monotonic version counter for Multi cells. Bumped on every
     /// `set_multi_alternatives` and `clear_multi_at` so the Phase 4.1
     /// wider-load cache (`wider_load_cache`) can detect any installation
@@ -217,7 +202,6 @@ impl SymbolicMemory {
             zero_fill_unconstrained: false,
             imported_addrs: FxHashSet::default(),
             enforce_permissions: false,
-            use_multi_cell_stores: false,
             multi_versions: FxHashMap::default(),
             wider_load_cache: RefCell::new(FxHashMap::default()),
         }
@@ -299,18 +283,6 @@ impl SymbolicMemory {
     #[cfg(test)]
     pub(crate) fn wider_load_cache_len(&self) -> usize {
         self.wider_load_cache.borrow().len()
-    }
-
-    /// Enable or disable Phase 2 (angr-qh5u) Multi-cell lazy stores for
-    /// `Multiple` / `Strided` concretization results. Default off — see
-    /// the `use_multi_cell_stores` field doc for the rationale.
-    pub fn set_use_multi_cell_stores(&mut self, enabled: bool) {
-        self.use_multi_cell_stores = enabled;
-    }
-
-    /// Whether Multi-cell lazy stores are enabled.
-    pub fn use_multi_cell_stores(&self) -> bool {
-        self.use_multi_cell_stores
     }
 
     /// Enable or disable strict per-page permission enforcement on load/store.
@@ -515,7 +487,6 @@ impl SymbolicMemory {
             zero_fill_unconstrained: self.zero_fill_unconstrained,
             imported_addrs: self.imported_addrs.clone(),
             enforce_permissions: self.enforce_permissions,
-            use_multi_cell_stores: self.use_multi_cell_stores,
             multi_versions: self.multi_versions.clone(),
             // Cloning the cache is cheap (Arc-refcounted BVs) and lets the
             // child reuse parent loads until the first divergent store.

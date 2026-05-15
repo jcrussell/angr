@@ -1891,47 +1891,20 @@ fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {
 }
 
 // ============================================================================
-// Phase 2 (angr-qh5u): default-store gate, lazy-region safety, and Multi
-// flush on export.
+// Phase 2 (angr-qh5u): Multi-cell store install, lazy-region safety, and Multi
+// flush on export. Phase 4.3 (angr-mmdh.3) made Multi cells the only path —
+// `store_symbolic_unified` always routes Multiple/Strided through
+// `install_multi_for_candidates_safe`.
 // ============================================================================
 
-/// With the gate OFF (default), `store_symbolic_unified` must use the
-/// eager `store_conditional_multiple` path — no Multi cells installed.
-#[test]
-fn test_phase2_gate_off_default_eager_store() {
-    let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
-    let mut mem = SymbolicMemory::new(Endness::Little);
-    mem.map(0x1000, 0x4000, Permission::RWX);
-    assert!(!mem.use_multi_cell_stores(), "gate must default to off");
-
-    let addr_var = RustBV::symbolic(&ctx, "p2_off_addr".to_string(), 64);
-    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
-        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
-        &ctx,
-    ));
-    let value = RustBV::concrete(0xDEAD_BEEF, 32);
-
-    mem.store_symbolic_unified(addr_var, value, &ctx, &concretizer)
-        .expect("gated-off eager store must succeed");
-
-    // Eager path stores ITE BVs into symbolic_objects; no Multi cells.
-    assert_eq!(
-        mem.multi_cell_count(),
-        0,
-        "gate off must not install Multi cells"
-    );
-}
-
-/// With the gate ON, `store_symbolic_unified` must route Multiple to
-/// Multi cells — same end-state as `store_symbolic_unified_multi`.
+/// `store_symbolic_unified` routes Multiple to Multi cells — same end-state as
+/// `store_symbolic_unified_multi`.
 #[test]
 fn test_phase2_gate_on_installs_multi() {
     let ctx = SymContext::new_mock();
     let concretizer = AddressConcretizer::new();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
-    mem.set_use_multi_cell_stores(true);
 
     let addr_var = RustBV::symbolic(&ctx, "p2_on_addr".to_string(), 64);
     ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
@@ -1960,7 +1933,6 @@ fn test_phase2_safe_install_lazy_region_signals() {
     let ctx = SymContext::new_mock();
     let concretizer = AddressConcretizer::new();
     let mut mem = SymbolicMemory::new(Endness::Little);
-    mem.set_use_multi_cell_stores(true);
 
     // Map page 0x1000; leave page 0x2000 unmapped but inside a lazy region.
     mem.map(0x1000, 0x1000, Permission::RWX);
@@ -1994,7 +1966,6 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     let ctx = SymContext::new_mock();
     let concretizer = AddressConcretizer::new();
     let mut mem = SymbolicMemory::new(Endness::Little);
-    mem.set_use_multi_cell_stores(true);
 
     // Only page 0x1000 is mapped. Page 0x2000 is unmapped and NOT lazy.
     mem.map(0x1000, 0x1000, Permission::RWX);
@@ -2062,7 +2033,6 @@ fn test_phase2_fork_independence_via_safe_install() {
     let concretizer = AddressConcretizer::new();
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
-    parent.set_use_multi_cell_stores(true);
 
     let addr_var = RustBV::symbolic(&ctx, "p2_fork_addr".to_string(), 64);
     ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(

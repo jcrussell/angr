@@ -79,10 +79,9 @@ static Z3_UNSAT_COUNT: AtomicU64 = AtomicU64::new(0);
 static Z3_TIMEOUT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Deepest ITE chain ever stored as a symbolic memory cell value.
 ///
-/// Recorded by the eager symbolic-store paths (`store_conditional_multiple`,
-/// `store_strided`) on every batch they produce. Future lazy-memory work
-/// (angr-czph / angr-qh5u Multi cells) will record the same metric on Multi
-/// insertion, so before/after comparison is direct.
+/// Recorded by the eager `store_strided` path and by Multi-cell installation
+/// (Phase 1/2, `install_multi_for_candidates`) so before/after comparison
+/// against the eager baseline is direct.
 static MEM_ITE_DEPTH_MAX: AtomicU32 = AtomicU32::new(0);
 /// Cumulative count of conditional iterations added to ITE chains in symbolic
 /// stores. Sum, not max — surfaces total ITE-chain work across a run.
@@ -245,10 +244,9 @@ pub fn reset_solver_stats() {
 /// Record that a symbolic store wrote an ITE chain of `depth` alternatives.
 ///
 /// Bumps the cumulative total and lifts the max watermark via `fetch_max`.
-/// Called from `memory/store.rs` after `store_conditional_multiple` /
-/// `store_strided` build their chains. Future Multi-cell (Phase 1+) code
-/// should call this on Multi cell insertion as well so before/after
-/// comparison is direct.
+/// Called from `memory/store.rs::store_strided` and from Multi-cell
+/// installation (`install_multi_for_candidates`) so before/after comparison
+/// against the eager baseline is direct.
 #[inline]
 pub fn record_mem_ite_depth(depth: u32) {
     if depth == 0 {

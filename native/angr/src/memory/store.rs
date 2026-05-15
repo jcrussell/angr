@@ -1,7 +1,7 @@
 //! Store operations for `SymbolicMemory`.
 //!
 //! Extracted from `memory/mod.rs` (angr-0lre). Holds the store_*/store_strided/
-//! store_conditional_multiple family in a single file. Multiple `impl SymbolicMemory`
+//! install_multi_for_candidates family in a single file. Multiple `impl SymbolicMemory`
 //! blocks across files are fine — Rust permits inherent impls to be split.
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
@@ -287,15 +287,7 @@ impl SymbolicMemory {
                 Ok(Some(result))
             }
             ConcretizationResult::Multiple(addrs) => {
-                // Phase 2 (angr-qh5u): install Multi cells when the
-                // use_multi_cell_stores gate is on; otherwise fall back to
-                // the eager `store_conditional_multiple` path.
-                if self.use_multi_cell_stores {
-                    self.install_multi_for_candidates_safe(&addr, &value, addrs, ctx)?;
-                } else {
-                    let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
-                    self.store_conditional_multiple(&addr, &value, &ready_addrs, ctx)?;
-                }
+                self.install_multi_for_candidates_safe(&addr, &value, addrs, ctx)?;
                 Ok(Some(result))
             }
             ConcretizationResult::Strided {
@@ -304,13 +296,8 @@ impl SymbolicMemory {
                 count,
             } => {
                 let (base, stride, count) = (*base, *stride, *count);
-                if self.use_multi_cell_stores {
-                    let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
-                    self.install_multi_for_candidates_safe(&addr, &value, &addrs, ctx)?;
-                } else {
-                    self.prepare_strided_region(base, stride, count, value.width() / 8);
-                    self.store_strided(&addr, &value, base, stride, count, ctx)?;
-                }
+                let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                self.install_multi_for_candidates_safe(&addr, &value, &addrs, ctx)?;
                 Ok(Some(result))
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
@@ -331,8 +318,8 @@ impl SymbolicMemory {
 
     /// Store using a pre-computed concretization result.
     ///
-    /// Phase 2 (angr-qh5u): Multiple / Strided results install Multi cells
-    /// via `install_multi_for_candidates` rather than folding eager ITE
+    /// `Multiple` / `Strided` results install Multi cells via
+    /// `install_multi_for_candidates` rather than folding eager ITE
     /// chains at store time. Load-time collapse handles the cost only for
     /// bytes that are actually re-read (see `assemble_load_with_multi`).
     /// `Single` and `TooLarge` / `Failed` paths are unchanged.
@@ -348,28 +335,16 @@ impl SymbolicMemory {
                 self.store_concrete_automap(*concrete_addr, value)
             }
             ConcretizationResult::Multiple(addrs) => {
-                // Phase 2 (angr-qh5u): see `store_symbolic_unified` for the
-                // same gate. Default off; Multi cells regress sym-write.
-                if self.use_multi_cell_stores {
-                    let addrs_v: Vec<u64> = addrs.clone();
-                    self.install_multi_for_candidates_safe(addr, &value, &addrs_v, ctx)
-                } else {
-                    let ready_addrs = self.prepare_addresses_for_ite(addrs, value.width() / 8);
-                    self.store_conditional_multiple(addr, &value, &ready_addrs, ctx)
-                }
+                let addrs_v: Vec<u64> = addrs.clone();
+                self.install_multi_for_candidates_safe(addr, &value, &addrs_v, ctx)
             }
             ConcretizationResult::Strided {
                 base,
                 stride,
                 count,
             } => {
-                if self.use_multi_cell_stores {
-                    let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
-                    self.install_multi_for_candidates_safe(addr, &value, &addrs, ctx)
-                } else {
-                    self.prepare_strided_region(*base, *stride, *count, value.width() / 8);
-                    self.store_strided(addr, &value, *base, *stride, *count, ctx)
-                }
+                let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
+                self.install_multi_for_candidates_safe(addr, &value, &addrs, ctx)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
                 // Return error so caller can fall back to Python's memory model,
@@ -385,43 +360,6 @@ impl SymbolicMemory {
                 description: reason.clone(),
             }),
         }
-    }
-
-    /// Perform conditional stores to multiple addresses.
-    ///
-    /// For each candidate address, performs:
-    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
-    pub(super) fn store_conditional_multiple(
-        &mut self,
-        addr_expr: &RustBV,
-        value: &RustBV,
-        addrs: &[u64],
-        ctx: &SymContext,
-    ) -> Result<(), MemoryError> {
-        let size = value.width() / 8;
-        let mut counter = 0u64;
-
-        for &candidate in addrs {
-            // Build condition: addr == candidate
-            let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
-            let cond = addr_expr.eq(&addr_const, ctx);
-
-            // Load current value (with unconstrained fallback)
-            let current = self.load_concrete_or_unconstrained(candidate, size, ctx, &mut counter);
-
-            // Build conditional value: If(addr == candidate, new_value, current)
-            let conditional_value = cond.ite(value, &current, ctx);
-
-            // Store the conditional value with auto-mapping
-            self.store_concrete_automap(candidate, conditional_value)?;
-        }
-
-        // Phase 0 instrumentation: record the depth of the eager ITE chain
-        // produced by this conditional-multiple store. Phase 1+ Multi cells
-        // will record the same metric on Multi insertion for direct comparison.
-        record_mem_ite_depth(addrs.len() as u32);
-
-        Ok(())
     }
 
     /// Lazy alternative to `store_conditional_multiple`: instead of folding
@@ -498,8 +436,8 @@ impl SymbolicMemory {
     ///
     /// Phase 2 (angr-qh5u) entry point used by `store_symbolic_unified` and
     /// `store_with_concretization`. Mirrors the eager safety semantics of
-    /// `store_conditional_multiple` / `store_strided` so a Phase 2 flip
-    /// can't lose Python backer data:
+    /// the pre-Phase-2 `store_strided` so Multi installation can't lose
+    /// Python backer data:
     ///
     /// * If any candidate page is in a lazy region, return
     ///   `UnmappedPageInRegion { page_addr: first_missing }` so the
