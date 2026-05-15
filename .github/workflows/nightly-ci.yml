@@ -110,8 +110,19 @@ jobs:
       - name: Run benchmark regression (fast tier)
         env:
           ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
-        run: uv run python tests/benchmarks/run_regression.py --rust-only
+        run: |
+          uv run python tests/benchmarks/run_regression.py \
+            --rust-only \
+            --history-record bench_history_record.json
         timeout-minutes: 5
+      - name: Upload benchmark history record
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bench-history-${{ github.sha }}
+          path: bench_history_record.json
+          if-no-files-found: warn
+          retention-days: 90
 
   property_fuzzer:
     name: Differential Property Fuzzer

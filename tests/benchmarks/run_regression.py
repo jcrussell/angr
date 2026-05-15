@@ -21,9 +21,11 @@ Exit codes:
     2 = setup error
 """
 import argparse
+import datetime
 import json
 import multiprocessing
 import os
+import subprocess
 import sys
 import time
 
@@ -173,6 +175,47 @@ def save_baseline(data):
     print(f"Baseline saved to {BASELINE_FILE}")
 
 
+def _git_revparse(*args):
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", *args],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def save_history_record(path, results):
+    """Emit a single timestamped record consumed by the perf dashboard.
+
+    The schema is intentionally narrow so aggregate_bench_history.py can
+    treat it as append-only time-series data. Per-bench fields are the
+    same set that baseline_timings.json tracks.
+    """
+    commit = os.environ.get("GITHUB_SHA") or _git_revparse("HEAD") or "unknown"
+    branch = (
+        os.environ.get("GITHUB_REF_NAME")
+        or _git_revparse("--abbrev-ref", "HEAD")
+        or "unknown"
+    )
+    record = {
+        "schema_version": 1,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+        "commit": commit,
+        "branch": branch,
+        "results": results,
+    }
+    with open(path, "w") as f:
+        json.dump(record, f, indent=2, sort_keys=True)
+    print(f"History record saved to {path} (commit={commit[:10]})")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Rust engine benchmark regression test")
     parser.add_argument("--update", action="store_true", help="Update baseline timings")
@@ -194,6 +237,10 @@ def main():
     parser.add_argument("--skip-bimodal", action="store_true",
                         help="Skip benchmarks with known bimodal Z3 timing variance "
                              "(intended for PR gates that need stable signal).")
+    parser.add_argument("--history-record", metavar="PATH",
+                        help="Write a timestamped JSON record of this run to PATH "
+                             "(used by the perf dashboard to assemble historical "
+                             "time-series data).")
     args = parser.parse_args()
 
     global REGRESSION_SUITE
@@ -364,6 +411,9 @@ def main():
     if args.update and results:
         baseline.update(results)
         save_baseline(baseline)
+
+    if args.history_record and results:
+        save_history_record(args.history_record, results)
 
     if failures:
         print(f"\nFAILURES:")

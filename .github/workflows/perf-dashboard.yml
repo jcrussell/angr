@@ -1,0 +1,112 @@
+name: Perf Dashboard
+
+on:
+  # Run after every nightly so the dashboard advances ~daily.
+  workflow_run:
+    workflows: ["Nightly CI"]
+    types: [completed]
+  # Manual refresh — useful if the nightly succeeded but the dashboard
+  # publish failed, or to backfill after a workflow change.
+  workflow_dispatch:
+  # Lightweight rebuild on dashboard source changes (e.g. dashboard.js
+  # tweak): regenerates data.json from the most recent artifacts and
+  # re-publishes the static site.
+  push:
+    branches: [master]
+    paths:
+      - "docs/dashboard/**"
+      - "tools/aggregate_bench_history.py"
+      - ".github/workflows/perf-dashboard.yml"
+
+concurrency:
+  group: perf-dashboard
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: Aggregate history + build site
+    runs-on: ubuntu-latest
+    # If we were triggered by workflow_run, only proceed when the nightly
+    # itself succeeded. (workflow_dispatch / push events bypass this.)
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.10"
+
+      - name: Download recent benchmark history artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p _bench_history
+          # Find the most recent ~60 nightly runs (success), grab their
+          # bench-history-* artifact if present. gh CLI gives us pagination
+          # for free and respects $GH_TOKEN. We use 60 to oversample the
+          # 50-point dashboard window in case some runs failed to upload.
+          gh run list \
+            --workflow="Nightly CI" \
+            --status=success \
+            --limit=60 \
+            --json databaseId,headSha \
+            > runs.json
+          python - <<'PY'
+          import json, os, subprocess, sys
+          runs = json.load(open("runs.json"))
+          ok = 0
+          for run in runs:
+              rid = run["databaseId"]
+              sha = run["headSha"]
+              target = f"_bench_history/{sha}"
+              os.makedirs(target, exist_ok=True)
+              # `gh run download` will fail with non-zero if the artifact
+              # doesn't exist for that run; that's fine — we just skip it.
+              proc = subprocess.run(
+                  ["gh", "run", "download", str(rid),
+                   "--name", f"bench-history-{sha}",
+                   "--dir", target],
+                  capture_output=True, text=True,
+              )
+              if proc.returncode == 0:
+                  ok += 1
+                  print(f"  ok    {sha[:10]} (run {rid})")
+              else:
+                  print(f"  skip  {sha[:10]} (run {rid}): {proc.stderr.strip()[:80]}")
+          print(f"\nDownloaded artifacts from {ok}/{len(runs)} runs.")
+          PY
+
+      - name: Aggregate history into data.json
+        run: |
+          python tools/aggregate_bench_history.py \
+            _bench_history docs/dashboard/data.json \
+            --max-points 50
+
+      - name: Stage site
+        run: |
+          # Copy the static dashboard into a clean publish dir so we don't
+          # accidentally ship the rest of docs/ as a perf-dashboard root.
+          mkdir -p _site
+          cp -r docs/dashboard/. _site/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

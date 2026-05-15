@@ -32,6 +32,7 @@ dist
 *.db
 *.dylib
 docs/_build
+docs/dashboard/data.json
 uv.lock
 target/
 tests/benchmarks/debug_*.py

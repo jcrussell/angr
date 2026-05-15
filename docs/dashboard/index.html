@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>angr Rust engine — performance dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="dashboard.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>angr Rust engine — performance dashboard</h1>
+    <p id="meta">Loading…</p>
+    <nav>
+      <label for="bench-select">Benchmark:</label>
+      <select id="bench-select" aria-label="Benchmark selector"></select>
+      <label for="metric-select">Metric:</label>
+      <select id="metric-select" aria-label="Metric selector">
+        <option value="rust_time" selected>rust_time (s)</option>
+        <option value="python_time">python_time (s)</option>
+        <option value="speedup">speedup (python / rust)</option>
+        <option value="peak_memory_mb">peak_memory_mb</option>
+        <option value="callback_count">callback_count</option>
+        <option value="state_creations">state_creations</option>
+        <option value="steps">steps</option>
+      </select>
+    </nav>
+  </header>
+
+  <main>
+    <section id="featured">
+      <h2>Featured benchmarks</h2>
+      <p class="hint">Three representative benchmarks (fast / medium / memory-heavy) rendered side by side, regardless of the selector above.</p>
+      <div class="grid">
+        <figure><canvas id="featured-fauxware" aria-label="fauxware rust_time history"></canvas><figcaption>fauxware — rust_time (s)</figcaption></figure>
+        <figure><canvas id="featured-ais3_crackme" aria-label="ais3_crackme rust_time history"></canvas><figcaption>ais3_crackme — rust_time (s)</figcaption></figure>
+        <figure><canvas id="featured-csaw_wyvern" aria-label="csaw_wyvern rust_time history"></canvas><figcaption>csaw_wyvern — rust_time (s)</figcaption></figure>
+      </div>
+    </section>
+
+    <section id="detail">
+      <h2 id="detail-title">Detail</h2>
+      <figure>
+        <canvas id="detail-chart" aria-label="Selected benchmark history"></canvas>
+      </figure>
+      <p id="detail-hint" class="hint"></p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Built from <code>tests/benchmarks/baseline_timings.json</code> via the nightly CI artifact pipeline. See
+       <a href="https://github.com/angr/angr/blob/master/.github/workflows/perf-dashboard.yml">perf-dashboard.yml</a>
+       and <a href="https://github.com/angr/angr/blob/master/tools/aggregate_bench_history.py">aggregate_bench_history.py</a>.</p>
+  </footer>
+</body>
+</html>
