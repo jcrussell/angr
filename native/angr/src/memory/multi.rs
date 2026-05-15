@@ -19,6 +19,14 @@ use std::cell::RefCell;
 
 use super::{MemoryPage, PAGE_MASK, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
+use crate::vex::Endness;
+
+/// Phase 4.2 (angr-mmdh.2): max number of consecutive Multi bytes that
+/// `flush_multi_cells` will coalesce into a single wider `symbolic_objects`
+/// entry. Capped at 16 bytes (128 bits) so the BV concat fast path in
+/// `RustBV::concat_into` stays within the `u128` it uses to short-circuit
+/// concrete operands; widths beyond 120 bits + 8 would silently truncate.
+const COALESCE_MAX_RUN: usize = 16;
 
 /// One alternative inside a `MultiPayload`. `cond` is a boolean BV (width 1)
 /// that selects this alternative; `value` is the byte stored when `cond`
@@ -251,7 +259,7 @@ impl SymbolicMemory {
         self.multi_objects.len()
     }
 
-    /// Materialize every Multi cell into a per-byte symbolic_object so the
+    /// Materialize every Multi cell into a `symbolic_objects` entry so the
     /// state export pipeline (`_sync_rust_symbolic_objects_to_state` in
     /// `rust_state_export.py`) sees the lazy alternatives.
     ///
@@ -262,55 +270,225 @@ impl SymbolicMemory {
     /// the underlying concrete `data[]` byte (usually zero), losing the
     /// alternative values entirely.
     ///
-    /// Per byte:
-    ///   1. Right-fold alternatives into an ITE chain with the page's
-    ///      current concrete byte as the default else. Same construction
-    ///      as `assemble_load_with_multi` for a 1-byte load.
-    ///   2. Insert the ITE BV at `symbolic_objects[byte_addr]` (width 8).
-    ///   3. Mark the byte symbolic on the page; drop the Multi marker.
-    ///   4. Remove the `multi_objects` entry.
-    /// The result is byte-equivalent to an eager store: every later load
-    /// of that byte will see the same ITE result through the regular
-    /// symbolic_objects path.
+    /// # Phase 4.2 (angr-mmdh.2): run coalescing
+    ///
+    /// Per the `phase41-bottleneck` memory, emitting one
+    /// `symbolic_objects` entry per Multi byte forces `state_api`
+    /// `_get_state_symbolic_z3_asts` to build N independent Z3 ASTs
+    /// (one per byte) and the Python exporter to call
+    /// `state.memory.store()` N times. A symbolic-address store of an
+    /// N-byte value resolved to K candidates writes N×K alternatives
+    /// across N adjacent byte addresses — each byte's payload shares the
+    /// same per-candidate `cond` `RustBV` (created once per call in
+    /// `install_multi_for_candidates` and `.clone()`d into every byte).
+    ///
+    /// This flush scans `multi_objects` in address order and groups runs
+    /// of adjacent bytes whose payloads share identical cond fingerprints.
+    /// For each run of length R (capped by `COALESCE_MAX_RUN`):
+    ///   * Wider per-alternative values are built by `concat`-ing the
+    ///     per-byte `value` BVs endian-correctly (matching the
+    ///     `extract_byte_lane` convention used by load paths).
+    ///   * A wider concrete default is built the same way from the
+    ///     pages' current bytes.
+    ///   * A single right-folded ITE BV of width 8·R is written to
+    ///     `symbolic_objects[run_start]`, and `symbolic_spans` is
+    ///     populated for the interior bytes so a per-byte load still
+    ///     finds the wider object.
+    /// Singletons (run length 1) and runs whose pages aren't all mapped
+    /// fall back to the per-byte path, byte-identical to the pre-Phase-4.2
+    /// behaviour.
+    ///
+    /// The wider symbolic_object is observable-equivalent to an eager
+    /// `state.memory.store(run_start, value, endness=...)` of the wider
+    /// ITE — every load path (`assemble_load_with_multi`,
+    /// `try_byte_merge_load`, `load_concrete`) already handles wider
+    /// objects via `extract_byte_lane` / `symbolic_spans`.
     pub fn flush_multi_cells(&mut self, ctx: &crate::symbolic::SymContext) {
         if self.multi_objects.is_empty() {
             return;
         }
 
         let multi = std::mem::take(&mut self.multi_objects);
-        for (byte_addr, payload) in multi {
-            // Phase 4.1: this byte is leaving Multi state — bump its
-            // version so any cached wider-load entry whose fingerprint
-            // snapshotted Multi at this address is invalidated.
-            self.bump_multi_version(byte_addr);
-            let page_num = byte_addr >> 12;
-            let offset = (byte_addr & PAGE_MASK) as u16;
+        let endness = self.endness;
 
-            let concrete_byte: u8 = match self.pages.get(&page_num) {
-                Some(page) => page.load_concrete(offset, 1).first().copied().unwrap_or(0),
-                None => {
-                    // Page was unmapped after the Multi cell was installed.
-                    // Drop the cell — there is no byte to merge it with and
-                    // no page to mark symbolic. Matches the eager path's
-                    // behavior when a candidate page becomes unmapped
-                    // mid-execution.
-                    continue;
-                }
+        // Sort entries by address so adjacent-byte runs surface in a
+        // single linear scan.
+        let mut entries: Vec<(u64, MultiPayload)> = multi.into_iter().collect();
+        entries.sort_by_key(|(addr, _)| *addr);
+
+        let mut i = 0;
+        while i < entries.len() {
+            let start_addr = entries[i].0;
+            let start_fp = payload_cond_fingerprint(&entries[i].1);
+
+            // Greedy extension: same alt count + same alt-cond identity
+            // order across consecutive byte addresses. Bytes whose conds
+            // differ (e.g. installed by a separate store, or merged with
+            // an extra alternative) terminate the run.
+            let mut j = i + 1;
+            while j < entries.len()
+                && j - i < COALESCE_MAX_RUN
+                && entries[j].0 == entries[j - 1].0 + 1
+                && payload_cond_fingerprint(&entries[j].1) == start_fp
+            {
+                j += 1;
+            }
+            let run_len = j - i;
+
+            // Need every byte's page mapped to read the wider concrete
+            // default. If any page is unmapped we fall back to per-byte
+            // (matches the pre-Phase-4.2 drop-on-unmap behaviour).
+            let coalesce = run_len >= 2 && {
+                (i..j).all(|k| self.pages.contains_key(&(entries[k].0 >> 12)))
             };
 
-            // Phase 3 collapse cache: identical right-fold shape as the
-            // load path, so a load that already populated the cache pays
-            // zero extra Z3 work here.
-            let acc = payload.collapse(concrete_byte, ctx);
+            if coalesce {
+                // Collect per-byte concrete defaults.
+                let mut concrete_bytes: Vec<u8> = Vec::with_capacity(run_len);
+                for k in i..j {
+                    let byte_addr = entries[k].0;
+                    let page_num = byte_addr >> 12;
+                    let offset = (byte_addr & PAGE_MASK) as u16;
+                    let page = self
+                        .pages
+                        .get(&page_num)
+                        .expect("page presence verified by `coalesce` guard");
+                    concrete_bytes
+                        .push(page.load_concrete(offset, 1).first().copied().unwrap_or(0));
+                }
 
-            // Update the page bitmap: clear Multi, set Symbolic.
-            // Keep a single mutable borrow for both updates.
-            if let Some(page) = self.pages.get_mut(&page_num) {
-                page.clear_multi(offset);
-                page.mark_symbolic(offset, 1);
+                // Build wider default (right-fold ITE's else leaf).
+                let default_bvs: Vec<RustBV> = concrete_bytes
+                    .iter()
+                    .map(|b| RustBV::concrete(*b as u128, 8))
+                    .collect();
+                let wider_default = build_wider_value(&default_bvs, endness, ctx);
+
+                // Right-fold per-alt wider values into the final ITE BV.
+                let alt_count = entries[i].1.alternatives().len();
+                let mut acc = wider_default;
+                for c in (0..alt_count).rev() {
+                    let cond = entries[i].1.alternatives()[c].cond.clone();
+                    let mut byte_vals: Vec<RustBV> = Vec::with_capacity(run_len);
+                    for k in i..j {
+                        byte_vals.push(entries[k].1.alternatives()[c].value.clone());
+                    }
+                    let wider_val = build_wider_value(&byte_vals, endness, ctx);
+                    acc = cond.ite(&wider_val, &acc, ctx);
+                }
+
+                // Apply state mutations: bump versions, drop Multi bits,
+                // set Symbolic bits, dirty pages, insert wider object,
+                // record reverse-span entries for interior bytes.
+                for k in i..j {
+                    let byte_addr = entries[k].0;
+                    self.bump_multi_version(byte_addr);
+                    let page_num = byte_addr >> 12;
+                    let offset = (byte_addr & PAGE_MASK) as u16;
+                    if let Some(page) = self.pages.get_mut(&page_num) {
+                        page.clear_multi(offset);
+                        page.mark_symbolic(offset, 1);
+                    }
+                    self.dirty_pages.insert(page_num);
+                }
+                self.symbolic_objects.insert(start_addr, acc);
+                let width_bits = (run_len * 8) as u32;
+                for b in 1..run_len {
+                    self.symbolic_spans
+                        .insert(start_addr + b as u64, (start_addr, width_bits));
+                }
+
+                i = j;
+                continue;
             }
-            self.symbolic_objects.insert(byte_addr, acc);
-            self.dirty_pages.insert(page_num);
+
+            // Fall-back per-byte path: singleton runs and runs with any
+            // unmapped page. Byte-identical to the pre-Phase-4.2 flush.
+            for k in i..j {
+                let (byte_addr, payload) = &entries[k];
+                self.bump_multi_version(*byte_addr);
+                let page_num = byte_addr >> 12;
+                let offset = (byte_addr & PAGE_MASK) as u16;
+                let concrete_byte: u8 = match self.pages.get(&page_num) {
+                    Some(page) => page.load_concrete(offset, 1).first().copied().unwrap_or(0),
+                    None => continue,
+                };
+                let acc = payload.collapse(concrete_byte, ctx);
+                if let Some(page) = self.pages.get_mut(&page_num) {
+                    page.clear_multi(offset);
+                    page.mark_symbolic(offset, 1);
+                }
+                self.symbolic_objects.insert(*byte_addr, acc);
+                self.dirty_pages.insert(page_num);
+            }
+            i = j;
+        }
+    }
+}
+
+/// Phase 4.2 (angr-mmdh.2): identity-based fingerprint of a `MultiAlternative`'s
+/// cond. Two alternatives produced by the same `install_multi_for_candidates`
+/// call share an `Arc<[RustBV]>` operands pointer (the cond is built once per
+/// candidate and `.clone()`d into every byte); bytes whose payload conds match
+/// in count and per-position fingerprint originated from the same store path
+/// and can be safely coalesced into a single wider `symbolic_objects` entry.
+fn cond_fingerprint(bv: &RustBV) -> u64 {
+    match bv {
+        RustBV::Expression { operands, .. } => {
+            // Within one `flush_multi_cells` call the entries Vec keeps every
+            // Arc live, so ptr reuse via free/realloc can't happen — pointer
+            // identity is a stable cross-byte comparison key.
+            std::sync::Arc::as_ptr(operands) as *const () as usize as u64
+        }
+        RustBV::Concrete { value, width } => {
+            // Mix in a salt distinct from the other variants so a Concrete 0
+            // can't alias a Symbolic id 0.
+            (*value as u64)
+                .wrapping_mul(0x100000001b3)
+                .wrapping_add(*width as u64)
+                ^ 0x1
+        }
+        RustBV::Symbolic { id, .. } => *id ^ 0x2,
+        RustBV::Constrained { id, .. } => *id ^ 0x3,
+    }
+}
+
+/// Cond fingerprint for a whole `MultiPayload`. Used by `flush_multi_cells` to
+/// decide whether a run of adjacent bytes can be coalesced.
+fn payload_cond_fingerprint(payload: &MultiPayload) -> Vec<u64> {
+    payload
+        .alternatives()
+        .iter()
+        .map(|a| cond_fingerprint(&a.cond))
+        .collect()
+}
+
+/// Concat per-byte `RustBV`s into a wider value matching the memory's
+/// endianness convention (the same one `extract_byte_lane` decodes):
+///   * `Little`: byte 0 (lowest addr) is the LSB, so byte `N-1` is concat'd
+///     into the high bits first.
+///   * `Big`: byte 0 (lowest addr) is the MSB, so byte 0 is concat'd into
+///     the high bits first.
+///
+/// Caller guarantees `bytes` is non-empty and each element is width 8.
+fn build_wider_value(bytes: &[RustBV], endness: Endness, ctx: &SymContext) -> RustBV {
+    debug_assert!(!bytes.is_empty(), "build_wider_value requires non-empty input");
+    match endness {
+        Endness::Little => {
+            let mut iter = bytes.iter().rev();
+            let mut acc = iter.next().expect("non-empty").clone();
+            for b in iter {
+                acc = acc.concat(b, ctx);
+            }
+            acc
+        }
+        Endness::Big => {
+            let mut iter = bytes.iter();
+            let mut acc = iter.next().expect("non-empty").clone();
+            for b in iter {
+                acc = acc.concat(b, ctx);
+            }
+            acc
         }
     }
 }
