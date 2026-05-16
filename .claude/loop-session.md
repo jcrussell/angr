@@ -1,76 +1,67 @@
-## Session log: 2026-05-16 — angr-n129 closed (EFFICIENT_STATE_MERGING → raise)
+## Session log: 2026-05-16 — angr-uq4n.1 closed (mem_read/mem_write inspect survey)
 
 ### Status: closed
 
 ### Task
 
-**angr-n129** — "Raise NotImplementedError for state-merging
-SimOptions in Rust engine."
+**angr-uq4n.1** — "survey hook points in VEX interpreter + memory
+model for mem_read/mem_write dispatch."
 
-Bead description called state merging "unimplemented; option silently
-ignored". Reality is more nuanced: Rust DOES implement `merge_states`
-at the low level (`native/angr/src/exploration/state_lifecycle.rs:85`,
-calling `RustSimState::merge` at `native/angr/src/state.rs:1724`), and
-`RustExplorationManager.merge()` exports states to Python and uses
-Python `state.merge()` per group (`rust_manager.py:3856`). What IS
-silently ignored is the `EFFICIENT_STATE_MERGING` SimOption, which the
-Python engine consults from `SimStateHistory.set_strongref_state`
-(`state_plugins/history.py:131`) to retain ancestor refs for plugin
-merging. Rust never drives that path.
+Pure research / design-note task. No code changes. Output is a
+design note attached as bd note + memory entry.
 
-### Implementation
+### Findings (KEY)
 
-- `angr/exploration/rust_manager.py`:
-  - Added `EFFICIENT_STATE_MERGING` to `_RAISE_OPTION_NAMES`.
-  - Added a paragraph rationale block above the literal (matches the
-    CONCRETIZE / DO_RET_EMULATION comment style), explicitly noting
-    why the paired `SIMPLIFY_MERGED_CONSTRAINTS` is NOT being promoted
-    (default-bundle member).
-- `tests/engines/test_rust_exploration.py`:
-  - Added `test_efficient_state_merging_option_raises_at_construction`
-    in `TestEdgeCases`, mirroring the cf9h / gmrc test pattern (asserts
-    `NotImplementedError`, option name in message, "Python engine"
-    pointer in message).
-- `docs/advanced-topics/rust_engine.rst`:
-  - Removed the `EFFICIENT_STATE_MERGING` row from "Ignored — no-op"
-    (was "Rust does not yet support state merge").
-  - Added an `EFFICIENT_STATE_MERGING` row to the (c)-raise category
-    in "Ignored — divergence-risk", explicitly citing the Veritesting
-    auto-add at `step_state` and explaining the
-    `SIMPLIFY_MERGED_CONSTRAINTS` asymmetry.
-  - Added a "Followup (angr-n129, 2026-05-16)" note in the
-    implementation-note callout.
+**Two dispatch surfaces in Rust, not one:**
 
-### Why not SIMPLIFY_MERGED_CONSTRAINTS
+1. `state.rs` wrappers (lines 1350/1356/1361/1368/1385) —
+   `memory_load`, `memory_store`, `memory_load_symbolic`,
+   `memory_store_symbolic`, `memory_store_symbolic_multi`. These
+   transitively cover all 20 native SimProcedures (~106 sites) — no
+   per-procedure instrumentation needed.
 
-`SIMPLIFY_MERGED_CONSTRAINTS` is a member of the `simplification` set
-inside `common_options` inside the default `symbolic` /
-`symbolic_approximating` mode bundles (`sim_options.py:370-379, 391-392`).
-Adding it to `_RAISE_OPTION_NAMES` would break every `entry_state()`.
-The option is only read inside Python `SimStateHistory.merge()`, which
-IS reached by `RustExplorationManager.merge()` since that method
-exports states to Python and calls Python `state.merge()`. So the
-option is effectively honored on the only path that touches it.
+2. `interpreter_cb/` VEX sites that BYPASS state wrappers:
+   - `expressions.rs:49` IRExpr::Load (8+ fast paths: pending_stores,
+     pending_symbolic_stores, flushed stores, prefetch cache,
+     concrete cache, callback fallback, ITE builds, symbolic-full)
+   - `statements.rs:54` IRStmt::Store
+   - `statements.rs:302` IRStmt::StoreG (guarded)
+   - `statements.rs:549` IRStmt::LoadG (guarded)
 
-The merge interface methods themselves (`merge_states`, `manager.merge`)
-were left alone — both have working implementations with passing tests
-(`test_merge_states_*` at `test_rust_exploration.py:7046+`).
+**Critical anti-pattern**: do NOT instrument
+`native/angr/src/memory/{load,store,mod}.rs` backends. They would
+(a) miss VEX fast paths (events never fire because fast paths skip
+the backend entirely), and (b) double-fire for SimProcedures.
 
-### Tests
+**Plumbing requirement**: `interpreter_cb` sites have no
+`&mut RustSimState`. Need (1) new `set_inspect_mem_read/write`
+methods on `PythonCallbacks`, (2) `inspect_enabled: u8` bitmask field
+on `PythonCallbacks` for zero-overhead skip when no breakpoint
+registered (the common case), (3) Python-side dispatcher that
+reads `state.inspect._breakpoints['mem_read']` and fires each BP.
 
-416 tests pass (was 415; +1 from the new raise test). Full suite ran
-in 49s with no regressions.
+`interpreter.rs` simple `VEXInterpreter` (Load at 366, Store at 255)
+is legacy/test (only used by `RustVEXEngine::execute_cached_block`,
+engine.rs:1406) — out of MVP scope.
 
-### Memory updates
+### Deliverables
 
-- `invariant-rust-raise-option-names` updated to include
-  `EFFICIENT_STATE_MERGING` as the 6th member. Critical note added
-  about `SIMPLIFY_MERGED_CONSTRAINTS` being a default-bundle member
-  that must never be promoted. Listed `EFFICIENT_STATE_MERGING` vs
-  `SIMPLIFY_MERGED_CONSTRAINTS` as a new asymmetric-promotion
-  precedent.
+- **bd note** on `angr-uq4n.1` — full 138-line design note with
+  per-site table + Python attribute shape + phasing recommendation.
+- **bd memory** `inspect-mem-dispatch-surfaces` — distilled
+  call-site list + the anti-pattern + the plumbing requirement.
+
+### Phasing recommendation for the rest of the epic
+
+- **uq4n.2** (next, unblocked now) — Python callback marshalling
+  layer: add `set_inspect_mem_read/write` on `PythonCallbacks`, wire
+  `inspect_enabled` bitmask, replace `_NoOpInspectProxy` registration
+  with real wiring.
+- **uq4n.3** — Instrument the 5 sites (3 state.rs + 4 interpreter_cb).
+- **uq4n.4** — Integration tests.
+- **uq4n.5** — Update `invariant-rust-inspect-unsupported` memory +
+  `docs/advanced-topics/rust_engine.rst`.
 
 ### Commit
 
-`8d4617562` — feat(rust-symex): raise NotImplementedError for
-EFFICIENT_STATE_MERGING (angr-n129)
+No code change. Task is research-only.
