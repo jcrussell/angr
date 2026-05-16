@@ -1,69 +1,76 @@
-## Session log: 2026-05-16 — angr-cf9h: promote DO_RET_EMULATION + CALLLESS to raise
+## Session log: 2026-05-16 — angr-n129 closed (EFFICIENT_STATE_MERGING → raise)
 
-### Status: closing (1 task done)
+### Status: closed
 
 ### Task
 
-**angr-cf9h** — Final task of the option-set sweep started by angr-xghv
-(TRACK_*_ACTIONS), angr-gmrc (CONCRETIZE), and angr-csmm
-(CONSERVATIVE_WRITE_STRATEGY). Move `DO_RET_EMULATION` and `CALLLESS`
-from `_REJECTED_OPTION_NAMES` (warn-once) to `_RAISE_OPTION_NAMES`
-(raise NotImplementedError at construction).
+**angr-n129** — "Raise NotImplementedError for state-merging
+SimOptions in Rust engine."
 
-- **DO_RET_EMULATION:** Python emits an emulated ret successor at every
-  ret site; Rust does not emulate rets at all. Silent ignore changes the
-  successor set — typically breaks Callable workflows.
-- **CALLLESS:** Python replaces each call with unconstraining of the
-  return register so Callable can short-circuit function bodies. Rust
-  has no equivalent path and steps into the callee, breaking the
-  Callable contract.
-
-`TRUE_RET_EMULATION_GUARD` (paired with DO_RET_EMULATION) **stays** in
-`_REJECTED_OPTION_NAMES`. Alone it's just a guard tweak with no effect;
-the case where it matters (paired with DO_RET_EMULATION) now raises
-before the guard is consulted. Asymmetric promotion follows the
-CONSERVATIVE_WRITE_STRATEGY / CONSERVATIVE_READ_STRATEGY precedent.
+Bead description called state merging "unimplemented; option silently
+ignored". Reality is more nuanced: Rust DOES implement `merge_states`
+at the low level (`native/angr/src/exploration/state_lifecycle.rs:85`,
+calling `RustSimState::merge` at `native/angr/src/state.rs:1724`), and
+`RustExplorationManager.merge()` exports states to Python and uses
+Python `state.merge()` per group (`rust_manager.py:3856`). What IS
+silently ignored is the `EFFICIENT_STATE_MERGING` SimOption, which the
+Python engine consults from `SimStateHistory.set_strongref_state`
+(`state_plugins/history.py:131`) to retain ancestor refs for plugin
+merging. Rust never drives that path.
 
 ### Implementation
 
 - `angr/exploration/rust_manager.py`:
-  - Dropped `DO_RET_EMULATION` and `CALLLESS` from
-    `_REJECTED_OPTION_NAMES`; left `TRUE_RET_EMULATION_GUARD` there with
-    an updated comment noting its now-orphan status.
-  - Added both names to `_RAISE_OPTION_NAMES` with paragraph rationale
-    blocks above the literal (matching the CONCRETIZE / CONSERVATIVE
-    comment style).
+  - Added `EFFICIENT_STATE_MERGING` to `_RAISE_OPTION_NAMES`.
+  - Added a paragraph rationale block above the literal (matches the
+    CONCRETIZE / DO_RET_EMULATION comment style), explicitly noting
+    why the paired `SIMPLIFY_MERGED_CONSTRAINTS` is NOT being promoted
+    (default-bundle member).
 - `tests/engines/test_rust_exploration.py`:
-  - `test_rejected_options_emit_warning` swapped its option pair from
-    `CALLLESS + DO_RET_EMULATION` (both now raise) to
-    `UNINITIALIZED_ACCESS_AWARENESS + BEST_EFFORT_MEMORY_STORING` (still
-    warn-only). Inline comment cites angr-cf9h.
-  - `test_rejected_options_warn_once_per_manager` swapped sole option
-    from `CALLLESS` to `UNINITIALIZED_ACCESS_AWARENESS`. Same reason.
-  - Added `test_do_ret_emulation_option_raises_at_construction` and
-    `test_callless_option_raises_at_construction`. Both assert
-    `NotImplementedError`, option name in message, and "Python engine"
-    pointer in message — matching the established pattern from xghv /
-    gmrc / csmm.
+  - Added `test_efficient_state_merging_option_raises_at_construction`
+    in `TestEdgeCases`, mirroring the cf9h / gmrc test pattern (asserts
+    `NotImplementedError`, option name in message, "Python engine"
+    pointer in message).
 - `docs/advanced-topics/rust_engine.rst`:
-  - Added a new "Followup (angr-cf9h, 2026-05-16)" callout inside the
-    implementation-note block, summarizing the promotion and the
-    TRUE_RET_EMULATION_GUARD asymmetry.
-  - Split the `DO_RET_EMULATION, TRUE_RET_EMULATION_GUARD` table row
-    into two rows: the first promoted to (c), the second updated to (b)
-    with the new "only meaningful when paired" rationale.
-  - Promoted the `CALLLESS` row from (b) to (c).
+  - Removed the `EFFICIENT_STATE_MERGING` row from "Ignored — no-op"
+    (was "Rust does not yet support state merge").
+  - Added an `EFFICIENT_STATE_MERGING` row to the (c)-raise category
+    in "Ignored — divergence-risk", explicitly citing the Veritesting
+    auto-add at `step_state` and explaining the
+    `SIMPLIFY_MERGED_CONSTRAINTS` asymmetry.
+  - Added a "Followup (angr-n129, 2026-05-16)" note in the
+    implementation-note callout.
+
+### Why not SIMPLIFY_MERGED_CONSTRAINTS
+
+`SIMPLIFY_MERGED_CONSTRAINTS` is a member of the `simplification` set
+inside `common_options` inside the default `symbolic` /
+`symbolic_approximating` mode bundles (`sim_options.py:370-379, 391-392`).
+Adding it to `_RAISE_OPTION_NAMES` would break every `entry_state()`.
+The option is only read inside Python `SimStateHistory.merge()`, which
+IS reached by `RustExplorationManager.merge()` since that method
+exports states to Python and calls Python `state.merge()`. So the
+option is effectively honored on the only path that touches it.
+
+The merge interface methods themselves (`merge_states`, `manager.merge`)
+were left alone — both have working implementations with passing tests
+(`test_merge_states_*` at `test_rust_exploration.py:7046+`).
 
 ### Tests
 
-415 tests pass (was 413; +2 from the two new raise-at-construction
-tests). Targeted run of the 13 option-related tests passed; full
-suite passed in 49s.
+416 tests pass (was 415; +1 from the new raise test). Full suite ran
+in 49s with no regressions.
 
 ### Memory updates
 
-`invariant-rust-raise-option-names` updated: `_RAISE_OPTION_NAMES` now
-holds 5 conceptual entries (TRACK_*_ACTIONS family, CONCRETIZE,
-CONSERVATIVE_WRITE_STRATEGY, DO_RET_EMULATION, CALLLESS). Option-set
-sweep is **complete** — no further sibling tasks remain in this
-mini-epic (angr-n129 state-merging is structurally different).
+- `invariant-rust-raise-option-names` updated to include
+  `EFFICIENT_STATE_MERGING` as the 6th member. Critical note added
+  about `SIMPLIFY_MERGED_CONSTRAINTS` being a default-bundle member
+  that must never be promoted. Listed `EFFICIENT_STATE_MERGING` vs
+  `SIMPLIFY_MERGED_CONSTRAINTS` as a new asymmetric-promotion
+  precedent.
+
+### Commit
+
+`8d4617562` — feat(rust-symex): raise NotImplementedError for
+EFFICIENT_STATE_MERGING (angr-n129)
