@@ -269,6 +269,18 @@ class RustStateExportMixin:
     - self._identity_tracker: SymbolicIdentityTracker
     """
 
+    def _invalidate_state_export_cache(self) -> None:
+        """Clear the per-state `rust_fully_synced` sentinel on every cached state.
+
+        Called when exploration resumes (`step`, `run`). After Rust takes
+        further steps, the cached Python mirror is stale until re-synced by
+        the next `_get_stash_states` visit.
+        """
+        for state in self._state_cache.values():
+            scratch = getattr(state, 'scratch', None)
+            if scratch is not None and getattr(scratch, 'rust_fully_synced', False):
+                scratch.rust_fully_synced = False
+
     def _get_stash_states(self, stash: str) -> list:
         """Get states from a stash as angr SimStates.
 
@@ -285,6 +297,17 @@ class RustStateExportMixin:
         for state_id in state_ids:
             if state_id in self._state_cache:
                 state = self._state_cache[state_id]
+                # Per-state export cache: once a state has been fully synced
+                # from Rust, its memory/registers/callstack are stable for as
+                # long as the Rust state is not stepped again. Repeated property
+                # accesses (`len(mgr.found)` then `mgr.found[0]`) re-enter this
+                # method; without this short-circuit each visit re-runs the
+                # heavy syncs (>500ms per state for sym-write). The
+                # `rust_fully_synced` sentinel is cleared by `step()` / `run()`
+                # via `_invalidate_state_export_cache`.
+                if getattr(state.scratch, 'rust_fully_synced', False):
+                    states.append(state)
+                    continue
                 self._restore_plugins_to_state(state, state_id)
                 self._inject_rust_stdout(state, state_id)
                 self._inject_rust_stdin(state, state_id)
@@ -306,6 +329,7 @@ class RustStateExportMixin:
                 self._sync_rust_callstack_to_state(state, state_id)
                 self._sync_rust_mmap_base_to_state(state, state_id)
                 self._sync_rust_posix_brk_to_state(state, state_id)
+                state.scratch.rust_fully_synced = True
                 states.append(state)
 
         # For states not in cache, try parent state or snapshot export
@@ -339,6 +363,7 @@ class RustStateExportMixin:
                     self._sync_rust_callstack_to_state(state, sid)
                     self._sync_rust_mmap_base_to_state(state, sid)
                     self._sync_rust_posix_brk_to_state(state, sid)
+                    state.scratch.rust_fully_synced = True
                     # Cache the copy so it stays alive (prevents weakref death
                     # during chained attribute access like sm.active[1].posix.dumps())
                     self._state_cache[sid] = state
@@ -364,6 +389,7 @@ class RustStateExportMixin:
                     self._sync_rust_callstack_to_state(state, sid)
                     self._sync_rust_mmap_base_to_state(state, sid)
                     self._sync_rust_posix_brk_to_state(state, sid)
+                    state.scratch.rust_fully_synced = True
                     self._state_cache[sid] = state
                     states.append(state)
                     cached_ids.add(sid)
@@ -391,6 +417,7 @@ class RustStateExportMixin:
                                 self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
+                                angr_state.scratch.rust_fully_synced = True
                                 self._state_cache[snapshot.state_id] = angr_state
                                 states.append(angr_state)
                             except Exception as e:

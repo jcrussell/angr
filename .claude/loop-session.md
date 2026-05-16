@@ -1,105 +1,56 @@
-## Session log: 2026-05-15 — Phase 4.3 default flip + gate removal (angr-mmdh.3)
+## Session log: 2026-05-16 — Phase 5 (angr-o6ef): state-export sync cache
 
-### Closed tasks
+### Status: closed
 
-- **angr-mmdh.3** — Phase 4.3: flip `use_multi_cell_stores` default to
-  `true` and remove the gate field. Commit `e5c594fe1`.
-- **angr-mmdh** (parent epic) — Phase 4 closed in the same session.
+### Investigation findings
 
-### What landed
+Initial hypothesis (per bead): per-byte state-export eval cost dominates.
+**Wrong.** Diagnostic counter showed only 1 Python-driven eval_upto call,
+all 255 inner checks came from `sm.found[0].solver.eval_upto(u, 256)` in
+solve.py:42 (the user-level post-explore code).
 
-Multi-cell lazy stores are now the only path for symbolic-address
-`Multiple` / `Strided` concretization results. The gate field and all
-its plumbing are gone.
+Real bottleneck (measured via /tmp/sym_write_time.py):
+- `len(mgr.found)`: **1183ms** (first state-export pass, 2 states)
+- `mgr.found[0]`:    **646ms** (second pass — re-runs all syncs)
+- `eval_upto(u, 256)`: 196ms
+- explore loop: 99ms
 
-Removed:
-- `SymbolicMemory::use_multi_cell_stores` field and its `Self::new()`
-  + `clone_for_fork()` sites.
-- `SymbolicMemory::{set_use_multi_cell_stores, use_multi_cell_stores}`
-  getter/setter.
-- `State::{set_use_multi_cell_stores, use_multi_cell_stores}` wrapper
-  methods (state.rs).
-- `RustState::{py_set_use_multi_cell_stores, py_use_multi_cell_stores}`
-  PyO3 bindings (state.rs).
-- `store_conditional_multiple` (eager fallback) — now dead, removed.
-- `if self.use_multi_cell_stores { … } else { … }` branches in
-  `store_symbolic_unified` and `store_with_concretization` — collapsed
-  to the Multi-install path.
-- Test `test_phase2_gate_off_default_eager_store` (no longer
-  reachable) and `mem.set_use_multi_cell_stores(true)` calls in the
-  four phase2/4 tests that still ran the Multi path explicitly.
+Each property access to `mgr.found` / `mgr.active` / etc. re-ran
+`_get_stash_states`, which calls `_restore_plugins`,
+`_inject_rust_stdout`, `_attach_rust_solver_fallback`,
+`_sync_rust_memory_to_state`, `_sync_rust_registers_to_state`,
+`_sync_rust_callstack_to_state`, … on every cached state — even when
+the Rust state had not advanced.
 
-Comment hygiene:
-- `record_mem_ite_depth` doc updated to drop references to
-  `store_conditional_multiple` and the "future Multi-cell" wording.
-- `store.rs` file header drops `store_conditional_multiple` from the
-  listed families.
+### Implementation
+
+Added a per-state `rust_fully_synced` sentinel on `state.scratch`,
+set at the tail of each sync path in `_get_stash_states`. Subsequent
+visits short-circuit to the cached SimState. Cleared by
+`_invalidate_state_export_cache()`, called at the top of `step()`
+and `explore()` (the only Rust-state-mutating entry points;
+`_explore_with_addresses` is reached via `explore()`, so it inherits
+the invalidation).
+
+SSoT preserved: Rust remains authoritative. The cache only
+short-circuits redundant Python mirror re-syncs between re-entries
+into Rust.
 
 ### Validation
 
-- `cargo check` clean, no `dead_code` warnings.
-- `cargo test --lib` — 775/775 pass (70 in `memory::tests`).
-- `python -m pytest tests/engines/test_rust_exploration.py` — 403/403
-  pass in 50.45s.
+- `test_rust_exploration.py`: 404 passed (was 403; new test
+  `test_state_export_cache_invalidated_on_step` exercises both the
+  cache-hit identity invariant and the step/explore invalidation).
+- `/tmp/sym_write_time.py`: second-access `mgr.found[0]` 646ms → **0.0ms**.
+- `run_regression.py --rust-only --skip-bimodal --threshold 0.15`:
+  pre-existing host-induced regressions present both with and without
+  this change (compared via `git stash`); the cache does not introduce
+  new ones. Sym-write bench wall-clock 1.74–1.83s (variance), unchanged
+  vs the 1.70s post-mmdh baseline — bench is a single-pass workflow,
+  the cache helps repeated property access not single reads.
 
-### Local benchmarks (8GB host, gate-off → default-on, --engine rust)
+### Diagnostic instrumentation
 
-FAST_SUITE (PR-time CI gate, unchanged within noise):
-
-| Bench | Gate-off | Default-on |
-|---|---|---|
-| fauxware | 0.28s | 0.28–0.30s |
-| defcamp_r100 | 0.27s | 0.27s |
-| ais3_crackme | 1.96–1.98s | 1.98s |
-| strcpy_find | 2.11s | 2.13s |
-| defcon2016quals_baby-re | 0.74s | 0.73–0.74s |
-
-MEDIUM_SUITE:
-
-| Bench | Gate-off | Default-on | Delta |
-|---|---|---|---|
-| sym-write | 1.53–1.55s | 1.70–1.74s | +~12% |
-
-The 12% sym-write slip is within the nightly 15% threshold but not
-at the parent epic's "parity-or-better" acceptance. Z3 eval counts
-were unchanged from Phase 4.1 (310 / 303) — the residual is in
-state-export eval count, not per-eval cost.
-
-### Follow-up bead
-
-- **angr-o6ef** (P2): reduce sym-write state-export Z3 eval count.
-  Phase 4.2 measured `z3_check_count` and `z3_site_eval_upto_count`
-  unchanged across Phase 4.1 → 4.2, so coalescing reduced per-eval
-  cost but not eval count. Profile target: which export path issues
-  these evals per Multi byte? Levers: per-AST cache, no-eval when
-  constraints haven't moved, coalesce evals across consecutive
-  `symbolic_objects` entries.
-
-### Memory updates
-
-- `phase43-default-flip` — what Phase 4.3 changed + which APIs were
-  removed.
-- `benchmark-phase43-flip` — before/after timing on the 8GB host.
-
-### Files modified
-
-- `native/angr/src/memory/mod.rs` (-29 lines)
-- `native/angr/src/memory/store.rs` (-62 lines net)
-- `native/angr/src/memory/tests.rs` (-37 lines net)
-- `native/angr/src/state.rs` (-25 lines)
-- `native/angr/src/symbolic/context.rs` (-3 lines)
-
-Net: +24 −172.
-
-### Caveats
-
-- The local 8GB host runs sym-write at 1.55s vs CI baseline 0.436s
-  (~3.5× slower overall). Regression checks against
-  `baseline_timings.json` are not meaningful here; before/after on
-  the same host is the relevant signal.
-- `.venv/bin/pip` still broken; used `tools/rebuild-rust.sh --cargo-only`
-  (same as Phase 4.1 / 4.2 sessions).
-- Parent epic closed with acceptance technically not met (parity
-  vs gate-off) but with the practical regression-gate criterion
-  (15% threshold) satisfied. Follow-up `angr-o6ef` tracks closing
-  the remaining gap.
+Loop-session note about `Z3_PY_EVAL_UPTO_*` counters in
+`symbolic/context.rs` / `solver.rs::eval_upto`: confirmed absent
+from the working tree (`git diff native/` empty). Nothing to revert.

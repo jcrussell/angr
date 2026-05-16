@@ -2756,6 +2756,10 @@ class RustExplorationManager(
         Returns:
             Self, for chaining.
         """
+        # Re-entry into Rust execution invalidates the state-export cache:
+        # any previously-cached Python mirrors are about to go stale.
+        self._invalidate_state_export_cache()
+
         # Ensure predicate attributes exist (may not be set if find/avoid not provided)
         if not hasattr(self, '_find_predicate'):
             self._find_predicate = None
@@ -3180,6 +3184,10 @@ class RustExplorationManager(
         Returns:
             Self, for chaining.
         """
+        # Re-entry into Rust execution invalidates the state-export cache:
+        # any previously-cached Python mirrors are about to go stale.
+        self._invalidate_state_export_cache()
+
         steps_taken = 0
         while steps_taken < n:
             self._sync_hooks_before_step()

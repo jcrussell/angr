@@ -763,6 +763,46 @@ class TestRustExplorationPython:
         assert len(mgr.found) > 0 or len(mgr.deadended) > 0, \
             "exploration should find states or deadend some"
 
+    def test_state_export_cache_invalidated_on_step(self, fauxware_project):
+        """step() / explore() must clear the rust_fully_synced sentinel on
+        cached Python state mirrors so that the next stash read re-syncs
+        from the (now-advanced) Rust state. Rust remains the single source
+        of truth; the cache only short-circuits redundant syncs between
+        re-entries."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step(n=1)
+
+        active = mgr.active
+        assert len(active) >= 1, \
+            "fauxware should still have at least one active state after one step"
+        first = active[0]
+        assert getattr(first.scratch, 'rust_fully_synced', False), \
+            "first read should set the rust_fully_synced sentinel"
+
+        # Re-read without stepping: cache hit must preserve identity and sentinel.
+        again = mgr.active
+        assert again[0] is first, \
+            "repeated mgr.active access must return the cached SimState"
+        assert getattr(again[0].scratch, 'rust_fully_synced', False)
+
+        # step() invalidates: cached mirror is now stale until next read.
+        mgr.step(n=1)
+        assert not getattr(first.scratch, 'rust_fully_synced', False), \
+            "step() must clear rust_fully_synced on cached states"
+
+        # explore() must also invalidate at its top.
+        state2 = fauxware_project.factory.entry_state()
+        mgr2 = RustExplorationManager(fauxware_project, [state2])
+        mgr2.step(n=1)
+        cached = mgr2.active[0]
+        assert getattr(cached.scratch, 'rust_fully_synced', False)
+        mgr2.explore(max_steps=1)
+        assert not getattr(cached.scratch, 'rust_fully_synced', False), \
+            "explore() must clear rust_fully_synced on cached states"
+
     def test_stash_access(self, fauxware_project):
         """Test accessing stashes."""
         from angr.exploration import RustExplorationManager
