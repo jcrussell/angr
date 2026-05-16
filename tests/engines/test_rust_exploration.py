@@ -1536,6 +1536,90 @@ class TestRustInspectMarshalling:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustInspectMemReadDispatch:
+    """Integration tests for mem_read inspect dispatch from IRExpr::Load
+    in the Rust VEX interpreter (angr-uq4n.3).
+
+    Mirror of TestRustInspectMemWriteDispatch — the marshalling-layer
+    tests cover the dispatcher itself; these verify the full end-to-end
+    path including the Rust-side bitmask gate and the IRExpr::Load hook.
+    """
+
+    def test_mem_read_fires_during_exploration(self, fauxware_project):
+        """mem_read BP receives at least one event when running the engine.
+
+        fauxware's entry block performs several VEX Load ops while
+        reading the saved RBP and ELF rodata — the BP must fire on
+        those concrete-address reads.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        events = []
+
+        def on_read(s):
+            events.append((
+                s.inspect.mem_read_address,
+                s.inspect.mem_read_length,
+                s.inspect.mem_read_endness,
+            ))
+
+        mgr._get_inspect_proxy().b('mem_read', when='after', action=on_read)
+        # Bitmask must reflect the BP — sanity-check before stepping.
+        assert mgr._callbacks.get_inspect_enabled() & 0b01 != 0
+
+        mgr.run(max_steps=5)
+
+        # At least one load should have fired.
+        assert len(events) > 0, "no mem_read events captured during run"
+        addr, length, endness = events[0]
+        assert endness in ("Iend_LE", "Iend_BE")
+        assert 0 < length <= 16
+
+    def test_mem_read_skipped_when_no_bp(self, fauxware_project):
+        """Without any mem_read BP, the bitmask gate keeps dispatch off
+        and exploration still progresses normally."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Bitmask should be 0 with no BPs.
+        assert mgr._callbacks.get_inspect_enabled() == 0
+
+        mgr.run(max_steps=5)
+
+    def test_mem_read_reentrancy_with_proxy_access(self, fauxware_project):
+        """BP action that touches the firing state via the proxy must
+        not deadlock or corrupt the exploration loop.
+
+        The state owning the firing event is currently held by the
+        interpreter, so the proxy's lookups raise PyValueError. The
+        dispatcher catches and logs that — the contract is that
+        exploration continues without deadlock or wrong-answer.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_read(s):
+            fire_count[0] += 1
+            try:
+                _ = s.addr
+            except Exception:
+                pass
+
+        mgr._get_inspect_proxy().b('mem_read', when='after', action=on_read)
+        mgr.run(max_steps=5)
+
+        assert fire_count[0] > 0, "BP must fire at least once"
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustInspectMemWriteDispatch:
     """Integration tests for mem_write inspect dispatch from IRStmt::Store
     in the Rust VEX interpreter (angr-uq4n.4).

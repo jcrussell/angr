@@ -46,7 +46,7 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(self.registers.get(*offset, size, self.ctx))
             }
 
-            IRExpr::Load { addr, ty, .. } => {
+            IRExpr::Load { addr, ty, endness } => {
                 let load_start = if self.profiling_enabled {
                     Some(Instant::now())
                 } else {
@@ -58,121 +58,135 @@ impl<'a> CallbackInterpreter<'a> {
                     self.stats.load_stmt_count += 1;
                 }
 
-                // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
-                if self.use_rust_memory {
-                    if let Some(value) =
-                        self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
-                    {
-                        return Ok(value);
-                    }
-                }
-
-                if let Some(addr_concrete) = addr_val.as_u64() {
-                    // FAST PATH 0: Check pending stores buffer
-                    // Stores within the same block are buffered in pending_stores.
-                    // We must check this buffer before falling through to Python
-                    // callbacks, which have stale state.
-
-                    // First check symbolic stores (preserves symbolic values)
-                    if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
-                        if sym_val.width() == (size * 8) as u32 {
-                            return Ok(sym_val.clone());
-                        } else if sym_val.width() > (size * 8) as u32 {
-                            return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+                let value: RustBV = 'load: {
+                    // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
+                    if self.use_rust_memory {
+                        if let Some(value) =
+                            self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
+                        {
+                            break 'load value;
                         }
                     }
 
-                    // Then check concrete stores via the indexed buffer.
-                    // try_load fast-skips when no pending store overlaps the
-                    // load address; falls back to a reverse scan only when the
-                    // most recent covering store is smaller than the load.
-                    if let Some(data) = self.pending_stores.try_load(addr_concrete, size) {
-                        return Ok(bytes_to_bv(data, (size * 8) as u32));
-                    }
+                    if let Some(addr_concrete) = addr_val.as_u64() {
+                        // FAST PATH 0: Check pending stores buffer
+                        // Stores within the same block are buffered in pending_stores.
+                        // We must check this buffer before falling through to Python
+                        // callbacks, which have stale state.
 
-                    // Also check previously flushed symbolic stores (cross-block)
-                    if let Some(sym_val) = self.all_flushed_symbolic_stores.get(&addr_concrete) {
-                        if sym_val.width() == (size * 8) as u32 {
-                            return Ok(sym_val.clone());
-                        } else if sym_val.width() > (size * 8) as u32 {
-                            return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
-                        }
-                    }
-
-                    // Also check previously flushed concrete stores (cross-block)
-                    if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
-                        if size <= store_data.len() {
-                            let data = &store_data[..size];
-                            return Ok(bytes_to_bv(data, (size * 8) as u32));
-                        }
-                    }
-
-                    // FAST PATH 1: Check prefetch cache (batch-loaded values)
-                    if let Some(prefetched) = self.load_prefetch_cache.get(&(addr_concrete, size)) {
-                        return Ok(prefetched.value.clone());
-                    }
-
-                    // FAST PATH 2: Check if address is in Rust-cached concrete memory
-                    if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
-                        return Ok(bytes_to_bv(data, (size * 8) as u32));
-                    }
-                    // SLOW PATH: Fall back to Python callback
-                    self.load_from_callback(py, callbacks, addr_concrete, size)
-                } else {
-                    // Symbolic address - try to concretize for read
-                    match &*self.concretize_cached_read(&addr_val) {
-                        ConcretizationResult::Single(addr_concrete) => {
-                            let addr_concrete = *addr_concrete;
-                            if self.arch.pointer_size() == 32
-                                && addr_concrete >= 0x400000
-                                && addr_concrete < 0x420000
-                            {}
-                            self.track_concretization_constraint(&addr_val, addr_concrete);
-                            if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
-                                return Ok(bytes_to_bv(data, (size * 8) as u32));
+                        // First check symbolic stores (preserves symbolic values)
+                        if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
+                            if sym_val.width() == (size * 8) as u32 {
+                                break 'load sym_val.clone();
+                            } else if sym_val.width() > (size * 8) as u32 {
+                                break 'load sym_val.extract((size * 8 - 1) as u32, 0, self.ctx);
                             }
-                            self.load_from_callback(py, callbacks, addr_concrete, size)
                         }
-                        ConcretizationResult::Multiple(addrs) => {
-                            // Sync constraints before batch load
-                            self.sync_before_callback(py, callbacks)?;
-                            // Build ITE chain in Rust instead of delegating to Python
-                            // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
-                            self.build_ite_load_from_callbacks(
-                                py, callbacks, addrs, &addr_val, size,
-                            )
+
+                        // Then check concrete stores via the indexed buffer.
+                        // try_load fast-skips when no pending store overlaps the
+                        // load address; falls back to a reverse scan only when the
+                        // most recent covering store is smaller than the load.
+                        if let Some(data) = self.pending_stores.try_load(addr_concrete, size) {
+                            break 'load bytes_to_bv(data, (size * 8) as u32);
                         }
-                        ConcretizationResult::Strided {
-                            base,
-                            stride,
-                            count,
-                        } => {
-                            // Sync constraints before batch load
-                            self.sync_before_callback(py, callbacks)?;
-                            // Strided access pattern - generate addresses and build ITE chain in Rust
-                            let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
-                            self.build_ite_load_from_callbacks(
-                                py, callbacks, &addrs, &addr_val, size,
-                            )
+
+                        // Also check previously flushed symbolic stores (cross-block)
+                        if let Some(sym_val) =
+                            self.all_flushed_symbolic_stores.get(&addr_concrete)
+                        {
+                            if sym_val.width() == (size * 8) as u32 {
+                                break 'load sym_val.clone();
+                            } else if sym_val.width() > (size * 8) as u32 {
+                                break 'load sym_val.extract((size * 8 - 1) as u32, 0, self.ctx);
+                            }
                         }
-                        ConcretizationResult::TooLarge { min, max, .. } => {
-                            let descr = format!("range 0x{:x}-0x{:x}", min, max);
-                            self.fallback_load_symbolic_full(
-                                py, callbacks, &addr_val, size, "Load", &descr,
-                            )
+
+                        // Also check previously flushed concrete stores (cross-block)
+                        if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
+                            if size <= store_data.len() {
+                                let data = &store_data[..size];
+                                break 'load bytes_to_bv(data, (size * 8) as u32);
+                            }
                         }
-                        ConcretizationResult::Failed(reason) => {
-                            // Concretization failed entirely (e.g., timeout, no
-                            // strategy applies). Try the full symbolic load callback;
-                            // Python's memory model can still resolve it via its
-                            // own address concretization strategies.
-                            let descr = format!("concretize failed: {}", reason);
-                            self.fallback_load_symbolic_full(
-                                py, callbacks, &addr_val, size, "Load", &descr,
-                            )
+
+                        // FAST PATH 1: Check prefetch cache (batch-loaded values)
+                        if let Some(prefetched) =
+                            self.load_prefetch_cache.get(&(addr_concrete, size))
+                        {
+                            break 'load prefetched.value.clone();
+                        }
+
+                        // FAST PATH 2: Check if address is in Rust-cached concrete memory
+                        if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+                            break 'load bytes_to_bv(data, (size * 8) as u32);
+                        }
+                        // SLOW PATH: Fall back to Python callback
+                        self.load_from_callback(py, callbacks, addr_concrete, size)?
+                    } else {
+                        // Symbolic address - try to concretize for read
+                        match &*self.concretize_cached_read(&addr_val) {
+                            ConcretizationResult::Single(addr_concrete) => {
+                                let addr_concrete = *addr_concrete;
+                                if self.arch.pointer_size() == 32
+                                    && addr_concrete >= 0x400000
+                                    && addr_concrete < 0x420000
+                                {}
+                                self.track_concretization_constraint(&addr_val, addr_concrete);
+                                if let Some(data) =
+                                    self.try_read_concrete_memory(addr_concrete, size)
+                                {
+                                    break 'load bytes_to_bv(data, (size * 8) as u32);
+                                }
+                                self.load_from_callback(py, callbacks, addr_concrete, size)?
+                            }
+                            ConcretizationResult::Multiple(addrs) => {
+                                // Sync constraints before batch load
+                                self.sync_before_callback(py, callbacks)?;
+                                // Build ITE chain in Rust instead of delegating to Python
+                                // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
+                                self.build_ite_load_from_callbacks(
+                                    py, callbacks, addrs, &addr_val, size,
+                                )?
+                            }
+                            ConcretizationResult::Strided {
+                                base,
+                                stride,
+                                count,
+                            } => {
+                                // Sync constraints before batch load
+                                self.sync_before_callback(py, callbacks)?;
+                                // Strided access pattern - generate addresses and build ITE chain in Rust
+                                let addrs: Vec<u64> =
+                                    (0..*count).map(|i| base + i * stride).collect();
+                                self.build_ite_load_from_callbacks(
+                                    py, callbacks, &addrs, &addr_val, size,
+                                )?
+                            }
+                            ConcretizationResult::TooLarge { min, max, .. } => {
+                                let descr = format!("range 0x{:x}-0x{:x}", min, max);
+                                self.fallback_load_symbolic_full(
+                                    py, callbacks, &addr_val, size, "Load", &descr,
+                                )?
+                            }
+                            ConcretizationResult::Failed(reason) => {
+                                // Concretization failed entirely (e.g., timeout, no
+                                // strategy applies). Try the full symbolic load callback;
+                                // Python's memory model can still resolve it via its
+                                // own address concretization strategies.
+                                let descr = format!("concretize failed: {}", reason);
+                                self.fallback_load_symbolic_full(
+                                    py, callbacks, &addr_val, size, "Load", &descr,
+                                )?
+                            }
                         }
                     }
-                }
+                };
+
+                self.dispatch_mem_read_inspect(
+                    py, callbacks, &addr_val, &value, size, *endness,
+                );
+                Ok(value)
             }
 
             IRExpr::Unop { op, arg } => {
@@ -821,6 +835,55 @@ impl<'a> CallbackInterpreter<'a> {
                 "complex expr in default exit".to_string(),
             )),
         }
+    }
+
+    /// Fire a `mem_read` inspect callback into Python for this load.
+    ///
+    /// Mirrors `dispatch_mem_write_inspect` in `statements.rs`. Gated on
+    /// `inspect_event_enabled(MemRead)` so the no-breakpoint case costs a
+    /// single bitmask test per Load. Symbolic addresses are skipped for
+    /// the MVP — only concrete addresses dispatch. The `when='after'`
+    /// event is fired once the value has been computed; the BP receives
+    /// the loaded value AST as `mem_read_expr`. Errors from the Python
+    /// callback are swallowed and logged on the Python side; a user BP
+    /// error must not halt exploration.
+    fn dispatch_mem_read_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        value: &RustBV,
+        size: usize,
+        endness: Endness,
+    ) {
+        // MemRead = InspectEvent variant 0 — see crate::state::InspectEvent.
+        if !callbacks.inspect_event_enabled(0) {
+            return;
+        }
+        let Some(addr_u64) = addr_val.as_u64() else {
+            return;
+        };
+        let endness_str = match endness {
+            Endness::Little => "Iend_LE",
+            Endness::Big => "Iend_BE",
+        };
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_mem_read(
+            py,
+            self.current_state_id,
+            "after",
+            addr_u64,
+            size as u32,
+            Some(&value_ast),
+            endness_str,
+        );
     }
 }
 
