@@ -368,6 +368,19 @@ vs. Python.
    generate noise the user did not consent to. They remain
    divergence-risk in this matrix, just not warn-on-add.
 
+   **Followup (angr-xghv, 2026-05-16):** The user-opted
+   ``TRACK_*_ACTIONS`` family (``TRACK_MEMORY_ACTIONS``,
+   ``TRACK_REGISTER_ACTIONS``, ``TRACK_TMP_ACTIONS``,
+   ``TRACK_JMP_ACTIONS``, ``TRACK_OP_ACTIONS``,
+   ``TRACK_ACTION_HISTORY``) was promoted from warn-once to **raise
+   ``NotImplementedError`` at manager construction** via
+   ``_RAISE_OPTION_NAMES``. Rust never emits ``SimAction`` records, so
+   any analysis driven off ``state.history.actions`` gets silently
+   empty data — loud failure beats silent divergence. Note
+   ``TRACK_OP_ACTIONS`` ships in the ``fastpath`` mode bundle
+   (``sim_options.py:411``); fastpath users must drop to the Python
+   engine.
+
    **Followup (angr-383x, 2026-05-11):** For the default-bundle options
    above, materialized Rust-owned states have their ``history`` plugin
    promoted to ``_RustOwnedSimStateHistory``
@@ -430,14 +443,21 @@ vs. Python.
      - (a) implement — partial overlap with ``ZERO_FILL`` behavior.
    * - ``TRACK_MEMORY_ACTIONS``, ``TRACK_REGISTER_ACTIONS``,
        ``TRACK_TMP_ACTIONS``, ``TRACK_JMP_ACTIONS``,
-       ``TRACK_CONSTRAINT_ACTIONS``, ``TRACK_OP_ACTIONS``
+       ``TRACK_OP_ACTIONS``
      - Populate ``state.history.actions`` with ``SimAction*`` records.
-     - **(b) explicitly reject** — the action stream is empty under Rust
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). The action stream is empty under Rust
        regardless, so silent acceptance misleads users who rely on
        ``state.history.actions``.
+   * - ``TRACK_CONSTRAINT_ACTIONS``
+     - Populate ``state.history.actions`` with ``SimAction*`` records.
+     - **(b) explicitly reject** — ships in the default ``symbolic``
+       mode bundle so cannot raise without spamming every
+       ``entry_state()``; warn-on-read via
+       ``_RustOwnedSimStateHistory`` instead.
    * - ``TRACK_ACTION_HISTORY``
      - Same, across path.
-     - (b) explicitly reject.
+     - **(c) raise NotImplementedError**.
    * - ``TRACK_MEMORY_MAPPING``
      - Logs map/unmap into ``state.history``.
      - (b) explicitly reject.

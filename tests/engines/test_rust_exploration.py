@@ -8437,14 +8437,13 @@ class TestEdgeCases:
         """Setting an option tagged ``(b) explicitly reject`` in
         docs/advanced-topics/rust_engine.rst must emit a UserWarning at
         state-add time. Without this signal, users silently get divergent
-        behavior from the Python engine (e.g. empty action streams under
-        TRACK_MEMORY_ACTIONS).
+        behavior from the Python engine.
         """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state(
             add_options={
-                angr.sim_options.TRACK_MEMORY_ACTIONS,
+                angr.sim_options.CONCRETIZE,
                 angr.sim_options.DO_RET_EMULATION,
             },
         )
@@ -8454,12 +8453,56 @@ class TestEdgeCases:
 
         messages = [str(w.message) for w in caught
                     if issubclass(w.category, UserWarning)]
-        assert any("TRACK_MEMORY_ACTIONS" in m for m in messages), (
-            f"expected TRACK_MEMORY_ACTIONS warning; got {messages!r}"
+        assert any("CONCRETIZE" in m for m in messages), (
+            f"expected CONCRETIZE warning; got {messages!r}"
         )
         assert any("DO_RET_EMULATION" in m for m in messages), (
             f"expected DO_RET_EMULATION warning; got {messages!r}"
         )
+
+    @pytest.mark.parametrize("option_name", [
+        "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
+        "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
+    ])
+    def test_action_tracking_options_raise_at_construction(
+        self, fauxware_project, option_name,
+    ):
+        """The TRACK_*_ACTIONS family must raise NotImplementedError at
+        RustExplorationManager construction. Rust does not emit SimAction
+        records, so silently honoring these would hand the user an empty
+        ``state.history.actions`` stream — a hard-to-diagnose divergence.
+        Acceptance for angr-xghv.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={getattr(angr.sim_options, option_name)},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert option_name in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
+
+    def test_action_tracking_options_raise_lists_all(self, fauxware_project):
+        """When multiple TRACK_*_ACTIONS options are set, the error lists
+        all of them so the user can disable them in one pass.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={
+                angr.sim_options.TRACK_MEMORY_ACTIONS,
+                angr.sim_options.TRACK_REGISTER_ACTIONS,
+            },
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert "TRACK_MEMORY_ACTIONS" in msg
+        assert "TRACK_REGISTER_ACTIONS" in msg
 
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""

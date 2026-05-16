@@ -193,11 +193,6 @@ except ImportError:
 # choose. They remain divergence-risk in the doc; this set covers the options
 # a user must opt into.
 _REJECTED_OPTION_NAMES = frozenset({
-    # Action / history tracking — Rust never produces SimAction records.
-    # TRACK_CONSTRAINT_ACTIONS and TRACK_MEMORY_MAPPING are intentionally
-    # excluded (default-mode bundle; see comment above).
-    "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
-    "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
     # Aggressive concretization / conservative strategies.
     "CONCRETIZE", "CONSERVATIVE_READ_STRATEGY", "CONSERVATIVE_WRITE_STRATEGY",
     # SimMemory error-handling tweaks.
@@ -208,6 +203,20 @@ _REJECTED_OPTION_NAMES = frozenset({
     "CALLLESS",
     # Alternate Python engines / memory plugins.
     "SUPER_FASTPATH", "FAST_MEMORY", "FAST_REGISTERS", "UNDER_CONSTRAINED_SYMEXEC",
+})
+
+
+# SimOptions that we hard-fail rather than warn on. The Rust engine never
+# produces SimAction or SimEvent records, so anything driven by
+# state.history.actions or unsat_core() will silently get empty data under
+# Rust. Loud failure beats hours of chasing a phantom divergence. None of
+# these ship in the default `symbolic` bundle (sim_options.py:391), so this
+# only fires when a user explicitly added the option. TRACK_OP_ACTIONS does
+# ship in the `fastpath` mode bundle — fastpath users will hit this and must
+# drop to the Python engine for action-stream-driven analyses.
+_RAISE_OPTION_NAMES = frozenset({
+    "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
+    "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
 })
 
 
@@ -887,10 +896,13 @@ class RustExplorationManager(
             for state in active_states:
                 # Detect state options
                 if hasattr(state, 'options'):
-                    # Warn about silently-divergent options up-front; the
-                    # post-Python-init state passed to _add_rust_state may
-                    # come from a cached path that strips options down to
-                    # LAZY_SOLVES + STRICT_PAGE_ACCESS via _apply_state_metadata.
+                    # Hard-fail on options the Rust engine cannot honor
+                    # before doing any further work; warn-once on the rest.
+                    # The post-Python-init state passed to _add_rust_state
+                    # may come from a cached path that strips options down
+                    # to LAZY_SOLVES + STRICT_PAGE_ACCESS via
+                    # _apply_state_metadata.
+                    self._check_raise_options(state.options)
                     self._warn_rejected_options(state.options)
                     try:
                         from angr import sim_options as o
@@ -2333,6 +2345,28 @@ class RustExplorationManager(
             )
         self._warned_rejected_options.update(unseen)
 
+    def _check_raise_options(self, options) -> None:
+        """Raise NotImplementedError if any ``_RAISE_OPTION_NAMES`` are set.
+
+        These SimOptions request behavior the Rust engine cannot provide
+        (action streams, history records). Silent divergence has burned
+        users in the past, so we hard-fail at the manager boundary to
+        force a drop to the Python engine.
+        """
+        if not options:
+            return
+        offending = sorted(name for name in _RAISE_OPTION_NAMES if name in options)
+        if not offending:
+            return
+        names = ", ".join(offending)
+        raise NotImplementedError(
+            f"SimOption(s) {{{names}}} require SimAction/SimEvent records "
+            "that the Rust engine does not produce. Drop "
+            "use_rust_engine=True (or remove these options from "
+            "state.options) and rerun with the Python engine. See "
+            "docs/advanced-topics/rust_engine.rst for the full matrix."
+        )
+
     def _add_rust_state(self, stash: str, angr_state: "angr.SimState"):
         """Add an angr state to a Rust stash.
 
@@ -2394,6 +2428,7 @@ class RustExplorationManager(
                 # would reject are silently allowed. Debug-logs.
                 l.debug(f"STRICT_PAGE_ACCESS detection failed: {e}")
 
+            self._check_raise_options(angr_state.options)
             self._warn_rejected_options(angr_state.options)
 
         # Get state IDs before adding (to find the new one)
