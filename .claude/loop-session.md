@@ -1,67 +1,56 @@
-## Session log: 2026-05-16 — angr-uq4n.1 closed (mem_read/mem_write inspect survey)
+## Session log: 2026-05-16 — angr-uq4n.2 inspect marshalling layer
 
-### Status: closed
+### Status: ready-to-close
 
 ### Task
 
-**angr-uq4n.1** — "survey hook points in VEX interpreter + memory
-model for mem_read/mem_write dispatch."
+**angr-uq4n.2** — "Python callback marshalling layer for inspect events."
 
-Pure research / design-note task. No code changes. Output is a
-design note attached as bd note + memory entry.
+Build the Rust → PyO3 → Python state.inspect.action() round-trip
+for mem_read / mem_write inspect events. Acceptance: skeleton
+marshalling layer that delivers a stub event to a registered
+Python callable, even without a real event source yet.
 
-### Findings (KEY)
+### Plan
 
-**Two dispatch surfaces in Rust, not one:**
+Per the survey from uq4n.1 (memory `inspect-mem-dispatch-surfaces`):
 
-1. `state.rs` wrappers (lines 1350/1356/1361/1368/1385) —
-   `memory_load`, `memory_store`, `memory_load_symbolic`,
-   `memory_store_symbolic`, `memory_store_symbolic_multi`. These
-   transitively cover all 20 native SimProcedures (~106 sites) — no
-   per-procedure instrumentation needed.
+**Rust side (`native/angr/src/callbacks.rs`):**
+- Add `inspect_mem_read`, `inspect_mem_write` `Option<Py<PyAny>>` fields on `PythonCallbacks`
+- Add `inspect_enabled: u8` bitmask field (zero-overhead skip)
+- Add setters + getter + `call_inspect_mem_{read,write}` helpers
+- Wire `__traverse__`/`__clear__`
 
-2. `interpreter_cb/` VEX sites that BYPASS state wrappers:
-   - `expressions.rs:49` IRExpr::Load (8+ fast paths: pending_stores,
-     pending_symbolic_stores, flushed stores, prefetch cache,
-     concrete cache, callback fallback, ITE builds, symbolic-full)
-   - `statements.rs:54` IRStmt::Store
-   - `statements.rs:302` IRStmt::StoreG (guarded)
-   - `statements.rs:549` IRStmt::LoadG (guarded)
+**Python side (`angr/exploration/rust_state_proxy.py`):**
+- Replace `_NoOpInspectProxy` with a `RustInspectProxy` that
+  supports mem_read / mem_write BPs (other events still raise).
+- Backed by manager-level BP storage (single set for all states).
 
-**Critical anti-pattern**: do NOT instrument
-`native/angr/src/memory/{load,store,mod}.rs` backends. They would
-(a) miss VEX fast paths (events never fire because fast paths skip
-the backend entirely), and (b) double-fire for SimProcedures.
+**Python side (`angr/exploration/rust_manager.py`):**
+- Add `_inspect_breakpoints` dict + global `_inspect_proxy`.
+- Add `_cb_inspect_mem_read` / `_cb_inspect_mem_write` dispatchers.
+- Add `_update_inspect_bitmask` aggregator.
+- Wire callbacks in `_setup_callbacks`.
 
-**Plumbing requirement**: `interpreter_cb` sites have no
-`&mut RustSimState`. Need (1) new `set_inspect_mem_read/write`
-methods on `PythonCallbacks`, (2) `inspect_enabled: u8` bitmask field
-on `PythonCallbacks` for zero-overhead skip when no breakpoint
-registered (the common case), (3) Python-side dispatcher that
-reads `state.inspect._breakpoints['mem_read']` and fires each BP.
+**Tests:** add tests in `test_rust_exploration.py` that exercise
+the round-trip by calling `_cb_inspect_mem_*` directly with
+synthetic args.
 
-`interpreter.rs` simple `VEXInterpreter` (Load at 366, Store at 255)
-is legacy/test (only used by `RustVEXEngine::execute_cached_block`,
-engine.rs:1406) — out of MVP scope.
+### Files modified
 
-### Deliverables
+- native/angr/src/callbacks.rs — added `inspect_mem_{read,write}` callback slots, `inspect_enabled` bitmask, setters/getter, `call_inspect_mem_{read,write}` helpers, wired GC (`__traverse__`/`__clear__`).
+- angr/exploration/rust_state_proxy.py — added `RustInspectProxy` (manager-shared facade with SimInspector-compatible `b`/`make_breakpoint`/`add_breakpoint`/`remove_breakpoint`/`action` for mem_read / mem_write; other events still raise). Kept `_NoOpInspectProxy` for the no-manager fallback. `RustStateProxy.inspect` now routes to `mgr._get_inspect_proxy()` when a manager is attached.
+- angr/exploration/rust_manager.py — added `_inspect_breakpoints` storage, `_INSPECT_EVENT_BITS`, `_inspect_dispatch_depth` reentrancy guard, `_get_inspect_proxy`/`_update_inspect_bitmask`/`_make_inspect_state_for`/`_dispatch_inspect_event`/`_cb_inspect_mem_{read,write}` dispatchers. Wired in `_setup_callbacks`.
+- tests/engines/test_rust_exploration.py — added `TestRustInspectMarshalling` (10 tests: callbacks slots, BP registration + bitmask, unsupported-event rejection, mem_read dispatch, mem_write w/ value AST, no-BP fast path, reentrancy guard, Rust-side `call_inspect_*` invocation, unset-callback no-op, proxy routing).
 
-- **bd note** on `angr-uq4n.1` — full 138-line design note with
-  per-site table + Python attribute shape + phasing recommendation.
-- **bd memory** `inspect-mem-dispatch-surfaces` — distilled
-  call-site list + the anti-pattern + the plumbing requirement.
+### Test result
 
-### Phasing recommendation for the rest of the epic
+426 / 426 passing (added 10 new tests on top of previous 416 count, plus
+renamed 1 existing).
 
-- **uq4n.2** (next, unblocked now) — Python callback marshalling
-  layer: add `set_inspect_mem_read/write` on `PythonCallbacks`, wire
-  `inspect_enabled` bitmask, replace `_NoOpInspectProxy` registration
-  with real wiring.
-- **uq4n.3** — Instrument the 5 sites (3 state.rs + 4 interpreter_cb).
-- **uq4n.4** — Integration tests.
-- **uq4n.5** — Update `invariant-rust-inspect-unsupported` memory +
-  `docs/advanced-topics/rust_engine.rst`.
+### Followup
 
-### Commit
-
-No code change. Task is research-only.
+- uq4n.3: instrument the 5 Rust dispatch sites identified in uq4n.1's
+  survey to actually fire these callbacks.
+- uq4n.5: bd memory `invariant-rust-inspect-unsupported` needs an update
+  once dispatch wiring lands.
