@@ -773,13 +773,25 @@ _INSPECT_NOT_IMPLEMENTED_MSG = (
     "analyses. See docs/advanced-topics/rust_engine.rst for details."
 )
 
+# Events that the Rust-engine inspect MVP knows how to dispatch.
+# Anything outside this set still raises NotImplementedError on registration
+# so users don't silently miss events. Expand as further events are wired.
+_RUST_INSPECT_SUPPORTED_EVENTS = frozenset({"mem_read", "mem_write"})
+
+_INSPECT_EVENT_NOT_SUPPORTED_MSG = (
+    "Rust engine inspect MVP only dispatches mem_read / mem_write events; "
+    "got event_type={!r}. Drop to use_rust_engine=False for full "
+    "state.inspect coverage."
+)
+
 
 class _NoOpInspectProxy:
-    """Stand-in for state.inspect on RustStateProxy.
+    """Stand-in for state.inspect on a RustStateProxy detached from any manager.
 
-    The Rust engine does not surface inspect events, so any breakpoint
-    registered here would silently never fire. Rather than letting that
-    fail invisibly, registration methods raise NotImplementedError.
+    Used only when a RustStateProxy is constructed without a python_mgr
+    (mostly low-level unit tests). With a manager attached, the proxy
+    routes `.inspect` to the manager's `RustInspectProxy` instead, which
+    actually dispatches mem_read / mem_write events from the Rust engine.
     """
 
     def b(self, *args, **kwargs):
@@ -796,6 +808,140 @@ class _NoOpInspectProxy:
 
     def action(self, *args, **kwargs):
         raise NotImplementedError(_INSPECT_NOT_IMPLEMENTED_MSG)
+
+
+# Inspect-attribute names per supported event. Mirrors angr.state_plugins.inspect.
+# Used by RustInspectProxy.action() to reset attrs between fires.
+_RUST_INSPECT_ATTRS_BY_EVENT = {
+    "mem_read": (
+        "mem_read_address",
+        "mem_read_length",
+        "mem_read_expr",
+        "mem_read_condition",
+        "mem_read_endness",
+    ),
+    "mem_write": (
+        "mem_write_address",
+        "mem_write_length",
+        "mem_write_expr",
+        "mem_write_condition",
+        "mem_write_endness",
+    ),
+}
+
+
+class RustInspectProxy:
+    """state.inspect for Rust-engine states.
+
+    Implements the subset of `SimInspector` needed for the mem_read /
+    mem_write MVP. Other event types raise NotImplementedError at
+    registration time to make the gap loud.
+
+    Storage is centralized on the owning RustExplorationManager (a single
+    set of breakpoints applies across all that manager's states), to keep
+    the bitmask the Rust engine reads in sync with what's registered.
+    The proxy itself is shared across all per-state RustStateProxy
+    instances; `set_state` rebinds the `state` field that BP.check / fire
+    receive when dispatch occurs for that state.
+
+    This is an MVP deviation from Python's per-state inspect plugin
+    semantics — see `docs/advanced-topics/rust_engine.rst`.
+    """
+
+    SUPPORTED_EVENTS = _RUST_INSPECT_SUPPORTED_EVENTS
+
+    def __init__(self, mgr):
+        # Manager-owned BP storage; the proxy is a thin facade so all
+        # state proxies share the same dispatch set.
+        self._mgr = mgr
+        self.state = None
+        self.action_attrs_set = False
+        # Initialize every known inspect attribute to None so BP.check
+        # doesn't AttributeError when reading attrs not set by the
+        # current event.
+        for attrs in _RUST_INSPECT_ATTRS_BY_EVENT.values():
+            for a in attrs:
+                setattr(self, a, None)
+
+    @property
+    def _breakpoints(self):
+        """Compat with code that pokes into SimInspector._breakpoints."""
+        return self._mgr._inspect_breakpoints
+
+    def set_state(self, state):
+        """Bind the state passed to BP.check / BP.fire during the next action().
+
+        Called by the manager-side dispatcher right before invoking
+        `action(...)` so the user's BP callable sees the per-state proxy.
+        """
+        self.state = state
+
+    def b(self, event_type, *args, **kwargs):
+        """Alias for make_breakpoint, matching SimInspector.b."""
+        return self.make_breakpoint(event_type, *args, **kwargs)
+
+    def make_breakpoint(self, event_type, *args, **kwargs):
+        self._check_event(event_type)
+        from angr.state_plugins.inspect import BP
+        bp = BP(*args, **kwargs)
+        self.add_breakpoint(event_type, bp)
+        return bp
+
+    def add_breakpoint(self, event_type, bp):
+        self._check_event(event_type)
+        self._mgr._inspect_breakpoints[event_type].append(bp)
+        self._mgr._update_inspect_bitmask()
+
+    def remove_breakpoint(self, event_type, bp=None, filter_func=None):
+        self._check_event(event_type)
+        if bp is None and filter_func is None:
+            raise ValueError(
+                'remove_breakpoint(): You must specify either "bp" or "filter".'
+            )
+        bps = self._mgr._inspect_breakpoints[event_type]
+        if bp is not None:
+            try:
+                bps.remove(bp)
+            except ValueError:
+                pass
+        else:
+            self._mgr._inspect_breakpoints[event_type] = [
+                b for b in bps if not filter_func(b)
+            ]
+        self._mgr._update_inspect_bitmask()
+
+    def action(self, event_type, when, **kwargs):
+        """Mirror SimInspector.action: stage attrs, walk BPs, fire matches.
+
+        BP.fire() invokes the user action with `self.state` (set by the
+        dispatcher just before this call). On reentrant calls (user action
+        triggering another inspect event), staging clobbers attrs — same
+        as Python's SimInspector. The Rust dispatch site guards against
+        reentrant dispatch (uq4n.4).
+        """
+        self._check_event(event_type)
+        self._set_inspect_attrs(**kwargs)
+        self.action_attrs_set = True
+        state = self.state
+        try:
+            for bp in list(self._mgr._inspect_breakpoints[event_type]):
+                if not self.action_attrs_set:
+                    self._set_inspect_attrs(**kwargs)
+                    self.action_attrs_set = True
+                if bp.check(state, when):
+                    bp.fire(state)
+        finally:
+            self.action_attrs_set = False
+
+    def _check_event(self, event_type):
+        if event_type not in self.SUPPORTED_EVENTS:
+            raise NotImplementedError(
+                _INSPECT_EVENT_NOT_SUPPORTED_MSG.format(event_type)
+            )
+
+    def _set_inspect_attrs(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
 
 class RustStateProxy:
@@ -951,9 +1097,15 @@ class RustStateProxy:
 
     @property
     def inspect(self):
-        """No-op inspect proxy. Breakpoint registration silently succeeds
-        but never fires — the Rust engine doesn't surface inspect events.
+        """state.inspect for the Rust engine.
+
+        If this proxy is attached to a RustExplorationManager, returns the
+        manager-wide RustInspectProxy that supports mem_read / mem_write
+        BP registration. Without a manager (low-level proxy construction),
+        registration raises NotImplementedError via _NoOpInspectProxy.
         """
+        if self._python_mgr is not None:
+            return self._python_mgr._get_inspect_proxy()
         if self._inspect_proxy is None:
             self._inspect_proxy = _NoOpInspectProxy()
         return self._inspect_proxy

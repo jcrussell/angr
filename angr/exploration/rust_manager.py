@@ -895,6 +895,21 @@ class RustExplorationManager(
         # Track active exploration techniques (applied during exploration steps).
         self._active_techniques: list = []
 
+        # state.inspect MVP storage (angr-uq4n).
+        # Manager-wide breakpoint registry — shared across all states this
+        # manager owns. RustInspectProxy is the user-facing facade.
+        # See docs/advanced-topics/rust_engine.rst for the MVP scope.
+        self._inspect_breakpoints: Dict[str, list] = {"mem_read": [], "mem_write": []}
+        # Per-event bit positions on the Rust-side `inspect_enabled` bitmask.
+        # Must match `crate::state::InspectEvent` ordering.
+        self._INSPECT_EVENT_BITS = {"mem_read": 0, "mem_write": 1}
+        # Reentrancy guard: when a user action callback runs, suppress
+        # nested inspect dispatch on the same manager. uq4n.4 covers
+        # the full guard test.
+        self._inspect_dispatch_depth = 0
+        # Lazy RustInspectProxy instance (one per manager, shared across proxies).
+        self._inspect_proxy: Optional["RustInspectProxy"] = None
+
         # Cached memory layout from disk cache for fast _sync_memory_to_rust
         self._mem_cache: Optional[dict] = None
 
@@ -1156,6 +1171,13 @@ class RustExplorationManager(
             callbacks.set_memory_store_symbolic_full(self._cb_memory_store_symbolic_full)
         if hasattr(callbacks, 'set_memory_load_symbolic_full'):
             callbacks.set_memory_load_symbolic_full(self._cb_memory_load_symbolic_full)
+        # state.inspect MVP (angr-uq4n.2) — register dispatchers even when
+        # no BPs are set so the Rust side has a target if instrumentation
+        # fires unexpectedly. The bitmask gates actual dispatch.
+        if hasattr(callbacks, 'set_inspect_mem_read'):
+            callbacks.set_inspect_mem_read(self._cb_inspect_mem_read)
+        if hasattr(callbacks, 'set_inspect_mem_write'):
+            callbacks.set_inspect_mem_write(self._cb_inspect_mem_write)
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks
 
@@ -1759,6 +1781,127 @@ class RustExplorationManager(
             # in memory — downstream constraint sync will diverge. Debug-logs.
             l.debug(f"Symbolic-address load failed: {e}")
             return claripy.BVS(f"sym_load_full_fail_{size}", size * 8, explicit_name=False)
+
+    # ---- state.inspect MVP dispatcher (angr-uq4n.2) ----
+
+    def _get_inspect_proxy(self):
+        """Return the manager-wide RustInspectProxy (lazy)."""
+        if self._inspect_proxy is None:
+            from angr.exploration.rust_state_proxy import RustInspectProxy
+            self._inspect_proxy = RustInspectProxy(self)
+        return self._inspect_proxy
+
+    def _update_inspect_bitmask(self):
+        """Recompute the Rust-side `inspect_enabled` bitmask.
+
+        Called after every BP add/remove. The bitmask is the OR of bits
+        for every event with at least one registered breakpoint.
+        Rust VEX dispatch sites read this with a single `& != 0` test
+        before any payload work, so when no BPs exist the cost is one
+        branch per Load/Store.
+        """
+        if self._callbacks is None or not hasattr(self._callbacks, 'set_inspect_enabled'):
+            return
+        mask = 0
+        for event, bit in self._INSPECT_EVENT_BITS.items():
+            if self._inspect_breakpoints.get(event):
+                mask |= 1 << bit
+        self._callbacks.set_inspect_enabled(mask)
+
+    def _make_inspect_state_for(self, state_id: int):
+        """Build the state object the user action sees during inspect dispatch.
+
+        Returns a RustStateProxy bound to `state_id` (preferred). Falls
+        back to whatever the cached default state is if the state_id is
+        unknown — keeps the BP firing rather than silently dropping.
+        """
+        if state_id is not None and state_id >= 0:
+            from angr.exploration.rust_state_proxy import RustStateProxy
+            try:
+                return RustStateProxy(self._rust_mgr, state_id, self._project,
+                                      python_mgr=self)
+            except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: state may have been
+                # dropped from Rust between dispatch and proxy build.
+                pass
+        return self._get_callback_state() or self._get_default_state()
+
+    def _dispatch_inspect_event(
+        self,
+        event_type: str,
+        state_id: int,
+        when: str,
+        addr: int,
+        size: int,
+        value_ast,
+        endness: str,
+    ):
+        """Common dispatch path for mem_read / mem_write inspect events.
+
+        Builds kwargs for SimInspector.action — wrapping addr as a
+        claripy BVV when it arrives as a Python int. Reentrancy is
+        suppressed by `_inspect_dispatch_depth`.
+        """
+        if self._inspect_dispatch_depth > 0:
+            return  # reentrancy guard (uq4n.4)
+        bps = self._inspect_breakpoints.get(event_type)
+        if not bps:
+            return  # bitmask race — Rust fired but Python already cleared
+        state = self._make_inspect_state_for(state_id)
+        if state is None:
+            return
+        bits = self._project.arch.bits if self._project is not None else 64
+        addr_attr = claripy.BVV(addr, bits) if isinstance(addr, int) else addr
+        kwargs = {
+            f"{event_type}_address": addr_attr,
+            f"{event_type}_length": size,
+            f"{event_type}_expr": value_ast,
+            f"{event_type}_endness": endness,
+        }
+        proxy = self._get_inspect_proxy()
+        proxy.set_state(state)
+        self._inspect_dispatch_depth += 1
+        try:
+            proxy.action(event_type, when, **kwargs)
+        finally:
+            self._inspect_dispatch_depth -= 1
+
+    def _cb_inspect_mem_read(
+        self,
+        state_id: int,
+        when: str,
+        addr: int,
+        size: int,
+        value_ast,
+        endness: str,
+    ):
+        """PyO3 callback target for mem_read events from Rust."""
+        try:
+            self._dispatch_inspect_event(
+                "mem_read", state_id, when, addr, size, value_ast, endness
+            )
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: user BP action errored. Log and
+            # swallow so the engine keeps stepping; the user can see the
+            # warning in stderr.
+            l.warning("inspect mem_read dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_mem_write(
+        self,
+        state_id: int,
+        when: str,
+        addr: int,
+        size: int,
+        value_ast,
+        endness: str,
+    ):
+        """PyO3 callback target for mem_write events from Rust."""
+        try:
+            self._dispatch_inspect_event(
+                "mem_write", state_id, when, addr, size, value_ast, endness
+            )
+        except Exception as e:
+            l.warning("inspect mem_write dispatch failed: %s: %s", type(e).__name__, e)
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""

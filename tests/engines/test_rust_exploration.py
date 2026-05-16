@@ -1328,10 +1328,11 @@ class TestCallStackProxy:
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestInspectProxy:
-    """Tests for the loud inspect proxy on RustStateProxy."""
+    """Tests for the loud inspect proxy on RustStateProxy (no-manager case)."""
 
-    def test_inspect_breakpoint_calls_raise(self):
-        """state.inspect.b/make_breakpoint/add_breakpoint raise NotImplementedError.
+    def test_inspect_breakpoint_calls_raise_without_manager(self):
+        """A standalone _NoOpInspectProxy (used when no manager is attached)
+        raises NotImplementedError on every registration method.
 
         Silent no-ops would let breakpoint-based techniques register hooks
         that never fire. Raising loudly surfaces the unsupported path.
@@ -1349,6 +1350,189 @@ class TestInspectProxy:
             ins.remove_breakpoint("call", 0)
         with pytest.raises(NotImplementedError, match="rust_engine"):
             ins.action("call", lambda s: None)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustInspectMarshalling:
+    """Tests for the state.inspect mem_read / mem_write marshalling layer.
+
+    Covers angr-uq4n.2: the Rust → PyO3 → Python state.inspect.action()
+    round-trip. The Rust dispatch instrumentation (uq4n.3) is not yet
+    wired, so these tests invoke the Python callbacks directly with
+    synthetic event payloads — the same shape the Rust side will use.
+    """
+
+    def test_callbacks_have_inspect_slots(self):
+        """PythonCallbacks exposes set_inspect_mem_{read,write} + bitmask."""
+        cbs = PythonCallbacks()
+        assert hasattr(cbs, 'set_inspect_mem_read')
+        assert hasattr(cbs, 'set_inspect_mem_write')
+        assert hasattr(cbs, 'set_inspect_enabled')
+        assert hasattr(cbs, 'get_inspect_enabled')
+        assert cbs.get_inspect_enabled() == 0
+        cbs.set_inspect_enabled(0b11)
+        assert cbs.get_inspect_enabled() == 0b11
+        cbs.set_inspect_enabled(0)
+        assert cbs.get_inspect_enabled() == 0
+
+    def test_inspect_proxy_registers_mem_read_bp(self, fauxware_project):
+        """Registering a mem_read BP via state.inspect.b flips the bitmask."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._callbacks.get_inspect_enabled() == 0
+
+        proxy_inspect = mgr._get_inspect_proxy()
+        bp = proxy_inspect.b('mem_read', when='before', action=lambda s: None)
+        assert bp is not None
+        assert mgr._callbacks.get_inspect_enabled() & 0b01 != 0
+        # Adding a mem_write BP sets bit 1 too.
+        proxy_inspect.b('mem_write', when='after', action=lambda s: None)
+        assert mgr._callbacks.get_inspect_enabled() & 0b10 != 0
+        # Removing them clears the bitmask.
+        proxy_inspect.remove_breakpoint('mem_read', bp)
+        proxy_inspect._mgr._inspect_breakpoints['mem_write'].clear()
+        proxy_inspect._mgr._update_inspect_bitmask()
+        assert mgr._callbacks.get_inspect_enabled() == 0
+
+    def test_inspect_proxy_rejects_unsupported_events(self, fauxware_project):
+        """Events outside the MVP (reg_read, fork, etc.) still raise loudly."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+        for evt in ("reg_read", "reg_write", "call", "exit", "fork"):
+            with pytest.raises(NotImplementedError, match="mem_read"):
+                ins.b(evt, when='before', action=lambda s: None)
+
+    def _make_mgr_with_state_id(self, project):
+        """Helper: build a manager and return (mgr, valid_state_id) for dispatch tests."""
+        from angr.exploration import RustExplorationManager
+        state = project.factory.entry_state()
+        mgr = RustExplorationManager(project, [state])
+        state_ids = list(mgr._rust_mgr.get_state_ids('active'))
+        assert state_ids, "expected at least one active state"
+        return mgr, state_ids[0], state
+
+    def test_dispatch_mem_read_fires_bp(self, fauxware_project):
+        """Calling _cb_inspect_mem_read invokes the user's BP action."""
+        mgr, sid, state = self._make_mgr_with_state_id(fauxware_project)
+        events = []
+
+        def on_read(s):
+            events.append({
+                'addr': s.inspect.mem_read_address,
+                'length': s.inspect.mem_read_length,
+                'endness': s.inspect.mem_read_endness,
+            })
+
+        mgr._get_inspect_proxy().b('mem_read', when='before', action=on_read)
+        mgr._cb_inspect_mem_read(sid, 'before', 0x401234, 4, None, 'Iend_LE')
+
+        assert len(events) == 1
+        ev = events[0]
+        assert ev['length'] == 4
+        assert ev['endness'] == 'Iend_LE'
+        import claripy
+        assert isinstance(ev['addr'], claripy.ast.bv.BV)
+        assert state.solver.eval(ev['addr']) == 0x401234
+
+    def test_dispatch_mem_write_after_carries_value_ast(self, fauxware_project):
+        """mem_write AFTER passes the stored value through to mem_write_expr."""
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+        sym_val = claripy.BVS('written_value', 32)
+
+        def on_write(s):
+            seen.append((
+                s.inspect.mem_write_address,
+                s.inspect.mem_write_length,
+                s.inspect.mem_write_expr,
+                s.inspect.mem_write_endness,
+            ))
+
+        mgr._get_inspect_proxy().b('mem_write', when='after', action=on_write)
+        mgr._cb_inspect_mem_write(sid, 'after', 0x402000, 4, sym_val, 'Iend_LE')
+
+        assert len(seen) == 1
+        addr, length, expr, endness = seen[0]
+        assert length == 4
+        assert endness == 'Iend_LE'
+        assert expr is sym_val
+
+    def test_dispatch_skipped_when_no_bps(self, fauxware_project):
+        """Dispatch with empty BP list is a no-op (no exception, nothing fired)."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        # No BPs registered — dispatch should silently return.
+        mgr._cb_inspect_mem_read(sid, 'before', 0x1000, 8, None, 'Iend_LE')
+        mgr._cb_inspect_mem_write(sid, 'after', 0x1000, 8, None, 'Iend_LE')
+
+    def test_dispatch_reentrancy_guard(self, fauxware_project):
+        """A BP action that triggers another inspect dispatch is suppressed.
+
+        Without the guard, a user action that touched memory through the
+        same RustExplorationManager could recursively call into the
+        dispatcher and overwrite the in-flight inspect attributes
+        mid-action.
+        """
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        fire_count = [0]
+
+        def reentrant_action(s):
+            fire_count[0] += 1
+            # Try to trigger another dispatch from inside the BP action.
+            mgr._cb_inspect_mem_read(sid, 'before', 0xdead, 4, None, 'Iend_LE')
+
+        mgr._get_inspect_proxy().b('mem_read', when='before', action=reentrant_action)
+        mgr._cb_inspect_mem_read(sid, 'before', 0x401234, 4, None, 'Iend_LE')
+
+        # Outer fire should run exactly once — the reentrant call returns early.
+        assert fire_count[0] == 1
+
+    def test_rust_call_inspect_mem_read_invokes_python(self, fauxware_project):
+        """The Rust-side call_inspect_mem_read method round-trips into Python."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        hits = []
+
+        def on_read(s):
+            hits.append(s.inspect.mem_read_length)
+
+        mgr._get_inspect_proxy().b('mem_read', when='before', action=on_read)
+
+        # Invoke through the Rust PyO3 entry point — exercises both the
+        # Rust callback dispatch path and the Python dispatcher.
+        mgr._callbacks.call_inspect_mem_read(sid, 'before', 0xcafe, 8, None, 'Iend_LE')
+        assert hits == [8]
+
+    def test_rust_call_inspect_skips_when_callback_unset(self):
+        """call_inspect_mem_* is a no-op when no callback is registered."""
+        cbs = PythonCallbacks()
+        # No callback set — should not raise.
+        cbs.call_inspect_mem_read(-1, 'before', 0x1000, 4, None, 'Iend_LE')
+        cbs.call_inspect_mem_write(-1, 'after', 0x1000, 4, None, 'Iend_LE')
+
+    def test_state_proxy_inspect_routes_to_manager(self, fauxware_project):
+        """RustStateProxy.inspect returns the manager-wide proxy when bound."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustStateProxy, RustInspectProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        state_ids = list(mgr._rust_mgr.get_state_ids('active'))
+        assert state_ids, "expected at least one active state"
+        proxy = RustStateProxy(mgr._rust_mgr, state_ids[0], fauxware_project,
+                               python_mgr=mgr)
+        ins = proxy.inspect
+        assert isinstance(ins, RustInspectProxy)
+        # Identity: same proxy returned across calls / across state proxies.
+        assert proxy.inspect is ins
+        proxy2 = RustStateProxy(mgr._rust_mgr, state_ids[0], fauxware_project,
+                                python_mgr=mgr)
+        assert proxy2.inspect is ins
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

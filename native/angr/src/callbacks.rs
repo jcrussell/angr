@@ -362,6 +362,25 @@ pub struct PythonCallbacks {
     /// If returns None, the function is truly unmodeled and state should be deadended.
     /// If returns info, Rust will register the function as a SimProcedure and retry.
     pub resolve_function: Option<Py<PyAny>>,
+    /// Callback for state.inspect mem_read events.
+    /// Signature:
+    ///   fn(state_id: int, when: str, addr: int, size: int,
+    ///      value_ast: object | None, endness: str) -> None
+    /// `when` is "before" or "after"; on BEFORE `value_ast` is None,
+    /// on AFTER it holds the loaded value (concrete value as int or
+    /// claripy AST). `endness` is "Iend_LE" or "Iend_BE".
+    /// Only dispatched when bit InspectEvent::MemRead in `inspect_enabled` is set.
+    pub inspect_mem_read: Option<Py<PyAny>>,
+    /// Callback for state.inspect mem_write events.
+    /// Signature mirrors `inspect_mem_read` but `value_ast` is the data
+    /// being stored (set on BEFORE and AFTER).
+    pub inspect_mem_write: Option<Py<PyAny>>,
+    /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
+    /// VEX dispatch sites read this with a single `& != 0` check before
+    /// touching any payload — keeps the cost of inspect-disabled
+    /// execution at one branch per Load/Store.
+    /// Python writes via `set_inspect_enabled`; defaults to 0 (off).
+    pub inspect_enabled: u8,
 }
 
 #[pymethods]
@@ -389,6 +408,9 @@ impl PythonCallbacks {
             memory_store_symbolic_full: None,
             memory_load_symbolic_full: None,
             resolve_function: None,
+            inspect_mem_read: None,
+            inspect_mem_write: None,
+            inspect_enabled: 0,
         }
     }
 
@@ -584,6 +606,70 @@ impl PythonCallbacks {
         self.resolve_function = Some(cb);
     }
 
+    /// Set the inspect mem_read callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(state_id: int, when: str, addr: int, size: int, value_ast: object | None, endness: str) -> None`
+    pub fn set_inspect_mem_read(&mut self, cb: Py<PyAny>) {
+        self.inspect_mem_read = Some(cb);
+    }
+
+    /// Set the inspect mem_write callback.
+    ///
+    /// The callback should have signature:
+    /// `fn(state_id: int, when: str, addr: int, size: int, value_ast: object | None, endness: str) -> None`
+    pub fn set_inspect_mem_write(&mut self, cb: Py<PyAny>) {
+        self.inspect_mem_write = Some(cb);
+    }
+
+    /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
+    /// Python aggregates registered breakpoints into this single value;
+    /// VEX dispatch sites do a single AND test before any payload work.
+    #[pyo3(name = "set_inspect_enabled")]
+    pub fn py_set_inspect_enabled(&mut self, mask: u8) {
+        self.inspect_enabled = mask;
+    }
+
+    /// Read the inspect-enabled bitmask (Python-side, mostly for tests).
+    #[pyo3(name = "get_inspect_enabled")]
+    pub fn py_get_inspect_enabled(&self) -> u8 {
+        self.inspect_enabled
+    }
+
+    /// Test entry point: invoke the registered mem_read callback directly.
+    /// Lets the marshalling round-trip be exercised before VEX dispatch
+    /// sites are wired (uq4n.3). Returns whatever Python returned.
+    #[pyo3(name = "call_inspect_mem_read")]
+    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    pub fn py_call_inspect_mem_read(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+        endness: &str,
+    ) -> PyResult<()> {
+        self.call_inspect_mem_read(py, state_id, when, addr, size, value_ast.as_ref(), endness)
+    }
+
+    /// Test entry point: invoke the registered mem_write callback directly.
+    #[pyo3(name = "call_inspect_mem_write")]
+    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    pub fn py_call_inspect_mem_write(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+        endness: &str,
+    ) -> PyResult<()> {
+        self.call_inspect_mem_write(py, state_id, when, addr, size, value_ast.as_ref(), endness)
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -630,6 +716,8 @@ impl PythonCallbacks {
             &self.memory_store_symbolic_full,
             &self.memory_load_symbolic_full,
             &self.resolve_function,
+            &self.inspect_mem_read,
+            &self.inspect_mem_write,
         ] {
             if let Some(obj) = opt {
                 visit.call(obj)?;
@@ -660,6 +748,9 @@ impl PythonCallbacks {
         self.memory_store_symbolic_full = None;
         self.memory_load_symbolic_full = None;
         self.resolve_function = None;
+        self.inspect_mem_read = None;
+        self.inspect_mem_write = None;
+        self.inspect_enabled = 0;
     }
 }
 
@@ -670,6 +761,63 @@ impl Default for PythonCallbacks {
 }
 
 impl PythonCallbacks {
+    /// Fast O(1) check for whether an inspect event is enabled.
+    /// Bit N = `crate::state::InspectEvent` variant N (MemRead=0, MemWrite=1, …).
+    #[inline(always)]
+    pub fn inspect_event_enabled(&self, event_bit: u8) -> bool {
+        self.inspect_enabled & (1u8 << event_bit) != 0
+    }
+
+    /// Invoke the Python inspect mem_read callback.
+    ///
+    /// Caller is expected to gate this on `inspect_event_enabled(0)` for
+    /// the common no-breakpoint case. Errors propagate so the engine can
+    /// surface user-action failures rather than swallowing them.
+    pub fn call_inspect_mem_read(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: u32,
+        value_ast: Option<&Py<PyAny>>,
+        endness: &str,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_mem_read.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let value_obj: Py<PyAny> = match value_ast {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect mem_write callback. See `call_inspect_mem_read`.
+    pub fn call_inspect_mem_write(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: u32,
+        value_ast: Option<&Py<PyAny>>,
+        endness: &str,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_mem_write.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let value_obj: Py<PyAny> = match value_ast {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
+        Ok(())
+    }
+
     /// Call the memory load callback.
     ///
     /// Returns (data_bytes, is_symbolic, symbolic_ast).
