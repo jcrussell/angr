@@ -1,63 +1,69 @@
-## Session log: 2026-05-16 — angr-gmrc + angr-csmm: promote two SimOptions to raise
+## Session log: 2026-05-16 — angr-cf9h: promote DO_RET_EMULATION + CALLLESS to raise
 
-### Status: closing (2 tasks done)
+### Status: closing (1 task done)
 
-### Tasks
+### Task
 
-Both were near-mechanical follow-ups to angr-xghv: move a SimOption name
-from `_REJECTED_OPTION_NAMES` to `_RAISE_OPTION_NAMES` so it raises
-`NotImplementedError` at `RustExplorationManager` construction instead
-of warning once.
+**angr-cf9h** — Final task of the option-set sweep started by angr-xghv
+(TRACK_*_ACTIONS), angr-gmrc (CONCRETIZE), and angr-csmm
+(CONSERVATIVE_WRITE_STRATEGY). Move `DO_RET_EMULATION` and `CALLLESS`
+from `_REJECTED_OPTION_NAMES` (warn-once) to `_RAISE_OPTION_NAMES`
+(raise NotImplementedError at construction).
 
-1. **angr-gmrc — CONCRETIZE.** Python routes it through
-   `SimSolver.BatchedConcretizationBacker` to eagerly concretize every
-   fresh symbol; Rust has no equivalent hook. Silent ignore meant
-   symbolic-driven analyses behaved as if the option were absent.
-2. **angr-csmm — CONSERVATIVE_WRITE_STRATEGY.** Python's
-   `SimSymbolicMemory.concretize_write_addr` honors it; Rust's
-   `SymbolicMemory` always concretizes within strategy limits. Silent
-   ignore defeated the user's intent to keep the analysis conservative.
+- **DO_RET_EMULATION:** Python emits an emulated ret successor at every
+  ret site; Rust does not emulate rets at all. Silent ignore changes the
+  successor set — typically breaks Callable workflows.
+- **CALLLESS:** Python replaces each call with unconstraining of the
+  return register so Callable can short-circuit function bodies. Rust
+  has no equivalent path and steps into the callee, breaking the
+  Callable contract.
+
+`TRUE_RET_EMULATION_GUARD` (paired with DO_RET_EMULATION) **stays** in
+`_REJECTED_OPTION_NAMES`. Alone it's just a guard tweak with no effect;
+the case where it matters (paired with DO_RET_EMULATION) now raises
+before the guard is consulted. Asymmetric promotion follows the
+CONSERVATIVE_WRITE_STRATEGY / CONSERVATIVE_READ_STRATEGY precedent.
 
 ### Implementation
 
-- `angr/exploration/rust_manager.py`: moved both names out of
-  `_REJECTED_OPTION_NAMES` and added them to `_RAISE_OPTION_NAMES`.
-  Added a comment block per option explaining the Python-side mechanism
-  and why silent acceptance would diverge.
+- `angr/exploration/rust_manager.py`:
+  - Dropped `DO_RET_EMULATION` and `CALLLESS` from
+    `_REJECTED_OPTION_NAMES`; left `TRUE_RET_EMULATION_GUARD` there with
+    an updated comment noting its now-orphan status.
+  - Added both names to `_RAISE_OPTION_NAMES` with paragraph rationale
+    blocks above the literal (matching the CONCRETIZE / CONSERVATIVE
+    comment style).
 - `tests/engines/test_rust_exploration.py`:
-  - `test_rejected_options_emit_warning` switched from `CONCRETIZE +
-    DO_RET_EMULATION` to `CALLLESS + DO_RET_EMULATION` (CONCRETIZE now
-    raises).
-  - Added `test_concretize_option_raises_at_construction` and
-    `test_conservative_write_strategy_raises_at_construction`. Both
-    assert `NotImplementedError`, that the option name is in the
-    message, and that the message points users to the Python engine.
+  - `test_rejected_options_emit_warning` swapped its option pair from
+    `CALLLESS + DO_RET_EMULATION` (both now raise) to
+    `UNINITIALIZED_ACCESS_AWARENESS + BEST_EFFORT_MEMORY_STORING` (still
+    warn-only). Inline comment cites angr-cf9h.
+  - `test_rejected_options_warn_once_per_manager` swapped sole option
+    from `CALLLESS` to `UNINITIALIZED_ACCESS_AWARENESS`. Same reason.
+  - Added `test_do_ret_emulation_option_raises_at_construction` and
+    `test_callless_option_raises_at_construction`. Both assert
+    `NotImplementedError`, option name in message, and "Python engine"
+    pointer in message — matching the established pattern from xghv /
+    gmrc / csmm.
 - `docs/advanced-topics/rust_engine.rst`:
-  - Moved the `CONCRETIZE` row in the divergence-risk table from (b) to
-    (c).
-  - Split the `CONSERVATIVE_WRITE_STRATEGY / CONSERVATIVE_READ_STRATEGY`
-    row into two: write becomes (c) raise, read stays (b) warn. The
-    asymmetry tracks ticket scope (only the write variant was filed),
-    not behavioral difference.
-  - Added two new "Followup" notes inside the implementation-note
-    callout, one per task.
+  - Added a new "Followup (angr-cf9h, 2026-05-16)" callout inside the
+    implementation-note block, summarizing the promotion and the
+    TRUE_RET_EMULATION_GUARD asymmetry.
+  - Split the `DO_RET_EMULATION, TRUE_RET_EMULATION_GUARD` table row
+    into two rows: the first promoted to (c), the second updated to (b)
+    with the new "only meaningful when paired" rationale.
+  - Promoted the `CALLLESS` row from (b) to (c).
 
 ### Tests
 
-413 tests pass (was 411 going into the session; +1 per new test, +0
-deletions). Both targeted runs and the full suite green.
+415 tests pass (was 413; +2 from the two new raise-at-construction
+tests). Targeted run of the 13 option-related tests passed; full
+suite passed in 49s.
 
-### Notes for future sessions
+### Memory updates
 
-- **One sibling task left**: `angr-cf9h` (DO_RET_EMULATION + CALLLESS).
-  Same pattern. **Watch out** — `test_rejected_options_emit_warning`
-  currently uses `CALLLESS + DO_RET_EMULATION` to verify warnings. If
-  cf9h promotes both at once, replace those with another stable
-  warn-only pair. Good candidates that remain in `_REJECTED_OPTION_NAMES`:
-  `UNINITIALIZED_ACCESS_AWARENESS + BEST_EFFORT_MEMORY_STORING`.
-- `angr-n129` (state-merging) is structurally different and not part of
-  this option-set sweep.
-- Memory `invariant-rust-raise-option-names` updated to reflect the
-  current state (3 entries: TRACK_*_ACTIONS, CONCRETIZE,
-  CONSERVATIVE_WRITE_STRATEGY) and to record the doc-row-splitting
-  convention for asymmetric promotions.
+`invariant-rust-raise-option-names` updated: `_RAISE_OPTION_NAMES` now
+holds 5 conceptual entries (TRACK_*_ACTIONS family, CONCRETIZE,
+CONSERVATIVE_WRITE_STRATEGY, DO_RET_EMULATION, CALLLESS). Option-set
+sweep is **complete** — no further sibling tasks remain in this
+mini-epic (angr-n129 state-merging is structurally different).
