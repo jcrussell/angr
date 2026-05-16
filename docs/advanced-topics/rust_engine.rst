@@ -391,6 +391,17 @@ vs. Python.
    semantic divergence that's hard to diagnose. Users hitting this
    should drop to the Python engine.
 
+   **Followup (angr-csmm, 2026-05-16):** ``CONSERVATIVE_WRITE_STRATEGY``
+   was promoted from warn-once to **raise ``NotImplementedError``** via
+   the same mechanism. The Python engine routes this option through
+   ``SimSymbolicMemory.concretize_write_addr`` to refuse concretization
+   on range-check failure; the Rust ``SymbolicMemory`` always
+   concretizes within strategy limits, so silent acceptance would
+   defeat the user's intent to keep the analysis conservative. The read
+   variant ``CONSERVATIVE_READ_STRATEGY`` remains warn-only because no
+   user request to surface it loudly has come in yet — the asymmetry
+   tracks ticket scope, not behavior difference.
+
    **Followup (angr-383x, 2026-05-11):** For the default-bundle options
    above, materialized Rust-owned states have their ``history`` plugin
    promoted to ``_RustOwnedSimStateHistory``
@@ -434,8 +445,15 @@ vs. Python.
      - Concretizes the *size* of a symbolic-sized write.
      - (a) implement — Rust concretizes addresses but not sizes the same
        way.
-   * - ``CONSERVATIVE_WRITE_STRATEGY`` / ``CONSERVATIVE_READ_STRATEGY``
-     - Refuses to concretize on range-check failure.
+   * - ``CONSERVATIVE_WRITE_STRATEGY``
+     - Refuses to concretize symbolic-write addresses on range-check
+       failure.
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). Silent ignore can mask an
+       intended-conservative analysis.
+   * - ``CONSERVATIVE_READ_STRATEGY``
+     - Refuses to concretize symbolic-read addresses on range-check
+       failure.
      - **(b) explicitly reject** — silent ignore can mask
        intended-conservative analyses.
    * - ``CONCRETIZE``

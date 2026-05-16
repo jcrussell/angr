@@ -193,8 +193,9 @@ except ImportError:
 # choose. They remain divergence-risk in the doc; this set covers the options
 # a user must opt into.
 _REJECTED_OPTION_NAMES = frozenset({
-    # Aggressive concretization / conservative strategies.
-    "CONSERVATIVE_READ_STRATEGY", "CONSERVATIVE_WRITE_STRATEGY",
+    # Conservative read strategy: refuses to concretize on range-check
+    # failure. (The write strategy variant raises, see _RAISE_OPTION_NAMES.)
+    "CONSERVATIVE_READ_STRATEGY",
     # SimMemory error-handling tweaks.
     "UNINITIALIZED_ACCESS_AWARENESS", "BEST_EFFORT_MEMORY_STORING",
     # Ret-emulation: Rust does not emulate.
@@ -220,10 +221,18 @@ _REJECTED_OPTION_NAMES = frozenset({
 # under Rust would totally change semantics — symbol-driven solver tests
 # would behave like concrete tests but without the speedup. Promoted to
 # raise (angr-gmrc, 2026-05-16).
+#
+# CONSERVATIVE_WRITE_STRATEGY tells SimMemory to refuse symbolic-write
+# address concretization on range-check failure (Python: state_plugins/
+# symbolic_memory.py SimSymbolicMemory.concretize_write_addr). Rust's
+# SymbolicMemory always concretizes within strategy limits, so silently
+# accepting this would mask the user's intent to keep an analysis
+# conservative. Promoted to raise (angr-csmm, 2026-05-16).
 _RAISE_OPTION_NAMES = frozenset({
     "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
     "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
     "CONCRETIZE",
+    "CONSERVATIVE_WRITE_STRATEGY",
 })
 
 

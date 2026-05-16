@@ -8524,6 +8524,31 @@ class TestEdgeCases:
             f"error must point users to the Python engine: {msg!r}"
         )
 
+    def test_conservative_write_strategy_raises_at_construction(
+        self, fauxware_project,
+    ):
+        """CONSERVATIVE_WRITE_STRATEGY must raise NotImplementedError at
+        manager construction. Rust's SymbolicMemory always concretizes
+        within strategy limits and does not honor the option's
+        "refuse to concretize on range-check failure" semantics, so
+        silently accepting it would mask the user's intent to keep the
+        analysis conservative. Acceptance for angr-csmm.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.CONSERVATIVE_WRITE_STRATEGY},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert "CONSERVATIVE_WRITE_STRATEGY" in msg, (
+            f"error must name the option: {msg!r}"
+        )
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
+
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""
         from angr.exploration import RustExplorationManager
