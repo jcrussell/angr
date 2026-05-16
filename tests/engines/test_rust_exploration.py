@@ -8443,7 +8443,7 @@ class TestEdgeCases:
 
         state = fauxware_project.factory.entry_state(
             add_options={
-                angr.sim_options.CONCRETIZE,
+                angr.sim_options.CALLLESS,
                 angr.sim_options.DO_RET_EMULATION,
             },
         )
@@ -8453,8 +8453,8 @@ class TestEdgeCases:
 
         messages = [str(w.message) for w in caught
                     if issubclass(w.category, UserWarning)]
-        assert any("CONCRETIZE" in m for m in messages), (
-            f"expected CONCRETIZE warning; got {messages!r}"
+        assert any("CALLLESS" in m for m in messages), (
+            f"expected CALLLESS warning; got {messages!r}"
         )
         assert any("DO_RET_EMULATION" in m for m in messages), (
             f"expected DO_RET_EMULATION warning; got {messages!r}"
@@ -8503,6 +8503,26 @@ class TestEdgeCases:
         msg = str(exc.value)
         assert "TRACK_MEMORY_ACTIONS" in msg
         assert "TRACK_REGISTER_ACTIONS" in msg
+
+    def test_concretize_option_raises_at_construction(self, fauxware_project):
+        """CONCRETIZE must raise NotImplementedError at manager construction.
+        Rust does not honor SimSolver's BatchedConcretizationBacker, so
+        silently accepting it would mean symbolic-driven analyses run
+        symbolically instead of eagerly concretizing — a hard-to-diagnose
+        semantic divergence. Acceptance for angr-gmrc.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.CONCRETIZE},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert "CONCRETIZE" in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
 
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""

@@ -194,7 +194,7 @@ except ImportError:
 # a user must opt into.
 _REJECTED_OPTION_NAMES = frozenset({
     # Aggressive concretization / conservative strategies.
-    "CONCRETIZE", "CONSERVATIVE_READ_STRATEGY", "CONSERVATIVE_WRITE_STRATEGY",
+    "CONSERVATIVE_READ_STRATEGY", "CONSERVATIVE_WRITE_STRATEGY",
     # SimMemory error-handling tweaks.
     "UNINITIALIZED_ACCESS_AWARENESS", "BEST_EFFORT_MEMORY_STORING",
     # Ret-emulation: Rust does not emulate.
@@ -214,9 +214,16 @@ _REJECTED_OPTION_NAMES = frozenset({
 # only fires when a user explicitly added the option. TRACK_OP_ACTIONS does
 # ship in the `fastpath` mode bundle — fastpath users will hit this and must
 # drop to the Python engine for action-stream-driven analyses.
+#
+# CONCRETIZE eagerly concretizes every symbol introduced (Python:
+# sim_options.py + SimSolver.BatchedConcretizationBacker). Silent ignore
+# under Rust would totally change semantics — symbol-driven solver tests
+# would behave like concrete tests but without the speedup. Promoted to
+# raise (angr-gmrc, 2026-05-16).
 _RAISE_OPTION_NAMES = frozenset({
     "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
     "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
+    "CONCRETIZE",
 })
 
 

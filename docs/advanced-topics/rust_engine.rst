@@ -381,6 +381,16 @@ vs. Python.
    (``sim_options.py:411``); fastpath users must drop to the Python
    engine.
 
+   **Followup (angr-gmrc, 2026-05-16):** ``CONCRETIZE`` was promoted
+   from warn-once to **raise ``NotImplementedError``** via the same
+   ``_RAISE_OPTION_NAMES`` mechanism. The Python engine routes this
+   option through ``SimSolver.BatchedConcretizationBacker`` to eagerly
+   concretize every freshly-introduced symbol; the Rust engine has no
+   equivalent hook, so accepting the option silently would let
+   symbolic-driven analyses behave as if the option were absent — a
+   semantic divergence that's hard to diagnose. Users hitting this
+   should drop to the Python engine.
+
    **Followup (angr-383x, 2026-05-11):** For the default-bundle options
    above, materialized Rust-owned states have their ``history`` plugin
    promoted to ``_RustOwnedSimStateHistory``
@@ -430,7 +440,8 @@ vs. Python.
        intended-conservative analyses.
    * - ``CONCRETIZE``
      - Eagerly concretizes every symbol introduced.
-     - **(b) explicitly reject** — totally changes semantics; silent
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). Totally changes semantics; silent
        ignore is dangerous.
    * - ``ZERO_FILL_UNCONSTRAINED_REGISTERS``
      - Default-zero registers instead of fresh symbols.
