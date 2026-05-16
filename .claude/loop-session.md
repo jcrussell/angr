@@ -1,56 +1,49 @@
-## Session log: 2026-05-16 — Phase 5 (angr-o6ef): state-export sync cache
+## Session log: 2026-05-16 — angr-fk0m.1: audit state-mixin overlaps
 
-### Status: closed
+### Status: closing
 
-### Investigation findings
+### Task
 
-Initial hypothesis (per bead): per-byte state-export eval cost dominates.
-**Wrong.** Diagnostic counter showed only 1 Python-driven eval_upto call,
-all 255 inner checks came from `sm.found[0].solver.eval_upto(u, 256)` in
-solve.py:42 (the user-level post-explore code).
+Audit cross-mixin coupling between `angr/exploration/rust_state_sync.py`,
+`rust_state_cache.py`, `rust_state_export.py`. No code change.
 
-Real bottleneck (measured via /tmp/sym_write_time.py):
-- `len(mgr.found)`: **1183ms** (first state-export pass, 2 states)
-- `mgr.found[0]`:    **646ms** (second pass — re-runs all syncs)
-- `eval_upto(u, 256)`: 196ms
-- explore loop: 99ms
+### Findings
 
-Each property access to `mgr.found` / `mgr.active` / etc. re-ran
-`_get_stash_states`, which calls `_restore_plugins`,
-`_inject_rust_stdout`, `_attach_rust_solver_fallback`,
-`_sync_rust_memory_to_state`, `_sync_rust_registers_to_state`,
-`_sync_rust_callstack_to_state`, … on every cached state — even when
-the Rust state had not advanced.
+Method counts (current):
+- sync:   46 methods (was 37 at prior audit, 2026-05-07)
+- cache:  14 methods (was 15)
+- export: 36 methods (was 29)
+Total: 96 methods (~18% growth since prior audit).
 
-### Implementation
+Cross-mixin call inventory:
+- sync → cache: 8 call sites, all `self._register_handle(...)` (AST handle
+  registration). Locations: rust_state_sync.py:1282, 1430, 1453, 1543,
+  1808, 1873, 1888, 1949.
+- cache → export: 1 call site,
+  `self._attach_rust_solver_fallback(state, state_id)` at
+  rust_state_cache.py:404, when materializing a Python SimState for
+  predicate evaluation.
+- export → sync/cache: 0 direct calls (export reads cache via
+  `self._state_cache`/`self._lookup_handle` through the manager surface
+  but does not call sync methods directly).
 
-Added a per-state `rust_fully_synced` sentinel on `state.scratch`,
-set at the tail of each sync path in `_get_stash_states`. Subsequent
-visits short-circuit to the cached SimState. Cleared by
-`_invalidate_state_export_cache()`, called at the top of `step()`
-and `explore()` (the only Rust-state-mutating entry points;
-`_explore_with_addresses` is reached via `explore()`, so it inherits
-the invalidation).
+Composition: `RustExplorationManager(RustCallbackDispatchMixin,
+RustStateSyncMixin, RustStateCacheMixin, RustStateExportMixin, ...)` —
+mixins layered in dependency order (sync → cache → export uses what
+sync produces, cache binds export-side fallback during materialization).
 
-SSoT preserved: Rust remains authoritative. The cache only
-short-circuits redundant Python mirror re-syncs between re-entries
-into Rust.
+### Conclusion
 
-### Validation
+Prior audit (avoid-deferred-fk0m-state-mixin-unification memory)
+remains valid: mixins are phase-organized; nothing meaningfully moves
+to a shared base. The 9 cross-mixin call sites are dependency edges,
+not duplicated logic — extracting a base class would add layering
+without removing code.
 
-- `test_rust_exploration.py`: 404 passed (was 403; new test
-  `test_state_export_cache_invalidated_on_step` exercises both the
-  cache-hit identity invariant and the step/explore invalidation).
-- `/tmp/sym_write_time.py`: second-access `mgr.found[0]` 646ms → **0.0ms**.
-- `run_regression.py --rust-only --skip-bimodal --threshold 0.15`:
-  pre-existing host-induced regressions present both with and without
-  this change (compared via `git stash`); the cache does not introduce
-  new ones. Sym-write bench wall-clock 1.74–1.83s (variance), unchanged
-  vs the 1.70s post-mmdh baseline — bench is a single-pass workflow,
-  the cache helps repeated property access not single reads.
+### Action
 
-### Diagnostic instrumentation
-
-Loop-session note about `Z3_PY_EVAL_UPTO_*` counters in
-`symbolic/context.rs` / `solver.rs::eval_upto`: confirmed absent
-from the working tree (`git diff native/` empty). Nothing to revert.
+- Refresh deferral memory with updated method counts and cross-mixin
+  call inventory (9 edges total).
+- Close angr-fk0m.1 with reference to memory.
+- Leave children .2/.3/.4 untouched — the user decides whether to mark
+  them deferred.
