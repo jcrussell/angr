@@ -1,6 +1,6 @@
 ## Session log: 2026-05-16 — angr-uq4n.4 mem_write dispatch wiring
 
-### Status: ready-to-close
+### Status: CLOSED — bd angr-uq4n.4 done
 
 ### Task
 
