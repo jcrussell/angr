@@ -243,6 +243,20 @@ _REJECTED_OPTION_NAMES = frozenset({
 # option means Callable workflows would step into the callee instead of
 # skipping it — a structural divergence, not a precision one. Promoted
 # to raise (angr-cf9h, 2026-05-16).
+#
+# EFFICIENT_STATE_MERGING asks SimStateHistory to retain a strong
+# reference to each ancestor state so state.merge() can find a common
+# ancestor for plugin merging (Python: state_plugins/history.py
+# set_strongref_state). The Rust engine does not drive SimStateHistory's
+# strongref path, so the option is silently ignored. Auto-added by
+# Veritesting (exploration_techniques/veritesting.py), which requires
+# real per-plugin merging to work — Veritesting under Rust would
+# silently lose ancestor refs and then fall back to weak-ref merging
+# inside the export path. Promoted to raise (angr-n129, 2026-05-16).
+# The paired SIMPLIFY_MERGED_CONSTRAINTS is NOT promoted because it
+# ships in the default `symbolic` mode bundle (simplification set);
+# it is honored implicitly through the Python state.merge() fallback
+# inside RustExplorationManager.merge().
 _RAISE_OPTION_NAMES = frozenset({
     "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
     "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
@@ -250,6 +264,7 @@ _RAISE_OPTION_NAMES = frozenset({
     "CONSERVATIVE_WRITE_STRATEGY",
     "DO_RET_EMULATION",
     "CALLLESS",
+    "EFFICIENT_STATE_MERGING",
 })
 
 

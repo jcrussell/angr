@@ -415,6 +415,23 @@ vs. Python.
    it has no effect — the guard only matters when ``DO_RET_EMULATION``
    is also set, and that case now raises before the guard is consulted.
 
+   **Followup (angr-n129, 2026-05-16):** ``EFFICIENT_STATE_MERGING``
+   was promoted from "Ignored — no-op" to **raise
+   ``NotImplementedError``** via the same mechanism. The Python engine
+   reads the option from ``SimStateHistory.set_strongref_state`` to
+   retain a strong reference to each ancestor state so ``state.merge()``
+   can find a common ancestor for plugin merging. The Rust engine does
+   not drive ``SimStateHistory``'s strongref path, so the option was
+   silently dropped — and the ``Veritesting`` exploration technique
+   auto-adds the option at ``step_state`` time, meaning Veritesting
+   under Rust would have silently run without ancestor refs and
+   produced weak-ref merges. The paired ``SIMPLIFY_MERGED_CONSTRAINTS``
+   is NOT promoted because it ships in the default ``symbolic`` mode
+   bundle (``simplification`` set); it is honored implicitly through
+   the Python ``state.merge()`` fallback inside
+   ``RustExplorationManager.merge()``, which exports states to Python
+   and calls ``state.merge()`` per group.
+
    **Followup (angr-383x, 2026-05-11):** For the default-bundle options
    above, materialized Rust-owned states have their ``history`` plugin
    promoted to ``_RustOwnedSimStateHistory``
@@ -538,6 +555,18 @@ vs. Python.
      - **(c) raise NotImplementedError** at manager construction (see
        ``_RAISE_OPTION_NAMES``). Rust has no equivalent short-circuit
        path; silent ignore steps into the callee.
+   * - ``EFFICIENT_STATE_MERGING``
+     - Retains strong refs on ``SimStateHistory`` ancestors so
+       ``state.merge()`` can find a common ancestor for plugin
+       merging.
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). Rust does not drive
+       ``SimStateHistory``'s strongref path; silent ignore would let
+       Veritesting (which auto-adds the option) run without ancestor
+       refs and produce weak-ref merges. The paired
+       ``SIMPLIFY_MERGED_CONSTRAINTS`` is honored implicitly through
+       the Python ``state.merge()`` fallback inside
+       ``RustExplorationManager.merge()``.
    * - ``SUPER_FASTPATH``, ``FAST_MEMORY``, ``FAST_REGISTERS``,
        ``UNDER_CONSTRAINED_SYMEXEC``
      - Select alternate Python engines / memory plugins.
@@ -585,8 +614,6 @@ in Rust mode.
      - Python memory-bp granularity tweak.
    * - ``MEMORY_FIND_STRICT_SIZE_LIMIT``
      - Argument to Python ``SimMemory.find()``.
-   * - ``EFFICIENT_STATE_MERGING``
-     - Rust does not yet support state merge.
    * - ``DOWNSIZE_Z3``
      - Python claripy Z3 downsize; Rust manages its own context.
    * - ``REPLACEMENT_SOLVER``, ``CACHELESS_SOLVER``, ``HYBRID_SOLVER``,

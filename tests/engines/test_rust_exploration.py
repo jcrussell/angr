@@ -8594,6 +8594,34 @@ class TestEdgeCases:
             f"error must point users to the Python engine: {msg!r}"
         )
 
+    def test_efficient_state_merging_option_raises_at_construction(
+        self, fauxware_project,
+    ):
+        """EFFICIENT_STATE_MERGING must raise NotImplementedError at manager
+        construction. The Python engine uses this option to retain strong
+        refs on SimStateHistory ancestors so state.merge() can find a
+        common ancestor for plugin merging; the Rust engine does not drive
+        SimStateHistory's strongref path, so the option is silently
+        ignored. Veritesting auto-adds the option and requires real plugin
+        merging to work — silent acceptance under Rust would let
+        Veritesting attempts run without ancestor refs and produce
+        weak-ref merges. Acceptance for angr-n129.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.EFFICIENT_STATE_MERGING},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert "EFFICIENT_STATE_MERGING" in msg, (
+            f"error must name the option: {msg!r}"
+        )
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
+
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""
         from angr.exploration import RustExplorationManager
