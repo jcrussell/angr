@@ -198,10 +198,9 @@ _REJECTED_OPTION_NAMES = frozenset({
     "CONSERVATIVE_READ_STRATEGY",
     # SimMemory error-handling tweaks.
     "UNINITIALIZED_ACCESS_AWARENESS", "BEST_EFFORT_MEMORY_STORING",
-    # Ret-emulation: Rust does not emulate.
-    "DO_RET_EMULATION", "TRUE_RET_EMULATION_GUARD",
-    # Calling-convention overrides incompatible with the Rust state model.
-    "CALLLESS",
+    # Ret-emulation guard sibling. The DO_RET_EMULATION half raises (see
+    # _RAISE_OPTION_NAMES); the guard alone is harmless without it.
+    "TRUE_RET_EMULATION_GUARD",
     # Alternate Python engines / memory plugins.
     "SUPER_FASTPATH", "FAST_MEMORY", "FAST_REGISTERS", "UNDER_CONSTRAINED_SYMEXEC",
 })
@@ -228,11 +227,29 @@ _REJECTED_OPTION_NAMES = frozenset({
 # SymbolicMemory always concretizes within strategy limits, so silently
 # accepting this would mask the user's intent to keep an analysis
 # conservative. Promoted to raise (angr-csmm, 2026-05-16).
+#
+# DO_RET_EMULATION asks the engine to add an emulated successor at every
+# ret site (Python: SimEngineVEX returns the ret successor with a guard
+# that's true unless TRUE_RET_EMULATION_GUARD is also set). Rust does
+# not emulate rets at all, so the emulated successor is silently missing
+# under Rust; that's a divergence in the successor set that Callable
+# workflows (the typical caller) depend on. Promoted to raise (angr-cf9h,
+# 2026-05-16). TRUE_RET_EMULATION_GUARD stays in _REJECTED_OPTION_NAMES
+# because alone it's just a guard tweak with no effect.
+#
+# CALLLESS replaces every call with an unconstraining of the return
+# register, used by Callable to short-circuit function bodies. Rust has
+# no equivalent path, so calls execute normally; silently accepting the
+# option means Callable workflows would step into the callee instead of
+# skipping it — a structural divergence, not a precision one. Promoted
+# to raise (angr-cf9h, 2026-05-16).
 _RAISE_OPTION_NAMES = frozenset({
     "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
     "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
     "CONCRETIZE",
     "CONSERVATIVE_WRITE_STRATEGY",
+    "DO_RET_EMULATION",
+    "CALLLESS",
 })
 
 

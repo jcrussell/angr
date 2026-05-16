@@ -402,6 +402,19 @@ vs. Python.
    user request to surface it loudly has come in yet — the asymmetry
    tracks ticket scope, not behavior difference.
 
+   **Followup (angr-cf9h, 2026-05-16):** ``DO_RET_EMULATION`` and
+   ``CALLLESS`` were promoted from warn-once to **raise
+   ``NotImplementedError``** via the same mechanism. The Python engine
+   emits an emulated ret successor when ``DO_RET_EMULATION`` is set and
+   replaces every call with an unconstraining of the return register
+   when ``CALLLESS`` is set; Rust does neither. Both options are
+   typically set together by Callable workflows, where silently
+   ignoring them would change the structure of the successor set or
+   step into callees that the caller intended to skip. The paired
+   guard ``TRUE_RET_EMULATION_GUARD`` remains warn-only because alone
+   it has no effect — the guard only matters when ``DO_RET_EMULATION``
+   is also set, and that case now raises before the guard is consulted.
+
    **Followup (angr-383x, 2026-05-11):** For the default-bundle options
    above, materialized Rust-owned states have their ``history`` plugin
    promoted to ``_RustOwnedSimStateHistory``
@@ -509,12 +522,22 @@ vs. Python.
    * - ``UNINITIALIZED_ACCESS_AWARENESS``, ``BEST_EFFORT_MEMORY_STORING``
      - Affect SimMemory error handling.
      - (b) explicitly reject.
-   * - ``DO_RET_EMULATION``, ``TRUE_RET_EMULATION_GUARD``
+   * - ``DO_RET_EMULATION``
      - Add emulated ret-site successors.
-     - (b) explicitly reject — Rust does not emulate.
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). Rust does not emulate rets, so the
+       emulated successor is silently missing — typically breaks
+       Callable workflows.
+   * - ``TRUE_RET_EMULATION_GUARD``
+     - Forces the emulated ret-site guard to ``true``.
+     - **(b) explicitly reject** — only meaningful when paired with
+       ``DO_RET_EMULATION``, which already raises; the guard alone
+       has no effect.
    * - ``CALLLESS``
      - Replaces calls with unconstraining of return register.
-     - (b) explicitly reject.
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). Rust has no equivalent short-circuit
+       path; silent ignore steps into the callee.
    * - ``SUPER_FASTPATH``, ``FAST_MEMORY``, ``FAST_REGISTERS``,
        ``UNDER_CONSTRAINED_SYMEXEC``
      - Select alternate Python engines / memory plugins.

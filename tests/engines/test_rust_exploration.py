@@ -8441,10 +8441,13 @@ class TestEdgeCases:
         """
         from angr.exploration import RustExplorationManager
 
+        # Pick two options that stay in _REJECTED_OPTION_NAMES (warn-only).
+        # CALLLESS and DO_RET_EMULATION were promoted to raise in angr-cf9h,
+        # so this test now exercises the SimMemory error-handling pair.
         state = fauxware_project.factory.entry_state(
             add_options={
-                angr.sim_options.CALLLESS,
-                angr.sim_options.DO_RET_EMULATION,
+                angr.sim_options.UNINITIALIZED_ACCESS_AWARENESS,
+                angr.sim_options.BEST_EFFORT_MEMORY_STORING,
             },
         )
         with warnings.catch_warnings(record=True) as caught:
@@ -8453,11 +8456,11 @@ class TestEdgeCases:
 
         messages = [str(w.message) for w in caught
                     if issubclass(w.category, UserWarning)]
-        assert any("CALLLESS" in m for m in messages), (
-            f"expected CALLLESS warning; got {messages!r}"
+        assert any("UNINITIALIZED_ACCESS_AWARENESS" in m for m in messages), (
+            f"expected UNINITIALIZED_ACCESS_AWARENESS warning; got {messages!r}"
         )
-        assert any("DO_RET_EMULATION" in m for m in messages), (
-            f"expected DO_RET_EMULATION warning; got {messages!r}"
+        assert any("BEST_EFFORT_MEMORY_STORING" in m for m in messages), (
+            f"expected BEST_EFFORT_MEMORY_STORING warning; got {messages!r}"
         )
 
     @pytest.mark.parametrize("option_name", [
@@ -8549,12 +8552,56 @@ class TestEdgeCases:
             f"error must point users to the Python engine: {msg!r}"
         )
 
+    def test_do_ret_emulation_option_raises_at_construction(
+        self, fauxware_project,
+    ):
+        """DO_RET_EMULATION must raise NotImplementedError at manager
+        construction. The Python engine emits an emulated ret successor at
+        every ret site; Rust does not emulate rets at all, so the successor
+        set silently differs. Callable workflows are the typical caller and
+        would lose the emulated successor. Acceptance for angr-cf9h.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.DO_RET_EMULATION},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert "DO_RET_EMULATION" in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
+
+    def test_callless_option_raises_at_construction(self, fauxware_project):
+        """CALLLESS must raise NotImplementedError at manager construction.
+        The Python engine replaces each call with an unconstraining of the
+        return register so Callable can short-circuit function bodies; Rust
+        has no equivalent path and would step into the callee, structurally
+        diverging from the Callable contract. Acceptance for angr-cf9h.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.CALLLESS},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert "CALLLESS" in msg, f"error must name the option: {msg!r}"
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
+
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""
         from angr.exploration import RustExplorationManager
 
+        # CALLLESS was promoted to raise in angr-cf9h; use a still-warn-only
+        # option so the test exercises the warn-once latch.
         s1 = fauxware_project.factory.entry_state(
-            add_options={angr.sim_options.CALLLESS},
+            add_options={angr.sim_options.UNINITIALIZED_ACCESS_AWARENESS},
         )
         s2 = s1.copy()
         s3 = s1.copy()
@@ -8562,13 +8609,14 @@ class TestEdgeCases:
             warnings.simplefilter("always")
             RustExplorationManager(fauxware_project, [s1, s2, s3])
 
-        callless_warnings = [
+        target_warnings = [
             w for w in caught
-            if issubclass(w.category, UserWarning) and "CALLLESS" in str(w.message)
+            if issubclass(w.category, UserWarning)
+            and "UNINITIALIZED_ACCESS_AWARENESS" in str(w.message)
         ]
-        assert len(callless_warnings) == 1, (
-            f"expected exactly one CALLLESS warning across 3 states, "
-            f"got {len(callless_warnings)}"
+        assert len(target_warnings) == 1, (
+            f"expected exactly one UNINITIALIZED_ACCESS_AWARENESS warning "
+            f"across 3 states, got {len(target_warnings)}"
         )
 
     def test_default_state_options_do_not_warn_for_non_rejected(self, fauxware_project):
