@@ -649,6 +649,11 @@ pub struct CallbackInterpreter<'a> {
     /// skip the native-lift fast path (which reads from immutable
     /// `concrete_memory` and would otherwise use stale bytes).
     dirtied_code_pages: FxHashSet<u64>,
+    /// State id of the state currently being stepped. Forwarded to
+    /// `PythonCallbacks::call_inspect_mem_*` so the Python dispatcher can
+    /// build a `RustStateProxy` for the BP action. -1 means "unknown" —
+    /// e.g. fresh interpreter from tests, or fork paths that never set it.
+    pub current_state_id: i64,
 }
 impl<'a> CallbackInterpreter<'a> {
     /// Create a new callback-aware interpreter.
@@ -716,6 +721,7 @@ impl<'a> CallbackInterpreter<'a> {
             vex_opt_level: None,
             vex_opt_level_overrides: Arc::new(FxHashMap::default()),
             dirtied_code_pages: FxHashSet::default(),
+            current_state_id: -1,
         }
     }
 
@@ -1593,6 +1599,7 @@ impl<'a> CallbackInterpreter<'a> {
             vex_opt_level: self.vex_opt_level,   // Inherit VEX opt level
             vex_opt_level_overrides: Arc::clone(&self.vex_opt_level_overrides), // Inherit overrides
             dirtied_code_pages: self.dirtied_code_pages.clone(), // Inherit SMC tracking
+            current_state_id: self.current_state_id,
         }
     }
 

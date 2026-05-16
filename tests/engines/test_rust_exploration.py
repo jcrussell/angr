@@ -1536,6 +1536,106 @@ class TestRustInspectMarshalling:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustInspectMemWriteDispatch:
+    """Integration tests for mem_write inspect dispatch from IRStmt::Store
+    in the Rust VEX interpreter (angr-uq4n.4).
+
+    The marshalling-layer tests (TestRustInspectMarshalling) call the
+    Python dispatcher directly; these tests verify the full end-to-end
+    path including the Rust-side bitmask gate and the IRStmt::Store hook.
+    """
+
+    def test_mem_write_fires_during_exploration(self, fauxware_project):
+        """mem_write BP receives at least one event when running the engine.
+
+        fauxware's entry block writes the saved RBP and locals to the
+        stack via VEX Store ops — the BP must fire on those concrete-
+        address writes.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        events = []
+
+        def on_write(s):
+            events.append((
+                s.inspect.mem_write_address,
+                s.inspect.mem_write_length,
+                s.inspect.mem_write_endness,
+            ))
+
+        mgr._get_inspect_proxy().b('mem_write', when='after', action=on_write)
+        # Bitmask must reflect the BP — sanity-check before stepping.
+        assert mgr._callbacks.get_inspect_enabled() & 0b10 != 0
+
+        mgr.run(max_steps=5)
+
+        # At least one stack-frame store should have fired.
+        assert len(events) > 0, "no mem_write events captured during run"
+        addr, length, endness = events[0]
+        # Endness should be a valid VEX endness string.
+        assert endness in ("Iend_LE", "Iend_BE")
+        # Length should be a positive integer up to register width.
+        assert 0 < length <= 16
+
+    def test_mem_write_skipped_when_no_bp(self, fauxware_project):
+        """Without any mem_write BP, the bitmask gate keeps dispatch off
+        and exploration still progresses normally.
+
+        Regression for the zero-overhead common case: a manager with no
+        breakpoints must not trigger the Python dispatcher even once.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Bitmask should be 0 with no BPs.
+        assert mgr._callbacks.get_inspect_enabled() == 0
+
+        # Run does not raise — we have no way to assert "0 fires" without
+        # instrumenting the Rust side, but the dispatcher being off is
+        # the contract being tested.
+        mgr.run(max_steps=5)
+
+    def test_mem_write_reentrancy_with_proxy_access(self, fauxware_project):
+        """BP action that touches the firing state via the proxy must
+        not deadlock or corrupt the exploration loop.
+
+        The state owning the firing event is currently held by the
+        interpreter (popped from the active stash for the duration of
+        the step), so the proxy's lookups raise PyValueError. The
+        dispatcher catches and logs that — the test's contract is that
+        exploration continues without deadlock or wrong-answer.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_write(s):
+            fire_count[0] += 1
+            # Try to touch the firing state via the proxy. With the state
+            # currently held by the interpreter, this swallows a "state
+            # not found" error inside the dispatcher. The contract is
+            # that exploration keeps running and does not deadlock.
+            try:
+                _ = s.addr
+            except Exception:
+                pass
+
+        mgr._get_inspect_proxy().b('mem_write', when='after', action=on_write)
+        # 5 steps is enough to hit a store; bound steps so a stuck loop
+        # would still time out via pytest's default timeout.
+        mgr.run(max_steps=5)
+
+        assert fire_count[0] > 0, "BP must fire at least once"
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStatePluginsProxy:
     """Tests for state.options, state.globals, and state.heap on RustStateProxy.
 

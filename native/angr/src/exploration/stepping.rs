@@ -898,6 +898,9 @@ impl RustExplorationManager {
         // Copy state registers to interpreter (including symbolic values)
         interp.registers = state.registers().fork();
         interp.set_pc(initial_pc);
+        // Forward state_id so inspect dispatch sites can identify which
+        // state owns the firing event (angr-uq4n.3/.4).
+        interp.current_state_id = state.state_id() as i64;
         // Transfer call stack and detailed history to interpreter
         interp.call_stack = state.call_stack().to_vec();
         interp.detailed_history = state.detailed_history().to_vec();

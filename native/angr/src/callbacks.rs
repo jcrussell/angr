@@ -380,7 +380,14 @@ pub struct PythonCallbacks {
     /// touching any payload — keeps the cost of inspect-disabled
     /// execution at one branch per Load/Store.
     /// Python writes via `set_inspect_enabled`; defaults to 0 (off).
-    pub inspect_enabled: u8,
+    ///
+    /// Wrapped in `Arc<AtomicU8>` because `PythonCallbacks` is `Clone` and
+    /// the Rust exploration manager stores a CLONED copy after Python
+    /// passes the original in via `set_callbacks`. Bitmask updates from
+    /// Python (`mgr._callbacks.set_inspect_enabled(...)`) must be visible
+    /// to the Rust side; sharing the atomic makes both copies read/write
+    /// the same byte.
+    pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[pymethods]
@@ -410,7 +417,7 @@ impl PythonCallbacks {
             resolve_function: None,
             inspect_mem_read: None,
             inspect_mem_write: None,
-            inspect_enabled: 0,
+            inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
         }
     }
 
@@ -625,15 +632,20 @@ impl PythonCallbacks {
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
+    ///
+    /// `inspect_enabled` is `Arc<AtomicU8>` so this write is visible to
+    /// the cloned PythonCallbacks held by the Rust manager.
     #[pyo3(name = "set_inspect_enabled")]
-    pub fn py_set_inspect_enabled(&mut self, mask: u8) {
-        self.inspect_enabled = mask;
+    pub fn py_set_inspect_enabled(&self, mask: u8) {
+        self.inspect_enabled
+            .store(mask, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Read the inspect-enabled bitmask (Python-side, mostly for tests).
     #[pyo3(name = "get_inspect_enabled")]
     pub fn py_get_inspect_enabled(&self) -> u8 {
         self.inspect_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Test entry point: invoke the registered mem_read callback directly.
@@ -750,7 +762,8 @@ impl PythonCallbacks {
         self.resolve_function = None;
         self.inspect_mem_read = None;
         self.inspect_mem_write = None;
-        self.inspect_enabled = 0;
+        self.inspect_enabled
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -765,7 +778,16 @@ impl PythonCallbacks {
     /// Bit N = `crate::state::InspectEvent` variant N (MemRead=0, MemWrite=1, …).
     #[inline(always)]
     pub fn inspect_event_enabled(&self, event_bit: u8) -> bool {
-        self.inspect_enabled & (1u8 << event_bit) != 0
+        self.inspect_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+            & (1u8 << event_bit)
+            != 0
+    }
+
+    /// Debug-only: read the raw bitmask. Used by eprintln traces.
+    pub fn get_inspect_enabled_for_debug(&self) -> u8 {
+        self.inspect_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Invoke the Python inspect mem_read callback.

@@ -51,7 +51,7 @@ impl<'a> CallbackInterpreter<'a> {
                 Ok(StmtResult::Continue)
             }
 
-            IRStmt::Store { addr, data, .. } => {
+            IRStmt::Store { addr, data, endness } => {
                 let store_start = if self.profiling_enabled {
                     Some(Instant::now())
                 } else {
@@ -74,10 +74,16 @@ impl<'a> CallbackInterpreter<'a> {
                         store_start,
                     )?
                 {
+                    self.dispatch_mem_write_inspect(
+                        py, callbacks, &addr_val, &data_val, data_size, *endness,
+                    );
                     return Ok(StmtResult::Continue);
                 }
 
-                self.fallback_to_python_store(py, callbacks, &addr_val, data_val, data_size)?;
+                self.fallback_to_python_store(py, callbacks, &addr_val, data_val.clone(), data_size)?;
+                self.dispatch_mem_write_inspect(
+                    py, callbacks, &addr_val, &data_val, data_size, *endness,
+                );
                 Ok(StmtResult::Continue)
             }
 
@@ -1512,6 +1518,57 @@ impl<'a> CallbackInterpreter<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Fire a `mem_write` inspect callback into Python for this store.
+    ///
+    /// Gated on `inspect_event_enabled(MemWrite)` so the common case
+    /// (no breakpoints) is a single bitmask test per Store. Symbolic
+    /// addresses are skipped for the MVP (uq4n.4) — only concrete
+    /// addresses dispatch; symbolic-address dispatch is a follow-up.
+    /// The `when='after'` event is fired once the underlying memory
+    /// write has completed; the BP receives the stored value AST as
+    /// `mem_write_expr`. Errors from the Python callback are swallowed
+    /// and logged on the Python side; we do not surface them up the
+    /// interpreter stack so a user BP error cannot halt exploration.
+    fn dispatch_mem_write_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        data_val: &RustBV,
+        data_size: usize,
+        endness: Endness,
+    ) {
+        // MemWrite = InspectEvent variant 1 — see crate::state::InspectEvent.
+        if !callbacks.inspect_event_enabled(1) {
+            return;
+        }
+        let Some(addr_u64) = addr_val.as_u64() else {
+            return;
+        };
+        let endness_str = match endness {
+            Endness::Little => "Iend_LE",
+            Endness::Big => "Iend_BE",
+        };
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, data_val, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        // Swallow errors — the Python dispatcher logs BP failures itself.
+        let _ = callbacks.call_inspect_mem_write(
+            py,
+            self.current_state_id,
+            "after",
+            addr_u64,
+            data_size as u32,
+            Some(&value_ast),
+            endness_str,
+        );
     }
 }
 
