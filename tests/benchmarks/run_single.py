@@ -147,14 +147,7 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
                 states = list(thing)
             else:
                 states = [thing]
-            # Opt-in to AST cache cleanup on manager teardown so
-            # Callable-heavy benchmarks (e.g. mma_howtouse runs 45
-            # short-lived managers) don't accumulate thread-local cache
-            # entries across managers — see angr-518z.
-            rust_mgr_instance = RustExplorationManager(
-                factory_self.project, states,
-                clear_caches_on_cleanup=True,
-            )
+            rust_mgr_instance = RustExplorationManager(factory_self.project, states)
             rust_mgr_instance.enable_profiling()
             if strategy == 'dfs':
                 rust_mgr_instance.set_exploration_strategy('dfs')
