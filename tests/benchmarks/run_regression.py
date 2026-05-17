@@ -98,6 +98,12 @@ FAST_SUITE = [
     # unconditionally. Uses only base scalar ARM ops (no NEON / VFP /
     # Thumb).
     ("arm_le_branch", 30, "bfs", True),
+    # MIPS64 LE inline-ELF synthetic benchmark (angr-duta.4). Same shape
+    # and rationale as mips32_le_branch — promotes MIPS64 from
+    # Experimental to Supported in the arch matrix. Uses only base MIPS
+    # integer ops; the ELF wrapper is ELF64 with EI_CLASS=ELF64 and
+    # EF_MIPS_ARCH_64, exercising the N64 calling convention path.
+    ("mips64_le_branch", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full

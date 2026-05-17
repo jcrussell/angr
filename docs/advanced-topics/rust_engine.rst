@@ -129,9 +129,9 @@ below "Supported" as experimental.
    * - MIPS64
      - 0
      - 2 (LE real ELF, native-proc)
-     - 0
+     - 1 (mips64_le_branch synthetic)
      - MipsN64
-     - Experimental
+     - Supported
 
 Status meanings:
 

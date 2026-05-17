@@ -1,0 +1,168 @@
+#!/usr/bin/env python
+"""MIPS64 (little-endian) synthetic benchmark.
+
+Inline-constructed ELF64 with a short MIPS N64 program whose entry
+point takes a symbolic 64-bit value in ``$a0``, runs it through a
+single SLL + ADDIU chain, and BEQs on the result. The Rust interpreter
+lifts and executes a handful of basic blocks plus one symbolic fork.
+
+No MIPS64 binary ships with angr-examples and no cross-compiler is
+available locally, so the ELF is built byte-by-byte (same pattern as
+``test_mips64_explore_le_real_elf``, angr-gxhf.3). This is the MIPS64
+regression-gated workload that promotes the arch from Experimental to
+Supported.
+
+MIPS64 base-integer instruction encodings match MIPS32 for the opcodes
+used here (registers are still 5 bits; ADDIU sign-extends the 16-bit
+immediate to 64 bits on MIPS64). The difference vs the MIPS32 bench is
+the ELF wrapper (ELF64 + EI_CLASS=ELF64 + EF_MIPS_ARCH_64) and the
+symbolic register width (64 bits).
+
+The program is short, so Rust's PyO3 init tax (~250 ms) dominates the
+runtime. Marked ``rust_only=True`` in ``FAST_SUITE`` so the SLA gate is
+skipped; the regression gate still validates MIPS64 lift + exec stays
+green and timing stays within 15% of baseline_timings.json's cached
+``rust_time``.
+
+Solution: ``$a0 == 42`` makes ``(a0 << 1) + 16 == 100``.
+"""
+import os
+import struct
+
+import angr
+import claripy
+
+
+# Register numbers (MIPS N64, same as O32 for these opcodes):
+#   zero=0, a0=4, t0=8, t1=9
+def _addiu(rt, rs, imm):
+    return 0x24000000 | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+
+def _sll(rd, rt, sa):
+    # SPECIAL func=0x00, opcode field zero
+    return (rt << 16) | (rd << 11) | ((sa & 0x1F) << 6)
+
+
+def _beq(rs, rt, off):
+    # ``off`` is signed 16-bit, in instruction-words relative to ``PC+4``.
+    return 0x10000000 | (rs << 21) | (rt << 16) | (off & 0xFFFF)
+
+
+def _b(off):
+    return _beq(0, 0, off)
+
+
+def _nop():
+    return 0x00000000
+
+
+# Program layout (each row is one 32-bit MIPS instruction):
+#
+#   0x00: sll   t0, a0, 1        # t0 = a0 << 1 (32-bit; sign-extends on MIPS64)
+#   0x04: addiu t0, t0, 0x10     # t0 = (a0 << 1) + 16
+#   0x08: addiu t1, zero, 100    # t1 = 100
+#   0x0c: beq   t0, t1, +4       # target = 0x20 (FOUND)
+#   0x10: nop                    # delay slot
+#   0x14: b     +3               # target = 0x24 (AVOID)
+#   0x18: nop                    # delay slot
+#   0x1c: nop                    # padding
+#   0x20: nop                    # FOUND
+#   0x24: nop                    # AVOID
+CODE_WORDS = (
+    _sll(8, 4, 1),
+    _addiu(8, 8, 0x10),
+    _addiu(9, 0, 100),
+    _beq(8, 9, 4),
+    _nop(),
+    _b(3),
+    _nop(),
+    _nop(),
+    _nop(),
+    _nop(),
+)
+CODE = struct.pack("<" + "I" * len(CODE_WORDS), *CODE_WORDS)
+
+BASE = 0x400000
+EHDR_SIZE = 64  # ELF64 header
+PHDR_SIZE = 56  # ELF64 program header
+TOTAL = EHDR_SIZE + PHDR_SIZE + len(CODE)
+ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
+FOUND_OFFSET = 0x20
+AVOID_OFFSET = 0x24
+
+
+def _build_elf():
+    """Return raw bytes of an ELF64 MIPS LE executable wrapping ``CODE``."""
+    ehdr = b"\x7fELF" + bytes([
+        2,  # EI_CLASS = ELF64
+        1,  # EI_DATA = LSB (little-endian)
+        1,  # EI_VERSION
+        0,  # EI_OSABI = System V
+        0,  # EI_ABIVERSION
+    ]) + b"\x00" * 7
+    ehdr += struct.pack(
+        "<HHIQQQIHHHHHH",
+        2,            # e_type = ET_EXEC
+        0x08,         # e_machine = EM_MIPS
+        1,            # e_version
+        ENTRY,        # e_entry
+        EHDR_SIZE,    # e_phoff
+        0,            # e_shoff
+        0x60000000,   # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
+        EHDR_SIZE,    # e_ehsize
+        PHDR_SIZE,    # e_phentsize
+        1,            # e_phnum
+        0,            # e_shentsize
+        0,            # e_shnum
+        0,            # e_shstrndx
+    )
+    phdr = struct.pack(
+        "<IIQQQQQQ",
+        1,            # p_type = PT_LOAD
+        5,            # p_flags = PF_R | PF_X
+        0,            # p_offset
+        BASE,         # p_vaddr
+        BASE,         # p_paddr
+        TOTAL,        # p_filesz
+        TOTAL,        # p_memsz
+        0x1000,       # p_align
+    )
+    return ehdr + phdr + CODE
+
+
+def solve():
+    elf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mips64le_branch.elf")
+    with open(elf_path, "wb") as f:
+        f.write(_build_elf())
+
+    proj = angr.Project(elf_path, auto_load_libs=False)
+    assert proj.arch.name == "MIPS64", proj.arch.name
+    assert proj.arch.bits == 64, proj.arch.bits
+    assert proj.arch.memory_endness == "Iend_LE", proj.arch.memory_endness
+
+    state = proj.factory.blank_state(addr=proj.entry)
+    a0 = claripy.BVS("a0", 64)
+    state.regs.a0 = a0
+
+    sm = proj.factory.simulation_manager(state)
+    sm.explore(
+        find=ENTRY + FOUND_OFFSET,
+        avoid=ENTRY + AVOID_OFFSET,
+        num_find=1,
+    )
+
+    if not sm.found:
+        return None
+    found = sm.found[0]
+    return found.solver.eval(a0)
+
+
+def test():
+    result = solve()
+    assert result == 42, f"expected a0=42, got {result}"
+
+
+if __name__ == "__main__":
+    result = solve()
+    print(f"a0 = {result}")
