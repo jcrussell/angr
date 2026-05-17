@@ -1,53 +1,54 @@
-## Session log: 2026-05-17 (later) — angr-kcf parent admin close
+## Session log: 2026-05-17 — admin defer of audit-deferred ready queue
 
-### Status: IN PROGRESS
+### Status: DONE
 
-### Task
+### Context
 
-**angr-kcf (P2, bug)** — "Fix codegate_2017-angrybird: stdin variable tracking
-for Rust engine". Parent of angr-kcf.1 (triage, closed) and angr-kcf.2
-(fix-or-doc, closed with xfail outcome).
+The previous session ended noting "No actionable work that doesn't relitigate
+prior audits." The 4 ready tasks all had explicit audit-deferral notes/memories
+but no formal `--defer` date set, so they kept appearing in `bd ready` every
+session, consuming session time on re-audit dances.
 
-### Why close as admin
+### What was done
 
-- angr-kcf.1 closed 2026-05-17: BFS path-divergence ruled out as cause.
-- angr-kcf.2 closed 2026-05-17: xfail accepted with memory entry. Codegate
-  added to KNOWN_XFAIL in tests/engines/test_rust_integration.py
-  (commit 24af5350f).
-- Memory `invariant-codegate-xfail` explicitly tells future agents NOT to
-  pursue "fix stdin tracking" — parent description premise is stale.
-- Memory `avoid-stdin-tracking-fix-for-codegate` reinforces.
-- Both children completed with conclusive outcomes; parent is just a tracker.
+Formal `bd update --defer 2026-08-01` applied to the 4 audited-and-deferred
+ready tasks, matching the established defer-date pattern from angr-csd1:
 
-### Verification before close
+| Task        | Type           | Audit memory                                |
+|-------------|----------------|---------------------------------------------|
+| angr-prem   | refactor (P2)  | avoid-deferred-prem-memory-layer            |
+| angr-prem.1 | refactor (P3)  | (child of angr-prem)                        |
+| angr-fk0m   | refactor (P2)  | avoid-deferred-fk0m-state-mixin-unification |
+| angr-34w.12 | bug (P2)       | grub-z3-crash-fixed + grub-investigation-depth |
 
-- Confirmed test_rust_integration.py:144-162 has codegate in KNOWN_XFAIL
-  with full comment referencing both bd memories.
-- No remaining open work referenced by parent description that isn't
-  contradicted by the memory entries.
+Each got an `--append-notes` entry documenting the formal defer and pointing at
+the audit memory with reopen criteria.
 
-### Action
+For angr-34w.12 specifically: the existing notes said root cause was a z3-rs
+Solver::clone panic. That panic is FIXED per memory `grub-z3-crash-fixed` —
+we no longer call Z3_solver_translate. The current failure is two-layered:
+"list index out of range" (32-bit x86 handling bug) + depth-14 BFS termination
+(per `grub-investigation-depth`). New memory `angr-34w.12-root-cause-current`
+captures this for the next session that picks the bug back up after 2026-08-01.
 
-- bd close angr-kcf with close reason summarizing the disposition.
-- No code changes needed.
+### Verification
 
-
-### Resolution
-
-- Closed angr-kcf with detailed close reason.
-- No code changes; no Rust rebuild or tests needed (test is already xfailed).
-
-### Ready queue post-close
-
-Remaining 4 ready tasks all carry explicit audit deferral notes:
-- angr-prem / angr-prem.1 (MemoryLayer trait) — "No bug class motivates it"
-- angr-fk0m (state-mixin unify) — "purely cosmetic"
-- angr-34w.12 (grub OOM) — z3-rs library bug, "not worth burning autonomous sessions"
-
-No actionable work that doesn't relitigate prior audits. Session ends.
+- `bd ready` now returns "No ready work found" (queue is clean).
+- No code changes; `.beads/embeddeddolt` is gitignored so no git commit needed
+  for metadata-only bd updates.
 
 ### Memories saved
 
-None — this was admin close. Real findings already captured by children
-(angr-kcf-not-bfs-divergence, invariant-codegate-xfail,
-avoid-stdin-tracking-fix-for-codegate).
+- `admin-defer-pattern` — pattern for handling audited-but-not-formally-deferred
+  ready-queue pollution. Future sessions encountering the same "no actionable
+  work" state should apply this same admin defer.
+- `angr-34w.12-root-cause-current` — refreshed root cause for grub bug
+  (z3 panic is fixed; current issue is depth-14 BFS + x86 handling).
+
+### Next session
+
+`bd ready` is empty. The next session should:
+1. If new bugs/tasks have been filed since 2026-05-17 (check
+   `bd list --status=open` for newer items), pick those up.
+2. Otherwise: no work — let it end early rather than re-audit deferred tasks.
+   Defers expire 2026-08-01 for natural re-evaluation.
