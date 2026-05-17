@@ -4078,10 +4078,14 @@ class TestExplorationIntegration:
 
         SYM_ADDR = 0x4000
 
+        # SYMBOL_FILL_UNCONSTRAINED_REGISTERS is raised under the Rust
+        # engine (angr-apre) — Rust's RegisterFile always returns zero
+        # from vec![0; size] so symbolic-fill cannot be honored. This
+        # test exercises memory symbolicity, not register symbolicity,
+        # so the memory variant is enough.
         state = proj.factory.blank_state(
             addr=0x1000,
-            add_options={angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-                         angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS},
+            add_options={angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY},
         )
         state.regs.rdi = SYM_ADDR
         state.regs.rsp = 0x7FFFFE00
@@ -8854,11 +8858,12 @@ class TestClaripyAnnotationRoundtrip:
         from claripy.annotation import UninitializedAnnotation
         from angr.exploration import RustExplorationManager
 
+        # SYMBOL_FILL_UNCONSTRAINED_REGISTERS is raised under Rust
+        # (angr-apre) — RegisterFile always returns zero so symbolic-fill
+        # cannot be honored. This test exercises annotation roundtrip
+        # through memory, not registers, so the memory variant is enough.
         state = fauxware_project.factory.entry_state(
-            add_options={
-                angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-                angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
-            },
+            add_options={angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY},
         )
 
         x = claripy.BVS("uninit_x", 32).annotate(UninitializedAnnotation())
@@ -9347,6 +9352,53 @@ class TestEdgeCases:
         assert "Python engine" in msg, (
             f"error must point users to the Python engine: {msg!r}"
         )
+
+    def test_symbol_fill_unconstrained_registers_option_raises_at_construction(
+        self, fauxware_project,
+    ):
+        """SYMBOL_FILL_UNCONSTRAINED_REGISTERS must raise NotImplementedError
+        at manager construction. The Python filler creates a fresh symbolic
+        BVS on every read of an uninitialized register; the Rust RegisterFile
+        always returns concrete zero from its vec![0; size] storage with no
+        "uninitialized" marker. A user who opted into symbolic-fill would
+        silently get concrete-zero registers and paths driven by
+        unconstrained initial register values would simply not be explored.
+        The MEMORY variant SYMBOL_FILL_UNCONSTRAINED_MEMORY is NOT promoted
+        because Rust's load_concrete_lazy already defaults to symbolic-fill
+        when zero_fill_unconstrained is unset. Acceptance for angr-apre.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS},
+        )
+        with pytest.raises(NotImplementedError) as exc:
+            RustExplorationManager(fauxware_project, [state])
+        msg = str(exc.value)
+        assert "SYMBOL_FILL_UNCONSTRAINED_REGISTERS" in msg, (
+            f"error must name the option: {msg!r}"
+        )
+        assert "Python engine" in msg, (
+            f"error must point users to the Python engine: {msg!r}"
+        )
+
+    def test_symbol_fill_unconstrained_memory_option_does_not_raise(
+        self, fauxware_project,
+    ):
+        """SYMBOL_FILL_UNCONSTRAINED_MEMORY must NOT raise — Rust's
+        load_concrete_lazy in native/angr/src/memory/load.rs falls back to a
+        fresh symbolic BVS when zero_fill_unconstrained is unset, so the
+        memory variant matches Python's symbolic-fill behavior. Only the
+        REGISTERS variant is a silent divergence. Acceptance for angr-apre.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state(
+            add_options={angr.sim_options.SYMBOL_FILL_UNCONSTRAINED_MEMORY},
+        )
+        # Must not raise; manager construction succeeds.
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr is not None
 
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""

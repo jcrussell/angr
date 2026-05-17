@@ -490,6 +490,24 @@ vs. Python.
    ``RustExplorationManager.merge()``, which exports states to Python
    and calls ``state.merge()`` per group.
 
+   **Followup (angr-apre, 2026-05-17):**
+   ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS`` was promoted to **raise
+   ``NotImplementedError``** at manager construction. The Python filler
+   (``angr/state_plugins/light_registers.py::_fill``,
+   ``angr/storage/memory_mixins/default_filler_mixin.py::_default_value``)
+   creates a fresh symbolic BVS on every read of an uninitialized
+   register; the Rust ``RegisterFile`` (``native/angr/src/arch/mod.rs``)
+   always returns concrete zero from its ``vec![0; size]`` storage with
+   no "uninitialized" marker, so register reads cannot generate fresh
+   symbols regardless of options. Silent acceptance means a user who
+   opted into symbolic-fill would never see the divergence — paths
+   driven by unconstrained initial register values would simply not be
+   explored. The MEMORY variant ``SYMBOL_FILL_UNCONSTRAINED_MEMORY`` is
+   NOT promoted because Rust's ``load_concrete_lazy``
+   (``native/angr/src/memory/load.rs:333-339``) already falls back to a
+   fresh ``unc_mem_*`` symbolic BVS when ``zero_fill_unconstrained`` is
+   unset — i.e., symbolic-fill is Rust's default for memory.
+
    **Followup (angr-383x, 2026-05-11):** For the default-bundle options
    above, materialized Rust-owned states have their ``history`` plugin
    promoted to ``_RustOwnedSimStateHistory``
@@ -563,10 +581,21 @@ vs. Python.
      - (a) implement — pairs with the already-honored memory variant.
        Currently Rust always picks one or the other depending on
        init-state plumbing.
-   * - ``SYMBOL_FILL_UNCONSTRAINED_MEMORY`` /
-       ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS``
-     - Force symbolic fill (the opposite of ``ZERO_FILL_*``).
-     - (a) implement — partial overlap with ``ZERO_FILL`` behavior.
+   * - ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS``
+     - Force symbolic fill on uninitialized register reads.
+     - **(c) raise NotImplementedError** at manager construction (see
+       ``_RAISE_OPTION_NAMES``). The Rust ``RegisterFile`` always returns
+       concrete zero from its ``vec![0; size]`` storage regardless of
+       options — silent ignore means a user who opted into symbolic-fill
+       gets concrete zeros instead.
+   * - ``SYMBOL_FILL_UNCONSTRAINED_MEMORY``
+     - Force symbolic fill on uninitialized memory reads.
+     - **Matches by default.** Rust's ``load_concrete_lazy``
+       (``native/angr/src/memory/load.rs:333-339``) returns a fresh
+       ``unc_mem_*`` symbolic BVS when ``zero_fill_unconstrained`` is
+       unset — i.e., symbolic-fill is already Rust's default for memory.
+       The option is silently accepted but has no effect because Rust
+       was already doing what it asks for.
    * - ``TRACK_MEMORY_ACTIONS``, ``TRACK_REGISTER_ACTIONS``,
        ``TRACK_TMP_ACTIONS``, ``TRACK_JMP_ACTIONS``,
        ``TRACK_OP_ACTIONS``

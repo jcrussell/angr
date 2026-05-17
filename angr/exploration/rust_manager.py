@@ -257,6 +257,22 @@ _REJECTED_OPTION_NAMES = frozenset({
 # ships in the default `symbolic` mode bundle (simplification set);
 # it is honored implicitly through the Python state.merge() fallback
 # inside RustExplorationManager.merge().
+#
+# SYMBOL_FILL_UNCONSTRAINED_REGISTERS asks the Python filler to create
+# a fresh symbolic BVS on every read of an uninitialized register, and
+# suppresses the otherwise-emitted warning (Python: state_plugins/
+# light_registers.py _fill, storage/memory_mixins/default_filler_mixin.py
+# _default_value). The Rust RegisterFile always returns concrete zero
+# from its vec![0; size] storage — there is no "uninitialized" marker,
+# so register reads cannot generate fresh symbols regardless of options.
+# Silently accepting the option means a user who opted into symbolic-fill
+# would get concrete-zero registers and never know — paths that depend
+# on unconstrained initial register values would simply not be explored.
+# Promoted to raise (angr-apre, 2026-05-17). The MEMORY variant
+# SYMBOL_FILL_UNCONSTRAINED_MEMORY is NOT promoted because Rust's
+# load_concrete_lazy (native/angr/src/memory/load.rs:333-339) falls back
+# to a fresh `unc_mem_*` symbolic BVS when zero_fill_unconstrained is
+# unset — i.e., symbolic-fill is already Rust's default for memory.
 _RAISE_OPTION_NAMES = frozenset({
     "TRACK_MEMORY_ACTIONS", "TRACK_REGISTER_ACTIONS", "TRACK_TMP_ACTIONS",
     "TRACK_JMP_ACTIONS", "TRACK_OP_ACTIONS", "TRACK_ACTION_HISTORY",
@@ -265,6 +281,7 @@ _RAISE_OPTION_NAMES = frozenset({
     "DO_RET_EMULATION",
     "CALLLESS",
     "EFFICIENT_STATE_MERGING",
+    "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",
 })
 
 
@@ -2569,9 +2586,11 @@ class RustExplorationManager(
         """Raise NotImplementedError if any ``_RAISE_OPTION_NAMES`` are set.
 
         These SimOptions request behavior the Rust engine cannot provide
-        (action streams, history records). Silent divergence has burned
-        users in the past, so we hard-fail at the manager boundary to
-        force a drop to the Python engine.
+        (action streams, eager concretization, conservative-write refusal,
+        ret-emulation, calless short-circuits, ancestor strongrefs,
+        symbolic register fill, etc.). Silent divergence has burned users
+        in the past, so we hard-fail at the manager boundary to force a
+        drop to the Python engine.
         """
         if not options:
             return
@@ -2580,11 +2599,11 @@ class RustExplorationManager(
             return
         names = ", ".join(offending)
         raise NotImplementedError(
-            f"SimOption(s) {{{names}}} require SimAction/SimEvent records "
-            "that the Rust engine does not produce. Drop "
-            "use_rust_engine=True (or remove these options from "
-            "state.options) and rerun with the Python engine. See "
-            "docs/advanced-topics/rust_engine.rst for the full matrix."
+            f"SimOption(s) {{{names}}} request behavior the Rust engine "
+            "cannot provide. Drop use_rust_engine=True (or remove these "
+            "options from state.options) and rerun with the Python "
+            "engine. See docs/advanced-topics/rust_engine.rst for the "
+            "full matrix."
         )
 
     def _add_rust_state(self, stash: str, angr_state: "angr.SimState"):
