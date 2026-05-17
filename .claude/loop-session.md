@@ -1,107 +1,69 @@
-## Session log: 2026-05-17 — angr-9maq mma_howtouse leak fixed
+## Session log: 2026-05-17 — angr-gra3 validated, cleanup hook is no-op
 
-### Status: CLOSED — surgical fix in rust_state_sync.py landed
-            (commit fced54a07). 437/437 tests pass.
+### Status: CLOSED — revert landed (commit 17ab6787a). 437/437 pass.
 
 ### Task
 
-**angr-9maq (P1, bug)** — "mma_howtouse regressed 6.5s/286MB ->
-55s/1888MB; leak fix appears bypassed". Filed by prior session as
-a blocker for angr-518z acceptance.
+**angr-gra3 (P2, task)** — "Validate angr-518z cleanup() benefit on
+mma_howtouse post-9maq fix". With angr-9maq closed, re-measure
+whether the cleanup() flag delivers the predicted 23% gain from
+`mma-howtouse-cache-clear-speedup` memory.
 
-### Root cause
+### Findings
 
-Commit 293aa8163 (angr-7vcx, 2026-05-14, "sync user-mapped
-concrete pages to Rust") REMOVED the `if any(concrete)` zero-page
-filter in `angr/exploration/rust_state_sync.py::_sync_extra_python_pages`
-to fix a separate bug (user `map_region`'d pages with no content
-getting silently de-mapped in Rust).
+| cfg                | wall    | peak  |
+|--------------------|---------|-------|
+| python             | 4.29s   | 226MB |
+| rust cleanup=False | 7.38s   | 277MB |
+| rust cleanup=True  | 7.32s   | 277MB |
 
-But Python state.memory._pages contains thousands of ZERO_FILL /
-SYMBOL_FILL_UNCONSTRAINED_MEMORY filler pages that look identical
-to user-mapped zero pages via `concrete_load(0, page_size)`.
-Mapping all of them via `rust_state.map_memory_data(page_addr,
-[0]*4096, perms)` allocated a 4KB buffer in Rust per page per
-state. Callable-heavy workloads (mma_howtouse: 45 short-lived
-managers) hit this every state-sync, blowing peak memory and
-per-call time 10x.
+The cleanup hook delivers **0% measurable benefit** on current HEAD.
+Rust runs at 0.58x of Python.
 
-### Fix
+### Why the prediction failed
 
-`angr/exploration/rust_state_sync.py::_sync_extra_python_pages`:
-- Still call `add_lazy_region(page_addr, page_size)` for the zero
-  case so the page is recognized as user-mapped. The first store
-  goes through `store_concrete_automap_internal` in
-  `native/angr/src/memory/store.rs:640` which auto-allocates a
-  zero page when the address is in a lazy region.
-- Skip the eager `map_memory_data(page_addr, [0]*4096, perms)`
-  call for all-zero pages. Non-zero pages keep the existing
-  eager-map behaviour (so any data the Python side wrote during
-  stage 1 still gets seen by Rust).
+1. The 23% gain came from `claripy.clear_all_caches()`. That API
+   **no longer exists** in claripy — replaced with WeakValueDictionary
+   caches that GC naturally.
+2. The angr-518z `clear_ast_cache()` PyO3 export clears only the
+   **Rust-side** translation LRUs (AST_CACHE, CLARIPY_AST_CACHE,
+   EXPRESSION_CACHE, EXPRESSION_BY_OPERANDS_PTR) — not equivalent to
+   the original Python-side cache flush.
+3. The Rust LRUs are bounded at 10000 entries; 45 Callable
+   invocations don't fill them enough to cause cold-line misses.
 
-Net diff: +17 lines, -6 lines in one file.
+### Action
 
-### Bisection
-
-- Wrote `/tmp/leak_repro.py` — subprocess wrapper with RLIMIT_AS=4GB
-  that runs N callable invocations and reports per-call time +
-  ru_maxrss. 10 calls was enough to expose 1.93s vs 0.17s.
-- Narrowed 151 commits in 7 steps via
-  `git checkout <commit> -- native/angr/src angr/exploration;
-  cargo build --release; cp ... .so; run repro`.
-  Each step ~30s incremental cargo + 20s reproducer = 50s.
-- Pinned to commit 293aa8163 (angr-7vcx) — diff between the
-  known-good parent cf71a2ad2 and 293aa8163 was a single file
-  (rust_state_sync.py) so the smoking gun was visible immediately.
-
-### Test result
-
-437 / 437 test_rust_exploration.py pass on HEAD.
-TestRustConcreteMemoryStoreRoundTrip (the angr-7vcx regression
-guard) still passes — store-to-mapped-zero-page round-trip works
-via lazy auto-mapping.
-
-PR-time benchmark gate (`run_regression.py --rust-only --skip-bimodal`):
-13/13 pass. One soft warning on unmapped_analysis 18% slower
-(0.79s -> 0.96s, baseline value pre-7vcx) — borderline noise
-threshold, no test failure.
-
-### Benchmark before/after
-
-| benchmark        | before fix      | after fix       | baseline        |
-|------------------|-----------------|-----------------|-----------------|
-| mma_howtouse     | 55.04s 1888MB   | 7.23s 277MB     | 6.51s 286MB     |
-| ais3_crackme     | 2.00s 929MB     | 0.91s 369MB     | 0.84s 367MB     |
-| fauxware         | 0.21s 176MB     | 0.21s 176MB     | 0.39s 251MB     |
-| unmapped_analysis| ~0.96s 274MB    | 0.96s 274MB     | 0.79s 270MB     |
-
-Per-call mma_howtouse timing in Callable loop: 1.93s -> 0.18s.
+- Reverted `tests/benchmarks/run_single.py` to construct
+  `RustExplorationManager(project, states)` with default kwargs
+  (removed `clear_caches_on_cleanup=True` opt-in that implied a
+  benefit that isn't real).
+- Kept the angr-518z infrastructure intact (PyO3 export,
+  cleanup() method, ctor flag, 5 TestRustManagerCleanup tests). It
+  remains a valid opt-in hygiene primitive in case a future workload
+  actually fills the LRUs.
 
 ### Files modified
 
-- `angr/exploration/rust_state_sync.py` — guard
-  `map_memory_data` call with `if any(concrete):`; updated
-  docstring/comment to cite both angr-7vcx and angr-9maq.
+- `tests/benchmarks/run_single.py` — -8 lines, +1 line (remove opt-in).
 
 ### Memories saved
 
-- `9maq-root-cause` — full root-cause writeup (filter removal in
-  293aa8163 mapped thousands of filler pages per state).
-- `invariant-lazy-region-auto-map` — invariant: lazy_region +
-  store_concrete_automap_internal is sufficient for stores; eager
-  map_memory_data is an allocation optimisation, not a correctness
-  requirement.
-- `benchmark-9maq-fix-2026-05-17` — before/after numbers.
-- `9maq-bisect-method` — reusable bisect pattern with
-  `/tmp/leak_repro.py` + cargo-only rebuild loop.
+- `benchmark-mma-howtouse-2026-05-17-final` — definitive numbers on
+  HEAD 17ab6787a; mma_howtouse at 0.58x permanently until the
+  remaining Python-vs-Rust gap is investigated separately.
+- `avoid-trusting-stale-cache-clear-speedup` — warns future sessions
+  not to plan against the stale 23% prediction.
+- `claripy-cache-clear-api` — what cache structures actually exist in
+  current claripy (WeakValueDictionary, no global flush API).
 
 ### Followup work for next session
 
-- Now that angr-9maq is closed, angr-518z's acceptance can be
-  re-measured: confirm the cleanup() flag actually does help
-  mma_howtouse drop from 7.23s -> closer to the 5.07s gain
-  predicted by `mma-howtouse-cache-clear-speedup` memory.
-- Consider whether angr-7vcx's other change in `_scan_symbolic_pages`
-  (scanning `symbolic_data` instead of `symbolic_bitmap`) has a
-  similar untested cost path. Not observed in benchmarks but worth
-  a quick check on Callable workloads.
+- **mma_howtouse remains 0.58x slower than Python**. The gap is no
+  longer attributable to AST cache lookup (validated this session).
+  A fresh investigation could profile the Callable construction path,
+  per-manager teardown, or the Rust↔Python FFI cost for
+  short-lived states. File a new bead if there's appetite to pursue.
+- The previous session's secondary followup ("check angr-7vcx's
+  `_scan_symbolic_pages` change for similar untested cost") is still
+  open and worth a 30-min look.
