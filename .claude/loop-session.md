@@ -1,77 +1,88 @@
-## Session log: 2026-05-17 — angr-gffd closed (symbolic syscall fix)
+## Session log: 2026-05-17 — angr-apre closed (SYMBOL_FILL_UNCONSTRAINED_REGISTERS raise)
 
 ### Status: CLOSED
 
 ### Task
 
-**angr-gffd (P3, bug)** — Fix silent symbolic-syscall-num divergence + honor
-NO_SYMBOLIC_SYSCALL_RESOLUTION.
+**angr-apre (P3, bug)** — Promote SYMBOL_FILL_UNCONSTRAINED_REGISTERS to
+raise NotImplementedError under Rust. Pattern matches angr-n129 / cf9h /
+gmrc / csmm.
 
 ### Root cause
 
-`CallbackInterpreter::get_syscall_num` in `interpreter_cb/exits.rs` was
-returning `.as_u64().unwrap_or(0)` — collapsing a symbolic syscall register
-to a concrete `0`. On amd64, syscall 0 is `read` (NativeReadSyscall), so
-any symbolic `rax` at a `syscall` instruction silently dispatched to
-NativeReadSyscall with whatever happened to be in `rdi/rsi/rdx`.
+Rust's `RegisterFile` in `native/angr/src/arch/mod.rs:178-185` initializes
+storage with `vec![0; size]` and has no "uninitialized" marker. Reads of
+never-written registers always return concrete zero from `data[]`.
 
-Python's `engines/successors.py::_resolve_syscall` (line 343-367) handles
-symbolic syscall numbers by enumeration (default) or short-circuit to the
-unknown-syscall stub when `NO_SYMBOLIC_SYSCALL_RESOLUTION` is set. Rust
-never reached that logic — the silent unwrap_or(0) preempted it.
+Python's `_fill` in `light_registers.py:140-164` and `_default_value` in
+`default_filler_mixin.py:45-49` create a fresh symbolic BVS when
+`ZERO_FILL_UNCONSTRAINED_REGISTERS` is absent. `SYMBOL_FILL_UNCONSTRAINED_REGISTERS`
+explicitly opts into symbolic-fill (and suppresses the warning).
+
+The Rust engine silently ignored the option, returning concrete-zero
+registers. A user who explicitly opted into symbolic-fill would never
+see the divergence — paths driven by unconstrained initial register
+values would simply not be explored.
 
 ### Resolution
 
-- `get_syscall_num` returns `Option<u64>` (None for symbolic register OR
-  arch without syscall_num_offset).
-- Propagated `Option<u64>` through `BlockResult::Syscall`,
-  `RunResult::Syscall`, `CallbackReason::Syscall`, and
-  `ExplorationEvent::need_syscall` / `LoopExecutionEvent::syscall_num`
-  (which were already `Option<u64>`).
-- `stepping.rs::RunResult::Syscall` skips the native syscall registry
-  when `num` is None and forces the Python callback. Python's
-  `_handle_syscall_callback` calls `engine.process(state)`, which reads
-  the still-symbolic register through `_resolve_syscall` and either
-  enumerates (default) or routes to the unknown-syscall stub
-  (NO_SYMBOLIC_SYSCALL_RESOLUTION).
+- Added `SYMBOL_FILL_UNCONSTRAINED_REGISTERS` to `_RAISE_OPTION_NAMES`
+  in `angr/exploration/rust_manager.py` with rationale block.
+- The MEMORY variant `SYMBOL_FILL_UNCONSTRAINED_MEMORY` is NOT promoted
+  — Rust's `load_concrete_lazy` (`native/angr/src/memory/load.rs:333-339`)
+  already defaults to symbolic-fill (`unc_mem_*` BVS) when
+  `zero_fill_unconstrained` is unset.
+- Also generalized the `_check_raise_options` error message: the old
+  wording claimed offending options "require SimAction/SimEvent records",
+  which has not been accurate since CONCRETIZE / CONSERVATIVE_WRITE_STRATEGY
+  / DO_RET_EMULATION / CALLLESS / EFFICIENT_STATE_MERGING / now SYMBOL_FILL
+  joined the set for non-action reasons.
 
 ### Files modified
 
-- `native/angr/src/interpreter_cb/exits.rs` — `get_syscall_num` returns
-  `Option<u64>`; tests updated (3 changes).
-- `native/angr/src/interpreter_cb/mod.rs` — `BlockResult::Syscall::num` ->
-  `Option<u64>`.
-- `native/angr/src/callbacks.rs` — `RunResult::Syscall::num` ->
-  `Option<u64>`; `LoopExecutionEvent` conversion passes through.
-- `native/angr/src/exploration/mod.rs` — `CallbackReason::Syscall::num` ->
-  `Option<u64>`; `need_syscall` accepts `Option<u64>`.
-- `native/angr/src/exploration/stepping.rs` — `and_then` to gate native
-  dispatch on concrete num.
-- `docs/advanced-topics/rust_engine.rst` — bumped Overview + matrix.
-- `tests/engines/test_rust_exploration.py` — 2 new tests:
-  - `test_symbolic_syscall_num_forces_python_fallback`
-  - `test_concrete_syscall_num_still_uses_native_dispatch`
+- `angr/exploration/rust_manager.py` — _RAISE_OPTION_NAMES + comment +
+  generalized error message.
+- `tests/engines/test_rust_exploration.py` — 2 new tests
+  (test_symbol_fill_unconstrained_registers_option_raises_at_construction,
+  test_symbol_fill_unconstrained_memory_option_does_not_raise). Updated 2
+  existing tests (test_filler_materialised_multibyte_symbolic_preserved,
+  test_uninitialized_annotation_on_bvs_in_memory) that opted into the
+  now-raising option — they exercise memory symbolicity, only the MEMORY
+  variant was needed.
+- `docs/advanced-topics/rust_engine.rst` — split joint
+  SYMBOL_FILL_UNCONSTRAINED_{MEMORY,REGISTERS} row, added
+  "Followup (angr-apre, 2026-05-17)" callout.
 
 ### Verification
 
-- `cargo check --release`: clean.
-- Rust unit tests: 11 in `interpreter_cb::exits::tests` all pass (1 renamed:
-  `get_syscall_num_returns_zero_for_symbolic_rax` →
-  `get_syscall_num_returns_none_for_symbolic_rax`).
-- `tests/engines/test_rust_exploration.py`: 448/448 pass (was 446, +2 new).
-- `tests/engines/test_rust_integration.py`: 22 pass, 2 xfailed (unchanged).
+- `cargo check --release`: clean (no Rust changes).
+- `tests/engines/test_rust_exploration.py`: 450/450 pass (was 448, +2 new).
 
-### Memories planned
+### Memories saved
 
-- `invariant-rust-honored-simoptions` — append `NO_SYMBOLIC_SYSCALL_RESOLUTION`.
-- `gffd-root-cause` — record `get_syscall_num`'s `unwrap_or(0)` silent
-  divergence (symbolic-rax-→-read on amd64).
-- `invariant-syscall-num-symbolic-routes-python` — invariant.
+- `apre-root-cause`: RegisterFile vec![0; size] no uninitialized marker.
+- `invariant-symbol-fill-memory-matches`: SYMBOL_FILL_UNCONSTRAINED_MEMORY
+  is silently accepted but NOT a divergence — Rust defaults match.
+- `invariant-rust-honored-simoptions`: updated to include SYMBOL_FILL.
 
 ### Followup ideas
 
-Same candidates as previous session's followup list still viable
-(ZERO_FILL_UNCONSTRAINED_REGISTERS is the next paired SimOption — note
-the current Rust default is zero-fill via `RegisterFile::new`'s
-`vec![0; size]`, so an audit is needed to decide what "honor" should
-really mean here).
+The previous-session followup remains valid: candidates for
+SimOption coverage are documented in `docs/advanced-topics/rust_engine.rst`.
+The remaining (a)-implement and (b)-reject entries in the matrix are:
+- `AVOID_MULTIVALUED_READS` / `AVOID_MULTIVALUED_WRITES` — Rust always
+  enumerates within strategy limits.
+- `CONCRETIZE_SYMBOLIC_WRITE_SIZES` — Rust concretizes addresses but
+  not sizes the same way.
+- `PRODUCE_ZERODIV_SUCCESSORS` — Rust treats div-by-zero as a single
+  state (no second successor with `divisor == 0`).
+- `CONSERVATIVE_READ_STRATEGY` — currently in `_REJECTED_OPTION_NAMES`
+  (warn-only); the WRITE variant raises. Asymmetry tracks ticket scope
+  per the doc; promoting to raise is a parallel small change if desired.
+- `ZERO_FILL_UNCONSTRAINED_REGISTERS` — actually a "matches by default"
+  case under Rust (always zero-fills regardless), so no action needed.
+
+For PRODUCE_ZERODIV_SUCCESSORS especially: it ships in the `tracing`
+mode bundle (sim_options.py:430) but tracing already pulls UNICORN
+which Rust rejects, so users hitting this are already directed away
+from Rust. Probably safe to leave silent.
