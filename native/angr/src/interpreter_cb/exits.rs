@@ -192,6 +192,13 @@ impl<'a> CallbackInterpreter<'a> {
         // Trace removed after debugging
 
         if jumpkind.is_syscall() {
+            // angr-gffd: keep `num: Option<u64>` honest about symbolicness.
+            // A symbolic syscall register MUST NOT silently dispatch to a
+            // native handler — on amd64 the previous `.unwrap_or(0)` routed
+            // every symbolic syscall to NativeReadSyscall. Caller forces the
+            // Python fallback when `num` is None, where Python's
+            // engines/successors.py::_resolve_syscall handles both
+            // enumeration and NO_SYMBOLIC_SYSCALL_RESOLUTION.
             let syscall_num = self.get_syscall_num();
             return BlockResult::Syscall { num: syscall_num };
         }
@@ -250,16 +257,19 @@ impl<'a> CallbackInterpreter<'a> {
     }
 
     /// Get the syscall number from the appropriate register.
-    pub(super) fn get_syscall_num(&self) -> u64 {
+    ///
+    /// Returns `Some(n)` when the syscall register holds a concrete value,
+    /// `None` when the register is symbolic (caller must route to Python so
+    /// `engines/successors.py::_resolve_syscall` can enumerate or honor
+    /// `NO_SYMBOLIC_SYSCALL_RESOLUTION`). Also returns `None` when the
+    /// architecture has no syscall-num register, matching the prior
+    /// `unwrap_or(0)` fallback in spirit but without silently dispatching
+    /// to syscall 0.
+    pub(super) fn get_syscall_num(&self) -> Option<u64> {
         let arch = self.registers.arch();
-        let Some(offset) = arch.syscall_num_offset() else {
-            return 0;
-        };
+        let offset = arch.syscall_num_offset()?;
         let size = arch.bytes();
-        self.registers
-            .get(offset, size, self.ctx)
-            .as_u64()
-            .unwrap_or(0)
+        self.registers.get(offset, size, self.ctx).as_u64()
     }
 }
 
@@ -296,7 +306,7 @@ mod tests {
         interp.registers.put_reg("rax", RustBV::concrete(60, 64));
         let result = interp.handle_exit(0x1234, JumpKind::Sys_syscall);
         match result {
-            BlockResult::Syscall { num } => assert_eq!(num, 60),
+            BlockResult::Syscall { num } => assert_eq!(num, Some(60)),
             other => panic!("expected Syscall, got {:?}", other),
         }
         // PC is updated even for syscalls.
@@ -421,16 +431,17 @@ mod tests {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
         interp.registers.put_reg("rax", RustBV::concrete(231, 64)); // exit_group
-        assert_eq!(interp.get_syscall_num(), 231);
+        assert_eq!(interp.get_syscall_num(), Some(231));
     }
 
     #[test]
-    fn get_syscall_num_returns_zero_for_symbolic_rax() {
+    fn get_syscall_num_returns_none_for_symbolic_rax() {
+        // angr-gffd: symbolic syscall register must produce None so the
+        // caller routes to Python instead of dispatching to a native handler.
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
         let sym = RustBV::symbolic(&ctx, "rax_sym", 64);
         interp.registers.put_reg("rax", sym);
-        // Symbolic value -> as_u64 returns None -> unwrap_or(0).
-        assert_eq!(interp.get_syscall_num(), 0);
+        assert_eq!(interp.get_syscall_num(), None);
     }
 }

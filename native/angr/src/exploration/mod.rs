@@ -75,8 +75,10 @@ pub enum CallbackReason {
         num_args: usize,
         return_addr: u64,
     },
-    /// Syscall instruction.
-    Syscall { num: u64 },
+    /// Syscall instruction. `num` is `None` when the syscall register is
+    /// symbolic (angr-gffd) — Python's `engines/successors.py::_resolve_syscall`
+    /// handles enumeration / `NO_SYMBOLIC_SYSCALL_RESOLUTION` resolution.
+    Syscall { num: Option<u64> },
     /// Find predicate needs Python evaluation.
     FindPredicate { addr: u64 },
     /// Avoid predicate needs Python evaluation.
@@ -207,7 +209,7 @@ impl ExplorationEvent {
 
     pub(crate) fn need_syscall(
         state_id: u64,
-        syscall_num: u64,
+        syscall_num: Option<u64>,
         found_count: usize,
         active_count: usize,
         steps: u64,
@@ -215,7 +217,7 @@ impl ExplorationEvent {
         ExplorationEvent {
             callback_state_id: Some(state_id),
             callback_reason: Some("syscall".to_string()),
-            callback_syscall_num: Some(syscall_num),
+            callback_syscall_num: syscall_num,
             ..Self::base("need_callback", found_count, active_count, steps)
         }
     }

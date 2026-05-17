@@ -907,6 +907,72 @@ class TestRustExplorationPython:
             "have short-circuited enumeration"
         )
 
+    def test_symbolic_syscall_num_forces_python_fallback(self):
+        """A symbolic syscall register must skip the native syscall registry
+        and route to the Python callback (angr-gffd). Before the fix,
+        `get_syscall_num` returned ``unwrap_or(0)``; on amd64 syscall 0 is
+        ``read`` (NativeReadSyscall) so a symbolic ``rax`` silently dispatched
+        to ``read`` with whatever happened to be in the arg registers.
+
+        We assert the Python fallback runs (``syscall_python_fallback_count``
+        is bumped) — that is the load-bearing observation. With
+        ``NO_SYMBOLIC_SYSCALL_RESOLUTION`` set, Python's
+        ``engines/successors.py::_resolve_syscall`` (line 352) returns
+        ``(syscall_num, None)`` and the unknown-syscall stub takes over, so
+        no enumeration happens.
+        """
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # AMD64: `0f 05` = syscall. Pad so PC+2 stays mapped.
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={o.NO_SYMBOLIC_SYSCALL_RESOLUTION},
+        )
+        # Fresh unconstrained syscall number.
+        state.regs.rax = claripy.BVS("sym_syscall_num", 64)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] >= 1, (
+            "Python syscall fallback must run for a symbolic syscall number — "
+            "otherwise Rust silently dispatched to native syscall 0 (read on "
+            f"amd64). Got {stats['syscall_python_fallback_count']}."
+        )
+
+    def test_concrete_syscall_num_still_uses_native_dispatch(self):
+        """Sanity check that the angr-gffd `Option<u64>` plumbing did not
+        regress the concrete-syscall fast path. A concrete ``rax = 60`` (exit
+        on amd64) must dispatch through ``NativeExitSyscall`` without bumping
+        the Python fallback counter."""
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rax = 60  # exit
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        stats = mgr._rust_mgr.stats()
+        assert stats["syscall_python_fallback_count"] == 0, (
+            "concrete syscall must take the native fast path, not the Python "
+            f"fallback (got {stats['syscall_python_fallback_count']})"
+        )
+        # NativeExitSyscall routes the state to deadended.
+        assert len(mgr.deadended) == 1, (
+            f"native exit(60) must deadend the state, got stashes="
+            f"{ {k: len(v) for k, v in mgr.stashes.items() if v} }"
+        )
+
     def test_keep_ip_symbolic_propagates_to_rust(self, fauxware_project):
         """A SimState with KEEP_IP_SYMBOLIC option should flip the Rust
         state's keep_ip_symbolic flag automatically — mirrors angr-yl5n's

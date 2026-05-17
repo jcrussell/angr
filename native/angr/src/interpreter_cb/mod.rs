@@ -322,8 +322,12 @@ enum StmtResult {
 pub enum BlockResult {
     /// Continue to the next block at given address.
     Continue { next_addr: u64 },
-    /// Syscall encountered.
-    Syscall { num: u64 },
+    /// Syscall encountered. `num` is `None` when the syscall-number register
+    /// is symbolic (angr-gffd); callers must route those cases to Python so
+    /// `engines/successors.py::_resolve_syscall` can enumerate or honor
+    /// `NO_SYMBOLIC_SYSCALL_RESOLUTION` instead of silently dispatching to
+    /// `read` (amd64 syscall 0).
+    Syscall { num: Option<u64> },
     /// Symbolic branch - need to fork.
     SymbolicBranch {
         condition_id: u64,

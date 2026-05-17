@@ -189,8 +189,19 @@ impl RustExplorationManager {
 
                 // Try native syscall dispatch first. On success we skip the
                 // Python `_handle_syscall_callback` round-trip entirely.
+                //
+                // angr-gffd: when `num` is `None` the syscall register is
+                // symbolic. Skip the native registry entirely and force the
+                // Python fallback below — Python's `_handle_syscall_callback`
+                // calls `engine.process(state)` which reads the still-symbolic
+                // register through `_resolve_syscall` and either enumerates
+                // (default) or routes to the unknown-syscall stub
+                // (NO_SYMBOLIC_SYSCALL_RESOLUTION). Dispatching to a native
+                // handler at concrete `0` would silently invoke `read` on
+                // amd64.
                 let arch_name = state.arch().name();
-                if let Some(handler) = self.native_syscalls.get(arch_name, num) {
+                let native_handler = num.and_then(|n| self.native_syscalls.get(arch_name, n));
+                if let Some(handler) = native_handler {
                     let n_args = handler.num_args();
                     let args = if n_args == 0 {
                         Vec::new()

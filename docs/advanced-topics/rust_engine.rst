@@ -22,7 +22,8 @@ Overview
 * **Honored options:** ``LAZY_SOLVES``, ``ZERO_FILL_UNCONSTRAINED_MEMORY``,
   ``APPROXIMATE_MEMORY_INDICES``, ``SYMBOLIC_WRITE_ADDRESSES``,
   ``STRICT_PAGE_ACCESS``, ``ENABLE_NX``, ``NO_IP_CONCRETIZATION``,
-  ``NO_SYMBOLIC_JUMP_RESOLUTION``, ``KEEP_IP_SYMBOLIC``.
+  ``NO_SYMBOLIC_JUMP_RESOLUTION``, ``NO_SYMBOLIC_SYSCALL_RESOLUTION``,
+  ``KEEP_IP_SYMBOLIC``.
   Everything else is either inherited from Python or silently ignored —
   see the matrix below.
 * **No** ``state.inspect`` **dispatch.** Registration raises
@@ -333,6 +334,18 @@ Honored options
        Matches Python's ``engines/successors.py:234-239`` (early elif
        branch routing symbolic targets to ``unconstrained_successors``
        before ``AddressConcretizer`` is invoked).
+   * - ``NO_SYMBOLIC_SYSCALL_RESOLUTION``
+     - Inherited through the Python syscall fallback
+     - ``CallbackInterpreter::get_syscall_num`` returns ``Option<u64>``
+       (``None`` when the syscall register is symbolic), and
+       ``stepping.rs::RunResult::Syscall`` skips the native syscall
+       registry when ``num`` is ``None``, forcing a Python callback. The
+       Python side's ``engines/successors.py:_resolve_syscall`` reads
+       the option from ``state.options`` and either enumerates concrete
+       syscalls or routes to the unknown-syscall stub (line 352). Before
+       angr-gffd, ``get_syscall_num`` was ``unwrap_or(0)`` so a symbolic
+       ``rax`` silently dispatched to ``NativeReadSyscall`` (amd64
+       syscall 0).
    * - ``KEEP_IP_SYMBOLIC``
      - ``rust_manager.py::_add_rust_state`` (also propagated through
        ``_apply_state_metadata`` on cache reuse)
@@ -515,7 +528,13 @@ vs. Python.
        symbolic targets route to ``unconstrained`` without enumeration.
    * - ``NO_SYMBOLIC_SYSCALL_RESOLUTION``
      - Same, for syscalls.
-     - (a) implement.
+     - **Honored** as of 2026-05-17 (angr-gffd). Symbolic syscall numbers
+       always route to the Python callback, where
+       ``engines/successors.py::_resolve_syscall`` reads the option from
+       state.options and either enumerates concrete syscalls or routes to
+       the unknown-syscall stub. Before the fix, a symbolic ``rax``
+       silently dispatched to ``NativeReadSyscall`` (amd64 syscall 0)
+       because ``get_syscall_num`` was ``unwrap_or(0)``.
    * - ``AVOID_MULTIVALUED_READS`` / ``AVOID_MULTIVALUED_WRITES``
      - Returns unconstrained instead of enumerating addresses.
      - (a) implement — Rust always enumerates within strategy limits.

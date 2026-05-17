@@ -238,7 +238,11 @@ pub enum RunResult {
         return_addr: u64,
     },
     /// Syscall encountered - need Python to handle.
-    Syscall { num: u64, pc: u64 },
+    ///
+    /// `num` is `None` when the syscall-number register is symbolic
+    /// (angr-gffd) — the dispatch loop must force a Python callback in that
+    /// case rather than picking a native handler.
+    Syscall { num: Option<u64>, pc: u64 },
     /// Symbolic branch - need Python to fork states.
     /// This is returned when use_deferred_forks is false or max_deferred_forks is reached.
     SymbolicBranch {
@@ -1651,7 +1655,7 @@ impl LoopExecutionEvent {
                 event_type: "syscall".to_string(),
                 pc: Some(pc),
                 addr: None,
-                syscall_num: Some(num),
+                syscall_num: num,
                 true_target: None,
                 false_target: None,
                 jumpkind: Some("Ijk_Sys_syscall".to_string()),
