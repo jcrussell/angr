@@ -1,64 +1,69 @@
-## Session log: 2026-05-17 — angr-97l8 per-simprocedure fallback telemetry
+## Session log: 2026-05-17 — angr-dcva Implement ENABLE_NX in Rust engine
 
-### Status: CLOSED — commit 156cdd64d. 438/438 pass (+1 net test).
+### Status: CLOSED — commit b99b3810a. 440/440 pass (+2 net tests).
 
 ### Task
 
-**angr-97l8 (P3, task)** — "Per-SimProcedure fallback telemetry in
-get_solver_stats()". Add `Dict[str, int]` of procedure_name →
-fallback_count so we know which native procedures need implementing
-next.
+**angr-dcva (P2, feature)** — Wire ENABLE_NX SimOption to Rust engine.
+Previously, Rust collapsed STRICT_PAGE_ACCESS and ENABLE_NX into a single
+`enforce_permissions` flag that gated both R/W AND X checks. Python angr
+separates them: X check fires only when BOTH STRICT_PAGE_ACCESS AND ENABLE_NX
+are set (`angr/engines/vex/heavy/heavy.py:115-124`).
 
 ### What landed
 
-- Added `simprocedure_fallback_by_name: HashMap<String, u64>` to
-  `RustExplorationManager` (alongside scalar
-  `simprocedure_python_fallback_count`).
-- Incremented at the TWO Python-fallback sites:
-  - `native/angr/src/exploration/run_loop.rs:305` (top-of-step hook)
-  - `native/angr/src/exploration/stepping.rs:597` (interpreter exit)
-- Exposed via `_stats()` and `_get_fallback_stats()` under
-  `simprocedure_fallback_by_name` (alongside the scalar).
-- Surfaced in `rust_manager.py::get_performance_summary` — prints top 10
-  procedures by fallback count below the scalar line.
-- Tests: extended `test_python_procedure_symbolic_arg_falls_back_to_python`
-  to assert by-name records "sym_proc" + sum-equals-scalar invariant.
-  Added `test_simprocedure_fallback_by_name_empty` for fresh-manager.
+Rust side:
+- `SymbolicMemory::enforce_nx` field + `set_enforce_nx`/`enforce_nx`
+  accessors (`native/angr/src/memory/mod.rs`); propagated through `fork()`.
+- `check_executable` now requires BOTH `enforce_permissions` AND `enforce_nx`
+  to fire (matches Python heavy VEX engine semantics).
+- `RustSimState` + PyO3 wrappers (`native/angr/src/state.rs:1344-1357,
+  2128-2141`) expose the flag to Python.
+- `RustExplorationManager::state_enforce_nx(state_id)` accessor
+  (`native/angr/src/exploration/mod.rs:1748-1752` + `state_api.rs:483-485`).
 
-### Acceptance criterion note
+Python side:
+- `rust_manager.py::_add_rust_state` sets `enforce_nx=True` when
+  `o.ENABLE_NX in state.options` (alongside existing STRICT_PAGE_ACCESS).
+- `_apply_state_metadata`'s allow-list extended:
+  `(LAZY_SOLVES, STRICT_PAGE_ACCESS, ENABLE_NX)` — add+discard mirroring
+  prevents cache reuse from leaking or dropping the flag.
 
-bd ticket said `get_solver_stats()` returns `simprocedure_fallback_by_name`,
-but that helper returns process-wide Z3 counters only. The per-manager
-fallback counters naturally live under `_stats()` /
-`_get_fallback_stats()`, where the scalar `simprocedure_python_fallback_count`
-already lived. Wired there. Close-reason on the bd ticket documents
-the divergence.
+Tests (+2 net):
+- Updated `test_strict_page_access_blocks_nx_block_fetch` to also call
+  `set_enforce_nx(True)` (since the single-flag wiring is gone).
+- Added `test_strict_page_access_alone_does_not_block_nx_fetch` —
+  verifies Python's gating semantics (STRICT alone must not block X).
+- Added `test_enable_nx_propagates_to_rust` — verifies the option-to-flag
+  wiring through the high-level `RustExplorationManager`.
 
-### Files modified
-
-- native/angr/src/exploration/mod.rs (+7)
-- native/angr/src/exploration/run_loop.rs (+4)
-- native/angr/src/exploration/stats_api.rs (+10)
-- native/angr/src/exploration/stepping.rs (+4)
-- angr/exploration/rust_manager.py (+5)
-- tests/engines/test_rust_exploration.py (+28)
+Docs:
+- `docs/advanced-topics/rust_engine.rst`: ENABLE_NX moved from "implement"
+  to the honored matrix with note about the STRICT_PAGE_ACCESS gate.
 
 ### Memories saved
 
-- `invariant-simprocedure-fallback-two-sites` — both run_loop.rs and
-  stepping.rs increment the counters; future fallback bookkeeping
-  changes must touch both.
-- `telemetry-simprocedure-fallback-by-name` — pointer to the new
-  Dict[str, int] surface and how to use it (prioritizing native
-  SimProcedure implementations).
+- `invariant-enable-nx-gated-on-strict` — both flags required for X check
+  to fire. Future memory-permission work must respect this.
+- `invariant-rust-honored-simoptions` (updated) — now 6 honored options
+  (added ENABLE_NX). Lists access pattern for both flags from Python.
+
+### Files modified
+
+- native/angr/src/memory/mod.rs (+27/-9)
+- native/angr/src/state.rs (+27)
+- native/angr/src/exploration/state_api.rs (+4)
+- native/angr/src/exploration/mod.rs (+6)
+- angr/exploration/rust_manager.py (+18/-13)
+- tests/engines/test_rust_exploration.py (+66/-3)
+- docs/advanced-topics/rust_engine.rst (+12/-4)
 
 ### Followup work for next session
 
-- None directly tied to this ticket. The new telemetry is a tool
-  available for the next round of native SimProcedure picking — run
-  any benchmark, read `mgr.get_fallback_stats()['simprocedure_fallback_by_name']`,
-  the highest-count names are the candidates.
-- Carryover from previous session: mma_howtouse remains 0.58x; root
-  cause is no longer AST cache lookup. Fresh profiling investigation
-  warranted if there's appetite. Also the angr-7vcx
-  `_scan_symbolic_pages` followup is still open.
+Sister tasks still open (P2) that share the same wiring pattern:
+- angr-yl5n — NO_IP_CONCRETIZATION
+- angr-ph9z — KEEP_IP_SYMBOLIC
+
+These are different in scope: they require routing through symbolic IP
+in the interpreter loop, not just a memory flag. Not as straightforward
+as ENABLE_NX.
