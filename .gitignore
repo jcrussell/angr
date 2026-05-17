@@ -28,6 +28,7 @@ angr/screenlog.0
 MANIFEST
 dist
 .eggs
+.venv/
 .vscode/
 *.db
 *.dylib
