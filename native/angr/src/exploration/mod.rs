@@ -1758,6 +1758,13 @@ impl RustExplorationManager {
         self._state_no_ip_concretization(state_id)
     }
 
+    /// Whether NO_SYMBOLIC_JUMP_RESOLUTION is active on a state.
+    /// Same Rust effect as `state_no_ip_concretization` — symbolic jump
+    /// targets route to the unconstrained stash without enumeration.
+    pub fn state_no_symbolic_jump_resolution(&self, state_id: u64) -> PyResult<bool> {
+        self._state_no_symbolic_jump_resolution(state_id)
+    }
+
     /// Whether KEEP_IP_SYMBOLIC is active on a state.
     /// When set, the IP register on each post-concretization successor stays
     /// holding the original symbolic next-pc expression (no `target == addr`

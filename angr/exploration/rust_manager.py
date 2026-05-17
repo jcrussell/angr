@@ -2342,8 +2342,8 @@ class RustExplorationManager(
     def _apply_state_metadata(self, src_state: "angr.SimState",
                               dst_state: "angr.SimState") -> None:
         """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS /
-        ENABLE_NX / NO_IP_CONCRETIZATION / KEEP_IP_SYMBOLIC options from src
-        to dst.
+        ENABLE_NX / NO_IP_CONCRETIZATION / NO_SYMBOLIC_JUMP_RESOLUTION /
+        KEEP_IP_SYMBOLIC options from src to dst.
 
         Options are mirrored — added when src has them, removed when src
         doesn't. The remove half matters for the in-memory init cache: a
@@ -2352,7 +2352,8 @@ class RustExplorationManager(
         that didn't request it (and downstream `set_enforce_permissions(True)`
         would then surface spurious permission errors). Same reasoning for
         ENABLE_NX → `set_enforce_nx(True)`, NO_IP_CONCRETIZATION →
-        `set_no_ip_concretization(True)`, and KEEP_IP_SYMBOLIC →
+        `set_no_ip_concretization(True)`, NO_SYMBOLIC_JUMP_RESOLUTION →
+        `set_no_symbolic_jump_resolution(True)`, and KEEP_IP_SYMBOLIC →
         `set_keep_ip_symbolic(True)`.
         """
         for c in src_state.solver.constraints:
@@ -2367,6 +2368,7 @@ class RustExplorationManager(
                 o.STRICT_PAGE_ACCESS,
                 o.ENABLE_NX,
                 o.NO_IP_CONCRETIZATION,
+                o.NO_SYMBOLIC_JUMP_RESOLUTION,
                 o.KEEP_IP_SYMBOLIC,
             ):
                 if opt in src_state.options:
@@ -2647,6 +2649,8 @@ class RustExplorationManager(
                     rust_state.set_enforce_nx(True)
                 if o.NO_IP_CONCRETIZATION in angr_state.options:
                     rust_state.set_no_ip_concretization(True)
+                if o.NO_SYMBOLIC_JUMP_RESOLUTION in angr_state.options:
+                    rust_state.set_no_symbolic_jump_resolution(True)
                 if o.KEEP_IP_SYMBOLIC in angr_state.options:
                     rust_state.set_keep_ip_symbolic(True)
             except Exception as e:
@@ -2656,6 +2660,7 @@ class RustExplorationManager(
                 # silently allowed/concretized. Debug-logs.
                 l.debug(
                     "STRICT_PAGE_ACCESS / ENABLE_NX / NO_IP_CONCRETIZATION / "
+                    "NO_SYMBOLIC_JUMP_RESOLUTION / "
                     f"KEEP_IP_SYMBOLIC detection failed: {e}"
                 )
 

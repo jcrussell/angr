@@ -53,11 +53,15 @@ impl<'a> CallbackInterpreter<'a> {
             }
         }
 
-        // NO_IP_CONCRETIZATION (engines/successors.py:292-296): suppress
-        // enumeration of symbolic jump targets — route the state straight to
-        // the unconstrained stash without a warning. Mirrors Python's
-        // skip_max_targets_warning=True + max_targets=0 behavior.
-        if self.no_ip_concretization {
+        // NO_IP_CONCRETIZATION (engines/successors.py:292-296) and
+        // NO_SYMBOLIC_JUMP_RESOLUTION (engines/successors.py:234-239) both
+        // route a symbolic jump target straight to the unconstrained stash
+        // without enumeration. The Python checks live at different layers
+        // (jump-resolution fires earlier in the elif chain than ip-concret)
+        // but for the Rust engine — which reaches this site only after the
+        // concrete-IP fast path — they produce the same outcome, so we OR
+        // them at one short-circuit.
+        if self.no_ip_concretization || self.no_symbolic_jump_resolution {
             return Ok(ConcretizedJump::TooMany {
                 min: 0,
                 max: 0,

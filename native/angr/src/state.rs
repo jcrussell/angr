@@ -782,6 +782,14 @@ pub struct RustSimState {
     /// unconstrained stash without warning. See engines/successors.py:292-296.
     /// Cloned on fork.
     no_ip_concretization: bool,
+    /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION SimOption. When true, any
+    /// symbolic jump target routes the state to the unconstrained stash
+    /// before enumeration is attempted. See engines/successors.py:234-239.
+    /// Behaviourally identical to `no_ip_concretization` for the Rust engine
+    /// (both short-circuit `eval_next_addr_concretized` for symbolic IPs);
+    /// they are separate flags to preserve Python option semantics. Cloned
+    /// on fork.
+    no_symbolic_jump_resolution: bool,
     /// Mirrors angr's KEEP_IP_SYMBOLIC SimOption. When true, after a symbolic
     /// jump target is concretized to one-or-more concrete pc values, the IP
     /// register is left set to the original symbolic expression (not the
@@ -842,6 +850,7 @@ impl RustSimState {
             addr_to_ast: HashMap::new(),
             last_time: None,
             no_ip_concretization: false,
+            no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
         })
     }
@@ -884,6 +893,7 @@ impl RustSimState {
             addr_to_ast: HashMap::new(),
             last_time: None,
             no_ip_concretization: false,
+            no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
         }
     }
@@ -936,6 +946,7 @@ impl RustSimState {
             addr_to_ast: HashMap::new(),
             last_time: None,
             no_ip_concretization: false,
+            no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
         })
     }
@@ -1386,6 +1397,21 @@ impl RustSimState {
         self.no_ip_concretization
     }
 
+    /// Enable or disable resolution of symbolic jump targets.
+    /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION option. When true, any
+    /// symbolic jump target routes the state to the unconstrained stash
+    /// instead of enumerating concretizations (matches
+    /// engines/successors.py:234-239). Default off.
+    pub fn set_no_symbolic_jump_resolution(&mut self, enabled: bool) {
+        self.no_symbolic_jump_resolution = enabled;
+    }
+
+    /// Whether symbolic jump targets are routed to unconstrained without
+    /// enumeration.
+    pub fn no_symbolic_jump_resolution(&self) -> bool {
+        self.no_symbolic_jump_resolution
+    }
+
     /// Enable or disable preservation of the symbolic IP after concretization.
     /// Mirrors angr's KEEP_IP_SYMBOLIC option. When true, the engine still
     /// concretizes the next pc, but the IP register on each successor is left
@@ -1652,6 +1678,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
@@ -1690,6 +1717,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
@@ -1728,6 +1756,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
@@ -1774,6 +1803,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
@@ -1868,6 +1898,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
@@ -2205,6 +2236,21 @@ impl PyRustSimState {
     #[pyo3(name = "no_ip_concretization")]
     pub fn py_no_ip_concretization(&self) -> bool {
         self.inner.no_ip_concretization()
+    }
+
+    /// Suppress resolution of symbolic jump targets.
+    /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION option. When set, a symbolic
+    /// jump target routes the state to the unconstrained stash before
+    /// AddressConcretizer enumeration is attempted. Default off.
+    #[pyo3(name = "set_no_symbolic_jump_resolution")]
+    pub fn py_set_no_symbolic_jump_resolution(&mut self, enabled: bool) {
+        self.inner.set_no_symbolic_jump_resolution(enabled);
+    }
+
+    /// Whether NO_SYMBOLIC_JUMP_RESOLUTION is active on this state.
+    #[pyo3(name = "no_symbolic_jump_resolution")]
+    pub fn py_no_symbolic_jump_resolution(&self) -> bool {
+        self.inner.no_symbolic_jump_resolution()
     }
 
     /// Preserve the symbolic IP across block boundaries.

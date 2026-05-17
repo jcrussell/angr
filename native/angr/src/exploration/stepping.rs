@@ -932,6 +932,9 @@ impl RustExplorationManager {
         // Propagate NO_IP_CONCRETIZATION from the state. Unlike lazy_solves
         // which is a manager-level flag, this is a per-state SimOption.
         interp.no_ip_concretization = state.no_ip_concretization();
+        // NO_SYMBOLIC_JUMP_RESOLUTION sibling — same routing, applied at the
+        // same short-circuit in eval_next_addr_concretized.
+        interp.no_symbolic_jump_resolution = state.no_symbolic_jump_resolution();
         // KEEP_IP_SYMBOLIC: per-state SimOption that tells eval_next_addr_concretized
         // to stash the original symbolic next-pc expression (for restore via
         // set_ip after the manager's set_pc) and to skip the

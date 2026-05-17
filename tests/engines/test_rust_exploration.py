@@ -853,6 +853,60 @@ class TestRustExplorationPython:
             "short-circuited enumeration"
         )
 
+    def test_no_symbolic_jump_resolution_propagates_to_rust(self, fauxware_project):
+        """A SimState with NO_SYMBOLIC_JUMP_RESOLUTION option should flip the
+        Rust state's no_symbolic_jump_resolution flag automatically. Mirrors
+        the propagation pattern used for NO_IP_CONCRETIZATION (angr-yl5n)."""
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # No option → flag stays off.
+        plain_state = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain_state])
+        plain_ids = plain_mgr._rust_mgr.get_state_ids("active")
+        assert plain_ids, "expected an active state to be added"
+        assert plain_mgr._rust_mgr.state_no_symbolic_jump_resolution(plain_ids[0]) is False
+
+        # Option present → flag flips on for the Rust state.
+        nsjr_state = fauxware_project.factory.entry_state(
+            add_options={o.NO_SYMBOLIC_JUMP_RESOLUTION}
+        )
+        nsjr_mgr = RustExplorationManager(fauxware_project, [nsjr_state])
+        nsjr_ids = nsjr_mgr._rust_mgr.get_state_ids("active")
+        assert nsjr_ids, "expected an active state to be added"
+        assert nsjr_mgr._rust_mgr.state_no_symbolic_jump_resolution(nsjr_ids[0]) is True
+
+    def test_no_symbolic_jump_resolution_routes_symbolic_jump_to_unconstrained(self):
+        """With NO_SYMBOLIC_JUMP_RESOLUTION, a `jmp rax` against a symbolic
+        rax must skip enumeration and land the state in the `unconstrained`
+        stash — matches engines/successors.py:234-239 (early elif route to
+        unconstrained_successors before AddressConcretizer is invoked)."""
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
+        # symbolic-IP path would normally enumerate concretizations; with
+        # NO_SYMBOLIC_JUMP_RESOLUTION the state goes to unconstrained.
+        proj = angr.load_shellcode(b"\xff\xe0", arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={o.NO_SYMBOLIC_JUMP_RESOLUTION},
+        )
+        state.regs.rax = claripy.BVS("sym_jmp_target", 64)
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=2)
+
+        assert len(mgr.unconstrained) == 1, (
+            f"expected 1 unconstrained state with NO_SYMBOLIC_JUMP_RESOLUTION, "
+            f"got stashes={ {k: len(v) for k, v in mgr.stashes.items() if v} }"
+        )
+        assert len(mgr.active) == 0, (
+            "active stash must be empty — NO_SYMBOLIC_JUMP_RESOLUTION should "
+            "have short-circuited enumeration"
+        )
+
     def test_keep_ip_symbolic_propagates_to_rust(self, fauxware_project):
         """A SimState with KEEP_IP_SYMBOLIC option should flip the Rust
         state's keep_ip_symbolic flag automatically — mirrors angr-yl5n's

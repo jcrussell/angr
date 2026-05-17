@@ -488,6 +488,10 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.no_ip_concretization()))
     }
 
+    pub(crate) fn _state_no_symbolic_jump_resolution(&self, state_id: u64) -> PyResult<bool> {
+        self.with_state(state_id, |state| Ok(state.no_symbolic_jump_resolution()))
+    }
+
     pub(crate) fn _state_keep_ip_symbolic(&self, state_id: u64) -> PyResult<bool> {
         self.with_state(state_id, |state| Ok(state.keep_ip_symbolic()))
     }

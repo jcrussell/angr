@@ -22,7 +22,7 @@ Overview
 * **Honored options:** ``LAZY_SOLVES``, ``ZERO_FILL_UNCONSTRAINED_MEMORY``,
   ``APPROXIMATE_MEMORY_INDICES``, ``SYMBOLIC_WRITE_ADDRESSES``,
   ``STRICT_PAGE_ACCESS``, ``ENABLE_NX``, ``NO_IP_CONCRETIZATION``,
-  ``KEEP_IP_SYMBOLIC``.
+  ``NO_SYMBOLIC_JUMP_RESOLUTION``, ``KEEP_IP_SYMBOLIC``.
   Everything else is either inherited from Python or silently ignored —
   see the matrix below.
 * **No** ``state.inspect`` **dispatch.** Registration raises
@@ -323,6 +323,16 @@ Honored options
        (``native/angr/src/interpreter_cb/exits.rs``). Matches Python's
        ``engines/successors.py:292-296`` behavior
        (``max_targets=0`` with ``skip_max_targets_warning=True``).
+   * - ``NO_SYMBOLIC_JUMP_RESOLUTION``
+     - ``rust_manager.py::_add_rust_state`` (also propagated through
+       ``_apply_state_metadata`` on cache reuse)
+     - Calls ``RustSimState::set_no_symbolic_jump_resolution(True)``;
+       OR'd with ``no_ip_concretization`` at the
+       ``eval_next_addr_concretized`` short-circuit, so a symbolic jump
+       target routes to the ``unconstrained`` stash without enumeration.
+       Matches Python's ``engines/successors.py:234-239`` (early elif
+       branch routing symbolic targets to ``unconstrained_successors``
+       before ``AddressConcretizer`` is invoked).
    * - ``KEEP_IP_SYMBOLIC``
      - ``rust_manager.py::_add_rust_state`` (also propagated through
        ``_apply_state_metadata`` on cache reuse)
@@ -500,8 +510,9 @@ vs. Python.
        Gated on ``STRICT_PAGE_ACCESS`` in addition, matching Python.
    * - ``NO_SYMBOLIC_JUMP_RESOLUTION``
      - Suppresses symbolic-jump enumeration.
-     - (a) implement — Rust resolves symbolic jumps differently and may
-       diverge on heavy-symbolic targets.
+     - **Honored** as of 2026-05-17 (angr-zmha) — see the table above.
+       OR'd with ``no_ip_concretization`` at the same short-circuit;
+       symbolic targets route to ``unconstrained`` without enumeration.
    * - ``NO_SYMBOLIC_SYSCALL_RESOLUTION``
      - Same, for syscalls.
      - (a) implement.

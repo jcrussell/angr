@@ -589,6 +589,13 @@ pub struct CallbackInterpreter<'a> {
     /// unconstrained stash without warning). Mirrors angr's
     /// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
     pub no_ip_concretization: bool,
+    /// When true, route any symbolic jump target to UnconstrainedJump before
+    /// AddressConcretizer enumeration is attempted. Mirrors angr's
+    /// NO_SYMBOLIC_JUMP_RESOLUTION option (engines/successors.py:234-239).
+    /// Functionally identical to `no_ip_concretization` for the symbolic-IP
+    /// case in Rust; kept as a separate flag so Python option semantics are
+    /// preserved.
+    pub no_symbolic_jump_resolution: bool,
     /// When true and the next pc was concretized from a symbolic expression,
     /// store that expression in `symbolic_ip_at_exit` so the manager can
     /// write it back to the IP register after the block (mirroring Python's
@@ -717,6 +724,7 @@ impl<'a> CallbackInterpreter<'a> {
             use_rust_memory: false,
             lazy_solves: false,
             no_ip_concretization: false,
+            no_symbolic_jump_resolution: false,
             keep_ip_symbolic: false,
             symbolic_ip_at_exit: None,
             load_prefetch_cache: FxHashMap::default(),
@@ -1606,6 +1614,7 @@ impl<'a> CallbackInterpreter<'a> {
             use_rust_memory: self.use_rust_memory,
             lazy_solves: self.lazy_solves,
             no_ip_concretization: self.no_ip_concretization,
+            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
             symbolic_ip_at_exit: None,
             load_prefetch_cache: FxHashMap::default(), // Fresh prefetch cache for fork
