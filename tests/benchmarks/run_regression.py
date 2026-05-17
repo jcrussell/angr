@@ -92,6 +92,12 @@ FAST_SUITE = [
     # Experimental to Supported in the arch matrix. Avoids NEON ops
     # (those still use the NeonUnimplemented scaffold and would panic).
     ("aarch64_le_branch", 30, "bfs", True),
+    # ARM (ARMEL) LE inline-ELF synthetic benchmark (angr-duta.2). Same
+    # shape and rationale as aarch64_le_branch — covers ARMEL without
+    # the angr-examples Android validate binary, so the benchmark runs
+    # unconditionally. Uses only base scalar ARM ops (no NEON / VFP /
+    # Thumb).
+    ("arm_le_branch", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full

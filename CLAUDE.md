@@ -246,8 +246,8 @@ period — do not run both simultaneously.
 ## Current Status
 
 **Tests:** 389/389 passing (`grep -c 'def test_' tests/engines/test_rust_exploration.py`)
-**Benchmarks:** 24 benchmarks tracked in `tests/benchmarks/baseline_timings.json` (22 angr-examples + 2 in-repo synthetics: MIPS32, AArch64)
-**Performance:** 17/22 faster than Python (≥1.0x; mips32_le_branch and aarch64_le_branch are synthetic rust_only smoke benchmarks)
+**Benchmarks:** 25 benchmarks tracked in `tests/benchmarks/baseline_timings.json` (22 angr-examples + 3 in-repo synthetics: ARM, MIPS32, AArch64)
+**Performance:** 17/22 faster than Python (≥1.0x; arm_le_branch, mips32_le_branch and aarch64_le_branch are synthetic rust_only smoke benchmarks)
 
 | Example | Speedup | Notes |
 |---------|---------|-------|

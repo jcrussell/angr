@@ -7,6 +7,14 @@
     "state_creations": 0,
     "steps": 0
   },
+  "arm_le_branch": {
+    "callback_count": 0,
+    "peak_memory_mb": 212.0,
+    "python_time": null,
+    "rust_time": 0.31,
+    "state_creations": 0,
+    "steps": 0
+  },
   "ais3_crackme": {
     "callback_count": 47,
     "peak_memory_mb": 366.8,

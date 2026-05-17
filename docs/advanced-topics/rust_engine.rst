@@ -111,9 +111,9 @@ below "Supported" as experimental.
    * - ARM (32-bit)
      - 2
      - 2 (validate, native-proc)
-     - 0
+     - 1 (arm_le_branch synthetic)
      - ARMEABI
-     - Experimental
+     - Supported
    * - ARM64
      - 1
      - 4 (blob branch, NEON mla, real ELF, native-proc)
