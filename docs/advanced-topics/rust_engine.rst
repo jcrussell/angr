@@ -105,9 +105,9 @@ below "Supported" as experimental.
    * - x86 (32-bit)
      - 2
      - 1 (Cdecl ret reg)
-     - 1 (flareon2015_2)
+     - 8 (3 FAST + 5 MEDIUM)
      - Cdecl
-     - Experimental
+     - Supported
    * - ARM (32-bit)
      - 2
      - 2 (validate, native-proc)
@@ -160,6 +160,30 @@ benchmark and ensure it stays green in regression runs. The Cdecl x86
 return-register bug (commit ``5329d8222``) was latent for months
 precisely because no end-to-end x86 test ran — assume the same risk
 for any new arch added without coverage.
+
+x86 (32-bit) single-CC note
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Rust engine registers only Cdecl in
+``native/angr/src/arch/calling_conventions.rs::default_cc_for_arch``
+for x86. The Windows i386 benchmarks listed above
+(``flareon2015_2``, ``flareon2015_5``, ``flareon2015_10``,
+``whitehatvn2015_re400``, ``ekopartyctf2016_sokohashv2``,
+``mma_howtouse``) run successfully under that single CC because the
+relevant CC boundary is **Python-side**: ``entry_state()`` and
+``Callable`` place arguments through angr's Python ``SimCC`` (which
+already handles ``SimCCStdcall`` / ``SimCCStdcall32`` for SimWindows
+binaries), and the Rust engine executes the resulting state. No
+current x86-32 bench triggers a Rust-native ``SimProcedure`` from a
+stdcall caller, so cleanup-side semantics (``ret N``) never matter.
+
+Adding stdcall / fastcall in the future requires both a
+``CallingConvention`` impl in ``calling_conventions.rs`` AND a
+cleanup hook on the native ``SimProcedure`` dispatcher so the callee
+adjusts SP by ``num_args * 4`` after returning. The current
+dispatcher only handles caller-cleans (``ret`` pops just the return
+address). File a bd issue with the specific consumer when that
+need arises.
 
 Z3 solver API
 -------------
