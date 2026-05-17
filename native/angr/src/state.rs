@@ -782,6 +782,14 @@ pub struct RustSimState {
     /// unconstrained stash without warning. See engines/successors.py:292-296.
     /// Cloned on fork.
     no_ip_concretization: bool,
+    /// Mirrors angr's KEEP_IP_SYMBOLIC SimOption. When true, after a symbolic
+    /// jump target is concretized to one-or-more concrete pc values, the IP
+    /// register is left set to the original symbolic expression (not the
+    /// concretized constant) and no `target == addr` narrowing constraint is
+    /// added per fork. The engine still uses the concrete `pc` value to drive
+    /// the next block lift. See engines/successors.py:297-307,326-331.
+    /// Cloned on fork.
+    keep_ip_symbolic: bool,
 }
 
 impl RustSimState {
@@ -834,6 +842,7 @@ impl RustSimState {
             addr_to_ast: HashMap::new(),
             last_time: None,
             no_ip_concretization: false,
+            keep_ip_symbolic: false,
         })
     }
 
@@ -875,6 +884,7 @@ impl RustSimState {
             addr_to_ast: HashMap::new(),
             last_time: None,
             no_ip_concretization: false,
+            keep_ip_symbolic: false,
         }
     }
 
@@ -926,6 +936,7 @@ impl RustSimState {
             addr_to_ast: HashMap::new(),
             last_time: None,
             no_ip_concretization: false,
+            keep_ip_symbolic: false,
         })
     }
 
@@ -1375,6 +1386,20 @@ impl RustSimState {
         self.no_ip_concretization
     }
 
+    /// Enable or disable preservation of the symbolic IP after concretization.
+    /// Mirrors angr's KEEP_IP_SYMBOLIC option. When true, the engine still
+    /// concretizes the next pc, but the IP register on each successor is left
+    /// holding the original symbolic expression and no narrowing constraint is
+    /// added (matches engines/successors.py:297-307,326-331). Default off.
+    pub fn set_keep_ip_symbolic(&mut self, enabled: bool) {
+        self.keep_ip_symbolic = enabled;
+    }
+
+    /// Whether the IP register should be kept symbolic across block boundaries.
+    pub fn keep_ip_symbolic(&self) -> bool {
+        self.keep_ip_symbolic
+    }
+
     /// Map memory with initial data.
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
         self.memory.map_data(addr, data, permissions);
@@ -1627,6 +1652,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
 
@@ -1664,6 +1690,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
 
@@ -1701,6 +1728,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
 
@@ -1746,6 +1774,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
 
@@ -1839,6 +1868,7 @@ impl RustSimState {
             addr_to_ast,
             last_time: self.last_time.clone(),
             no_ip_concretization: self.no_ip_concretization,
+            keep_ip_symbolic: self.keep_ip_symbolic,
         }
     }
 
@@ -2175,6 +2205,22 @@ impl PyRustSimState {
     #[pyo3(name = "no_ip_concretization")]
     pub fn py_no_ip_concretization(&self) -> bool {
         self.inner.no_ip_concretization()
+    }
+
+    /// Preserve the symbolic IP across block boundaries.
+    /// Mirrors angr's KEEP_IP_SYMBOLIC option. When set, the engine still
+    /// concretizes the next pc, but each fork's IP register is left holding
+    /// the original symbolic expression and no `target == addr` narrowing
+    /// constraint is added. Default off.
+    #[pyo3(name = "set_keep_ip_symbolic")]
+    pub fn py_set_keep_ip_symbolic(&mut self, enabled: bool) {
+        self.inner.set_keep_ip_symbolic(enabled);
+    }
+
+    /// Whether KEEP_IP_SYMBOLIC is active on this state.
+    #[pyo3(name = "keep_ip_symbolic")]
+    pub fn py_keep_ip_symbolic(&self) -> bool {
+        self.inner.keep_ip_symbolic()
     }
 
     /// Load from memory.

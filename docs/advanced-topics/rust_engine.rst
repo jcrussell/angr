@@ -21,7 +21,8 @@ Overview
 
 * **Honored options:** ``LAZY_SOLVES``, ``ZERO_FILL_UNCONSTRAINED_MEMORY``,
   ``APPROXIMATE_MEMORY_INDICES``, ``SYMBOLIC_WRITE_ADDRESSES``,
-  ``STRICT_PAGE_ACCESS``, ``ENABLE_NX``, ``NO_IP_CONCRETIZATION``.
+  ``STRICT_PAGE_ACCESS``, ``ENABLE_NX``, ``NO_IP_CONCRETIZATION``,
+  ``KEEP_IP_SYMBOLIC``.
   Everything else is either inherited from Python or silently ignored —
   see the matrix below.
 * **No** ``state.inspect`` **dispatch.** Registration raises
@@ -322,6 +323,21 @@ Honored options
        (``native/angr/src/interpreter_cb/exits.rs``). Matches Python's
        ``engines/successors.py:292-296`` behavior
        (``max_targets=0`` with ``skip_max_targets_warning=True``).
+   * - ``KEEP_IP_SYMBOLIC``
+     - ``rust_manager.py::_add_rust_state`` (also propagated through
+       ``_apply_state_metadata`` on cache reuse)
+     - Calls ``RustSimState::set_keep_ip_symbolic(True)``; after a symbolic
+       jump target is concretized to one-or-more concrete pc values, each
+       successor keeps its IP register set to the original symbolic
+       expression and no per-fork ``target == addr`` narrowing constraint is
+       added. The concretized ``state.pc`` u64 still drives the next block
+       lift. The interpreter stashes the symbolic expression in
+       ``symbolic_ip_at_exit`` and the manager restores it via
+       ``state.set_ip`` after ``state.set_pc(next_pc)``
+       (``native/angr/src/exploration/stepping.rs``,
+       ``native/angr/src/interpreter_cb/exits.rs``). Multi-target forks are
+       handled by ``handle_symbolic_jump_target``. Mirrors Python's
+       ``engines/successors.py:297-307,326-331``.
 
 Inherited (option works because the code path runs in Python)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -471,8 +487,9 @@ vs. Python.
      - Suggested fix
    * - ``KEEP_IP_SYMBOLIC``
      - Allows IP to remain symbolic across blocks.
-     - **(a) implement** — Rust always concretizes IP at block boundaries;
-       symbolic-IP support is a real gap.
+     - **Honored** as of 2026-05-17 (angr-ph9z) — see the table above. The
+       concretized ``state.pc`` drives the next block lift while each
+       successor's IP register keeps the original symbolic expression.
    * - ``NO_IP_CONCRETIZATION``
      - Aborts on symbolic IP instead of concretizing.
      - **Honored** as of 2026-05-17 (angr-yl5n) — see the table above.

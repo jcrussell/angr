@@ -69,6 +69,11 @@ impl<'a> CallbackInterpreter<'a> {
         // without solver queries. Pattern: if(c1, addr1, if(c2, addr2, ...))
         if let Some(targets) = extract_ite_targets(&next_val, self.config.max_symbolic_ip_targets) {
             if targets.len() == 1 {
+                // KEEP_IP_SYMBOLIC: stash the original ITE so the manager can
+                // restore it to the IP register after `set_pc(targets[0])`.
+                if self.keep_ip_symbolic {
+                    self.symbolic_ip_at_exit = Some(next_val.clone());
+                }
                 return Ok(ConcretizedJump::Single(targets[0]));
             }
             return Ok(ConcretizedJump::Multiple {
@@ -80,10 +85,18 @@ impl<'a> CallbackInterpreter<'a> {
         // Symbolic address - use AddressConcretizer
         match self.concretizer.concretize(&next_val, self.ctx) {
             ConcretizationResult::Single(addr) => {
-                // Add constraint that target == addr
-                let concrete = RustBV::concrete(addr as u128, next_val.width());
-                let constraint = next_val.eq(&concrete, self.ctx);
-                self.ctx.assume_true(&constraint);
+                // KEEP_IP_SYMBOLIC: do NOT pin `next_val == addr` (mirrors
+                // engines/successors.py:327-328, which skips
+                // `add_constraints(cond)` when the option is set). Stash the
+                // symbolic expression so the manager can write it back to the
+                // IP register after `set_pc`.
+                if self.keep_ip_symbolic {
+                    self.symbolic_ip_at_exit = Some(next_val.clone());
+                } else {
+                    let concrete = RustBV::concrete(addr as u128, next_val.width());
+                    let constraint = next_val.eq(&concrete, self.ctx);
+                    self.ctx.assume_true(&constraint);
+                }
                 Ok(ConcretizedJump::Single(addr))
             }
             ConcretizationResult::Multiple(addrs) => {

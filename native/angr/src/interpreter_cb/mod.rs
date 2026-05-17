@@ -589,6 +589,19 @@ pub struct CallbackInterpreter<'a> {
     /// unconstrained stash without warning). Mirrors angr's
     /// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
     pub no_ip_concretization: bool,
+    /// When true and the next pc was concretized from a symbolic expression,
+    /// store that expression in `symbolic_ip_at_exit` so the manager can
+    /// write it back to the IP register after the block (mirroring Python's
+    /// `split_state.regs.ip = target` at engines/successors.py:328). Also
+    /// suppresses the per-Single `assume_true(target == addr)` constraint
+    /// that `eval_next_addr_concretized` would otherwise add. Mirrors angr's
+    /// KEEP_IP_SYMBOLIC option.
+    pub keep_ip_symbolic: bool,
+    /// Populated by `eval_next_addr_concretized` when `keep_ip_symbolic` is
+    /// set and the default exit's `next` expression was symbolic. The
+    /// manager extracts this via `take_symbolic_ip_at_exit()` and writes it
+    /// back to the state's IP register after `set_pc`. None otherwise.
+    pub symbolic_ip_at_exit: Option<RustBV>,
     /// Prefetch cache for batched memory loads.
     /// Key is (address, size), value is the prefetched result.
     /// This is populated at block start and used during Load expression evaluation.
@@ -704,6 +717,8 @@ impl<'a> CallbackInterpreter<'a> {
             use_rust_memory: false,
             lazy_solves: false,
             no_ip_concretization: false,
+            keep_ip_symbolic: false,
+            symbolic_ip_at_exit: None,
             load_prefetch_cache: FxHashMap::default(),
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,   // Prefetch 2 pages in each direction by default
@@ -1542,6 +1557,14 @@ impl<'a> CallbackInterpreter<'a> {
         std::mem::take(&mut self.fork_snapshots)
     }
 
+    /// Take the symbolic IP expression recorded at the most recent default
+    /// exit (set only when `keep_ip_symbolic` is enabled and the exit's `next`
+    /// was symbolic). The internal slot is cleared. Mirrors Python's
+    /// `split_state.regs.ip = target` write at engines/successors.py:328.
+    pub fn take_symbolic_ip_at_exit(&mut self) -> Option<RustBV> {
+        self.symbolic_ip_at_exit.take()
+    }
+
     /// Run the execution loop until an event requires Python handling.
 
     /// Fork the interpreter state.
@@ -1583,6 +1606,8 @@ impl<'a> CallbackInterpreter<'a> {
             use_rust_memory: self.use_rust_memory,
             lazy_solves: self.lazy_solves,
             no_ip_concretization: self.no_ip_concretization,
+            keep_ip_symbolic: self.keep_ip_symbolic,
+            symbolic_ip_at_exit: None,
             load_prefetch_cache: FxHashMap::default(), // Fresh prefetch cache for fork
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count

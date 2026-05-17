@@ -36,6 +36,10 @@ struct InterpreterStepResult {
     recovered_memory: Option<SymbolicMemory>,
     step_stats: ExecutionStats,
     updated_block_cache: LruCache<u64, Arc<IRSB>>,
+    /// Set only when `state.keep_ip_symbolic()` was true and the interpreter
+    /// concretized a symbolic default-exit next-pc. The manager writes this
+    /// back to the state's IP register after `state.set_pc(new_pc)`.
+    symbolic_ip_at_exit: Option<RustBV>,
 }
 
 impl RustExplorationManager {
@@ -89,6 +93,15 @@ impl RustExplorationManager {
         // Restore registers (including symbolic values) from interpreter
         state.set_registers(step.new_registers);
         state.set_pc(step.new_pc);
+        // KEEP_IP_SYMBOLIC: overwrite the IP register (just concretized by
+        // set_pc above) with the original symbolic next-pc expression. The
+        // `state.pc` u64 still points to the concretized address so the next
+        // block lift drives from there, but the IP register reads as the
+        // unpinned symbolic expression — matching Python's
+        // `split_state.regs.ip = target` at engines/successors.py:328.
+        if let Some(sym_ip) = step.symbolic_ip_at_exit {
+            state.set_ip(sym_ip);
+        }
         // Restore call stack and detailed history from interpreter
         state.set_call_stack(step.new_call_stack);
         state.set_detailed_history(step.new_detailed_history);
@@ -649,17 +662,30 @@ impl RustExplorationManager {
             return Err(StepError::Deadended(state));
         }
 
+        // KEEP_IP_SYMBOLIC: mirror engines/successors.py:326-331 — skip the
+        // per-fork `add_constraints(cond)` narrowing and leave each fork's
+        // IP register holding the symbolic `target` expression. The concrete
+        // `addr` still drives the next block lift via `state.pc`.
+        let keep_ip_symbolic = state.keep_ip_symbolic();
+
         if targets.len() == 1 {
             // Single target - just continue
             let mut state = state;
             let addr = targets[0];
             if let Some(ref expr) = target_expr {
-                // Add constraint: target_expr == addr
-                let concrete = RustBV::concrete(addr as u128, expr.width());
-                let constraint = expr.eq(&concrete, &*state.solver().borrow());
-                state.add_constraint(constraint);
+                if keep_ip_symbolic {
+                    state.set_pc(addr);
+                    state.set_ip(expr.clone());
+                } else {
+                    // Add constraint: target_expr == addr
+                    let concrete = RustBV::concrete(addr as u128, expr.width());
+                    let constraint = expr.eq(&concrete, &*state.solver().borrow());
+                    state.add_constraint(constraint);
+                    state.set_pc(addr);
+                }
+            } else {
+                state.set_pc(addr);
             }
-            state.set_pc(addr);
             let mut successors = vec![state];
             self.process_deferred_forks_into(
                 &mut successors,
@@ -690,11 +716,18 @@ impl RustExplorationManager {
         let first_addr = targets[0];
         let mut first_state = state; // Move state into first_state
         if let Some(ref expr) = target_expr {
-            let concrete = RustBV::concrete(first_addr as u128, expr.width());
-            let constraint = expr.eq(&concrete, &*first_state.solver().borrow());
-            first_state.add_constraint(constraint);
+            if keep_ip_symbolic {
+                first_state.set_pc(first_addr);
+                first_state.set_ip(expr.clone());
+            } else {
+                let concrete = RustBV::concrete(first_addr as u128, expr.width());
+                let constraint = expr.eq(&concrete, &*first_state.solver().borrow());
+                first_state.add_constraint(constraint);
+                first_state.set_pc(first_addr);
+            }
+        } else {
+            first_state.set_pc(first_addr);
         }
-        first_state.set_pc(first_addr);
         successors.push(first_state);
 
         // Handle remaining targets - fork from unconstrained base
@@ -703,11 +736,18 @@ impl RustExplorationManager {
 
             // Add constraint: target_expr == addr (only this target's constraint)
             if let Some(ref expr) = target_expr {
-                let concrete = RustBV::concrete(addr as u128, expr.width());
-                let constraint = expr.eq(&concrete, &*forked.solver().borrow());
-                forked.add_constraint(constraint);
+                if keep_ip_symbolic {
+                    forked.set_pc(addr);
+                    forked.set_ip(expr.clone());
+                } else {
+                    let concrete = RustBV::concrete(addr as u128, expr.width());
+                    let constraint = expr.eq(&concrete, &*forked.solver().borrow());
+                    forked.add_constraint(constraint);
+                    forked.set_pc(addr);
+                }
+            } else {
+                forked.set_pc(addr);
             }
-            forked.set_pc(addr);
             // Track root state ID for this forked state
             self.sm.set_root(forked.state_id(), root_state_id);
             successors.push(forked);
@@ -892,6 +932,11 @@ impl RustExplorationManager {
         // Propagate NO_IP_CONCRETIZATION from the state. Unlike lazy_solves
         // which is a manager-level flag, this is a per-state SimOption.
         interp.no_ip_concretization = state.no_ip_concretization();
+        // KEEP_IP_SYMBOLIC: per-state SimOption that tells eval_next_addr_concretized
+        // to stash the original symbolic next-pc expression (for restore via
+        // set_ip after the manager's set_pc) and to skip the
+        // `assume_true(next_val == addr)` narrowing constraint.
+        interp.keep_ip_symbolic = state.keep_ip_symbolic();
         interp.set_profiling(self.profiling.profiling_enabled);
         // Propagate concretization strategy config
         interp.set_concretizer(self.memory_config.concretizer_config.clone());
@@ -977,6 +1022,7 @@ impl RustExplorationManager {
         let last_condition = interp.take_last_branch_condition();
         let stored_conditions = interp.take_stored_conditions();
         let fork_snapshots = interp.take_fork_snapshots();
+        let symbolic_ip_at_exit = interp.take_symbolic_ip_at_exit();
         let new_registers = interp.registers.fork();
         let new_pc = interp.get_pc();
         let new_call_stack = std::mem::take(&mut interp.call_stack);
@@ -1006,6 +1052,7 @@ impl RustExplorationManager {
             recovered_memory,
             step_stats,
             updated_block_cache,
+            symbolic_ip_at_exit,
         }
     }
 

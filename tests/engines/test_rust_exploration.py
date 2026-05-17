@@ -853,6 +853,101 @@ class TestRustExplorationPython:
             "short-circuited enumeration"
         )
 
+    def test_keep_ip_symbolic_propagates_to_rust(self, fauxware_project):
+        """A SimState with KEEP_IP_SYMBOLIC option should flip the Rust
+        state's keep_ip_symbolic flag automatically — mirrors angr-yl5n's
+        propagation test for NO_IP_CONCRETIZATION."""
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # No option → flag stays off.
+        plain_state = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain_state])
+        plain_ids = plain_mgr._rust_mgr.get_state_ids("active")
+        assert plain_ids, "expected an active state to be added"
+        assert plain_mgr._rust_mgr.state_keep_ip_symbolic(plain_ids[0]) is False
+
+        # Option present → flag flips on for the Rust state.
+        kis_state = fauxware_project.factory.entry_state(
+            add_options={o.KEEP_IP_SYMBOLIC}
+        )
+        kis_mgr = RustExplorationManager(fauxware_project, [kis_state])
+        kis_ids = kis_mgr._rust_mgr.get_state_ids("active")
+        assert kis_ids, "expected an active state to be added"
+        assert kis_mgr._rust_mgr.state_keep_ip_symbolic(kis_ids[0]) is True
+
+    def test_keep_ip_symbolic_leaves_ip_register_symbolic_after_fork(self):
+        """With KEEP_IP_SYMBOLIC, after a `jmp rax` against a symbolic rax
+        constrained to a small set of concrete addresses, each forked state's
+        IP register should still hold a symbolic expression (not the
+        concretized value). Mirrors engines/successors.py:326-331's
+        `regs.ip = target` branch which skips `add_constraints(cond)`.
+
+        Without the option, each fork has `rip` pinned to a concrete u64 (the
+        Rust manager API's `get_state_register("rip")` returns Some(value)).
+        With the option, the IP register is symbolic and the API returns None.
+        """
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # AMD64: `ff e0` = jmp rax. Two concrete jump targets are mapped so
+        # the concretizer has somewhere to land (otherwise the jumps go to
+        # unmapped memory and the test exits the Rust path early).
+        shellcode = b"\xff\xe0" + b"\x00" * 0x2000  # pad so 0x2000/0x3000 are in-range
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        def _new_state(*, with_keep):
+            opts = {o.KEEP_IP_SYMBOLIC} if with_keep else set()
+            state = proj.factory.blank_state(addr=0x1000, add_options=opts)
+            sym_target = claripy.BVS("sym_jmp_target", 64)
+            state.regs.rax = sym_target
+            # Restrict rax to two concrete in-range targets so the
+            # concretizer returns Multiple(2) instead of TooMany.
+            state.solver.add(claripy.Or(sym_target == 0x2000, sym_target == 0x2010))
+            return state
+
+        # Use step(1) (exactly one step pass) instead of run(max_steps=1):
+        # run() keeps stepping until termination so each fork would proceed
+        # into the zero-padded region (decoded as add [rax], al) and either
+        # deadend or fall back, washing the forks out of the active stash.
+        # step(1) gives us the post-fork snapshot.
+
+        # --- Baseline: WITHOUT KEEP_IP_SYMBOLIC ---
+        base_mgr = RustExplorationManager(proj, [_new_state(with_keep=False)])
+        base_mgr.step(1)
+        base_ids = base_mgr._rust_mgr.get_state_ids("active")
+        assert len(base_ids) == 2, (
+            f"expected 2 forks for jmp rax over 2 targets, got {len(base_ids)}"
+        )
+        for sid in base_ids:
+            rip = base_mgr._rust_mgr.get_state_register(sid, "rip")
+            assert rip is not None, (
+                "without KEEP_IP_SYMBOLIC, rip should be concretized to a u64"
+            )
+            assert rip in (0x2000, 0x2010), (
+                f"unexpected concretized rip 0x{rip:x}"
+            )
+
+        # --- With KEEP_IP_SYMBOLIC ---
+        kis_mgr = RustExplorationManager(proj, [_new_state(with_keep=True)])
+        kis_mgr.step(1)
+        kis_ids = kis_mgr._rust_mgr.get_state_ids("active")
+        assert len(kis_ids) == 2, (
+            f"expected 2 forks for jmp rax over 2 targets with "
+            f"KEEP_IP_SYMBOLIC, got {len(kis_ids)}"
+        )
+        for sid in kis_ids:
+            rip = kis_mgr._rust_mgr.get_state_register(sid, "rip")
+            assert rip is None, (
+                f"with KEEP_IP_SYMBOLIC, rip must stay symbolic, got "
+                f"concrete 0x{rip:x}"
+            )
+            assert kis_mgr._rust_mgr.state_keep_ip_symbolic(sid) is True, (
+                f"keep_ip_symbolic flag should propagate through fork"
+            )
+
     def test_solver_stats_populated(self, fauxware_project):
         """mgr.get_solver_stats() returns populated counters after exploration.
 

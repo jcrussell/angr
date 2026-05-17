@@ -488,6 +488,10 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.no_ip_concretization()))
     }
 
+    pub(crate) fn _state_keep_ip_symbolic(&self, state_id: u64) -> PyResult<bool> {
+        self.with_state(state_id, |state| Ok(state.keep_ip_symbolic()))
+    }
+
     pub(crate) fn _get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self.with_state(state_id, |state| {
             Ok(state.get_register(name).and_then(|bv| bv.as_u128()))

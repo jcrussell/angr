@@ -1758,6 +1758,15 @@ impl RustExplorationManager {
         self._state_no_ip_concretization(state_id)
     }
 
+    /// Whether KEEP_IP_SYMBOLIC is active on a state.
+    /// When set, the IP register on each post-concretization successor stays
+    /// holding the original symbolic next-pc expression (no `target == addr`
+    /// narrowing constraint is added). The next block lift still drives from
+    /// the concretized `state.pc` value.
+    pub fn state_keep_ip_symbolic(&self, state_id: u64) -> PyResult<bool> {
+        self._state_keep_ip_symbolic(state_id)
+    }
+
     /// Get a register value from a state.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self._get_state_register(state_id, name)
