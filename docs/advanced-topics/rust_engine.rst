@@ -971,8 +971,20 @@ be tracked.
        be the slow mode. See :doc:`rust_bimodal_variance` and
        ``benchmark-google2016-unbreakable-1-regression``.
    * - ``hackcon2016_angry-reverser``
-     - 0.87x
-     - Close to parity, no formal investigation yet.
+     - 0.33x (regressed from 0.87x on 2026-05-09)
+     - 2026-05-17 campaign: 10/10 runs in 28.8–32.5s (median 30.79s,
+       stdev 1.33s) — tight, *not* bimodal. Baseline raised
+       11.722s → 33.0s to track current state. Profiling attributes
+       ~28s/30s wall to a single ``z3_check`` invocation at the final
+       solve (z3_check_count=1, z3_site_eval_count=1) — explore phase
+       runs in 0.5–1s. Root cause is the same Z3 constraint-AST
+       structural mismatch documented in ``hackcon-z3-ast-structure``
+       (Rust solver builds Extract/Reverse subexpressions over the
+       flag BVS that Z3 simplifies less effectively than the
+       Python-built form). The regression between 2026-05-09 (11.7s)
+       and 2026-05-17 (30.6s) is tracked separately — bisecting is
+       out of scope for the characterization task. Python time is
+       unchanged (~10.5s), so the regression is Rust-path-specific.
    * - ``securityfest_fairlight``
      - 0.73x (slow mode)
      - Bimodal; 2026-05-13 campaign measured ~7.95s OR ~21.4s
