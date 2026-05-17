@@ -1,0 +1,4 @@
+#!/bin/sh
+# failure: notified on OOM / rate-limit / dead-session / terminal failure.
+# Env: RALPH_FAILURE_MODE, RALPH_FAILURE_REASON.
+exit 0

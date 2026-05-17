@@ -1,0 +1,6 @@
+#!/bin/sh
+# states/revert/gate: revert is one-shot and ralph does not run an
+# agent during it, so the gate exists only for symmetry. Default no-op.
+# Env: RALPH_REPO RALPH_ITER RALPH_STATE RALPH_PROMPT_FILE
+#      RALPH_ITER_JSON
+exit 0

@@ -1,0 +1,18 @@
+# .ralph/config.toml — rust-symex optimization loop config.
+#
+# Built-in defaults from internal/config.Defaults() already match what the
+# legacy run_optimization_loop.py used: max_iterations=30, session_timeout=3600s,
+# memory_limit=7G, dirty_revert_threshold=3, gate timeout=600s, soft_fail=true,
+# run_when="commits-only". We override only what's different.
+
+[runner]
+# Wrapper script that exports PATH for ~/.cargo/bin and sources .venv before
+# exec-ing claude. Without this, ralph would need to be invoked from an already
+# activated venv every time.
+command = "tools/ralph-claude.sh"
+args    = []
+model   = "opus"
+
+[review]
+# angr defaults to `master`, not `main`.
+base_branch = "master"

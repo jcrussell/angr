@@ -1,0 +1,3 @@
+#!/bin/sh
+# pre-iteration: runs before every iteration. Exit non-zero to skip it.
+exit 0

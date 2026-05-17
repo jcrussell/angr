@@ -1,0 +1,3 @@
+# Everything under .ralph/state/ is runtime state — not version-controlled.
+*
+!.gitignore

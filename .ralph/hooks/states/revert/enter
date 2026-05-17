@@ -1,0 +1,7 @@
+#!/bin/sh
+# states/revert/enter: runs once when the FSM enters the revert state.
+# Revert is a one-shot state; ralph has already reset the working tree
+# before this hook fires. Use it to record the reset (alerts, metrics).
+# Env: RALPH_REPO RALPH_ITER RALPH_STATE RALPH_PREV_STATE
+#      RALPH_PROMPT_FILE RALPH_ITER_JSON
+exit 0

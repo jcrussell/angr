@@ -1,0 +1,4 @@
+#!/bin/sh
+# post-iteration: runs after every iteration. Iteration JSON is on stdin.
+cat >/dev/null
+exit 0

@@ -1,0 +1,5 @@
+#!/bin/sh
+# states/clean/enter: runs once when the FSM enters the clean state.
+# Env: RALPH_REPO RALPH_ITER RALPH_STATE RALPH_PREV_STATE
+#      RALPH_PROMPT_FILE RALPH_ITER_JSON
+exit 0

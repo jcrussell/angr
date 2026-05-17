@@ -209,6 +209,40 @@ Caveats:
 
 Ported from `rust-engine-v2` (176 commits condensed to clean port). Tracked via beads (`bd ready`).
 
+## Autonomous loop (`ralph`)
+
+The optimization loop runs through [`ralph`](https://github.com/jcrussell/ralph)
+(local checkout at `~/repos/ralph`, symlinked to `~/.local/bin/ralph`). Config
+lives in `.ralph/`:
+
+- `.ralph/config.toml` — overrides for the runner wrapper (`tools/ralph-claude.sh`)
+  and the master base branch. All other knobs (max_iterations=30, timeout=3600s,
+  memory=7G, dirty_revert_threshold=3, gate soft_fail, run_when="commits-only")
+  use ralph's built-in defaults.
+- `.ralph/prompts/{_header,_footer,clean,dirty,revert}.md` — per-state agent
+  prompts. `_footer.md` carries the workflow steps, MEMORY SAFETY rules, and
+  key-files map.
+- `.ralph/hooks/states/{clean,dirty}/gate` — benchmark regression check
+  (`tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15`),
+  matching the CI gate. Fires only on iterations that produced commits.
+- `.ralph/state/` — runtime state (FSM, logs, session.md handoff). Gitignored
+  by ralph init.
+
+Common commands:
+
+```bash
+ralph doctor                      # verify prereqs (claude, bd, systemd-run, .ralph/)
+ralph run --once --dry-run        # route + render prompt, skip the runner
+ralph run --once                  # one real iteration
+ralph run                         # autonomous session
+ralph status                      # current FSM state, iter count, cost
+ralph trace <iter>                # drill into one iteration
+ralph hook run states/clean/gate  # standalone gate hook test
+```
+
+The legacy `run_optimization_loop.py` is kept in the repo root during a soak
+period — do not run both simultaneously.
+
 ## Current Status
 
 **Tests:** 389/389 passing (`grep -c 'def test_' tests/engines/test_rust_exploration.py`)

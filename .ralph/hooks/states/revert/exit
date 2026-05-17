@@ -1,0 +1,5 @@
+#!/bin/sh
+# states/revert/exit: runs once when the FSM leaves the revert state.
+# Env: RALPH_REPO RALPH_ITER RALPH_STATE RALPH_PREV_STATE
+#      RALPH_NEXT_STATE RALPH_PROMPT_FILE RALPH_ITER_JSON
+exit 0

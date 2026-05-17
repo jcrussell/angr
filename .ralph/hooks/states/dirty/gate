@@ -1,0 +1,14 @@
+#!/bin/sh
+# states/dirty/gate: same benchmark regression check as clean/gate.
+# The dirty state can still produce commits when the agent salvages prior
+# in-progress work, so the gate must run there too.
+#
+# Env: RALPH_REPO RALPH_ITER RALPH_STATE RALPH_PROMPT_FILE RALPH_ITER_JSON
+
+set -e
+export PATH="$HOME/.cargo/bin:$PATH"
+# shellcheck disable=SC1091
+. /home/ubuntu/repos/angr/.venv/bin/activate
+
+exec python tests/benchmarks/run_regression.py \
+    --rust-only --skip-bimodal --threshold 0.15
