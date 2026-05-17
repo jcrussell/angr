@@ -579,13 +579,24 @@ class RustStateSyncMixin:
                 try:
                     concrete = bytes(page_obj.concrete_load(0, page_size))
                     if len(concrete) == page_size:
-                        # angr-7vcx: map even all-zero pages. Dropping zero
-                        # pages here silently de-maps user `map_region` calls
-                        # — Rust then faults on the first store and the
-                        # value is lost in flush_stores' Unmapped path.
-                        # Stack region gets RW, others RWX
+                        # angr-7vcx: must record the mapping even for
+                        # all-zero pages, otherwise user `map_region` calls
+                        # silently disappear and Rust faults on the first
+                        # store. Stack region gets RW, others RWX.
+                        #
+                        # angr-9maq: but skip the eager `map_memory_data`
+                        # allocation when the page is all-zero — only mark
+                        # it as lazy. Without this, Callable-heavy workloads
+                        # (mma_howtouse: 45 short-lived states, each with
+                        # thousands of ZERO_FILL/SYMBOL_FILL filler pages)
+                        # eagerly allocate a 4KB buffer per page per state,
+                        # blowing peak memory from 286MB to 1.9GB and per-
+                        # call time from 0.15s to 1.9s. Stores still work
+                        # because `store_concrete_automap_internal` auto-
+                        # maps pages in lazy regions on first write.
                         perms = 6 if stack_start <= page_addr < stack_base else 7
-                        rust_state.map_memory_data(page_addr, concrete, perms)
+                        if any(concrete):
+                            rust_state.map_memory_data(page_addr, concrete, perms)
                         rust_state.add_lazy_region(page_addr, page_size)
                         extra_pages_synced += 1
                 except Exception:
