@@ -21,8 +21,9 @@ Overview
 
 * **Honored options:** ``LAZY_SOLVES``, ``ZERO_FILL_UNCONSTRAINED_MEMORY``,
   ``APPROXIMATE_MEMORY_INDICES``, ``SYMBOLIC_WRITE_ADDRESSES``,
-  ``STRICT_PAGE_ACCESS``, ``ENABLE_NX``. Everything else is either
-  inherited from Python or silently ignored — see the matrix below.
+  ``STRICT_PAGE_ACCESS``, ``ENABLE_NX``, ``NO_IP_CONCRETIZATION``.
+  Everything else is either inherited from Python or silently ignored —
+  see the matrix below.
 * **No** ``state.inspect`` **dispatch.** Registration raises
   ``NotImplementedError``. Use the Python engine for breakpoint-driven
   analyses.
@@ -311,6 +312,16 @@ Honored options
        ``CallbackInterpreter::get_or_lift_block``. Matches Python: the X
        check fires only when ``ENABLE_NX`` AND ``STRICT_PAGE_ACCESS`` are
        both set (``angr/engines/vex/heavy/heavy.py:115-124``).
+   * - ``NO_IP_CONCRETIZATION``
+     - ``rust_manager.py::_add_rust_state`` (also propagated through
+       ``_apply_state_metadata`` on cache reuse)
+     - Calls ``RustSimState::set_no_ip_concretization(True)``; at block
+       boundaries with a symbolic jump target the state routes to the
+       ``unconstrained`` stash silently instead of being enumerated. The
+       check fires inside ``CallbackInterpreter::eval_next_addr_concretized``
+       (``native/angr/src/interpreter_cb/exits.rs``). Matches Python's
+       ``engines/successors.py:292-296`` behavior
+       (``max_targets=0`` with ``skip_max_targets_warning=True``).
 
 Inherited (option works because the code path runs in Python)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -464,7 +475,8 @@ vs. Python.
        symbolic-IP support is a real gap.
    * - ``NO_IP_CONCRETIZATION``
      - Aborts on symbolic IP instead of concretizing.
-     - **(a) implement** — same gap as above, opposite direction.
+     - **Honored** as of 2026-05-17 (angr-yl5n) — see the table above.
+       Symbolic IPs route silently to the ``unconstrained`` stash.
    * - ``ENABLE_NX``
      - Raises on execution from non-X pages.
      - **Honored** as of 2026-05-17 (angr-dcva) — see the table above.

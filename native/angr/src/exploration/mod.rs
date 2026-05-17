@@ -1751,6 +1751,13 @@ impl RustExplorationManager {
         self._state_enforce_nx(state_id)
     }
 
+    /// Whether NO_IP_CONCRETIZATION is active on a state.
+    /// When set, symbolic jump targets short-circuit to the unconstrained
+    /// stash without enumeration.
+    pub fn state_no_ip_concretization(&self, state_id: u64) -> PyResult<bool> {
+        self._state_no_ip_concretization(state_id)
+    }
+
     /// Get a register value from a state.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self._get_state_register(state_id, name)

@@ -53,6 +53,18 @@ impl<'a> CallbackInterpreter<'a> {
             }
         }
 
+        // NO_IP_CONCRETIZATION (engines/successors.py:292-296): suppress
+        // enumeration of symbolic jump targets — route the state straight to
+        // the unconstrained stash without a warning. Mirrors Python's
+        // skip_max_targets_warning=True + max_targets=0 behavior.
+        if self.no_ip_concretization {
+            return Ok(ConcretizedJump::TooMany {
+                min: 0,
+                max: 0,
+                limit: 0,
+            });
+        }
+
         // ITE fast path: extract concrete targets from nested ITE chains
         // without solver queries. Pattern: if(c1, addr1, if(c2, addr2, ...))
         if let Some(targets) = extract_ite_targets(&next_val, self.config.max_symbolic_ip_targets) {

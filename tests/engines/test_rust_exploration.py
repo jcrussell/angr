@@ -799,6 +799,60 @@ class TestRustExplorationPython:
         assert nx_ids, "expected an active state to be added"
         assert nx_mgr._rust_mgr.state_enforce_nx(nx_ids[0]) is True
 
+    def test_no_ip_concretization_propagates_to_rust(self, fauxware_project):
+        """A SimState with NO_IP_CONCRETIZATION option should flip the
+        Rust state's no_ip_concretization flag automatically."""
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # No option → flag stays off.
+        plain_state = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain_state])
+        plain_ids = plain_mgr._rust_mgr.get_state_ids("active")
+        assert plain_ids, "expected an active state to be added"
+        assert plain_mgr._rust_mgr.state_no_ip_concretization(plain_ids[0]) is False
+
+        # Option present → flag flips on for the Rust state.
+        nic_state = fauxware_project.factory.entry_state(
+            add_options={o.NO_IP_CONCRETIZATION}
+        )
+        nic_mgr = RustExplorationManager(fauxware_project, [nic_state])
+        nic_ids = nic_mgr._rust_mgr.get_state_ids("active")
+        assert nic_ids, "expected an active state to be added"
+        assert nic_mgr._rust_mgr.state_no_ip_concretization(nic_ids[0]) is True
+
+    def test_no_ip_concretization_routes_symbolic_jump_to_unconstrained(self):
+        """With NO_IP_CONCRETIZATION, a `jmp rax` against a symbolic rax must
+        skip enumeration and land the state in the `unconstrained` stash —
+        matches engines/successors.py:292-296 (max_targets=0, no warning)."""
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
+        # symbolic-IP path would normally enumerate concretizations; with
+        # NO_IP_CONCRETIZATION it pushes one unconstrained successor instead.
+        proj = angr.load_shellcode(b"\xff\xe0", arch="AMD64", load_address=0x1000)
+        state = proj.factory.blank_state(
+            addr=0x1000,
+            add_options={o.NO_IP_CONCRETIZATION},
+        )
+        state.regs.rax = claripy.BVS("sym_jmp_target", 64)
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=2)
+
+        # State lands in unconstrained, not enumerated into many active forks.
+        assert len(mgr.unconstrained) == 1, (
+            f"expected 1 unconstrained state with NO_IP_CONCRETIZATION, "
+            f"got stashes={ {k: len(v) for k, v in mgr.stashes.items() if v} }"
+        )
+        # Active stash should not have forked into many enumerated targets.
+        assert len(mgr.active) == 0, (
+            "active stash must be empty — NO_IP_CONCRETIZATION should have "
+            "short-circuited enumeration"
+        )
+
     def test_solver_stats_populated(self, fauxware_project):
         """mgr.get_solver_stats() returns populated counters after exploration.
 

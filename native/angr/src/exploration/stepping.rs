@@ -889,6 +889,9 @@ impl RustExplorationManager {
 
         // Propagate lazy_solves to skip Z3 feasibility checks
         interp.lazy_solves = self.constraint_solver.lazy_solves;
+        // Propagate NO_IP_CONCRETIZATION from the state. Unlike lazy_solves
+        // which is a manager-level flag, this is a per-state SimOption.
+        interp.no_ip_concretization = state.no_ip_concretization();
         interp.set_profiling(self.profiling.profiling_enabled);
         // Propagate concretization strategy config
         interp.set_concretizer(self.memory_config.concretizer_config.clone());

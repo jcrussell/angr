@@ -584,6 +584,11 @@ pub struct CallbackInterpreter<'a> {
     /// When true, skip Z3 feasibility checks during deferred fork creation.
     /// This mirrors angr's LAZY_SOLVES option for binaries with expensive constraints.
     pub lazy_solves: bool,
+    /// When true, do not enumerate symbolic jump targets — short-circuit the
+    /// IP-concretization path to UnconstrainedJump (state goes to the
+    /// unconstrained stash without warning). Mirrors angr's
+    /// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
+    pub no_ip_concretization: bool,
     /// Prefetch cache for batched memory loads.
     /// Key is (address, size), value is the prefetched result.
     /// This is populated at block start and used during Load expression evaluation.
@@ -698,6 +703,7 @@ impl<'a> CallbackInterpreter<'a> {
             rust_memory: None,
             use_rust_memory: false,
             lazy_solves: false,
+            no_ip_concretization: false,
             load_prefetch_cache: FxHashMap::default(),
             use_load_prefetch: false, // Disabled by default - adds overhead for most workloads
             page_prefetch_count: 2,   // Prefetch 2 pages in each direction by default
@@ -1576,6 +1582,7 @@ impl<'a> CallbackInterpreter<'a> {
             rust_memory: self.rust_memory.as_ref().map(|m| m.fork()),
             use_rust_memory: self.use_rust_memory,
             lazy_solves: self.lazy_solves,
+            no_ip_concretization: self.no_ip_concretization,
             load_prefetch_cache: FxHashMap::default(), // Fresh prefetch cache for fork
             use_load_prefetch: self.use_load_prefetch,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count

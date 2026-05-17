@@ -484,6 +484,10 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.enforce_nx()))
     }
 
+    pub(crate) fn _state_no_ip_concretization(&self, state_id: u64) -> PyResult<bool> {
+        self.with_state(state_id, |state| Ok(state.no_ip_concretization()))
+    }
+
     pub(crate) fn _get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self.with_state(state_id, |state| {
             Ok(state.get_register(name).and_then(|bv| bv.as_u128()))

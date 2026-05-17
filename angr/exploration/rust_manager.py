@@ -2342,7 +2342,7 @@ class RustExplorationManager(
     def _apply_state_metadata(self, src_state: "angr.SimState",
                               dst_state: "angr.SimState") -> None:
         """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS /
-        ENABLE_NX options from src to dst.
+        ENABLE_NX / NO_IP_CONCRETIZATION options from src to dst.
 
         Options are mirrored — added when src has them, removed when src
         doesn't. The remove half matters for the in-memory init cache: a
@@ -2350,7 +2350,8 @@ class RustExplorationManager(
         same binary would otherwise leak that option to a subsequent caller
         that didn't request it (and downstream `set_enforce_permissions(True)`
         would then surface spurious permission errors). Same reasoning for
-        ENABLE_NX → `set_enforce_nx(True)`.
+        ENABLE_NX → `set_enforce_nx(True)` and NO_IP_CONCRETIZATION →
+        `set_no_ip_concretization(True)`.
         """
         for c in src_state.solver.constraints:
             dst_state.solver.add(c)
@@ -2359,7 +2360,12 @@ class RustExplorationManager(
                 dst_state.globals[k] = v
         try:
             from angr import sim_options as o
-            for opt in (o.LAZY_SOLVES, o.STRICT_PAGE_ACCESS, o.ENABLE_NX):
+            for opt in (
+                o.LAZY_SOLVES,
+                o.STRICT_PAGE_ACCESS,
+                o.ENABLE_NX,
+                o.NO_IP_CONCRETIZATION,
+            ):
                 if opt in src_state.options:
                     dst_state.options.add(opt)
                 else:
@@ -2636,11 +2642,14 @@ class RustExplorationManager(
                     rust_state.set_enforce_permissions(True)
                 if o.ENABLE_NX in angr_state.options:
                     rust_state.set_enforce_nx(True)
+                if o.NO_IP_CONCRETIZATION in angr_state.options:
+                    rust_state.set_no_ip_concretization(True)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: option detection failed; Rust
-                # permission/NX enforcement stays off — accesses that Python
-                # would reject are silently allowed. Debug-logs.
-                l.debug(f"STRICT_PAGE_ACCESS / ENABLE_NX detection failed: {e}")
+                # permission/NX enforcement and IP-concretization gating stay
+                # off — accesses/jumps that Python would handle differently
+                # are silently allowed/concretized. Debug-logs.
+                l.debug(f"STRICT_PAGE_ACCESS / ENABLE_NX / NO_IP_CONCRETIZATION detection failed: {e}")
 
             self._check_raise_options(angr_state.options)
             self._warn_rejected_options(angr_state.options)

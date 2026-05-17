@@ -777,6 +777,11 @@ pub struct RustSimState {
     /// to be monotonic (`new >= prev`). Cloned on fork; not synced across the
     /// Python boundary today (same drift class as `posix_brk` / `mmap_base`).
     last_time: Option<RustBV>,
+    /// Mirrors angr's NO_IP_CONCRETIZATION SimOption. When true, symbolic
+    /// jump targets are NOT enumerated via solver — the state routes to the
+    /// unconstrained stash without warning. See engines/successors.py:292-296.
+    /// Cloned on fork.
+    no_ip_concretization: bool,
 }
 
 impl RustSimState {
@@ -828,6 +833,7 @@ impl RustSimState {
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
             last_time: None,
+            no_ip_concretization: false,
         })
     }
 
@@ -868,6 +874,7 @@ impl RustSimState {
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
             last_time: None,
+            no_ip_concretization: false,
         }
     }
 
@@ -918,6 +925,7 @@ impl RustSimState {
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
             last_time: None,
+            no_ip_concretization: false,
         })
     }
 
@@ -1354,6 +1362,19 @@ impl RustSimState {
         self.memory.enforce_nx()
     }
 
+    /// Enable or disable IP concretization at block boundaries.
+    /// Mirrors angr's NO_IP_CONCRETIZATION option. When true, a symbolic jump
+    /// target routes the state to the unconstrained stash without warning
+    /// (matches engines/successors.py:292-296). Default off.
+    pub fn set_no_ip_concretization(&mut self, enabled: bool) {
+        self.no_ip_concretization = enabled;
+    }
+
+    /// Whether IP concretization is suppressed for symbolic jump targets.
+    pub fn no_ip_concretization(&self) -> bool {
+        self.no_ip_concretization
+    }
+
     /// Map memory with initial data.
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
         self.memory.map_data(addr, data, permissions);
@@ -1605,6 +1626,7 @@ impl RustSimState {
             hook_symbolic_memory,
             addr_to_ast,
             last_time: self.last_time.clone(),
+            no_ip_concretization: self.no_ip_concretization,
         }
     }
 
@@ -1641,6 +1663,7 @@ impl RustSimState {
             hook_symbolic_memory,
             addr_to_ast,
             last_time: self.last_time.clone(),
+            no_ip_concretization: self.no_ip_concretization,
         }
     }
 
@@ -1677,6 +1700,7 @@ impl RustSimState {
             hook_symbolic_memory,
             addr_to_ast,
             last_time: self.last_time.clone(),
+            no_ip_concretization: self.no_ip_concretization,
         }
     }
 
@@ -1721,6 +1745,7 @@ impl RustSimState {
             hook_symbolic_memory,
             addr_to_ast,
             last_time: self.last_time.clone(),
+            no_ip_concretization: self.no_ip_concretization,
         }
     }
 
@@ -1813,6 +1838,7 @@ impl RustSimState {
             hook_symbolic_memory,
             addr_to_ast,
             last_time: self.last_time.clone(),
+            no_ip_concretization: self.no_ip_concretization,
         }
     }
 
@@ -2134,6 +2160,21 @@ impl PyRustSimState {
     #[pyo3(name = "enforce_nx")]
     pub fn py_enforce_nx(&self) -> bool {
         self.inner.enforce_nx()
+    }
+
+    /// Suppress IP concretization for symbolic jump targets.
+    /// Mirrors angr's NO_IP_CONCRETIZATION option. When set, a symbolic IP
+    /// at block boundary routes the state to the unconstrained stash
+    /// silently instead of being enumerated. Default off.
+    #[pyo3(name = "set_no_ip_concretization")]
+    pub fn py_set_no_ip_concretization(&mut self, enabled: bool) {
+        self.inner.set_no_ip_concretization(enabled);
+    }
+
+    /// Whether NO_IP_CONCRETIZATION is active on this state.
+    #[pyo3(name = "no_ip_concretization")]
+    pub fn py_no_ip_concretization(&self) -> bool {
+        self.inner.no_ip_concretization()
     }
 
     /// Load from memory.
