@@ -46,6 +46,11 @@ impl RustExplorationManager {
             "simprocedure_python_fallback_count",
             self.simprocedure_python_fallback_count,
         )?;
+        let fallback_by_name = PyDict::new(py);
+        for (name, count) in &self.simprocedure_fallback_by_name {
+            fallback_by_name.set_item(name, *count)?;
+        }
+        dict.set_item("simprocedure_fallback_by_name", fallback_by_name)?;
         dict.set_item(
             "syscall_python_fallback_count",
             self.syscall_python_fallback_count,
@@ -66,6 +71,11 @@ impl RustExplorationManager {
             "simprocedure_python_fallback_count",
             self.simprocedure_python_fallback_count,
         )?;
+        let fallback_by_name = PyDict::new(py);
+        for (name, count) in &self.simprocedure_fallback_by_name {
+            fallback_by_name.set_item(name, *count)?;
+        }
+        dict.set_item("simprocedure_fallback_by_name", fallback_by_name)?;
         dict.set_item(
             "syscall_python_fallback_count",
             self.syscall_python_fallback_count,

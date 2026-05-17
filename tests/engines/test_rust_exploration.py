@@ -146,6 +146,20 @@ class TestRustExplorationManagerUnit:
         assert fb["simprocedure_python_fallback_count"] == 0
         assert fb["syscall_python_fallback_count"] == 0
 
+    def test_simprocedure_fallback_by_name_empty(self):
+        """angr-97l8: simprocedure_fallback_by_name is an empty dict on a
+        fresh manager and is exposed via both stats() and get_fallback_stats().
+        """
+        mgr = _RustExplorationManager("amd64")
+
+        stats = mgr.stats()
+        assert "simprocedure_fallback_by_name" in stats
+        assert stats["simprocedure_fallback_by_name"] == {}
+
+        fb = mgr.get_fallback_stats()
+        assert "simprocedure_fallback_by_name" in fb
+        assert fb["simprocedure_fallback_by_name"] == {}
+
     def test_add_rust_state(self):
         """Test adding an existing RustSimState."""
         mgr = _RustExplorationManager("amd64")
@@ -438,6 +452,20 @@ class TestRustExplorationManagerUnit:
             f"expected need_callback (SimProcedure fallback); got {event.event_type}"
         )
         assert event.callback_reason == "simprocedure"
+
+        # angr-97l8: the by-name fallback map must record the procedure
+        # under its registered name so users can see which procedures need
+        # native handlers.
+        mgr_stats = mgr.stats()
+        by_name = mgr_stats["simprocedure_fallback_by_name"]
+        assert by_name.get("sym_proc", 0) >= 1, (
+            f"simprocedure_fallback_by_name should record 'sym_proc' fallback; "
+            f"got {by_name}"
+        )
+        assert sum(by_name.values()) == mgr_stats["simprocedure_python_fallback_count"], (
+            f"sum of by-name counts must equal scalar fallback counter; "
+            f"by_name={by_name} scalar={mgr_stats['simprocedure_python_fallback_count']}"
+        )
 
     def test_python_procedure_num_args_truncates_at_registered_count(self):
         """The dispatcher extracts exactly `num_args` values from the calling

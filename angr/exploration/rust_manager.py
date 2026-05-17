@@ -1078,6 +1078,11 @@ class RustExplorationManager(
         if fb:
             lines.append("Fallback counters:")
             lines.append(f"  SimProcedure -> Python: {fb.get('simprocedure_python_fallback_count', 0)}")
+            by_name = fb.get('simprocedure_fallback_by_name', {}) or {}
+            if by_name:
+                top = sorted(by_name.items(), key=lambda kv: -kv[1])[:10]
+                for pname, pcount in top:
+                    lines.append(f"    {pname}: {pcount}")
             lines.append(f"  Syscall -> Python: {fb.get('syscall_python_fallback_count', 0)}")
             lines.append(f"  Dirty call -> Python: {fb.get('rust_python_dirty_call_count', 0)}")
             lines.append(f"  VEX op fallback (silent): {fb.get('rust_python_vex_op_fallback_count', 0)}")

@@ -595,6 +595,10 @@ impl RustExplorationManager {
         } else {
             // Fall through to Python callback
             self.simprocedure_python_fallback_count += 1;
+            *self
+                .simprocedure_fallback_by_name
+                .entry(name.clone())
+                .or_insert(0) += 1;
             state.set_pc(addr);
             state.add_to_history(addr);
             // Only snapshot if deferred forks need it

@@ -303,6 +303,10 @@ impl RustExplorationManager {
 
                     // Fall back to Python for SimProcedure execution
                     self.simprocedure_python_fallback_count += 1;
+                    *self
+                        .simprocedure_fallback_by_name
+                        .entry(name.clone())
+                        .or_insert(0) += 1;
                     let state_id = state.state_id();
                     let return_addr = self.get_return_addr(&state).unwrap_or(0);
 

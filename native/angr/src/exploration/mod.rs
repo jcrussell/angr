@@ -409,6 +409,12 @@ pub struct RustExplorationManager {
     /// via `stats()` so a regression that flips a hot procedure off the
     /// native path is visible without rebuilding.
     pub(crate) simprocedure_python_fallback_count: u64,
+    /// Per-procedure breakdown of `simprocedure_python_fallback_count`. Keyed
+    /// by the SimProcedure name (as registered via `add_simprocedure`).
+    /// Surfaced via `stats()` and `get_fallback_stats()` under
+    /// `simprocedure_fallback_by_name` so we can see which native procedures
+    /// to implement next without running a separate profiling pass.
+    pub(crate) simprocedure_fallback_by_name: HashMap<String, u64>,
     /// Total count of syscalls dispatched to the Python
     /// `_handle_syscall_callback` (rather than handled by `NativeSyscall`).
     /// Includes: no native handler registered for (arch, num) and native
@@ -484,6 +490,7 @@ impl RustExplorationManager {
             vex_fallback_addrs: HashMap::new(),
             dcas_unsupported_count: 0,
             simprocedure_python_fallback_count: 0,
+            simprocedure_fallback_by_name: HashMap::new(),
             syscall_python_fallback_count: 0,
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
