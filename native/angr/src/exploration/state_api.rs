@@ -480,6 +480,10 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.enforce_permissions()))
     }
 
+    pub(crate) fn _state_enforce_nx(&self, state_id: u64) -> PyResult<bool> {
+        self.with_state(state_id, |state| Ok(state.enforce_nx()))
+    }
+
     pub(crate) fn _get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self.with_state(state_id, |state| {
             Ok(state.get_register(name).and_then(|bv| bv.as_u128()))

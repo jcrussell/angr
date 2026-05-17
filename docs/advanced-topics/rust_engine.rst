@@ -21,8 +21,8 @@ Overview
 
 * **Honored options:** ``LAZY_SOLVES``, ``ZERO_FILL_UNCONSTRAINED_MEMORY``,
   ``APPROXIMATE_MEMORY_INDICES``, ``SYMBOLIC_WRITE_ADDRESSES``,
-  ``STRICT_PAGE_ACCESS``. Everything else is either inherited from
-  Python or silently ignored — see the matrix below.
+  ``STRICT_PAGE_ACCESS``, ``ENABLE_NX``. Everything else is either
+  inherited from Python or silently ignored — see the matrix below.
 * **No** ``state.inspect`` **dispatch.** Registration raises
   ``NotImplementedError``. Use the Python engine for breakpoint-driven
   analyses.
@@ -303,6 +303,14 @@ Honored options
      - Calls ``RustSimState::set_enforce_permissions(True)``; loads/stores
        violating per-page R/W bits raise ``SimSegfaultError``. Preserved
        across forks via ``SymbolicMemory::fork``.
+   * - ``ENABLE_NX``
+     - ``rust_manager.py::_add_rust_state`` (also propagated through
+       ``_apply_state_metadata`` on cache reuse)
+     - Calls ``RustSimState::set_enforce_nx(True)``; instruction fetches
+       from mapped non-X pages raise ``SimSegfaultError`` at
+       ``CallbackInterpreter::get_or_lift_block``. Matches Python: the X
+       check fires only when ``ENABLE_NX`` AND ``STRICT_PAGE_ACCESS`` are
+       both set (``angr/engines/vex/heavy/heavy.py:115-124``).
 
 Inherited (option works because the code path runs in Python)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -459,8 +467,8 @@ vs. Python.
      - **(a) implement** — same gap as above, opposite direction.
    * - ``ENABLE_NX``
      - Raises on execution from non-X pages.
-     - (a) implement — Rust does not consult page X-bits during
-       instruction fetch.
+     - **Honored** as of 2026-05-17 (angr-dcva) — see the table above.
+       Gated on ``STRICT_PAGE_ACCESS`` in addition, matching Python.
    * - ``NO_SYMBOLIC_JUMP_RESOLUTION``
      - Suppresses symbolic-jump enumeration.
      - (a) implement — Rust resolves symbolic jumps differently and may

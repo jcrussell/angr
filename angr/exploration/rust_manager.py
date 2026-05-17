@@ -2341,15 +2341,16 @@ class RustExplorationManager(
 
     def _apply_state_metadata(self, src_state: "angr.SimState",
                               dst_state: "angr.SimState") -> None:
-        """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS
-        options from src to dst.
+        """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS /
+        ENABLE_NX options from src to dst.
 
-        Both options are mirrored — added when src has them, removed when src
+        Options are mirrored — added when src has them, removed when src
         doesn't. The remove half matters for the in-memory init cache: a
         cached state populated from a prior STRICT_PAGE_ACCESS run on the
         same binary would otherwise leak that option to a subsequent caller
         that didn't request it (and downstream `set_enforce_permissions(True)`
-        would then surface spurious permission errors).
+        would then surface spurious permission errors). Same reasoning for
+        ENABLE_NX → `set_enforce_nx(True)`.
         """
         for c in src_state.solver.constraints:
             dst_state.solver.add(c)
@@ -2358,7 +2359,7 @@ class RustExplorationManager(
                 dst_state.globals[k] = v
         try:
             from angr import sim_options as o
-            for opt in (o.LAZY_SOLVES, o.STRICT_PAGE_ACCESS):
+            for opt in (o.LAZY_SOLVES, o.STRICT_PAGE_ACCESS, o.ENABLE_NX):
                 if opt in src_state.options:
                     dst_state.options.add(opt)
                 else:
@@ -2621,20 +2622,25 @@ class RustExplorationManager(
         self._sync_memory_to_rust(angr_state, rust_state)
         self._perf_stats.add_init_phase('memory_sync', time.perf_counter_ns() - _t_mem)
 
-        # Mirror angr's STRICT_PAGE_ACCESS: when set on the SimState, the Rust
-        # memory model rejects loads/stores that violate per-page R/W bits.
-        # add_state forks the state internally; the flag is preserved through
-        # forks (see SymbolicMemory::fork in native/angr/src/memory.rs).
+        # Mirror angr's STRICT_PAGE_ACCESS and ENABLE_NX: when set on the
+        # SimState, the Rust memory model rejects loads/stores that violate
+        # per-page R/W bits (STRICT_PAGE_ACCESS) and instruction fetches from
+        # non-X pages (ENABLE_NX, which Python additionally gates on
+        # STRICT_PAGE_ACCESS — see angr/engines/vex/heavy/heavy.py:115-124).
+        # add_state forks the state internally; both flags are preserved
+        # through forks (see SymbolicMemory::fork in native/angr/src/memory/mod.rs).
         if hasattr(angr_state, 'options'):
             try:
                 from angr import sim_options as o
                 if o.STRICT_PAGE_ACCESS in angr_state.options:
                     rust_state.set_enforce_permissions(True)
+                if o.ENABLE_NX in angr_state.options:
+                    rust_state.set_enforce_nx(True)
             except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: STRICT_PAGE_ACCESS detection failed;
-                # Rust permission enforcement stays off — accesses that Python
+                # cat-(b) FALLBACK WITH LOSS: option detection failed; Rust
+                # permission/NX enforcement stays off — accesses that Python
                 # would reject are silently allowed. Debug-logs.
-                l.debug(f"STRICT_PAGE_ACCESS detection failed: {e}")
+                l.debug(f"STRICT_PAGE_ACCESS / ENABLE_NX detection failed: {e}")
 
             self._check_raise_options(angr_state.options)
             self._warn_rejected_options(angr_state.options)

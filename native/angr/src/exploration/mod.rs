@@ -1745,6 +1745,12 @@ impl RustExplorationManager {
         self._state_enforce_permissions(state_id)
     }
 
+    /// Whether non-executable page enforcement is enabled on a state.
+    /// Mirrors angr's ENABLE_NX option.
+    pub fn state_enforce_nx(&self, state_id: u64) -> PyResult<bool> {
+        self._state_enforce_nx(state_id)
+    }
+
     /// Get a register value from a state.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self._get_state_register(state_id, name)

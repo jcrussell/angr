@@ -1341,6 +1341,19 @@ impl RustSimState {
         self.memory.enforce_permissions()
     }
 
+    /// Enable or disable non-executable page enforcement on instruction fetch.
+    /// Mirrors angr's ENABLE_NX option. The X check fires only when this AND
+    /// `enforce_permissions` (STRICT_PAGE_ACCESS) are both on, matching
+    /// Python's heavy VEX engine.
+    pub fn set_enforce_nx(&mut self, enabled: bool) {
+        self.memory.set_enforce_nx(enabled);
+    }
+
+    /// Whether non-executable page enforcement is enabled.
+    pub fn enforce_nx(&self) -> bool {
+        self.memory.enforce_nx()
+    }
+
     /// Map memory with initial data.
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
         self.memory.map_data(addr, data, permissions);
@@ -2107,6 +2120,20 @@ impl PyRustSimState {
     #[pyo3(name = "enforce_permissions")]
     pub fn py_enforce_permissions(&self) -> bool {
         self.inner.enforce_permissions()
+    }
+
+    /// Enable or disable non-executable page enforcement on instruction fetch.
+    /// Mirrors angr's ENABLE_NX option. The X check fires only when this and
+    /// `enforce_permissions` are both on. Default off.
+    #[pyo3(name = "set_enforce_nx")]
+    pub fn py_set_enforce_nx(&mut self, enabled: bool) {
+        self.inner.set_enforce_nx(enabled);
+    }
+
+    /// Whether non-executable page enforcement is enabled.
+    #[pyo3(name = "enforce_nx")]
+    pub fn py_enforce_nx(&self) -> bool {
+        self.inner.enforce_nx()
     }
 
     /// Load from memory.

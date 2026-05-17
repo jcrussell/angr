@@ -127,6 +127,12 @@ pub struct SymbolicMemory {
     /// callers (which often map all memory as RWX or rely on Python perms)
     /// working unchanged.
     enforce_permissions: bool,
+    /// If true (and `enforce_permissions` is also true), reject instruction
+    /// fetches from mapped pages without the X bit. Mirrors angr's ENABLE_NX
+    /// option: Python's heavy VEX engine only fires the non-executable check
+    /// when BOTH STRICT_PAGE_ACCESS and ENABLE_NX are in state.options
+    /// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
+    enforce_nx: bool,
     /// Per-byte monotonic version counter for Multi cells. Bumped on every
     /// `set_multi_alternatives` and `clear_multi_at` so the Phase 4.1
     /// wider-load cache (`wider_load_cache`) can detect any installation
@@ -202,6 +208,7 @@ impl SymbolicMemory {
             zero_fill_unconstrained: false,
             imported_addrs: FxHashSet::default(),
             enforce_permissions: false,
+            enforce_nx: false,
             multi_versions: FxHashMap::default(),
             wider_load_cache: RefCell::new(FxHashMap::default()),
         }
@@ -298,13 +305,28 @@ impl SymbolicMemory {
         self.enforce_permissions
     }
 
+    /// Enable or disable non-executable page enforcement on instruction
+    /// fetch. Mirrors angr's ENABLE_NX option. The X check only fires when
+    /// BOTH `enforce_permissions` (STRICT_PAGE_ACCESS) and `enforce_nx`
+    /// (ENABLE_NX) are on, matching Python's heavy VEX engine semantics.
+    pub fn set_enforce_nx(&mut self, enabled: bool) {
+        self.enforce_nx = enabled;
+    }
+
+    /// Whether non-executable page enforcement is enabled.
+    pub fn enforce_nx(&self) -> bool {
+        self.enforce_nx
+    }
+
     /// Check that the page containing `addr` carries execute permission.
-    /// No-op if `enforce_permissions` is false. If the page is unmapped we
-    /// return Ok so the caller can fall back to its existing lift paths
+    /// No-op unless BOTH `enforce_permissions` and `enforce_nx` are true
+    /// (matches Python: STRICT_PAGE_ACCESS gates the permissions lookup,
+    /// ENABLE_NX gates raising on non-executable). If the page is unmapped
+    /// we return Ok so the caller can fall back to its existing lift paths
     /// (native libpyvex region / Python lift_block callback) — only mapped
     /// pages without the X bit produce a `Permission` error here.
     pub fn check_executable(&self, addr: u64) -> Result<(), MemoryError> {
-        if !self.enforce_permissions {
+        if !self.enforce_permissions || !self.enforce_nx {
             return Ok(());
         }
         let page_num = addr >> 12;
@@ -487,6 +509,7 @@ impl SymbolicMemory {
             zero_fill_unconstrained: self.zero_fill_unconstrained,
             imported_addrs: self.imported_addrs.clone(),
             enforce_permissions: self.enforce_permissions,
+            enforce_nx: self.enforce_nx,
             multi_versions: self.multi_versions.clone(),
             // Cloning the cache is cheap (Arc-refcounted BVs) and lets the
             // child reuse parent loads until the first divergent store.

@@ -706,9 +706,11 @@ class TestRustExplorationPython:
 
     def test_strict_page_access_blocks_nx_block_fetch(self):
         """Fetching a basic block from a mapped non-executable page must
-        surface as a permission error (state lands in `errored`) when
-        enforce_permissions is on. Lift callback must NOT be invoked at
-        the NX address — the check fires before lifting."""
+        surface as a permission error (state lands in `errored`) when BOTH
+        enforce_permissions and enforce_nx are on. Lift callback must NOT
+        be invoked at the NX address — the check fires before lifting.
+        Matches Python heavy VEX engine, which only raises non-executable
+        when STRICT_PAGE_ACCESS AND ENABLE_NX are both set."""
         from angr.rustylib.vex_engine import PythonCallbacks
 
         mgr = _RustExplorationManager("amd64")
@@ -724,6 +726,7 @@ class TestRustExplorationPython:
 
         state = RustSimState("amd64")
         state.set_enforce_permissions(True)
+        state.set_enforce_nx(True)
         state.map_memory(0x1000, 0x1000, 6)  # RW, no X
         state.pc = 0x1000
         mgr.add_state("active", state)
@@ -737,6 +740,64 @@ class TestRustExplorationPython:
         assert 0x1000 not in lift_addrs, (
             "permission check must fire before lift_block is dispatched"
         )
+
+    def test_strict_page_access_alone_does_not_block_nx_fetch(self):
+        """STRICT_PAGE_ACCESS without ENABLE_NX must not raise on a fetch
+        from a non-executable page — matches Python's heavy VEX engine,
+        which guards the SimSegfaultError on `o.ENABLE_NX in options`
+        (angr/engines/vex/heavy/heavy.py:115-124). The lift callback IS
+        invoked because no early permission rejection fires."""
+        from angr.rustylib.vex_engine import PythonCallbacks
+
+        mgr = _RustExplorationManager("amd64")
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda addr, size: (bytes(size), False, None))
+        callbacks.set_memory_store(lambda addr, data: None)
+        lift_addrs = []
+        def lift(addr):
+            lift_addrs.append(addr)
+            return '{}'
+        callbacks.set_lift_block(lift)
+        mgr.set_callbacks(callbacks)
+
+        state = RustSimState("amd64")
+        state.set_enforce_permissions(True)
+        # enforce_nx left OFF — NX should NOT fire.
+        state.map_memory(0x1000, 0x1000, 6)  # RW, no X
+        state.pc = 0x1000
+        mgr.add_state("active", state)
+
+        mgr.run(10)
+
+        counts = mgr.stash_counts()
+        assert counts.get("errored", 0) == 0, (
+            f"NX should not fire without enforce_nx; got stashes={counts}"
+        )
+        assert 0x1000 in lift_addrs, (
+            "lift_block should have been dispatched at 0x1000 since NX is off"
+        )
+
+    def test_enable_nx_propagates_to_rust(self, fauxware_project):
+        """A SimState with ENABLE_NX option should flip the Rust memory
+        model's enforce_nx flag automatically (mirrors angr)."""
+        from angr.exploration import RustExplorationManager
+        from angr import sim_options as o
+
+        # No option → flag stays off.
+        plain_state = fauxware_project.factory.entry_state()
+        plain_mgr = RustExplorationManager(fauxware_project, [plain_state])
+        plain_ids = plain_mgr._rust_mgr.get_state_ids("active")
+        assert plain_ids, "expected an active state to be added"
+        assert plain_mgr._rust_mgr.state_enforce_nx(plain_ids[0]) is False
+
+        # Option present → flag flips on for the Rust state.
+        nx_state = fauxware_project.factory.entry_state(
+            add_options={o.ENABLE_NX}
+        )
+        nx_mgr = RustExplorationManager(fauxware_project, [nx_state])
+        nx_ids = nx_mgr._rust_mgr.get_state_ids("active")
+        assert nx_ids, "expected an active state to be added"
+        assert nx_mgr._rust_mgr.state_enforce_nx(nx_ids[0]) is True
 
     def test_solver_stats_populated(self, fauxware_project):
         """mgr.get_solver_stats() returns populated counters after exploration.
