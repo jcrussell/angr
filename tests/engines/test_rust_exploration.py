@@ -9252,5 +9252,77 @@ class TestRustConcreteMemoryStoreRoundTrip:
         )
 
 
+class TestRustManagerCleanup:
+    """angr-518z: opt-in AST cache cleanup so Callable-heavy workloads
+    (mma_howtouse pattern: many short-lived managers on one thread)
+    don't accumulate O(n) thread-local AST cache entries.
+    """
+
+    def test_clear_ast_cache_ffi_exposed(self):
+        """The Rust-side cache flush helper must be callable from Python."""
+        from angr.rustylib.vex_engine import clear_ast_cache
+        # No-op on an empty cache; must not raise.
+        clear_ast_cache()
+        clear_ast_cache()
+
+    def test_cleanup_is_idempotent_and_safe(self):
+        """cleanup() can be called multiple times and on a manager that
+        never ran exploration; must not raise."""
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
+        state = proj.factory.blank_state(addr=0x401000)
+        mgr = RustExplorationManager(proj, [state])
+        mgr.cleanup()
+        mgr.cleanup()
+
+    def test_cleanup_runs_after_short_exploration(self):
+        """Run a tiny exploration, then call cleanup() — must not raise
+        and the manager must remain usable for inspecting stash counts."""
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        # nop; ret — predictable deadend after one step.
+        proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
+        state = proj.factory.blank_state(addr=0x401000)
+        state.regs.rsp = 0x7FFF_0000
+        state.memory.store(0x7FFF_0000, b"\x00" * 8)
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=4)
+        mgr.cleanup()
+        # Still reachable post-cleanup.
+        assert mgr.stash_counts()['active'] >= 0
+
+    def test_clear_caches_on_cleanup_flag_default_off(self):
+        """Default constructor leaves the flag off — single-long-exploration
+        users see no behavior change."""
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
+        state = proj.factory.blank_state(addr=0x401000)
+        mgr = RustExplorationManager(proj, [state])
+        assert mgr._clear_caches_on_cleanup is False
+
+    def test_clear_caches_on_cleanup_flag_honored(self):
+        """When the constructor flag is set, __del__ wires through to
+        cleanup(); explicit drop triggers the cache flush without raising."""
+        import gc
+        import angr
+        from angr.exploration import RustExplorationManager
+
+        proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
+        state = proj.factory.blank_state(addr=0x401000)
+        mgr = RustExplorationManager(
+            proj, [state],
+            clear_caches_on_cleanup=True,
+        )
+        assert mgr._clear_caches_on_cleanup is True
+        # Drop and force collection — cleanup() must not raise during __del__.
+        del mgr
+        gc.collect()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

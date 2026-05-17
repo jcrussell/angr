@@ -1609,6 +1609,22 @@ fn register_names_for_arch(arch_name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Clear the Rust-side thread-local claripy AST translation caches.
+///
+/// Drops the four LRU/HashMaps in `claripy_bridge` (AST_CACHE,
+/// CLARIPY_AST_CACHE, EXPRESSION_CACHE, EXPRESSION_BY_OPERANDS_PTR).
+/// Used by `RustExplorationManager.cleanup()` to bound per-process
+/// growth in Callable-heavy workloads where many short-lived managers
+/// share the same thread (e.g. mma_howtouse's 45 invocations).
+///
+/// Does NOT clear the global `SymbolicIdentityRegistry` because that
+/// is shared across all managers in the process; clearing it from one
+/// manager would invalidate live symbol IDs held by another.
+#[pyfunction]
+fn clear_ast_cache() {
+    crate::claripy_bridge::clear_ast_cache();
+}
+
 /// Register the VEX engine module with Python.
 pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustVEXEngine>()?;
@@ -1637,6 +1653,7 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(clear_ast_cache, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;

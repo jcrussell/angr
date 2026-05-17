@@ -720,6 +720,7 @@ class RustExplorationManager(
         solver_timeout_ms: int = 30000,
         max_active_states: Optional[int] = None,
         max_history: int = 1000,
+        clear_caches_on_cleanup: bool = False,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -737,6 +738,14 @@ class RustExplorationManager(
                 unlimited — only safe for short runs since long explorations
                 can OOM. Applied to every state created or added via this
                 manager.
+            clear_caches_on_cleanup: If True, the manager flushes the
+                Rust-side thread-local claripy AST translation caches
+                from ``cleanup()`` / ``__del__``. Off by default because
+                the caches are typically helpful for a single long
+                exploration; enable for Callable-heavy workloads that
+                spawn many short-lived managers on the same thread
+                (e.g. mma_howtouse runs 45 ``callable()`` invocations
+                and the cache accumulates O(n) entries across them).
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
@@ -750,6 +759,9 @@ class RustExplorationManager(
 
         self._project = project
         self._save_unconstrained = save_unconstrained
+        # See ``cleanup()`` — only honored when the manager has a real Rust
+        # backend (i.e. not the multi-stage-reuse early return below).
+        self._clear_caches_on_cleanup = clear_caches_on_cleanup
         is_le = project.arch.memory_endness == 'Iend_LE'
         self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
 
@@ -4099,6 +4111,40 @@ class RustExplorationManager(
             l.warning("State merge failed entirely, keeping states unmerged", exc_info=True)
 
         return self
+
+    def cleanup(self) -> None:
+        """Release this manager's hold on per-process AST caches.
+
+        Flushes the Rust-side thread-local claripy AST translation caches
+        (``AST_CACHE`` / ``CLARIPY_AST_CACHE`` / ``EXPRESSION_CACHE`` /
+        ``EXPRESSION_BY_OPERANDS_PTR`` in ``claripy_bridge``). Those caches
+        outlive a single manager because they are thread-local, so without
+        a flush they accumulate O(n) across managers in Callable-heavy
+        workloads — see ``docs/advanced-topics/rust_engine.rst`` for the
+        mma_howtouse case study.
+
+        Safe to call multiple times. Does NOT touch the global symbolic
+        identity registry (shared across managers, so a clear from one
+        manager would invalidate symbol IDs held live by another).
+        """
+        try:
+            from angr.rustylib.vex_engine import clear_ast_cache
+            clear_ast_cache()
+        except Exception as e:
+            # cat-(a) EXPECTED CONTROL FLOW: vex_engine module may be
+            # absent in degraded builds; cleanup is best-effort.
+            l.debug("clear_ast_cache unavailable, skipping: %s", e)
+
+    def __del__(self):
+        # Best-effort cleanup. Skip silently when the flag was never
+        # opted into (single-long-exploration users see no behavior
+        # change). Wrap everything because interpreter shutdown can
+        # already have torn down sys.modules by the time __del__ runs.
+        try:
+            if getattr(self, '_clear_caches_on_cleanup', False):
+                self.cleanup()
+        except Exception:
+            pass
 
     def __len__(self) -> int:
         """Return total number of active states."""
