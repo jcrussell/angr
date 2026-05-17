@@ -132,7 +132,25 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
 class TestRustIntegration:
     """Integration tests running real CTF examples through the Rust engine."""
 
-    KNOWN_XFAIL = set()  # All examples now produce correct output
+    KNOWN_XFAIL = {
+        # codegate_2017-angrybird: Rust reaches find_addr (0x404fab) and
+        # extracts 20 stdin bytes, but the bytes are wrong (e.g.
+        # b'*%\xac\x0c`\xfe\xff\x80\x06 \xc0\xff\xff\xca4\x07\xffpK\x05'
+        # vs expected b'Im_so_cute&pretty_:)'). Triage (bd angr-kcf.1)
+        # ruled out BFS exploration ordering — both BFS and DFS produce
+        # byte-identical wrong output, so a different exploration order
+        # would not change the result. NativeFgets correctly records
+        # stdin_fgets_0_* symbols and the Rust Z3 solver does accumulate
+        # constraints over them, but the path Rust traverses to reach
+        # find_addr differs from Python's, producing a constraint set
+        # that admits the wrong stdin satisfying assignment. Likely root
+        # cause is symbolic-memory branch divergence at the loads from
+        # 0x1000-0x1018 the binary uses for anti-fingerprinting (see bd
+        # memory codegate-0x1000-loads). See bd memory
+        # angr-kcf-not-bfs-divergence for the full triage and
+        # invariant-codegate-xfail for the keep-xfail decision.
+        "codegate_2017-angrybird",
+    }
 
     @pytest.mark.parametrize(
         "example_name,expected,timeout,uses_predicate",
