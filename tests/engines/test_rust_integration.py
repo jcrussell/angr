@@ -83,6 +83,15 @@ def _run_example(example_name: str, engine: str, timeout: float) -> tuple[bool, 
         original_simgr = angr.factory.AngrObjectFactory.simgr
 
         def patched_simulation_manager(factory_self, thing=None, **kwargs):
+            # Fall through to the original simulation_manager when called from
+            # angr internals (CFG jumptable resolver, exploration techniques)
+            # whose internal SimState carries SimOptions like DO_RET_EMULATION
+            # that RustExplorationManager._check_raise_options rejects.
+            import traceback
+            caller_frames = traceback.extract_stack()
+            for frame in caller_frames[:-1]:
+                if '/angr/analyses/' in frame.filename or '/angr/exploration_techniques/' in frame.filename:
+                    return original_sm(factory_self, thing, **kwargs)
             if thing is None:
                 states = [factory_self.entry_state()]
             elif isinstance(thing, (list, tuple)):
