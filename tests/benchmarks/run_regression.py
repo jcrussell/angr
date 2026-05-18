@@ -127,9 +127,13 @@ REGRESSION_SUITE = FAST_SUITE  # overridden in main() if --full
 # (slow-mode runs can be ~2x the fast-mode runs even on a stable HEAD). They
 # routinely exceed the 15% regression threshold without a real code change and
 # should be skipped on tight PR gates. See bd memory
-# `invariant-bimodal-variance-benchmarks`.
+# `invariant-bimodal-variance-benchmarks` and
+# ``docs/advanced-topics/rust_bimodal_variance.rst``.
+#
+# google2016_unbreakable_1 was removed on 2026-05-18 (angr-hyiz.4) after a
+# second 20-sample campaign confirmed it has unimodalized at ~2.46s (stdev
+# 0.01s) — see the 2026-05-18 section of rust_bimodal_variance.rst.
 BIMODAL_BENCHMARKS = frozenset({
-    "google2016_unbreakable_1",
     "securityfest_fairlight",
     "ekopartyctf2016_sokohashv2",
 })

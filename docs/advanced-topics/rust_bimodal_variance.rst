@@ -119,10 +119,44 @@ The bimodal classification itself:
   re-confirm until the regression is fixed.
 - ``securityfest_fairlight`` — still bimodal; slow mode has drifted.
 - ``google2016_unbreakable_1`` — no longer bimodal in 2026-05-13
-  measurements. Kept in the ``BIMODAL_BENCHMARKS`` set in
-  ``run_regression.py`` for now; if a re-run in a future session
-  confirms unimodality, it can be removed from ``--skip-bimodal``
-  exclusion to tighten PR coverage.
+  measurements. **Removed from** ``BIMODAL_BENCHMARKS`` on 2026-05-18
+  after the re-validation campaign below confirmed continued
+  unimodality.
+
+2026-05-18 re-validation
+------------------------
+
+``google2016_unbreakable_1``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Second 20-sample campaign on 2026-05-18 (HEAD ``f54bbba93``,
+angr-hyiz.4):
+
+.. code-block:: text
+
+   summary: n=20 (fail=0) min=2.43s median=2.46s max=2.48s mean=2.46s stdev=0.01s
+
+   histogram (1.0s bins):
+     2.0–3.0s | 20 ####################
+
+20/20 runs in **2.43–2.48s** — even tighter than the 2026-05-13
+campaign (3.01–3.06s). The benchmark has further sped up at the
+median, likely from intervening Rust engine work (notably the
+2026-05-18 ``f54bbba93`` lazy-zero-page cap, but the speedup is
+broad and not pinned to a single commit). No slow mode reappears.
+
+Decision: removed from ``BIMODAL_BENCHMARKS`` in ``run_regression.py``
+so the PR-time gate (``--skip-bimodal``) now covers it. The baseline
+``rust_time = 3.5s`` is left as-is — it gives ~42% headroom over the
+2.48s worst-case sample and ~15% above the 2026-05-13 3.06s sample,
+preserving room for natural drift without re-tightening on a single
+session's measurement. (Per the ``avoid-update-baseline-without-verification``
+memory, baselines should not be tightened on optimistic single-session
+data; the headroom here is intentional.)
+
+Cached ``python_time = 1.602s`` gives a current speedup of
+~0.65x (1.602 / 2.46). The PR-time SLA gate (default fail at 0.5x,
+warn at 1.0x) will print a WARN line for this benchmark and not fail.
 
 Reproducing
 -----------
