@@ -269,7 +269,7 @@ period — do not run both simultaneously.
 | unmapped_analysis | 1.2x | |
 | flareon2015_2 | 1.1x | 32-bit x86 |
 | securityfest_fairlight | 1.0x | Rust interpreter parity for symbolic-heavy blocks |
-| hackcon2016_angry-reverser | 0.3x | Regressed 2026-05-17: ~11.7s → ~30.6s median (n=10, stdev 1.33s, unimodal). Z3 final-solve dominates. See `docs/advanced-topics/rust_engine.rst`. |
+| hackcon2016_angry-reverser | 0.6x | angr-8t45 partial fix 2026-05-18: bisected regression to `fced54a07` (lazy-zero-page opt); added per-state cap so hackcon keeps eager path (3-sample median ~15.2s). See `docs/advanced-topics/rust_engine.rst`. |
 | mma_howtouse | 0.7x | Callable-heavy; thread-local AST cache lookup overhead. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
 | google2016_unbreakable_1 | 0.5x | High variance; regressed from 3.3x |
 | ekopartyctf2016_sokohashv2 | 0.4x | x87 transcendentals fall back to Python; bimodal Z3 variance. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |

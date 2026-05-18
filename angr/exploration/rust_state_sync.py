@@ -561,10 +561,22 @@ class RustStateSyncMixin:
         synced or the Rust engine will read zeros and diverge.
         """
         extra_pages_synced = 0
+        # angr-8t45: eager-map all-zero pages too when there aren't many.
+        # angr-9maq made zero pages lazy-only to avoid mma_howtouse blowing
+        # up to 1.9GB (2000+ zero pages per state * 45 short-lived states).
+        # But hackcon2016 has only ~35 zero pages per state, and keeping
+        # them lazy regressed final-solve Z3 time from ~10s to ~28s (root
+        # cause is structural — see angr-8t45 memory). Cap below: if a
+        # state has more all-zero pages than this, keep them all lazy
+        # (mma path); otherwise eager-map (hackcon path).
+        zero_eager_cap = 200
         try:
             mem_pages = getattr(angr_state.memory, '_pages', None)
             if mem_pages is None:
                 return
+            # First pass: classify each candidate page so we can decide
+            # eager-vs-lazy for the all-zero set based on count.
+            candidates = []  # list[(page_addr, concrete_bytes, is_nonzero)]
             for page_no in list(mem_pages.keys()):
                 page_addr = page_no * page_size
                 if page_addr in mapped_page_addrs:
@@ -578,32 +590,29 @@ class RustStateSyncMixin:
                     continue
                 try:
                     concrete = bytes(page_obj.concrete_load(0, page_size))
-                    if len(concrete) == page_size:
-                        # angr-7vcx: must record the mapping even for
-                        # all-zero pages, otherwise user `map_region` calls
-                        # silently disappear and Rust faults on the first
-                        # store. Stack region gets RW, others RWX.
-                        #
-                        # angr-9maq: but skip the eager `map_memory_data`
-                        # allocation when the page is all-zero — only mark
-                        # it as lazy. Without this, Callable-heavy workloads
-                        # (mma_howtouse: 45 short-lived states, each with
-                        # thousands of ZERO_FILL/SYMBOL_FILL filler pages)
-                        # eagerly allocate a 4KB buffer per page per state,
-                        # blowing peak memory from 286MB to 1.9GB and per-
-                        # call time from 0.15s to 1.9s. Stores still work
-                        # because `store_concrete_automap_internal` auto-
-                        # maps pages in lazy regions on first write.
-                        perms = 6 if stack_start <= page_addr < stack_base else 7
-                        if any(concrete):
-                            rust_state.map_memory_data(page_addr, concrete, perms)
-                        rust_state.add_lazy_region(page_addr, page_size)
-                        extra_pages_synced += 1
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: per-page sync failed;
                     # the page is not pre-populated. fetch_page from
                     # Python catches accesses on demand.
-                    pass
+                    continue
+                if len(concrete) != page_size:
+                    continue
+                candidates.append((page_addr, concrete, any(concrete)))
+
+            zero_count = sum(1 for _, _, nz in candidates if not nz)
+            eager_zero = zero_count <= zero_eager_cap
+
+            for page_addr, concrete, is_nonzero in candidates:
+                # angr-7vcx: must record the mapping even for all-zero pages,
+                # otherwise user `map_region` calls silently disappear and
+                # Rust faults on the first store. Stack region gets RW.
+                perms = 6 if stack_start <= page_addr < stack_base else 7
+                if is_nonzero or eager_zero:
+                    rust_state.map_memory_data(page_addr, concrete, perms)
+                # Else: store_concrete_automap_internal will auto-allocate
+                # this page on first write via add_lazy_region tracking.
+                rust_state.add_lazy_region(page_addr, page_size)
+                extra_pages_synced += 1
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: outer iteration failed (rare,
             # _pages dict shape mismatch). All non-loader pages skip
