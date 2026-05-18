@@ -117,7 +117,9 @@ The bimodal classification itself:
 
 - ``ekopartyctf2016_sokohashv2`` — still bimodal historically; cannot
   re-confirm until the regression is fixed.
-- ``securityfest_fairlight`` — still bimodal; slow mode has drifted.
+- ``securityfest_fairlight`` — still bimodal in 2026-05-13 *and*
+  2026-05-18 campaigns; structural floor confirmed (see
+  re-validation section below).
 - ``google2016_unbreakable_1`` — no longer bimodal in 2026-05-13
   measurements. **Removed from** ``BIMODAL_BENCHMARKS`` on 2026-05-18
   after the re-validation campaign below confirmed continued
@@ -157,6 +159,85 @@ data; the headroom here is intentional.)
 Cached ``python_time = 1.602s`` gives a current speedup of
 ~0.65x (1.602 / 2.46). The PR-time SLA gate (default fail at 0.5x,
 warn at 1.0x) will print a WARN line for this benchmark and not fail.
+
+``securityfest_fairlight``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Second 20-sample campaign on 2026-05-18 (HEAD ``607eed29e``,
+angr-hyiz.2):
+
+.. code-block:: text
+
+   summary: n=20 (fail=0) min=7.97s median=21.55s max=22.72s mean=16.96s stdev=6.68s
+
+   histogram (1.0s bins):
+      7.0– 8.0s |  1 ###
+      8.0– 9.0s |  6 #####################
+     21.0–22.0s | 11 ########################################
+     22.0–23.0s |  2 #######
+
+20/20 runs OK (no AssertionError). Distribution remains strongly
+bimodal: **7 fast (7.97–8.33s) / 13 slow (21.48–22.72s)**. Compared
+to the 2026-05-13 campaign:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 25 25 25
+
+   * -
+     - 2026-05-13
+     - 2026-05-18
+     - Delta
+   * - Fast / slow split
+     - 5 / 15
+     - 7 / 13
+     - +2 fast
+   * - Fast-mode range
+     - 7.94–8.x s
+     - 7.97–8.33s
+     - stable
+   * - Slow-mode range
+     - 21.0–21.53s
+     - 21.48–22.72s
+     - +1.2s ceiling drift
+   * - Median
+     - 21.39s
+     - 21.55s
+     - +0.16s
+   * - Stdev
+     - 5.98s
+     - 6.68s
+     - widened ~0.7s
+
+Conclusion: fairlight is **structurally bimodal** under Z3 model
+nondeterminism — three runs across two months (2026-05-01, 2026-05-13,
+2026-05-18) all reproduce two clearly-separated modes (~8s and ~21s).
+The 13:7 mix this session is close enough to the 15:5 mix from
+2026-05-13 to be noise-level; mode separation (~13s) dwarfs noise
+inside each mode (<1s).
+
+The slow-mode ceiling drifted slightly upward (21.53s → 22.72s). One
+run (22.72s, sample 15) is above the current ``rust_time = 22.0s``
+baseline but well within the 15% threshold (25.3s) used by
+``run_regression.py``. Baseline is left at **22.0s**; per
+``avoid-update-baseline-without-verification`` we don't tighten on a
+single session, but 22.0s is also not loosened — drift fits inside
+the existing margin.
+
+Cached ``python_time = 15.756s`` against the **median** 21.55s gives
+a current speedup of ~0.73x (slow mode) or 1.97x (fast mode, 15.756 /
+7.99 mean). The blended-mean speedup is 0.93x. Per the SLA gate
+defaults (fail < 0.5x, warn < 1.0x), this prints a WARN line and does
+not fail.
+
+Structural floor: as recorded in ``fairlight-bottleneck`` and
+``benchmark-fairlight-2026-05`` memories, Z3 ``check()`` accounts for
+~95% of wall-clock time in this benchmark; the only known further
+optimization (``LAZY_SOLVES``) gave ~0.65s upper bound (25x) in a
+synthetic test but requires correctness proofs that have not been
+attempted. Until that path is taken — or x87/bit-blasting overhead is
+shifted out of Z3 entirely — fairlight is at the floor for this
+engine, and the bimodal distribution is the floor's signature.
 
 Reproducing
 -----------
