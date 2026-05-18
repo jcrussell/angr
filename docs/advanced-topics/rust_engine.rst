@@ -874,8 +874,8 @@ Speedup column is ``python_time / rust_time`` from the live baseline
 file. Numbers refresh whenever ``baseline_timings.json`` is
 regenerated; treat the values here as snapshots, not invariants.
 
-mma_howtouse — 0.65x (Py 4.25s / Rust 6.51s)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+mma_howtouse — 0.59x (Py ~4.33s / Rust ~7.39s)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Workload:** ``Callable`` FFI demo
 (``angr-examples/mma_howtouse/solve.py``) invokes ``howtouse(i)`` 45
@@ -884,32 +884,83 @@ times in a loop. Each ``callable(i)`` constructs a fresh
 ``AngrObjectFactory.simulation_manager``. The exploration itself is
 short (concrete-only, ~45 short call_state runs).
 
-**Root cause — thread-local AST cache lookup overhead.** angr's
-claripy backend caches AST simplification results in thread-local
-hashmaps. The caches accumulate entries across all 45 manager
-instances (they outlive any single manager) so per-lookup cost grows
-roughly with total AST count. Manually calling
-``claripy.clear_all_caches()`` between ``callable()`` invocations cuts
-wall time from 6.62s → 5.07s (a ~23% reduction) without affecting
-correctness — but is not a default because it would penalize the
-common single-long-exploration case.
+**Earlier hypothesis (now invalidated) — thread-local AST cache
+lookup overhead.** Through mid-2026-05 this section claimed the
+slowdown was Python-side claripy AST cache probes accumulating
+entries across all 45 manager instances, with a manual
+``claripy.clear_all_caches()`` cutting 6.62s → 5.07s (~23%). That
+hypothesis no longer holds:
+
+#. claripy migrated its caches to ``WeakValueDictionary`` and removed
+   the public ``clear_all_caches()`` entry point. The memory
+   ``avoid-trusting-stale-cache-clear-speedup`` records the 2026-05-17
+   verification.
+#. The Rust-side ``clear_ast_cache()`` PyO3 hook (angr-518z) targets
+   only the Rust translation-side LRUs, not Python claripy state, and
+   measured 0% gain on mma_howtouse (angr-gra3 validation,
+   2026-05-17).
+#. With ``cleanup=True`` versus ``cleanup=False`` both landing at
+   ~7.3s on the post-fix tree, the AST cache is not the bottleneck.
+
+**Current picture (HEAD 260eb4d66, 2026-05-18):** 5-sample paired
+``run_single.py --both`` campaign:
+
+* Python: median 4.33s, range 4.20–4.42s, peak_mem 226MB.
+* Rust: median 7.39s, range 7.25–7.45s, peak_mem 276–277MB.
+* Speedup: 0.59x (5/5 OK, no failures, very tight variance — not
+  bimodal).
+* Tracks the validated ``benchmark-mma-howtouse-2026-05-17-final``
+  memory (HEAD 17ab6787a: 7.32s / 4.29s = 0.58x).
+
+The ``baseline_timings.json`` rust_time of 6.513s pre-dates the post
+angr-9maq / angr-gra3 / angr-8t45 wave; current Rust time sits ~13%
+above it, just under the 15% PR-time regression threshold, so the
+baseline is intentionally left in place (consistent with the
+sokohashv2 / unbreakable_1 / fairlight precedent — see
+:doc:`rust_bimodal_variance`).
+
+**Where the gap actually is — unattributed.** Per the
+``benchmark-mma-howtouse-2026-05-17-final`` memory the remaining
+~3.1s gap is "in some other path — not AST cache lookup overhead."
+No single Rust hot path explains it. Likely contributors (none
+individually dominant in a profile):
+
+* Per-``callable()`` ``RustExplorationManager`` construction and
+  state-export overhead (45 instances) amortizes poorly on a workload
+  that runs only a handful of blocks per call.
+* Python-side Callable plumbing (``call_state`` setup, return-value
+  extraction) is paid 45× and is not on the Rust engine's hot path.
+* UltraPage / DirtyAddrsMixin growth was the *memory* problem fixed
+  by ``342df4a7f`` (1606MB → 285MB) but the wall-time gap was not
+  recovered by that fix.
+
+**Why not chase a Rust fix?**
+
+#. The benchmark is a degenerate stress test (45 isolated
+   ``Callable`` invocations) that does not reflect typical
+   symbolic-execution workloads.
+#. The two cheap mitigations historically considered — manual cache
+   clears and a Rust LRU flush — have both been measured to deliver
+   ~0% on the current tree.
+#. The remaining structural fix (per-manager AST cache scoping so
+   cached entries do not leak across manager lifetimes) is invasive
+   claripy work and only pays for Callable-heavy workloads, of which
+   this is the sole benchmark.
+
+Per the ``angr-ed7j-doc-resolution`` rule, this is closed via
+documentation. Re-open justification: an explicit per-manager AST
+cache scoping design lands, or a fresh profile attributes the gap to
+a concrete Rust-side hot path that did not exist before.
 
 **Memory:** the original 1606MB peak was fixed independently in commit
-``342df4a7f`` (2026-05-02), bringing peak to ~285MB. The current 0.65x
+``342df4a7f`` (2026-05-02), bringing peak to ~285MB. The current 0.59x
 slowdown is purely CPU time.
 
-**Why not chase a Rust fix?** The slow path is in the Python-side
-hashmap (per-``callable()`` AST equality probes), not in the Rust
-engine. A real fix would need either (a) a per-manager AST cache scope
-so cached entries do not leak across manager lifetimes, or (b) opt-in
-``clear_all_caches()`` plumbed through Callable. Both are non-trivial
-and the benchmark itself is a degenerate stress test (45 isolated
-invocations) that does not reflect typical symbolic-execution
-workloads.
-
-**Relevant memories:** ``mma-howtouse-leak-source``,
-``mma-howtouse-cache-clear-speedup``,
-``benchmark-mma-howtouse-leak-fix``.
+**Relevant memories:** ``benchmark-mma-howtouse-2026-05-17-final``,
+``avoid-trusting-stale-cache-clear-speedup``,
+``mma-howtouse-leak-source``,
+``benchmark-mma-howtouse-leak-fix``,
+``angr-ed7j-doc-resolution``.
 
 ekopartyctf2016_sokohashv2 — 0.36x (Py 5.83s / Rust 16.0s baseline; ~9.5s typical)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
