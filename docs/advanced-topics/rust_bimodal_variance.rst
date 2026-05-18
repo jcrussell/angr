@@ -62,11 +62,11 @@ baseline ``rust_time = 16.0s`` no longer absorbs it — 15× of 20 runs
 exceed even the +15% threshold (16.0 × 1.15 = 18.4s). Baseline has been
 raised to ``22.0s`` to cover the slow mode plus headroom.
 
-``ekopartyctf2016_sokohashv2`` — REGRESSED (not measurable)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``ekopartyctf2016_sokohashv2`` — REGRESSED 2026-05-13, FIXED 2026-05-14
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-3/3 confirming runs failed deterministically at ~0.75s with empty
-``AssertionError``:
+3/3 confirming runs in 2026-05-13 failed deterministically at ~0.75s
+with empty ``AssertionError``:
 
 .. code-block:: text
 
@@ -74,17 +74,24 @@ raised to ``22.0s`` to cover the slow mode plus headroom.
    FAIL rust ekopartyctf2016_sokohashv2 0.74s: AssertionError:
    FAIL rust ekopartyctf2016_sokohashv2 0.73s: AssertionError:
 
-Python engine still passes in 4.6s. The 0.75s wall-clock is too fast
-for the exploration loop to have started, so the assert fires during
+Python engine still passes in 4.6s. The 0.75s wall-clock was too fast
+for the exploration loop to have started, so the assert fired during
 state setup or the first VEX block. Tracked as **angr-7vcx**.
 
-Suspect: commit ``ef020d101`` replaced the silent-zero x87
-transcendental fallback with libm calls. sokohashv2's hash routine
-uses ``fyl2x`` / ``fscale`` / ``f2xm1``; a libm value (NaN, denorm) may
-be triggering a downstream Rust assertion.
+The root cause was not x87 fallback as initially suspected. Two
+Python↔Rust memory-sync bugs were uncovered during the investigation:
 
-The PR-time gate ``--skip-bimodal`` excludes this benchmark, which is
-how the regression reached HEAD without tripping CI.
+* **angr-ctct** (commit ``c6b2824cb``, 2026-05-14): ``_extract_symbolic_pages``
+  missed filler-materialised symbolic values from
+  ``SYMBOL_FILL_UNCONSTRAINED_MEMORY``.
+* **angr-fv81** (commit ``13bb9f741``, 2026-05-14):
+  ``_extract_from_ultrapage`` fallback truncated multi-byte symbolic
+  entries to the head byte; now walks each entry's bitmap extent
+  (capped at 64 bytes).
+
+The PR-time gate ``--skip-bimodal`` excluded this benchmark, which is
+how the regression reached HEAD without tripping CI. See the 2026-05-18
+re-validation section below for current distribution.
 
 Decisions
 ---------
@@ -110,13 +117,18 @@ Baseline tightenings landed in this campaign:
    * - ``ekopartyctf2016_sokohashv2``
      - 16.0s
      - 16.0s (unchanged)
-     - Benchmark currently broken; baseline left alone until
-       angr-7vcx is fixed
+     - Benchmark was broken in 2026-05-13 campaign; angr-ctct +
+       angr-fv81 fixes shipped 2026-05-14. 2026-05-18 re-validation
+       (below) confirms 16.0s still covers the slow mode (max 17.44s
+       within +15% threshold)
 
 The bimodal classification itself:
 
-- ``ekopartyctf2016_sokohashv2`` — still bimodal historically; cannot
-  re-confirm until the regression is fixed.
+- ``ekopartyctf2016_sokohashv2`` — re-validated 2026-05-18 post-fix.
+  Distribution has softened from clean bimodal to trimodal-ish (1 fast
+  ~8.6s, 7 mid ~12s, 2 slow ~17s over 10 runs). Retained in
+  ``BIMODAL_BENCHMARKS`` because the slow-mode tail still exceeds the
+  PR-time threshold and the structural x87+Z3 sources remain.
 - ``securityfest_fairlight`` — still bimodal in 2026-05-13 *and*
   2026-05-18 campaigns; structural floor confirmed (see
   re-validation section below).
@@ -239,13 +251,51 @@ attempted. Until that path is taken — or x87/bit-blasting overhead is
 shifted out of Z3 entirely — fairlight is at the floor for this
 engine, and the bimodal distribution is the floor's signature.
 
+``ekopartyctf2016_sokohashv2``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+First post-fix campaign on 2026-05-18 (HEAD ``d5b6b1edd``,
+angr-hyiz.5), 10 runs (vs 20 for the other two — sokohashv2 takes
+~12s/run so 10 runs gives the same wall-clock budget):
+
+.. code-block:: text
+
+   summary: n=10 (fail=0) min=8.63s median=11.98s max=17.44s mean=12.69s stdev=2.65s
+
+   histogram (1.0s bins):
+      8.0– 9.0s |  1 ########
+     11.0–12.0s |  5 ########################################
+     12.0–13.0s |  2 ################
+     17.0–18.0s |  2 ################
+
+10/10 runs OK (no AssertionError) — the angr-ctct + angr-fv81 fixes
+hold. Distribution has shifted from the historic clean bimodal split
+(~9.5s OR ~15.4s) to a **trimodal-ish spread**:
+
+* 1× fast (8.63s)
+* 7× mid (5×~12.0s tightly clustered + 2× at 12.06s/12.x)
+* 2× slow (17.18s, 17.44s)
+
+Slow-mode max 17.44s stays within the +15% threshold for the 16.0s
+baseline (18.4s), so the baseline is left unchanged. Median 11.98s
+gives a current speedup of ~0.49x against cached ``python_time = 5.833s``;
+the mean 12.69s gives ~0.46x, consistent with the 0.4x reported in
+``CLAUDE.md``.
+
+Decision: **retained in** ``BIMODAL_BENCHMARKS``. The slow-mode tail
+(17.x s) still exceeds 1× python time by ~3×, and the structural
+sources (x87 transcendental fallback per
+``avoid-silent-zero-raw-fallback``, Z3 nondeterminism) are unchanged.
+The PR-time gate ``--skip-bimodal`` continues to exclude this benchmark
+so a slow-mode run does not flake a PR. See bd memory
+``benchmark-sokohashv2-2026-05-18``.
+
 Reproducing
 -----------
 
-The campaign takes ~10 minutes for the two working benchmarks
-(unbreakable_1 ~3s × 20, fairlight ~13s mean × 20). Add 60s overhead.
-sokohashv2 currently exits in <1s each so a 20-run pass is fast
-but uninformative.
+The campaign takes ~12-13 minutes for the three bimodal benchmarks
+combined (unbreakable_1 ~3s × 20, fairlight ~13s mean × 20,
+sokohashv2 ~12s mean × 10). Add 60s overhead.
 
 .. code-block:: console
 

@@ -946,9 +946,27 @@ only known benchmark exercising them — high implementation cost for a
 niche win. Z3 nondeterminism is structural; nothing in the engine
 controls it.
 
+**2026-05-18 re-validation (post-fix):** After the angr-ctct
+(commit ``c6b2824cb``) + angr-fv81 (commit ``13bb9f741``) memory-sync
+fixes landed on 2026-05-14, sokohashv2 again runs to completion under
+Rust. A 10-sample campaign (``bimodal_variance.py --runs 10
+--benchmarks ekopartyctf2016_sokohashv2``) measured:
+
+* min=8.63s, max=17.44s, median=11.98s, mean=12.69s, stdev=2.65s
+* Histogram: 1×~8.6s, 5×~12s (11.82–12.06s), 2×~12-13s, 2×~17s (17.18s,
+  17.44s)
+
+The clean bimodal "~9.5s OR ~15.4s" picture has softened into a
+trimodal-ish spread with a dominant mid-mode around 12s. Slow-mode max
+17.44s stays within baseline+15% (18.4s) so the 16.0s baseline is left
+unchanged. Median 11.98s gives ~0.49x; the typical 0.4x in
+``CLAUDE.md`` reflects the longer-tail mean. See bd memory
+``benchmark-sokohashv2-2026-05-18``.
+
 **Relevant memories:** ``avoid-silent-zero-raw-fallback``,
 ``invariant-bimodal-variance-benchmarks``,
-``benchmark-perf-wins-2026-05-09``.
+``benchmark-perf-wins-2026-05-09``,
+``benchmark-sokohashv2-2026-05-18``.
 
 Other benchmarks below 1.0x
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
