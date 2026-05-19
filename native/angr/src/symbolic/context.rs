@@ -299,6 +299,30 @@ fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
     result
 }
 
+/// Build the Z3 `Params` object applied to every fresh `z3::Solver` and
+/// every `set_timeout` call. Centralizes the bv_rewriter knobs we set.
+///
+/// Two knobs enabled (Z3 disables both by default):
+/// - `bv_extract_prop`: propagates Extract inward through arithmetic.
+/// - `mul2concat`: rewrites `x * 2^k` -> `concat(x, 0^k)`. Added in
+///   angr-ya00.1 (free bv_* sweep, 2026-05-19) — drops fairlight's bimodal
+///   slow-mode median from 21.66s to 14.46s (-33%) without regressing
+///   8 other Z3-heavy benches measured (max delta +0.8% on flareon2015_2).
+///
+/// Three sweep knobs left disabled: `bv_not_simpl`, `bv_ite2id`,
+/// `blast_eq_value` (no measurable effect across matrix). `bv_sort_ac`
+/// rejected: looked like a fairlight winner combined with mul2concat
+/// (median 8.10s) but blows up defcon2016quals_baby-re by 7x (0.50s ->
+/// 3.71s) and adds +25% to flareon2015_2.
+#[cfg(feature = "vex-engine-z3")]
+fn build_solver_params(timeout_ms: u32) -> z3::Params {
+    let mut params = z3::Params::new();
+    params.set_u32("timeout", timeout_ms);
+    params.set_bool("bv_extract_prop", true);
+    params.set_bool("mul2concat", true);
+    params
+}
+
 /// Error type for constraint sync operations.
 #[derive(Debug, Clone)]
 pub enum ConstraintSyncError {
@@ -430,16 +454,10 @@ impl SymContext {
     /// Create a new solver context with Z3 and a custom timeout.
     #[cfg(feature = "vex-engine-z3")]
     pub fn with_timeout(timeout_ms: u32) -> Self {
-        // Create solver with timeout (unsat_core disabled for performance —
-        // tracking booleans add significant overhead per constraint)
+        // unsat_core disabled for performance — tracking booleans add
+        // significant overhead per constraint.
         let solver = z3::Solver::new();
-        let mut params = z3::Params::new();
-        params.set_u32("timeout", timeout_ms);
-        // Propagate extraction inward through arithmetic — reduces constraint
-        // structure before bit-blasting, especially for Rust-generated constraints
-        // that use nested Extract/SignExt patterns.
-        params.set_bool("bv_extract_prop", true);
-        solver.set_params(&params);
+        solver.set_params(&build_solver_params(timeout_ms));
 
         SymContext {
             next_id: AtomicU64::new(0),
@@ -478,10 +496,9 @@ impl SymContext {
         if guard.is_none() {
             let start = std::time::Instant::now();
             let new_solver = z3::Solver::new();
-            let mut params = z3::Params::new();
-            params.set_u32("timeout", self.timeout_ms.load(Ordering::SeqCst));
-            params.set_bool("bv_extract_prop", true);
-            new_solver.set_params(&params);
+            new_solver.set_params(&build_solver_params(
+                self.timeout_ms.load(Ordering::SeqCst),
+            ));
 
             // Replay cached Z3 assertions: shared prefix then local additions
             let shared = Arc::clone(&self.z3_assertions_shared.lock());
@@ -777,10 +794,7 @@ impl SymContext {
     pub fn set_timeout(&self, timeout_ms: u32) {
         self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
         if let Some(solver) = self.solver.lock().as_ref() {
-            let mut params = z3::Params::new();
-            params.set_u32("timeout", timeout_ms);
-            params.set_bool("bv_extract_prop", true);
-            solver.set_params(&params);
+            solver.set_params(&build_solver_params(timeout_ms));
         }
     }
 
