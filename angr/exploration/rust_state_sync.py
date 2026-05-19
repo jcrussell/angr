@@ -289,20 +289,20 @@ class RustStateSyncMixin:
                     symbolic_pages.add(page_num * mem_page_size)
         return symbolic_pages
 
-    def _map_loader_pages(self, rust_state: "_RustSimState",
-                          symbolic_pages: set, page_size: int):
-        """Map pages for each loaded object's segments via a single FFI batch.
+    def _build_loader_pages_cache_entry(self, page_size: int) -> dict:
+        """Compute the cacheable (batch_pages, lazy_regions) for the loader.
 
-        Returns (mapped_page_addrs, pages_mapped). Skips pages already in
-        symbolic_pages so callbacks can serve them.
+        Iterates `loader.all_objects` once, reads each in-segment page via
+        `loader.memory.load`, and collects every object's full address range
+        as a lazy region. Pure function of `self._project.loader` — output
+        is reusable across RustExplorationManager constructions for the
+        same project (see `RustExplorationManager._loader_pages_cache`).
         """
         batch_pages = []
-        mapped_page_addrs: set = set()
-        pages_mapped = 0
+        lazy_regions = []
+        seen_page_addrs: set = set()
         for obj in self._project.loader.all_objects:
             try:
-                # Prefer segments for ELF objects (avoids iterating gaps:
-                # ais3 has 553 pages in full range but only 12 in segments).
                 if hasattr(obj, 'segments') and obj.segments:
                     ranges = []
                     for seg in obj.segments:
@@ -314,35 +314,75 @@ class RustStateSyncMixin:
                               (obj.max_addr + page_size) & ~(page_size - 1))]
                 for start_page, end_page in ranges:
                     for page_addr in range(start_page, end_page, page_size):
-                        if page_addr in symbolic_pages or page_addr in mapped_page_addrs:
+                        if page_addr in seen_page_addrs:
                             continue
                         try:
                             data = self._project.loader.memory.load(page_addr, page_size)
                             if data and len(data) == page_size:
                                 batch_pages.append((page_addr, bytes(data), 7))
-                                mapped_page_addrs.add(page_addr)
-                                pages_mapped += 1
+                                seen_page_addrs.add(page_addr)
                         except Exception:
                             # cat-(a) EXPECTED CONTROL FLOW: per-page load
                             # may hit unmapped gaps in object's page range
                             # (esp. ELF .bss gaps). Skip silently — the
                             # lazy region added below catches accesses.
                             pass
+                region_start = obj.min_addr & ~(page_size - 1)
+                region_end = (obj.max_addr + page_size) & ~(page_size - 1)
+                if region_end - region_start > 0:
+                    lazy_regions.append((region_start, region_end - region_start))
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: per-object iteration failed
                 # (object lacks expected attributes). That object's pages
                 # won't be eagerly mapped; lazy_region in
                 # _add_loader_lazy_regions catches accesses on demand.
                 pass
-        if batch_pages:
+        return {"batch_pages": batch_pages, "lazy_regions": lazy_regions}
+
+    def _get_loader_pages_cache(self, page_size: int) -> dict:
+        """Return the cached loader pages entry, building it on miss.
+
+        Keyed (weakly) by `self._project.loader` so Callable-style
+        workflows that spawn many RustExplorationManagers on the same
+        Project hit the cache after the first construction (angr-bzsc).
+        Entries auto-evict when the Loader is garbage-collected.
+        """
+        cls = type(self)
+        cache = cls._loader_pages_cache
+        loader = self._project.loader
+        entry = cache.get(loader)
+        if entry is not None:
+            return entry
+        entry = self._build_loader_pages_cache_entry(page_size)
+        cache[loader] = entry
+        return entry
+
+    def _map_loader_pages(self, rust_state: "_RustSimState",
+                          symbolic_pages: set, page_size: int):
+        """Map pages for each loaded object's segments via a single FFI batch.
+
+        Returns (mapped_page_addrs, pages_mapped). Skips pages already in
+        symbolic_pages so callbacks can serve them. Reads the cached
+        `_extract_loader_pages` output (built on first construction per
+        project) to avoid re-loading loader pages on every Callable spawn.
+        """
+        entry = self._get_loader_pages_cache(page_size)
+        cached_pages = entry["batch_pages"]
+        if symbolic_pages:
+            filtered = [(addr, data, perms) for (addr, data, perms) in cached_pages
+                        if addr not in symbolic_pages]
+        else:
+            filtered = cached_pages
+        mapped_page_addrs = {addr for (addr, _data, _perms) in filtered}
+        if filtered:
             try:
-                rust_state.map_memory_batch(batch_pages)
+                rust_state.map_memory_batch(filtered)
             except AttributeError:
                 # cat-(a) EXPECTED CONTROL FLOW: probing for batch API on
                 # older Rust builds; fall back to per-page mapping.
-                for page_addr, data, perms in batch_pages:
+                for page_addr, data, perms in filtered:
                     rust_state.map_memory_data(page_addr, data, perms)
-        return mapped_page_addrs, pages_mapped
+        return mapped_page_addrs, len(filtered)
 
     def _overlay_relocated_sections(self, angr_state: "angr.SimState",
                                     rust_state: "_RustSimState") -> None:
@@ -412,14 +452,15 @@ class RustStateSyncMixin:
 
     def _add_loader_lazy_regions(self, rust_state: "_RustSimState",
                                  page_size: int) -> None:
-        """Register every loaded object as a lazy region for fetch_page callbacks."""
-        for obj in self._project.loader.all_objects:
+        """Register every loaded object as a lazy region for fetch_page callbacks.
+
+        Uses the cached lazy_regions list (computed once per project, shared
+        across managers) to avoid re-iterating `loader.all_objects`.
+        """
+        entry = self._get_loader_pages_cache(page_size)
+        for region_start, region_size in entry["lazy_regions"]:
             try:
-                region_start = obj.min_addr & ~(page_size - 1)
-                region_end = (obj.max_addr + page_size) & ~(page_size - 1)
-                region_size = region_end - region_start
-                if region_size > 0:
-                    rust_state.add_lazy_region(region_start, region_size)
+                rust_state.add_lazy_region(region_start, region_size)
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: lazy region registration
                 # failed for this object; accesses to its pages can't

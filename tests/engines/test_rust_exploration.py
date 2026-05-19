@@ -9734,5 +9734,88 @@ class TestRustManagerCleanup:
         gc.collect()
 
 
+class TestLoaderPagesCache:
+    """angr-bzsc: class-level cache of loader-page output so Callable-style
+    workflows (e.g. mma_howtouse, which spawns 45 RustExplorationManagers
+    on one Project) skip the per-init `loader.memory.load` + `map_memory_batch`
+    cost on the second-and-later constructions.
+    """
+
+    def test_loader_pages_cache_hit_on_second_manager(self, fauxware_project):
+        """Constructing a second manager with a non-entry start state must
+        reuse the cache entry built by the first manager (identity check)."""
+        from angr.exploration.rust_manager import RustExplorationManager
+
+        RustExplorationManager._loader_pages_cache.clear()
+        loader = fauxware_project.loader
+        main_sym = loader.find_symbol('main')
+        assert main_sym is not None
+
+        # First manager: cache miss, populates the entry.
+        s1 = fauxware_project.factory.blank_state(addr=main_sym.rebased_addr)
+        RustExplorationManager(fauxware_project, [s1])
+        assert loader in RustExplorationManager._loader_pages_cache, (
+            "first manager must populate the loader-pages cache"
+        )
+        entry1 = RustExplorationManager._loader_pages_cache[loader]
+        assert entry1["batch_pages"], "cache must record at least one batch page"
+        assert entry1["lazy_regions"], "cache must record at least one lazy region"
+
+        # Second manager: cache hit. Same dict identity proves no rebuild.
+        s2 = fauxware_project.factory.blank_state(addr=main_sym.rebased_addr)
+        RustExplorationManager(fauxware_project, [s2])
+        entry2 = RustExplorationManager._loader_pages_cache[loader]
+        assert entry2 is entry1, "second manager must reuse cache entry"
+
+    def test_loader_pages_cache_separate_projects_separate_entries(self):
+        """Two distinct projects must hold separate cache entries (the
+        WeakKeyDictionary keys by Loader identity, not by file path)."""
+        import angr
+        from angr.exploration.rust_manager import RustExplorationManager
+
+        RustExplorationManager._loader_pages_cache.clear()
+        binary = os.path.join(TEST_BINARIES_DIR, "fauxware")
+        if not os.path.exists(binary):
+            pytest.skip("fauxware binary not found")
+
+        proj_a = angr.Project(binary, auto_load_libs=False)
+        proj_b = angr.Project(binary, auto_load_libs=False)
+
+        main_a = proj_a.loader.find_symbol('main').rebased_addr
+        main_b = proj_b.loader.find_symbol('main').rebased_addr
+
+        RustExplorationManager(proj_a, [proj_a.factory.blank_state(addr=main_a)])
+        RustExplorationManager(proj_b, [proj_b.factory.blank_state(addr=main_b)])
+
+        assert proj_a.loader in RustExplorationManager._loader_pages_cache
+        assert proj_b.loader in RustExplorationManager._loader_pages_cache
+        assert (RustExplorationManager._loader_pages_cache[proj_a.loader]
+                is not RustExplorationManager._loader_pages_cache[proj_b.loader])
+
+    def test_loader_pages_cache_weakref_auto_evicts(self):
+        """When the Project (and its Loader) is garbage-collected, the
+        WeakKeyDictionary entry must vanish — no stale-id collisions."""
+        import gc
+        import angr
+        from angr.exploration.rust_manager import RustExplorationManager
+
+        RustExplorationManager._loader_pages_cache.clear()
+        binary = os.path.join(TEST_BINARIES_DIR, "fauxware")
+        if not os.path.exists(binary):
+            pytest.skip("fauxware binary not found")
+
+        proj = angr.Project(binary, auto_load_libs=False)
+        main = proj.loader.find_symbol('main').rebased_addr
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=main)])
+        assert proj.loader in RustExplorationManager._loader_pages_cache
+
+        # Drop all strong references and force collection.
+        del mgr
+        del proj
+        gc.collect()
+        # WeakKeyDictionary now has no remaining strong refs to any Loader.
+        assert len(RustExplorationManager._loader_pages_cache) == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

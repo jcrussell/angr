@@ -722,6 +722,17 @@ class RustExplorationManager(
     _blank_state_cache: Dict[tuple, "angr.SimState"] = {}
     _blank_state_cache_max = 10
 
+    # Class-level cache for loader-pages output keyed (weakly) by the
+    # cle.Loader instance. The output is a pure function of loader state,
+    # so reusing it across Callable-spawned RustExplorationManagers on the
+    # same project skips the per-init `loader.memory.load` + `map_memory_batch`
+    # cost (~36ms for mma_howtouse, see angr-i9f2). Value is a dict with
+    # 'batch_pages' (list of (page_addr, bytes, perms)) and 'lazy_regions'
+    # (list of (start, len)). WeakKeyDictionary auto-evicts entries when
+    # the Project/Loader is garbage-collected, so we avoid stale hits if
+    # Python recycles ids across short-lived projects.
+    _loader_pages_cache: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
     # SimProcedures known to write memory (need full state.copy() for changed_bytes)
     _MEMORY_WRITING_PROCS = frozenset({
         'read', 'recv', 'fgets', 'scanf', '__isoc99_scanf',
