@@ -69,6 +69,13 @@ static Z3_BRANCH_CONCRETE_COUNT: AtomicU64 = AtomicU64::new(0);
 static Z3_BRANCH_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of branch checks where no usable cached model was available.
 static Z3_BRANCH_MODEL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of min()/max() calls where the cached model produced a usable
+/// witness used to tighten the binary-search initial bound (and, in the
+/// signed case, sometimes skipped the MinInit/MaxInit pre-check).
+static Z3_EXTREMA_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of min()/max() calls where no cached model was available (or the
+/// model could not be evaluated against the bv ast).
+static Z3_EXTREMA_MODEL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
 static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Sat.
@@ -185,6 +192,14 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         Z3_BRANCH_MODEL_MISS_COUNT.load(Ordering::Relaxed),
     );
     stats.insert(
+        "z3_extrema_model_hit".into(),
+        Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_extrema_model_miss".into(),
+        Z3_EXTREMA_MODEL_MISS_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
         "z3_ast_build".into(),
         Z3_AST_BUILD_COUNT.load(Ordering::Relaxed),
     );
@@ -229,6 +244,8 @@ pub fn reset_solver_stats() {
     Z3_BRANCH_CONCRETE_COUNT.store(0, Ordering::Relaxed);
     Z3_BRANCH_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_BRANCH_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
+    Z3_EXTREMA_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
+    Z3_EXTREMA_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
     Z3_SAT_COUNT.store(0, Ordering::Relaxed);
     Z3_UNSAT_COUNT.store(0, Ordering::Relaxed);
@@ -927,6 +944,23 @@ impl SymContext {
         value
     }
 
+    /// Evaluate a bv against the cached parent model without doing a SAT
+    /// check. Returns the witness value as a u128 (raw bit pattern, zero-
+    /// extended for widths <128). Used by min()/max() to seed binary-search
+    /// bounds from a previously-computed model.
+    ///
+    /// Soundness: per `invalidate_model_if_inconsistent`, any model in the
+    /// cache satisfies the current constraint set. So `M(bv)` is a feasible
+    /// value of `bv` — for unsigned, `min <= M(bv) <= max`; for signed, the
+    /// same holds under signed interpretation.
+    #[cfg(feature = "vex-engine-z3")]
+    fn cached_model_eval(&self, ast: &z3::ast::BV) -> Option<u128> {
+        let cache = self.model_cache.borrow();
+        let model = cache.as_ref()?;
+        let result = model.eval(ast, true)?;
+        Self::extract_bv_value(&result)
+    }
+
     /// Evaluate a bitvector to bytes (for values > 128 bits).
     #[cfg(feature = "vex-engine-z3")]
     pub fn eval_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
@@ -1185,6 +1219,12 @@ impl SymContext {
     /// This implementation uses pure SAT checks without model value extraction,
     /// which allows it to work with bitvectors of any width (including >64 bits).
     /// Based on claripy's _extrema algorithm.
+    ///
+    /// Optimization: when a parent model is cached (from a prior is_sat / eval
+    /// on the same constraint set), `M(bv)` is a feasible witness `w`. We use
+    /// it to tighten the initial `hi` bound: `min <= w` always holds. For the
+    /// signed case, if `w` is negative we additionally skip the MinInit
+    /// pre-check (we know a negative value exists).
     #[cfg(feature = "vex-engine-z3")]
     pub fn min(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         // Fast path for concrete values
@@ -1199,118 +1239,93 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
-        // Set initial bounds based on signedness
-        // For unsigned: [0, 2^width - 1]
-        // For signed: [-(2^(width-1)), 2^(width-1) - 1] represented in two's complement
-        let (mut lo, mut hi): (u128, u128) = if signed {
-            // Signed: lo is most negative (0x8000...), hi is most positive (0x7FFF...)
-            let sign_bit = 1u128 << (width - 1);
-            let max_positive = sign_bit - 1;
-            // In two's complement ordering for binary search, we search [0, max_positive] then [sign_bit, max_val]
-            // But for signed comparison, Z3 handles this correctly with bvsle/bvsge
-            // Start with the full signed range in two's complement representation
-            (sign_bit, max_positive)
+        // Peek the cached model (populated by is_sat above when it does a
+        // fresh check, or carried over from a prior eval/min/max on the
+        // same constraint set).
+        let witness = self.cached_model_eval(&ast);
+        if witness.is_some() {
+            Z3_EXTREMA_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
         } else {
-            // Unsigned: [0, 2^width - 1]
+            Z3_EXTREMA_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let solver = self.solver();
+        solver.push();
+
+        let (mut lo, mut hi): (u128, u128) = if signed {
+            let sign_bit = 1u128 << (width - 1);
             let max_val = if width >= 128 {
                 u128::MAX
             } else {
                 (1u128 << width) - 1
             };
-            (0, max_val)
-        };
+            let max_positive = sign_bit - 1;
 
-        let solver = self.solver();
-        solver.push();
+            // Witness's signed interpretation: negative iff sign bit set.
+            let witness_is_negative = witness.map(|v| (v & sign_bit) != 0).unwrap_or(false);
 
-        if signed {
-            // For signed values, we need to handle the two's complement ordering
-            // First check if a negative value (sign bit set) is possible
-            solver.push();
-            let zero = Self::make_bv_const(0, width);
-            solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
-            let has_negative =
-                matches!(timed_check(&solver, CheckSite::MinInit), z3::SatResult::Sat);
-            solver.pop(1);
+            // has_negative is true if some satisfying assignment is signed
+            // negative. A negative witness proves it without a Z3 check.
+            let has_negative = if witness_is_negative {
+                true
+            } else {
+                solver.push();
+                let zero = Self::make_bv_const(0, width);
+                solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
+                let r =
+                    matches!(timed_check(&solver, CheckSite::MinInit), z3::SatResult::Sat);
+                solver.pop(1);
+                r
+            };
 
             if has_negative {
-                // Minimum is negative, search in [sign_bit, all_ones] range
-                let sign_bit = 1u128 << (width - 1);
-                let max_val = if width >= 128 {
-                    u128::MAX
+                // Minimum is negative, search in [sign_bit, max_val] range.
+                let hi_seed = if witness_is_negative {
+                    // Witness is in [sign_bit, max_val] and feasible.
+                    witness.unwrap().min(max_val)
                 } else {
-                    (1u128 << width) - 1
+                    max_val
                 };
-                lo = sign_bit;
-                hi = max_val;
-
-                // Binary search for minimum negative value (smallest = most negative)
-                while lo < hi {
-                    let mid = lo + (hi - lo) / 2;
-
-                    solver.push();
-                    let mid_ast = Self::make_bv_const(mid, width);
-                    // Check if bv can be <= mid (signed comparison)
-                    solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(
-                        timed_check(&solver, CheckSite::MinSearch),
-                        z3::SatResult::Sat
-                    );
-                    solver.pop(1);
-
-                    if can_be_le_mid {
-                        hi = mid;
-                    } else {
-                        lo = mid + 1;
-                    }
-                }
+                (sign_bit, hi_seed)
             } else {
-                // Minimum is non-negative, search in [0, max_positive] range
-                let max_positive = (1u128 << (width - 1)) - 1;
-                lo = 0;
-                hi = max_positive;
-
-                // Binary search for minimum non-negative value
-                while lo < hi {
-                    let mid = lo + (hi - lo) / 2;
-
-                    solver.push();
-                    let mid_ast = Self::make_bv_const(mid, width);
-                    // Check if bv can be <= mid (signed comparison)
-                    solver.assert(&ast.bvsle(&mid_ast));
-                    let can_be_le_mid = matches!(
-                        timed_check(&solver, CheckSite::MinSearch),
-                        z3::SatResult::Sat
-                    );
-                    solver.pop(1);
-
-                    if can_be_le_mid {
-                        hi = mid;
-                    } else {
-                        lo = mid + 1;
-                    }
-                }
+                // Minimum is non-negative. Witness, if any, is non-negative
+                // (otherwise has_negative would be true), so it's in
+                // [0, max_positive] and tightens the upper bound.
+                let hi_seed = witness.map(|v| v.min(max_positive)).unwrap_or(max_positive);
+                (0, hi_seed)
             }
         } else {
-            // Unsigned binary search
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
+            let max_val = if width >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << width) - 1
+            };
+            let hi_seed = witness.map(|v| v.min(max_val)).unwrap_or(max_val);
+            (0, hi_seed)
+        };
 
-                solver.push();
-                let mid_ast = Self::make_bv_const(mid, width);
-                // Check if bv can be <= mid (unsigned comparison)
+        // Common binary search loop. The signed and unsigned variants only
+        // differ in the comparison operator (bvsle vs bvule).
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+
+            solver.push();
+            let mid_ast = Self::make_bv_const(mid, width);
+            if signed {
+                solver.assert(&ast.bvsle(&mid_ast));
+            } else {
                 solver.assert(&ast.bvule(&mid_ast));
-                let can_be_le_mid = matches!(
-                    timed_check(&solver, CheckSite::MinSearch),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
+            }
+            let can_be_le_mid = matches!(
+                timed_check(&solver, CheckSite::MinSearch),
+                z3::SatResult::Sat
+            );
+            solver.pop(1);
 
-                if can_be_le_mid {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
+            if can_be_le_mid {
+                hi = mid;
+            } else {
+                lo = mid + 1;
             }
         }
 
@@ -1323,6 +1338,11 @@ impl SymContext {
     /// This implementation uses pure SAT checks without model value extraction,
     /// which allows it to work with bitvectors of any width (including >64 bits).
     /// Based on claripy's _extrema algorithm.
+    ///
+    /// Optimization: when a parent model is cached, `M(bv)` is a feasible
+    /// witness `w` and `max >= w` always holds — used to tighten the initial
+    /// `lo` bound. For the signed case, if `w` is non-negative we additionally
+    /// skip the MaxInit pre-check (we know a non-negative value exists).
     #[cfg(feature = "vex-engine-z3")]
     pub fn max(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         // Fast path for concrete values
@@ -1337,111 +1357,91 @@ impl SymContext {
         let ast = bv.to_z3_ast();
         let width = bv.width();
 
+        let witness = self.cached_model_eval(&ast);
+        if witness.is_some() {
+            Z3_EXTREMA_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            Z3_EXTREMA_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
         let solver = self.solver();
         solver.push();
 
-        let (mut lo, mut hi): (u128, u128);
-
-        if signed {
-            // For signed values, we need to handle the two's complement ordering
-            // First check if a non-negative value (sign bit clear) is possible
-            let zero = Self::make_bv_const(0, width);
-
-            solver.push();
-            solver.assert(&ast.bvsge(&zero)); // bv >= 0 (signed)
-            let has_non_negative =
-                matches!(timed_check(&solver, CheckSite::MaxInit), z3::SatResult::Sat);
-            solver.pop(1);
-
-            if has_non_negative {
-                // Maximum is non-negative, search in [0, max_positive] range
-                let max_positive = (1u128 << (width - 1)) - 1;
-                lo = 0;
-                hi = max_positive;
-
-                // Binary search for maximum non-negative value
-                while lo < hi {
-                    // Use ceiling division to avoid infinite loop when lo + 1 == hi
-                    let mid = lo + (hi - lo + 1) / 2;
-
-                    solver.push();
-                    let mid_ast = Self::make_bv_const(mid, width);
-                    // Check if bv can be >= mid (signed comparison)
-                    solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(
-                        timed_check(&solver, CheckSite::MaxSearch),
-                        z3::SatResult::Sat
-                    );
-                    solver.pop(1);
-
-                    if can_be_ge_mid {
-                        lo = mid;
-                    } else {
-                        hi = mid - 1;
-                    }
-                }
-            } else {
-                // Maximum is negative, search in [sign_bit, all_ones] range
-                let sign_bit = 1u128 << (width - 1);
-                let max_val = if width >= 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << width) - 1
-                };
-                lo = sign_bit;
-                hi = max_val;
-
-                // Binary search for maximum negative value (largest = least negative = closest to 0)
-                while lo < hi {
-                    // Use ceiling division to avoid infinite loop when lo + 1 == hi
-                    let mid = lo + (hi - lo + 1) / 2;
-
-                    solver.push();
-                    let mid_ast = Self::make_bv_const(mid, width);
-                    // Check if bv can be >= mid (signed comparison)
-                    solver.assert(&ast.bvsge(&mid_ast));
-                    let can_be_ge_mid = matches!(
-                        timed_check(&solver, CheckSite::MaxSearch),
-                        z3::SatResult::Sat
-                    );
-                    solver.pop(1);
-
-                    if can_be_ge_mid {
-                        lo = mid;
-                    } else {
-                        hi = mid - 1;
-                    }
-                }
-            }
-        } else {
-            // Unsigned binary search
+        let (mut lo, mut hi): (u128, u128) = if signed {
+            let sign_bit = 1u128 << (width - 1);
             let max_val = if width >= 128 {
                 u128::MAX
             } else {
                 (1u128 << width) - 1
             };
-            lo = 0;
-            hi = max_val;
+            let max_positive = sign_bit - 1;
 
-            while lo < hi {
-                // Use ceiling division to avoid infinite loop when lo + 1 == hi
-                let mid = lo + (hi - lo + 1) / 2;
+            // Witness's signed interpretation: non-negative iff sign bit clear.
+            let witness_is_non_negative = witness.map(|v| (v & sign_bit) == 0).unwrap_or(false);
 
+            // A non-negative witness proves has_non_negative without a Z3 check.
+            let has_non_negative = if witness_is_non_negative {
+                true
+            } else {
                 solver.push();
-                let mid_ast = Self::make_bv_const(mid, width);
-                // Check if bv can be >= mid (unsigned comparison)
-                solver.assert(&ast.bvuge(&mid_ast));
-                let can_be_ge_mid = matches!(
-                    timed_check(&solver, CheckSite::MaxSearch),
-                    z3::SatResult::Sat
-                );
+                let zero = Self::make_bv_const(0, width);
+                solver.assert(&ast.bvsge(&zero)); // bv >= 0 (signed)
+                let r =
+                    matches!(timed_check(&solver, CheckSite::MaxInit), z3::SatResult::Sat);
                 solver.pop(1);
+                r
+            };
 
-                if can_be_ge_mid {
-                    lo = mid;
+            if has_non_negative {
+                // Maximum is non-negative, search in [0, max_positive] range.
+                // Witness, when non-negative, gives a tight lower bound.
+                let lo_seed = if witness_is_non_negative {
+                    witness.unwrap().min(max_positive)
                 } else {
-                    hi = mid - 1;
-                }
+                    0
+                };
+                (lo_seed, max_positive)
+            } else {
+                // Maximum is negative. Witness, if any, is negative (otherwise
+                // has_non_negative would be true), so it's in [sign_bit, max_val].
+                let lo_seed = witness
+                    .map(|v| v.max(sign_bit).min(max_val))
+                    .unwrap_or(sign_bit);
+                (lo_seed, max_val)
+            }
+        } else {
+            let max_val = if width >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << width) - 1
+            };
+            let lo_seed = witness.map(|v| v.min(max_val)).unwrap_or(0);
+            (lo_seed, max_val)
+        };
+
+        // Common binary search loop. The signed and unsigned variants only
+        // differ in the comparison operator (bvsge vs bvuge).
+        while lo < hi {
+            // Use ceiling division to avoid infinite loop when lo + 1 == hi
+            let mid = lo + (hi - lo + 1) / 2;
+
+            solver.push();
+            let mid_ast = Self::make_bv_const(mid, width);
+            if signed {
+                solver.assert(&ast.bvsge(&mid_ast));
+            } else {
+                solver.assert(&ast.bvuge(&mid_ast));
+            }
+            let can_be_ge_mid = matches!(
+                timed_check(&solver, CheckSite::MaxSearch),
+                z3::SatResult::Sat
+            );
+            solver.pop(1);
+
+            if can_be_ge_mid {
+                lo = mid;
+            } else {
+                hi = mid - 1;
             }
         }
 
@@ -2523,5 +2523,142 @@ mod tests {
             !can_be_five,
             "x2 should have same constraints as x1 since same name"
         );
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_min_max_use_cached_model_unsigned() {
+        // Verify unsigned min()/max() return correct values when seeded by a
+        // cached model, and that the HIT counter increments. Counters are
+        // process-wide and tests run in parallel, so we only assert deltas
+        // with >= bounds (other tests may bump the same counter concurrently).
+        use super::{Z3_EXTREMA_MODEL_HIT_COUNT, Z3_EXTREMA_MODEL_MISS_COUNT};
+
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_min_max_cached", 32);
+        let lo_bound = RustBV::concrete(10, 32);
+        let hi_bound = RustBV::concrete(20, 32);
+        ctx.assume_true(&x.ugt(&lo_bound, &ctx));
+        ctx.assume_true(&x.ult(&hi_bound, &ctx));
+
+        // Populate the model cache with an eval.
+        let v = ctx.eval(&x);
+        assert!(v.is_some());
+
+        let hit_before = Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed);
+        let miss_before = Z3_EXTREMA_MODEL_MISS_COUNT.load(Ordering::Relaxed);
+
+        let min_val = ctx.min(&x, false);
+        let max_val = ctx.max(&x, false);
+
+        let hit_after = Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed);
+        let miss_after = Z3_EXTREMA_MODEL_MISS_COUNT.load(Ordering::Relaxed);
+
+        assert_eq!(min_val, Some(11), "min should be 11");
+        assert_eq!(max_val, Some(19), "max should be 19");
+        // Our 2 calls each had a usable model — should bump HIT by >=2 and
+        // not bump MISS at all.
+        assert!(
+            hit_after - hit_before >= 2,
+            "expected >=2 extrema cache hits across min+max, got {}",
+            hit_after - hit_before
+        );
+        assert_eq!(
+            miss_after - miss_before,
+            0,
+            "expected 0 extrema cache misses from this test's calls"
+        );
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_min_use_cached_model_seeds_unsigned_zero_witness() {
+        // If the cached witness is 0, unsigned min should short-circuit
+        // (hi=0=lo) and return 0 with no binary-search SAT checks.
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_min_zero_witness", 32);
+        let five = RustBV::concrete(5, 32);
+        ctx.assume_true(&x.ule(&five, &ctx));
+        // Pin the model under a push frame so the constraint x==0 doesn't
+        // persist into the actual min() call. The model survives the pop.
+        ctx.push();
+        ctx.add_bv_constraint(&x, 0);
+        let _ = ctx.eval(&x);
+        ctx.pop();
+
+        let result = ctx.min(&x, false);
+        assert_eq!(result, Some(0), "min should be 0 (witness-pinned)");
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_min_max_signed_with_negative_witness() {
+        // Verify signed min/max are correct when the cached witness is
+        // signed-negative.
+        use super::Z3_EXTREMA_MODEL_HIT_COUNT;
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_signed_neg", 32);
+        // Constrain: -20 <= x <= -5 (signed)
+        let neg20 = RustBV::concrete((-20i32) as u32 as u128, 32);
+        let neg5 = RustBV::concrete((-5i32) as u32 as u128, 32);
+        ctx.assume_true(&x.sge(&neg20, &ctx));
+        ctx.assume_true(&x.sle(&neg5, &ctx));
+        // Populate cache with eval — witness must be in [-20, -5].
+        let v = ctx.eval(&x).unwrap();
+        // Witness's sign bit (bit 31 for width=32) must be set.
+        assert_ne!(v & (1u128 << 31), 0, "witness should be signed-negative");
+
+        let hit_before = Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed);
+
+        let min_signed = ctx.min(&x, true);
+        let max_signed = ctx.max(&x, true);
+
+        let hit_after = Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed);
+
+        assert_eq!(min_signed, Some((-20i32) as u32 as u128));
+        assert_eq!(max_signed, Some((-5i32) as u32 as u128));
+        assert!(
+            hit_after - hit_before >= 2,
+            "expected >=2 extrema hits, got {}",
+            hit_after - hit_before
+        );
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_min_max_signed_with_positive_witness() {
+        // Verify signed min/max are correct when the cached witness is
+        // signed-positive (covers the witness_is_non_negative path in max).
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_signed_pos", 32);
+        // Constrain: 5 <= x <= 20 (signed)
+        let five = RustBV::concrete(5u128, 32);
+        let twenty = RustBV::concrete(20u128, 32);
+        ctx.assume_true(&x.sge(&five, &ctx));
+        ctx.assume_true(&x.sle(&twenty, &ctx));
+        // Populate cache.
+        let v = ctx.eval(&x).unwrap();
+        assert_eq!(v & (1u128 << 31), 0, "witness should be signed-non-negative");
+
+        assert_eq!(ctx.min(&x, true), Some(5));
+        assert_eq!(ctx.max(&x, true), Some(20));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_min_max_no_cached_model_still_correct() {
+        // When no model is cached (e.g. fresh context after pop without prior
+        // eval), min/max must still work correctly via the fallback path.
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_no_model", 32);
+        let lo_bound = RustBV::concrete(100, 32);
+        let hi_bound = RustBV::concrete(200, 32);
+        ctx.assume_true(&x.ugt(&lo_bound, &ctx));
+        ctx.assume_true(&x.ult(&hi_bound, &ctx));
+        // Don't call eval. The first is_sat inside min will populate the
+        // cache, so the witness path is exercised — but the seeded value is
+        // whatever Z3 chose. Still must be in [101, 199].
+        assert_eq!(ctx.min(&x, false), Some(101));
+        assert_eq!(ctx.max(&x, false), Some(199));
     }
 }
