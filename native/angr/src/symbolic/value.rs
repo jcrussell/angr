@@ -1563,11 +1563,25 @@ impl RustBV {
                     return hi_part.concat_into(lo_part, _ctx);
                 }
 
-                // Rule 3: Extract(Reverse(x)) with byte-aligned bounds
-                // → Extract(width-1-lo, width-1-hi, x) — eliminates the Reverse
+                // Rule 3: Extract(Reverse(x)) with byte-aligned bounds.
+                //
+                // The byte at position k of Reverse(x) (with B = x.width/8 bytes)
+                // is x's byte at position B-1-k. Extracting bytes [l/8..h/8] from
+                // Reverse(x) is therefore the byte sequence of x at indices
+                // [B-1-h/8 .. B-1-l/8], delivered in reversed order.
+                //
+                // → Single-byte (h == l + 7): plain Extract(w-1-low, w-1-high, x).
+                // → Multi-byte:                Reverse(Extract(w-1-low, w-1-high, x)).
+                //
+                // The previous form dropped the byte-shuffle for the multi-byte
+                // case, which is silently wrong on a Z3 round-trip.
                 BVOp::Reverse if operands[0].width() % 8 == 0 && high % 8 == 7 && low % 8 == 0 => {
                     let w = operands[0].width();
-                    return operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
+                    let inner = operands[0].extract(w - 1 - low, w - 1 - high, _ctx);
+                    if high - low + 1 == 8 {
+                        return inner;
+                    }
+                    return inner.reverse(_ctx);
                 }
 
                 // Rule 4: Extract(ZeroExt(x)) — if entirely within original width,
@@ -2009,7 +2023,10 @@ impl RustBV {
                 }
                 result
             }
-            BVOp::Extract(high, low) => operands[0].to_z3_ast().extract(*high, *low),
+            BVOp::Extract(high, low) => {
+                let mut cache = std::collections::HashMap::new();
+                Self::emit_extract_z3_cached(&operands[0], *high, *low, &mut cache)
+            }
             BVOp::Concat => {
                 // Flatten nested left-associative Concat trees into a single
                 // right-associative chain. Left-associative trees from memory loads
@@ -2127,6 +2144,141 @@ impl RustBV {
                 Self::build_fp_z3_ast_cached(*kind, *prec, operands, &mut cache)
             }
         }
+    }
+
+    /// Emit a Z3 AST for `Extract(high, low, inner)` while re-applying the
+    /// canonicalization rules from `extract_into` at Z3-emission time.
+    ///
+    /// `extract_into` only fires at construction time. Extract nodes built via
+    /// `truncate_into` or `extract_no_ctx` bypass those rules, and so do Extract
+    /// nodes whose inner shape was rewritten *after* the Extract was created.
+    /// This walks the inner operand and distributes the Extract through
+    /// Concat/Reverse/ZeroExt/SignExt/Extract patterns before handing anything
+    /// to Z3, which avoids emitting intermediate Z3 ASTs that Z3's bv_rewriter
+    /// would have to simplify (and, in the Reverse case, often can't — Z3 has
+    /// no native Reverse, so the Concat-of-Extracts encoding survives).
+    #[cfg(feature = "vex-engine-z3")]
+    fn emit_extract_z3_cached(
+        inner: &RustBV,
+        high: u32,
+        low: u32,
+        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
+    ) -> z3::ast::BV {
+        debug_assert!(high >= low);
+        debug_assert!(high < inner.width());
+        let result_width = high - low + 1;
+
+        // Identity: Extract(width-1, 0, x) → x
+        if high == inner.width() - 1 && low == 0 {
+            return inner.to_z3_ast_cached(cache);
+        }
+
+        // Concrete fast path — fold the extraction at the Rust level so Z3
+        // never sees Extract over a literal.
+        if let Some(v) = inner.as_u128() {
+            let extracted = (v >> low) & ((1u128 << result_width) - 1);
+            if result_width <= 64 {
+                return z3::ast::BV::from_u64(extracted as u64, result_width);
+            }
+            let lo = z3::ast::BV::from_u64(extracted as u64, 64);
+            let hi = z3::ast::BV::from_u64((extracted >> 64) as u64, result_width - 64);
+            return hi.concat(&lo);
+        }
+
+        if let RustBV::Expression { op, operands, .. } = inner {
+            match op {
+                // Rule 1: Extract(h2, l2, Extract(h1, l1, x)) → Extract(l1+h2, l1+l2, x)
+                BVOp::Extract(_, inner_low) => {
+                    return Self::emit_extract_z3_cached(
+                        &operands[0],
+                        inner_low + high,
+                        inner_low + low,
+                        cache,
+                    );
+                }
+
+                // Rule 2: Extract(Concat(a, b)) → distribute to the relevant part(s)
+                BVOp::Concat if operands.len() == 2 => {
+                    let b_width = operands[1].width();
+                    if high < b_width {
+                        return Self::emit_extract_z3_cached(&operands[1], high, low, cache);
+                    } else if low >= b_width {
+                        return Self::emit_extract_z3_cached(
+                            &operands[0],
+                            high - b_width,
+                            low - b_width,
+                            cache,
+                        );
+                    }
+                    // Crosses boundary — extract from each part and concat.
+                    let lo_part =
+                        Self::emit_extract_z3_cached(&operands[1], b_width - 1, low, cache);
+                    let hi_part =
+                        Self::emit_extract_z3_cached(&operands[0], high - b_width, 0, cache);
+                    return hi_part.concat(&lo_part);
+                }
+
+                // Rule 3: Extract(Reverse(x)) with byte-aligned bounds.
+                // Single-byte: Reverse is a no-op, just extract the flipped byte from x.
+                // Multi-byte: extract the matching byte range from x, then byte-reverse
+                // (emitted as the canonical Concat-of-Extracts Z3 shape, matching
+                // build_z3_ast_cached's BVOp::Reverse arm).
+                BVOp::Reverse
+                    if operands[0].width() % 8 == 0 && high % 8 == 7 && low % 8 == 0 =>
+                {
+                    let w = operands[0].width();
+                    let inner_ast = Self::emit_extract_z3_cached(
+                        &operands[0],
+                        w - 1 - low,
+                        w - 1 - high,
+                        cache,
+                    );
+                    if high - low + 1 == 8 {
+                        return inner_ast;
+                    }
+                    let inner_w = high - low + 1;
+                    let byte_count = inner_w / 8;
+                    let parts: Vec<z3::ast::BV> = (0..byte_count)
+                        .map(|i| inner_ast.extract(i * 8 + 7, i * 8))
+                        .collect();
+                    let mut result = parts[0].clone();
+                    for part in &parts[1..] {
+                        result = result.concat(part);
+                    }
+                    return result;
+                }
+
+                // Rule 4: Extract(ZeroExt(x)) — collapse to original or zero
+                BVOp::ZeroExt(_) => {
+                    let inner_width = operands[0].width();
+                    if high < inner_width {
+                        return Self::emit_extract_z3_cached(&operands[0], high, low, cache);
+                    } else if low >= inner_width {
+                        return z3::ast::BV::from_u64(0, result_width);
+                    }
+                    // Straddles the extension boundary — fall through to the
+                    // generic path. Don't try to split here: the existing
+                    // build_z3_ast_cached emits ZeroExt as a concat of zero
+                    // bits, so Z3's bv_rewriter already collapses
+                    // Extract(zero_ext) cleanly.
+                }
+
+                // Rule 5: Extract(SignExt(x)) — collapse if entirely within original width
+                BVOp::SignExt(_) => {
+                    let inner_width = operands[0].width();
+                    if high < inner_width {
+                        return Self::emit_extract_z3_cached(&operands[0], high, low, cache);
+                    }
+                    // Otherwise fall through — the SignExt encoding handles
+                    // sign-bit propagation; bv_rewriter folds the Extract.
+                }
+
+                _ => {}
+            }
+        }
+
+        // Default: build the inner Z3 AST and apply Extract.
+        inner.to_z3_ast_cached(cache).extract(high, low)
     }
 
     /// Build Z3 AST with caching to avoid exponential blowup on DAG expressions.
@@ -2267,7 +2419,9 @@ impl RustBV {
                 }
                 result
             }
-            BVOp::Extract(high, low) => operands[0].to_z3_ast_cached(cache).extract(*high, *low),
+            BVOp::Extract(high, low) => {
+                Self::emit_extract_z3_cached(&operands[0], *high, *low, cache)
+            }
             BVOp::Concat => {
                 fn collect_concat_leaves_cached(
                     bv: &RustBV,
@@ -3363,5 +3517,226 @@ mod tests {
         }
         // concat = 0x1122334455667788; reverse → 0x8877665544332211
         assert_eq!(ctx.eval(&rev), Some(0x8877665544332211));
+    }
+
+    // --- Pre-Z3 Extract rewrite pass (angr-p8cz) ---
+
+    /// Helper: build a raw Extract Expression node without going through
+    /// `extract_into`. This simulates Extract nodes that bypass the
+    /// construction-time rewrite (e.g., via `truncate_into` or
+    /// `extract_no_ctx`), so we can verify the Z3-emission pass picks them up.
+    #[cfg(feature = "vex-engine-z3")]
+    fn raw_extract_node(inner: RustBV, high: u32, low: u32) -> RustBV {
+        let result_width = high - low + 1;
+        RustBV::Expression {
+            id: RustBV::EXPRESSION_ID,
+            width: result_width,
+            op: BVOp::Extract(high, low),
+            operands: std::sync::Arc::<[RustBV]>::from([inner]),
+        }
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_reverse_byte_aligned() {
+        // Extract a single byte from Reverse(x). With the rewrite pass the
+        // Reverse should be eliminated entirely from the Z3 AST.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let rev = x.reverse(&ctx);
+        // Bypass extract_into via the raw-node helper: pretend this Extract was
+        // built by truncate_into or extract_no_ctx after the Reverse existed.
+        // Reverse(x) byte 0 ([7:0]) is byte 3 ([31:24]) of x.
+        let lo_byte = raw_extract_node(rev, 7, 0);
+        let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        assert_eq!(ctx.eval(&lo_byte), Some(0x11));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_reverse_crossing_byte() {
+        // Two-byte extract across a byte boundary on Reverse — still
+        // byte-aligned (high % 8 == 7, low % 8 == 0), should be rewritten.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let rev = x.reverse(&ctx);
+        // Reverse(x)[15:0] = bytes 0,1 of reverse = bytes 3,2 of x = top half reversed.
+        let lower16 = raw_extract_node(rev, 15, 0);
+        let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        // Reverse(0x11223344) = 0x44332211; low 16 bits = 0x2211
+        assert_eq!(ctx.eval(&lower16), Some(0x2211));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_concat_within_low() {
+        // Extract entirely within the low (right) part of a Concat — should
+        // delegate to that operand alone.
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "a", 16);
+        let b = RustBV::symbolic(&ctx, "b", 16);
+        let cat = a.concat(&b, &ctx); // a:high, b:low
+        // Extract [15:0] of cat = entirely within b.
+        let lo = raw_extract_node(cat, 15, 0);
+        ctx.add_constraint(
+            a.eq(&RustBV::concrete(0xAAAA, 16), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        ctx.add_constraint(
+            b.eq(&RustBV::concrete(0xBBBB, 16), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        assert_eq!(ctx.eval(&lo), Some(0xBBBB));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_concat_within_high() {
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "a", 16);
+        let b = RustBV::symbolic(&ctx, "b", 16);
+        let cat = a.concat(&b, &ctx);
+        // Extract [31:16] of cat = entirely within a.
+        let hi = raw_extract_node(cat, 31, 16);
+        ctx.add_constraint(
+            a.eq(&RustBV::concrete(0xAAAA, 16), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        ctx.add_constraint(
+            b.eq(&RustBV::concrete(0xBBBB, 16), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        assert_eq!(ctx.eval(&hi), Some(0xAAAA));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_concat_crossing() {
+        // Crosses the a/b boundary in the middle — distribute Extract to both.
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "a", 16);
+        let b = RustBV::symbolic(&ctx, "b", 16);
+        let cat = a.concat(&b, &ctx);
+        // Extract [23:8] = high 8 bits of b ([15:8]) concat with low 8 bits of a ([7:0]).
+        let mid = raw_extract_node(cat, 23, 8);
+        ctx.add_constraint(
+            a.eq(&RustBV::concrete(0x1234, 16), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        ctx.add_constraint(
+            b.eq(&RustBV::concrete(0x5678, 16), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        // cat = 0x12345678; extract [23:8] = 0x3456
+        assert_eq!(ctx.eval(&mid), Some(0x3456));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_extract_fused() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 64);
+        let mid = x.extract(47, 16, &ctx); // width 32, = bits 16..=47 of x
+        // Build outer Extract WITHOUT going through extract_into.
+        let outer = raw_extract_node(mid, 23, 8); // mid[23:8] = bits [39:24] of x
+        ctx.add_constraint(
+            x.eq(&RustBV::concrete(0x0011_2233_4455_6677, 64), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        // x bytes (LSB→MSB): 0x77 0x66 0x55 0x44 0x33 0x22 0x11 0x00.
+        // bits [39:24] of x = byte indices 3..=4 = 0x33:0x44 (high:low) = 0x3344.
+        assert_eq!(ctx.eval(&outer), Some(0x3344));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_zero_ext_low_bits() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(32, &ctx); // width 32
+        // Extract [7:0] entirely within original x.
+        let lo = raw_extract_node(zx, 7, 0);
+        ctx.add_constraint(
+            x.eq(&RustBV::concrete(0xAB, 8), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        assert_eq!(ctx.eval(&lo), Some(0xAB));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_zero_ext_extended_bits() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(32, &ctx);
+        // Extract [31:24] is entirely in the zero-extended region.
+        let top = raw_extract_node(zx, 31, 24);
+        ctx.add_constraint(
+            x.eq(&RustBV::concrete(0xFF, 8), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        assert_eq!(ctx.eval(&top), Some(0));
+    }
+
+    /// Regression for the latent bug in extract_into's Rule 3: multi-byte
+    /// byte-aligned Extract of Reverse(x) used to drop the byte shuffle
+    /// (returned plain Extract from x), giving the wrong byte order in the
+    /// constraint tree. Now it returns Reverse(Extract(...)), preserving
+    /// semantics through every consumer (Z3 round-trip, downstream rewrites).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_extract_over_reverse_multibyte_construction() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let rev = x.reverse(&ctx);
+        // Use the normal extract (which now goes through the fixed Rule 3).
+        let lower16 = rev.extract(15, 0, &ctx);
+        let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        // Reverse(0x11223344) = 0x44332211; low 16 = 0x2211.
+        assert_eq!(ctx.eval(&lower16), Some(0x2211));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_extract_over_reverse_single_byte_construction() {
+        // Single-byte case: rule reduces to plain Extract from x.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let rev = x.reverse(&ctx);
+        // Byte 0 of reverse = byte 3 of x.
+        let b0 = rev.extract(7, 0, &ctx);
+        ctx.add_constraint(
+            x.eq(&RustBV::concrete(0x11223344, 32), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        assert_eq!(ctx.eval(&b0), Some(0x11));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_pre_z3_extract_over_sign_ext_low_bits() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let sx = x.sign_extend(32, &ctx);
+        let lo = raw_extract_node(sx, 7, 0);
+        ctx.add_constraint(
+            x.eq(&RustBV::concrete(0x80, 8), &ctx)
+                .to_z3_ast()
+                .eq(&z3::ast::BV::from_u64(1, 1)),
+        );
+        assert_eq!(ctx.eval(&lo), Some(0x80));
     }
 }
