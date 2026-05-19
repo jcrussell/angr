@@ -269,7 +269,7 @@ period — do not run both simultaneously.
 | unmapped_analysis | 1.2x | |
 | flareon2015_2 | 1.1x | 32-bit x86 |
 | securityfest_fairlight | 1.0x | Rust interpreter parity for symbolic-heavy blocks |
-| hackcon2016_angry-reverser | 0.6x | angr-8t45 partial fix 2026-05-18: bisected regression to `fced54a07` (lazy-zero-page opt); added per-state cap so hackcon keeps eager path (3-sample median ~15.2s). See `docs/advanced-topics/rust_engine.rst`. |
+| hackcon2016_angry-reverser | 0.7x | angr-8t45 (2026-05-18) per-state lazy-zero cap; angr-tlvl (2026-05-19) fixed latent Reverse leaf-emission bug — Z3 shape now matches claripy but hackcon residual gap unchanged (5-sample median ~14.84s). See `docs/advanced-topics/rust_engine.rst`. |
 | mma_howtouse | 0.6x | 45 isolated `Callable` invocations; AST-cache hypothesis invalidated 2026-05-17 (claripy `clear_all_caches()` removed; Rust-side cache hook delivered 0%). Residual gap unattributed. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
 | google2016_unbreakable_1 | 0.5x | High variance; regressed from 3.3x |
 | ekopartyctf2016_sokohashv2 | 0.4x | x87 transcendentals fall back to Python; bimodal Z3 variance. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |

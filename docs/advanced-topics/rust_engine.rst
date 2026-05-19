@@ -1040,7 +1040,7 @@ be tracked.
        be the slow mode. See :doc:`rust_bimodal_variance` and
        ``benchmark-google2016-unbreakable-1-regression``.
    * - ``hackcon2016_angry-reverser``
-     - 0.57x (recovered from 0.33x on 2026-05-17 via angr-8t45)
+     - 0.69x (Py ~10.29s / Rust ~14.84s, 5-sample median 2026-05-19)
      - The 2026-05-17 regression (11.7s → 30.6s) was bisected to
        ``fced54a07`` (angr-9maq, "skip eager allocation of all-zero
        filler pages"), which optimized ``mma_howtouse``'s memory
@@ -1048,10 +1048,19 @@ be tracked.
        angr-8t45 added a per-state ``zero_eager_cap=200`` to
        ``_sync_extra_python_pages``: hackcon (~35 zero pages/state)
        gets the eager-map path back; mma_howtouse (~2058 zero
-       pages/state) keeps the lazy path. Post-fix: 3-sample median
-       ~15.2s (still above pre-regression 11.7s — residual structural
-       cost is the same Z3 Extract/Reverse AST mismatch from
-       ``hackcon-z3-ast-structure``). Python time unchanged (~10.5s).
+       pages/state) keeps the lazy path. **Reverse leaf-emission
+       hypothesis invalidated (angr-tlvl, 2026-05-19):** the
+       ``Reverse(x)`` leaf-case in ``build_z3_ast`` had a latent
+       semantic bug (a stray ``parts.reverse()`` produced ``x``
+       instead of byte-reversed x; Z3 folded it back to ``x`` so
+       integration tests passed). Fixing the bug to emit
+       ``Concat(extract[7:0,x], …, extract[N-1:N-8,x])`` — claripy's
+       canonical shape — moved the median from ~15.22s to ~14.84s
+       (within stdev). The residual hackcon cost is **not** from
+       the Reverse leaf emission. Suspected next: rustbv↔claripy
+       round-trip producing structurally different concat trees
+       over the flag BVS, per ``hackcon-z3-ast-structure``. Python
+       time unchanged (~10.3s).
    * - ``securityfest_fairlight``
      - 0.73x (slow mode)
      - Bimodal; 2026-05-13 campaign measured ~7.95s OR ~21.4s

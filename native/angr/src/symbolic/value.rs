@@ -2099,10 +2099,13 @@ impl RustBV {
                 let ast = operands[0].to_z3_ast();
                 let w = operands[0].width();
                 if w % 8 == 0 && w >= 16 {
+                    // Emit Concat(extract[7:0,x], extract[15:8,x], ..., extract[N-1:N-8,x]),
+                    // matching claripy's canonical Reverse shape. The HIGH byte of the
+                    // reversed value is the LOW byte of x, so the first part (extract[7:0])
+                    // accumulates as the highest bits via left-associative `result.concat(part)`.
                     let bytes = w / 8;
-                    let mut parts: Vec<z3::ast::BV> =
+                    let parts: Vec<z3::ast::BV> =
                         (0..bytes).map(|i| ast.extract(i * 8 + 7, i * 8)).collect();
-                    parts.reverse();
                     let mut result = parts[0].clone();
                     for part in &parts[1..] {
                         result = result.concat(part);
@@ -2350,10 +2353,10 @@ impl RustBV {
                 let ast = operands[0].to_z3_ast_cached(cache);
                 let w = operands[0].width();
                 if w % 8 == 0 && w >= 16 {
+                    // Same canonical shape as the non-cached path above.
                     let bytes = w / 8;
-                    let mut parts: Vec<z3::ast::BV> =
+                    let parts: Vec<z3::ast::BV> =
                         (0..bytes).map(|i| ast.extract(i * 8 + 7, i * 8)).collect();
-                    parts.reverse();
                     let mut result = parts[0].clone();
                     for part in &parts[1..] {
                         result = result.concat(part);
@@ -3298,5 +3301,67 @@ mod tests {
         let lo = ext.extract(7, 0, &ctx);
         assert!(matches!(lo, RustBV::Symbolic { .. }));
         assert_eq!(lo.width(), 8);
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_reverse_z3_emission_32bit_leaf() {
+        // Reverse(x) over a symbolic leaf should produce byte-reversed value
+        // through the Z3 emission path.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let rev = x.reverse(&ctx); // Expression { Reverse, [x] }
+        // Pin x = 0x11223344; expect Reverse(x) = 0x44332211
+        let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        assert_eq!(ctx.eval(&rev), Some(0x44332211));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_reverse_z3_emission_64bit_leaf() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 64);
+        let rev = x.reverse(&ctx);
+        let pinned = x.eq(&RustBV::concrete(0x0123456789ABCDEF, 64), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        assert_eq!(ctx.eval(&rev), Some(0xEFCDAB8967452301));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_reverse_z3_emission_16bit_leaf() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 16);
+        let rev = x.reverse(&ctx);
+        let pinned = x.eq(&RustBV::concrete(0xAABB, 16), &ctx);
+        ctx.add_constraint(pinned.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        assert_eq!(ctx.eval(&rev), Some(0xBBAA));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_reverse_z3_emission_concat_of_bytes() {
+        // Reverse(Concat(b0, b1, ..., b7)) with independent byte BVSes.
+        // Memory loads in angr typically produce this shape; the result should
+        // be Concat(b7, b6, ..., b0) — the byte-reversed value.
+        let ctx = SymContext::new_mock();
+        let bytes: Vec<RustBV> = (0..8u32)
+            .map(|i| RustBV::symbolic(&ctx, &format!("b{}", i), 8))
+            .collect();
+        // Build claripy-style Concat(b0, b1, ..., b7) with b0 as high.
+        let mut concat = bytes[0].clone();
+        for b in &bytes[1..] {
+            concat = concat.concat(b, &ctx);
+        }
+        let rev = concat.reverse(&ctx);
+        // Pin each byte to a distinct value and verify byte-reversed result.
+        let vals: [u64; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        for (b, v) in bytes.iter().zip(vals.iter()) {
+            let pin = b.eq(&RustBV::concrete(*v as u128, 8), &ctx);
+            ctx.add_constraint(pin.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        }
+        // concat = 0x1122334455667788; reverse → 0x8877665544332211
+        assert_eq!(ctx.eval(&rev), Some(0x8877665544332211));
     }
 }
