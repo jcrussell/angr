@@ -919,38 +919,48 @@ baseline is intentionally left in place (consistent with the
 sokohashv2 / unbreakable_1 / fairlight precedent — see
 :doc:`rust_bimodal_variance`).
 
-**Where the gap actually is — unattributed.** Per the
-``benchmark-mma-howtouse-2026-05-17-final`` memory the remaining
-~3.1s gap is "in some other path — not AST cache lookup overhead."
-No single Rust hot path explains it. Likely contributors (none
-individually dominant in a profile):
+**Where the gap is — per-manager memory sync (attributed 2026-05-19,
+angr-i9f2).** A single-Callable ``perf_report()`` collected on HEAD
+``2870a3429`` (the last manager constructed by ``run_single.py
+mma_howtouse --engine rust``) breaks the per-instance cost down to:
 
-* Per-``callable()`` ``RustExplorationManager`` construction and
-  state-export overhead (45 instances) amortizes poorly on a workload
-  that runs only a handful of blocks per call.
-* Python-side Callable plumbing (``call_state`` setup, return-value
-  extraction) is paid 45× and is not on the Rust engine's hot path.
-* UltraPage / DirtyAddrsMixin growth was the *memory* problem fixed
-  by ``342df4a7f`` (1606MB → 285MB) but the wall-time gap was not
-  recovered by that fix.
+* ``Init total``: 43.3 ms
 
-**Why not chase a Rust fix?**
+  * Setup callbacks / load binary / register SimProcedures: ~0 ms
+  * Python init: 1.2 ms
+  * ``Add Rust state``: 42.0 ms
 
-#. The benchmark is a degenerate stress test (45 isolated
-   ``Callable`` invocations) that does not reflect typical
-   symbolic-execution workloads.
-#. The two cheap mitigations historically considered — manual cache
-   clears and a Rust LRU flush — have both been measured to deliver
-   ~0% on the current tree.
-#. The remaining structural fix (per-manager AST cache scoping so
-   cached entries do not leak across manager lifetimes) is invasive
-   claripy work and only pays for Callable-heavy workloads, of which
-   this is the sole benchmark.
+    * **Memory sync: 36.7 ms** ← dominant per-Callable cost
+    * Register sync: 3.1 ms
 
-Per the ``angr-ed7j-doc-resolution`` rule, this is closed via
-documentation. Re-open justification: an explicit per-manager AST
-cache scoping design lands, or a fresh profile attributes the gap to
-a concrete Rust-side hot path that did not exist before.
+* SimProcedure callback (``CallReturn``): 8.4 ms total
+* Lift block (3 callbacks): 1.0 ms total
+* Z3: 45 checks at ~7.1 ms each (320 ms cumulative)
+
+Per-Callable Rust extras therefore sum to ~58 ms, and 45 × 58 ms ≈
+2.6 s — consistent with the observed 3.0 s gap over Python.
+
+The memory-sync slow path runs every Callable because
+``_run_python_init_if_needed`` (``rust_manager.py:2317``) short-circuits
+when ``state.addr`` is inside a real (non-loader) binary, so
+``_mem_cache`` is never populated and ``_try_fast_memory_sync``
+(``rust_state_sync.py:229``) returns ``False``. Each manager then
+re-iterates ``loader.all_objects``, re-loads every page via
+``loader.memory.load``, and re-issues the FFI ``map_memory_batch`` from
+scratch. The loader-pages output of ``_extract_loader_pages``
+(``rust_manager.py:406``) is a pure function of the loader state and is
+identical for all 45 Callables.
+
+A follow-up fix is tracked in ``angr-bzsc``: cache the loader-pages
+output class-wide (keyed by ``binary_path + arch_name``) so that the
+second-through-Nth Callable skip the slow loader iteration and only pay
+the small per-state stack / overlay stages. Expected impact: ~36 ms ×
+44 ≈ 1.6 s, which would close most of the residual 3 s gap.
+
+**Why this was not chased earlier.** Pre-attribution, the cheap
+mitigations considered (manual claripy cache clears, Rust LRU flush)
+delivered ~0% on the current tree, and the gap had been left
+documentation-resolved per ``angr-ed7j-doc-resolution``.
 
 **Memory:** the original 1606MB peak was fixed independently in commit
 ``342df4a7f`` (2026-05-02), bringing peak to ~285MB. The current 0.59x
