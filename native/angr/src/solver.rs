@@ -162,7 +162,49 @@ impl RustSolverContext {
     }
 
     /// Add multiple constraints from claripy ASTs.
+    ///
+    /// Fast path: when every AST resolves to a raw Z3 AST pointer via the
+    /// claripy z3 backend (the same fast path used by `add_constraint_ast`),
+    /// dispatch through `SymContext::add_constraints_raw_batch` so the whole
+    /// batch shares one `local_constraints` lock, one `solver()` guard, and
+    /// one model invalidation pass. Any AST that fails the raw extraction
+    /// flips the call back to the per-constraint slow path so behavior stays
+    /// identical to the unbatched loop.
     pub fn add_constraints(&self, py: Python<'_>, asts: &Bound<'_, PyList>) -> PyResult<()> {
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            let ctx = self.inner.ctx();
+            let n = asts.len();
+            let mut entries: Vec<(usize, RustBV, bool)> = Vec::with_capacity(n);
+            let mut all_raw = true;
+            for ast in asts.iter() {
+                let ptr = match extract_z3_ast_ptr(py, &ast) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        all_raw = false;
+                        break;
+                    }
+                };
+                let bv = match claripy_to_rustbv(py, &ast, &*ctx) {
+                    Ok(b) => b,
+                    Err(_) => {
+                        all_raw = false;
+                        break;
+                    }
+                };
+                entries.push((ptr, bv, true));
+            }
+            if all_raw {
+                // SAFETY: every ptr came from extract_z3_ast_ptr (non-null,
+                // claripy z3 backend), same precondition as add_constraint_raw.
+                unsafe {
+                    ctx.add_constraints_raw_batch(entries);
+                }
+                return Ok(());
+            }
+        }
+        // Slow path: any AST that resisted the raw extraction sends the
+        // whole batch through the per-constraint route to preserve semantics.
         for ast in asts.iter() {
             self.add_constraint_ast(py, &ast)?;
         }

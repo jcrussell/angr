@@ -717,6 +717,79 @@ impl SymContext {
         self.invalidate_model_if_inconsistent(&constraint);
     }
 
+    /// Batched fast path for `add_constraint_raw`: asserts N constraints under
+    /// one `local_constraints` lock, one `solver()` guard, and one model
+    /// invalidation pass. Each `(z3_ast_ptr, bv, is_true)` tuple corresponds
+    /// to the per-constraint metadata that the single-shot path stores in
+    /// `local_constraints.{z3_assertions, assumed}`.
+    ///
+    /// SAFETY: every pointer must be a valid `Z3_ast` Bool in the active
+    /// thread-local Z3 context (same precondition as `add_constraint_raw`).
+    #[cfg(feature = "vex-engine-z3")]
+    pub unsafe fn add_constraints_raw_batch(
+        &self,
+        entries: Vec<(usize, RustBV, bool)>,
+    ) {
+        if entries.is_empty() {
+            return;
+        }
+        let z3_ctx = z3::Context::thread_local();
+        let mut constraints: Vec<z3::ast::Bool> = Vec::with_capacity(entries.len());
+        let mut assumed: Vec<(RustBV, bool)> = Vec::with_capacity(entries.len());
+        for (ptr, bv, is_true) in entries {
+            let constraint: z3::ast::Bool = unsafe {
+                let raw_ast = std::ptr::NonNull::new_unchecked(ptr as *mut _);
+                z3::ast::Ast::wrap(&z3_ctx, raw_ast)
+            };
+            constraints.push(constraint);
+            assumed.push((bv, is_true));
+        }
+        // Single lock on local_constraints for both vectors.
+        {
+            let mut local = self.local_constraints.lock();
+            local.z3_assertions.extend(constraints.iter().cloned());
+            local.assumed.extend(assumed);
+        }
+        // Single solver guard for all assertions.
+        {
+            let solver = self.solver();
+            for c in &constraints {
+                solver.assert(c);
+            }
+        }
+        self.constraint_count
+            .fetch_add(constraints.len(), Ordering::SeqCst);
+        self.sat_cache.set(None);
+        self.invalidate_model_if_inconsistent_batch(&constraints);
+    }
+
+    /// Batched model invalidation: if the cached model fails to satisfy any
+    /// constraint in `constraints`, drop it. Short-circuits on the first
+    /// inconsistency. If the cache is already empty, returns immediately.
+    #[cfg(feature = "vex-engine-z3")]
+    fn invalidate_model_if_inconsistent_batch(&self, constraints: &[z3::ast::Bool]) {
+        let mut cache = self.model_cache.borrow_mut();
+        if cache.is_none() {
+            return;
+        }
+        let mut still_valid = true;
+        if let Some(model) = cache.as_ref() {
+            for constraint in constraints {
+                let ok = model
+                    .eval(constraint, true)
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false);
+                if !ok {
+                    still_valid = false;
+                    break;
+                }
+            }
+        }
+        if !still_valid {
+            *cache = None;
+        }
+    }
+
     /// Add a constraint with tracking for unsat_core extraction.
     /// Use this only when unsat_core analysis is needed.
     ///
@@ -2761,5 +2834,126 @@ mod tests {
         // whatever Z3 chose. Still must be in [101, 199].
         assert_eq!(ctx.min(&x, false), Some(101));
         assert_eq!(ctx.max(&x, false), Some(199));
+    }
+
+    /// Helper: build a `(z3_ast_ptr, RustBV, bool)` tuple from a width-1 cond
+    /// for use with `add_constraints_raw_batch`. Mirrors what the
+    /// `RustSolverContext::add_constraints` fast path does with claripy ASTs.
+    #[cfg(feature = "vex-engine-z3")]
+    fn batch_entry(cond: &RustBV) -> (usize, RustBV, bool) {
+        use z3::ast::Ast;
+        debug_assert_eq!(cond.width(), 1);
+        let bool_ast = cond.to_z3_bool();
+        let ptr = bool_ast.get_z3_ast().as_ptr() as usize;
+        // The pointer borrows from `bool_ast`; intentionally leak it via
+        // forget so the Z3 ref-count survives until add_constraints_raw_batch
+        // rewraps it (it bumps the refcount on wrap and decrements on drop).
+        std::mem::forget(bool_ast);
+        (ptr, cond.clone(), true)
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_basic() {
+        // Three independent constraints in one batch should constrain x as
+        // tightly as adding them one by one. Verifies semantics match the
+        // unbatched path.
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_batch_basic", 32);
+        let lo = RustBV::concrete(10, 32);
+        let hi = RustBV::concrete(20, 32);
+        let mid = RustBV::concrete(15, 32);
+
+        let entries = vec![
+            batch_entry(&x.ugt(&lo, &ctx)),
+            batch_entry(&x.ult(&hi, &ctx)),
+            batch_entry(&x.uge(&mid, &ctx)),
+        ];
+        let before = ctx.num_constraints();
+        unsafe {
+            ctx.add_constraints_raw_batch(entries);
+        }
+        assert_eq!(ctx.num_constraints(), before + 3);
+        // x must satisfy 15 <= x < 20.
+        assert!(ctx.solution(&x, 15));
+        assert!(ctx.solution(&x, 19));
+        assert!(!ctx.solution(&x, 14));
+        assert!(!ctx.solution(&x, 20));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_empty_is_noop() {
+        // Empty batch must not touch the solver or counter.
+        let ctx = SymContext::new();
+        let before = ctx.num_constraints();
+        unsafe {
+            ctx.add_constraints_raw_batch(Vec::new());
+        }
+        assert_eq!(ctx.num_constraints(), before);
+        assert!(ctx.is_sat());
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_drops_inconsistent_model() {
+        // Populate the model cache with eval, then batch-add a constraint
+        // that contradicts that model. The cache must be dropped.
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_batch_model", 32);
+        // Loose constraint first; populate model.
+        ctx.assume_true(&x.ult(&RustBV::concrete(100, 32), &ctx));
+        let first = ctx.eval(&x).unwrap();
+        // Now batch-add x == new_val (forces a value distinct from `first`
+        // but still within [0,99]), which invalidates the cached model.
+        let new_val = if first == 0 { 1 } else { 0 };
+        let pinned = RustBV::concrete(new_val, 32);
+        let entries = vec![batch_entry(&x.eq(&pinned, &ctx))];
+        unsafe {
+            ctx.add_constraints_raw_batch(entries);
+        }
+        // The next eval must produce the newly-required value.
+        assert_eq!(ctx.eval(&x), Some(new_val));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_preserves_consistent_model() {
+        // A constraint already satisfied by the cached model should leave
+        // the model in place (matches the single-shot invalidate path).
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_batch_consistent", 32);
+        ctx.assume_true(&x.eq(&RustBV::concrete(7, 32), &ctx));
+        // Populate model.
+        let v = ctx.eval(&x).unwrap();
+        assert_eq!(v, 7);
+        // Batch-add a constraint that the model already satisfies.
+        let entries = vec![batch_entry(&x.ult(&RustBV::concrete(100, 32), &ctx))];
+        unsafe {
+            ctx.add_constraints_raw_batch(entries);
+        }
+        // Still SAT, still 7.
+        assert!(ctx.is_sat());
+        assert_eq!(ctx.eval(&x), Some(7));
+    }
+
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_tracks_local_assertions() {
+        // The batch path must populate local_constraints.z3_assertions so
+        // export_z3_assertion_ptrs sees the same count as the per-constraint
+        // path. Regression guard against forgetting to extend the vector.
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_batch_export", 32);
+        let entries = vec![
+            batch_entry(&x.ugt(&RustBV::concrete(0, 32), &ctx)),
+            batch_entry(&x.ult(&RustBV::concrete(100, 32), &ctx)),
+        ];
+        let before = ctx.export_z3_assertion_ptrs().len();
+        unsafe {
+            ctx.add_constraints_raw_batch(entries);
+        }
+        let after = ctx.export_z3_assertion_ptrs().len();
+        assert_eq!(after - before, 2);
     }
 }
