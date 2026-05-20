@@ -467,6 +467,30 @@ class TestRustExplorationManagerUnit:
             f"by_name={by_name} scalar={mgr_stats['simprocedure_python_fallback_count']}"
         )
 
+        # angr-ilsr: SymbolicArgument fallbacks must be attributed to the
+        # "symbolic" bucket, not "not_implemented" or "other". Both the
+        # mgr.stats() and native_procedure_stats() views must agree.
+        sym_by_name = stats["symbolic_fallbacks_by_name"]
+        assert sym_by_name.get("sym_proc", 0) >= 1, (
+            f"native_procedure_stats symbolic_fallbacks_by_name should record "
+            f"'sym_proc'; got {sym_by_name}"
+        )
+        assert stats["not_implemented_fallbacks_by_name"].get("sym_proc", 0) == 0
+        assert stats["other_fallbacks_by_name"].get("sym_proc", 0) == 0
+        assert mgr_stats["native_proc_symbolic_fallbacks_by_name"].get("sym_proc", 0) >= 1
+        # The three buckets must sum to native_proc_fallbacks.
+        assert (
+            stats["symbolic_fallbacks"]
+            + stats["not_implemented_fallbacks"]
+            + stats["other_fallbacks"]
+            == stats["python_fallbacks"]
+        ), (
+            f"sum(symbolic+not_implemented+other) must equal python_fallbacks; "
+            f"got symbolic={stats['symbolic_fallbacks']} "
+            f"not_implemented={stats['not_implemented_fallbacks']} "
+            f"other={stats['other_fallbacks']} total={stats['python_fallbacks']}"
+        )
+
     def test_python_procedure_num_args_truncates_at_registered_count(self):
         """The dispatcher extracts exactly `num_args` values from the calling
         convention. Extra args sitting in unused registers (e.g. RDX when
@@ -566,6 +590,16 @@ class TestRustExplorationManagerUnit:
         assert event.event_type == "need_callback", (
             f"({label}) expected need_callback fallback; got {event.event_type}"
         )
+
+        # angr-ilsr: PythonNativeProcedure surfaces ProcedureError::Other for
+        # bad return values, which must land in the "other" bucket, not
+        # "symbolic" or "not_implemented".
+        assert stats["other_fallbacks_by_name"].get("bad_ret_proc", 0) >= 1, (
+            f"({label}) bad-return fallback must be recorded under "
+            f"other_fallbacks_by_name; got {stats['other_fallbacks_by_name']}"
+        )
+        assert stats["symbolic_fallbacks_by_name"].get("bad_ret_proc", 0) == 0
+        assert stats["not_implemented_fallbacks_by_name"].get("bad_ret_proc", 0) == 0
 
     def test_python_procedure_re_registration_overrides_prior(self):
         """Registering a procedure under an existing name must replace the

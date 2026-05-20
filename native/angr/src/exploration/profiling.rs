@@ -20,6 +20,17 @@ pub(crate) struct NativeProcStats {
     pub(crate) python_fallbacks: u64,
     /// Per-procedure call counts.
     pub(crate) call_counts: HashMap<String, u64>,
+    /// Fallbacks caused by `ProcedureError::SymbolicArgument`. By-proc
+    /// breakdown lets an audit distinguish "input was symbolic, native impl
+    /// correctly bailed out" from "native impl is missing for this case".
+    pub(crate) symbolic_fallbacks_by_name: HashMap<String, u64>,
+    /// Fallbacks caused by `ProcedureError::NotImplemented`. Surfaces native
+    /// impls that bailed out because the case isn't covered yet.
+    pub(crate) not_implemented_fallbacks_by_name: HashMap<String, u64>,
+    /// Fallbacks for any other reason (`MemoryError`, `MaxIterations`,
+    /// `Other`). These are usually rarer, lumped together so the per-proc
+    /// total is `symbolic + not_implemented + other`.
+    pub(crate) other_fallbacks_by_name: HashMap<String, u64>,
 }
 
 /// Aggregated profiling state for the exploration manager.

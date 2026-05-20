@@ -34,6 +34,44 @@ impl RustExplorationManager {
             "native_proc_fallbacks",
             self.profiling.native_proc_stats.python_fallbacks,
         )?;
+        // angr-ilsr: per-reason fallback breakdown. sum(symbolic +
+        // not_implemented + other) == native_proc_fallbacks.
+        let symbolic_by_name = PyDict::new(py);
+        let mut symbolic_total: u64 = 0;
+        for (name, count) in &self.profiling.native_proc_stats.symbolic_fallbacks_by_name {
+            symbolic_by_name.set_item(name, *count)?;
+            symbolic_total += *count;
+        }
+        dict.set_item(
+            "native_proc_symbolic_fallbacks_by_name",
+            symbolic_by_name,
+        )?;
+        dict.set_item("native_proc_symbolic_fallbacks", symbolic_total)?;
+
+        let not_impl_by_name = PyDict::new(py);
+        let mut not_impl_total: u64 = 0;
+        for (name, count) in &self
+            .profiling
+            .native_proc_stats
+            .not_implemented_fallbacks_by_name
+        {
+            not_impl_by_name.set_item(name, *count)?;
+            not_impl_total += *count;
+        }
+        dict.set_item(
+            "native_proc_not_implemented_fallbacks_by_name",
+            not_impl_by_name,
+        )?;
+        dict.set_item("native_proc_not_implemented_fallbacks", not_impl_total)?;
+
+        let other_by_name = PyDict::new(py);
+        let mut other_total: u64 = 0;
+        for (name, count) in &self.profiling.native_proc_stats.other_fallbacks_by_name {
+            other_by_name.set_item(name, *count)?;
+            other_total += *count;
+        }
+        dict.set_item("native_proc_other_fallbacks_by_name", other_by_name)?;
+        dict.set_item("native_proc_other_fallbacks", other_total)?;
         dict.set_item("avoided_count", self.sm.avoided_count)?;
         dict.set_item("pruned_count", self.sm.pruned_count)?;
         dict.set_item("deadended_count", self.sm.deadended_count)?;
@@ -88,20 +126,45 @@ impl RustExplorationManager {
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-        dict.set_item(
-            "native_calls",
-            self.profiling.native_proc_stats.native_calls,
-        )?;
-        dict.set_item(
-            "python_fallbacks",
-            self.profiling.native_proc_stats.python_fallbacks,
-        )?;
+        let stats = &self.profiling.native_proc_stats;
+        dict.set_item("native_calls", stats.native_calls)?;
+        dict.set_item("python_fallbacks", stats.python_fallbacks)?;
 
         let call_counts = PyDict::new(py);
-        for (name, count) in &self.profiling.native_proc_stats.call_counts {
+        for (name, count) in &stats.call_counts {
             call_counts.set_item(name, *count)?;
         }
         dict.set_item("call_counts", call_counts)?;
+
+        // Per-procedure fallback breakdown by reason. Sum across all three
+        // maps equals `python_fallbacks`. Distinguishes "input was symbolic,
+        // expected fallback" from "native impl missing this case".
+        let symbolic = PyDict::new(py);
+        let mut symbolic_total: u64 = 0;
+        for (name, count) in &stats.symbolic_fallbacks_by_name {
+            symbolic.set_item(name, *count)?;
+            symbolic_total += *count;
+        }
+        dict.set_item("symbolic_fallbacks_by_name", symbolic)?;
+        dict.set_item("symbolic_fallbacks", symbolic_total)?;
+
+        let not_impl = PyDict::new(py);
+        let mut not_impl_total: u64 = 0;
+        for (name, count) in &stats.not_implemented_fallbacks_by_name {
+            not_impl.set_item(name, *count)?;
+            not_impl_total += *count;
+        }
+        dict.set_item("not_implemented_fallbacks_by_name", not_impl)?;
+        dict.set_item("not_implemented_fallbacks", not_impl_total)?;
+
+        let other = PyDict::new(py);
+        let mut other_total: u64 = 0;
+        for (name, count) in &stats.other_fallbacks_by_name {
+            other.set_item(name, *count)?;
+            other_total += *count;
+        }
+        dict.set_item("other_fallbacks_by_name", other)?;
+        dict.set_item("other_fallbacks", other_total)?;
 
         Ok(dict)
     }

@@ -27,7 +27,7 @@ use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter_cb::{CallbackInterpreter, DCAS_UNSUPPORTED_REASON, ExecutionStats};
 use crate::memory::Permission;
-use crate::procedures::NativeProcedureRegistry;
+use crate::procedures::{NativeProcedureRegistry, ProcedureError};
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
 use crate::symbolic::{RustBV, SymContext};

@@ -584,8 +584,21 @@ impl RustExplorationManager {
                         }
                         Some(proc_no_return)
                     }
-                    Err(_) => {
+                    Err(e) => {
                         self.profiling.native_proc_stats.python_fallbacks += 1;
+                        let bucket = match e {
+                            ProcedureError::SymbolicArgument(_) => {
+                                &mut self.profiling.native_proc_stats.symbolic_fallbacks_by_name
+                            }
+                            ProcedureError::NotImplemented => {
+                                &mut self
+                                    .profiling
+                                    .native_proc_stats
+                                    .not_implemented_fallbacks_by_name
+                            }
+                            _ => &mut self.profiling.native_proc_stats.other_fallbacks_by_name,
+                        };
+                        *bucket.entry(name.clone()).or_insert(0) += 1;
                         None
                     }
                 }
