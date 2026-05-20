@@ -14,12 +14,13 @@ mod table;
 mod value;
 
 pub use context::{
-    ConstraintSyncError, SymContext, VexOpFamily, get_solver_stats, record_bvop_concat,
-    record_bvop_extract, record_bvop_reverse, record_concretize_disjunction,
-    record_concretize_read, record_concretize_write, record_mem_ite_depth,
-    record_mem_lazy_page_fault, record_mem_load, record_mem_load_symbolic_addr, record_mem_store,
-    record_mem_store_symbolic_addr, record_vex_binop, record_vex_qop, record_vex_triop,
-    record_vex_unop, record_zext_cmp_collapse, record_zext_cmp_trivial_decide, reset_solver_stats,
+    ConstraintSharingStats, ConstraintSharingWalk, ConstraintSyncError, SymContext, VexOpFamily,
+    get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,
+    record_concretize_disjunction, record_concretize_read, record_concretize_write,
+    record_mem_ite_depth, record_mem_lazy_page_fault, record_mem_load,
+    record_mem_load_symbolic_addr, record_mem_store, record_mem_store_symbolic_addr,
+    record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop, record_zext_cmp_collapse,
+    record_zext_cmp_trivial_decide, reset_solver_stats,
 };
 pub use handle::RustBVHandle;
 pub use registry::{SymbolInfo, SymbolicIdentityRegistry, clear_global_registry, global_registry};

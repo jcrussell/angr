@@ -2076,6 +2076,52 @@ impl RustExplorationManager {
     pub fn reset_solver_stats() {
         crate::symbolic::reset_solver_stats()
     }
+
+    /// Walk every state's assumed-constraint RustBV graph and report
+    /// pointer-identity vs structural-identity sharing (angr-zdho).
+    ///
+    /// Returns a dict with:
+    ///   - `total_visits`     — DAG descents, counting Arc re-visits.
+    ///   - `unique_pointers`  — distinct RustBV Arc allocations seen. The
+    ///     current per-call `to_z3_ast_cached` cache collapses repeat
+    ///     visits of the same Arc pointer down to this.
+    ///   - `unique_shapes`    — distinct structural shapes. A
+    ///     construction-time hash-cons (angr-behq) would dedupe to this.
+    ///   - `structural_duplicates` — `unique_pointers - unique_shapes`.
+    ///   - `states_analyzed`  — how many states contributed constraints.
+    ///   - `constraints_analyzed` — total `(RustBV, bool)` pairs folded in.
+    ///
+    /// Walks ALL stashes (so it's deterministic across exploration
+    /// outcomes — no `find`/`avoid` bias).
+    pub fn analyze_constraint_sharing(&self) -> std::collections::HashMap<String, u64> {
+        let mut walk = crate::symbolic::ConstraintSharingWalk::new();
+        let mut states_analyzed: u64 = 0;
+        let mut constraints_analyzed: u64 = 0;
+        for (_name, stash) in self.sm.stashes() {
+            for state in stash.iter() {
+                let ctx = state.solver().borrow();
+                let n_constraints = ctx.assumed_constraint_count();
+                if n_constraints == 0 {
+                    continue;
+                }
+                ctx.fold_sharing_walk(&mut walk);
+                states_analyzed += 1;
+                constraints_analyzed = constraints_analyzed.saturating_add(n_constraints as u64);
+            }
+        }
+        let stats = walk.into_stats();
+        let mut out = std::collections::HashMap::new();
+        out.insert("total_visits".into(), stats.total_visits);
+        out.insert("unique_pointers".into(), stats.unique_pointers);
+        out.insert("unique_shapes".into(), stats.unique_shapes);
+        out.insert(
+            "structural_duplicates".into(),
+            stats.unique_pointers.saturating_sub(stats.unique_shapes),
+        );
+        out.insert("states_analyzed".into(), states_analyzed);
+        out.insert("constraints_analyzed".into(), constraints_analyzed);
+        out
+    }
 }
 
 /// Register the exploration module with Python.

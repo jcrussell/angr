@@ -78,6 +78,19 @@ static Z3_EXTREMA_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static Z3_EXTREMA_MODEL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
 static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of cache hits in `to_z3_ast_cached` per-call HashMap (angr-zdho).
+///
+/// Each hit means a sub-expression was visited more than once during a single
+/// top-level `to_z3_ast()` call and the Arc-pointer key already had a Z3 AST
+/// built — the inner DAG had at least one shared Arc subtree. Ratio of hits to
+/// (hits+misses) gives the per-conversion sharing rate the cache captures.
+static Z3_AST_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of cache misses in `to_z3_ast_cached` per-call HashMap (angr-zdho).
+///
+/// A miss is a unique RustBV pointer visited within one `to_z3_ast()` call.
+/// Equals the count of distinct Arc-pointer subtrees materialized into Z3
+/// ASTs for that conversion.
+static Z3_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Sat.
 static Z3_SAT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Unsat.
@@ -272,6 +285,14 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "z3_ast_build".into(),
         Z3_AST_BUILD_COUNT.load(Ordering::Relaxed),
     );
+    stats.insert(
+        "z3_ast_cache_hit".into(),
+        Z3_AST_CACHE_HIT_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "z3_ast_cache_miss".into(),
+        Z3_AST_CACHE_MISS_COUNT.load(Ordering::Relaxed),
+    );
     stats.insert("z3_sat_count".into(), Z3_SAT_COUNT.load(Ordering::Relaxed));
     stats.insert(
         "z3_unsat_count".into(),
@@ -419,6 +440,8 @@ pub fn reset_solver_stats() {
     Z3_EXTREMA_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
     Z3_EXTREMA_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
     Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
+    Z3_AST_CACHE_HIT_COUNT.store(0, Ordering::Relaxed);
+    Z3_AST_CACHE_MISS_COUNT.store(0, Ordering::Relaxed);
     Z3_SAT_COUNT.store(0, Ordering::Relaxed);
     Z3_UNSAT_COUNT.store(0, Ordering::Relaxed);
     Z3_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
@@ -481,6 +504,18 @@ pub fn record_mem_ite_depth(depth: u32) {
 #[inline]
 pub fn record_z3_ast_build() {
     Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Increment per-call to_z3_ast_cached cache-hit counter (angr-zdho).
+#[inline]
+pub fn record_z3_ast_cache_hit() {
+    Z3_AST_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Increment per-call to_z3_ast_cached cache-miss counter (angr-zdho).
+#[inline]
+pub fn record_z3_ast_cache_miss() {
+    Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 // -----------------------------------------------------------------------------
@@ -798,6 +833,133 @@ impl std::fmt::Display for ConstraintSyncError {
 }
 
 impl std::error::Error for ConstraintSyncError {}
+
+// =============================================================================
+// Constraint sharing walk (angr-zdho)
+// =============================================================================
+//
+// Walks a population of constraint RustBVs (typically every state's assumed
+// list at end of exploration) and reports:
+//
+//   - `total_visits`     — recursive descents through the DAG, counting Arc
+//                          re-visits as separate. The upper bound on AST work
+//                          if we had NO cache (neither per-call nor hash-cons).
+//   - `unique_pointers`  — distinct `Arc<RustBV>` allocations seen. This is
+//                          what today's per-call `to_z3_ast_cached` collapses
+//                          repeated visits down to.
+//   - `unique_shapes`    — distinct *structural* shapes seen. Two nodes with
+//                          the same op/width and structurally-equal children
+//                          share a shape. This is the lower bound a
+//                          construction-time hash-cons (angr-behq) would
+//                          reach.
+//
+// `unique_pointers - unique_shapes` is the "structural-duplicate" count from
+// the bead — RustBVs that hash-cons could merge but the current build path
+// keeps distinct.
+
+/// Canonical key for structural equality between two `RustBV` subtrees.
+///
+/// Two `RustBV` nodes hash to the same `StructuralKey` iff a construction-time
+/// hash-cons would treat them as the same node.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum StructuralKey {
+    /// Concrete leaf: same value at the same width.
+    Concrete(u128, u32),
+    /// Symbolic leaf: same `id` (ids are minted globally so this implies same
+    /// width too, but include it explicitly for clarity).
+    Symbolic(u64, u32),
+    /// Constrained leaf: symbolic id with a known concrete witness.
+    Constrained(u64, u128, u32),
+    /// Expression node: same op, same width, structurally-equal operand list.
+    Expression(super::value::BVOp, u32, Vec<u64>),
+}
+
+/// Accumulator for a constraint-sharing analysis pass.
+///
+/// Build with `ConstraintSharingWalk::new()`, fold one or more
+/// `SymContext`s in via `SymContext::fold_sharing_walk`, then read out
+/// the totals with `into_stats()`.
+pub struct ConstraintSharingWalk {
+    /// Pointer → canonical shape id. A pointer entry is created on first
+    /// visit, so `len()` is the count of unique RustBV Arc allocations.
+    ptr_to_shape: HashMap<usize, u64>,
+    /// Structural shape → canonical id. `len()` is the count of unique
+    /// structural shapes — what hash-cons would shrink to.
+    shape_to_id: HashMap<StructuralKey, u64>,
+    /// Monotonic id allocator for shape interning.
+    next_shape_id: u64,
+    /// Recursive descents (including Arc re-visits).
+    total_visits: u64,
+}
+
+impl ConstraintSharingWalk {
+    pub fn new() -> Self {
+        Self {
+            ptr_to_shape: HashMap::new(),
+            shape_to_id: HashMap::new(),
+            next_shape_id: 0,
+            total_visits: 0,
+        }
+    }
+
+    /// Recursively walk `node`, updating the maps and the visit counter.
+    /// Returns the canonical shape id for `node`.
+    pub fn visit(&mut self, node: &RustBV) -> u64 {
+        self.total_visits = self.total_visits.saturating_add(1);
+        let ptr_key = node as *const RustBV as usize;
+        if let Some(&id) = self.ptr_to_shape.get(&ptr_key) {
+            return id;
+        }
+        let key = match node {
+            RustBV::Concrete { value, width } => StructuralKey::Concrete(*value, *width),
+            RustBV::Symbolic { id, width, .. } => StructuralKey::Symbolic(*id, *width),
+            RustBV::Constrained { id, value, width } => {
+                StructuralKey::Constrained(*id, *value, *width)
+            }
+            RustBV::Expression {
+                op, operands, width, ..
+            } => {
+                let mut op_ids = Vec::with_capacity(operands.len());
+                for operand in operands.iter() {
+                    op_ids.push(self.visit(operand));
+                }
+                StructuralKey::Expression(op.clone(), *width, op_ids)
+            }
+        };
+        let id = if let Some(&existing) = self.shape_to_id.get(&key) {
+            existing
+        } else {
+            let id = self.next_shape_id;
+            self.next_shape_id = self.next_shape_id.saturating_add(1);
+            self.shape_to_id.insert(key, id);
+            id
+        };
+        self.ptr_to_shape.insert(ptr_key, id);
+        id
+    }
+
+    /// Consume the walk and return the aggregate stats.
+    pub fn into_stats(self) -> ConstraintSharingStats {
+        ConstraintSharingStats {
+            total_visits: self.total_visits,
+            unique_pointers: self.ptr_to_shape.len() as u64,
+            unique_shapes: self.shape_to_id.len() as u64,
+        }
+    }
+}
+
+impl Default for ConstraintSharingWalk {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Aggregate output of `ConstraintSharingWalk::into_stats()`.
+pub struct ConstraintSharingStats {
+    pub total_visits: u64,
+    pub unique_pointers: u64,
+    pub unique_shapes: u64,
+}
 
 /// Solver context for symbolic execution.
 ///
@@ -2524,6 +2686,18 @@ impl SymContext {
     /// Get the number of assumed constraints.
     pub fn assumed_constraint_count(&self) -> usize {
         self.assumed_constraints_shared.lock().len() + self.local_constraints.lock().assumed.len()
+    }
+
+    /// Fold this context's assumed constraints into the in-progress sharing
+    /// walk (angr-zdho). Each (RustBV, _) is treated as a top-level constraint
+    /// tree and walked recursively; pointer-keyed dedup matches today's
+    /// per-conversion cache, structural-keyed dedup answers what
+    /// construction-level hash-cons (angr-behq) would dedupe to.
+    pub fn fold_sharing_walk(&self, walk: &mut ConstraintSharingWalk) {
+        let constraints = self.get_assumed_constraints();
+        for (bv, _) in &constraints {
+            walk.visit(bv);
+        }
     }
 
     // =========================================================================

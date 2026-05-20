@@ -1138,6 +1138,64 @@ class TestRustExplorationPython:
                 + stats["z3_unsat_count"]
                 + stats["z3_timeout_count"]) == stats["z3_check_count"]
 
+    def test_z3_ast_cache_counters(self, fauxware_project):
+        """angr-zdho: `z3_ast_cache_hit` + `z3_ast_cache_miss` are exposed via
+        `get_solver_stats()` and at least one is non-zero after exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.reset_solver_stats()
+
+        baseline = mgr.get_solver_stats()
+        assert "z3_ast_cache_hit" in baseline
+        assert "z3_ast_cache_miss" in baseline
+        assert baseline["z3_ast_cache_hit"] == 0
+        assert baseline["z3_ast_cache_miss"] == 0
+
+        mgr.explore(find=0x4006ed, num_find=1)
+
+        stats = mgr.get_solver_stats()
+        assert stats["z3_ast_cache_miss"] >= 1, (
+            "exploration with at least one Z3 query should produce cache misses; "
+            f"got {stats['z3_ast_cache_miss']}"
+        )
+
+    def test_analyze_constraint_sharing(self, fauxware_project):
+        """angr-zdho: `analyze_constraint_sharing()` reports pointer-vs-structural
+        sharing across every state's assumed-constraint RustBV graph.
+
+        Invariants:
+          - `unique_pointers >= unique_shapes` (hash-cons can only collapse,
+            never split)
+          - `structural_duplicates == unique_pointers - unique_shapes`
+          - keys are present and integer-valued
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.explore(find=0x4006ed, num_find=1)
+
+        sharing = mgr._rust_mgr.analyze_constraint_sharing()
+        for key in (
+            "total_visits", "unique_pointers", "unique_shapes",
+            "structural_duplicates", "states_analyzed", "constraints_analyzed",
+        ):
+            assert key in sharing, f"missing key {key} in {sharing}"
+            assert isinstance(sharing[key], int), f"{key} not int"
+
+        assert sharing["unique_pointers"] >= sharing["unique_shapes"], (
+            f"hash-cons can never split: {sharing}"
+        )
+        assert (sharing["structural_duplicates"]
+                == sharing["unique_pointers"] - sharing["unique_shapes"]), (
+            f"structural_duplicates accounting wrong: {sharing}"
+        )
+        # fauxware should produce at least one constraint to walk.
+        assert sharing["constraints_analyzed"] >= 1
+        assert sharing["total_visits"] >= sharing["unique_pointers"]
+
     def test_basic_explore(self, fauxware_project):
         """Test basic exploration with find address."""
         from angr.exploration import RustExplorationManager

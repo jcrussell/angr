@@ -225,6 +225,17 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
                 perf_report = rust_mgr_instance.perf_report()
             except Exception:
                 pass
+            # angr-zdho: walk every state's assumed-constraint RustBV graph
+            # and report pointer-vs-structural sharing. Negligible runtime
+            # cost (single pass at end-of-bench), surfaces what
+            # construction-time hash-cons would dedupe.
+            if stats is not None:
+                try:
+                    sharing = rust_mgr_instance._rust_mgr.analyze_constraint_sharing()
+                    for k, v in sharing.items():
+                        stats[f"constraint_sharing_{k}"] = v
+                except Exception:
+                    pass
 
         return {
             "ok": True,

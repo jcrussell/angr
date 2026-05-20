@@ -1980,8 +1980,10 @@ impl RustBV {
         // (Arc-shared sub-expressions will have the same pointer)
         let cache_key = self as *const RustBV as usize;
         if let Some(cached) = cache.get(&cache_key) {
+            super::context::record_z3_ast_cache_hit();
             return cached.clone();
         }
+        super::context::record_z3_ast_cache_miss();
         let result = match self {
             RustBV::Concrete { value, width } => {
                 if *width <= 64 {
