@@ -229,6 +229,7 @@ fn test_check_executable_rejects_non_x_page() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RW);
     mem.set_enforce_permissions(true);
+    mem.set_enforce_nx(true);
     let err = mem.check_executable(0x1234).unwrap_err();
     match err {
         MemoryError::Permission {
