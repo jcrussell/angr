@@ -152,6 +152,17 @@ static BVOP_REVERSE_COUNT: AtomicU64 = AtomicU64::new(0);
 static BVOP_CONCAT_COUNT: AtomicU64 = AtomicU64::new(0);
 static BVOP_EXTRACT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+// angr-g7nq: trivial-constraint fast path counters. Bumped from
+// `value.rs::{eq_into,ne_into,ult_into,ule_into,ugt_into,uge_into}` when
+// the `Cmp(ZeroExt(k, x), BVV)` (or commuted form) pattern is recognized
+// and either collapsed to a smaller AST (the "high bits zero" case) or
+// short-circuited to a concrete answer (the "high bits nonzero" case, an
+// unsatisfiable/tautological subexpression). Separate counts for the two
+// outcomes make it possible to attribute hits without inspecting the
+// emitted ASTs.
+static ZEXT_CMP_COLLAPSE_COUNT: AtomicU64 = AtomicU64::new(0);
+static ZEXT_CMP_TRIVIAL_DECIDE_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Per-site counters and timers for solver.check() calls.
 /// Indexed by `CheckSite as usize`.
 const NUM_CHECK_SITES: usize = 9;
@@ -372,6 +383,15 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "bvop_extract_count".into(),
         BVOP_EXTRACT_COUNT.load(Ordering::Relaxed),
     );
+    // angr-g7nq: trivial-constraint fast path
+    stats.insert(
+        "zext_cmp_collapse_count".into(),
+        ZEXT_CMP_COLLAPSE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "zext_cmp_trivial_decide_count".into(),
+        ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed),
+    );
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
         let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
@@ -434,6 +454,8 @@ pub fn reset_solver_stats() {
     BVOP_REVERSE_COUNT.store(0, Ordering::Relaxed);
     BVOP_CONCAT_COUNT.store(0, Ordering::Relaxed);
     BVOP_EXTRACT_COUNT.store(0, Ordering::Relaxed);
+    ZEXT_CMP_COLLAPSE_COUNT.store(0, Ordering::Relaxed);
+    ZEXT_CMP_TRIVIAL_DECIDE_COUNT.store(0, Ordering::Relaxed);
     for i in 0..NUM_CHECK_SITES {
         Z3_CHECK_SITE_COUNT[i].store(0, Ordering::Relaxed);
         Z3_CHECK_SITE_TIME_NS[i].store(0, Ordering::Relaxed);
@@ -601,6 +623,22 @@ pub fn record_bvop_concat() {
 #[inline]
 pub fn record_bvop_extract() {
     BVOP_EXTRACT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// angr-g7nq: record a `Cmp(ZeroExt(k, x), BVV)` collapse — high k bits of
+/// const are zero, so the comparison is rewritten on the W-k-bit operands.
+#[inline]
+pub fn record_zext_cmp_collapse() {
+    ZEXT_CMP_COLLAPSE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// angr-g7nq: record a `Cmp(ZeroExt(k, x), BVV)` trivial decision — the
+/// constant has a nonzero high k-bit prefix, so the subexpression is
+/// structurally unsatisfiable (Eq) or always satisfiable (Ne) or has a
+/// constant unsigned ordering, and the result is a concrete 0/1 bool.
+#[inline]
+pub fn record_zext_cmp_trivial_decide() {
+    ZEXT_CMP_TRIVIAL_DECIDE_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Timed wrapper around solver.check() — records count, total time, and per-site stats.

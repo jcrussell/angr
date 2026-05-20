@@ -9,7 +9,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::SymContext;
-use super::context::{record_bvop_concat, record_bvop_extract, record_bvop_reverse};
+use super::context::{
+    record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_zext_cmp_collapse,
+    record_zext_cmp_trivial_decide,
+};
 
 /// Bitvector operation type for expression tree reconstruction.
 ///
@@ -1247,19 +1250,36 @@ impl RustBV {
 
     /// Equality comparison, consuming both arguments.
     #[inline]
-    pub fn eq_into(self, other: Self, _ctx: &SymContext) -> Self {
+    pub fn eq_into(self, other: Self, ctx: &SymContext) -> Self {
         // Width mismatch guard — return concrete 0 instead of panicking
         if self.width() != other.width() {
             return Self::concrete(0, 1);
         }
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a == b { 1 } else { 0 }, 1),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Eq,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                // angr-g7nq pattern (b): `Eq(ZeroExt(k, x), BVV(c, W))`.
+                // ZeroExt is zero in the top k bits, so:
+                //   * if `c >> (W-k) != 0` the equation is unsatisfiable → false
+                //   * if `c >> (W-k) == 0` rewrite to `Eq(x, BVV(c, W-k))` so a
+                //     smaller Z3 AST is built (and downstream rules — e.g.
+                //     `eq_into`'s concrete branch — can fold further).
+                // Handles either operand order; signed ext is intentionally not
+                // touched (the sign-bit handling is more delicate, see
+                // `try_zext_const_cmp_fold`).
+                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Eq, ctx) {
+                    return folded;
+                }
+                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Eq, ctx) {
+                    return folded;
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: 1,
+                    op: BVOp::Eq,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                }
+            }
         }
     }
 
@@ -1271,16 +1291,26 @@ impl RustBV {
 
     /// Inequality comparison, consuming both arguments.
     #[inline]
-    pub fn ne_into(self, other: Self, _ctx: &SymContext) -> Self {
+    pub fn ne_into(self, other: Self, ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a != b { 1 } else { 0 }, 1),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Ne,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                // angr-g7nq pattern (b), see `eq_into`. For Ne the trivial-decide
+                // direction inverts (high-bit-nonzero const → always not-equal).
+                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ne, ctx) {
+                    return folded;
+                }
+                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ne, ctx) {
+                    return folded;
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: 1,
+                    op: BVOp::Ne,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                }
+            }
         }
     }
 
@@ -1292,16 +1322,29 @@ impl RustBV {
 
     /// Unsigned less-than, consuming both arguments.
     #[inline]
-    pub fn ult_into(self, other: Self, _ctx: &SymContext) -> Self {
+    pub fn ult_into(self, other: Self, ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a < b { 1 } else { 0 }, 1),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Ult,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                // angr-g7nq pattern (b) for unsigned compare. Direction matters
+                // here — `Ult(zext, const)` and `Ult(const, zext)` resolve to
+                // different trivial answers when the high bits of const are set.
+                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ult, ctx) {
+                    return folded;
+                }
+                if let Some(folded) =
+                    try_zext_const_cmp_fold(&other, &self, ZExtCmp::UltSwapped, ctx)
+                {
+                    return folded;
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: 1,
+                    op: BVOp::Ult,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                }
+            }
         }
     }
 
@@ -1313,16 +1356,26 @@ impl RustBV {
 
     /// Unsigned less-than-or-equal, consuming both arguments.
     #[inline]
-    pub fn ule_into(self, other: Self, _ctx: &SymContext) -> Self {
+    pub fn ule_into(self, other: Self, ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a <= b { 1 } else { 0 }, 1),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Ule,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ule, ctx) {
+                    return folded;
+                }
+                if let Some(folded) =
+                    try_zext_const_cmp_fold(&other, &self, ZExtCmp::UleSwapped, ctx)
+                {
+                    return folded;
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: 1,
+                    op: BVOp::Ule,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                }
+            }
         }
     }
 
@@ -1334,16 +1387,30 @@ impl RustBV {
 
     /// Unsigned greater-than, consuming both arguments.
     #[inline]
-    pub fn ugt_into(self, other: Self, _ctx: &SymContext) -> Self {
+    pub fn ugt_into(self, other: Self, ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a > b { 1 } else { 0 }, 1),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Ugt,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                // `Ugt(a, b) == Ult(b, a)`. Forward direction reuses UltSwapped
+                // when zext appears on the left (a-as-zext, b-as-const), since
+                // `a > b` with a being zext-shape and b being const has the
+                // same trivial answers as `b < a`.
+                if let Some(folded) =
+                    try_zext_const_cmp_fold(&self, &other, ZExtCmp::UltSwapped, ctx)
+                {
+                    return folded;
+                }
+                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ult, ctx) {
+                    return folded;
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: 1,
+                    op: BVOp::Ugt,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                }
+            }
         }
     }
 
@@ -1355,16 +1422,27 @@ impl RustBV {
 
     /// Unsigned greater-than-or-equal, consuming both arguments.
     #[inline]
-    pub fn uge_into(self, other: Self, _ctx: &SymContext) -> Self {
+    pub fn uge_into(self, other: Self, ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(if a >= b { 1 } else { 0 }, 1),
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Uge,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                // `Uge(a, b) == Ule(b, a)`. Symmetric to `ugt_into`.
+                if let Some(folded) =
+                    try_zext_const_cmp_fold(&self, &other, ZExtCmp::UleSwapped, ctx)
+                {
+                    return folded;
+                }
+                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ule, ctx) {
+                    return folded;
+                }
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: 1,
+                    op: BVOp::Uge,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                }
+            }
         }
     }
 
@@ -3175,6 +3253,147 @@ impl RustBV {
 // Helper Functions
 // =============================================================================
 
+/// angr-g7nq: comparison-op tag for `try_zext_const_cmp_fold`. The `Swapped`
+/// variants describe the case where the ZeroExt operand sits on the right of
+/// the original operator (e.g. `Ult(const, ZeroExt(x))` is `UltSwapped` from
+/// the helper's perspective, since the helper always takes `(zext_side,
+/// const_side)`).
+#[derive(Copy, Clone)]
+enum ZExtCmp {
+    Eq,
+    Ne,
+    Ult,
+    UltSwapped,
+    Ule,
+    UleSwapped,
+}
+
+/// Fold `Cmp(ZeroExt(k, x), BVV(c, W))` (and commuted variants) using the
+/// fact that `ZeroExt(k, x)` is always in the range `[0, 2^(W-k))`.
+///
+/// Two outcomes:
+/// * Trivial decide — the comparison is structurally `true` or `false`
+///   regardless of `x`. Returns `Self::concrete(0|1, 1)`. Bumps
+///   `zext_cmp_trivial_decide_count`.
+/// * Collapse — the high `k` bits of `c` are zero (or the comparison is
+///   insensitive to them), so the comparison is rewritten on the `W-k`-bit
+///   operands by recursing into the same op on the narrowed sides. Bumps
+///   `zext_cmp_collapse_count`.
+///
+/// Returns `None` if `zext_side` is not a `BVOp::ZeroExt(_)` expression, or
+/// `const_side` is not concrete, or the widths don't match the expected shape.
+fn try_zext_const_cmp_fold(
+    zext_side: &RustBV,
+    const_side: &RustBV,
+    op: ZExtCmp,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    let (extend_bits, inner) = match zext_side {
+        RustBV::Expression { op: bv_op, operands, .. } => match bv_op {
+            BVOp::ZeroExt(k) => (*k, &operands[0]),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    // ZeroExt(0, x) → x; the wrapping caller hands us a normal width
+    // comparison and we shouldn't bother. `extend_bits == 0` is unusual but
+    // safe to skip — falling through builds the same Cmp expression as before.
+    if extend_bits == 0 {
+        return None;
+    }
+    let c = const_side.as_u128()?;
+    let total_width = zext_side.width();
+    let inner_width = inner.width();
+    debug_assert_eq!(inner_width + extend_bits, total_width);
+    // Compute `c_high = c >> inner_width` (the bits that ZeroExt forces to
+    // zero) and `c_low` (the low W-k bits) without overflowing the shift on
+    // total_width == 128.
+    let (c_high, c_low) = if inner_width >= 128 {
+        // Defensive; in practice all BVVs we touch fit in <= 128 bits and the
+        // ZeroExt source can't be wider than 128 either.
+        (0u128, c)
+    } else {
+        let low_mask = (1u128 << inner_width) - 1;
+        (c >> inner_width, c & low_mask)
+    };
+
+    match op {
+        ZExtCmp::Eq | ZExtCmp::Ne => {
+            if c_high != 0 {
+                // ZeroExt produces high bits zero; const_side disagrees → eq
+                // is unsat, ne is tautological.
+                record_zext_cmp_trivial_decide();
+                let val = match op {
+                    ZExtCmp::Eq => 0,
+                    ZExtCmp::Ne => 1,
+                    _ => unreachable!(),
+                };
+                return Some(RustBV::concrete(val, 1));
+            }
+            // High bits agree (both zero) → narrow.
+            record_zext_cmp_collapse();
+            let narrowed_const = RustBV::concrete(c_low, inner_width);
+            let narrowed_inner = inner.clone();
+            let result = match op {
+                ZExtCmp::Eq => narrowed_inner.eq_into(narrowed_const, ctx),
+                ZExtCmp::Ne => narrowed_inner.ne_into(narrowed_const, ctx),
+                _ => unreachable!(),
+            };
+            Some(result)
+        }
+        ZExtCmp::Ult => {
+            // `ZeroExt(k, x) < c`. ZeroExt ∈ [0, 2^(W-k)).
+            if c_high != 0 {
+                // c >= 2^(W-k) ⇒ ZeroExt(x) < c is always true.
+                record_zext_cmp_trivial_decide();
+                return Some(RustBV::concrete(1, 1));
+            }
+            if c_low == 0 {
+                // ZeroExt(x) < 0 is unsat.
+                record_zext_cmp_trivial_decide();
+                return Some(RustBV::concrete(0, 1));
+            }
+            record_zext_cmp_collapse();
+            Some(inner.clone().ult_into(RustBV::concrete(c_low, inner_width), ctx))
+        }
+        ZExtCmp::UltSwapped => {
+            // `c < ZeroExt(k, x)`. ZeroExt ∈ [0, 2^(W-k)).
+            if c_high != 0 {
+                // c >= 2^(W-k) > ZeroExt(x); never c < ZeroExt(x).
+                record_zext_cmp_trivial_decide();
+                return Some(RustBV::concrete(0, 1));
+            }
+            record_zext_cmp_collapse();
+            Some(RustBV::concrete(c_low, inner_width).ult_into(inner.clone(), ctx))
+        }
+        ZExtCmp::Ule => {
+            // `ZeroExt(k, x) <= c`.
+            if c_high != 0 {
+                // c >= 2^(W-k) > all ZeroExt values; always true.
+                record_zext_cmp_trivial_decide();
+                return Some(RustBV::concrete(1, 1));
+            }
+            record_zext_cmp_collapse();
+            Some(inner.clone().ule_into(RustBV::concrete(c_low, inner_width), ctx))
+        }
+        ZExtCmp::UleSwapped => {
+            // `c <= ZeroExt(k, x)`.
+            if c_high != 0 {
+                // c >= 2^(W-k) > ZeroExt(x); never c <= ZeroExt(x).
+                record_zext_cmp_trivial_decide();
+                return Some(RustBV::concrete(0, 1));
+            }
+            if c_low == 0 {
+                // 0 <= ZeroExt(x) is always true.
+                record_zext_cmp_trivial_decide();
+                return Some(RustBV::concrete(1, 1));
+            }
+            record_zext_cmp_collapse();
+            Some(RustBV::concrete(c_low, inner_width).ule_into(inner.clone(), ctx))
+        }
+    }
+}
+
 /// Sign-extend a value from `width` bits to i128.
 fn sign_extend(value: u128, width: u32) -> i128 {
     if width >= 128 {
@@ -4045,5 +4264,201 @@ mod tests {
                 .eq(&z3::ast::BV::from_u64(1, 1)),
         );
         assert_eq!(ctx.eval(&lo), Some(0x80));
+    }
+
+    // =========================================================================
+    // angr-g7nq: Cmp(ZeroExt(k, x), BVV) trivial-constraint fast path
+    // =========================================================================
+
+    #[test]
+    fn test_zext_eq_high_bits_nonzero_is_false() {
+        // ZeroExt(8, x:8) == 0x100 — high byte nonzero → folds to concrete 0.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let c = RustBV::concrete(0x100, 16);
+        let r = zx.eq(&c, &ctx);
+        assert_eq!(r.as_u64(), Some(0));
+        // Commuted form folds the same way.
+        let r_rev = c.eq(&zx, &ctx);
+        assert_eq!(r_rev.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_zext_ne_high_bits_nonzero_is_true() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let c = RustBV::concrete(0x100, 16);
+        let r = zx.ne(&c, &ctx);
+        assert_eq!(r.as_u64(), Some(1));
+    }
+
+    #[test]
+    fn test_zext_eq_high_bits_zero_collapses() {
+        // ZeroExt(8, x:8) == 0x42 — high byte zero → narrows to Eq(x, 0x42),
+        // which is still symbolic but should be a width-8 Expression not the
+        // width-16 form, evidenced by the operand width.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = zx.eq(&RustBV::concrete(0x42, 16), &ctx);
+        // Result is a width-1 Eq expression over width-8 operands.
+        match &r {
+            RustBV::Expression { op, operands, width, .. } => {
+                assert_eq!(*op, BVOp::Eq);
+                assert_eq!(*width, 1);
+                assert_eq!(operands.len(), 2);
+                assert_eq!(operands[0].width(), 8);
+                assert_eq!(operands[1].width(), 8);
+                assert_eq!(operands[1].as_u64(), Some(0x42));
+            }
+            _ => panic!("expected narrowed Eq expression, got {:?}", r),
+        }
+    }
+
+    #[test]
+    fn test_zext_eq_collapse_solver_consistency() {
+        // After narrowing, asserting Eq(zext(x), 0x42) must still pin x to 0x42.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let eq = zx.eq(&RustBV::concrete(0x42, 16), &ctx);
+        ctx.add_constraint(eq.to_z3_ast().eq(&z3::ast::BV::from_u64(1, 1)));
+        assert_eq!(ctx.eval(&x), Some(0x42));
+        // Also verify the wider zext expression evaluates to the constant.
+        assert_eq!(ctx.eval(&zx), Some(0x42));
+    }
+
+    #[test]
+    fn test_zext_ult_high_bits_nonzero_is_true() {
+        // ZeroExt(8, x:8) < 0x200 — all zext values < 256, so always < 0x200.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = zx.ult(&RustBV::concrete(0x200, 16), &ctx);
+        assert_eq!(r.as_u64(), Some(1));
+    }
+
+    #[test]
+    fn test_zext_ult_const_zero_is_false() {
+        // ZeroExt(8, x:8) < 0 — never true.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = zx.ult(&RustBV::concrete(0, 16), &ctx);
+        assert_eq!(r.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_zext_ult_swapped_high_bits_nonzero_is_false() {
+        // 0x200 < ZeroExt(8, x:8) — never true (RHS < 256).
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = RustBV::concrete(0x200, 16).ult(&zx, &ctx);
+        assert_eq!(r.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_zext_ule_high_bits_nonzero_is_true() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = zx.ule(&RustBV::concrete(0x200, 16), &ctx);
+        assert_eq!(r.as_u64(), Some(1));
+    }
+
+    #[test]
+    fn test_zext_ule_swapped_const_zero_is_true() {
+        // 0 <= ZeroExt(x) — always true.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = RustBV::concrete(0, 16).ule(&zx, &ctx);
+        assert_eq!(r.as_u64(), Some(1));
+    }
+
+    #[test]
+    fn test_zext_ugt_high_bits_nonzero_is_false() {
+        // ZeroExt(8, x:8) > 0x200 — never true (LHS < 256 <= 0x200).
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = zx.ugt(&RustBV::concrete(0x200, 16), &ctx);
+        assert_eq!(r.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_zext_uge_high_bits_nonzero_is_false() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let r = zx.uge(&RustBV::concrete(0x200, 16), &ctx);
+        assert_eq!(r.as_u64(), Some(0));
+    }
+
+    #[test]
+    fn test_zext_cmp_no_fold_when_both_symbolic() {
+        // Cmp(ZeroExt(x), ZeroExt(y)) — no const side, no fold.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let y = RustBV::symbolic(&ctx, "y", 8);
+        let zx = x.zero_extend(16, &ctx);
+        let zy = y.zero_extend(16, &ctx);
+        let r = zx.eq(&zy, &ctx);
+        // Should be a regular Eq expression at width 16 — no fold.
+        match &r {
+            RustBV::Expression { op, operands, .. } => {
+                assert_eq!(*op, BVOp::Eq);
+                assert_eq!(operands[0].width(), 16);
+                assert_eq!(operands[1].width(), 16);
+            }
+            _ => panic!("expected Eq expression, got {:?}", r),
+        }
+    }
+
+    #[test]
+    fn test_zext_cmp_no_fold_for_signed_ops() {
+        // SignExt(k, x) is not handled — the comparison should pass through.
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let sx = x.sign_extend(16, &ctx); // SignExt, not ZeroExt
+        let r = sx.eq(&RustBV::concrete(0x100, 16), &ctx);
+        // Should be Eq expression (no fold).
+        match &r {
+            RustBV::Expression { op, operands, .. } => {
+                assert_eq!(*op, BVOp::Eq);
+                assert_eq!(operands[0].width(), 16);
+            }
+            _ => panic!("expected Eq expression, got {:?}", r),
+        }
+    }
+
+    #[test]
+    fn test_zext_cmp_chain_collapse_to_narrowest() {
+        // ZeroExt(16, ZeroExt(8, x:8)) == 0xFF — both extends collapse cleanly.
+        // The inner zero_extend collapses via constant fold; the outer is what
+        // we're testing. After the first call, the inner zx is a ZeroExt(8, x);
+        // wrapping in zero_extend(32, ...) produces ZeroExt(16, ZeroExt(8, x))
+        // which by the operand structure is treated as ZeroExt(16, <inner>),
+        // where <inner> has width 16. The const 0xFF has zero high 16 bits, so
+        // we narrow to Eq(<inner-as-zext>, 0xFF:16); that then narrows again
+        // recursively. Final: Eq(x, 0xFF:8).
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 8);
+        let zx16 = x.zero_extend(16, &ctx);
+        let zx32 = zx16.zero_extend(32, &ctx);
+        let r = zx32.eq(&RustBV::concrete(0xFF, 32), &ctx);
+        match &r {
+            RustBV::Expression { op, operands, width, .. } => {
+                assert_eq!(*op, BVOp::Eq);
+                assert_eq!(*width, 1);
+                // Should have narrowed to width-8 operands.
+                assert_eq!(operands[0].width(), 8);
+                assert_eq!(operands[1].as_u64(), Some(0xFF));
+            }
+            _ => panic!("expected narrowed Eq, got {:?}", r),
+        }
     }
 }
