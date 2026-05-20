@@ -177,23 +177,16 @@ impl SymbolicMemory {
             }
             if all_found && !parts.is_empty() {
                 // Concatenate bytes: first byte is at lowest address.
-                // LE: byte 0 = LSB → low bits of result → parts[N-1] :: ... :: parts[0]
-                // BE: byte 0 = MSB → high bits of result → parts[0] :: ... :: parts[N-1]
+                // LE: byte 0 = LSB → reverse so parts[N-1] is high.
+                // BE: byte 0 = MSB → already high-to-low.
+                // angr-kg58: balanced fold gives an O(log N) AST instead
+                // of O(N) left-skewed chain.
                 let result = match self.endness {
                     Endness::Little => {
-                        let mut acc = parts[parts.len() - 1].clone();
-                        for i in (0..parts.len() - 1).rev() {
-                            acc = acc.concat(&parts[i], ctx);
-                        }
-                        acc
+                        let high_to_low: Vec<RustBV> = parts.iter().rev().cloned().collect();
+                        RustBV::concat_balanced(&high_to_low, ctx)
                     }
-                    Endness::Big => {
-                        let mut acc = parts[0].clone();
-                        for part in parts.iter().skip(1) {
-                            acc = acc.concat(part, ctx);
-                        }
-                        acc
-                    }
+                    Endness::Big => RustBV::concat_balanced(&parts, ctx),
                 };
                 return Ok(result);
             }
@@ -632,28 +625,21 @@ impl SymbolicMemory {
             }
 
             if all_bytes_have_objects && byte_objects.len() == size as usize {
-                // Combine bytes into a single value using Concat
-                // For little-endian, the first byte is the LSB
-                match self.endness {
+                // Combine bytes into a single value using a balanced Concat
+                // tree (angr-kg58). byte_objects[0] is the byte at the
+                // lowest address.
+                let result = match self.endness {
                     Endness::Little => {
-                        // Start with the MSB (last byte) and concat towards LSB
-                        let mut result = byte_objects
-                            .pop()
-                            .expect("byte_objects non-empty when size > 0");
-                        while let Some(byte) = byte_objects.pop() {
-                            result = result.concat(&byte, ctx);
-                        }
-                        return Ok(result);
+                        // LE: byte 0 = LSB → reverse so high byte is first
+                        byte_objects.reverse();
+                        RustBV::concat_balanced(&byte_objects, ctx)
                     }
                     Endness::Big => {
-                        // Start with the MSB (first byte) and concat towards LSB
-                        let mut result = byte_objects.remove(0);
-                        for byte in byte_objects {
-                            result = result.concat(&byte, ctx);
-                        }
-                        return Ok(result);
+                        // BE: byte 0 = MSB → already high-to-low
+                        RustBV::concat_balanced(&byte_objects, ctx)
                     }
-                }
+                };
+                return Ok(result);
             }
 
             // Try to extract from a wider symbolic object that contains our range
@@ -817,27 +803,15 @@ impl SymbolicMemory {
             byte_parts.push(part);
         }
 
-        // Concatenate per endianness:
-        //   LE: byte[0] is the LSB → fold from high byte to low byte.
-        //   BE: byte[0] is the MSB → fold from low byte to high byte.
-        // In both folds, the accumulator is the high half of each `concat`.
+        // Concatenate per endianness with a balanced tree (angr-kg58):
+        //   LE: byte[0] is the LSB → reverse so high byte is first.
+        //   BE: byte[0] is the MSB → already high-to-low.
         let result = match self.endness {
             Endness::Little => {
-                let mut iter = byte_parts.into_iter().rev();
-                let mut acc = iter.next().expect("size > 0");
-                for b in iter {
-                    acc = acc.concat(&b, ctx);
-                }
-                acc
+                byte_parts.reverse();
+                RustBV::concat_balanced(&byte_parts, ctx)
             }
-            Endness::Big => {
-                let mut iter = byte_parts.into_iter();
-                let mut acc = iter.next().expect("size > 0");
-                for b in iter {
-                    acc = acc.concat(&b, ctx);
-                }
-                acc
-            }
+            Endness::Big => RustBV::concat_balanced(&byte_parts, ctx),
         };
 
         // Phase 4.1: cache the assembled BV when the load is fully covered
@@ -892,27 +866,15 @@ impl SymbolicMemory {
             };
             byte_parts.push(part);
         }
-        // Concatenate per endianness:
-        //   LE: byte[0] is the LSB → fold from high byte to low byte.
-        //   BE: byte[0] is the MSB → fold from low byte to high byte.
-        // In both folds, the accumulator is the high half of each `concat`.
+        // Concatenate per endianness with a balanced tree (angr-kg58):
+        //   LE: byte[0] is the LSB → reverse so high byte is first.
+        //   BE: byte[0] is the MSB → already high-to-low.
         let result = match self.endness {
             Endness::Little => {
-                let mut iter = byte_parts.into_iter().rev();
-                let mut acc = iter.next().expect("size > 0");
-                for b in iter {
-                    acc = acc.concat(&b, ctx);
-                }
-                acc
+                byte_parts.reverse();
+                RustBV::concat_balanced(&byte_parts, ctx)
             }
-            Endness::Big => {
-                let mut iter = byte_parts.into_iter();
-                let mut acc = iter.next().expect("size > 0");
-                for b in iter {
-                    acc = acc.concat(&b, ctx);
-                }
-                acc
-            }
+            Endness::Big => RustBV::concat_balanced(&byte_parts, ctx),
         };
         Some(result)
     }

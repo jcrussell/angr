@@ -1664,6 +1664,34 @@ impl RustBV {
         }
     }
 
+    /// Build a balanced Concat tree from `parts`, ordered HIGH bits first
+    /// and LOW bits last (i.e. `parts[0]` becomes the high bits of the
+    /// result, `parts[parts.len()-1]` becomes the low bits).
+    ///
+    /// A linear left-fold (`acc = concat(acc, next)`) produces a skewed
+    /// AST of depth N-1; pre-Z3 analysis passes walking this DAG do extra
+    /// work. This helper recursively splits the slice in half, producing
+    /// a tree of depth `ceil(log2(N))`. Z3's flat=true rewriter still
+    /// flattens at solve time, but starting from a balanced shape exposes
+    /// structural sharing to max-bv-sharing (which matches by AST node
+    /// identity) and saves rewrite cycles.
+    ///
+    /// Panics if `parts` is empty.
+    #[inline]
+    pub fn concat_balanced(parts: &[RustBV], ctx: &SymContext) -> Self {
+        assert!(
+            !parts.is_empty(),
+            "concat_balanced requires at least one element"
+        );
+        if parts.len() == 1 {
+            return parts[0].clone();
+        }
+        let mid = parts.len() / 2;
+        let high = Self::concat_balanced(&parts[..mid], ctx);
+        let low = Self::concat_balanced(&parts[mid..], ctx);
+        high.concat_into(low, ctx)
+    }
+
     /// Concatenate without requiring a SymContext (same logic, ctx unused).
     #[inline]
     pub fn concat_no_ctx(&self, other: &Self) -> Self {
@@ -3265,6 +3293,97 @@ mod tests {
         let result = hi.concat(&lo, &ctx);
         assert_eq!(result.width(), 16);
         assert_eq!(result.as_u64(), Some(0xABCD));
+    }
+
+    /// Helper: recursive depth of an expression AST. Concrete/symbolic
+    /// leaves have depth 0; every Expression node adds one.
+    fn ast_depth(bv: &RustBV) -> u32 {
+        match bv {
+            RustBV::Expression { operands, .. } => {
+                1 + operands.iter().map(ast_depth).max().unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn test_concat_balanced_single() {
+        let ctx = SymContext::new_mock();
+        let parts = [RustBV::symbolic(&ctx, "a", 8)];
+        let result = RustBV::concat_balanced(&parts, &ctx);
+        assert_eq!(result.width(), 8);
+    }
+
+    #[test]
+    fn test_concat_balanced_pair() {
+        let ctx = SymContext::new_mock();
+        let hi = RustBV::concrete(0xAB, 8);
+        let lo = RustBV::concrete(0xCD, 8);
+        let result = RustBV::concat_balanced(&[hi, lo], &ctx);
+        assert_eq!(result.width(), 16);
+        assert_eq!(result.as_u64(), Some(0xABCD));
+    }
+
+    #[test]
+    fn test_concat_balanced_concrete_value() {
+        // Build 0xDEADBEEF byte-by-byte (high to low) and check the value.
+        let ctx = SymContext::new_mock();
+        let parts: Vec<RustBV> = [0xDE, 0xAD, 0xBE, 0xEF]
+            .iter()
+            .map(|&b| RustBV::concrete(b, 8))
+            .collect();
+        let result = RustBV::concat_balanced(&parts, &ctx);
+        assert_eq!(result.width(), 32);
+        assert_eq!(result.as_u64(), Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn test_concat_balanced_depth_is_log() {
+        // 8 symbolic bytes → linear chain would have depth 7; balanced
+        // tree should be 3 (log2(8)).
+        let ctx = SymContext::new_mock();
+        let parts: Vec<RustBV> = (0..8)
+            .map(|i| RustBV::symbolic(&ctx, format!("b{}", i), 8))
+            .collect();
+        let balanced = RustBV::concat_balanced(&parts, &ctx);
+        assert_eq!(balanced.width(), 64);
+        assert_eq!(ast_depth(&balanced), 3);
+
+        // Sanity: the left-fold reference is depth 7.
+        let mut linear = parts[0].clone();
+        for p in &parts[1..] {
+            linear = linear.concat(p, &ctx);
+        }
+        assert_eq!(ast_depth(&linear), 7);
+    }
+
+    #[test]
+    fn test_concat_balanced_odd_length() {
+        // Odd length (5) should still produce ceil(log2(5))=3-deep tree.
+        let ctx = SymContext::new_mock();
+        let parts: Vec<RustBV> = (0..5)
+            .map(|i| RustBV::symbolic(&ctx, format!("o{}", i), 8))
+            .collect();
+        let balanced = RustBV::concat_balanced(&parts, &ctx);
+        assert_eq!(balanced.width(), 40);
+        assert!(ast_depth(&balanced) <= 3);
+    }
+
+    #[test]
+    fn test_concat_balanced_matches_linear_value() {
+        // For concrete inputs, both balanced and linear concat must
+        // produce the same numeric value.
+        let ctx = SymContext::new_mock();
+        let bytes = [0x12u128, 0x34, 0x56, 0x78, 0x9A, 0xBC];
+        let parts: Vec<RustBV> = bytes.iter().map(|&b| RustBV::concrete(b, 8)).collect();
+        let balanced = RustBV::concat_balanced(&parts, &ctx);
+        let mut linear = parts[0].clone();
+        for p in &parts[1..] {
+            linear = linear.concat(p, &ctx);
+        }
+        assert_eq!(balanced.width(), linear.width());
+        assert_eq!(balanced.as_u64(), linear.as_u64());
+        assert_eq!(balanced.as_u64(), Some(0x123456789ABC));
     }
 
     #[test]
