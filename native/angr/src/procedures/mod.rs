@@ -36,6 +36,7 @@ pub mod rand;
 pub mod read;
 pub mod scanf;
 pub mod sprintf;
+pub mod stdio;
 pub mod strcat;
 pub mod strchr;
 pub mod strcmp;
@@ -237,6 +238,11 @@ impl NativeProcedureRegistry {
         // issue described in angr-mme3 / angr-3tek no longer applies.
         registry.register(Arc::new(read::NativeRead));
         registry.register(Arc::new(write::NativeWrite));
+        // stdio shims (angr-70no): fwrite resolves FILE._fileno → fd buffer;
+        // fflush / setvbuf are no-ops returning 0 (match Python procs).
+        registry.register(Arc::new(stdio::NativeFwrite));
+        registry.register(Arc::new(stdio::NativeFflush));
+        registry.register(Arc::new(stdio::NativeSetvbuf));
         // File operations: registered for fd tracking in FileSystem.
         registry.register(Arc::new(fileops::NativeOpen));
         registry.register(Arc::new(fileops::NativeClose));
