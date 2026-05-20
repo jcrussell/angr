@@ -703,23 +703,33 @@ impl RustBV {
     #[inline]
     pub fn mul_into(self, other: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), other.width());
+        let width = self.width();
         match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), self.width()),
+            (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), width),
             // x * 0 → 0
-            (_, Some(0)) | (Some(0), _) => Self::zero(self.width()),
+            (_, Some(0)) | (Some(0), _) => Self::zero(width),
             // x * 1 → x
             (None, Some(1)) => self,
             // 1 * x → x
             (Some(1), None) => other,
-            _ => {
-                let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Mul,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
+            // sym * 2^k → sym << k (avoids Z3's O(N^2) Dadda bit-blast)
+            (None, Some(b)) if b.is_power_of_two() => {
+                let k = b.trailing_zeros();
+                let amt = Self::concrete(k as u128, width);
+                self.shl_into(amt, _ctx)
             }
+            // 2^k * sym → sym << k
+            (Some(a), None) if a.is_power_of_two() => {
+                let k = a.trailing_zeros();
+                let amt = Self::concrete(k as u128, width);
+                other.shl_into(amt, _ctx)
+            }
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width,
+                op: BVOp::Mul,
+                operands: Arc::<[RustBV]>::from([self, other]),
+            },
         }
     }
 
@@ -1061,24 +1071,31 @@ impl RustBV {
     #[inline]
     pub fn shl_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
+        let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
-                let amt = (a as u32).min(self.width());
-                Self::concrete(v.wrapping_shl(amt), self.width())
+                let amt = (a as u32).min(width);
+                Self::concrete(v.wrapping_shl(amt), width)
             }
             // x << 0 → x
             (None, Some(0)) => self,
             // 0 << x → 0
-            (Some(0), None) => Self::zero(self.width()),
-            _ => {
-                let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Shl,
-                    operands: Arc::<[RustBV]>::from([self, amount]),
-                }
+            (Some(0), None) => Self::zero(width),
+            // sym << c for 0 < c < w → Concat(Extract(w-c-1, 0, sym), 0^c).
+            // Avoids Z3 bit-blasting an O(N^2) mux tree for the symbolic shift.
+            (None, Some(c)) if c < width as u128 => {
+                let c = c as u32;
+                let lo = self.extract_into(width - c - 1, 0, _ctx);
+                lo.concat_into(Self::zero(c), _ctx)
             }
+            // sym << c with c >= w → 0
+            (None, Some(_)) => Self::zero(width),
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width,
+                op: BVOp::Shl,
+                operands: Arc::<[RustBV]>::from([self, amount]),
+            },
         }
     }
 
@@ -1092,24 +1109,30 @@ impl RustBV {
     #[inline]
     pub fn lshr_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
+        let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
-                let amt = (a as u32).min(self.width());
-                Self::concrete(v.wrapping_shr(amt), self.width())
+                let amt = (a as u32).min(width);
+                Self::concrete(v.wrapping_shr(amt), width)
             }
             // x >> 0 → x
             (None, Some(0)) => self,
             // 0 >> x → 0
-            (Some(0), None) => Self::zero(self.width()),
-            _ => {
-                let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Lshr,
-                    operands: Arc::<[RustBV]>::from([self, amount]),
-                }
+            (Some(0), None) => Self::zero(width),
+            // sym >> c for 0 < c < w → Concat(0^c, Extract(w-1, c, sym)).
+            (None, Some(c)) if c < width as u128 => {
+                let c = c as u32;
+                let hi = self.extract_into(width - 1, c, _ctx);
+                Self::zero(c).concat_into(hi, _ctx)
             }
+            // sym >> c with c >= w → 0
+            (None, Some(_)) => Self::zero(width),
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width,
+                op: BVOp::Lshr,
+                operands: Arc::<[RustBV]>::from([self, amount]),
+            },
         }
     }
 
@@ -1123,23 +1146,32 @@ impl RustBV {
     #[inline]
     pub fn ashr_into(self, amount: Self, _ctx: &SymContext) -> Self {
         debug_assert_eq!(self.width(), amount.width());
+        let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
-                let amt = (a as u32).min(self.width());
-                let signed = sign_extend(v, self.width());
-                Self::concrete((signed >> amt) as u128, self.width())
+                let amt = (a as u32).min(width);
+                let signed = sign_extend(v, width);
+                Self::concrete((signed >> amt) as u128, width)
             }
             // x >>> 0 → x
             (None, Some(0)) => self,
-            _ => {
-                let width = self.width();
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width,
-                    op: BVOp::Ashr,
-                    operands: Arc::<[RustBV]>::from([self, amount]),
-                }
+            // sym >>> c for 0 < c < w → SignExt(Extract(w-1, c, sym), w).
+            (None, Some(c)) if c < width as u128 => {
+                let c = c as u32;
+                let hi = self.extract_into(width - 1, c, _ctx);
+                hi.sign_extend_into(width, _ctx)
             }
+            // sym >>> c with c >= w → SignExt(MSB, w) (saturates to all sign bits).
+            (None, Some(_)) => {
+                let msb = self.extract_into(width - 1, width - 1, _ctx);
+                msb.sign_extend_into(width, _ctx)
+            }
+            _ => RustBV::Expression {
+                id: Self::EXPRESSION_ID,
+                width,
+                op: BVOp::Ashr,
+                operands: Arc::<[RustBV]>::from([self, amount]),
+            },
         }
     }
 
@@ -3539,6 +3571,149 @@ mod tests {
         assert_eq!(zero.shl(&x, &ctx).as_u128(), Some(0));
         // 0 >> x → 0
         assert_eq!(zero.lshr(&x, &ctx).as_u128(), Some(0));
+    }
+
+    #[test]
+    fn test_shl_concrete_amount_rewrites_to_concat() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let four = RustBV::concrete(4, 32);
+        // sym << 4 → Concat(Extract(27, 0, sym), 0^4)
+        let r = x.shl(&four, &ctx);
+        assert_eq!(r.width(), 32);
+        match r {
+            RustBV::Expression {
+                op: BVOp::Concat,
+                operands,
+                ..
+            } => {
+                assert_eq!(operands.len(), 2);
+                assert_eq!(operands[1].as_u128(), Some(0)); // low bits are zero
+                assert_eq!(operands[1].width(), 4);
+                assert_eq!(operands[0].width(), 28); // top bits extracted from x
+            }
+            other => panic!("expected Concat, got {:?}", other),
+        }
+        // Behavior preserved when LHS happens to be concrete (still constant-folds).
+        let v = RustBV::concrete(0x1234, 32);
+        assert_eq!(v.shl(&four, &ctx).as_u128(), Some(0x12340));
+    }
+
+    #[test]
+    fn test_shl_concrete_amount_at_or_above_width_yields_zero() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        // sym << 32 → 0
+        let r = x.shl(&RustBV::concrete(32, 32), &ctx);
+        assert_eq!(r.as_u128(), Some(0));
+        // sym << 999 (oversized amount) → 0
+        let r = x.shl(&RustBV::concrete(999, 32), &ctx);
+        assert_eq!(r.as_u128(), Some(0));
+    }
+
+    #[test]
+    fn test_lshr_concrete_amount_rewrites_to_concat() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let eight = RustBV::concrete(8, 32);
+        // sym >> 8 → Concat(0^8, Extract(31, 8, sym))
+        let r = x.lshr(&eight, &ctx);
+        assert_eq!(r.width(), 32);
+        match r {
+            RustBV::Expression {
+                op: BVOp::Concat,
+                operands,
+                ..
+            } => {
+                assert_eq!(operands.len(), 2);
+                assert_eq!(operands[0].as_u128(), Some(0));
+                assert_eq!(operands[0].width(), 8);
+                assert_eq!(operands[1].width(), 24);
+            }
+            other => panic!("expected Concat, got {:?}", other),
+        }
+        let r = x.lshr(&RustBV::concrete(32, 32), &ctx);
+        assert_eq!(r.as_u128(), Some(0));
+    }
+
+    #[test]
+    fn test_ashr_concrete_amount_rewrites_to_sign_extend() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let four = RustBV::concrete(4, 32);
+        // sym >>> 4 → SignExt(4, Extract(31, 4, sym))  [extends 28-bit slice by 4 bits]
+        let r = x.ashr(&four, &ctx);
+        assert_eq!(r.width(), 32);
+        match r {
+            RustBV::Expression {
+                op: BVOp::SignExt(4),
+                operands,
+                ..
+            } => {
+                assert_eq!(operands[0].width(), 28);
+            }
+            other => panic!("expected SignExt(4), got {:?}", other),
+        }
+        // Beyond width: SignExt of MSB (1-bit slice extended by 31 bits).
+        let r = x.ashr(&RustBV::concrete(64, 32), &ctx);
+        assert_eq!(r.width(), 32);
+        match r {
+            RustBV::Expression {
+                op: BVOp::SignExt(31),
+                operands,
+                ..
+            } => {
+                assert_eq!(operands[0].width(), 1);
+            }
+            other => panic!("expected SignExt(31), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mul_by_power_of_two_rewrites_to_shl_then_concat() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        let eight = RustBV::concrete(8, 32);
+        // sym * 8 → sym << 3 → Concat(Extract(28, 0, sym), 0^3)
+        let r = x.mul(&eight, &ctx);
+        assert_eq!(r.width(), 32);
+        match r {
+            RustBV::Expression {
+                op: BVOp::Concat,
+                operands,
+                ..
+            } => {
+                assert_eq!(operands[1].as_u128(), Some(0));
+                assert_eq!(operands[1].width(), 3);
+                assert_eq!(operands[0].width(), 29);
+            }
+            other => panic!("expected Concat (via Shl), got {:?}", other),
+        }
+        // Commutative case: 8 * sym → same shape.
+        let r = eight.mul(&x, &ctx);
+        match r {
+            RustBV::Expression {
+                op: BVOp::Concat,
+                operands,
+                ..
+            } => {
+                assert_eq!(operands[1].as_u128(), Some(0));
+                assert_eq!(operands[1].width(), 3);
+            }
+            other => panic!("expected Concat (commutative), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mul_by_non_power_of_two_stays_as_mul() {
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "x", 32);
+        // sym * 3 → still Mul (no rewrite for non-pow2 constants)
+        let r = x.mul(&RustBV::concrete(3, 32), &ctx);
+        match r {
+            RustBV::Expression { op: BVOp::Mul, .. } => {}
+            other => panic!("expected Mul, got {:?}", other),
+        }
     }
 
     #[test]
