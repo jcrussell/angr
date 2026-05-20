@@ -358,6 +358,49 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
                     continue
                 print(f"    {key}: {val}")
 
+        # angr-2j5v: VEX dispatch / memory volume / concretization / AST
+        # construction counters. Surface op-family distribution and memory
+        # access volume so bench attribution doesn't need a flamegraph.
+        vex_keys = [k for k in stats if k.startswith("vex_")]
+        if vex_keys and any(stats.get(k, 0) > 0 for k in vex_keys):
+            print(f"  vex op dispatch:")
+            for key in sorted(vex_keys):
+                val = stats[key]
+                if val == 0:
+                    continue
+                print(f"    {key}: {val}")
+
+        memvol_keys = [
+            k for k in stats
+            if k.startswith("mem_load") or k.startswith("mem_store")
+            or k == "mem_lazy_page_fault_count"
+        ]
+        if memvol_keys and any(stats.get(k, 0) > 0 for k in memvol_keys):
+            print(f"  memory volume:")
+            for key in sorted(memvol_keys):
+                val = stats[key]
+                if val == 0:
+                    continue
+                print(f"    {key}: {val}")
+
+        conc_keys = [k for k in stats if k.startswith("concretize_")]
+        if conc_keys and any(stats.get(k, 0) > 0 for k in conc_keys):
+            print(f"  concretization fanout:")
+            for key in sorted(conc_keys):
+                val = stats[key]
+                if val == 0:
+                    continue
+                print(f"    {key}: {val}")
+
+        bvop_keys = [k for k in stats if k.startswith("bvop_")]
+        if bvop_keys and any(stats.get(k, 0) > 0 for k in bvop_keys):
+            print(f"  ast emissions:")
+            for key in sorted(bvop_keys):
+                val = stats[key]
+                if val == 0:
+                    continue
+                print(f"    {key}: {val}")
+
     if engine == "rust" and perf_report:
         print(f"  {perf_report}")
 

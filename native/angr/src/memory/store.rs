@@ -5,7 +5,10 @@
 //! blocks across files are fine — Rust permits inherent impls to be split.
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
-use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
+use crate::symbolic::{
+    RustBV, SymContext, record_mem_ite_depth, record_mem_lazy_page_fault, record_mem_store,
+    record_mem_store_symbolic_addr,
+};
 use crate::vex::Endness;
 
 use super::multi::{MultiAlternative, MultiPayload};
@@ -20,6 +23,11 @@ impl SymbolicMemory {
         value: RustBV,
         ctx: &SymContext,
     ) -> Result<(), MemoryError> {
+        // Symbolic-addr subcounter only — the base count + bytes live in
+        // `store_concrete` so the state.rs hot path bumps them too.
+        if addr.as_u64().is_none() {
+            record_mem_store_symbolic_addr();
+        }
         // For symbolic addresses, we need to concretize
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
@@ -33,12 +41,17 @@ impl SymbolicMemory {
             },
         };
 
-        self.store_concrete(concrete_addr, value)
+        let result = self.store_concrete(concrete_addr, value);
+        if let Err(MemoryError::UnmappedPageInRegion { .. }) = &result {
+            record_mem_lazy_page_fault();
+        }
+        result
     }
 
     /// Store to a concrete address.
     pub fn store_concrete(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
         let size = value.width() / 8;
+        record_mem_store(size as u64);
 
         // Check if pages are mapped (fast path for same-page stores)
         let start_page = addr >> 12;

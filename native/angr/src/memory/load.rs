@@ -5,7 +5,10 @@
 //! fine — Rust permits inherent impls to be split.
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::{
+    RustBV, SymContext, record_mem_lazy_page_fault, record_mem_load,
+    record_mem_load_symbolic_addr,
+};
 use crate::vex::Endness;
 
 use super::page::{PAGE_MASK, PAGE_SIZE, Permission};
@@ -14,6 +17,13 @@ use super::{MemoryError, SymbolicMemory};
 impl SymbolicMemory {
     /// Load bytes from memory as a RustBV.
     pub fn load(&self, addr: RustBV, size: u32, ctx: &SymContext) -> Result<RustBV, MemoryError> {
+        // Symbolic-addr subcounter: only visible here (post-eval the addr is
+        // a concrete u64 indistinguishable from a load via `load_concrete`).
+        // The base load_count / load_bytes counters live in `load_concrete`
+        // so they catch the state.rs hot path too.
+        if addr.as_u64().is_none() {
+            record_mem_load_symbolic_addr();
+        }
         // For symbolic addresses, we need to concretize or fork
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
@@ -30,7 +40,11 @@ impl SymbolicMemory {
             }
         };
 
-        self.load_concrete(concrete_addr, size, ctx)
+        let result = self.load_concrete(concrete_addr, size, ctx);
+        if let Err(MemoryError::UnmappedPageInRegion { .. }) = &result {
+            record_mem_lazy_page_fault();
+        }
+        result
     }
 
     /// Load from a concrete address.
@@ -40,6 +54,7 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        record_mem_load(size as u64);
         // angr-3zhl: a later partial store that begins inside [addr+1, addr+size)
         // overwrites trailing bytes of an earlier wider object at `addr`. The
         // exact-address and span fast paths below would return the stale wider

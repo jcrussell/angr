@@ -190,6 +190,7 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRExpr::Unop { op, arg } => {
+                record_vex_unop(iropclass(op));
                 let arg_val = self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?;
                 let arg_is_sym = arg_val.is_symbolic();
                 match VEXOps::unop(*op, arg_val, self.ctx) {
@@ -214,6 +215,7 @@ impl<'a> CallbackInterpreter<'a> {
             }
 
             IRExpr::Binop { op, left, right } => {
+                record_vex_binop(iropclass(op));
                 let left_val = self.eval_expr_with_callbacks(py, callbacks, left, tyenv)?;
                 let right_val = self.eval_expr_with_callbacks(py, callbacks, right, tyenv)?;
                 let fallback_width = op
@@ -293,6 +295,7 @@ impl<'a> CallbackInterpreter<'a> {
                 arg2,
                 arg3,
             } => {
+                record_vex_triop(iropclass(op));
                 // VEX Triops are float arithmetic with a rounding mode:
                 // (rm, a, b). For FAdd/FSub/FMul/FDiv we route through
                 // `binop_with_rm` which honors the VEX rm bits when non-RNE;
@@ -328,6 +331,7 @@ impl<'a> CallbackInterpreter<'a> {
                 arg3,
                 arg4,
             } => {
+                record_vex_qop(iropclass(op));
                 // VEX Qops are typically fused multiply-add/sub with a
                 // rounding mode: (rm, a, b, c). Drop rm for the same reason
                 // as Triop above.

@@ -94,6 +94,55 @@ static MEM_ITE_DEPTH_MAX: AtomicU32 = AtomicU32::new(0);
 /// stores. Sum, not max — surfaces total ITE-chain work across a run.
 static MEM_ITE_DEPTH_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+// -----------------------------------------------------------------------------
+// Dispatch / volume counters (angr-2j5v)
+// -----------------------------------------------------------------------------
+// Lightweight breadth-first instrumentation across the rest of the pipeline.
+// Each counter is a single AtomicU64 fetch_add at the construction site —
+// matches the existing Z3_* pattern. Read out via `get_solver_stats()`.
+
+// VEX op dispatch — count per family at the entry of unop/binop/triop/qop.
+static VEX_UNOP_TOTAL: AtomicU64 = AtomicU64::new(0);
+static VEX_BINOP_TOTAL: AtomicU64 = AtomicU64::new(0);
+static VEX_TRIOP_TOTAL: AtomicU64 = AtomicU64::new(0);
+static VEX_QOP_TOTAL: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_ARITH: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_LOGIC: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_SHIFT: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_CMP: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_EXT: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_FP: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_VEC: AtomicU64 = AtomicU64::new(0);
+static VEX_OP_OTHER: AtomicU64 = AtomicU64::new(0);
+
+// Memory volume — load/store call counts, total bytes, concrete-vs-symbolic
+// address split. Recorded at top-level `SymbolicMemory::{load,store}` only,
+// not at every internal helper, so the counter reflects the public surface.
+static MEM_LOAD_COUNT: AtomicU64 = AtomicU64::new(0);
+static MEM_STORE_COUNT: AtomicU64 = AtomicU64::new(0);
+static MEM_LOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+static MEM_STORE_BYTES: AtomicU64 = AtomicU64::new(0);
+static MEM_LOAD_SYMBOLIC_ADDR: AtomicU64 = AtomicU64::new(0);
+static MEM_STORE_SYMBOLIC_ADDR: AtomicU64 = AtomicU64::new(0);
+/// `UnmappedPageInRegion` faults — lazy region had no backing page, caller
+/// must materialize. Bumped in load/store before the error is propagated.
+static MEM_LAZY_PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// Concretization fanout — count + cumulative K + max K observed per call.
+static CONCRETIZE_READ_COUNT: AtomicU64 = AtomicU64::new(0);
+static CONCRETIZE_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
+static CONCRETIZE_TOTAL_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+static CONCRETIZE_MAX_CANDIDATES: AtomicU32 = AtomicU32::new(0);
+
+// AST construction (specific) — Reverse/Concat/Extract emissions. These
+// are the AST shapes most often blamed when claripy<->Rust mismatch surfaces
+// (angr-tlvl-style residuals). Counted at the public `RustBV::{reverse,
+// concat, extract}` entry points; internal recursion within `*_into` is
+// not double-counted.
+static BVOP_REVERSE_COUNT: AtomicU64 = AtomicU64::new(0);
+static BVOP_CONCAT_COUNT: AtomicU64 = AtomicU64::new(0);
+static BVOP_EXTRACT_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Per-site counters and timers for solver.check() calls.
 /// Indexed by `CheckSite as usize`.
 const NUM_CHECK_SITES: usize = 9;
@@ -220,6 +269,87 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "mem_ite_depth_total".into(),
         MEM_ITE_DEPTH_TOTAL.load(Ordering::Relaxed),
     );
+    // VEX op dispatch
+    stats.insert(
+        "vex_unop_total".into(),
+        VEX_UNOP_TOTAL.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "vex_binop_total".into(),
+        VEX_BINOP_TOTAL.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "vex_triop_total".into(),
+        VEX_TRIOP_TOTAL.load(Ordering::Relaxed),
+    );
+    stats.insert("vex_qop_total".into(), VEX_QOP_TOTAL.load(Ordering::Relaxed));
+    stats.insert("vex_op_arith".into(), VEX_OP_ARITH.load(Ordering::Relaxed));
+    stats.insert("vex_op_logic".into(), VEX_OP_LOGIC.load(Ordering::Relaxed));
+    stats.insert("vex_op_shift".into(), VEX_OP_SHIFT.load(Ordering::Relaxed));
+    stats.insert("vex_op_cmp".into(), VEX_OP_CMP.load(Ordering::Relaxed));
+    stats.insert("vex_op_ext".into(), VEX_OP_EXT.load(Ordering::Relaxed));
+    stats.insert("vex_op_fp".into(), VEX_OP_FP.load(Ordering::Relaxed));
+    stats.insert("vex_op_vec".into(), VEX_OP_VEC.load(Ordering::Relaxed));
+    stats.insert("vex_op_other".into(), VEX_OP_OTHER.load(Ordering::Relaxed));
+    // Memory volume
+    stats.insert(
+        "mem_load_count".into(),
+        MEM_LOAD_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "mem_store_count".into(),
+        MEM_STORE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "mem_load_bytes".into(),
+        MEM_LOAD_BYTES.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "mem_store_bytes".into(),
+        MEM_STORE_BYTES.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "mem_load_symbolic_addr".into(),
+        MEM_LOAD_SYMBOLIC_ADDR.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "mem_store_symbolic_addr".into(),
+        MEM_STORE_SYMBOLIC_ADDR.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "mem_lazy_page_fault_count".into(),
+        MEM_LAZY_PAGE_FAULT_COUNT.load(Ordering::Relaxed),
+    );
+    // Concretization fanout
+    stats.insert(
+        "concretize_read_count".into(),
+        CONCRETIZE_READ_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "concretize_write_count".into(),
+        CONCRETIZE_WRITE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "concretize_total_candidates".into(),
+        CONCRETIZE_TOTAL_CANDIDATES.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "concretize_max_candidates".into(),
+        CONCRETIZE_MAX_CANDIDATES.load(Ordering::Relaxed) as u64,
+    );
+    // AST construction
+    stats.insert(
+        "bvop_reverse_count".into(),
+        BVOP_REVERSE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "bvop_concat_count".into(),
+        BVOP_CONCAT_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "bvop_extract_count".into(),
+        BVOP_EXTRACT_COUNT.load(Ordering::Relaxed),
+    );
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
         let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
@@ -252,6 +382,33 @@ pub fn reset_solver_stats() {
     Z3_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
     MEM_ITE_DEPTH_MAX.store(0, Ordering::Relaxed);
     MEM_ITE_DEPTH_TOTAL.store(0, Ordering::Relaxed);
+    // angr-2j5v counters
+    VEX_UNOP_TOTAL.store(0, Ordering::Relaxed);
+    VEX_BINOP_TOTAL.store(0, Ordering::Relaxed);
+    VEX_TRIOP_TOTAL.store(0, Ordering::Relaxed);
+    VEX_QOP_TOTAL.store(0, Ordering::Relaxed);
+    VEX_OP_ARITH.store(0, Ordering::Relaxed);
+    VEX_OP_LOGIC.store(0, Ordering::Relaxed);
+    VEX_OP_SHIFT.store(0, Ordering::Relaxed);
+    VEX_OP_CMP.store(0, Ordering::Relaxed);
+    VEX_OP_EXT.store(0, Ordering::Relaxed);
+    VEX_OP_FP.store(0, Ordering::Relaxed);
+    VEX_OP_VEC.store(0, Ordering::Relaxed);
+    VEX_OP_OTHER.store(0, Ordering::Relaxed);
+    MEM_LOAD_COUNT.store(0, Ordering::Relaxed);
+    MEM_STORE_COUNT.store(0, Ordering::Relaxed);
+    MEM_LOAD_BYTES.store(0, Ordering::Relaxed);
+    MEM_STORE_BYTES.store(0, Ordering::Relaxed);
+    MEM_LOAD_SYMBOLIC_ADDR.store(0, Ordering::Relaxed);
+    MEM_STORE_SYMBOLIC_ADDR.store(0, Ordering::Relaxed);
+    MEM_LAZY_PAGE_FAULT_COUNT.store(0, Ordering::Relaxed);
+    CONCRETIZE_READ_COUNT.store(0, Ordering::Relaxed);
+    CONCRETIZE_WRITE_COUNT.store(0, Ordering::Relaxed);
+    CONCRETIZE_TOTAL_CANDIDATES.store(0, Ordering::Relaxed);
+    CONCRETIZE_MAX_CANDIDATES.store(0, Ordering::Relaxed);
+    BVOP_REVERSE_COUNT.store(0, Ordering::Relaxed);
+    BVOP_CONCAT_COUNT.store(0, Ordering::Relaxed);
+    BVOP_EXTRACT_COUNT.store(0, Ordering::Relaxed);
     for i in 0..NUM_CHECK_SITES {
         Z3_CHECK_SITE_COUNT[i].store(0, Ordering::Relaxed);
         Z3_CHECK_SITE_TIME_NS[i].store(0, Ordering::Relaxed);
@@ -277,6 +434,136 @@ pub fn record_mem_ite_depth(depth: u32) {
 #[inline]
 pub fn record_z3_ast_build() {
     Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+// -----------------------------------------------------------------------------
+// Recorder functions for angr-2j5v counters
+// -----------------------------------------------------------------------------
+
+/// VEX IR op family — passed by the dispatcher in `vex/ops.rs` so the
+/// classifier lives next to the dispatch and the counter bookkeeping stays in
+/// `symbolic/context.rs` alongside the other instrumentation atomics.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum VexOpFamily {
+    Arith,
+    Logic,
+    Shift,
+    Cmp,
+    Ext,
+    Fp,
+    Vec,
+    Other,
+}
+
+#[inline]
+fn bump_vex_family(family: VexOpFamily) {
+    let counter = match family {
+        VexOpFamily::Arith => &VEX_OP_ARITH,
+        VexOpFamily::Logic => &VEX_OP_LOGIC,
+        VexOpFamily::Shift => &VEX_OP_SHIFT,
+        VexOpFamily::Cmp => &VEX_OP_CMP,
+        VexOpFamily::Ext => &VEX_OP_EXT,
+        VexOpFamily::Fp => &VEX_OP_FP,
+        VexOpFamily::Vec => &VEX_OP_VEC,
+        VexOpFamily::Other => &VEX_OP_OTHER,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_vex_unop(family: VexOpFamily) {
+    VEX_UNOP_TOTAL.fetch_add(1, Ordering::Relaxed);
+    bump_vex_family(family);
+}
+
+#[inline]
+pub fn record_vex_binop(family: VexOpFamily) {
+    VEX_BINOP_TOTAL.fetch_add(1, Ordering::Relaxed);
+    bump_vex_family(family);
+}
+
+#[inline]
+pub fn record_vex_triop(family: VexOpFamily) {
+    VEX_TRIOP_TOTAL.fetch_add(1, Ordering::Relaxed);
+    bump_vex_family(family);
+}
+
+#[inline]
+pub fn record_vex_qop(family: VexOpFamily) {
+    VEX_QOP_TOTAL.fetch_add(1, Ordering::Relaxed);
+    bump_vex_family(family);
+}
+
+/// Record a load operation reaching `SymbolicMemory::load_concrete`. This is
+/// the unified entry point — counts BOTH loads via the public `load(addr_bv)`
+/// and the state.rs hot path that calls `load_concrete(addr_u64)` directly.
+#[inline]
+pub fn record_mem_load(bytes: u64) {
+    MEM_LOAD_COUNT.fetch_add(1, Ordering::Relaxed);
+    MEM_LOAD_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+/// Record a store operation reaching `SymbolicMemory::store_concrete`.
+#[inline]
+pub fn record_mem_store(bytes: u64) {
+    MEM_STORE_COUNT.fetch_add(1, Ordering::Relaxed);
+    MEM_STORE_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+/// Record that a public `SymbolicMemory::load` was called with a symbolic
+/// address (subset of `mem_load_count`). The symbolic-vs-concrete split is
+/// only visible at the public entry point — by the time we reach
+/// `load_concrete` the address has been evaluated to a u64.
+#[inline]
+pub fn record_mem_load_symbolic_addr() {
+    MEM_LOAD_SYMBOLIC_ADDR.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Symbolic-addr counterpart to `record_mem_load_symbolic_addr`, for the
+/// public `SymbolicMemory::store` entry.
+#[inline]
+pub fn record_mem_store_symbolic_addr() {
+    MEM_STORE_SYMBOLIC_ADDR.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a lazy-region page fault (`MemoryError::UnmappedPageInRegion`).
+#[inline]
+pub fn record_mem_lazy_page_fault() {
+    MEM_LAZY_PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a `concretize_read` outcome with the candidate count `k`.
+#[inline]
+pub fn record_concretize_read(k: u32) {
+    CONCRETIZE_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+    CONCRETIZE_TOTAL_CANDIDATES.fetch_add(k as u64, Ordering::Relaxed);
+    CONCRETIZE_MAX_CANDIDATES.fetch_max(k, Ordering::Relaxed);
+}
+
+/// Record a `concretize_write` outcome with the candidate count `k`.
+#[inline]
+pub fn record_concretize_write(k: u32) {
+    CONCRETIZE_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+    CONCRETIZE_TOTAL_CANDIDATES.fetch_add(k as u64, Ordering::Relaxed);
+    CONCRETIZE_MAX_CANDIDATES.fetch_max(k, Ordering::Relaxed);
+}
+
+/// Record a public `RustBV::reverse` call.
+#[inline]
+pub fn record_bvop_reverse() {
+    BVOP_REVERSE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a public `RustBV::concat` call.
+#[inline]
+pub fn record_bvop_concat() {
+    BVOP_CONCAT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a public `RustBV::extract` call.
+#[inline]
+pub fn record_bvop_extract() {
+    BVOP_EXTRACT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Timed wrapper around solver.check() — records count, total time, and per-site stats.
@@ -2955,5 +3242,152 @@ mod tests {
         }
         let after = ctx.export_z3_assertion_ptrs().len();
         assert_eq!(after - before, 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // angr-2j5v instrumentation counter tests
+    // -------------------------------------------------------------------------
+    //
+    // Counters are process-global atomics — other parallel tests may touch
+    // them. Each test reads a baseline, performs `n` recorder calls, and
+    // asserts the delta is `>= n` (not `== n`). Tests do NOT assume the
+    // counters start at zero.
+
+    #[test]
+    fn test_record_vex_dispatch_counters() {
+        let baseline = get_solver_stats();
+        let base_unop = baseline.get("vex_unop_total").copied().unwrap_or(0);
+        let base_binop = baseline.get("vex_binop_total").copied().unwrap_or(0);
+        let base_triop = baseline.get("vex_triop_total").copied().unwrap_or(0);
+        let base_qop = baseline.get("vex_qop_total").copied().unwrap_or(0);
+        let base_arith = baseline.get("vex_op_arith").copied().unwrap_or(0);
+        let base_logic = baseline.get("vex_op_logic").copied().unwrap_or(0);
+        let base_fp = baseline.get("vex_op_fp").copied().unwrap_or(0);
+
+        record_vex_unop(VexOpFamily::Logic);
+        record_vex_binop(VexOpFamily::Arith);
+        record_vex_binop(VexOpFamily::Arith);
+        record_vex_triop(VexOpFamily::Fp);
+        record_vex_qop(VexOpFamily::Fp);
+
+        let stats = get_solver_stats();
+        assert!(stats.get("vex_unop_total").copied().unwrap() >= base_unop + 1);
+        assert!(stats.get("vex_binop_total").copied().unwrap() >= base_binop + 2);
+        assert!(stats.get("vex_triop_total").copied().unwrap() >= base_triop + 1);
+        assert!(stats.get("vex_qop_total").copied().unwrap() >= base_qop + 1);
+        // Each *_op_<family> got bumped once per record_vex_* call.
+        assert!(stats.get("vex_op_arith").copied().unwrap() >= base_arith + 2);
+        assert!(stats.get("vex_op_logic").copied().unwrap() >= base_logic + 1);
+        assert!(stats.get("vex_op_fp").copied().unwrap() >= base_fp + 2);
+    }
+
+    #[test]
+    fn test_record_mem_load_store_counters() {
+        let baseline = get_solver_stats();
+        let base_load = baseline.get("mem_load_count").copied().unwrap_or(0);
+        let base_store = baseline.get("mem_store_count").copied().unwrap_or(0);
+        let base_load_bytes = baseline.get("mem_load_bytes").copied().unwrap_or(0);
+        let base_store_bytes = baseline.get("mem_store_bytes").copied().unwrap_or(0);
+        let base_lsym = baseline.get("mem_load_symbolic_addr").copied().unwrap_or(0);
+        let base_ssym = baseline.get("mem_store_symbolic_addr").copied().unwrap_or(0);
+        let base_fault = baseline
+            .get("mem_lazy_page_fault_count")
+            .copied()
+            .unwrap_or(0);
+
+        record_mem_load(8);
+        record_mem_load(4);
+        record_mem_load_symbolic_addr();
+        record_mem_store(16);
+        record_mem_store_symbolic_addr();
+        record_mem_lazy_page_fault();
+
+        let stats = get_solver_stats();
+        assert!(stats.get("mem_load_count").copied().unwrap() >= base_load + 2);
+        assert!(stats.get("mem_store_count").copied().unwrap() >= base_store + 1);
+        assert!(stats.get("mem_load_bytes").copied().unwrap() >= base_load_bytes + 12);
+        assert!(stats.get("mem_store_bytes").copied().unwrap() >= base_store_bytes + 16);
+        assert!(stats.get("mem_load_symbolic_addr").copied().unwrap() >= base_lsym + 1);
+        assert!(stats.get("mem_store_symbolic_addr").copied().unwrap() >= base_ssym + 1);
+        assert!(
+            stats
+                .get("mem_lazy_page_fault_count")
+                .copied()
+                .unwrap()
+                >= base_fault + 1
+        );
+    }
+
+    #[test]
+    fn test_record_concretize_counters() {
+        let baseline = get_solver_stats();
+        let base_read = baseline.get("concretize_read_count").copied().unwrap_or(0);
+        let base_write = baseline.get("concretize_write_count").copied().unwrap_or(0);
+        let base_total = baseline
+            .get("concretize_total_candidates")
+            .copied()
+            .unwrap_or(0);
+        let base_max = baseline
+            .get("concretize_max_candidates")
+            .copied()
+            .unwrap_or(0);
+
+        record_concretize_read(3);
+        record_concretize_read(7);
+        record_concretize_write(1);
+
+        let stats = get_solver_stats();
+        assert!(stats.get("concretize_read_count").copied().unwrap() >= base_read + 2);
+        assert!(stats.get("concretize_write_count").copied().unwrap() >= base_write + 1);
+        // Total candidates: 3 + 7 + 1 = 11.
+        assert!(
+            stats.get("concretize_total_candidates").copied().unwrap() >= base_total + 11,
+            "expected concretize_total_candidates delta >= 11"
+        );
+        // Max watermark must reach >= 7 (the largest K we recorded).
+        assert!(stats.get("concretize_max_candidates").copied().unwrap() >= base_max.max(7));
+    }
+
+    #[test]
+    fn test_record_bvop_counters() {
+        let baseline = get_solver_stats();
+        let base_rev = baseline.get("bvop_reverse_count").copied().unwrap_or(0);
+        let base_cat = baseline.get("bvop_concat_count").copied().unwrap_or(0);
+        let base_ext = baseline.get("bvop_extract_count").copied().unwrap_or(0);
+
+        record_bvop_reverse();
+        record_bvop_concat();
+        record_bvop_concat();
+        record_bvop_extract();
+        record_bvop_extract();
+        record_bvop_extract();
+
+        let stats = get_solver_stats();
+        assert!(stats.get("bvop_reverse_count").copied().unwrap() >= base_rev + 1);
+        assert!(stats.get("bvop_concat_count").copied().unwrap() >= base_cat + 2);
+        assert!(stats.get("bvop_extract_count").copied().unwrap() >= base_ext + 3);
+    }
+
+    #[test]
+    fn test_bvop_counters_fire_on_symbolic_construction() {
+        // End-to-end: building Reverse/Concat/Extract via the public RustBV
+        // API on symbolic inputs must bump the respective counters. Concrete
+        // inputs are folded by `as_u128()` and do NOT bump (this is the
+        // desired behavior — we count node emissions, not fold-throughs).
+        let ctx = SymContext::new_mock();
+        let baseline = get_solver_stats();
+        let base_rev = baseline.get("bvop_reverse_count").copied().unwrap_or(0);
+        let base_cat = baseline.get("bvop_concat_count").copied().unwrap_or(0);
+        let base_ext = baseline.get("bvop_extract_count").copied().unwrap_or(0);
+
+        let s = RustBV::symbolic(&ctx, "test_2j5v", 32);
+        let _r = s.reverse(&ctx);
+        let _c = s.concat(&s, &ctx);
+        let _e = s.extract(15, 0, &ctx);
+
+        let stats = get_solver_stats();
+        assert!(stats.get("bvop_reverse_count").copied().unwrap() >= base_rev + 1);
+        assert!(stats.get("bvop_concat_count").copied().unwrap() >= base_cat + 1);
+        assert!(stats.get("bvop_extract_count").copied().unwrap() >= base_ext + 1);
     }
 }

@@ -9,6 +9,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::SymContext;
+use super::context::{record_bvop_concat, record_bvop_extract, record_bvop_reverse};
 
 /// Bitvector operation type for expression tree reconstruction.
 ///
@@ -1047,6 +1048,7 @@ impl RustBV {
                 {
                     return operands[0].clone();
                 }
+                record_bvop_reverse();
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width: w,
@@ -1536,12 +1538,15 @@ impl RustBV {
         debug_assert!(to_width <= self.width());
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
-            None => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: to_width,
-                op: BVOp::Extract(to_width - 1, 0),
-                operands: Arc::<[RustBV]>::from([self]),
-            },
+            None => {
+                record_bvop_extract();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: to_width,
+                    op: BVOp::Extract(to_width - 1, 0),
+                    operands: Arc::<[RustBV]>::from([self]),
+                }
+            }
         }
     }
 
@@ -1640,6 +1645,7 @@ impl RustBV {
             }
         }
 
+        record_bvop_extract();
         RustBV::Expression {
             id: Self::EXPRESSION_ID,
             width: result_width,
@@ -1663,12 +1669,15 @@ impl RustBV {
                 let combined = (hi << other.width()) | lo;
                 Self::concrete(combined, result_width)
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: result_width,
-                op: BVOp::Concat,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                record_bvop_concat();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: result_width,
+                    op: BVOp::Concat,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                }
+            }
         }
     }
 
@@ -1688,6 +1697,7 @@ impl RustBV {
             return self.clone();
         }
 
+        record_bvop_extract();
         RustBV::Expression {
             id: Self::EXPRESSION_ID,
             width: result_width,
@@ -1733,12 +1743,15 @@ impl RustBV {
                 let combined = (hi << other.width()) | lo;
                 Self::concrete(combined, result_width)
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: result_width,
-                op: BVOp::Concat,
-                operands: Arc::<[RustBV]>::from([self.clone(), other.clone()]),
-            },
+            _ => {
+                record_bvop_concat();
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: result_width,
+                    op: BVOp::Concat,
+                    operands: Arc::<[RustBV]>::from([self.clone(), other.clone()]),
+                }
+            }
         }
     }
 

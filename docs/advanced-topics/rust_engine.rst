@@ -248,6 +248,89 @@ Counters are global (shared across ``SymContext`` instances). Call
 window. The same dict is also merged into ``mgr.stats`` for
 convenience.
 
+Pipeline instrumentation counters
+---------------------------------
+
+The same ``mgr.stats`` / ``mgr.get_solver_stats()`` dict carries
+counters covering the rest of the engine: VEX op dispatch, memory
+volume, address concretization, and AST construction (angr-2j5v). All
+counters are process-wide ``AtomicU64`` and a single ``fetch_add`` —
+zero-cost when not read. They reset alongside the Z3 counters via
+``mgr.reset_solver_stats()``.
+
+* **VEX op dispatch** (bumped at the ``IRExpr::{Unop,Binop,Triop,Qop}``
+  dispatch in ``interpreter_cb/expressions.rs``):
+
+  * ``vex_unop_total`` / ``vex_binop_total`` / ``vex_triop_total`` /
+    ``vex_qop_total`` — count per arity.
+  * ``vex_op_arith`` / ``vex_op_logic`` / ``vex_op_shift`` /
+    ``vex_op_cmp`` / ``vex_op_ext`` / ``vex_op_fp`` / ``vex_op_vec`` /
+    ``vex_op_other`` — count per IROp family. Family classification
+    lives in ``vex/ops.rs::iropclass``; ``Vec`` covers every
+    ``V*``-prefixed (SIMD/NEON) variant, ``Other`` is the catch-all for
+    ``Raw``/``NeonUnimplemented``. Every dispatched op bumps exactly
+    one family counter, so ``sum(vex_op_*) == sum(vex_<arity>_total)``.
+
+* **Memory volume** (bumped in ``memory/load.rs`` and
+  ``memory/store.rs``):
+
+  * ``mem_load_count`` / ``mem_store_count`` — total load/store calls
+    reaching ``SymbolicMemory::{load,store}_concrete``. Catches both
+    the public ``load(addr_bv)`` entry and the ``state.rs`` hot path
+    that calls ``load_concrete(addr_u64)`` directly.
+  * ``mem_load_bytes`` / ``mem_store_bytes`` — cumulative bytes
+    accessed.
+  * ``mem_load_symbolic_addr`` / ``mem_store_symbolic_addr`` — subset
+    that entered via ``load(addr_bv)`` / ``store(addr_bv)`` with a
+    symbolic address. (Counted only at the public entry because by
+    the time the call reaches ``*_concrete`` the address has been
+    evaluated to a ``u64``.)
+  * ``mem_lazy_page_fault_count`` — ``UnmappedPageInRegion`` errors,
+    bumped on the public ``load`` / ``store`` paths only.
+
+* **Concretization fanout** (bumped in ``concretize.rs``):
+
+  * ``concretize_read_count`` / ``concretize_write_count`` — number of
+    ``concretize_read`` / ``concretize_write`` calls.
+  * ``concretize_total_candidates`` — cumulative ``K`` (candidate
+    count) across all calls. Average ``K`` = total / count.
+  * ``concretize_max_candidates`` — watermark of the largest ``K``
+    seen. ``TooLarge`` / ``Failed`` outcomes count as ``K = 0``.
+
+* **AST construction** (bumped at the actual
+  ``RustBV::Expression { op: BVOp::X, ... }`` construction sites in
+  ``symbolic/value.rs``):
+
+  * ``bvop_reverse_count`` / ``bvop_concat_count`` /
+    ``bvop_extract_count`` — node emissions of ``BVOp::Reverse``,
+    ``BVOp::Concat``, ``BVOp::Extract``. Simplification short-circuits
+    (e.g. ``reverse(reverse(x)) → x``, fully-concrete fold) do **not**
+    bump the counter — these track real Z3-visible emissions.
+
+Sample output on ``defcamp_r100`` (Rust engine, 3 SAT paths):
+
+.. code-block::
+
+   vex op dispatch:
+     vex_binop_total: 374
+     vex_op_arith: 275
+     vex_op_cmp: 39
+     vex_op_ext: 996
+     vex_op_shift: 60
+     vex_unop_total: 996
+   memory volume:
+     mem_load_bytes: 21
+     mem_load_count: 21
+     mem_store_bytes: 391
+     mem_store_count: 279
+   ast emissions:
+     bvop_extract_count: 60
+
+``tests/benchmarks/run_single.py`` emits these blocks automatically
+when the Rust engine is run with non-zero counters (see the
+``vex op dispatch`` / ``memory volume`` / ``concretization fanout`` /
+``ast emissions`` sections of its output).
+
 Experimental: ``ANGR_Z3_TACTIC`` solver-strategy override
 ---------------------------------------------------------
 

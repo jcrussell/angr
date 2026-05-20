@@ -15,7 +15,7 @@
 //! 4. If range ≤ limit, enumerate all solutions
 //! 5. If range > limit, apply fallback: Any (reads) or Max (writes)
 
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concretize_write};
 
 /// Whether a concretization is for a read or write operation.
 /// This determines which strategy chain to use (different limits and fallbacks).
@@ -106,6 +106,19 @@ impl ConcretizationResult {
             } => Some((*base, *stride, *count)),
             _ => None,
         }
+    }
+}
+
+/// Candidate count `K` for a concretization result, used by the
+/// `concretize_*_count` / `concretize_*_candidates` instrumentation
+/// (angr-2j5v). `TooLarge` and `Failed` count as 0 — they're failure modes,
+/// not enumerable address sets.
+fn candidate_count(result: &ConcretizationResult) -> u32 {
+    match result {
+        ConcretizationResult::Single(_) => 1,
+        ConcretizationResult::Multiple(addrs) => addrs.len().min(u32::MAX as usize) as u32,
+        ConcretizationResult::Strided { count, .. } => (*count).min(u32::MAX as u64) as u32,
+        ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => 0,
     }
 }
 
@@ -280,7 +293,7 @@ impl AddressConcretizer {
     /// Uses read_range_limit and falls back to Any (single solution) if range is too large.
     pub fn concretize_read(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
         let result = self.concretize_with_mode(addr, ctx, ConcretizationMode::Read);
-        match result {
+        let result = match result {
             ConcretizationResult::TooLarge { .. } if self.read_fallback_any => {
                 // Fallback: SimConcretizationStrategyAny - return single arbitrary solution
                 if let Some(val) = ctx.eval(addr) {
@@ -290,14 +303,16 @@ impl AddressConcretizer {
                 }
             }
             _ => result,
-        }
+        };
+        record_concretize_read(candidate_count(&result));
+        result
     }
 
     /// Concretize for a write operation.
     /// Uses write_range_limit and falls back to Max (maximum solution) if range is too large.
     pub fn concretize_write(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
         let result = self.concretize_with_mode(addr, ctx, ConcretizationMode::Write);
-        match result {
+        let result = match result {
             ConcretizationResult::TooLarge { .. } if self.write_fallback_max => {
                 // Fallback: SimConcretizationStrategyMax - return maximum solution
                 if let Some((_min, max)) = ctx.range(addr) {
@@ -309,7 +324,9 @@ impl AddressConcretizer {
                 }
             }
             _ => result,
-        }
+        };
+        record_concretize_write(candidate_count(&result));
+        result
     }
 
     /// Concretize with a specific mode (determines range limit).

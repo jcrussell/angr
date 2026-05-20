@@ -1257,6 +1257,96 @@ fn test_mem_ite_depth_counter_records_eager_multi_store() {
     );
 }
 
+/// angr-2j5v end-to-end: a real `SymbolicMemory::{store,load}` round-trip
+/// must increment `mem_load_count` / `mem_store_count` / `mem_load_bytes` /
+/// `mem_store_bytes`. Delta-based assertions (counters are process-global).
+#[test]
+fn test_memory_volume_counters_fire_on_load_store() {
+    use crate::symbolic::get_solver_stats;
+
+    let pre = get_solver_stats();
+    let pre_load = pre.get("mem_load_count").copied().unwrap_or(0);
+    let pre_store = pre.get("mem_store_count").copied().unwrap_or(0);
+    let pre_load_bytes = pre.get("mem_load_bytes").copied().unwrap_or(0);
+    let pre_store_bytes = pre.get("mem_store_bytes").copied().unwrap_or(0);
+
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x2000, 0x1000, Permission::RWX);
+
+    // Concrete address, 4 bytes stored, 4 bytes loaded.
+    let addr = RustBV::concrete(0x2000, 64);
+    let value = RustBV::concrete(0xCAFEBABE, 32);
+    mem.store(addr.clone(), value, &ctx).expect("store ok");
+    let _ = mem.load(addr, 4, &ctx).expect("load ok");
+
+    let post = get_solver_stats();
+    assert!(
+        post.get("mem_load_count").copied().unwrap() >= pre_load + 1,
+        "mem_load_count must climb"
+    );
+    assert!(
+        post.get("mem_store_count").copied().unwrap() >= pre_store + 1,
+        "mem_store_count must climb"
+    );
+    assert!(
+        post.get("mem_load_bytes").copied().unwrap() >= pre_load_bytes + 4,
+        "mem_load_bytes must climb by load size"
+    );
+    assert!(
+        post.get("mem_store_bytes").copied().unwrap() >= pre_store_bytes + 4,
+        "mem_store_bytes must climb by store size"
+    );
+}
+
+/// angr-2j5v: a symbolic-address store routed through `concretize_write`
+/// must bump `concretize_write_count` and `concretize_total_candidates`.
+/// Uses the same setup as the ITE-depth test (3 candidate addresses).
+#[test]
+fn test_concretize_counters_fire_on_symbolic_store() {
+    use crate::concretize::AddressConcretizer;
+    use crate::symbolic::get_solver_stats;
+
+    let pre = get_solver_stats();
+    let pre_write = pre.get("concretize_write_count").copied().unwrap_or(0);
+    let pre_total = pre
+        .get("concretize_total_candidates")
+        .copied()
+        .unwrap_or(0);
+    let pre_max = pre.get("concretize_max_candidates").copied().unwrap_or(0);
+
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x3000, 0x1000, Permission::RWX);
+
+    let addr = RustBV::symbolic(&ctx, "addr_2j5v".to_string(), 64);
+    let a0 = addr.eq(&RustBV::concrete(0x3000, 64), &ctx);
+    let a1 = addr.eq(&RustBV::concrete(0x3004, 64), &ctx);
+    let a2 = addr.eq(&RustBV::concrete(0x3008, 64), &ctx);
+    let or_all = a0.or(&a1, &ctx).or(&a2, &ctx);
+    ctx.assume_true(&or_all);
+    assert!(ctx.is_sat());
+
+    let value = RustBV::concrete(0xC0DE, 32);
+    mem.store_symbolic(addr, value, &ctx, &concretizer)
+        .expect("symbolic store must succeed");
+
+    let post = get_solver_stats();
+    assert!(
+        post.get("concretize_write_count").copied().unwrap() >= pre_write + 1,
+        "concretize_write_count must climb"
+    );
+    assert!(
+        post.get("concretize_total_candidates").copied().unwrap() >= pre_total + 3,
+        "concretize_total_candidates must climb by K=3"
+    );
+    assert!(
+        post.get("concretize_max_candidates").copied().unwrap() >= pre_max.max(3),
+        "concretize_max_candidates must reach >= 3"
+    );
+}
+
 /// angr-0nme Phase 0: direct calls to `record_mem_ite_depth` increment the
 /// cumulative total and lift the max watermark monotonically. A 0-depth
 /// call is a no-op. Verified via deltas because the underlying atomics

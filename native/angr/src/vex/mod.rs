@@ -28,5 +28,5 @@ pub use lifter::{IRSBBuilder, LiftError, NativeVEXLifter, VEXLifter};
 pub use opcode_map::{
     parse_endness, parse_jumpkind, parse_opcode, parse_opcode_from_u32, parse_type,
 };
-pub use ops::{OpError, VEXOps};
+pub use ops::{OpError, VEXOps, iropclass};
 pub use pyvex_bridge::{DeserializeError, deserialize_irsb};

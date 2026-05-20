@@ -20,13 +20,16 @@ use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
-use crate::symbolic::{BVOp, RustBV, RustSymbolTable, SymContext};
+use crate::symbolic::{
+    BVOp, RustBV, RustSymbolTable, SymContext, record_vex_binop, record_vex_qop, record_vex_triop,
+    record_vex_unop,
+};
 use crate::vex::ccall;
 use crate::vex::dirty::DirtyHelperDispatch;
 use crate::vex::ir::{
     IRConst, IRExpr, IRLoadGOp, IROp, IRSB, IRStmt, IRType, JumpKind, TypeEnv, VexArch,
 };
-use crate::vex::ops::{OpError, VEXOps};
+use crate::vex::ops::{OpError, VEXOps, iropclass};
 use crate::vex::{Endness, deserialize_irsb};
 
 mod constraints;
