@@ -242,8 +242,127 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
             angr.factory.AngrObjectFactory.simgr = original_simgr
 
 
+# Counter categorization for --dump-counters. Tried in order; first match wins.
+# Keys not matched by any category fall into "misc".
+_DUMP_EXPLICIT_GROUPS = {
+    "exploration": {
+        "active", "steps", "found", "deadended_count", "avoided_count",
+        "pruned_count", "errors", "find_addrs", "avoid_addrs",
+        "drop_terminal_states", "hooks", "simprocedures",
+        "state_roots_size", "block_cache_size",
+    },
+    "python-side": {
+        "callback_count", "ffi_crossings", "state_creations",
+        "cache_hits", "cache_misses", "technique_filter_calls",
+        "hook_sync_calls", "hook_sync_skips", "time_in_callbacks",
+        "time_in_rust_run", "time_in_predicate_eval",
+        "time_in_active_check", "time_in_explore",
+        "z3_ptr_cache_hits", "z3_ptr_cache_misses",
+    },
+    "fallbacks": {
+        "simprocedure_python_fallback_count",
+        "simprocedure_fallback_by_name",
+        "syscall_python_fallback_count",
+        "native_proc_calls", "native_proc_fallbacks",
+        "vex_fallback_count", "vex_fallback_unique_addrs",
+        "dcas_unsupported_count",
+    },
+}
+_DUMP_PREFIX_GROUPS = [
+    ("rust execution", "rust_"),
+    ("z3 solver", "z3_"),
+    ("vex op dispatch", "vex_"),
+    ("memory volume", "mem_"),
+    ("concretization fanout", "concretize_"),
+    ("ast construction", "bvop_"),
+    ("zext collapse", "zext_"),
+]
+_DUMP_GROUP_ORDER = [
+    "exploration", "python-side", "fallbacks",
+    "rust execution", "z3 solver", "vex op dispatch", "memory volume",
+    "concretization fanout", "ast construction", "zext collapse",
+    "misc",
+]
+
+
+def _format_counter_value(key, val):
+    """Render a single counter value for the dump-counters table."""
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, dict):
+        if not val:
+            return "{}"
+        return "{" + ", ".join(f"{k}={v}" for k, v in sorted(val.items())) + "}"
+    if isinstance(val, int):
+        if key.endswith("_time_ns"):
+            return f"{val / 1e6:.2f}ms"
+        return str(val)
+    if isinstance(val, float):
+        # time_in_* are seconds (from rust_manager.stats)
+        if key.startswith("time_in_"):
+            return f"{val * 1000:.2f}ms"
+        return f"{val:.4f}"
+    return str(val)
+
+
+def _group_counters(stats):
+    """Return {group_label: [(key, value), ...]} keyed by _DUMP_GROUP_ORDER."""
+    sections = {}
+    seen = set()
+
+    def add(grp, key):
+        sections.setdefault(grp, []).append((key, stats[key]))
+        seen.add(key)
+
+    for grp, keys in _DUMP_EXPLICIT_GROUPS.items():
+        for k in sorted(keys & set(stats)):
+            add(grp, k)
+    for grp, prefix in _DUMP_PREFIX_GROUPS:
+        for k in sorted(stats):
+            if k in seen:
+                continue
+            if k.startswith(prefix):
+                add(grp, k)
+    for k in sorted(stats):
+        if k not in seen:
+            add("misc", k)
+    return sections
+
+
+def _dump_counters_table(stats):
+    """Print a categorized, aligned counter table to stdout.
+
+    All counters from ``mgr.stats()`` are surfaced, including zeros — the goal
+    is to make per-bench attribution explicit rather than cherry-picked.
+    Time counters (``*_time_ns`` ints, ``time_in_*`` floats in seconds) are
+    rendered as milliseconds for readability.
+    """
+    sections = _group_counters(stats)
+    key_w = max(
+        (len(k) for sec in sections.values() for k, _ in sec),
+        default=20,
+    )
+    print("  === all counters ===")
+    for grp in _DUMP_GROUP_ORDER:
+        if grp not in sections:
+            continue
+        print(f"  [{grp}]")
+        for key, val in sections[grp]:
+            rendered = _format_counter_value(key, val)
+            print(f"    {key:<{key_w}}  {rendered:>14}")
+
+
+def _dump_counters_json(stats):
+    """Emit the raw stats dict as JSON to stdout (machine-consumable)."""
+    import json
+    # dict values (simprocedure_fallback_by_name) are fine; default=str
+    # handles any unexpected non-JSON-native value without crashing.
+    print(json.dumps(stats, indent=2, default=str, sort_keys=True))
+
+
 def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB, strategy="bfs",
-                diff_state=False, diff_interval=1, diff_max_snapshots=200):
+                diff_state=False, diff_interval=1, diff_max_snapshots=200,
+                dump_counters=False, counters_json=False):
     """Run an example in an isolated subprocess and print results."""
     examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
     solve_script = os.path.join(examples_dir, example_name, "solve.py")
@@ -293,7 +412,7 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         if len(lines) > 3:
             print(f"  > ... ({len(lines)} lines total)")
 
-    if engine == "rust" and stats:
+    if engine == "rust" and stats and not counters_json:
         parts = []
         for key in [
             "callback_count", "ffi_crossings", "state_creations",
@@ -401,8 +520,14 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
                     continue
                 print(f"    {key}: {val}")
 
-    if engine == "rust" and perf_report:
+    if engine == "rust" and perf_report and not counters_json:
         print(f"  {perf_report}")
+
+    if engine == "rust" and stats:
+        if counters_json:
+            _dump_counters_json(stats)
+        elif dump_counters:
+            _dump_counters_table(stats)
 
     return result
 
@@ -427,6 +552,15 @@ def main():
                         help="Snapshot every N step() calls when --diff-state is used (default: 1)")
     parser.add_argument("--diff-max-snapshots", type=int, default=200,
                         help="Cap snapshots per engine to bound memory/time (default: 200)")
+    parser.add_argument("--dump-counters", action="store_true",
+                        help="At bench end, pretty-print every counter from "
+                             "mgr.stats() grouped by category (callbacks, z3, "
+                             "vex, memory, concretization, etc.). Rust engine only.")
+    parser.add_argument("--counters-json", action="store_true",
+                        help="At bench end, emit the full mgr.stats() dict as "
+                             "JSON to stdout for machine consumption. Rust "
+                             "engine only. Mutually exclusive with --dump-counters "
+                             "(JSON wins when both are set).")
     args = parser.parse_args()
 
     if args.list:
@@ -448,9 +582,13 @@ def main():
             if args.both:
                 run_example(name, "python", args.timeout, args.mem_limit, args.strategy)
                 print()
-                run_example(name, "rust", args.timeout, args.mem_limit, args.strategy)
+                run_example(name, "rust", args.timeout, args.mem_limit, args.strategy,
+                            dump_counters=args.dump_counters,
+                            counters_json=args.counters_json)
             else:
-                run_example(name, args.engine, args.timeout, args.mem_limit)
+                run_example(name, args.engine, args.timeout, args.mem_limit, args.strategy,
+                            dump_counters=args.dump_counters,
+                            counters_json=args.counters_json)
         return
 
     if not args.example:
@@ -461,9 +599,13 @@ def main():
         print(f"=== {args.example} ===")
         run_example(args.example, "python", args.timeout, args.mem_limit, args.strategy)
         print()
-        run_example(args.example, "rust", args.timeout, args.mem_limit, args.strategy)
+        run_example(args.example, "rust", args.timeout, args.mem_limit, args.strategy,
+                    dump_counters=args.dump_counters,
+                    counters_json=args.counters_json)
     else:
-        run_example(args.example, args.engine, args.timeout, args.mem_limit, args.strategy)
+        run_example(args.example, args.engine, args.timeout, args.mem_limit, args.strategy,
+                    dump_counters=args.dump_counters,
+                    counters_json=args.counters_json)
 
 
 def _run_diff_state(args) -> int:

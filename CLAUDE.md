@@ -104,6 +104,15 @@ python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold
 # Run single benchmark (safe, subprocess with 4GB memory limit)
 python tests/benchmarks/run_single.py fauxware --both
 
+# Dump every counter from mgr.stats() grouped by category — useful for
+# per-bench attribution without a flamegraph (Rust engine only).
+python tests/benchmarks/run_single.py fauxware --dump-counters
+
+# Machine-readable variant: emits the full stats dict as JSON between an
+# `OK rust ...` header line and end-of-file. Suppresses the curated stats
+# sections so the JSON is the only structured payload on stdout.
+python tests/benchmarks/run_single.py fauxware --counters-json
+
 # Point at a custom angr-examples checkout (defaults to ~/repos/angr-examples)
 ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_regression.py
 

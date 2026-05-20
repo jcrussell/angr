@@ -81,7 +81,7 @@ bench-regression:  ## Fast-tier benchmark regression check (7 examples, subproce
 	$(PY) $(REPO_ROOT)/tests/benchmarks/run_regression.py
 
 .PHONY: bench-single
-bench-single:  ## Run one benchmark — EXAMPLE=name [ARGS="--both"] (defaults to fauxware --both).
+bench-single:  ## Run one benchmark — EXAMPLE=name [ARGS="--both"] (defaults to fauxware --both). Use ARGS="--dump-counters" for the full counter table; ARGS="--counters-json" for machine-readable output.
 	$(PY) $(REPO_ROOT)/tests/benchmarks/run_single.py $(or $(EXAMPLE),fauxware) $(or $(ARGS),--both)
 
 .PHONY: profile-bench
