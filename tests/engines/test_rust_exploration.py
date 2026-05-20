@@ -7026,6 +7026,127 @@ class TestErrorRecovery:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestZ3TacticEnvVar:
+    """The ANGR_Z3_TACTIC env var selects the Z3 solver construction strategy.
+
+    The spec is read once via OnceLock on the first call to build_solver, so
+    these tests must run in subprocesses to vary the env var. Each subprocess
+    asserts the solver still produces correct answers under the requested
+    spec — a regression here means we shipped a tactic that breaks
+    correctness on real claripy ASTs (sat-preprocess:qfbv was rejected for
+    exactly this — see angr-ya00).
+    """
+
+    @staticmethod
+    def _run_in_subprocess(tactic_env_value):
+        """Spawn a fresh interpreter with `ANGR_Z3_TACTIC=<value>` set and
+        run a known constraint problem (x*7 + 3 == 24, expected x==3) via
+        RustSolverContext. Returns (eval_result, satisfiable_result).
+        """
+        import os
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(
+            """
+            import sys
+            import claripy
+            from angr.exploration.rust_manager import _setup_shared_z3_context
+            _setup_shared_z3_context()
+            from angr.rustylib.vex_engine import RustSolverContext
+
+            ctx = RustSolverContext()
+            x = claripy.BVS("x", 32)
+            ctx.add_constraint_ast(x * 7 + 3 == 24)
+            sat = ctx.satisfiable()
+            val = ctx.eval(x) if sat else None
+            sys.stdout.write(f"{int(sat)}|{val}")
+            """
+        )
+        env = dict(os.environ)
+        if tactic_env_value is None:
+            env.pop("ANGR_Z3_TACTIC", None)
+        else:
+            env["ANGR_Z3_TACTIC"] = tactic_env_value
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        assert proc.returncode == 0, (
+            f"subprocess failed (env={tactic_env_value!r}):\n"
+            f"stdout: {proc.stdout!r}\nstderr: {proc.stderr[-2000:]!r}"
+        )
+        sat_str, val_str = proc.stdout.strip().split("|")
+        return int(sat_str), int(val_str) if val_str != "None" else None
+
+    def test_default_tactic_solves_simple_bv(self):
+        """No env var → default Solver::new()."""
+        sat, val = self._run_in_subprocess(None)
+        assert sat == 1
+        assert val == 3
+
+    def test_qfbv_tactic_solves_simple_bv(self):
+        """ANGR_Z3_TACTIC=qfbv → Z3 qfbv preset. Bimodal-bench winner per
+        angr-ya00 (fairlight 6.2x, sokohashv2 2.6x) but regresses
+        csgames2018 and flareon2015_2 — opt-in only."""
+        sat, val = self._run_in_subprocess("qfbv")
+        assert sat == 1
+        assert val == 3
+
+    def test_pipeline_tactic_solves_simple_bv(self):
+        """Colon-separated pipeline parses and composes via and_then."""
+        sat, val = self._run_in_subprocess("simplify:qfbv")
+        assert sat == 1
+        assert val == 3
+
+    def test_qfbv_smart_tactic_solves_simple_bv(self):
+        """qfbv_smart builds cond(num-consts > N, qfbv, smt). Whichever
+        branch fires must still return the correct answer."""
+        sat, val = self._run_in_subprocess("qfbv_smart")
+        assert sat == 1
+        assert val == 3
+
+    def test_unknown_pipeline_name_fails_fast(self):
+        """An invalid tactic name must panic loudly rather than silently
+        falling back — caught by `Z3_mk_tactic` returning None."""
+        import os
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(
+            """
+            from angr.exploration.rust_manager import _setup_shared_z3_context
+            _setup_shared_z3_context()
+            from angr.rustylib.vex_engine import RustSolverContext
+            try:
+                RustSolverContext()
+            except BaseException as e:
+                print(type(e).__name__)
+            """
+        )
+        env = dict(os.environ)
+        env["ANGR_Z3_TACTIC"] = "no-such-tactic-name-12345"
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+        # Either a non-zero exit (panic via build_solver) or an exception name
+        # in stdout is acceptable; the contract is "loud failure, not silent".
+        assert proc.returncode != 0 or "Error" in proc.stdout or "Exception" in proc.stdout, (
+            f"expected loud failure with invalid tactic; got:\n"
+            f"  rc={proc.returncode}\n  stdout={proc.stdout!r}\n  stderr={proc.stderr[-500:]!r}"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestSolverOutputCorrectness:
     """Tests verifying solver eval() returns correct values for known constraint systems.
 

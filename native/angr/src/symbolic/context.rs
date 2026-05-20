@@ -323,6 +323,97 @@ fn build_solver_params(timeout_ms: u32) -> z3::Params {
     params
 }
 
+/// Parsed `ANGR_Z3_TACTIC` env-var spec, cached once per process.
+///
+/// Recognized values:
+/// - unset / empty / "default" / "smt" → default `z3::Solver::new()`
+///   (Z3's smt portfolio strategy).
+/// - "qfbv_smart" → probe-conditional tactic that dispatches on
+///   `num-consts`: large problems (> 20 constants) go to `qfbv`, small ones
+///   stay on `smt`. Targets the bimodal benches (fairlight, sokohashv2,
+///   mma_howtouse) where qfbv wins big, without regressing small-problem
+///   benches like csgames2018 / flareon2015_2 where the qfbv preset's
+///   per-check overhead dominates.
+/// - any other value → colon-separated pipeline of tactic names
+///   composed via `Tactic::and_then`, e.g.
+///   `simplify:propagate-values:solve-eqs:bit-blast:sat`.
+#[cfg(feature = "vex-engine-z3")]
+#[derive(Debug, Clone)]
+enum TacticSpec {
+    Default,
+    Pipeline(Vec<String>),
+    QfbvSmart,
+}
+
+#[cfg(feature = "vex-engine-z3")]
+fn tactic_spec() -> &'static TacticSpec {
+    static SPEC: std::sync::OnceLock<TacticSpec> = std::sync::OnceLock::new();
+    SPEC.get_or_init(|| match std::env::var("ANGR_Z3_TACTIC") {
+        Ok(s) => {
+            let s = s.trim();
+            if s.is_empty() || s.eq_ignore_ascii_case("default") || s.eq_ignore_ascii_case("smt") {
+                TacticSpec::Default
+            } else if s.eq_ignore_ascii_case("qfbv_smart") {
+                TacticSpec::QfbvSmart
+            } else {
+                let names: Vec<String> = s
+                    .split(':')
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                if names.is_empty() {
+                    TacticSpec::Default
+                } else {
+                    TacticSpec::Pipeline(names)
+                }
+            }
+        }
+        Err(_) => TacticSpec::Default,
+    })
+}
+
+/// `num-consts > N` threshold used by `qfbv_smart`. Override via
+/// `ANGR_Z3_QFBV_THRESHOLD`. 20 is the empirical pivot between bimodal
+/// hash-cracker problems (winners) and CTF-style small-problem benches
+/// (regressers) — see angr-ya00 measurements in
+/// `docs/advanced-topics/rust_engine.rst`.
+#[cfg(feature = "vex-engine-z3")]
+fn qfbv_smart_threshold() -> f64 {
+    static THRESHOLD: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("ANGR_Z3_QFBV_THRESHOLD")
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .unwrap_or(20.0)
+    })
+}
+
+/// Construct a fresh Z3 solver per the active [`TacticSpec`], with timeout
+/// and bv_rewriter params applied. Three sites in this file rely on this:
+/// initial creation, lazy fork materialization, and `set_timeout`.
+#[cfg(feature = "vex-engine-z3")]
+fn build_solver(timeout_ms: u32) -> z3::Solver {
+    let solver = match tactic_spec() {
+        TacticSpec::Default => z3::Solver::new(),
+        TacticSpec::Pipeline(names) => {
+            let mut iter = names.iter();
+            let first = z3::Tactic::new(iter.next().expect("non-empty pipeline"));
+            let composed = iter.fold(first, |acc, name| acc.and_then(&z3::Tactic::new(name)));
+            composed.solver()
+        }
+        TacticSpec::QfbvSmart => {
+            let qfbv = z3::Tactic::new("qfbv");
+            let smt = z3::Tactic::new("smt");
+            let num_consts = z3::Probe::new("num-consts");
+            let thresh = z3::Probe::constant(qfbv_smart_threshold());
+            let cond = z3::Tactic::cond(&num_consts.gt(&thresh), &qfbv, &smt);
+            cond.solver()
+        }
+    };
+    solver.set_params(&build_solver_params(timeout_ms));
+    solver
+}
+
 /// Error type for constraint sync operations.
 #[derive(Debug, Clone)]
 pub enum ConstraintSyncError {
@@ -456,8 +547,7 @@ impl SymContext {
     pub fn with_timeout(timeout_ms: u32) -> Self {
         // unsat_core disabled for performance — tracking booleans add
         // significant overhead per constraint.
-        let solver = z3::Solver::new();
-        solver.set_params(&build_solver_params(timeout_ms));
+        let solver = build_solver(timeout_ms);
 
         SymContext {
             next_id: AtomicU64::new(0),
@@ -495,10 +585,7 @@ impl SymContext {
         let mut guard = self.solver.lock();
         if guard.is_none() {
             let start = std::time::Instant::now();
-            let new_solver = z3::Solver::new();
-            new_solver.set_params(&build_solver_params(
-                self.timeout_ms.load(Ordering::SeqCst),
-            ));
+            let new_solver = build_solver(self.timeout_ms.load(Ordering::SeqCst));
 
             // Replay cached Z3 assertions: shared prefix then local additions
             let shared = Arc::clone(&self.z3_assertions_shared.lock());

@@ -248,6 +248,81 @@ Counters are global (shared across ``SymContext`` instances). Call
 window. The same dict is also merged into ``mgr.stats`` for
 convenience.
 
+Experimental: ``ANGR_Z3_TACTIC`` solver-strategy override
+---------------------------------------------------------
+
+Z3's solver construction strategy is selectable via the
+``ANGR_Z3_TACTIC`` environment variable, read once per process on the
+first ``SymContext`` materialization. **Default behavior (env unset) is
+unchanged from prior releases.** This knob exists for users hitting
+bimodal hash-cracker-style benchmarks where Z3's default portfolio
+falls into a slow branch.
+
+Recognized values:
+
+* unset / empty / ``default`` / ``smt`` — use ``z3::Solver::new()``
+  (Z3's default ``smt`` portfolio). **Recommended for most workloads.**
+* ``qfbv`` — use Z3's quantifier-free bitvector preset
+  (``Tactic::new("qfbv").solver()``). Wins big on bimodal Z3-heavy
+  benches and regresses small-problem benches; see table below.
+* ``qfbv_smart`` — probe-conditional tactic that dispatches on
+  ``num-consts``: large goals (> ``ANGR_Z3_QFBV_THRESHOLD``, default
+  20) use ``qfbv``, smaller goals use ``smt``. Logged here as an
+  experimental hook — measured A/B against ``qfbv`` it picks up the
+  per-check tactic-dispatch overhead, so plain ``qfbv`` wins more
+  cleanly on the bimodal trio. Kept for further experimentation.
+* any other string — interpreted as a colon-separated tactic pipeline
+  composed with ``Tactic::and_then``, e.g.
+  ``simplify:propagate-values:solve-eqs:bit-blast:sat``. Unknown
+  tactic names panic loudly (no silent fallback).
+
+Measured impact of ``ANGR_Z3_TACTIC=qfbv`` (3-sample medians,
+2026-05-20):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 18 18 14
+
+   * - Benchmark
+     - default (s)
+     - qfbv (s)
+     - delta
+   * - securityfest_fairlight
+     - 18.87
+     - 3.04
+     - **−84 %**
+   * - ekopartyctf2016_sokohashv2
+     - 9.42
+     - 3.68
+     - **−61 %**
+   * - mma_howtouse
+     - 6.04
+     - 5.63
+     - −7 %
+   * - csgames2018
+     - 1.04
+     - 2.88
+     - **+177 %**
+   * - flareon2015_2
+     - 3.51
+     - 4.48
+     - **+24 %**
+
+The shape: ``qfbv`` skips Z3's portfolio dispatch and goes straight to
+a bitvector-specialized pipeline. Hash-cracker problems with many
+constraints over a single state-set benefit; CTF-style binaries with
+many small constraint problems pay the qfbv pipeline's per-check
+overhead on every solve. The acceptance criteria for the angr-ya00
+spike were "≥10 % median win on at least one bench with no
+regressions elsewhere (ship behind a SimOption if needed)" — the env
+var is the SimOption analog for this lower-level knob.
+
+Note: ``sat-preprocess:qfbv`` was tried and rejected — it produced
+incorrect results on ``csgames2018`` and ``securityfest_fairlight``
+(``IndexError: list index out of range`` from the post-solve goal
+unwrap). Avoid pipelines beginning with ``sat-preprocess`` until that
+is debugged.
+
 SimOption coverage matrix
 -------------------------
 
