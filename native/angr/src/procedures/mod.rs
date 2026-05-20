@@ -25,6 +25,7 @@ pub mod exit;
 pub mod fgets;
 pub mod fileops;
 pub mod getenv;
+pub mod libc_start_main;
 pub mod malloc;
 pub mod memcmp;
 pub mod memcpy;
@@ -250,6 +251,12 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fileops::NativeDup));
         registry.register(Arc::new(fileops::NativeDup2));
         registry.register(Arc::new(fileops::NativePipe));
+        // __libc_start_main: handles the after_main continuation by
+        // deadending. Python init (rust_manager._step_python_to_main) covers
+        // the entry/run path before Rust takes over, so the only invocation
+        // path during Rust exploration is after_main → exit(0). See
+        // procedures/libc_start_main.rs for the safety argument.
+        registry.register(Arc::new(libc_start_main::NativeLibcStartMain));
 
         registry
     }
