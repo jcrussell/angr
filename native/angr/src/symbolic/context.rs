@@ -134,6 +134,15 @@ static CONCRETIZE_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 static CONCRETIZE_TOTAL_CANDIDATES: AtomicU64 = AtomicU64::new(0);
 static CONCRETIZE_MAX_CANDIDATES: AtomicU32 = AtomicU32::new(0);
 
+// angr-62li: address-concretization disjunction hoisting. When the
+// concretizer returns Multiple, the engine now asserts the disjunction
+// `Or(addr == a0, ..., addr == aK)` as a top-level constraint so Z3's
+// propagate-values tactic can substitute the addr var. Bumped at the
+// hoist site in `memory/store.rs::assert_address_disjunction`.
+static CONCRETIZE_DISJUNCTION_COUNT: AtomicU64 = AtomicU64::new(0);
+static CONCRETIZE_DISJUNCTION_TERMS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CONCRETIZE_DISJUNCTION_MAX_TERMS: AtomicU32 = AtomicU32::new(0);
+
 // AST construction (specific) — Reverse/Concat/Extract emissions. These
 // are the AST shapes most often blamed when claripy<->Rust mismatch surfaces
 // (angr-tlvl-style residuals). Counted at the public `RustBV::{reverse,
@@ -337,6 +346,19 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "concretize_max_candidates".into(),
         CONCRETIZE_MAX_CANDIDATES.load(Ordering::Relaxed) as u64,
     );
+    // angr-62li: disjunction hoisting
+    stats.insert(
+        "concretize_disjunction_count".into(),
+        CONCRETIZE_DISJUNCTION_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "concretize_disjunction_terms_total".into(),
+        CONCRETIZE_DISJUNCTION_TERMS_TOTAL.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "concretize_disjunction_max_terms".into(),
+        CONCRETIZE_DISJUNCTION_MAX_TERMS.load(Ordering::Relaxed) as u64,
+    );
     // AST construction
     stats.insert(
         "bvop_reverse_count".into(),
@@ -406,6 +428,9 @@ pub fn reset_solver_stats() {
     CONCRETIZE_WRITE_COUNT.store(0, Ordering::Relaxed);
     CONCRETIZE_TOTAL_CANDIDATES.store(0, Ordering::Relaxed);
     CONCRETIZE_MAX_CANDIDATES.store(0, Ordering::Relaxed);
+    CONCRETIZE_DISJUNCTION_COUNT.store(0, Ordering::Relaxed);
+    CONCRETIZE_DISJUNCTION_TERMS_TOTAL.store(0, Ordering::Relaxed);
+    CONCRETIZE_DISJUNCTION_MAX_TERMS.store(0, Ordering::Relaxed);
     BVOP_REVERSE_COUNT.store(0, Ordering::Relaxed);
     BVOP_CONCAT_COUNT.store(0, Ordering::Relaxed);
     BVOP_EXTRACT_COUNT.store(0, Ordering::Relaxed);
@@ -546,6 +571,18 @@ pub fn record_concretize_write(k: u32) {
     CONCRETIZE_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
     CONCRETIZE_TOTAL_CANDIDATES.fetch_add(k as u64, Ordering::Relaxed);
     CONCRETIZE_MAX_CANDIDATES.fetch_max(k, Ordering::Relaxed);
+}
+
+/// angr-62li: record a disjunction `Or(addr == a0, ..., addr == a{k-1})`
+/// hoisted to the top-level Rust solver as a propagate-values aid.
+#[inline]
+pub fn record_concretize_disjunction(k: u32) {
+    if k == 0 {
+        return;
+    }
+    CONCRETIZE_DISJUNCTION_COUNT.fetch_add(1, Ordering::Relaxed);
+    CONCRETIZE_DISJUNCTION_TERMS_TOTAL.fetch_add(k as u64, Ordering::Relaxed);
+    CONCRETIZE_DISJUNCTION_MAX_TERMS.fetch_max(k, Ordering::Relaxed);
 }
 
 /// Record a public `RustBV::reverse` call.

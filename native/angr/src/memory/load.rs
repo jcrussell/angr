@@ -400,7 +400,15 @@ impl SymbolicMemory {
                 }
 
                 let addr_clone = addr.clone();
-                self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)?
+                let value =
+                    self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)?;
+                // angr-62li: hoist the addr-domain disjunction over the
+                // post-prep set (addresses that actually had data; matches
+                // the set Z3 ITE-loads against, and is the soundest
+                // restriction we can communicate without re-running the
+                // concretizer over unmapped pages).
+                Self::assert_address_disjunction(&addr, &ready_addrs, ctx);
+                value
             }
             ConcretizationResult::Strided {
                 base,

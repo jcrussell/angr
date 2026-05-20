@@ -6,8 +6,8 @@
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{
-    RustBV, SymContext, record_mem_ite_depth, record_mem_lazy_page_fault, record_mem_store,
-    record_mem_store_symbolic_addr,
+    RustBV, SymContext, record_concretize_disjunction, record_mem_ite_depth,
+    record_mem_lazy_page_fault, record_mem_store, record_mem_store_symbolic_addr,
 };
 use crate::vex::Endness;
 
@@ -211,6 +211,8 @@ impl SymbolicMemory {
                 }
                 // Phase 0 instrumentation: eager ITE chain depth = #candidates.
                 record_mem_ite_depth(addrs.len() as u32);
+                // angr-62li: hoist the addr-domain disjunction.
+                Self::assert_address_disjunction(&addr, &addrs, ctx);
                 Ok(())
             }
             ConcretizationResult::TooLarge { min, max, .. } => Err(MemoryError::SymbolicAddress {
@@ -301,6 +303,8 @@ impl SymbolicMemory {
             }
             ConcretizationResult::Multiple(addrs) => {
                 self.install_multi_for_candidates_safe(&addr, &value, addrs, ctx)?;
+                // angr-62li: hoist the addr-domain disjunction.
+                Self::assert_address_disjunction(&addr, addrs, ctx);
                 Ok(Some(result))
             }
             ConcretizationResult::Strided {
@@ -349,7 +353,10 @@ impl SymbolicMemory {
             }
             ConcretizationResult::Multiple(addrs) => {
                 let addrs_v: Vec<u64> = addrs.clone();
-                self.install_multi_for_candidates_safe(addr, &value, &addrs_v, ctx)
+                self.install_multi_for_candidates_safe(addr, &value, &addrs_v, ctx)?;
+                // angr-62li: hoist the addr-domain disjunction.
+                Self::assert_address_disjunction(addr, &addrs_v, ctx);
+                Ok(())
             }
             ConcretizationResult::Strided {
                 base,
@@ -505,6 +512,62 @@ impl SymbolicMemory {
         self.install_multi_for_candidates(addr_expr, value, &ready, ctx)
     }
 
+    /// angr-62li: hoist `Or(addr == a0, ..., addr == aK)` to the top-level
+    /// solver when the concretizer returned `Multiple`. Python's
+    /// `address_concretization_mixin` (angr/storage/memory_mixins/
+    /// address_concretization_mixin.py:292-294, 342-344) does the same for
+    /// every concretized read/write; the Rust-native path was missing it,
+    /// so Z3's `propagate_values` tactic never saw the address domain
+    /// restriction.
+    ///
+    /// Scope:
+    /// * Only the `Multiple` arm. `Strided` is skipped — the strided
+    ///   abstraction is concretizer policy, not a tight constraint.
+    /// * Gated by `MAX_DISJUNCTION_TERMS = 8`. Empirically (flareon2015_5,
+    ///   sym-write) hoisting a 64-way Or regresses Z3 because the cost of
+    ///   processing the new constraint on every subsequent `check()` swamps
+    ///   the propagate-values benefit. Small K (<=8) lets cheap cases
+    ///   benefit without the long-Or tax.
+    ///
+    /// Returns early without touching the solver when `addrs.len() <= 1`
+    /// (no domain restriction to communicate), when `addr` is concrete,
+    /// or when `addrs.len() > MAX_DISJUNCTION_TERMS`.
+    pub(super) fn assert_address_disjunction(
+        addr: &RustBV,
+        addrs: &[u64],
+        ctx: &SymContext,
+    ) {
+        /// Maximum disjunction width worth hoisting. Above this the
+        /// per-solver-check overhead of the long Or chain dominates.
+        const MAX_DISJUNCTION_TERMS: usize = 8;
+
+        if addrs.len() <= 1
+            || addrs.len() > MAX_DISJUNCTION_TERMS
+            || addr.as_u64().is_some()
+        {
+            return;
+        }
+        let width = addr.width();
+        let mut disjunction: Option<RustBV> = None;
+        for &cand in addrs {
+            let addr_const = RustBV::concrete(cand as u128, width);
+            let eq = addr.eq(&addr_const, ctx);
+            disjunction = Some(match disjunction {
+                Some(prev) => prev.or(&eq, ctx),
+                None => eq,
+            });
+        }
+        if let Some(or_bv) = disjunction {
+            // or() simplifies `eq | 1 -> 1` etc., so a concrete-true result
+            // means the disjunction is tautological — nothing to assert.
+            if or_bv.as_u128() == Some(1) {
+                return;
+            }
+            ctx.assume_true(&or_bv);
+            record_concretize_disjunction(addrs.len() as u32);
+        }
+    }
+
     /// Test-rig helper: install Multi alternatives for a multi-byte value
     /// across a known list of candidate addresses without going through
     /// the address concretizer. Pure wrapper around
@@ -554,6 +617,8 @@ impl SymbolicMemory {
             ConcretizationResult::Multiple(addrs) => {
                 let addrs_v: Vec<u64> = addrs.clone();
                 self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
+                // angr-62li: hoist the addr-domain disjunction.
+                Self::assert_address_disjunction(&addr, &addrs_v, ctx);
                 Ok(Some(result))
             }
             ConcretizationResult::Strided {

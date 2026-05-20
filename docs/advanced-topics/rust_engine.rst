@@ -296,6 +296,17 @@ zero-cost when not read. They reset alongside the Z3 counters via
     count) across all calls. Average ``K`` = total / count.
   * ``concretize_max_candidates`` — watermark of the largest ``K``
     seen. ``TooLarge`` / ``Failed`` outcomes count as ``K = 0``.
+  * ``concretize_disjunction_count`` / ``_terms_total`` /
+    ``_max_terms`` — angr-62li. Number of times the engine hoisted
+    ``Or(addr == a0, ..., addr == aK)`` to the top-level Rust solver
+    (matches Python's ``address_concretization_mixin``), the sum of
+    ``K`` across those hoists, and the largest ``K``. Hoisting is
+    gated to ``2 <= K <= 8`` — beyond ``8`` the long-Or processing
+    cost on every subsequent ``solver.check()`` swamps the
+    propagate-values payoff (measured: 22% regression on
+    flareon2015_5 with K up to 64 unbounded; neutral with the gate).
+    ``Strided`` results are not hoisted (the strided abstraction is
+    concretizer policy, not a tight constraint — A/B pending).
 
 * **AST construction** (bumped at the actual
   ``RustBV::Expression { op: BVOp::X, ... }`` construction sites in
