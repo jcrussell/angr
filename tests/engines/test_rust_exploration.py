@@ -9817,5 +9817,130 @@ class TestLoaderPagesCache:
         assert len(RustExplorationManager._loader_pages_cache) == 0
 
 
+class TestSyncExtraPagesFastPath:
+    """angr-b58a: _sync_extra_python_pages skips full bytes() materialization
+    for UltraPage backings (using a memcmp on `concrete_data`) and batches
+    the per-page lazy-region FFI into a single call.  These tests pin the
+    fast-path behaviour so a refactor that drops one branch keeps working.
+    """
+
+    @staticmethod
+    def _fresh_rust_state(project):
+        """Build a bare _RustSimState matching the project's arch."""
+        from angr.rustylib.vex_engine import RustSimState
+        is_le = project.arch.memory_endness == 'Iend_LE'
+        return RustSimState(project.arch.name, little_endian=is_le)
+
+    def test_lazy_regions_use_batch_ffi(self, fauxware_project):
+        """All synced extra pages should go through add_lazy_regions_batch
+        exactly once; the per-page add_lazy_region helper must not be hit
+        from inside _sync_extra_python_pages."""
+        from angr.exploration.rust_manager import RustExplorationManager
+        from angr.exploration.rust_state_sync import RustStateSyncMixin
+
+        state = fauxware_project.factory.entry_state()
+        # Add 8 extra non-loader pages so the function has work to do.
+        for i in range(8):
+            page_addr = 0x4000_0000 + i * 0x1000
+            state.memory.store(page_addr, b'\x00' * 0x1000, endness='Iend_BE')
+        mgr = RustExplorationManager(fauxware_project, [state])
+        rust_state = self._fresh_rust_state(fauxware_project)
+
+        batch_calls: list = []
+        single_calls: list = []
+        real_batch = type(rust_state).add_lazy_regions_batch
+        real_single = type(rust_state).add_lazy_region
+        try:
+            type(rust_state).add_lazy_regions_batch = (
+                lambda self, regions, _r=real_batch, _b=batch_calls:
+                    (_b.append(list(regions)), _r(self, regions))[1]
+            )
+            type(rust_state).add_lazy_region = (
+                lambda self, start, size, _r=real_single, _s=single_calls:
+                    (_s.append((start, size)), _r(self, start, size))[1]
+            )
+            sp = state.solver.eval(state.regs.sp)
+            stack_base = (sp & ~0xFFF) + 0x1000
+            stack_start = stack_base - 0x11_0000
+            mapped, _ = mgr._map_loader_pages(rust_state, set(), 0x1000)
+            RustStateSyncMixin._sync_extra_python_pages(
+                mgr, state, rust_state, mapped, set(),
+                sp & ~0xFFF, stack_start, stack_base, 0x1000)
+        finally:
+            type(rust_state).add_lazy_regions_batch = real_batch
+            type(rust_state).add_lazy_region = real_single
+
+        assert len(single_calls) == 0, (
+            f"_sync_extra_python_pages should batch lazy regions, "
+            f"saw {len(single_calls)} single calls"
+        )
+        assert len(batch_calls) == 1, (
+            f"expected exactly one batch call, got {len(batch_calls)}"
+        )
+        addrs_in_batch = {addr for addr, _size in batch_calls[0]}
+        for i in range(8):
+            assert 0x4000_0000 + i * 0x1000 in addrs_in_batch
+
+    def test_zero_page_classified_without_concrete_load(self, fauxware_project):
+        """For all-zero pages on the mma lazy path (zero_count > cap),
+        the UltraPage fast path classifies via concrete_data memcmp and
+        never invokes concrete_load() — even during the FFI phase."""
+        from angr.exploration.rust_manager import RustExplorationManager
+        from angr.exploration.rust_state_sync import RustStateSyncMixin
+        from angr.storage.memory_mixins.paged_memory.pages.ultra_page import (
+            UltraPage,
+        )
+
+        state = fauxware_project.factory.entry_state()
+        # Allocate > zero_eager_cap (200) zero pages so eager_zero=False
+        # (mma path).  Then _sync_extra_python_pages will only call
+        # add_lazy_regions_batch — no per-page bytes() copy, no FFI map.
+        for i in range(220):
+            page_addr = 0x4100_0000 + i * 0x1000
+            state.memory.store(page_addr, b'\x00' * 0x1000, endness='Iend_BE')
+        mgr = RustExplorationManager(fauxware_project, [state])
+        rust_state = self._fresh_rust_state(fauxware_project)
+
+        # Verify the UltraPage backing is what the fast path expects.
+        any_page = state.memory._pages.get(0x4100_0000 // 0x1000)
+        assert isinstance(any_page, UltraPage)
+        assert isinstance(any_page.concrete_data, bytearray)
+
+        calls = {"concrete_load": 0}
+        orig_cl = UltraPage.concrete_load
+
+        def spy_cl(self, addr, size, **kw):
+            calls["concrete_load"] += 1
+            return orig_cl(self, addr, size, **kw)
+
+        UltraPage.concrete_load = spy_cl
+        try:
+            sp = state.solver.eval(state.regs.sp)
+            stack_base = (sp & ~0xFFF) + 0x1000
+            stack_start = stack_base - 0x11_0000
+            mapped, _ = mgr._map_loader_pages(rust_state, set(), 0x1000)
+            RustStateSyncMixin._sync_extra_python_pages(
+                mgr, state, rust_state, mapped, set(),
+                sp & ~0xFFF, stack_start, stack_base, 0x1000)
+        finally:
+            UltraPage.concrete_load = orig_cl
+
+        # mma path: > 200 zero pages → eager_zero=False → no FFI
+        # map_memory_data, no bytes() copy.  concrete_load MUST be zero.
+        assert calls["concrete_load"] == 0, (
+            f"UltraPage lazy path should never call concrete_load; "
+            f"saw {calls['concrete_load']}"
+        )
+
+    def test_add_lazy_regions_batch_ffi_available(self, fauxware_project):
+        """Smoke-test the new Rust FFI surface exists and is callable."""
+        rust_state = self._fresh_rust_state(fauxware_project)
+        assert hasattr(rust_state, 'add_lazy_regions_batch'), (
+            "Rust FFI must expose add_lazy_regions_batch (angr-b58a)"
+        )
+        rust_state.add_lazy_regions_batch([(0x4200_0000, 0x1000),
+                                           (0x4200_1000, 0x1000)])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -2301,6 +2301,17 @@ impl PyRustSimState {
         self.inner.add_lazy_region(start_addr, size);
     }
 
+    /// Add multiple lazy regions in a single FFI call.
+    /// `regions` is a list of (start_addr, size) tuples. Used by
+    /// `RustStateSyncMixin._sync_extra_python_pages` to register thousands of
+    /// per-page lazy entries (mma_howtouse / Callable workflow) in one
+    /// crossing instead of one FFI per page.
+    pub fn add_lazy_regions_batch(&mut self, regions: Vec<(u64, u64)>) {
+        for (start_addr, size) in regions {
+            self.inner.add_lazy_region(start_addr, size);
+        }
+    }
+
     /// Get dirty page addresses.
     pub fn get_dirty_pages(&self) -> Vec<u64> {
         self.inner.get_dirty_pages()

@@ -10,6 +10,12 @@ from angr.rustylib.vex_engine import register_names_for_arch
 
 from ._constants import PAGE_SIZE, PAGE_MASK, STACK_SIZE, MAX_OVERLAY_SECTION_SIZE
 
+# Precomputed all-zero buffers for _sync_extra_python_pages fast-path
+# zero-page detection (memcmp-based instead of any() byte iteration; saves
+# ~14us / page in mma_howtouse-style workloads — see angr-b58a).
+_ZERO_PAGE_BA = bytearray(PAGE_SIZE)
+_ZERO_PAGE_BYTES = bytes(PAGE_SIZE)
+
 if TYPE_CHECKING:
     import angr
 
@@ -615,9 +621,14 @@ class RustStateSyncMixin:
             mem_pages = getattr(angr_state.memory, '_pages', None)
             if mem_pages is None:
                 return
-            # First pass: classify each candidate page so we can decide
-            # eager-vs-lazy for the all-zero set based on count.
-            candidates = []  # list[(page_addr, concrete_bytes, is_nonzero)]
+            # angr-b58a: classify pages without materializing 4KB bytes objects.
+            # For UltraPage (the default backend) we read concrete_data
+            # directly — a bytearray-vs-bytearray compare is ~0.1us / page
+            # (memcmp) versus ~15us / page for `any(bytes_iter)`. The bytes()
+            # copy is deferred until we know the page actually needs to be
+            # FFI-mapped (saves 8MB of bytes allocations per Callable on
+            # mma_howtouse's ~2000 all-zero pages).
+            raw_pages = []  # list[(page_addr, page_obj, is_nonzero, perms, cached_bytes_or_None)]
             for page_no in list(mem_pages.keys()):
                 page_addr = page_no * page_size
                 if page_addr in mapped_page_addrs:
@@ -629,31 +640,62 @@ class RustStateSyncMixin:
                 page_obj = mem_pages.get(page_no)
                 if page_obj is None:
                     continue
-                try:
-                    concrete = bytes(page_obj.concrete_load(0, page_size))
-                except Exception:
-                    # cat-(b) FALLBACK WITH LOSS: per-page sync failed;
-                    # the page is not pre-populated. fetch_page from
-                    # Python catches accesses on demand.
-                    continue
-                if len(concrete) != page_size:
-                    continue
-                candidates.append((page_addr, concrete, any(concrete)))
+                perms = 6 if stack_start <= page_addr < stack_base else 7
+                cd = getattr(page_obj, 'concrete_data', None)
+                if isinstance(cd, bytearray) and len(cd) == page_size:
+                    # UltraPage fast path: classify via memcmp on the backing
+                    # bytearray. No bytes() copy yet — deferred to the FFI
+                    # phase (and skipped entirely for lazy-only zero pages).
+                    is_nonzero = cd != _ZERO_PAGE_BA
+                    raw_pages.append((page_addr, page_obj, is_nonzero, perms, None))
+                else:
+                    # Non-UltraPage backend: materialize bytes once and keep
+                    # the buffer for the FFI phase to avoid a second
+                    # concrete_load.
+                    try:
+                        concrete = bytes(page_obj.concrete_load(0, page_size))
+                    except Exception:
+                        # cat-(b) FALLBACK WITH LOSS: per-page sync failed;
+                        # lazy fetch_page handles it on first access.
+                        continue
+                    if len(concrete) != page_size:
+                        continue
+                    is_nonzero = concrete != _ZERO_PAGE_BYTES
+                    raw_pages.append((page_addr, page_obj, is_nonzero, perms, concrete))
 
-            zero_count = sum(1 for _, _, nz in candidates if not nz)
+            zero_count = sum(1 for _, _, nz, _, _ in raw_pages if not nz)
             eager_zero = zero_count <= zero_eager_cap
 
-            for page_addr, concrete, is_nonzero in candidates:
+            lazy_batch = []
+            for page_addr, page_obj, is_nonzero, perms, cached in raw_pages:
                 # angr-7vcx: must record the mapping even for all-zero pages,
                 # otherwise user `map_region` calls silently disappear and
                 # Rust faults on the first store. Stack region gets RW.
-                perms = 6 if stack_start <= page_addr < stack_base else 7
                 if is_nonzero or eager_zero:
-                    rust_state.map_memory_data(page_addr, concrete, perms)
+                    concrete = cached
+                    if concrete is None:
+                        try:
+                            concrete = bytes(page_obj.concrete_load(0, page_size))
+                        except Exception:
+                            # cat-(b) FALLBACK WITH LOSS: classification path
+                            # worked but second load failed; keep the lazy
+                            # registration so on-demand fetch can recover.
+                            concrete = None
+                    if concrete is not None and len(concrete) == page_size:
+                        rust_state.map_memory_data(page_addr, concrete, perms)
                 # Else: store_concrete_automap_internal will auto-allocate
                 # this page on first write via add_lazy_region tracking.
-                rust_state.add_lazy_region(page_addr, page_size)
+                lazy_batch.append((page_addr, page_size))
                 extra_pages_synced += 1
+
+            if lazy_batch:
+                try:
+                    rust_state.add_lazy_regions_batch(lazy_batch)
+                except AttributeError:
+                    # cat-(a) EXPECTED CONTROL FLOW: probing for batch API on
+                    # older Rust builds; fall back to per-page registration.
+                    for start, size in lazy_batch:
+                        rust_state.add_lazy_region(start, size)
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: outer iteration failed (rare,
             # _pages dict shape mismatch). All non-loader pages skip
