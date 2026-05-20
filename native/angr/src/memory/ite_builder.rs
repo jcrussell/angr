@@ -13,9 +13,59 @@
 //!
 //! All entry points are inherent methods on `SymbolicMemory` re-exported by the
 //! parent module, so callers in `memory/mod.rs` keep using `self.method(...)`.
+use std::sync::Arc;
+
 use crate::symbolic::{RustBV, SymContext};
 
 use super::{MemoryError, SymbolicMemory};
+
+/// Light-weight structural equality used by the ITE builders to detect when
+/// two sibling subtrees produce identical loaded values, in which case the
+/// surrounding ITE can be collapsed (`ite(c, v, v) -> v`). Returns true only
+/// when the two values are provably identical without recursing into
+/// expression trees — conservative by design, so it never collapses
+/// distinct ASTs.
+///
+/// Catches the common bead-described case (angr-269l): N-way concretization
+/// where every candidate address maps to the same memory content (zero
+/// pages, repeated initializers). Those loads return identical
+/// `RustBV::Concrete` values, so the entire balanced ITE tree collapses to
+/// a single leaf — no `ITE` nodes, no Or-of-equalities to construct.
+fn loads_match(a: &RustBV, b: &RustBV) -> bool {
+    use RustBV::*;
+    if a.width() != b.width() {
+        return false;
+    }
+    match (a, b) {
+        (Concrete { value: v1, .. }, Concrete { value: v2, .. }) => v1 == v2,
+        (Symbolic { id: i1, .. }, Symbolic { id: i2, .. }) => i1 == i2,
+        (
+            Constrained {
+                id: i1, value: v1, ..
+            },
+            Constrained {
+                id: i2, value: v2, ..
+            },
+        ) => i1 == i2 && v1 == v2,
+        // Two Expression nodes are treated as identical only when they share
+        // the same operand `Arc` and op. This catches incidental sharing
+        // (e.g. when distinct addresses route to the same cached AST) without
+        // paying for a deep structural walk on every ITE construction.
+        (
+            Expression {
+                op: op1,
+                operands: ops1,
+                ..
+            },
+            Expression {
+                op: op2,
+                operands: ops2,
+                ..
+            },
+        ) => op1 == op2 && Arc::ptr_eq(ops1, ops2),
+        _ => false,
+    }
+}
 
 impl SymbolicMemory {
     /// Load from strided addresses using a balanced ITE tree.
@@ -92,6 +142,12 @@ impl SymbolicMemory {
         let left = self.build_strided_ite_tree(addr_expr, base, stride, lo, mid, size, ctx)?;
         let right = self.build_strided_ite_tree(addr_expr, base, stride, mid + 1, hi, size, ctx)?;
 
+        // angr-269l: collapse `ite(c, v, v) -> v` so identical-content
+        // strided regions fold to a single leaf instead of an N-deep tree.
+        if loads_match(&left, &right) {
+            return Ok(left);
+        }
+
         // Build ITE: if (addr <= mid_addr) then left else right
         Ok(cond.ite(&left, &right, ctx))
     }
@@ -137,6 +193,11 @@ impl SymbolicMemory {
             let left_val = self.load_concrete_lazy(addrs[0], size, ctx)?;
             let right_val = self.load_concrete_lazy(addrs[1], size, ctx)?;
 
+            // angr-269l: skip the ITE when both addresses map to the same content.
+            if loads_match(&left_val, &right_val) {
+                return Ok(left_val);
+            }
+
             let left_const = RustBV::concrete(addrs[0] as u128, addr_expr.width());
             let cond = addr_expr.eq(&left_const, ctx);
 
@@ -154,6 +215,12 @@ impl SymbolicMemory {
         // Recursively build left (addrs < mid) and right (addrs >= mid) subtrees
         let left = self.build_balanced_ite_load_inner(addr_expr, &addrs[..mid], size, ctx)?;
         let right = self.build_balanced_ite_load_inner(addr_expr, &addrs[mid..], size, ctx)?;
+
+        // angr-269l: collapse identical subtrees so multi-address dedup
+        // propagates up the tree (every leaf identical → root is the leaf).
+        if loads_match(&left, &right) {
+            return Ok(left);
+        }
 
         // Build ITE: if (addr < mid_addr) then left else right
         Ok(cond.ite(&left, &right, ctx))
@@ -201,6 +268,10 @@ impl SymbolicMemory {
         if addrs.len() == 2 {
             let left_val = self.load_concrete_or_unconstrained(addrs[0], size, ctx, counter);
             let right_val = self.load_concrete_or_unconstrained(addrs[1], size, ctx, counter);
+            // angr-269l: dedup identical-content pair without wrapping in ITE.
+            if loads_match(&left_val, &right_val) {
+                return Ok(left_val);
+            }
             let left_const = RustBV::concrete(addrs[0] as u128, addr_expr.width());
             let cond = addr_expr.eq(&left_const, ctx);
             return Ok(cond.ite(&left_val, &right_val, ctx));
@@ -213,6 +284,13 @@ impl SymbolicMemory {
 
         let left = self.build_ite_tree_inner(addr_expr, &addrs[..mid], size, ctx, counter)?;
         let right = self.build_ite_tree_inner(addr_expr, &addrs[mid..], size, ctx, counter)?;
+
+        // angr-269l: propagate the "identical children → no ITE" dedup
+        // upward, collapsing entire balanced subtrees when every leaf shares
+        // the same value.
+        if loads_match(&left, &right) {
+            return Ok(left);
+        }
 
         Ok(cond.ite(&left, &right, ctx))
     }

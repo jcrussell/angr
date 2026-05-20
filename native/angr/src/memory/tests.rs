@@ -2586,3 +2586,159 @@ fn test_phase42_flush_run_length_cap() {
     assert_eq!(first.width(), 128);
     assert_eq!(second.width(), 64);
 }
+
+/// Returns true if `bv` is an `Expression` whose top-level op is `Ite`.
+fn is_ite(bv: &RustBV) -> bool {
+    use crate::symbolic::BVOp;
+    matches!(
+        bv,
+        RustBV::Expression {
+            op: BVOp::Ite,
+            ..
+        }
+    )
+}
+
+// angr-269l: de-duplicate ITE arms in concretization fan-out. When every
+// candidate address maps to the same loaded content (zero pages, repeated
+// initializers), the balanced ITE tree should collapse to a single leaf
+// instead of emitting log-depth ITE nodes that Z3's max-bv-sharing tactic
+// cannot dedup (it matches by AST node identity, not structural equality).
+
+#[test]
+fn test_ite_dedup_zero_page_load() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+
+    // Zero page: never written, so every aligned load returns Concrete(0).
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // Symbolic 64-bit addr constrained to {0x1000, 0x1010, 0x1020, 0x1030}
+    // — four candidates, all backed by the same zero content.
+    let addr = RustBV::symbolic(&ctx, "zp_addr".to_string(), 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    for off in [0x10u64, 0x20, 0x30] {
+        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
+        clause = clause.or(&eq, &ctx);
+    }
+    ctx.assume_true(&clause);
+    assert!(ctx.is_sat(), "four-solution constraint must be SAT");
+
+    let loaded = mem
+        .load_symbolic_unified(addr.clone(), 8, &ctx, &concretizer)
+        .expect("zero-page load must succeed");
+
+    // Dedup contract: identical zero loads collapse to a single Concrete leaf.
+    assert!(
+        !is_ite(&loaded),
+        "expected dedup → single leaf, got ITE: {:?}",
+        loaded
+    );
+    assert_eq!(
+        loaded.as_u64(),
+        Some(0),
+        "all candidates load zero → result must be Concrete(0)"
+    );
+}
+
+#[test]
+fn test_ite_dedup_repeated_initializer_collapses() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+
+    // Repeated initializer: four 8-byte slots, all storing the same word.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    for off in [0u64, 0x10, 0x20, 0x30] {
+        mem.store_concrete(0x1000 + off, RustBV::concrete(0xDEAD_BEEF, 64))
+            .expect("store");
+    }
+
+    let addr = RustBV::symbolic(&ctx, "ri_addr".to_string(), 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    for off in [0x10u64, 0x20, 0x30] {
+        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
+        clause = clause.or(&eq, &ctx);
+    }
+    ctx.assume_true(&clause);
+    assert!(ctx.is_sat(), "four-solution constraint must be SAT");
+
+    let loaded = mem
+        .load_symbolic_unified(addr, 8, &ctx, &concretizer)
+        .expect("repeated-initializer load must succeed");
+
+    assert!(
+        !is_ite(&loaded),
+        "expected dedup → single leaf, got ITE: {:?}",
+        loaded
+    );
+    assert_eq!(loaded.as_u64(), Some(0xDEAD_BEEF));
+}
+
+#[test]
+fn test_ite_dedup_distinct_values_keeps_ite() {
+    // Control test: when candidate addresses load distinct values, the
+    // dedup must NOT collapse — we must still see an ITE at the root.
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    mem.store_concrete(0x1000, RustBV::concrete(0x11, 64))
+        .expect("store a");
+    mem.store_concrete(0x1010, RustBV::concrete(0x22, 64))
+        .expect("store b");
+
+    let addr = RustBV::symbolic(&ctx, "dv_addr".to_string(), 64);
+    let eq_a = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let eq_b = addr.eq(&RustBV::concrete(0x1010, 64), &ctx);
+    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    assert!(ctx.is_sat());
+
+    let loaded = mem
+        .load_symbolic_unified(addr, 8, &ctx, &concretizer)
+        .expect("distinct-values load must succeed");
+
+    // Distinct contents → ITE is required. Verifies the dedup is conservative.
+    assert!(
+        is_ite(&loaded),
+        "distinct candidate values must keep the ITE, got: {:?}",
+        loaded
+    );
+}
+
+#[test]
+fn test_ite_dedup_strided_zero_collapses() {
+    // Strided variant: a stride-aligned region of zeros routes through
+    // `load_strided_balanced` / `build_strided_ite_tree`. The recursive
+    // sibling-collapse must propagate up to a single leaf.
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    // Page is never written, so every offset is zero.
+
+    // Constrain addr to a regular stride of 8 across four candidates; the
+    // concretizer should classify this as Strided.
+    let addr = RustBV::symbolic(&ctx, "st_addr".to_string(), 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    for off in [0x8u64, 0x10, 0x18] {
+        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
+        clause = clause.or(&eq, &ctx);
+    }
+    ctx.assume_true(&clause);
+    assert!(ctx.is_sat());
+
+    let loaded = mem
+        .load_symbolic_unified(addr, 8, &ctx, &concretizer)
+        .expect("strided zero load must succeed");
+
+    assert!(
+        !is_ite(&loaded),
+        "strided zero load expected to collapse to a leaf, got: {:?}",
+        loaded
+    );
+    assert_eq!(loaded.as_u64(), Some(0));
+}
