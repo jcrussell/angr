@@ -695,55 +695,7 @@ fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     Flags { cf, pf, zf, sf, of }
 }
 
-/// Get the operand size in bits for an AMD64 CC_OP
-fn amd64_op_to_nbits(cc_op: u64) -> Option<u32> {
-    use amd64_cc_op::*;
-    match cc_op {
-        G_CC_OP_ADDB | G_CC_OP_SUBB | G_CC_OP_ADCB | G_CC_OP_SBBB | G_CC_OP_LOGICB
-        | G_CC_OP_INCB | G_CC_OP_DECB | G_CC_OP_SHLB | G_CC_OP_SHRB | G_CC_OP_ROLB
-        | G_CC_OP_RORB | G_CC_OP_UMULB | G_CC_OP_SMULB => Some(8),
-
-        G_CC_OP_ADDW | G_CC_OP_SUBW | G_CC_OP_ADCW | G_CC_OP_SBBW | G_CC_OP_LOGICW
-        | G_CC_OP_INCW | G_CC_OP_DECW | G_CC_OP_SHLW | G_CC_OP_SHRW | G_CC_OP_ROLW
-        | G_CC_OP_RORW | G_CC_OP_UMULW | G_CC_OP_SMULW => Some(16),
-
-        G_CC_OP_ADDL | G_CC_OP_SUBL | G_CC_OP_ADCL | G_CC_OP_SBBL | G_CC_OP_LOGICL
-        | G_CC_OP_INCL | G_CC_OP_DECL | G_CC_OP_SHLL | G_CC_OP_SHRL | G_CC_OP_ROLL
-        | G_CC_OP_RORL | G_CC_OP_UMULL | G_CC_OP_SMULL => Some(32),
-
-        G_CC_OP_ADDQ | G_CC_OP_SUBQ | G_CC_OP_ADCQ | G_CC_OP_SBBQ | G_CC_OP_LOGICQ
-        | G_CC_OP_INCQ | G_CC_OP_DECQ | G_CC_OP_SHLQ | G_CC_OP_SHRQ | G_CC_OP_ROLQ
-        | G_CC_OP_RORQ | G_CC_OP_UMULQ | G_CC_OP_SMULQ => Some(64),
-
-        G_CC_OP_COPY => Some(64), // COPY uses native size
-
-        _ => None,
-    }
-}
-
-/// Get the operand size in bits for an X86 CC_OP
-fn x86_op_to_nbits(cc_op: u64) -> Option<u32> {
-    use x86_cc_op::*;
-    match cc_op {
-        G_CC_OP_ADDB | G_CC_OP_SUBB | G_CC_OP_ADCB | G_CC_OP_SBBB | G_CC_OP_LOGICB
-        | G_CC_OP_INCB | G_CC_OP_DECB | G_CC_OP_SHLB | G_CC_OP_SHRB | G_CC_OP_ROLB
-        | G_CC_OP_RORB | G_CC_OP_UMULB | G_CC_OP_SMULB => Some(8),
-
-        G_CC_OP_ADDW | G_CC_OP_SUBW | G_CC_OP_ADCW | G_CC_OP_SBBW | G_CC_OP_LOGICW
-        | G_CC_OP_INCW | G_CC_OP_DECW | G_CC_OP_SHLW | G_CC_OP_SHRW | G_CC_OP_ROLW
-        | G_CC_OP_RORW | G_CC_OP_UMULW | G_CC_OP_SMULW => Some(16),
-
-        G_CC_OP_ADDL | G_CC_OP_SUBL | G_CC_OP_ADCL | G_CC_OP_SBBL | G_CC_OP_LOGICL
-        | G_CC_OP_INCL | G_CC_OP_DECL | G_CC_OP_SHLL | G_CC_OP_SHRL | G_CC_OP_ROLL
-        | G_CC_OP_RORL | G_CC_OP_UMULL | G_CC_OP_SMULL => Some(32),
-
-        G_CC_OP_COPY => Some(32), // COPY uses native size
-
-        _ => None,
-    }
-}
-
-/// Get the operation category for an AMD64 CC_OP
+/// Operation category implied by a CC_OP value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OpCategory {
     Copy,
@@ -762,47 +714,177 @@ enum OpCategory {
     Smul,
 }
 
-fn amd64_op_to_category(cc_op: u64) -> Option<OpCategory> {
-    use amd64_cc_op::*;
-    match cc_op {
-        G_CC_OP_COPY => Some(OpCategory::Copy),
-        G_CC_OP_ADDB | G_CC_OP_ADDW | G_CC_OP_ADDL | G_CC_OP_ADDQ => Some(OpCategory::Add),
-        G_CC_OP_SUBB | G_CC_OP_SUBW | G_CC_OP_SUBL | G_CC_OP_SUBQ => Some(OpCategory::Sub),
-        G_CC_OP_ADCB | G_CC_OP_ADCW | G_CC_OP_ADCL | G_CC_OP_ADCQ => Some(OpCategory::Adc),
-        G_CC_OP_SBBB | G_CC_OP_SBBW | G_CC_OP_SBBL | G_CC_OP_SBBQ => Some(OpCategory::Sbb),
-        G_CC_OP_LOGICB | G_CC_OP_LOGICW | G_CC_OP_LOGICL | G_CC_OP_LOGICQ => {
-            Some(OpCategory::Logic)
+/// Decoded metadata for a CC_OP value: operand width and category.
+#[derive(Debug, Clone, Copy)]
+struct CcOpInfo {
+    nbits: u32,
+    category: OpCategory,
+}
+
+/// Which x86/amd64 dialect a CCall is calling into.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CcArch {
+    Amd64,
+    X86,
+}
+
+impl CcArch {
+    /// Pick the dialect from a CCall callee name (`"amd64g_..."` vs `"x86g_..."`).
+    fn from_ccall_name(name: &str) -> Self {
+        if name.starts_with("amd64g") {
+            CcArch::Amd64
+        } else {
+            CcArch::X86
         }
-        G_CC_OP_INCB | G_CC_OP_INCW | G_CC_OP_INCL | G_CC_OP_INCQ => Some(OpCategory::Inc),
-        G_CC_OP_DECB | G_CC_OP_DECW | G_CC_OP_DECL | G_CC_OP_DECQ => Some(OpCategory::Dec),
-        G_CC_OP_SHLB | G_CC_OP_SHLW | G_CC_OP_SHLL | G_CC_OP_SHLQ => Some(OpCategory::Shl),
-        G_CC_OP_SHRB | G_CC_OP_SHRW | G_CC_OP_SHRL | G_CC_OP_SHRQ => Some(OpCategory::Shr),
-        G_CC_OP_ROLB | G_CC_OP_ROLW | G_CC_OP_ROLL | G_CC_OP_ROLQ => Some(OpCategory::Rol),
-        G_CC_OP_RORB | G_CC_OP_RORW | G_CC_OP_RORL | G_CC_OP_RORQ => Some(OpCategory::Ror),
-        G_CC_OP_UMULB | G_CC_OP_UMULW | G_CC_OP_UMULL | G_CC_OP_UMULQ => Some(OpCategory::Umul),
-        G_CC_OP_SMULB | G_CC_OP_SMULW | G_CC_OP_SMULL | G_CC_OP_SMULQ => Some(OpCategory::Smul),
-        _ => None,
     }
 }
 
-fn x86_op_to_category(cc_op: u64) -> Option<OpCategory> {
+/// Decode an AMD64 CC_OP into (nbits, category). Returns `None` for unknown values.
+fn amd64_cc_op_info(cc_op: u64) -> Option<CcOpInfo> {
+    use OpCategory::*;
+    use amd64_cc_op::*;
+    let (nbits, category) = match cc_op {
+        G_CC_OP_COPY => (64, Copy),
+        G_CC_OP_ADDB => (8, Add),
+        G_CC_OP_ADDW => (16, Add),
+        G_CC_OP_ADDL => (32, Add),
+        G_CC_OP_ADDQ => (64, Add),
+        G_CC_OP_SUBB => (8, Sub),
+        G_CC_OP_SUBW => (16, Sub),
+        G_CC_OP_SUBL => (32, Sub),
+        G_CC_OP_SUBQ => (64, Sub),
+        G_CC_OP_ADCB => (8, Adc),
+        G_CC_OP_ADCW => (16, Adc),
+        G_CC_OP_ADCL => (32, Adc),
+        G_CC_OP_ADCQ => (64, Adc),
+        G_CC_OP_SBBB => (8, Sbb),
+        G_CC_OP_SBBW => (16, Sbb),
+        G_CC_OP_SBBL => (32, Sbb),
+        G_CC_OP_SBBQ => (64, Sbb),
+        G_CC_OP_LOGICB => (8, Logic),
+        G_CC_OP_LOGICW => (16, Logic),
+        G_CC_OP_LOGICL => (32, Logic),
+        G_CC_OP_LOGICQ => (64, Logic),
+        G_CC_OP_INCB => (8, Inc),
+        G_CC_OP_INCW => (16, Inc),
+        G_CC_OP_INCL => (32, Inc),
+        G_CC_OP_INCQ => (64, Inc),
+        G_CC_OP_DECB => (8, Dec),
+        G_CC_OP_DECW => (16, Dec),
+        G_CC_OP_DECL => (32, Dec),
+        G_CC_OP_DECQ => (64, Dec),
+        G_CC_OP_SHLB => (8, Shl),
+        G_CC_OP_SHLW => (16, Shl),
+        G_CC_OP_SHLL => (32, Shl),
+        G_CC_OP_SHLQ => (64, Shl),
+        G_CC_OP_SHRB => (8, Shr),
+        G_CC_OP_SHRW => (16, Shr),
+        G_CC_OP_SHRL => (32, Shr),
+        G_CC_OP_SHRQ => (64, Shr),
+        G_CC_OP_ROLB => (8, Rol),
+        G_CC_OP_ROLW => (16, Rol),
+        G_CC_OP_ROLL => (32, Rol),
+        G_CC_OP_ROLQ => (64, Rol),
+        G_CC_OP_RORB => (8, Ror),
+        G_CC_OP_RORW => (16, Ror),
+        G_CC_OP_RORL => (32, Ror),
+        G_CC_OP_RORQ => (64, Ror),
+        G_CC_OP_UMULB => (8, Umul),
+        G_CC_OP_UMULW => (16, Umul),
+        G_CC_OP_UMULL => (32, Umul),
+        G_CC_OP_UMULQ => (64, Umul),
+        G_CC_OP_SMULB => (8, Smul),
+        G_CC_OP_SMULW => (16, Smul),
+        G_CC_OP_SMULL => (32, Smul),
+        G_CC_OP_SMULQ => (64, Smul),
+        _ => return None,
+    };
+    Some(CcOpInfo { nbits, category })
+}
+
+/// Decode an X86 CC_OP into (nbits, category). Returns `None` for unknown values.
+fn x86_cc_op_info(cc_op: u64) -> Option<CcOpInfo> {
+    use OpCategory::*;
     use x86_cc_op::*;
-    match cc_op {
-        G_CC_OP_COPY => Some(OpCategory::Copy),
-        G_CC_OP_ADDB | G_CC_OP_ADDW | G_CC_OP_ADDL => Some(OpCategory::Add),
-        G_CC_OP_SUBB | G_CC_OP_SUBW | G_CC_OP_SUBL => Some(OpCategory::Sub),
-        G_CC_OP_ADCB | G_CC_OP_ADCW | G_CC_OP_ADCL => Some(OpCategory::Adc),
-        G_CC_OP_SBBB | G_CC_OP_SBBW | G_CC_OP_SBBL => Some(OpCategory::Sbb),
-        G_CC_OP_LOGICB | G_CC_OP_LOGICW | G_CC_OP_LOGICL => Some(OpCategory::Logic),
-        G_CC_OP_INCB | G_CC_OP_INCW | G_CC_OP_INCL => Some(OpCategory::Inc),
-        G_CC_OP_DECB | G_CC_OP_DECW | G_CC_OP_DECL => Some(OpCategory::Dec),
-        G_CC_OP_SHLB | G_CC_OP_SHLW | G_CC_OP_SHLL => Some(OpCategory::Shl),
-        G_CC_OP_SHRB | G_CC_OP_SHRW | G_CC_OP_SHRL => Some(OpCategory::Shr),
-        G_CC_OP_ROLB | G_CC_OP_ROLW | G_CC_OP_ROLL => Some(OpCategory::Rol),
-        G_CC_OP_RORB | G_CC_OP_RORW | G_CC_OP_RORL => Some(OpCategory::Ror),
-        G_CC_OP_UMULB | G_CC_OP_UMULW | G_CC_OP_UMULL => Some(OpCategory::Umul),
-        G_CC_OP_SMULB | G_CC_OP_SMULW | G_CC_OP_SMULL => Some(OpCategory::Smul),
-        _ => None,
+    let (nbits, category) = match cc_op {
+        G_CC_OP_COPY => (32, Copy),
+        G_CC_OP_ADDB => (8, Add),
+        G_CC_OP_ADDW => (16, Add),
+        G_CC_OP_ADDL => (32, Add),
+        G_CC_OP_SUBB => (8, Sub),
+        G_CC_OP_SUBW => (16, Sub),
+        G_CC_OP_SUBL => (32, Sub),
+        G_CC_OP_ADCB => (8, Adc),
+        G_CC_OP_ADCW => (16, Adc),
+        G_CC_OP_ADCL => (32, Adc),
+        G_CC_OP_SBBB => (8, Sbb),
+        G_CC_OP_SBBW => (16, Sbb),
+        G_CC_OP_SBBL => (32, Sbb),
+        G_CC_OP_LOGICB => (8, Logic),
+        G_CC_OP_LOGICW => (16, Logic),
+        G_CC_OP_LOGICL => (32, Logic),
+        G_CC_OP_INCB => (8, Inc),
+        G_CC_OP_INCW => (16, Inc),
+        G_CC_OP_INCL => (32, Inc),
+        G_CC_OP_DECB => (8, Dec),
+        G_CC_OP_DECW => (16, Dec),
+        G_CC_OP_DECL => (32, Dec),
+        G_CC_OP_SHLB => (8, Shl),
+        G_CC_OP_SHLW => (16, Shl),
+        G_CC_OP_SHLL => (32, Shl),
+        G_CC_OP_SHRB => (8, Shr),
+        G_CC_OP_SHRW => (16, Shr),
+        G_CC_OP_SHRL => (32, Shr),
+        G_CC_OP_ROLB => (8, Rol),
+        G_CC_OP_ROLW => (16, Rol),
+        G_CC_OP_ROLL => (32, Rol),
+        G_CC_OP_RORB => (8, Ror),
+        G_CC_OP_RORW => (16, Ror),
+        G_CC_OP_RORL => (32, Ror),
+        G_CC_OP_UMULB => (8, Umul),
+        G_CC_OP_UMULW => (16, Umul),
+        G_CC_OP_UMULL => (32, Umul),
+        G_CC_OP_SMULB => (8, Smul),
+        G_CC_OP_SMULW => (16, Smul),
+        G_CC_OP_SMULL => (32, Smul),
+        _ => return None,
+    };
+    Some(CcOpInfo { nbits, category })
+}
+
+/// Arch-dispatched decoder.
+fn cc_op_info(arch: CcArch, cc_op: u64) -> Option<CcOpInfo> {
+    match arch {
+        CcArch::Amd64 => amd64_cc_op_info(cc_op),
+        CcArch::X86 => x86_cc_op_info(cc_op),
+    }
+}
+
+/// Compute concrete EFLAGS for a non-Copy category. The caller MUST handle
+/// `OpCategory::Copy` before calling this — Copy isn't a real flag-producing
+/// operation (it just stores already-computed flags in `cc_dep1`).
+fn compute_flags_from_category(
+    category: OpCategory,
+    nbits: u32,
+    cc_dep1: u64,
+    cc_dep2: u64,
+    cc_ndep: u64,
+) -> Flags {
+    match category {
+        OpCategory::Copy => unreachable!("Copy must be handled by caller"),
+        OpCategory::Add => calc_flags_add(nbits, cc_dep1, cc_dep2),
+        OpCategory::Sub => calc_flags_sub(nbits, cc_dep1, cc_dep2),
+        OpCategory::Adc => calc_flags_adc(nbits, cc_dep1, cc_dep2, cc_ndep),
+        OpCategory::Sbb => calc_flags_sbb(nbits, cc_dep1, cc_dep2, cc_ndep),
+        OpCategory::Logic => calc_flags_logic(nbits, cc_dep1),
+        OpCategory::Inc => calc_flags_inc(nbits, cc_dep1, cc_ndep),
+        OpCategory::Dec => calc_flags_dec(nbits, cc_dep1, cc_ndep),
+        OpCategory::Shl => calc_flags_shl(nbits, cc_dep1, cc_dep2),
+        OpCategory::Shr => calc_flags_shr(nbits, cc_dep1, cc_dep2),
+        OpCategory::Rol => calc_flags_rol(nbits, cc_dep1, cc_ndep),
+        OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
+        OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
+        OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
     }
 }
 
@@ -854,27 +936,7 @@ pub fn amd64g_calculate_condition(
     cc_dep2: u64,
     cc_ndep: u64,
 ) -> Option<u64> {
-    let nbits = amd64_op_to_nbits(cc_op)?;
-    let category = amd64_op_to_category(cc_op)?;
-
-    let flags = match category {
-        OpCategory::Copy => return Some(eval_condition_from_copy(cond, cc_dep1)),
-        OpCategory::Add => calc_flags_add(nbits, cc_dep1, cc_dep2),
-        OpCategory::Sub => calc_flags_sub(nbits, cc_dep1, cc_dep2),
-        OpCategory::Adc => calc_flags_adc(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Sbb => calc_flags_sbb(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Logic => calc_flags_logic(nbits, cc_dep1),
-        OpCategory::Inc => calc_flags_inc(nbits, cc_dep1, cc_ndep),
-        OpCategory::Dec => calc_flags_dec(nbits, cc_dep1, cc_ndep),
-        OpCategory::Shl => calc_flags_shl(nbits, cc_dep1, cc_dep2),
-        OpCategory::Shr => calc_flags_shr(nbits, cc_dep1, cc_dep2),
-        OpCategory::Rol => calc_flags_rol(nbits, cc_dep1, cc_ndep),
-        OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
-        OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
-        OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
-    };
-
-    Some(eval_condition(cond, &flags))
+    calculate_condition(CcArch::Amd64, cond, cc_op, cc_dep1, cc_dep2, cc_ndep)
 }
 
 /// Calculate condition for X86 architecture.
@@ -885,79 +947,46 @@ pub fn x86g_calculate_condition(
     cc_dep2: u64,
     cc_ndep: u64,
 ) -> Option<u64> {
-    let nbits = x86_op_to_nbits(cc_op)?;
-    let category = x86_op_to_category(cc_op)?;
+    calculate_condition(CcArch::X86, cond, cc_op, cc_dep1, cc_dep2, cc_ndep)
+}
 
-    let flags = match category {
-        OpCategory::Copy => return Some(eval_condition_from_copy(cond, cc_dep1)),
-        OpCategory::Add => calc_flags_add(nbits, cc_dep1, cc_dep2),
-        OpCategory::Sub => calc_flags_sub(nbits, cc_dep1, cc_dep2),
-        OpCategory::Adc => calc_flags_adc(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Sbb => calc_flags_sbb(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Logic => calc_flags_logic(nbits, cc_dep1),
-        OpCategory::Inc => calc_flags_inc(nbits, cc_dep1, cc_ndep),
-        OpCategory::Dec => calc_flags_dec(nbits, cc_dep1, cc_ndep),
-        OpCategory::Shl => calc_flags_shl(nbits, cc_dep1, cc_dep2),
-        OpCategory::Shr => calc_flags_shr(nbits, cc_dep1, cc_dep2),
-        OpCategory::Rol => calc_flags_rol(nbits, cc_dep1, cc_ndep),
-        OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
-        OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
-        OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
-    };
-
+fn calculate_condition(
+    arch: CcArch,
+    cond: u64,
+    cc_op: u64,
+    cc_dep1: u64,
+    cc_dep2: u64,
+    cc_ndep: u64,
+) -> Option<u64> {
+    let info = cc_op_info(arch, cc_op)?;
+    if info.category == OpCategory::Copy {
+        return Some(eval_condition_from_copy(cond, cc_dep1));
+    }
+    let flags = compute_flags_from_category(info.category, info.nbits, cc_dep1, cc_dep2, cc_ndep);
     Some(eval_condition(cond, &flags))
 }
 
 /// Calculate the carry flag (CF) for the given cc_op.
 fn calculate_eflags_c_amd64(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Option<u64> {
-    let nbits = amd64_op_to_nbits(cc_op)?;
-    let category = amd64_op_to_category(cc_op)?;
-
-    let flags = match category {
-        OpCategory::Copy => {
-            return Some((cc_dep1 >> flag_shift::G_CC_SHIFT_C) & 1);
-        }
-        OpCategory::Add => calc_flags_add(nbits, cc_dep1, cc_dep2),
-        OpCategory::Sub => calc_flags_sub(nbits, cc_dep1, cc_dep2),
-        OpCategory::Adc => calc_flags_adc(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Sbb => calc_flags_sbb(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Logic => calc_flags_logic(nbits, cc_dep1),
-        OpCategory::Inc => calc_flags_inc(nbits, cc_dep1, cc_ndep),
-        OpCategory::Dec => calc_flags_dec(nbits, cc_dep1, cc_ndep),
-        OpCategory::Shl => calc_flags_shl(nbits, cc_dep1, cc_dep2),
-        OpCategory::Shr => calc_flags_shr(nbits, cc_dep1, cc_dep2),
-        OpCategory::Rol => calc_flags_rol(nbits, cc_dep1, cc_ndep),
-        OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
-        OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
-        OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
-    };
-
-    Some(flags.cf as u64)
+    calculate_eflags_c(CcArch::Amd64, cc_op, cc_dep1, cc_dep2, cc_ndep)
 }
 
 fn calculate_eflags_c_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Option<u64> {
-    let nbits = x86_op_to_nbits(cc_op)?;
-    let category = x86_op_to_category(cc_op)?;
+    calculate_eflags_c(CcArch::X86, cc_op, cc_dep1, cc_dep2, cc_ndep)
+}
 
-    let flags = match category {
-        OpCategory::Copy => {
-            return Some((cc_dep1 >> flag_shift::G_CC_SHIFT_C) & 1);
-        }
-        OpCategory::Add => calc_flags_add(nbits, cc_dep1, cc_dep2),
-        OpCategory::Sub => calc_flags_sub(nbits, cc_dep1, cc_dep2),
-        OpCategory::Adc => calc_flags_adc(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Sbb => calc_flags_sbb(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Logic => calc_flags_logic(nbits, cc_dep1),
-        OpCategory::Inc => calc_flags_inc(nbits, cc_dep1, cc_ndep),
-        OpCategory::Dec => calc_flags_dec(nbits, cc_dep1, cc_ndep),
-        OpCategory::Shl => calc_flags_shl(nbits, cc_dep1, cc_dep2),
-        OpCategory::Shr => calc_flags_shr(nbits, cc_dep1, cc_dep2),
-        OpCategory::Rol => calc_flags_rol(nbits, cc_dep1, cc_ndep),
-        OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
-        OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
-        OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
-    };
-
+fn calculate_eflags_c(
+    arch: CcArch,
+    cc_op: u64,
+    cc_dep1: u64,
+    cc_dep2: u64,
+    cc_ndep: u64,
+) -> Option<u64> {
+    let info = cc_op_info(arch, cc_op)?;
+    if info.category == OpCategory::Copy {
+        return Some((cc_dep1 >> flag_shift::G_CC_SHIFT_C) & 1);
+    }
+    let flags = compute_flags_from_category(info.category, info.nbits, cc_dep1, cc_dep2, cc_ndep);
     Some(flags.cf as u64)
 }
 
@@ -972,10 +1001,23 @@ fn pack_eflags(flags: &Flags) -> u64 {
 
 /// Calculate all eflags for AMD64.
 fn calculate_eflags_all_amd64(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Option<u64> {
-    let nbits = amd64_op_to_nbits(cc_op)?;
-    let category = amd64_op_to_category(cc_op)?;
+    calculate_eflags_all(CcArch::Amd64, cc_op, cc_dep1, cc_dep2, cc_ndep)
+}
 
-    if category == OpCategory::Copy {
+/// Calculate all eflags for X86.
+fn calculate_eflags_all_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Option<u64> {
+    calculate_eflags_all(CcArch::X86, cc_op, cc_dep1, cc_dep2, cc_ndep)
+}
+
+fn calculate_eflags_all(
+    arch: CcArch,
+    cc_op: u64,
+    cc_dep1: u64,
+    cc_dep2: u64,
+    cc_ndep: u64,
+) -> Option<u64> {
+    let info = cc_op_info(arch, cc_op)?;
+    if info.category == OpCategory::Copy {
         // For COPY, cc_dep1 already contains the flags
         return Some(
             cc_dep1
@@ -987,61 +1029,7 @@ fn calculate_eflags_all_amd64(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u
                     | flag_mask::G_CC_MASK_A),
         );
     }
-
-    let flags = match category {
-        OpCategory::Copy => unreachable!(),
-        OpCategory::Add => calc_flags_add(nbits, cc_dep1, cc_dep2),
-        OpCategory::Sub => calc_flags_sub(nbits, cc_dep1, cc_dep2),
-        OpCategory::Adc => calc_flags_adc(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Sbb => calc_flags_sbb(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Logic => calc_flags_logic(nbits, cc_dep1),
-        OpCategory::Inc => calc_flags_inc(nbits, cc_dep1, cc_ndep),
-        OpCategory::Dec => calc_flags_dec(nbits, cc_dep1, cc_ndep),
-        OpCategory::Shl => calc_flags_shl(nbits, cc_dep1, cc_dep2),
-        OpCategory::Shr => calc_flags_shr(nbits, cc_dep1, cc_dep2),
-        OpCategory::Rol => calc_flags_rol(nbits, cc_dep1, cc_ndep),
-        OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
-        OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
-        OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
-    };
-
-    Some(pack_eflags(&flags))
-}
-
-/// Calculate all eflags for X86.
-fn calculate_eflags_all_x86(cc_op: u64, cc_dep1: u64, cc_dep2: u64, cc_ndep: u64) -> Option<u64> {
-    let nbits = x86_op_to_nbits(cc_op)?;
-    let category = x86_op_to_category(cc_op)?;
-
-    if category == OpCategory::Copy {
-        return Some(
-            cc_dep1
-                & (flag_mask::G_CC_MASK_O
-                    | flag_mask::G_CC_MASK_S
-                    | flag_mask::G_CC_MASK_Z
-                    | flag_mask::G_CC_MASK_P
-                    | flag_mask::G_CC_MASK_C
-                    | flag_mask::G_CC_MASK_A),
-        );
-    }
-
-    let flags = match category {
-        OpCategory::Copy => unreachable!(),
-        OpCategory::Add => calc_flags_add(nbits, cc_dep1, cc_dep2),
-        OpCategory::Sub => calc_flags_sub(nbits, cc_dep1, cc_dep2),
-        OpCategory::Adc => calc_flags_adc(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Sbb => calc_flags_sbb(nbits, cc_dep1, cc_dep2, cc_ndep),
-        OpCategory::Logic => calc_flags_logic(nbits, cc_dep1),
-        OpCategory::Inc => calc_flags_inc(nbits, cc_dep1, cc_ndep),
-        OpCategory::Dec => calc_flags_dec(nbits, cc_dep1, cc_ndep),
-        OpCategory::Shl => calc_flags_shl(nbits, cc_dep1, cc_dep2),
-        OpCategory::Shr => calc_flags_shr(nbits, cc_dep1, cc_dep2),
-        OpCategory::Rol => calc_flags_rol(nbits, cc_dep1, cc_ndep),
-        OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
-        OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
-        OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
-    };
-
+    let flags = compute_flags_from_category(info.category, info.nbits, cc_dep1, cc_dep2, cc_ndep);
     Some(pack_eflags(&flags))
 }
 
@@ -1307,123 +1295,62 @@ pub fn handle_ccall_with_ctx(
             return Some(RustBV::concrete(result as u128, ret_bits));
         }
 
-        // Symbolic path: handle SUB/LOGIC with symbolic deps
-        // This enables symbolic branch detection for comparisons
+        // Symbolic path: handle SUB/LOGIC/ADD with symbolic deps.
+        // This enables symbolic branch detection for comparisons.
         if let (Some(cond), Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), args[1].as_u64(), ctx)
         {
             let dep1 = &args[2];
             let dep2 = &args[3];
-            let category = if name == "amd64g_calculate_condition" {
-                amd64_op_to_category(cc_op)
-            } else {
-                x86_op_to_category(cc_op)
-            };
-
-            if let Some(cat) = category {
-                match cat {
+            let arch = CcArch::from_ccall_name(name);
+            if let Some(info) = cc_op_info(arch, cc_op) {
+                use cond_type::*;
+                let inv = (cond & 1) != 0;
+                let nb = info.nbits;
+                let result_flag = match info.category {
                     OpCategory::Sub => {
-                        // For SUB: must extract to nbits first (64-bit temps for 8/16/32-bit ops)
-                        use cond_type::*;
-                        let inv = (cond & 1) != 0;
-                        let nbits = if name == "amd64g_calculate_condition" {
-                            amd64_op_to_nbits(cc_op)
-                        } else {
-                            x86_op_to_nbits(cc_op)
-                        };
-                        if let Some(nb) = nbits {
-                            let d1 = extract_to_nbits(dep1, nb, sym_ctx);
-                            let d2 = extract_to_nbits(dep2, nb, sym_ctx);
-                            match cond & !1 {
-                                COND_Z => {
-                                    let eq = d1.eq(&d2, sym_ctx);
-                                    let r = if inv { eq.not(sym_ctx) } else { eq };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                COND_B => {
-                                    let lt = d1.ult(&d2, sym_ctx);
-                                    let r = if inv { lt.not(sym_ctx) } else { lt };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                COND_BE => {
-                                    let le = d1.ule(&d2, sym_ctx);
-                                    let r = if inv { le.not(sym_ctx) } else { le };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                COND_L => {
-                                    let lt = d1.slt(&d2, sym_ctx);
-                                    let r = if inv { lt.not(sym_ctx) } else { lt };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                COND_LE => {
-                                    let le = d1.sle(&d2, sym_ctx);
-                                    let r = if inv { le.not(sym_ctx) } else { le };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                _ => {}
-                            }
+                        // For SUB: must extract to nbits first (64-bit temps for 8/16/32-bit ops).
+                        let d1 = extract_to_nbits(dep1, nb, sym_ctx);
+                        let d2 = extract_to_nbits(dep2, nb, sym_ctx);
+                        match cond & !1 {
+                            COND_Z => Some(d1.eq(&d2, sym_ctx)),
+                            COND_B => Some(d1.ult(&d2, sym_ctx)),
+                            COND_BE => Some(d1.ule(&d2, sym_ctx)),
+                            COND_L => Some(d1.slt(&d2, sym_ctx)),
+                            COND_LE => Some(d1.sle(&d2, sym_ctx)),
+                            _ => None,
                         }
                     }
                     OpCategory::Logic => {
-                        use cond_type::*;
-                        let inv = (cond & 1) != 0;
-                        let nbits = if name == "amd64g_calculate_condition" {
-                            amd64_op_to_nbits(cc_op)
-                        } else {
-                            x86_op_to_nbits(cc_op)
-                        };
-                        if let Some(nb) = nbits {
-                            let d1 = extract_to_nbits(dep1, nb, sym_ctx);
-                            match cond & !1 {
-                                COND_Z => {
-                                    let zero = RustBV::concrete(0, nb);
-                                    let eq = d1.eq(&zero, sym_ctx);
-                                    let r = if inv { eq.not(sym_ctx) } else { eq };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                COND_S => {
-                                    let sf = d1.extract(nb - 1, nb - 1, sym_ctx);
-                                    let r = if inv { sf.not(sym_ctx) } else { sf };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                _ => {}
+                        let d1 = extract_to_nbits(dep1, nb, sym_ctx);
+                        match cond & !1 {
+                            COND_Z => {
+                                let zero = RustBV::concrete(0, nb);
+                                Some(d1.eq(&zero, sym_ctx))
                             }
+                            COND_S => Some(d1.extract(nb - 1, nb - 1, sym_ctx)),
+                            _ => None,
                         }
                     }
                     OpCategory::Add => {
-                        use cond_type::*;
-                        let inv = (cond & 1) != 0;
-                        let nbits = if name == "amd64g_calculate_condition" {
-                            amd64_op_to_nbits(cc_op)
-                        } else {
-                            x86_op_to_nbits(cc_op)
-                        };
-                        if let Some(nb) = nbits {
-                            let d1 = extract_to_nbits(dep1, nb, sym_ctx);
-                            let d2 = extract_to_nbits(dep2, nb, sym_ctx);
-                            let result = d1.add(&d2, sym_ctx);
-                            match cond & !1 {
-                                COND_Z => {
-                                    let zero = RustBV::concrete(0, nb);
-                                    let eq = result.eq(&zero, sym_ctx);
-                                    let r = if inv { eq.not(sym_ctx) } else { eq };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                COND_B => {
-                                    // CF = result < dep1 (unsigned overflow)
-                                    let cf = result.ult(&d1, sym_ctx);
-                                    let r = if inv { cf.not(sym_ctx) } else { cf };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                COND_S => {
-                                    let sf = result.extract(nb - 1, nb - 1, sym_ctx);
-                                    let r = if inv { sf.not(sym_ctx) } else { sf };
-                                    return Some(r.zero_extend(ret_bits, sym_ctx));
-                                }
-                                _ => {}
+                        let d1 = extract_to_nbits(dep1, nb, sym_ctx);
+                        let d2 = extract_to_nbits(dep2, nb, sym_ctx);
+                        let result = d1.add(&d2, sym_ctx);
+                        match cond & !1 {
+                            COND_Z => {
+                                let zero = RustBV::concrete(0, nb);
+                                Some(result.eq(&zero, sym_ctx))
                             }
+                            // CF = result < dep1 (unsigned overflow)
+                            COND_B => Some(result.ult(&d1, sym_ctx)),
+                            COND_S => Some(result.extract(nb - 1, nb - 1, sym_ctx)),
+                            _ => None,
                         }
                     }
-                    _ => {} // Other categories: fall through to None
+                    _ => None, // Other categories: fall through to None.
+                };
+                if let Some(flag) = result_flag {
+                    let r = if inv { flag.not(sym_ctx) } else { flag };
+                    return Some(r.zero_extend(ret_bits, sym_ctx));
                 }
             }
         }
@@ -1461,19 +1388,10 @@ pub fn handle_ccall_with_ctx(
 
         // Symbolic path for carry flag
         if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
-            let is_amd64 = name.starts_with("amd64g");
-            let category = if is_amd64 {
-                amd64_op_to_category(cc_op)
-            } else {
-                x86_op_to_category(cc_op)
-            };
-            let nbits = if is_amd64 {
-                amd64_op_to_nbits(cc_op)
-            } else {
-                x86_op_to_nbits(cc_op)
-            };
-            if let (Some(cat), Some(nb)) = (category, nbits) {
-                let cf = match cat {
+            let arch = CcArch::from_ccall_name(name);
+            if let Some(info) = cc_op_info(arch, cc_op) {
+                let nb = info.nbits;
+                let cf = match info.category {
                     OpCategory::Copy => {
                         // CF = (dep1 >> SHIFT_C) & 1
                         let shift =
@@ -1554,19 +1472,10 @@ pub fn handle_ccall_with_ctx(
             }
 
             // Symbolic SUB/ADD/LOGIC eflags computation
-            let is_amd64 = name.starts_with("amd64g");
-            let category = if is_amd64 {
-                amd64_op_to_category(cc_op)
-            } else {
-                x86_op_to_category(cc_op)
-            };
-            let nbits = if is_amd64 {
-                amd64_op_to_nbits(cc_op)
-            } else {
-                x86_op_to_nbits(cc_op)
-            };
-            if let (Some(cat), Some(nb)) = (category, nbits) {
-                let result = match cat {
+            let arch = CcArch::from_ccall_name(name);
+            if let Some(info) = cc_op_info(arch, cc_op) {
+                let nb = info.nbits;
+                let result = match info.category {
                     OpCategory::Sub => Some(symbolic_eflags_sub(
                         nb, &args[1], &args[2], sym_ctx, ret_bits,
                     )),
