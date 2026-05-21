@@ -900,62 +900,6 @@ class RustStateExportMixin:
             # answer source.
             l.debug(f"Could not sync constraints for state {state_id}: {e}")
 
-    def _replace_with_rust_snapshot(self, state, state_id):
-        """Fix a UNSAT state by clearing constraints and pinning symbolic values.
-
-        When constraint sync creates UNSAT due to identity mismatches,
-        this method creates a brand new blank state with the correct PC,
-        copies plugins from the template, and adds pinning constraints
-        that map original symbolic variables to their Rust-solved values.
-        """
-        try:
-            # Build a fresh state from snapshot (has correct concrete memory)
-            snapshot = self._rust_mgr.export_state(state_id)
-            fresh = self._snapshot_to_angr(snapshot)
-            self._restore_plugins_to_state(fresh, state_id)
-
-            # Now pin original symbolic variables to their Rust concrete values
-            root_id = self._state_roots.get(state_id, state_id)
-            if root_id == state_id:
-                try:
-                    rust_root = self._rust_mgr.get_state_root(state_id)
-                    if rust_root is not None:
-                        root_id = rust_root
-                except Exception:
-                    # cat-(a) EXPECTED CONTROL FLOW: probing for Rust root.
-                    pass
-
-            for lookup_id in [state_id, root_id]:
-                if lookup_id is None:
-                    continue
-                addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
-                for addr, (ast, size) in addr_map.items():
-                    try:
-                        concrete_bytes = self._rust_mgr.get_state_memory(
-                            state_id, addr, size)
-                        if concrete_bytes is not None:
-                            concrete_val = int.from_bytes(concrete_bytes, 'little')
-                            fresh.solver.add(ast == claripy.BVV(concrete_val, size * 8))
-                    except Exception:
-                        # cat-(b) FALLBACK WITH LOSS: per-symbol pin
-                        # failed (memory read or constraint add). Other
-                        # pins still apply but this symbol is left
-                        # unconstrained — eval() may return arbitrary
-                        # solutions where Rust had a concrete answer.
-                        pass
-
-            # Replace the original state's internals
-            state.memory = fresh.memory
-            state.solver = fresh.solver
-            if hasattr(fresh, '_ip'):
-                state.regs._ip = fresh.addr
-            l.debug(f"Replaced UNSAT state {state_id} with pinned Rust values")
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: replacement failed entirely; the
-            # caller-supplied state is unchanged and may still be UNSAT,
-            # producing wrong eval() results downstream.
-            l.warning(f"Could not replace UNSAT state {state_id}: {e}")
-
     @property
     def found_states(self) -> list:
         """Get found states as angr SimStates.
