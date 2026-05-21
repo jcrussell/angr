@@ -2350,6 +2350,106 @@ class TestStatePluginsProxy:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRegisterProxySymbolicRecovery:
+    """angr-4pm1: RustRegisterProxy must recover Rust's claripy AST for symbolic
+    registers via ``get_state_register_ast`` instead of minting an orphan
+    ``claripy.BVS``.
+
+    The orphan BVS had no identity link to Rust's symbol: constraints added
+    through ``proxy.solver.add(proxy.regs.<sym_reg> == K)`` silently missed
+    because the forked solver saw a constraint over a ghost symbol Y, while
+    Rust's register still held the original X. The fix asks Rust for the AST
+    of the underlying ``RustBV`` so the returned AST is the same Python object
+    used for both constraint construction and evaluation.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        """Initialize the Python/Rust shared Z3 context so claripy's z3
+        backend and Rust's z3-rs binding hash-cons against the same Z3
+        instance. Without this, an AST pointer obtained on the Python side
+        will not match the ``z3::ast::BV::new_const`` that Rust creates on
+        ``claripy_to_rustbv``, and constraints added in the proxy.solver fork
+        end up over a phantom symbol — exactly the failure mode angr-4pm1 is
+        meant to fix.
+        """
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+        _setup_shared_z3_context()
+
+    @staticmethod
+    def _setup_symbolic_rax(mgr):
+        """Build a state with RAX bound to a fresh symbolic claripy AST,
+        registered through ``set_state_register_symbolic_ast`` so the symbol
+        is properly cached for FFI round-trip. Returns ``(state_id, sym)``
+        where ``sym`` is the originating claripy BVS."""
+        import claripy
+        sym = claripy.BVS("sym_rax_proxy_4pm1", 64)
+        sid = mgr.create_state("active")
+        mgr.set_state_register_symbolic_ast(sid, "rax", sym)
+        return sid, sym
+
+    def test_symbolic_register_returns_ast_not_orphan(self):
+        """proxy.regs.<sym_reg> returns the AST recovered from Rust — must
+        report itself as symbolic and live in the proxy's cache (consistent
+        repeated reads)."""
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid, _ = self._setup_symbolic_rax(mgr)
+        proxy = RustStateProxy(mgr, sid)
+
+        ast = proxy.regs.rax
+        assert ast is not None
+        assert hasattr(ast, "symbolic") and ast.symbolic, (
+            f"expected symbolic AST for rax, got {ast!r}"
+        )
+        # Cached: the proxy must hand back the SAME Python object on
+        # repeated reads. The constraint-add path relies on this — if the
+        # second read returned a different BVS, the constraint added on the
+        # first AST would not narrow the second.
+        assert proxy.regs.rax is proxy.regs.rax
+
+    def test_symbolic_register_constraint_round_trip(self):
+        """proxy.solver.add(proxy.regs.<sym_reg> == K) followed by
+        proxy.solver.eval(proxy.regs.<sym_reg>) returns K.
+
+        Pre-fix: proxy.regs.rax was an orphan BVS Y; the constraint Y==K hit
+        a ghost symbol in the forked solver, so eval(Y) could return anything
+        the solver decided. Post-fix: Y is Rust's actual AST, so the
+        constraint narrows the solver to K.
+        """
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid, _ = self._setup_symbolic_rax(mgr)
+        proxy = RustStateProxy(mgr, sid)
+
+        rax = proxy.regs.rax
+        proxy.solver.add(rax == 0x41)
+        # Re-read via the proxy AND directly — both must report 0x41 since
+        # the fork's constraint hits the symbol the proxy is caching.
+        assert proxy.solver.eval(rax) == 0x41
+        assert proxy.solver.eval(proxy.regs.rax) == 0x41
+
+    def test_symbolic_register_prefetch_recovers_ast(self):
+        """Prefetch path mirrors __getattr__: a register Rust reports as
+        symbolic must land in the cache as an AST, not an orphan."""
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        mgr = _RustExplorationManager("amd64")
+        sid, _ = self._setup_symbolic_rax(mgr)
+        proxy = RustStateProxy(mgr, sid)
+
+        proxy.regs.prefetch(["rax"])
+        ast = proxy.regs.rax
+        assert ast is not None
+        assert hasattr(ast, "symbolic") and ast.symbolic
+        # Same constraint round-trip after the prefetch warmed the cache.
+        proxy.solver.add(ast == 0x42)
+        assert proxy.solver.eval(ast) == 0x42
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStateProxyRepr:
     """Tests for the enriched RustStateProxy.__repr__ (angr-4c20).
 

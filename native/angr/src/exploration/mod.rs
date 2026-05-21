@@ -1791,6 +1791,39 @@ impl RustExplorationManager {
         self._get_state_registers_batch(state_id, names)
     }
 
+    /// Get the claripy AST for a register on a state (angr-4pm1).
+    ///
+    /// Mirrors `get_pending_register_ast` for an arbitrary `state_id`.
+    /// Returns the claripy AST built from Rust's stored `RustBV`, preserving
+    /// identity for symbolic values so constraints added by the proxy land on
+    /// the same Z3 symbol Rust is tracking. Returns `None` if the register
+    /// name is unknown or the state holds no value for it.
+    /// See [`state_api::_get_state_register_ast`] for the body.
+    pub fn get_state_register_ast(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+        name: &str,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self._get_state_register_ast(py, state_id, name)
+    }
+
+    /// Set a state's register to a symbolic value from a claripy AST
+    /// (angr-4pm1). Mirrors `set_pending_register_symbolic_ast` for an
+    /// arbitrary `state_id`, routing through `claripy_to_rustbv` so the
+    /// symbol is registered in the shared cache and the inverse
+    /// `get_state_register_ast` round-trip preserves identity.
+    /// See [`state_api::_set_state_register_symbolic_ast`] for the body.
+    pub fn set_state_register_symbolic_ast(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        reg_name: &str,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self._set_state_register_symbolic_ast(py, state_id, reg_name, ast)
+    }
+
     /// Get memory from a state.
     pub fn get_state_memory(
         &self,

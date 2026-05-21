@@ -263,7 +263,7 @@ class RustRegisterProxy:
         for name, val in zip(names, values):
             width = self._get_register_width(name)
             if val is None:
-                self._cache[name] = claripy.BVS(f"reg_{name}_{self._state_id}", width)
+                self._cache[name] = self._recover_symbolic_register_ast(name, width)
             else:
                 self._cache[name] = claripy.BVV(val, width)
 
@@ -284,11 +284,45 @@ class RustRegisterProxy:
             raise AttributeError(f"register '{name}' not found")
         width = self._get_register_width(name)
         if val is None:
-            result = claripy.BVS(f"reg_{name}_{self._state_id}", width)
+            result = self._recover_symbolic_register_ast(name, width)
         else:
             result = claripy.BVV(val, width)
         self._cache[name] = result
         return result
+
+    def _recover_symbolic_register_ast(self, name, width):
+        """Recover Rust's claripy AST for a symbolic register (angr-4pm1).
+
+        ``get_state_register`` returns ``None`` when the register holds a
+        symbolic ``RustBV``. Previously we minted a fresh, orphan ``claripy.BVS``
+        here — but the orphan symbol has no identity link to Rust's internal
+        Z3 AST, so ``state.solver.add(state.regs.<reg> == K)`` constrained a
+        ghost symbol and never affected the actual register value.
+
+        Now we ask the manager for the register's claripy AST via
+        ``get_state_register_ast`` (which round-trips through
+        ``rustbv_to_claripy`` and preserves the underlying Z3 AST), so
+        downstream solver operations land on the correct symbol. Only when
+        the manager genuinely has no value for the register (unknown name or
+        old build without the FFI shim) do we fall back to the orphan BVS —
+        same loss-of-identity behavior as before, but at least with a debug
+        log so the gap is visible.
+        """
+        if hasattr(self._mgr, "get_state_register_ast"):
+            try:
+                ast = self._mgr.get_state_register_ast(self._state_id, name)
+            except Exception:
+                ast = None
+            if ast is not None:
+                return ast
+        l.debug(
+            "RustRegisterProxy: no AST recovered for symbolic register %r "
+            "(sid=%d); minting orphan BVS — solver writes through the proxy "
+            "will not affect this register",
+            name,
+            self._state_id,
+        )
+        return claripy.BVS(f"reg_{name}_{self._state_id}", width)
 
     def _get_register_width(self, name):
         """Get the bit width for a named register.

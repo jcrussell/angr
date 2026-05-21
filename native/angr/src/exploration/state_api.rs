@@ -515,6 +515,72 @@ impl RustExplorationManager {
         })
     }
 
+    /// Get the claripy AST for a register on a specific state (angr-4pm1).
+    ///
+    /// Mirrors `_get_pending_register_ast` for an arbitrary `state_id`. Returns
+    /// the claripy AST built from Rust's stored `RustBV` (symbolic or
+    /// concrete) via `rustbv_to_claripy`, preserving identity for symbolic
+    /// values so `state.solver.add(state.regs.<sym_reg> == K)` actually
+    /// constrains the Rust-side symbol.
+    ///
+    /// Returns `None` when the register name is unknown to the architecture
+    /// or the state holds no value for it — callers can decide whether that
+    /// is a hard error or fall back to minting a fresh BVS.
+    pub(crate) fn _get_state_register_ast(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+        name: &str,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self.with_state(state_id, |state| {
+            let bv = match state.get_register(name) {
+                Some(bv) => bv,
+                None => return Ok(None),
+            };
+            let claripy = py.import("claripy")?;
+            let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
+                PyRuntimeError::new_err(format!("register {} AST conversion failed: {}", name, e))
+            })?;
+            Ok(Some(ast))
+        })
+    }
+
+    /// Set a register on a specific state to a symbolic value from a claripy
+    /// AST (angr-4pm1). Mirrors `_set_pending_register_symbolic_ast` for an
+    /// arbitrary `state_id`.
+    ///
+    /// Routes through `claripy_to_rustbv` so the symbol gets registered in
+    /// the shared cache. That makes the inverse `get_state_register_ast`
+    /// round-trip return the original claripy AST verbatim (identity
+    /// preservation), which is what the proxy needs so constraints land on
+    /// the same Z3 symbol Rust is tracking.
+    pub(crate) fn _set_state_register_symbolic_ast(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        reg_name: &str,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let bv = {
+                let solver_ref = state.solver();
+                let sym_ctx = solver_ref.borrow();
+                let ctx_ref: &SymContext = &*sym_ctx;
+                claripy_to_rustbv(py, ast, ctx_ref).map_err(|e| {
+                    PyValueError::new_err(format!("AST conversion failed: {}", e))
+                })?
+            };
+            if state.set_register(reg_name, bv) {
+                Ok(())
+            } else {
+                Err(PyValueError::new_err(format!(
+                    "failed to set register: {}",
+                    reg_name
+                )))
+            }
+        })
+    }
+
     pub(crate) fn _get_state_memory(
         &self,
         state_id: u64,
