@@ -411,7 +411,13 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VFSqrt { .. }
         | IROp::VFAbs { .. }
         | IROp::VFMin { .. }
-        | IROp::VFMax { .. } => VexOpFamily::Vec,
+        | IROp::VFMax { .. }
+        | IROp::VFRecipEst { .. }
+        | IROp::VFRecipStep { .. }
+        | IROp::VFRSqrtEst { .. }
+        | IROp::VFRSqrtStep { .. }
+        | IROp::VFRecipEstS { .. }
+        | IROp::VFRSqrtEstS { .. } => VexOpFamily::Vec,
 
         // x86-specific carry-less multiply / CRC32 — classified as Arith
         // (they're integer ops in the polynomial / checksum sense).
@@ -509,6 +515,15 @@ impl VEXOps {
             // Scalar-in-vector sqrt (SQRTSS/SQRTSD)
             IROp::VFSqrtS { elem } => Self::vec_float_scalar_sqrt(arg, elem, ctx),
 
+            // SSE scalar-in-vector reciprocal/rsqrt estimate (RCPSS / RSQRTSS).
+            // Lane 0 fresh-symbolic, upper lanes pass through.
+            IROp::VFRecipEstS { elem } => {
+                Self::vec_float_scalar_fresh(arg, elem, "RecipEst", ctx)
+            }
+            IROp::VFRSqrtEstS { elem } => {
+                Self::vec_float_scalar_fresh(arg, elem, "RSqrtEst", ctx)
+            }
+
             // Packed integer absolute value
             IROp::VAbs { elem, count } => Self::vec_int_abs(arg, elem, count, ctx),
 
@@ -517,6 +532,17 @@ impl VEXOps {
                 Self::vec_float_lane_op(&[arg], elem, count, &FSqrt, ctx)
             }
             IROp::VFAbs { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FAbs, ctx),
+
+            // Packed FP reciprocal / reciprocal-sqrt estimate. Returns a fresh
+            // symbolic per lane: VEX leaves precision implementation-defined and
+            // angr Python uses the same conservative pattern (_op_fgeneric_RSqrtEst
+            // returns BVS). Mirrors that policy uniformly across RecipEst/RSqrtEst.
+            IROp::VFRecipEst { elem, count } => {
+                Self::vec_float_fresh_per_lane(elem, count, "RecipEst", ctx)
+            }
+            IROp::VFRSqrtEst { elem, count } => {
+                Self::vec_float_fresh_per_lane(elem, count, "RSqrtEst", ctx)
+            }
 
             // NEON broadcast scalar to vector
             IROp::VDup { elem, count } => Self::vec_dup(arg, elem, count, ctx),
@@ -738,6 +764,20 @@ impl VEXOps {
             }
             IROp::VFMax { elem, count } => {
                 Self::vec_float_lane_op(&[left, right], elem, count, &FMax, ctx)
+            }
+
+            // NEON Newton-Raphson reciprocal / rsqrt step. Operands consumed but
+            // the result is a fresh symbolic per lane (matches angr Python's
+            // conservative handling — no `_op_fgeneric_RecipStep` /
+            // `_op_fgeneric_RSqrtStep`). Refinement loops typically follow with
+            // additional steps that converge regardless of the seed.
+            IROp::VFRecipStep { elem, count } => {
+                let _ = (left, right);
+                Self::vec_float_fresh_per_lane(elem, count, "RecipStep", ctx)
+            }
+            IROp::VFRSqrtStep { elem, count } => {
+                let _ = (left, right);
+                Self::vec_float_fresh_per_lane(elem, count, "RSqrtStep", ctx)
             }
 
             // Raw opcode — try concrete x87 transcendental fast path first
@@ -2460,6 +2500,47 @@ impl VEXOps {
         let upper = arg.extract(127, lane_bits, ctx);
         let res_lane = build_float_expr(FloatOpKind::Sqrt, prec, vec![lo]);
         Ok(upper.concat_into(res_lane, ctx))
+    }
+
+    /// SSE scalar-in-vector reciprocal/rsqrt estimate (RCPSS / RSQRTSS).
+    /// VEX leaves the lane-0 result implementation-defined, so we hand back a
+    /// fresh symbolic of the lane width; upper 96 bits pass through from arg.
+    /// Used for `Iop_RecipEst32F0x4` and `Iop_RSqrtEst32F0x4`. The arg is still
+    /// consumed (the upper-lane passthrough preserves it) so dataflow is sane.
+    fn vec_float_scalar_fresh(
+        arg: RustBV,
+        elem: IRType,
+        name: &str,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        debug_assert_eq!(arg.width(), 128);
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let lane_bits = prec.bits();
+        let upper = arg.extract(127, lane_bits, ctx);
+        let lane = RustBV::symbolic(ctx, name, lane_bits);
+        Ok(upper.concat_into(lane, ctx))
+    }
+
+    /// Packed FP fresh-symbolic per lane. Used for `VFRecipEst`/`VFRSqrtEst`
+    /// (precision implementation-defined) and `VFRecipStep`/`VFRSqrtStep`
+    /// (angr Python has no generic handler, so a fresh symbolic per lane is
+    /// the conservative match — Newton-Raphson refinement converges anyway).
+    fn vec_float_fresh_per_lane(
+        elem: IRType,
+        count: u8,
+        name: &str,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let lane_bits = match elem {
+            IRType::F32 => 32,
+            IRType::F64 => 64,
+            _ => return Err(OpError::InvalidFloatType(elem)),
+        };
+        let mut lanes: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            lanes.push(RustBV::symbolic(ctx, name, lane_bits));
+        }
+        Ok(Self::concat_le_elements(lanes, ctx))
     }
 
     /// Scalar max in vector (MAXSS/MAXSD).
@@ -5090,6 +5171,281 @@ mod tests {
                 lane
             );
         }
+    }
+
+    // ---- Newton-Raphson FP estimate / step (angr-iyon) ----
+    //
+    // VEX leaves Recip/RSqrt Est precision implementation-defined, and the Step
+    // ops in angr Python have no dedicated handler — both branches collapse to
+    // a fresh symbolic per lane. These tests pin the *shape* (lane count, width,
+    // upper-lane passthrough for the SSE F0x4 variants) rather than the value.
+    //
+    // Convenience: turn a width-N RustBV into its u128 representation via the
+    // solver so the result of a fresh-symbolic-per-lane op is observable.
+    fn eval_v128(ctx: &SymContext, bv: &RustBV) -> u128 {
+        assert!(ctx.is_sat(), "expected SAT for eval");
+        ctx.eval(bv).expect("eval returned None")
+    }
+    fn eval_i64(ctx: &SymContext, bv: &RustBV) -> u64 {
+        eval_v128(ctx, bv) as u64
+    }
+    fn eval_i32(ctx: &SymContext, bv: &RustBV) -> u32 {
+        eval_v128(ctx, bv) as u32
+    }
+
+    /// SSE RCPSS shape: 128-bit result, lane 0 fresh symbolic (32-bit width),
+    /// upper 96 bits passed through unchanged from the arg.
+    #[test]
+    fn test_vfrecip_est_s_f32_upper_passthrough() {
+        let ctx = SymContext::new_mock();
+        let upper96 = 0xDEAD_BEEF_CAFE_BABE_1234_5678u128;
+        let arg = RustBV::concrete((upper96 << 32) | 0x4080_0000u128, 128); // lane0 = 4.0f32
+        let result =
+            VEXOps::unop(IROp::VFRecipEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 128);
+        let v = eval_v128(&ctx, &result);
+        assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
+    }
+
+    /// SSE RSQRTSS shape: same as RCPSS — upper 96 bits passthrough, lane 0 fresh.
+    #[test]
+    fn test_vfrsqrt_est_s_f32_upper_passthrough() {
+        let ctx = SymContext::new_mock();
+        let upper96 = 0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFFu128;
+        let arg = RustBV::concrete((upper96 << 32) | 0x4400_0000u128, 128); // lane0 = 512.0f32
+        let result =
+            VEXOps::unop(IROp::VFRSqrtEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 128);
+        let v = eval_v128(&ctx, &result);
+        assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
+    }
+
+    /// NEON Iop_RecipEst32Fx2 (D-reg, 2x f32 = 64-bit result).
+    #[test]
+    fn test_vfrecip_est_packed_f32x2_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 64);
+        let result = VEXOps::unop(
+            IROp::VFRecipEst {
+                elem: IRType::F32,
+                count: 2,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        let _ = eval_i64(&ctx, &result);
+    }
+
+    /// SSE RCPPS / NEON Q-reg Iop_RecipEst32Fx4 (4x f32 = 128-bit result).
+    #[test]
+    fn test_vfrecip_est_packed_f32x4_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 128);
+        let result = VEXOps::unop(
+            IROp::VFRecipEst {
+                elem: IRType::F32,
+                count: 4,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        let _ = eval_v128(&ctx, &result);
+    }
+
+    /// AVX Iop_RecipEst32Fx8 (8x f32 = 256-bit result).
+    #[test]
+    fn test_vfrecip_est_packed_f32x8_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 256);
+        let result = VEXOps::unop(
+            IROp::VFRecipEst {
+                elem: IRType::F32,
+                count: 8,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 256);
+    }
+
+    /// NEON Iop_RecipEst64Fx2 (2x f64 = 128-bit result).
+    #[test]
+    fn test_vfrecip_est_packed_f64x2_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 128);
+        let result = VEXOps::unop(
+            IROp::VFRecipEst {
+                elem: IRType::F64,
+                count: 2,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+    }
+
+    /// Iop_RSqrtEst*: same widths as RecipEst, separate dispatch arm.
+    #[test]
+    fn test_vfrsqrt_est_packed_f64x2_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 128);
+        let result = VEXOps::unop(
+            IROp::VFRSqrtEst {
+                elem: IRType::F64,
+                count: 2,
+            },
+            arg,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+    }
+
+    /// NEON Iop_RecipStep32Fx2: D-reg binary, 64-bit result.
+    #[test]
+    fn test_vfrecip_step_packed_f32x2_shape() {
+        let ctx = SymContext::new_mock();
+        let a = RustBV::concrete(0u128, 64);
+        let b = RustBV::concrete(0u128, 64);
+        let result = VEXOps::binop(
+            IROp::VFRecipStep {
+                elem: IRType::F32,
+                count: 2,
+            },
+            a,
+            b,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        let _ = eval_i64(&ctx, &result);
+    }
+
+    /// NEON Iop_RecipStep64Fx2: Q-reg binary, 128-bit result.
+    #[test]
+    fn test_vfrecip_step_packed_f64x2_shape() {
+        let ctx = SymContext::new_mock();
+        let a = RustBV::concrete(0u128, 128);
+        let b = RustBV::concrete(0u128, 128);
+        let result = VEXOps::binop(
+            IROp::VFRecipStep {
+                elem: IRType::F64,
+                count: 2,
+            },
+            a,
+            b,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+    }
+
+    /// NEON Iop_RSqrtStep32Fx4: Q-reg binary, 128-bit result.
+    #[test]
+    fn test_vfrsqrt_step_packed_f32x4_shape() {
+        let ctx = SymContext::new_mock();
+        let a = RustBV::concrete(0u128, 128);
+        let b = RustBV::concrete(0u128, 128);
+        let result = VEXOps::binop(
+            IROp::VFRSqrtStep {
+                elem: IRType::F32,
+                count: 4,
+            },
+            a,
+            b,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+    }
+
+    /// End-to-end opcode-string routing: all 16 FP Recip/RSqrt opcodes
+    /// resolve to the new IROp variants (and not to NeonUnimplemented).
+    /// Catches regressions where parse_float and parse_neon_unimplemented
+    /// fall out of sync.
+    #[test]
+    fn test_recip_rsqrt_opcode_routing() {
+        use crate::vex::opcode_map::parse_opcode;
+        // Est family: F0x4 → VFRecipEstS/VFRSqrtEstS, others → packed.
+        let recip_est_packed = [
+            ("Iop_RecipEst32Fx2", IRType::F32, 2),
+            ("Iop_RecipEst32Fx4", IRType::F32, 4),
+            ("Iop_RecipEst32Fx8", IRType::F32, 8),
+            ("Iop_RecipEst64Fx2", IRType::F64, 2),
+        ];
+        for (name, elem, count) in recip_est_packed {
+            match parse_opcode(name) {
+                IROp::VFRecipEst { elem: e, count: c } => {
+                    assert_eq!(e, elem);
+                    assert_eq!(c, count);
+                }
+                other => panic!("{}: expected VFRecipEst, got {:?}", name, other),
+            }
+        }
+        assert!(matches!(
+            parse_opcode("Iop_RecipEst32F0x4"),
+            IROp::VFRecipEstS {
+                elem: IRType::F32
+            }
+        ));
+        let rsqrt_est_packed = [
+            ("Iop_RSqrtEst32Fx2", IRType::F32, 2),
+            ("Iop_RSqrtEst32Fx4", IRType::F32, 4),
+            ("Iop_RSqrtEst32Fx8", IRType::F32, 8),
+            ("Iop_RSqrtEst64Fx2", IRType::F64, 2),
+        ];
+        for (name, elem, count) in rsqrt_est_packed {
+            match parse_opcode(name) {
+                IROp::VFRSqrtEst { elem: e, count: c } => {
+                    assert_eq!(e, elem);
+                    assert_eq!(c, count);
+                }
+                other => panic!("{}: expected VFRSqrtEst, got {:?}", name, other),
+            }
+        }
+        assert!(matches!(
+            parse_opcode("Iop_RSqrtEst32F0x4"),
+            IROp::VFRSqrtEstS {
+                elem: IRType::F32
+            }
+        ));
+        // Step family: NEON-only, no F0x4 form.
+        let step_pairs = [
+            ("Iop_RecipStep32Fx2", IRType::F32, 2),
+            ("Iop_RecipStep32Fx4", IRType::F32, 4),
+            ("Iop_RecipStep64Fx2", IRType::F64, 2),
+        ];
+        for (name, elem, count) in step_pairs {
+            match parse_opcode(name) {
+                IROp::VFRecipStep { elem: e, count: c } => {
+                    assert_eq!(e, elem);
+                    assert_eq!(c, count);
+                }
+                other => panic!("{}: expected VFRecipStep, got {:?}", name, other),
+            }
+        }
+        let rsqrt_step_pairs = [
+            ("Iop_RSqrtStep32Fx2", IRType::F32, 2),
+            ("Iop_RSqrtStep32Fx4", IRType::F32, 4),
+            ("Iop_RSqrtStep64Fx2", IRType::F64, 2),
+        ];
+        for (name, elem, count) in rsqrt_step_pairs {
+            match parse_opcode(name) {
+                IROp::VFRSqrtStep { elem: e, count: c } => {
+                    assert_eq!(e, elem);
+                    assert_eq!(c, count);
+                }
+                other => panic!("{}: expected VFRSqrtStep, got {:?}", name, other),
+            }
+        }
+        // Suppress the unused-helper lint when running this test alone:
+        let _ = eval_i32;
     }
 
     // ---- FCmpScalarLane (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}) ----

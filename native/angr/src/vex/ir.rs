@@ -890,6 +890,45 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
+    /// Packed FP reciprocal estimate (1/x approximation) — RCPPS / NEON FRECPE.
+    /// Returns a fresh symbolic per lane: VEX leaves precision implementation-
+    /// defined, so binaries that use this typically follow with one or two
+    /// Newton-Raphson refinement steps (RecipStep) which converge to the exact
+    /// 1/x irrespective of the seed.
+    VFRecipEst {
+        elem: IRType,
+        count: u8,
+    },
+    /// Packed FP Newton-Raphson reciprocal step — NEON FRECPS.
+    /// Mathematically 2.0 - x*y per lane; treated as fresh-symbolic per lane to
+    /// match angr Python's conservative handling (no `_op_fgeneric_RecipStep`).
+    VFRecipStep {
+        elem: IRType,
+        count: u8,
+    },
+    /// Packed FP reciprocal-sqrt estimate (1/sqrt(x) approximation) —
+    /// RSQRTPS / NEON FRSQRTE. Fresh-symbolic per lane, see VFRecipEst.
+    VFRSqrtEst {
+        elem: IRType,
+        count: u8,
+    },
+    /// Packed FP Newton-Raphson reciprocal-sqrt step — NEON FRSQRTS.
+    /// Mathematically (3.0 - x*y*y) / 2.0 per lane; treated as fresh-symbolic
+    /// per lane (mirrors angr Python, which has no `_op_fgeneric_RSqrtStep`).
+    VFRSqrtStep {
+        elem: IRType,
+        count: u8,
+    },
+    /// SSE scalar-in-vector reciprocal estimate (RCPSS, Iop_RecipEst32F0x4).
+    /// Lane 0 fresh-symbolic, upper lanes pass through from arg.
+    VFRecipEstS {
+        elem: IRType,
+    },
+    /// SSE scalar-in-vector reciprocal-sqrt estimate (RSQRTSS,
+    /// Iop_RSqrtEst32F0x4). Lane 0 fresh-symbolic, upper lanes pass through.
+    VFRSqrtEstS {
+        elem: IRType,
+    },
 
     // =========================================================================
     // Special operations
@@ -1042,7 +1081,9 @@ impl IROp {
             | IROp::VFDivS { elem: _elem }
             | IROp::VFSqrtS { elem: _elem }
             | IROp::VFMaxS { elem: _elem }
-            | IROp::VFMinS { elem: _elem } => Some(IRType::V128),
+            | IROp::VFMinS { elem: _elem }
+            | IROp::VFRecipEstS { elem: _elem }
+            | IROp::VFRSqrtEstS { elem: _elem } => Some(IRType::V128),
 
             // SetV128lo ops return V128
             IROp::SetV128lo32 | IROp::SetV128lo64 => Some(IRType::V128),
@@ -1144,6 +1185,21 @@ impl IROp {
             | IROp::VFAbs { .. }
             | IROp::VFMin { .. }
             | IROp::VFMax { .. } => Some(IRType::V128),
+
+            // Newton-Raphson reciprocal/rsqrt families: result width = elem * count
+            // (NEON D-reg variants are I64, Q-reg variants are V128).
+            IROp::VFRecipEst { elem, count }
+            | IROp::VFRecipStep { elem, count }
+            | IROp::VFRSqrtEst { elem, count }
+            | IROp::VFRSqrtStep { elem, count } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    256 => Some(IRType::V256),
+                    _ => None,
+                }
+            }
 
             IROp::Reinterpret { to, .. } => Some(*to),
             IROp::MulHi { ty, .. } => Some(*ty),

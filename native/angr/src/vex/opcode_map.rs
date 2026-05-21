@@ -662,6 +662,73 @@ fn parse_float(op_str: &str) -> Option<IROp> {
             count: 4,
         }),
 
+        // FP reciprocal estimate (1/x approximation) — RCPPS / NEON FRECPE.
+        // F0x4 is the SSE scalar form (RCPSS); F[xN] forms are packed.
+        "Iop_RecipEst32F0x4" => Some(IROp::VFRecipEstS { elem: IRType::F32 }),
+        "Iop_RecipEst32Fx2" => Some(IROp::VFRecipEst {
+            elem: IRType::F32,
+            count: 2,
+        }),
+        "Iop_RecipEst32Fx4" => Some(IROp::VFRecipEst {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_RecipEst32Fx8" => Some(IROp::VFRecipEst {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_RecipEst64Fx2" => Some(IROp::VFRecipEst {
+            elem: IRType::F64,
+            count: 2,
+        }),
+
+        // FP Newton-Raphson reciprocal step — NEON FRECPS.
+        "Iop_RecipStep32Fx2" => Some(IROp::VFRecipStep {
+            elem: IRType::F32,
+            count: 2,
+        }),
+        "Iop_RecipStep32Fx4" => Some(IROp::VFRecipStep {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_RecipStep64Fx2" => Some(IROp::VFRecipStep {
+            elem: IRType::F64,
+            count: 2,
+        }),
+
+        // FP reciprocal-sqrt estimate (1/sqrt(x)) — RSQRTPS / NEON FRSQRTE.
+        "Iop_RSqrtEst32F0x4" => Some(IROp::VFRSqrtEstS { elem: IRType::F32 }),
+        "Iop_RSqrtEst32Fx2" => Some(IROp::VFRSqrtEst {
+            elem: IRType::F32,
+            count: 2,
+        }),
+        "Iop_RSqrtEst32Fx4" => Some(IROp::VFRSqrtEst {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_RSqrtEst32Fx8" => Some(IROp::VFRSqrtEst {
+            elem: IRType::F32,
+            count: 8,
+        }),
+        "Iop_RSqrtEst64Fx2" => Some(IROp::VFRSqrtEst {
+            elem: IRType::F64,
+            count: 2,
+        }),
+
+        // FP Newton-Raphson reciprocal-sqrt step — NEON FRSQRTS.
+        "Iop_RSqrtStep32Fx2" => Some(IROp::VFRSqrtStep {
+            elem: IRType::F32,
+            count: 2,
+        }),
+        "Iop_RSqrtStep32Fx4" => Some(IROp::VFRSqrtStep {
+            elem: IRType::F32,
+            count: 4,
+        }),
+        "Iop_RSqrtStep64Fx2" => Some(IROp::VFRSqrtStep {
+            elem: IRType::F64,
+            count: 2,
+        }),
+
         // SetV128lo operations
         "Iop_SetV128lo32" => Some(IROp::SetV128lo32),
         "Iop_SetV128lo64" => Some(IROp::SetV128lo64),
@@ -1654,19 +1721,9 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // parse_vector to IROp::VDup / IROp::VWiden / IROp::VNarrow{Un,Bin} /
         // IROp::VQNarrow{Un,Bin}.
 
-        // Reciprocal estimate / Newton-Raphson step (FP)
-        "Iop_RecipEst32Fx2" => "Iop_RecipEst32Fx2",
-        "Iop_RecipEst32Fx4" => "Iop_RecipEst32Fx4",
-        "Iop_RecipEst64Fx2" => "Iop_RecipEst64Fx2",
-        "Iop_RecipStep32Fx2" => "Iop_RecipStep32Fx2",
-        "Iop_RecipStep32Fx4" => "Iop_RecipStep32Fx4",
-        "Iop_RecipStep64Fx2" => "Iop_RecipStep64Fx2",
-        "Iop_RSqrtEst32Fx2" => "Iop_RSqrtEst32Fx2",
-        "Iop_RSqrtEst32Fx4" => "Iop_RSqrtEst32Fx4",
-        "Iop_RSqrtEst64Fx2" => "Iop_RSqrtEst64Fx2",
-        "Iop_RSqrtStep32Fx2" => "Iop_RSqrtStep32Fx2",
-        "Iop_RSqrtStep32Fx4" => "Iop_RSqrtStep32Fx4",
-        "Iop_RSqrtStep64Fx2" => "Iop_RSqrtStep64Fx2",
+        // NOTE: FP RecipEst / RecipStep / RSqrtEst / RSqrtStep ({32,64}{F0,Fx}*)
+        // implemented in angr-iyon — routed through parse_float to
+        // IROp::VFRecipEst{,S} / VFRecipStep / VFRSqrtEst{,S} / VFRSqrtStep.
 
         // Reciprocal estimate (integer, NEON-only)
         "Iop_RecipEst32Ux2" => "Iop_RecipEst32Ux2",
@@ -2361,7 +2418,7 @@ mod tests {
         // coverage visible immediately instead of silently producing a
         // fresh-symbolic value.
         for op in [
-            "Iop_RecipEst32Fx4",
+            "Iop_RecipEst32Ux4",
             "Iop_QAdd8Sx8",
             "Iop_Avg8Ux8",
             "Iop_Reverse8sIn32_x2",
