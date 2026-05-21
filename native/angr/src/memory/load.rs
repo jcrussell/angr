@@ -205,25 +205,22 @@ impl SymbolicMemory {
                 };
                 return Ok(result);
             }
-            // Check for wider symbolic objects that contain our range
-            for (&sym_addr, sym_val) in &self.symbolic_objects {
-                let sym_size = sym_val.width() / 8;
-                if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
-                    let total_bits = sym_val.width();
-                    let off_bits = (addr - sym_addr) as u32 * 8;
-                    // Mirror of fast-path angr-v1q2 fix: the wide BV's byte
-                    // layout depends on memory endianness.
-                    // BE: bytes [off, off+size) occupy bits
-                    //     [total-1-off_bits : total-off_bits-size*8].
-                    // LE: same byte range occupies bits [off_bits+size*8-1 : off_bits].
-                    let (hi, lo) = match self.endness {
-                        Endness::Big => {
-                            (total_bits - off_bits - 1, total_bits - off_bits - size * 8)
-                        }
-                        Endness::Little => (off_bits + size * 8 - 1, off_bits),
-                    };
-                    return Ok(sym_val.extract(hi, lo, ctx));
-                }
+            // angr-uwtj: spans-first containment lookup. O(1) via the
+            // reverse-span index; falls back to a linear scan over
+            // symbolic_objects when spans is stale/missing.
+            if let Some((sym_addr, sym_val)) = self.containing_wider_sym(addr, size) {
+                let total_bits = sym_val.width();
+                let off_bits = (addr - sym_addr) as u32 * 8;
+                // Mirror of fast-path angr-v1q2 fix: the wide BV's byte
+                // layout depends on memory endianness.
+                // BE: bytes [off, off+size) occupy bits
+                //     [total-1-off_bits : total-off_bits-size*8].
+                // LE: same byte range occupies bits [off_bits+size*8-1 : off_bits].
+                let (hi, lo) = match self.endness {
+                    Endness::Big => (total_bits - off_bits - 1, total_bits - off_bits - size * 8),
+                    Endness::Little => (off_bits + size * 8 - 1, off_bits),
+                };
+                return Ok(sym_val.extract(hi, lo, ctx));
             }
             // Cannot reconstruct - return error for Python fallback
             return Err(MemoryError::SymbolicAddress {
@@ -671,15 +668,14 @@ impl SymbolicMemory {
                 return Ok(result);
             }
 
-            // Try to extract from a wider symbolic object that contains our range
-            for (&sym_addr, sym_val) in &self.symbolic_objects {
-                let sym_size = sym_val.width() / 8;
-                if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
-                    let byte_offset = (addr - sym_addr) as u32;
-                    let high = (byte_offset + size) * 8 - 1;
-                    let low = byte_offset * 8;
-                    return Ok(sym_val.extract(high, low, ctx));
-                }
+            // angr-uwtj: spans-first containment lookup. O(1) via the
+            // reverse-span index; falls back to a linear scan over
+            // symbolic_objects when spans is stale/missing.
+            if let Some((sym_addr, sym_val)) = self.containing_wider_sym(addr, size) {
+                let byte_offset = (addr - sym_addr) as u32;
+                let high = (byte_offset + size) * 8 - 1;
+                let low = byte_offset * 8;
+                return Ok(sym_val.extract(high, low, ctx));
             }
 
             // Cannot reconstruct - return error for Python fallback
@@ -871,6 +867,45 @@ impl SymbolicMemory {
     ///
     /// Returns the byte-merged bitvector, or `None` if a fully-symbolic
     /// reconstruction was not possible.
+    /// angr-uwtj: find a wider symbolic object that fully contains
+    /// `[addr, addr+size)`. Consults the O(1) `symbolic_spans` reverse
+    /// index first; falls back to a linear scan over `symbolic_objects`
+    /// when spans is stale or missing (see `invariant-symbolic-spans-staleness`).
+    pub(super) fn containing_wider_sym(
+        &self,
+        addr: Address,
+        size: u32,
+    ) -> Option<(Address, &RustBV)> {
+        // O(1) path 1: addr lies strictly inside a wider sym (spans
+        // populates offsets 1..sym_bytes; offset 0 is handled below).
+        if let Some(&(base_addr, _base_width)) = self.symbolic_spans.get(&addr) {
+            if let Some(sym) = self.symbolic_objects.get(&base_addr) {
+                let sym_size = sym.width() / 8;
+                if addr + size as u64 <= base_addr + sym_size as u64 {
+                    return Some((base_addr, sym));
+                }
+            }
+        }
+        // O(1) path 2: addr IS the base of a wider sym. Caller's earlier
+        // exact-width branch already returns on `sym.width() == size*8`;
+        // this catches partial reads where the sym is wider.
+        if let Some(sym) = self.symbolic_objects.get(&addr) {
+            let sym_size = sym.width() / 8;
+            if sym.width() > size * 8 && size as u64 <= sym_size as u64 {
+                return Some((addr, sym));
+            }
+        }
+        // Fallback linear scan — preserves correctness when spans is
+        // stale (e.g. test setups that bypass `import_symbolic_value`).
+        for (&sym_addr, sym_val) in &self.symbolic_objects {
+            let sym_size = sym_val.width() / 8;
+            if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
+                return Some((sym_addr, sym_val));
+            }
+        }
+        None
+    }
+
     fn try_byte_merge_load(&self, addr: Address, size: u32, ctx: &SymContext) -> Option<RustBV> {
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {

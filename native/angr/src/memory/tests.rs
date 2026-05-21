@@ -645,6 +645,99 @@ fn test_wide_linear_scan_big_endian() {
     );
 }
 
+/// angr-uwtj: `containing_wider_sym` consults `symbolic_spans` first
+/// (O(1)) before falling back to a linear scan over
+/// `symbolic_objects` (O(n)). After `import_symbolic_value`, the
+/// spans reverse index covers offsets 1..sym_bytes; the base address
+/// is matched against `symbolic_objects` directly. This test pins
+/// the helper's three branches:
+///   - addr strictly inside the wider sym → spans path 1
+///   - addr IS the base of a wider sym for a partial read → path 2
+///   - addr outside the wider sym → returns None
+///   - stale spans (object deleted) → falls back to linear scan,
+///     which also misses, returning None.
+#[test]
+fn test_containing_wider_sym_spans_first() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    let wide = RustBV::symbolic(&ctx, "wide128_uwtj".to_string(), 128);
+    mem.import_symbolic_value(0x1000, wide, None);
+
+    // Path 1: addr inside the wider sym → spans hit.
+    let hit = mem
+        .containing_wider_sym(Address(0x1008), 4)
+        .expect("spans-first lookup must find wider sym");
+    assert_eq!(hit.0, Address(0x1000));
+    assert_eq!(hit.1.width(), 128);
+
+    // Path 2: addr IS the base of a wider sym, partial read.
+    let hit_base = mem
+        .containing_wider_sym(Address(0x1000), 4)
+        .expect("base-address lookup must find wider sym");
+    assert_eq!(hit_base.0, Address(0x1000));
+
+    // Out-of-range: addr beyond the wider sym → miss.
+    assert!(
+        mem.containing_wider_sym(Address(0x1020), 4).is_none(),
+        "addr outside wider sym should not match"
+    );
+
+    // Load range crosses the wider sym's end → miss (full
+    // containment is required).
+    assert!(
+        mem.containing_wider_sym(Address(0x100C), 8).is_none(),
+        "load crossing wider sym's end should not match"
+    );
+
+    // Stale spans: delete the base object but leave the spans
+    // entries pointing at it. The helper's path 1 sees the spans
+    // entry, fails to find the base object, falls through to path
+    // 2 (no entry at addr), then to the linear scan (also empty).
+    // Net: None — confirming the safety net works.
+    mem.symbolic_objects.remove(&Address(0x1000));
+    assert!(
+        mem.containing_wider_sym(Address(0x1008), 4).is_none(),
+        "stale spans without backing object must not return a hit"
+    );
+}
+
+/// angr-uwtj: end-to-end load_concrete via the spans-first slow path.
+/// Setup forces `has_inner_overlap=true` (bypassing the fast spans
+/// check at line ~95) and removes a single spans entry so
+/// `try_byte_merge_load` fails on that byte. The slow-path
+/// reconstruction then calls `containing_wider_sym`, which finds the
+/// wider sym via spans path 1 and extracts the load range
+/// endianness-correctly.
+#[test]
+fn test_load_concrete_slow_path_spans_first_little_endian() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    let pinned: u128 = 0x1011_1213_1415_1617_1819_1A1B_1C1D_1E1F;
+    let wide = RustBV::symbolic(&ctx, "wide128_slow_le".to_string(), 128);
+    ctx.assume_true(&wide.eq(&RustBV::concrete(pinned, 128), &ctx));
+    mem.import_symbolic_value(0x1000, wide, None);
+    // Insert an unrelated symbolic_objects entry inside the load
+    // range to force has_inner_overlap=true on the load below.
+    let noise = RustBV::symbolic(&ctx, "noise8".to_string(), 8);
+    mem.symbolic_objects.insert(Address(0x1006), noise);
+    // Remove the spans entry at 0x1007 so try_byte_merge_load
+    // returns None and we fall through to the slow path.
+    mem.symbolic_spans.remove(&Address(0x1007));
+    let word = mem
+        .load_concrete(0x1004, 4, &ctx)
+        .expect("4-byte load must succeed via spans-first slow path");
+    // LE bytes [4..8) of the wide value live at bits [63:32].
+    let expected: u128 = (pinned >> 32) & 0xFFFF_FFFF;
+    assert_eq!(
+        ctx.eval(&word),
+        Some(expected),
+        "LE spans-first slow path expected 0x{:08x}",
+        expected
+    );
+}
+
 /// angr-jdz9: wide symbolic load whose two pinned solutions each
 /// straddle a different 4 KiB page boundary.
 ///
