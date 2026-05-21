@@ -10,7 +10,7 @@
 //! All entry points are inherent methods on `SymbolicMemory`, so callers in
 //! `memory/mod.rs` and external crates keep using `mem.method(...)`.
 
-use super::{MemoryPage, PAGE_MASK, Permission, SymbolicMemory};
+use super::{Address, MemoryPage, Permission, SymbolicMemory};
 use crate::symbolic::RustBV;
 
 impl SymbolicMemory {
@@ -36,7 +36,7 @@ impl SymbolicMemory {
                 }
                 _ => None,
             };
-            regions.push((addr, width, sym_id));
+            regions.push((addr.raw(), width, sym_id));
         }
 
         regions
@@ -51,7 +51,13 @@ impl SymbolicMemory {
     /// * `addr` - The address to store the value at
     /// * `value` - The symbolic value to store
     /// * `symbol_id` - Optional symbol ID for identity tracking
-    pub fn import_symbolic_value(&mut self, addr: u64, value: RustBV, _symbol_id: Option<u64>) {
+    pub fn import_symbolic_value(
+        &mut self,
+        addr: impl Into<Address>,
+        value: RustBV,
+        _symbol_id: Option<u64>,
+    ) {
+        let addr = addr.into();
         // Track as Python-imported so get_state_symbolic_z3_asts can filter it out
         self.imported_addrs.insert(addr);
         // Store in symbolic_objects for lookup
@@ -69,8 +75,8 @@ impl SymbolicMemory {
         let size = value.width() / 8;
         for i in 0..size {
             let byte_addr = addr + i as u64;
-            let page_num = byte_addr >> 12;
-            let offset = (byte_addr & PAGE_MASK) as u16;
+            let page_num = byte_addr.page_num();
+            let offset = byte_addr.page_offset();
             let page_addr = page_num << 12;
 
             // Get or create page
@@ -85,8 +91,8 @@ impl SymbolicMemory {
     }
 
     /// Get the symbolic object at an address if it exists.
-    pub fn get_symbolic_object(&self, addr: u64) -> Option<&RustBV> {
-        self.symbolic_objects.get(&addr)
+    pub fn get_symbolic_object(&self, addr: impl Into<Address>) -> Option<&RustBV> {
+        self.symbolic_objects.get(&addr.into())
     }
 
     /// Check if there are any symbolic objects in memory.
@@ -100,13 +106,16 @@ impl SymbolicMemory {
     }
 
     /// Check if an address was imported from Python.
-    pub fn is_imported_addr(&self, addr: u64) -> bool {
-        self.imported_addrs.contains(&addr)
+    pub fn is_imported_addr(&self, addr: impl Into<Address>) -> bool {
+        self.imported_addrs.contains(&addr.into())
     }
 
     /// Iterate over all symbolic objects in memory.
-    pub fn symbolic_objects_iter(&self) -> impl Iterator<Item = (&u64, &RustBV)> {
-        self.symbolic_objects.iter()
+    ///
+    /// Returns `Address` by value (it's `Copy`) so callers can pattern-match
+    /// `for (addr, bv) in ...` without borrowing the key.
+    pub fn symbolic_objects_iter(&self) -> impl Iterator<Item = (Address, &RustBV)> {
+        self.symbolic_objects.iter().map(|(a, b)| (*a, b))
     }
 
     /// Clear all symbolic objects (used when resetting state).

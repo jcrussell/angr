@@ -12,8 +12,8 @@ use crate::symbolic::{
 use crate::vex::Endness;
 
 use super::multi::{MultiAlternative, MultiPayload};
-use super::page::{MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
-use super::{MemoryError, SymbolicMemory};
+use super::page::{MemoryPage, PAGE_SIZE, Permission};
+use super::{Address, MemoryError, SymbolicMemory};
 
 impl SymbolicMemory {
     /// Store a value to memory.
@@ -41,7 +41,7 @@ impl SymbolicMemory {
             },
         };
 
-        let result = self.store_concrete(concrete_addr, value);
+        let result = self.store_concrete(Address(concrete_addr), value);
         if let Err(MemoryError::UnmappedPageInRegion { .. }) = &result {
             record_mem_lazy_page_fault();
         }
@@ -49,13 +49,18 @@ impl SymbolicMemory {
     }
 
     /// Store to a concrete address.
-    pub fn store_concrete(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
+    pub fn store_concrete(
+        &mut self,
+        addr: impl Into<Address>,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let addr = addr.into();
         let size = value.width() / 8;
         record_mem_store(size as u64);
 
         // Check if pages are mapped (fast path for same-page stores)
-        let start_page = addr >> 12;
-        let end_page = (addr + size as u64 - 1) >> 12;
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size as u64 - 1) >> 12;
 
         if start_page == end_page {
             if !self.pages.contains_key(&start_page) {
@@ -92,8 +97,8 @@ impl SymbolicMemory {
             let mut current_page: Option<MemoryPage> = None;
             for i in 0..size {
                 let byte_addr = addr + i as u64;
-                let page_num = byte_addr >> 12;
-                let offset = (byte_addr & PAGE_MASK) as u16;
+                let page_num = byte_addr.page_num();
+                let offset = byte_addr.page_offset();
                 if page_num != current_page_num {
                     // Flush previous page
                     if let Some(p) = current_page.take() {
@@ -131,8 +136,8 @@ impl SymbolicMemory {
         let mut current_addr = addr;
 
         while !remaining.is_empty() {
-            let page_num = current_addr >> 12;
-            let page_offset = (current_addr & PAGE_MASK) as u16;
+            let page_num = current_addr.page_num();
+            let page_offset = current_addr.page_offset();
             let bytes_in_page = ((PAGE_SIZE - page_offset as u64) as usize).min(remaining.len());
 
             if let Some(page) = self.pages.get_mut(&page_num) {
@@ -142,7 +147,7 @@ impl SymbolicMemory {
             }
 
             remaining = &remaining[bytes_in_page..];
-            current_addr += bytes_in_page as u64;
+            current_addr = current_addr + bytes_in_page as u64;
         }
 
         // Clear any symbolic object at this address and its span entries
@@ -205,7 +210,7 @@ impl SymbolicMemory {
                 for &candidate in &addrs {
                     let addr_const = RustBV::concrete(candidate as u128, addr.width());
                     let cond = addr.eq(&addr_const, ctx);
-                    let current = self.load_concrete_lazy(candidate, size, ctx)?;
+                    let current = self.load_concrete_lazy(Address(candidate), size, ctx)?;
                     let conditional_value = cond.ite(&value, &current, ctx);
                     self.store_concrete_lazy(candidate, conditional_value)?;
                 }
@@ -250,7 +255,7 @@ impl SymbolicMemory {
             let cond = addr_expr.eq(&addr_const, ctx);
 
             // Load current value at candidate address
-            let current = self.load_concrete_lazy(candidate, size, ctx)?;
+            let current = self.load_concrete_lazy(Address(candidate), size, ctx)?;
 
             // Build conditional value
             let conditional_value = cond.ite(value, &current, ctx);
@@ -438,14 +443,15 @@ impl SymbolicMemory {
                 // Merge with any existing payload at this byte. New alt
                 // goes after existing ones; conds are disjoint so order
                 // is semantically irrelevant.
-                let merged: Vec<MultiAlternative> = match self.multi_objects.get(&byte_addr) {
-                    Some(p) => {
-                        let mut v = p.alternatives().to_vec();
-                        v.push(alt);
-                        v
-                    }
-                    None => vec![alt],
-                };
+                let merged: Vec<MultiAlternative> =
+                    match self.multi_objects.get(&Address(byte_addr)) {
+                        Some(p) => {
+                            let mut v = p.alternatives().to_vec();
+                            v.push(alt);
+                            v
+                        }
+                        None => vec![alt],
+                    };
                 self.set_multi_alternatives(byte_addr, MultiPayload::from_alternatives(merged));
             }
         }
@@ -532,19 +538,12 @@ impl SymbolicMemory {
     /// Returns early without touching the solver when `addrs.len() <= 1`
     /// (no domain restriction to communicate), when `addr` is concrete,
     /// or when `addrs.len() > MAX_DISJUNCTION_TERMS`.
-    pub(super) fn assert_address_disjunction(
-        addr: &RustBV,
-        addrs: &[u64],
-        ctx: &SymContext,
-    ) {
+    pub(super) fn assert_address_disjunction(addr: &RustBV, addrs: &[u64], ctx: &SymContext) {
         /// Maximum disjunction width worth hoisting. Above this the
         /// per-solver-check overhead of the long Or chain dominates.
         const MAX_DISJUNCTION_TERMS: usize = 8;
 
-        if addrs.len() <= 1
-            || addrs.len() > MAX_DISJUNCTION_TERMS
-            || addr.as_u64().is_some()
-        {
+        if addrs.len() <= 1 || addrs.len() > MAX_DISJUNCTION_TERMS || addr.as_u64().is_some() {
             return;
         }
         let width = addr.width();
@@ -631,14 +630,12 @@ impl SymbolicMemory {
                 self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
                 Ok(Some(result))
             }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                Err(MemoryError::SymbolicAddress {
-                    description: format!(
-                        "address range too large for concretization: 0x{:x} - 0x{:x}",
-                        min, max
-                    ),
-                })
-            }
+            ConcretizationResult::TooLarge { min, max, .. } => Err(MemoryError::SymbolicAddress {
+                description: format!(
+                    "address range too large for concretization: 0x{:x} - 0x{:x}",
+                    min, max
+                ),
+            }),
             ConcretizationResult::Failed(reason) => Err(MemoryError::SymbolicAddress {
                 description: reason.clone(),
             }),
@@ -646,12 +643,17 @@ impl SymbolicMemory {
     }
 
     /// Store to a concrete address, returning UnmappedPageInRegion for lazy regions.
-    pub fn store_concrete_lazy(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
+    pub fn store_concrete_lazy(
+        &mut self,
+        addr: impl Into<Address>,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let addr = addr.into();
         let size = value.width() / 8;
 
         // Check if pages are mapped
-        let start_page = addr >> 12;
-        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
 
         for page_num in start_page..end_page {
             if !self.pages.contains_key(&page_num) {
@@ -685,10 +687,15 @@ impl SymbolicMemory {
     ///
     /// If you need auto-mapping behavior for internal Rust operations that
     /// don't involve Python state, use `store_concrete_automap_internal`.
-    pub fn store_concrete_automap(&mut self, addr: u64, value: RustBV) -> Result<(), MemoryError> {
+    pub fn store_concrete_automap(
+        &mut self,
+        addr: impl Into<Address>,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let addr = addr.into();
         let size = value.width() / 8;
-        let start_page = addr >> 12;
-        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
 
         // Check all pages are mapped - do NOT auto-map
         for page_num in start_page..end_page {
@@ -717,12 +724,13 @@ impl SymbolicMemory {
     /// errors so Python can handle the store correctly.
     pub fn store_concrete_automap_internal(
         &mut self,
-        addr: u64,
+        addr: impl Into<Address>,
         value: RustBV,
     ) -> Result<(), MemoryError> {
+        let addr = addr.into();
         let size = value.width() / 8;
-        let start_page = addr >> 12;
-        let end_page = (addr + size as u64 + PAGE_SIZE - 1) >> 12;
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
 
         // Auto-map any missing pages in lazy regions
         for page_num in start_page..end_page {

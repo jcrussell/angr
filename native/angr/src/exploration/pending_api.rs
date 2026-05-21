@@ -511,16 +511,16 @@ impl RustExplorationManager {
             let claripy_mod = py.import("claripy")?;
             let target_page = page_addr >> 12;
             let mut out = Vec::new();
-            for (&addr, bv) in pending.state.memory().symbolic_objects_iter() {
-                if (addr >> 12) != target_page {
+            for (addr, bv) in pending.state.memory().symbolic_objects_iter() {
+                if addr.page_num() != target_page {
                     continue;
                 }
                 match rustbv_to_claripy(py, bv, claripy_mod.as_any()) {
-                    Ok(ast) => out.push((addr, ast)),
+                    Ok(ast) => out.push((addr.raw(), ast)),
                     Err(e) => {
                         log::debug!(
                             "symbolic-page replay: failed to convert AST at 0x{:x}: {}",
-                            addr,
+                            addr.raw(),
                             e
                         );
                     }

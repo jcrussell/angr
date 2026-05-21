@@ -14,6 +14,7 @@ use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
+mod address;
 mod concretize_glue;
 mod ite_builder;
 mod load;
@@ -23,6 +24,7 @@ mod store;
 mod symbolic_objects;
 #[cfg(test)]
 mod tests;
+pub use address::Address;
 pub use multi::{MultiAlternative, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
 
@@ -80,7 +82,7 @@ pub struct SymbolicMemory {
     /// Pages indexed by page number (addr >> 12).
     pages: OrdMap<u64, MemoryPage>,
     /// Symbolic objects (for values that span multiple bytes).
-    symbolic_objects: FxHashMap<u64, RustBV>,
+    symbolic_objects: FxHashMap<Address, RustBV>,
     /// Next symbolic object ID.
     next_sym_id: u64,
     /// Default permissions for new pages.
@@ -98,7 +100,7 @@ pub struct SymbolicMemory {
     /// Reverse index for symbolic objects: maps each byte offset within a
     /// symbolic object to (base_addr, width_bits). Enables O(1) lookup when
     /// loading a byte that falls inside a wider symbolic object.
-    symbolic_spans: FxHashMap<u64, (u64, u32)>,
+    symbolic_spans: FxHashMap<Address, (Address, u32)>,
     /// Multi-cell side table indexed by byte address. A byte is "Multi"
     /// (has an entry here) when a symbolic-address store emitted lazy
     /// alternatives at that cell instead of folding into an ITE chain.
@@ -110,7 +112,7 @@ pub struct SymbolicMemory {
     /// stale Symbolic entry before installing a Multi.
     ///
     /// See `memory/multi.rs` for the `MultiPayload` invariants.
-    multi_objects: FxHashMap<u64, MultiPayload>,
+    multi_objects: FxHashMap<Address, MultiPayload>,
     /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
     /// addresses at store time, we append here and materialize on load.
     pending_writes: Vec<PendingWrite>,
@@ -121,7 +123,7 @@ pub struct SymbolicMemory {
     /// Used to filter get_state_symbolic_z3_asts: even if the binary modifies
     /// an imported value (turning Symbolic→Expression), the address should be
     /// excluded from export since Python already has the correct original value.
-    imported_addrs: FxHashSet<u64>,
+    imported_addrs: FxHashSet<Address>,
     /// If true, enforce per-page R/W permissions on load and store. Mirrors
     /// angr's STRICT_PAGE_ACCESS option. Default is false to keep existing
     /// callers (which often map all memory as RWX or rely on Python perms)
@@ -140,7 +142,7 @@ pub struct SymbolicMemory {
     /// Versions persist across flush/reinstall so the fingerprint of a
     /// post-flush Multi byte differs from the cached pre-flush snapshot
     /// even when both happen to have the same alternative count.
-    pub(super) multi_versions: FxHashMap<u64, u64>,
+    pub(super) multi_versions: FxHashMap<Address, u64>,
     /// Phase 4.1 (angr-mmdh.1): cached results from
     /// `assemble_load_with_multi`, keyed by `(addr, size)`. Each entry
     /// stores a per-byte fingerprint (Multi version+default_byte, or the
@@ -149,7 +151,7 @@ pub struct SymbolicMemory {
     /// matches — skipping the per-byte concat + ITE-rebuild that
     /// dominated Phase 2 gate-on cost. RefCell because the cache lives
     /// on the load path (`&self`).
-    wider_load_cache: RefCell<FxHashMap<(u64, u32), CachedWiderLoad>>,
+    wider_load_cache: RefCell<FxHashMap<(Address, u32), CachedWiderLoad>>,
 }
 
 /// Phase 4.1: one byte's role in a cached wider-load result. Loads that
@@ -180,10 +182,10 @@ pub(super) const WIDER_LOAD_CACHE_CAP: usize = 1024;
 
 impl PendingWrite {
     /// Check if a concrete address could possibly overlap with this pending write.
-    pub fn could_overlap_page(&self, addr: u64) -> bool {
+    pub fn could_overlap_page(&self, addr: impl Into<Address>) -> bool {
         match self.page_hint {
             Some((min_page, max_page)) => {
-                let page = addr >> 12;
+                let page = addr.into().page_num();
                 page >= min_page && page <= max_page
             }
             None => true, // Unknown range, must assume overlap
@@ -222,7 +224,7 @@ impl SymbolicMemory {
     /// entry persists even after the Multi cell is cleared so a later
     /// reinstall still produces a fresh version distinct from any cached
     /// snapshot.
-    pub(super) fn bump_multi_version(&mut self, addr: u64) {
+    pub(super) fn bump_multi_version(&mut self, addr: Address) {
         let v = self.multi_versions.entry(addr).or_insert(0);
         *v = v.wrapping_add(1);
     }
@@ -233,22 +235,18 @@ impl SymbolicMemory {
     /// is unmapped (the caller's existing error path handles that).
     pub(super) fn compute_wider_load_fingerprint(
         &self,
-        addr: u64,
+        addr: Address,
         size: u32,
     ) -> Option<Vec<ByteFingerprint>> {
         let mut fp = Vec::with_capacity(size as usize);
         for i in 0..size {
             let byte_addr = addr + i as u64;
-            let page_num = byte_addr >> 12;
-            let offset = (byte_addr & PAGE_MASK) as u16;
+            let page_num = byte_addr.page_num();
+            let offset = byte_addr.page_offset();
             let page = self.pages.get(&page_num)?;
             if self.multi_objects.contains_key(&byte_addr) {
                 let version = self.multi_versions.get(&byte_addr).copied().unwrap_or(0);
-                let default_byte = page
-                    .load_concrete(offset, 1)
-                    .first()
-                    .copied()
-                    .unwrap_or(0);
+                let default_byte = page.load_concrete(offset, 1).first().copied().unwrap_or(0);
                 fp.push(ByteFingerprint::Multi {
                     version,
                     default_byte,
@@ -256,11 +254,7 @@ impl SymbolicMemory {
             } else if page.is_symbolic(offset) {
                 return None;
             } else {
-                let byte = page
-                    .load_concrete(offset, 1)
-                    .first()
-                    .copied()
-                    .unwrap_or(0);
+                let byte = page.load_concrete(offset, 1).first().copied().unwrap_or(0);
                 fp.push(ByteFingerprint::Concrete { byte });
             }
         }
@@ -272,11 +266,7 @@ impl SymbolicMemory {
     /// `HashMap::keys().next()` (arbitrary, no LRU bookkeeping); the cap
     /// is high enough that this only matters for explorations that touch
     /// thousands of distinct load shapes.
-    pub(super) fn insert_wider_load_cache(
-        &self,
-        key: (u64, u32),
-        entry: CachedWiderLoad,
-    ) {
+    pub(super) fn insert_wider_load_cache(&self, key: (Address, u32), entry: CachedWiderLoad) {
         let mut cache = self.wider_load_cache.borrow_mut();
         if cache.len() >= WIDER_LOAD_CACHE_CAP && !cache.contains_key(&key) {
             if let Some(victim) = cache.keys().next().copied() {
@@ -325,16 +315,17 @@ impl SymbolicMemory {
     /// we return Ok so the caller can fall back to its existing lift paths
     /// (native libpyvex region / Python lift_block callback) — only mapped
     /// pages without the X bit produce a `Permission` error here.
-    pub fn check_executable(&self, addr: u64) -> Result<(), MemoryError> {
+    pub fn check_executable(&self, addr: impl Into<Address>) -> Result<(), MemoryError> {
         if !self.enforce_permissions || !self.enforce_nx {
             return Ok(());
         }
-        let page_num = addr >> 12;
+        let addr = addr.into();
+        let page_num = addr.page_num();
         if let Some(page) = self.pages.get(&page_num) {
             let actual = page.permissions();
             if !actual.allows(Permission::X) {
                 return Err(MemoryError::Permission {
-                    addr,
+                    addr: addr.raw(),
                     required: Permission::X,
                     actual,
                 });
@@ -387,9 +378,10 @@ impl SymbolicMemory {
     }
 
     /// Map a memory region.
-    pub fn map(&mut self, addr: u64, size: u64, permissions: Permission) {
-        let start_page = addr >> 12;
-        let end_page = (addr + size + PAGE_SIZE - 1) >> 12;
+    pub fn map(&mut self, addr: impl Into<Address>, size: u64, permissions: Permission) {
+        let addr = addr.into();
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size + PAGE_SIZE - 1) >> 12;
 
         for page_num in start_page..end_page {
             let base = page_num << 12;
@@ -401,16 +393,14 @@ impl SymbolicMemory {
     }
 
     /// Map a region and initialize with data.
-    pub fn map_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
-        let _start_page = addr >> 12;
-        let _offset_in_page = addr & PAGE_MASK;
-
+    pub fn map_data(&mut self, addr: impl Into<Address>, data: &[u8], permissions: Permission) {
+        let addr = addr.into();
         let mut remaining = data;
         let mut current_addr = addr;
 
         while !remaining.is_empty() {
-            let page_num = current_addr >> 12;
-            let page_offset = (current_addr & PAGE_MASK) as usize;
+            let page_num = current_addr.page_num();
+            let page_offset = current_addr.page_offset() as usize;
             let bytes_in_page = (PAGE_SIZE as usize - page_offset).min(remaining.len());
 
             // Get or create page, modify in place (COW handled by Arc::make_mut in store_concrete)
@@ -421,14 +411,15 @@ impl SymbolicMemory {
             page.store_concrete(page_offset as u16, &remaining[..bytes_in_page]);
 
             remaining = &remaining[bytes_in_page..];
-            current_addr += bytes_in_page as u64;
+            current_addr = current_addr + bytes_in_page as u64;
         }
     }
 
     /// Unmap a memory region.
-    pub fn unmap(&mut self, addr: u64, size: u64) {
-        let start_page = addr >> 12;
-        let end_page = (addr + size + PAGE_SIZE - 1) >> 12;
+    pub fn unmap(&mut self, addr: impl Into<Address>, size: u64) {
+        let addr = addr.into();
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size + PAGE_SIZE - 1) >> 12;
 
         for page_num in start_page..end_page {
             self.pages.remove(&page_num);
@@ -436,8 +427,8 @@ impl SymbolicMemory {
     }
 
     /// Check if an address is mapped.
-    pub fn is_mapped(&self, addr: u64) -> bool {
-        let page_num = addr >> 12;
+    pub fn is_mapped(&self, addr: impl Into<Address>) -> bool {
+        let page_num = addr.into().page_num();
         self.pages.contains_key(&page_num)
     }
 
@@ -446,21 +437,25 @@ impl SymbolicMemory {
     /// or unmapped byte. `None` is returned only if the very first byte is
     /// unmapped or symbolic. The lifter accepts a partial buffer and stops
     /// at the byte boundary, so a short read is still useful.
-    pub fn read_concrete_bytes_for_lift(&self, addr: u64, max_size: usize) -> Option<Vec<u8>> {
+    pub fn read_concrete_bytes_for_lift(
+        &self,
+        addr: impl Into<Address>,
+        max_size: usize,
+    ) -> Option<Vec<u8>> {
         if max_size == 0 {
             return Some(Vec::new());
         }
         let mut result = Vec::with_capacity(max_size);
-        let mut current = addr;
+        let mut current = addr.into();
         while result.len() < max_size {
-            let page_num = current >> 12;
+            let page_num = current.page_num();
             let page = match self.pages.get(&page_num) {
                 Some(p) => p,
                 None => break,
             };
-            let offset_in_page = (current & PAGE_MASK) as u16;
+            let offset_in_page = current.page_offset();
             let remaining = max_size - result.len();
-            let to_read = remaining.min((PAGE_SIZE - (current & PAGE_MASK)) as usize);
+            let to_read = remaining.min((PAGE_SIZE - (current.raw() & PAGE_MASK)) as usize);
             // Stop at the first symbolic byte; native lift can't use it.
             let mut concrete_run = 0usize;
             for i in 0..to_read {
@@ -474,7 +469,7 @@ impl SymbolicMemory {
             }
             let bytes = page.load_concrete(offset_in_page, concrete_run as u16);
             result.extend(bytes);
-            current = current.saturating_add(concrete_run as u64);
+            current = Address(current.raw().saturating_add(concrete_run as u64));
             if concrete_run < to_read {
                 break; // hit a symbolic byte
             }
@@ -585,10 +580,11 @@ impl SymbolicMemory {
                         } else {
                             cond
                         };
-                        let current = match self.load_concrete_lazy_inner(candidate, pw.size, ctx) {
-                            Ok(v) => v,
-                            Err(_) => RustBV::concrete(0, pw.size * 8),
-                        };
+                        let current =
+                            match self.load_concrete_lazy_inner(Address(candidate), pw.size, ctx) {
+                                Ok(v) => v,
+                                Err(_) => RustBV::concrete(0, pw.size * 8),
+                            };
                         let ite_val = effective_cond.ite(&pw.value, &current, ctx);
                         self.store_concrete_lazy(candidate, ite_val)?;
                     }
@@ -607,10 +603,11 @@ impl SymbolicMemory {
                         } else {
                             cond
                         };
-                        let current = match self.load_concrete_lazy_inner(candidate, pw.size, ctx) {
-                            Ok(v) => v,
-                            Err(_) => RustBV::concrete(0, pw.size * 8),
-                        };
+                        let current =
+                            match self.load_concrete_lazy_inner(Address(candidate), pw.size, ctx) {
+                                Ok(v) => v,
+                                Err(_) => RustBV::concrete(0, pw.size * 8),
+                            };
                         let ite_val = effective_cond.ite(&pw.value, &current, ctx);
                         self.store_concrete_lazy(candidate, ite_val)?;
                     }
@@ -645,13 +642,17 @@ impl SymbolicMemory {
 
     /// Load an entire page as concrete bytes (4096 bytes).
     /// Returns Err if the page is not mapped.
-    pub fn load_page_concrete(&self, page_addr: u64) -> Result<Vec<u8>, MemoryError> {
-        let page_num = page_addr >> 12;
+    pub fn load_page_concrete(
+        &self,
+        page_addr: impl Into<Address>,
+    ) -> Result<Vec<u8>, MemoryError> {
+        let page_addr = page_addr.into();
+        let page_num = page_addr.page_num();
         if let Some(page) = self.pages.get(&page_num) {
             Ok(page.load_concrete(0, PAGE_SIZE as u16))
         } else {
             Err(MemoryError::Unmapped {
-                addr: page_addr,
+                addr: page_addr.raw(),
                 size: PAGE_SIZE,
             })
         }
@@ -714,9 +715,10 @@ impl SymbolicMemory {
     /// # Arguments
     /// * `start_addr` - Start address of the region (will be page-aligned down)
     /// * `size` - Size of the region in bytes
-    pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
-        let start_page = start_addr >> 12;
-        let end_page = (start_addr + size + PAGE_SIZE - 1) >> 12;
+    pub fn add_lazy_region(&mut self, start_addr: impl Into<Address>, size: u64) {
+        let start_addr = start_addr.into();
+        let start_page = start_addr.page_num();
+        let end_page = (start_addr.raw() + size + PAGE_SIZE - 1) >> 12;
         self.lazy_regions.push((start_page, end_page));
     }
 
@@ -731,8 +733,8 @@ impl SymbolicMemory {
     }
 
     /// Check if an address is within a lazy region.
-    pub fn is_addr_in_lazy_region(&self, addr: u64) -> bool {
-        self.is_in_lazy_region(addr >> 12)
+    pub fn is_addr_in_lazy_region(&self, addr: impl Into<Address>) -> bool {
+        self.is_in_lazy_region(addr.into().page_num())
     }
 
     /// Clear all lazy regions.
@@ -758,10 +760,10 @@ impl SymbolicMemory {
     /// List of page addresses to fetch, or None if the page is not in a lazy region.
     pub fn get_region_prefetch_list(
         &self,
-        trigger_page_addr: u64,
+        trigger_page_addr: impl Into<Address>,
         max_pages: usize,
     ) -> Option<Vec<u64>> {
-        let trigger_page_num = trigger_page_addr >> 12;
+        let trigger_page_num = trigger_page_addr.into().page_num();
 
         // Find the lazy region containing this page
         let region = self
@@ -801,11 +803,12 @@ impl SymbolicMemory {
     /// List of unmapped page addresses in the region around the trigger.
     pub fn get_nearby_prefetch_list(
         &self,
-        trigger_page_addr: u64,
+        trigger_page_addr: impl Into<Address>,
         count_before: u64,
         count_after: u64,
     ) -> Vec<u64> {
-        let trigger_page_num = trigger_page_addr >> 12;
+        let trigger_page_addr = trigger_page_addr.into();
+        let trigger_page_num = trigger_page_addr.page_num();
         let mut pages_to_fetch = Vec::new();
 
         // Check pages before the trigger
@@ -819,7 +822,7 @@ impl SymbolicMemory {
 
         // Add the trigger page itself if not mapped
         if !self.pages.contains_key(&trigger_page_num) {
-            pages_to_fetch.push(trigger_page_addr);
+            pages_to_fetch.push(trigger_page_addr.raw());
         }
 
         // Check pages after the trigger
@@ -836,9 +839,15 @@ impl SymbolicMemory {
     /// Map a page with data directly (used for on-demand page fetching).
     ///
     /// This is a convenience method for the interpreter to add fetched pages.
-    pub fn map_page(&mut self, page_addr: u64, data: Vec<u8>, permissions: Permission) {
-        let page_num = page_addr >> 12;
-        let page = MemoryPage::from_data(page_addr, data, permissions);
+    pub fn map_page(
+        &mut self,
+        page_addr: impl Into<Address>,
+        data: Vec<u8>,
+        permissions: Permission,
+    ) {
+        let page_addr = page_addr.into();
+        let page_num = page_addr.page_num();
+        let page = MemoryPage::from_data(page_addr.raw(), data, permissions);
         self.pages.insert(page_num, page);
     }
 
@@ -857,8 +866,8 @@ impl SymbolicMemory {
     ///
     /// This creates a speculative zero page that can be validated later
     /// against Python state. Returns true if a page was created.
-    pub fn auto_map_zero_page(&mut self, addr: u64) -> bool {
-        let page_num = addr >> 12;
+    pub fn auto_map_zero_page(&mut self, addr: impl Into<Address>) -> bool {
+        let page_num = addr.into().page_num();
 
         // Only auto-map if not already mapped and in a lazy region
         if self.pages.contains_key(&page_num) {
@@ -903,7 +912,7 @@ impl SymbolicMemory {
             self_pages.union(&other_pages).copied().collect();
 
         // Collect merge operations first to avoid borrow conflicts
-        let mut merge_ops: Vec<(u64, u64, RustBV)> = Vec::new(); // (page_num, addr, ite_val)
+        let mut merge_ops: Vec<(u64, Address, RustBV)> = Vec::new(); // (page_num, addr, ite_val)
         let mut pages_to_add: Vec<(u64, MemoryPage)> = Vec::new();
 
         for &page_num in &all_pages {
@@ -920,7 +929,7 @@ impl SymbolicMemory {
                         continue;
                     }
 
-                    let base_addr = page_num << 12;
+                    let base_addr = Address(page_num << 12);
                     for i in 0..PAGE_SIZE as usize {
                         let s_byte = s_data[i];
                         let o_byte = o_data[i];
@@ -968,7 +977,7 @@ impl SymbolicMemory {
             self.next_sym_id += 1;
             self.symbolic_objects.insert(addr, ite_val);
             self.symbolic_spans.insert(addr, (addr, 8));
-            let offset_in_page = (addr & (PAGE_SIZE as u64 - 1)) as u16;
+            let offset_in_page = addr.page_offset();
             if let Some(page) = self.pages.get_mut(&page_num) {
                 page.mark_symbolic(offset_in_page, 1);
             }

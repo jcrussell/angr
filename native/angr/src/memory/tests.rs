@@ -607,7 +607,7 @@ fn wide_linear_scan_setup(endness: Endness) -> (SymContext, SymbolicMemory, u128
     // Insert directly into symbolic_objects without populating
     // symbolic_spans, then mark each byte as symbolic on the page so
     // has_symbolic flips during the byte scan.
-    mem.symbolic_objects.insert(0x1000, sym);
+    mem.symbolic_objects.insert(Address(0x1000), sym);
     let page = mem.pages.get_mut(&(0x1000 >> 12)).expect("page mapped");
     page.mark_symbolic(0, 16);
     (ctx, mem, pinned)
@@ -777,7 +777,7 @@ fn test_fork_symbolic_spans_isolation() {
     // Sanity: spans for 0x1001..0x1008 exist on parent.
     for off in 1..8u64 {
         assert!(
-            parent.symbolic_spans.contains_key(&(0x1000 + off)),
+            parent.symbolic_spans.contains_key(&Address(0x1000 + off)),
             "parent must have span entry for byte 0x{:x}",
             0x1000 + off
         );
@@ -798,12 +798,12 @@ fn test_fork_symbolic_spans_isolation() {
     );
     for off in 1..8u64 {
         assert!(
-            !parent.symbolic_spans.contains_key(&(0x2000 + off)),
+            !parent.symbolic_spans.contains_key(&Address(0x2000 + off)),
             "parent leaked span entry for child-only byte 0x{:x}",
             0x2000 + off
         );
         assert!(
-            child.symbolic_spans.contains_key(&(0x2000 + off)),
+            child.symbolic_spans.contains_key(&Address(0x2000 + off)),
             "child must own span entry for byte 0x{:x}",
             0x2000 + off
         );
@@ -1309,10 +1309,7 @@ fn test_concretize_counters_fire_on_symbolic_store() {
 
     let pre = get_solver_stats();
     let pre_write = pre.get("concretize_write_count").copied().unwrap_or(0);
-    let pre_total = pre
-        .get("concretize_total_candidates")
-        .copied()
-        .unwrap_or(0);
+    let pre_total = pre.get("concretize_total_candidates").copied().unwrap_or(0);
     let pre_max = pre.get("concretize_max_candidates").copied().unwrap_or(0);
 
     let ctx = SymContext::new_mock();
@@ -1485,7 +1482,11 @@ fn test_multi_fork_independence() {
     let p = parent
         .get_multi_alternatives(0x1000)
         .expect("parent still has its payload");
-    assert_eq!(p.len(), 2, "parent payload must be untouched by fork mutation");
+    assert_eq!(
+        p.len(),
+        2,
+        "parent payload must be untouched by fork mutation"
+    );
     assert_eq!(p.alternatives()[0].value.as_u64(), Some(0xAA));
 
     let c = child
@@ -1663,9 +1664,12 @@ fn test_multi_cell_load_mixed_concrete() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     // Surrounding concrete bytes.
-    mem.store_concrete(0x1001, RustBV::concrete(0x11, 8)).unwrap();
-    mem.store_concrete(0x1002, RustBV::concrete(0x22, 8)).unwrap();
-    mem.store_concrete(0x1003, RustBV::concrete(0x33, 8)).unwrap();
+    mem.store_concrete(0x1001, RustBV::concrete(0x11, 8))
+        .unwrap();
+    mem.store_concrete(0x1002, RustBV::concrete(0x22, 8))
+        .unwrap();
+    mem.store_concrete(0x1003, RustBV::concrete(0x33, 8))
+        .unwrap();
 
     let addr_var = RustBV::symbolic(&ctx, "load_mix_addr".to_string(), 64);
     let payload = MultiPayload::from_alternatives(vec![
@@ -1700,9 +1704,12 @@ fn test_multi_cell_load_big_endian() {
     let mut mem = SymbolicMemory::new(Endness::Big);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    mem.store_concrete(0x1001, RustBV::concrete(0x11, 8)).unwrap();
-    mem.store_concrete(0x1002, RustBV::concrete(0x22, 8)).unwrap();
-    mem.store_concrete(0x1003, RustBV::concrete(0x33, 8)).unwrap();
+    mem.store_concrete(0x1001, RustBV::concrete(0x11, 8))
+        .unwrap();
+    mem.store_concrete(0x1002, RustBV::concrete(0x22, 8))
+        .unwrap();
+    mem.store_concrete(0x1003, RustBV::concrete(0x33, 8))
+        .unwrap();
 
     let addr_var = RustBV::symbolic(&ctx, "load_be_addr".to_string(), 64);
     let payload = MultiPayload::from_alternatives(vec![
@@ -1737,7 +1744,8 @@ fn test_multi_cell_load_multiple_multi_bytes() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    mem.store_concrete(0x1001, RustBV::concrete(0x11, 8)).unwrap();
+    mem.store_concrete(0x1001, RustBV::concrete(0x11, 8))
+        .unwrap();
     // Last byte (offset 3) is also concrete via no-op (default 0).
 
     let addr_var = RustBV::symbolic(&ctx, "load_multi_addr".to_string(), 64);
@@ -1795,7 +1803,8 @@ fn test_concrete_overwrite_clears_multi_bit() {
     }
 
     // Concrete overwrite at the same byte.
-    mem.store_concrete(0x3000, RustBV::concrete(0xFE, 8)).unwrap();
+    mem.store_concrete(0x3000, RustBV::concrete(0xFE, 8))
+        .unwrap();
 
     let page = mem.pages.get(&(0x3000 >> 12)).expect("page must exist");
     assert!(
@@ -1998,10 +2007,11 @@ fn test_phase2_gate_on_installs_multi() {
     mem.map(0x1000, 0x4000, Permission::RWX);
 
     let addr_var = RustBV::symbolic(&ctx, "p2_on_addr".to_string(), 64);
-    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
-        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
-        &ctx,
-    ));
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
     let value = RustBV::concrete(0xCAFEBABE, 32);
 
     mem.store_symbolic_unified(addr_var.clone(), value, &ctx, &concretizer)
@@ -2030,10 +2040,11 @@ fn test_phase2_safe_install_lazy_region_signals() {
     mem.add_lazy_region(0x2000, 0x1000);
 
     let addr_var = RustBV::symbolic(&ctx, "p2_lazy_addr".to_string(), 64);
-    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
-        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
-        &ctx,
-    ));
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
     let value = RustBV::concrete(0x11, 8);
 
     let err = mem
@@ -2062,10 +2073,11 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     let addr_var = RustBV::symbolic(&ctx, "p2_skip_addr".to_string(), 64);
-    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
-        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
-        &ctx,
-    ));
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
     let value = RustBV::concrete(0xAB, 8);
 
     mem.store_symbolic_unified(addr_var.clone(), value, &ctx, &concretizer)
@@ -2126,12 +2138,18 @@ fn test_phase2_fork_independence_via_safe_install() {
     parent.map(0x1000, 0x4000, Permission::RWX);
 
     let addr_var = RustBV::symbolic(&ctx, "p2_fork_addr".to_string(), 64);
-    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx).or(
-        &addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx),
-        &ctx,
-    ));
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
     parent
-        .store_symbolic_unified(addr_var.clone(), RustBV::concrete(0x12, 8), &ctx, &concretizer)
+        .store_symbolic_unified(
+            addr_var.clone(),
+            RustBV::concrete(0x12, 8),
+            &ctx,
+            &concretizer,
+        )
         .unwrap();
     let parent_count = parent.multi_cell_count();
     assert_eq!(parent_count, 2);
@@ -2195,7 +2213,10 @@ fn test_phase3_collapse_cache_invalidated_on_push() {
         RustBV::concrete(0xAA, 8),
     )]);
     let _ = payload.collapse(0, &ctx);
-    assert!(payload.has_cached_collapse(), "collapse must populate cache");
+    assert!(
+        payload.has_cached_collapse(),
+        "collapse must populate cache"
+    );
 
     payload.push(MultiAlternative::new(
         RustBV::concrete(0, 1),
@@ -2448,7 +2469,11 @@ fn test_phase4_wider_load_cache_fork_independence() {
     assert_eq!(parent.wider_load_cache_len(), 1);
 
     let mut child = parent.fork();
-    assert_eq!(child.wider_load_cache_len(), 1, "fork carries cache forward");
+    assert_eq!(
+        child.wider_load_cache_len(),
+        1,
+        "fork carries cache forward"
+    );
 
     // Child mutation must not affect parent.
     child
@@ -2602,13 +2627,8 @@ fn test_phase42_flush_fingerprint_mismatch_breaks_run() {
     // First store: 4-byte value at two candidates → 4 Multi bytes per
     // candidate.
     let addr1 = RustBV::symbolic(&ctx, "p42_addr1".to_string(), 64);
-    mem.store_concrete_multi(
-        &addr1,
-        &RustBV::concrete(0x1111_2222, 32),
-        &[0x1000],
-        &ctx,
-    )
-    .unwrap();
+    mem.store_concrete_multi(&addr1, &RustBV::concrete(0x1111_2222, 32), &[0x1000], &ctx)
+        .unwrap();
     assert_eq!(mem.multi_cell_count(), 4);
 
     // Second store: 1-byte value at byte 2 of the previous range. This
@@ -2681,13 +2701,7 @@ fn test_phase42_flush_run_length_cap() {
 /// Returns true if `bv` is an `Expression` whose top-level op is `Ite`.
 fn is_ite(bv: &RustBV) -> bool {
     use crate::symbolic::BVOp;
-    matches!(
-        bv,
-        RustBV::Expression {
-            op: BVOp::Ite,
-            ..
-        }
-    )
+    matches!(bv, RustBV::Expression { op: BVOp::Ite, .. })
 }
 
 // angr-269l: de-duplicate ITE arms in concretization fan-out. When every
@@ -2852,7 +2866,10 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
     use crate::symbolic::get_solver_stats;
 
     let pre = get_solver_stats();
-    let pre_count = pre.get("concretize_disjunction_count").copied().unwrap_or(0);
+    let pre_count = pre
+        .get("concretize_disjunction_count")
+        .copied()
+        .unwrap_or(0);
     let pre_terms = pre
         .get("concretize_disjunction_terms_total")
         .copied()
@@ -2938,7 +2955,10 @@ fn test_assert_address_disjunction_multiple_load_hoists() {
     use crate::symbolic::get_solver_stats;
 
     let pre = get_solver_stats();
-    let pre_count = pre.get("concretize_disjunction_count").copied().unwrap_or(0);
+    let pre_count = pre
+        .get("concretize_disjunction_count")
+        .copied()
+        .unwrap_or(0);
 
     let ctx = SymContext::new_mock();
     let concretizer = AddressConcretizer::new();

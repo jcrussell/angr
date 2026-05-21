@@ -17,7 +17,7 @@
 
 use std::cell::RefCell;
 
-use super::{MemoryPage, PAGE_MASK, Permission, SymbolicMemory};
+use super::{Address, MemoryPage, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
 use crate::vex::Endness;
 
@@ -194,7 +194,8 @@ impl SymbolicMemory {
     ///
     /// A payload with zero alternatives clears the cell instead of
     /// installing an empty entry.
-    pub fn set_multi_alternatives(&mut self, addr: u64, payload: MultiPayload) {
+    pub fn set_multi_alternatives(&mut self, addr: impl Into<Address>, payload: MultiPayload) {
+        let addr = addr.into();
         if payload.is_empty() {
             self.clear_multi_at(addr);
             return;
@@ -205,8 +206,8 @@ impl SymbolicMemory {
         // Auto-map the page if missing. Matches import_symbolic_value's
         // policy so callers (test rigs, future SimProcedure wiring) do not
         // need to pre-map stack regions.
-        let page_num = addr >> 12;
-        let offset = (addr & PAGE_MASK) as u16;
+        let page_num = addr.page_num();
+        let offset = addr.page_offset();
         let page_addr = page_num << 12;
         let page = self
             .pages
@@ -233,16 +234,17 @@ impl SymbolicMemory {
     }
 
     /// Read-only access to the lazy alternatives at a byte address, if any.
-    pub fn get_multi_alternatives(&self, addr: u64) -> Option<&MultiPayload> {
-        self.multi_objects.get(&addr)
+    pub fn get_multi_alternatives(&self, addr: impl Into<Address>) -> Option<&MultiPayload> {
+        self.multi_objects.get(&addr.into())
     }
 
     /// Remove lazy alternatives at a byte address and clear the page bit.
     /// Safe to call on a byte that is not currently Multi (no-op).
-    pub fn clear_multi_at(&mut self, addr: u64) {
+    pub fn clear_multi_at(&mut self, addr: impl Into<Address>) {
+        let addr = addr.into();
         let had_payload = self.multi_objects.remove(&addr).is_some();
-        let page_num = addr >> 12;
-        let offset = (addr & PAGE_MASK) as u16;
+        let page_num = addr.page_num();
+        let offset = addr.page_offset();
         if let Some(page) = self.pages.get_mut(&page_num) {
             page.clear_multi(offset);
         }
@@ -313,7 +315,7 @@ impl SymbolicMemory {
 
         // Sort entries by address so adjacent-byte runs surface in a
         // single linear scan.
-        let mut entries: Vec<(u64, MultiPayload)> = multi.into_iter().collect();
+        let mut entries: Vec<(Address, MultiPayload)> = multi.into_iter().collect();
         entries.sort_by_key(|(addr, _)| *addr);
 
         let mut i = 0;
@@ -339,7 +341,7 @@ impl SymbolicMemory {
             // default. If any page is unmapped we fall back to per-byte
             // (matches the pre-Phase-4.2 drop-on-unmap behaviour).
             let coalesce = run_len >= 2 && {
-                (i..j).all(|k| self.pages.contains_key(&(entries[k].0 >> 12)))
+                (i..j).all(|k| self.pages.contains_key(&entries[k].0.page_num()))
             };
 
             if coalesce {
@@ -347,8 +349,8 @@ impl SymbolicMemory {
                 let mut concrete_bytes: Vec<u8> = Vec::with_capacity(run_len);
                 for k in i..j {
                     let byte_addr = entries[k].0;
-                    let page_num = byte_addr >> 12;
-                    let offset = (byte_addr & PAGE_MASK) as u16;
+                    let page_num = byte_addr.page_num();
+                    let offset = byte_addr.page_offset();
                     let page = self
                         .pages
                         .get(&page_num)
@@ -383,8 +385,8 @@ impl SymbolicMemory {
                 for k in i..j {
                     let byte_addr = entries[k].0;
                     self.bump_multi_version(byte_addr);
-                    let page_num = byte_addr >> 12;
-                    let offset = (byte_addr & PAGE_MASK) as u16;
+                    let page_num = byte_addr.page_num();
+                    let offset = byte_addr.page_offset();
                     if let Some(page) = self.pages.get_mut(&page_num) {
                         page.clear_multi(offset);
                         page.mark_symbolic(offset, 1);
@@ -407,8 +409,8 @@ impl SymbolicMemory {
             for k in i..j {
                 let (byte_addr, payload) = &entries[k];
                 self.bump_multi_version(*byte_addr);
-                let page_num = byte_addr >> 12;
-                let offset = (byte_addr & PAGE_MASK) as u16;
+                let page_num = byte_addr.page_num();
+                let offset = byte_addr.page_offset();
                 let concrete_byte: u8 = match self.pages.get(&page_num) {
                     Some(page) => page.load_concrete(offset, 1).first().copied().unwrap_or(0),
                     None => continue,
@@ -472,7 +474,10 @@ fn payload_cond_fingerprint(payload: &MultiPayload) -> Vec<u64> {
 ///
 /// Caller guarantees `bytes` is non-empty and each element is width 8.
 fn build_wider_value(bytes: &[RustBV], endness: Endness, ctx: &SymContext) -> RustBV {
-    debug_assert!(!bytes.is_empty(), "build_wider_value requires non-empty input");
+    debug_assert!(
+        !bytes.is_empty(),
+        "build_wider_value requires non-empty input"
+    );
     match endness {
         Endness::Little => {
             let mut iter = bytes.iter().rev();

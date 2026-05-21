@@ -448,7 +448,7 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| {
             let mem = state.memory();
             let mut result = Vec::new();
-            for (&addr, bv) in mem.symbolic_objects_iter() {
+            for (addr, bv) in mem.symbolic_objects_iter() {
                 // Only export Expression values (Rust-computed).
                 // Skip Symbolic values (imported from Python) — Python already
                 // has those with proper claripy identity.
@@ -465,7 +465,7 @@ impl RustExplorationManager {
                     // Prevent z3::ast::BV destructor from decrementing the ref count.
                     // Python takes ownership of this pointer.
                     std::mem::forget(z3_ast);
-                    result.push((addr, raw_ptr, bv.width()));
+                    result.push((addr.raw(), raw_ptr, bv.width()));
                 }
             }
             Ok(result)

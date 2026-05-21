@@ -6,13 +6,12 @@
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{
-    RustBV, SymContext, record_mem_lazy_page_fault, record_mem_load,
-    record_mem_load_symbolic_addr,
+    RustBV, SymContext, record_mem_lazy_page_fault, record_mem_load, record_mem_load_symbolic_addr,
 };
 use crate::vex::Endness;
 
-use super::page::{PAGE_MASK, PAGE_SIZE, Permission};
-use super::{MemoryError, SymbolicMemory};
+use super::page::{PAGE_SIZE, Permission};
+use super::{Address, MemoryError, SymbolicMemory};
 
 impl SymbolicMemory {
     /// Load bytes from memory as a RustBV.
@@ -40,7 +39,7 @@ impl SymbolicMemory {
             }
         };
 
-        let result = self.load_concrete(concrete_addr, size, ctx);
+        let result = self.load_concrete(Address(concrete_addr), size, ctx);
         if let Err(MemoryError::UnmappedPageInRegion { .. }) = &result {
             record_mem_lazy_page_fault();
         }
@@ -50,10 +49,11 @@ impl SymbolicMemory {
     /// Load from a concrete address.
     pub fn load_concrete(
         &self,
-        addr: u64,
+        addr: impl Into<Address>,
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        let addr = addr.into();
         record_mem_load(size as u64);
         // angr-3zhl: a later partial store that begins inside [addr+1, addr+size)
         // overwrites trailing bytes of an earlier wider object at `addr`. The
@@ -117,8 +117,8 @@ impl SymbolicMemory {
             }
         }
 
-        let start_page = addr >> 12;
-        let end_page = (addr + size as u64 - 1) >> 12;
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size as u64 - 1) >> 12;
 
         self.check_perms_range(start_page, end_page, Permission::R)?;
 
@@ -131,7 +131,7 @@ impl SymbolicMemory {
                 addr: start_page << 12,
                 size: PAGE_SIZE,
             })?;
-            let offset = (addr & PAGE_MASK) as u16;
+            let offset = addr.page_offset();
             bytes = page.load_concrete(offset, size as u16);
             // Check symbolic markers
             for i in 0..size as u16 {
@@ -145,17 +145,17 @@ impl SymbolicMemory {
             bytes = Vec::with_capacity(size as usize);
             for i in 0..size {
                 let byte_addr = addr + i as u64;
-                let page_num = byte_addr >> 12;
-                let offset = (byte_addr & PAGE_MASK) as u16;
+                let page_num = byte_addr.page_num();
+                let offset = byte_addr.page_offset();
                 if let Some(page) = self.pages.get(&page_num) {
                     if page.is_symbolic(offset) {
                         has_symbolic = true;
                     }
                     let byte = page.load_concrete(offset, 1);
-                    bytes.push(byte.get(0).copied().unwrap_or(0));
+                    bytes.push(byte.first().copied().unwrap_or(0));
                 } else {
                     return Err(MemoryError::Unmapped {
-                        addr: byte_addr,
+                        addr: byte_addr.raw(),
                         size: 1,
                     });
                 }
@@ -280,13 +280,13 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.load_concrete_lazy(concrete_addr, size, ctx);
+            return self.load_concrete_lazy(Address(concrete_addr), size, ctx);
         }
 
         // Try to concretize the address (read mode: falls back to Any single solution)
         let base_value = match concretizer.concretize_read(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_lazy(concrete_addr, size, ctx)?
+                self.load_concrete_lazy(Address(concrete_addr), size, ctx)?
             }
             ConcretizationResult::Strided {
                 base,
@@ -330,11 +330,12 @@ impl SymbolicMemory {
     /// The loaded value, or a fresh unconstrained symbolic value if unmapped.
     pub fn load_concrete_or_unconstrained(
         &self,
-        addr: u64,
+        addr: impl Into<Address>,
         size: u32,
         ctx: &SymContext,
         counter: &mut u64,
     ) -> RustBV {
+        let addr = addr.into();
         match self.load_concrete_lazy(addr, size, ctx) {
             Ok(value) => value,
             Err(_) => {
@@ -343,7 +344,11 @@ impl SymbolicMemory {
                 } else {
                     // Generate a unique name for the unconstrained memory read
                     *counter += 1;
-                    RustBV::symbolic(ctx, format!("unc_mem_{:x}_{}", addr, counter), size * 8)
+                    RustBV::symbolic(
+                        ctx,
+                        format!("unc_mem_{:x}_{}", addr.raw(), counter),
+                        size * 8,
+                    )
                 }
             }
         }
@@ -380,13 +385,13 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.load_concrete_automap(concrete_addr, size, ctx);
+            return self.load_concrete_automap(Address(concrete_addr), size, ctx);
         }
 
         // Try to concretize the address (read mode: falls back to Any single solution)
         let base_value = match concretizer.concretize_read(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_automap(concrete_addr, size, ctx)?
+                self.load_concrete_automap(Address(concrete_addr), size, ctx)?
             }
             ConcretizationResult::Multiple(addrs) => {
                 let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
@@ -452,10 +457,11 @@ impl SymbolicMemory {
     /// don't involve Python state, use `load_concrete_automap_internal`.
     pub fn load_concrete_automap(
         &mut self,
-        addr: u64,
+        addr: impl Into<Address>,
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        let addr = addr.into();
         let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
         Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
@@ -467,10 +473,11 @@ impl SymbolicMemory {
     /// errors so Python can provide correct backer data.
     pub fn load_concrete_automap_internal(
         &mut self,
-        addr: u64,
+        addr: impl Into<Address>,
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        let addr = addr.into();
         // First try normal load
         let base = match self.load_concrete_lazy_inner(addr, size, ctx) {
             Ok(v) => v,
@@ -489,7 +496,7 @@ impl SymbolicMemory {
     /// Returns the value with ITE chains for any matching pending writes.
     pub(super) fn apply_pending_writes_concrete(
         &self,
-        _addr: u64,
+        _addr: Address,
         _size: u32,
         base_value: RustBV,
         _ctx: &SymContext,
@@ -521,10 +528,11 @@ impl SymbolicMemory {
     /// - Totally unmapped memory (error)
     pub fn load_concrete_lazy(
         &self,
-        addr: u64,
+        addr: impl Into<Address>,
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        let addr = addr.into();
         let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
         Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
@@ -532,7 +540,7 @@ impl SymbolicMemory {
     /// Internal implementation of load_concrete_lazy.
     pub(super) fn load_concrete_lazy_inner(
         &self,
-        addr: u64,
+        addr: Address,
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
@@ -545,8 +553,8 @@ impl SymbolicMemory {
         if !self.multi_objects.is_empty()
             && (0..size as u64).any(|i| self.multi_objects.contains_key(&(addr + i)))
         {
-            let start_page = addr >> 12;
-            let end_page = (addr + size as u64 - 1) >> 12;
+            let start_page = addr.page_num();
+            let end_page = (addr.raw() + size as u64 - 1) >> 12;
             self.check_perms_range(start_page, end_page, Permission::R)?;
             return self.assemble_load_with_multi(addr, size, ctx);
         }
@@ -558,8 +566,8 @@ impl SymbolicMemory {
             }
         }
 
-        let start_page = addr >> 12;
-        let end_page = (addr + size as u64 - 1) >> 12;
+        let start_page = addr.page_num();
+        let end_page = (addr.raw() + size as u64 - 1) >> 12;
 
         self.check_perms_range(start_page, end_page, Permission::R)?;
 
@@ -583,7 +591,7 @@ impl SymbolicMemory {
                     }
                 }
             };
-            let offset = (addr & PAGE_MASK) as u16;
+            let offset = addr.page_offset();
             bytes = page.load_concrete(offset, size as u16);
             for i in 0..size as u16 {
                 if page.is_symbolic(offset + i) {
@@ -596,26 +604,24 @@ impl SymbolicMemory {
             bytes = Vec::with_capacity(size as usize);
             for i in 0..size {
                 let byte_addr = addr + i as u64;
-                let page_num = byte_addr >> 12;
-                let offset = (byte_addr & PAGE_MASK) as u16;
+                let page_num = byte_addr.page_num();
+                let offset = byte_addr.page_offset();
 
                 if let Some(page) = self.pages.get(&page_num) {
                     if page.is_symbolic(offset) {
                         has_symbolic = true;
                     }
                     let byte = page.load_concrete(offset, 1);
-                    bytes.push(byte.get(0).copied().unwrap_or(0));
+                    bytes.push(byte.first().copied().unwrap_or(0));
+                } else if self.is_in_lazy_region(page_num) {
+                    return Err(MemoryError::UnmappedPageInRegion {
+                        page_addr: page_num << 12,
+                    });
                 } else {
-                    if self.is_in_lazy_region(page_num) {
-                        return Err(MemoryError::UnmappedPageInRegion {
-                            page_addr: page_num << 12,
-                        });
-                    } else {
-                        return Err(MemoryError::Unmapped {
-                            addr: byte_addr,
-                            size: 1,
-                        });
-                    }
+                    return Err(MemoryError::Unmapped {
+                        addr: byte_addr.raw(),
+                        size: 1,
+                    });
                 }
             }
         }
@@ -719,7 +725,7 @@ impl SymbolicMemory {
     /// usual `MemoryError`.
     pub(super) fn assemble_load_with_multi(
         &self,
-        addr: u64,
+        addr: Address,
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
@@ -756,8 +762,8 @@ impl SymbolicMemory {
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {
             let byte_addr = addr + i as u64;
-            let page_num = byte_addr >> 12;
-            let offset = (byte_addr & PAGE_MASK) as u16;
+            let page_num = byte_addr.page_num();
+            let offset = byte_addr.page_offset();
             let page = match self.pages.get(&page_num) {
                 Some(p) => p,
                 None => {
@@ -767,7 +773,7 @@ impl SymbolicMemory {
                         });
                     } else {
                         return Err(MemoryError::Unmapped {
-                            addr: byte_addr,
+                            addr: byte_addr.raw(),
                             size: 1,
                         });
                     }
@@ -779,11 +785,7 @@ impl SymbolicMemory {
                 // right-folded ITE keyed on the page's concrete default byte.
                 // Cache hits skip the alt-by-alt Z3 ITE build, eliminating
                 // the per-load cost that gated Phase 2.
-                let concrete_byte = page
-                    .load_concrete(offset, 1)
-                    .first()
-                    .copied()
-                    .unwrap_or(0);
+                let concrete_byte = page.load_concrete(offset, 1).first().copied().unwrap_or(0);
                 let depth = payload.len() as u32;
                 total_ite_depth = total_ite_depth.saturating_add(depth);
                 crate::symbolic::record_mem_ite_depth(depth);
@@ -795,9 +797,7 @@ impl SymbolicMemory {
                             description: "symbolic byte lane out of range".to_string(),
                         }
                     })?
-                } else if let Some(&(base_addr, base_width)) =
-                    self.symbolic_spans.get(&byte_addr)
-                {
+                } else if let Some(&(base_addr, base_width)) = self.symbolic_spans.get(&byte_addr) {
                     let sym = self.symbolic_objects.get(&base_addr).ok_or(
                         MemoryError::SymbolicAddress {
                             description: "stale symbolic span".to_string(),
@@ -871,7 +871,7 @@ impl SymbolicMemory {
     ///
     /// Returns the byte-merged bitvector, or `None` if a fully-symbolic
     /// reconstruction was not possible.
-    fn try_byte_merge_load(&self, addr: u64, size: u32, ctx: &SymContext) -> Option<RustBV> {
+    fn try_byte_merge_load(&self, addr: Address, size: u32, ctx: &SymContext) -> Option<RustBV> {
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {
             let byte_addr = addr + i as u64;
