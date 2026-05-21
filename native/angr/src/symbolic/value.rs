@@ -439,6 +439,98 @@ pub enum RustBV {
     },
 }
 
+/// Generate a borrow + consuming comparison pair for an unsigned ordering
+/// operator (Ult/Ule/Ugt/Uge).
+///
+/// Entry shape:
+///   `name: into_name, BVOp::Variant, concrete_op, doc;
+///    zext_fwd: ZExtCmp::Variant, zext_swap: ZExtCmp::Variant`
+///
+/// The concrete branch evaluates `if a $cmp b { 1 } else { 0 }` on the raw
+/// `u128` representations. The symbolic branch tries the bidirectional
+/// `try_zext_const_cmp_fold` shortcut (angr-g7nq pattern (b)) before falling
+/// through to a generic `Expression` node.
+macro_rules! define_unsigned_cmp_pair {
+    (
+        $name:ident, $into_name:ident, $op:expr, $cmp:tt,
+        $doc_borrow:literal, $doc_consume:literal,
+        $zext_fwd:expr, $zext_swap:expr
+    ) => {
+        #[doc = $doc_borrow]
+        #[inline]
+        pub fn $name(&self, other: &Self, ctx: &SymContext) -> Self {
+            self.clone().$into_name(other.clone(), ctx)
+        }
+
+        #[doc = $doc_consume]
+        #[inline]
+        pub fn $into_name(self, other: Self, ctx: &SymContext) -> Self {
+            debug_assert_eq!(self.width(), other.width());
+            match (self.as_u128(), other.as_u128()) {
+                (Some(a), Some(b)) => Self::concrete(if a $cmp b { 1 } else { 0 }, 1),
+                _ => {
+                    if let Some(folded) =
+                        try_zext_const_cmp_fold(&self, &other, $zext_fwd, ctx)
+                    {
+                        return folded;
+                    }
+                    if let Some(folded) =
+                        try_zext_const_cmp_fold(&other, &self, $zext_swap, ctx)
+                    {
+                        return folded;
+                    }
+                    RustBV::Expression {
+                        id: Self::EXPRESSION_ID,
+                        width: 1,
+                        op: $op,
+                        operands: Arc::<[RustBV]>::from([self, other]),
+                    }
+                }
+            }
+        }
+    };
+}
+
+/// Generate a borrow + consuming comparison pair for a signed ordering
+/// operator (Slt/Sle/Sgt/Sge).
+///
+/// Entry shape: `name: into_name, BVOp::Variant, signed_op, doc`.
+///
+/// The concrete branch sign-extends both operands to `i128` (via the module-
+/// level `sign_extend` helper) before applying the operator. No zext-fold
+/// shortcut — that path is unsigned-only.
+macro_rules! define_signed_cmp_pair {
+    (
+        $name:ident, $into_name:ident, $op:expr, $cmp:tt,
+        $doc_borrow:literal, $doc_consume:literal
+    ) => {
+        #[doc = $doc_borrow]
+        #[inline]
+        pub fn $name(&self, other: &Self, ctx: &SymContext) -> Self {
+            self.clone().$into_name(other.clone(), ctx)
+        }
+
+        #[doc = $doc_consume]
+        #[inline]
+        pub fn $into_name(self, other: Self, _ctx: &SymContext) -> Self {
+            debug_assert_eq!(self.width(), other.width());
+            match (self.as_u128(), other.as_u128()) {
+                (Some(a), Some(b)) => {
+                    let a_signed = sign_extend(a, self.width());
+                    let b_signed = sign_extend(b, self.width());
+                    Self::concrete(if a_signed $cmp b_signed { 1 } else { 0 }, 1)
+                }
+                _ => RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width: 1,
+                    op: $op,
+                    operands: Arc::<[RustBV]>::from([self, other]),
+                },
+            }
+        }
+    };
+}
+
 impl RustBV {
     /// Sentinel ID for expression results (not real symbolic variables).
     /// Using u64::MAX avoids allocating new IDs for every intermediate operation.
@@ -1371,237 +1463,58 @@ impl RustBV {
         }
     }
 
-    /// Unsigned less-than comparison.
-    #[inline]
-    pub fn ult(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().ult_into(other.clone(), ctx)
-    }
+    // Unsigned ordering comparisons. `Ult` direction matters for the
+    // `try_zext_const_cmp_fold` shortcut: high-bit-nonzero const → different
+    // trivial answers for `Ult(zext, const)` vs `Ult(const, zext)`. `Ugt(a,b)
+    // == Ult(b,a)`, so the forward zext arg is the swapped variant. Symmetric
+    // story for Ule/Uge.
+    define_unsigned_cmp_pair!(
+        ult, ult_into, BVOp::Ult, <,
+        "Unsigned less-than comparison.",
+        "Unsigned less-than, consuming both arguments.",
+        ZExtCmp::Ult, ZExtCmp::UltSwapped
+    );
+    define_unsigned_cmp_pair!(
+        ule, ule_into, BVOp::Ule, <=,
+        "Unsigned less-than-or-equal comparison.",
+        "Unsigned less-than-or-equal, consuming both arguments.",
+        ZExtCmp::Ule, ZExtCmp::UleSwapped
+    );
+    define_unsigned_cmp_pair!(
+        ugt, ugt_into, BVOp::Ugt, >,
+        "Unsigned greater-than comparison.",
+        "Unsigned greater-than, consuming both arguments.",
+        ZExtCmp::UltSwapped, ZExtCmp::Ult
+    );
+    define_unsigned_cmp_pair!(
+        uge, uge_into, BVOp::Uge, >=,
+        "Unsigned greater-than-or-equal comparison.",
+        "Unsigned greater-than-or-equal, consuming both arguments.",
+        ZExtCmp::UleSwapped, ZExtCmp::Ule
+    );
 
-    /// Unsigned less-than, consuming both arguments.
-    #[inline]
-    pub fn ult_into(self, other: Self, ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(if a < b { 1 } else { 0 }, 1),
-            _ => {
-                // angr-g7nq pattern (b) for unsigned compare. Direction matters
-                // here — `Ult(zext, const)` and `Ult(const, zext)` resolve to
-                // different trivial answers when the high bits of const are set.
-                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ult, ctx) {
-                    return folded;
-                }
-                if let Some(folded) =
-                    try_zext_const_cmp_fold(&other, &self, ZExtCmp::UltSwapped, ctx)
-                {
-                    return folded;
-                }
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: 1,
-                    op: BVOp::Ult,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
-            }
-        }
-    }
-
-    /// Unsigned less-than-or-equal comparison.
-    #[inline]
-    pub fn ule(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().ule_into(other.clone(), ctx)
-    }
-
-    /// Unsigned less-than-or-equal, consuming both arguments.
-    #[inline]
-    pub fn ule_into(self, other: Self, ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(if a <= b { 1 } else { 0 }, 1),
-            _ => {
-                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ule, ctx) {
-                    return folded;
-                }
-                if let Some(folded) =
-                    try_zext_const_cmp_fold(&other, &self, ZExtCmp::UleSwapped, ctx)
-                {
-                    return folded;
-                }
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: 1,
-                    op: BVOp::Ule,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
-            }
-        }
-    }
-
-    /// Unsigned greater-than comparison.
-    #[inline]
-    pub fn ugt(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().ugt_into(other.clone(), ctx)
-    }
-
-    /// Unsigned greater-than, consuming both arguments.
-    #[inline]
-    pub fn ugt_into(self, other: Self, ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(if a > b { 1 } else { 0 }, 1),
-            _ => {
-                // `Ugt(a, b) == Ult(b, a)`. Forward direction reuses UltSwapped
-                // when zext appears on the left (a-as-zext, b-as-const), since
-                // `a > b` with a being zext-shape and b being const has the
-                // same trivial answers as `b < a`.
-                if let Some(folded) =
-                    try_zext_const_cmp_fold(&self, &other, ZExtCmp::UltSwapped, ctx)
-                {
-                    return folded;
-                }
-                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ult, ctx) {
-                    return folded;
-                }
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: 1,
-                    op: BVOp::Ugt,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
-            }
-        }
-    }
-
-    /// Unsigned greater-than-or-equal comparison.
-    #[inline]
-    pub fn uge(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().uge_into(other.clone(), ctx)
-    }
-
-    /// Unsigned greater-than-or-equal, consuming both arguments.
-    #[inline]
-    pub fn uge_into(self, other: Self, ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => Self::concrete(if a >= b { 1 } else { 0 }, 1),
-            _ => {
-                // `Uge(a, b) == Ule(b, a)`. Symmetric to `ugt_into`.
-                if let Some(folded) =
-                    try_zext_const_cmp_fold(&self, &other, ZExtCmp::UleSwapped, ctx)
-                {
-                    return folded;
-                }
-                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ule, ctx) {
-                    return folded;
-                }
-                RustBV::Expression {
-                    id: Self::EXPRESSION_ID,
-                    width: 1,
-                    op: BVOp::Uge,
-                    operands: Arc::<[RustBV]>::from([self, other]),
-                }
-            }
-        }
-    }
-
-    /// Signed less-than comparison.
-    #[inline]
-    pub fn slt(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().slt_into(other.clone(), ctx)
-    }
-
-    /// Signed less-than, consuming both arguments.
-    #[inline]
-    pub fn slt_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => {
-                let a_signed = sign_extend(a, self.width());
-                let b_signed = sign_extend(b, self.width());
-                Self::concrete(if a_signed < b_signed { 1 } else { 0 }, 1)
-            }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Slt,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
-        }
-    }
-
-    /// Signed less-than-or-equal comparison.
-    #[inline]
-    pub fn sle(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().sle_into(other.clone(), ctx)
-    }
-
-    /// Signed less-than-or-equal, consuming both arguments.
-    #[inline]
-    pub fn sle_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => {
-                let a_signed = sign_extend(a, self.width());
-                let b_signed = sign_extend(b, self.width());
-                Self::concrete(if a_signed <= b_signed { 1 } else { 0 }, 1)
-            }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Sle,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
-        }
-    }
-
-    /// Signed greater-than comparison.
-    #[inline]
-    pub fn sgt(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().sgt_into(other.clone(), ctx)
-    }
-
-    /// Signed greater-than, consuming both arguments.
-    #[inline]
-    pub fn sgt_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => {
-                let a_signed = sign_extend(a, self.width());
-                let b_signed = sign_extend(b, self.width());
-                Self::concrete(if a_signed > b_signed { 1 } else { 0 }, 1)
-            }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Sgt,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
-        }
-    }
-
-    /// Signed greater-than-or-equal comparison.
-    #[inline]
-    pub fn sge(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().sge_into(other.clone(), ctx)
-    }
-
-    /// Signed greater-than-or-equal, consuming both arguments.
-    #[inline]
-    pub fn sge_into(self, other: Self, _ctx: &SymContext) -> Self {
-        debug_assert_eq!(self.width(), other.width());
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => {
-                let a_signed = sign_extend(a, self.width());
-                let b_signed = sign_extend(b, self.width());
-                Self::concrete(if a_signed >= b_signed { 1 } else { 0 }, 1)
-            }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width: 1,
-                op: BVOp::Sge,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
-        }
-    }
+    // Signed ordering comparisons. Sign-extend both operands to i128 before
+    // applying the operator. No zext-const-cmp-fold (unsigned-only shortcut).
+    define_signed_cmp_pair!(
+        slt, slt_into, BVOp::Slt, <,
+        "Signed less-than comparison.",
+        "Signed less-than, consuming both arguments."
+    );
+    define_signed_cmp_pair!(
+        sle, sle_into, BVOp::Sle, <=,
+        "Signed less-than-or-equal comparison.",
+        "Signed less-than-or-equal, consuming both arguments."
+    );
+    define_signed_cmp_pair!(
+        sgt, sgt_into, BVOp::Sgt, >,
+        "Signed greater-than comparison.",
+        "Signed greater-than, consuming both arguments."
+    );
+    define_signed_cmp_pair!(
+        sge, sge_into, BVOp::Sge, >=,
+        "Signed greater-than-or-equal comparison.",
+        "Signed greater-than-or-equal, consuming both arguments."
+    );
 
     // =========================================================================
     // Conversion Operations
