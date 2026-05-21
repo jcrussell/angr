@@ -3807,4 +3807,172 @@ mod tests {
             NVARS,
         );
     }
+
+    // angr-rwzi: Validate SMT-LIB2 round-trip across a SEPARATE Z3 context.
+    // Same-thread/same-context worked in angr-9o4n.1 because constants in the
+    // shared context dedupe by (symbol, sort). The realistic save/restore path
+    // (different thread or different process) gets a fresh Z3_context, so the
+    // open question is whether name-based re-resolution (BV::new_const) in the
+    // new context binds to the same AST that `Z3_solver_from_string` creates.
+    //
+    // Discriminator: the constraint set forces x=11, y=7. If name interning
+    // works cross-context, the new model returns 11/7 via name lookup. If the
+    // re-declared const is disconnected from the parsed assertions,
+    // model.eval(.., model_completion=true) returns the Z3 default (0).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_smtlib2_cross_context_round_trip() {
+        use std::time::Instant;
+        use z3::ast::{Ast, BV};
+        use z3::{with_z3_context, Config, Context, Solver};
+
+        // -------- Build constraints in the default (original) context. --------
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "xctx_x_rwzi", 32);
+        let y = RustBV::symbolic(&ctx, "xctx_y_rwzi", 32);
+
+        let ten = RustBV::concrete(10, 32);
+        let twenty = RustBV::concrete(20, 32);
+        ctx.assume_true(&x.ugt(&ten, &ctx));
+        ctx.assume_true(&x.ult(&twenty, &ctx));
+
+        let y_high = y.extract(31, 16, &ctx);
+        let zero16 = RustBV::concrete(0, 16);
+        ctx.assume_true(&y_high.eq(&zero16, &ctx));
+
+        let x_low = x.extract(15, 0, &ctx);
+        let y_low = y.extract(15, 0, &ctx);
+        let combined = x_low.concat(&y_low, &ctx);
+        let target = RustBV::concrete(0x000B_0007, 32);
+        ctx.assume_true(&combined.eq(&target, &ctx));
+
+        assert!(ctx.is_sat());
+        let x_witness = ctx.eval(&x).expect("x evaluable");
+        let y_witness = ctx.eval(&y).expect("y evaluable");
+        assert_eq!(x_witness, 11);
+        assert_eq!(y_witness, 0x0000_0007);
+
+        // Record the original AST/ctx pointers so we can prove the new
+        // context's by-name lookup yields a DIFFERENT AST (i.e. is truly
+        // cross-context). Cast to `usize` here so we can move them across the
+        // `Send + Sync` bound of `with_z3_context` (Z3 raw pointers wrap
+        // `NonNull` which isn't `Send`).
+        let original_x_ast_usize = x.to_z3_ast().get_z3_ast().as_ptr() as usize;
+        let original_ctx_usize =
+            z3::Context::thread_local().get_z3_context().as_ptr() as usize;
+
+        let serialize_start = Instant::now();
+        let serialized = ctx.debug_solver_string();
+        let serialize_ns = serialize_start.elapsed().as_nanos() as u64;
+        let serialized_bytes = serialized.len();
+
+        // -------- Switch to a freshly-created Z3 context. --------
+        // `Context::new` allocates a separate `Z3_context`; `with_z3_context`
+        // swaps DEFAULT_CONTEXT for the closure body, so all subsequent
+        // `Solver::new`, `BV::new_const`, `from_string`, model eval, etc.
+        // resolve against the new context. The `Send + Sync` bound on the
+        // closure type prevents accidentally smuggling Z3 ASTs from the old
+        // context across the boundary; we only pass in plain `String`.
+        let cfg = Config::new();
+        let new_ctx = Context::new(&cfg);
+        let new_ctx_usize_for_assert = new_ctx.get_z3_context().as_ptr() as usize;
+
+        let (
+            new_sat,
+            new_x_val,
+            new_y_val,
+            new_x_ast_usize,
+            seen_ctx_usize,
+            deserialize_ns,
+            new_check_ns,
+        ) = with_z3_context(&new_ctx, || -> (bool, u64, u64, usize, usize, u64, u64) {
+            // Sanity: confirm we really are in a different context.
+            let in_closure_ctx_usize =
+                z3::Context::thread_local().get_z3_context().as_ptr() as usize;
+
+            let solver = Solver::new();
+            let deserialize_start = Instant::now();
+            solver.from_string(serialized.clone());
+            let deserialize_ns = deserialize_start.elapsed().as_nanos() as u64;
+
+            let check_start = Instant::now();
+            let sat = matches!(solver.check(), z3::SatResult::Sat);
+            let check_ns = check_start.elapsed().as_nanos() as u64;
+
+            // Re-resolve constants by NAME in the new context — this is the
+            // realistic save/restore path (consumer holds only names + sorts,
+            // not the original ASTs).
+            let x_new = BV::new_const("xctx_x_rwzi", 32);
+            let y_new = BV::new_const("xctx_y_rwzi", 32);
+            let x_new_ast_usize = x_new.get_z3_ast().as_ptr() as usize;
+
+            let model = solver.get_model().expect("sat solver must produce model");
+            let x_val = model
+                .eval(&x_new, true)
+                .and_then(|v| v.as_u64())
+                .expect("model must evaluate x_new");
+            let y_val = model
+                .eval(&y_new, true)
+                .and_then(|v| v.as_u64())
+                .expect("model must evaluate y_new");
+
+            (
+                sat,
+                x_val,
+                y_val,
+                x_new_ast_usize,
+                in_closure_ctx_usize,
+                deserialize_ns,
+                check_ns,
+            )
+        });
+
+        // -------- Verify we actually used a different context. --------
+        assert_ne!(
+            original_ctx_usize, new_ctx_usize_for_assert,
+            "test bug: new context pointer equals original; not testing cross-context"
+        );
+        assert_eq!(
+            seen_ctx_usize, new_ctx_usize_for_assert,
+            "with_z3_context did not actually swap the thread-local context"
+        );
+        // ASTs are per-context: the same-name BV in the new context must be a
+        // different `Z3_ast` pointer than the one in the original context.
+        assert_ne!(
+            original_x_ast_usize, new_x_ast_usize,
+            "test bug: cross-context BV::new_const returned an AST pointer \
+             identical to the original-context AST — contexts are not actually \
+             distinct"
+        );
+
+        // -------- The actual cross-context round-trip claims. --------
+        assert!(new_sat, "cross-context round-tripped solver must remain SAT");
+        assert_eq!(
+            new_x_val as u128, x_witness,
+            "cross-context model must give x=11 via name lookup; got {} \
+             (=0 would mean the by-name constant in the new context is \
+             disconnected from the parsed assertions)",
+            new_x_val
+        );
+        assert_eq!(
+            new_y_val as u128, y_witness,
+            "cross-context model must give y=7 via name lookup; got {}",
+            new_y_val
+        );
+
+        eprintln!(
+            "[angr-rwzi] SMT-LIB2 cross-context round-trip: {} bytes; \
+             to_string={}us from_string={}us check_sat={}us; \
+             original_ctx=0x{:x} new_ctx=0x{:x}; \
+             original_x_ast=0x{:x} new_x_ast=0x{:x}",
+            serialized_bytes,
+            serialize_ns / 1000,
+            deserialize_ns / 1000,
+            new_check_ns / 1000,
+            original_ctx_usize,
+            new_ctx_usize_for_assert,
+            original_x_ast_usize,
+            new_x_ast_usize,
+        );
+    }
 }
