@@ -969,6 +969,11 @@ class RustStateExportMixin:
         state.scratch.rust_parent_id = snapshot.parent_id
 
         self._restore_plugins_to_state(state, snapshot.state_id)
+        # Eval/min/max/satisfiable defer to the Rust solver — required because
+        # _apply_symbolic_constraints no longer pre-pins recovered symbols
+        # (pre-pinning was UNSAT-prone, see pre-pinning-dangerous memo).
+        # Idempotent: re-attach is a no-op via the _ATTACH_FLAG guard.
+        self._attach_rust_solver_fallback(state, snapshot.state_id)
         return state
 
     def _load_snapshot_registers(self, state: "angr.SimState", snapshot):
@@ -996,10 +1001,9 @@ class RustStateExportMixin:
                 if not symbolic_offsets:
                     continue
                 regions = self._find_contiguous_regions(symbolic_offsets)
-                sym_to_constrain = self._restore_symbolic_regions(
+                self._restore_symbolic_regions(
                     state, snapshot, page_addr, regions, arch,
                 )
-                self._apply_symbolic_constraints(state, snapshot.state_id, sym_to_constrain)
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: page failed to load. State
                 # memory at this page is left at its blank-state default,
@@ -1023,12 +1027,8 @@ class RustStateExportMixin:
         regions.append((start, end - start + 1))
         return regions
 
-    def _restore_symbolic_regions(self, state, snapshot, page_addr, regions, arch) -> list:
-        """Overwrite symbolic regions on a page with recovered or fresh symbols.
-
-        Returns a list of (sym_addr, size, ast) for downstream constraint sync.
-        """
-        sym_to_constrain = []
+    def _restore_symbolic_regions(self, state, snapshot, page_addr, regions, arch) -> None:
+        """Overwrite symbolic regions on a page with recovered or fresh symbols."""
         for offset, size in regions:
             sym_addr = page_addr + offset
             ast = self._recover_symbolic_ast(snapshot, sym_addr, size)
@@ -1039,8 +1039,6 @@ class RustStateExportMixin:
             state.memory.store(sym_addr, ast,
                                endness=arch.memory_endness,
                                inspect=False)
-            sym_to_constrain.append((sym_addr, size, ast))
-        return sym_to_constrain
 
     def _recover_symbolic_ast(self, snapshot, sym_addr: int, size: int):
         """Look up the original claripy AST for a symbolic byte at sym_addr.
@@ -1077,22 +1075,6 @@ class RustStateExportMixin:
         if hook_entry is not None and hook_entry[1] == size:
             return hook_entry[0]
         return None
-
-    def _apply_symbolic_constraints(self, state, state_id: int, sym_to_constrain: list):
-        """Pin recovered symbolic values to their concrete Rust evaluations."""
-        for sym_addr, size, ast in sym_to_constrain:
-            try:
-                concrete_bytes = self._rust_mgr.get_state_memory(state_id, sym_addr, size)
-                if concrete_bytes is None:
-                    continue
-                concrete_val = int.from_bytes(concrete_bytes, 'little')
-                state.solver.add(ast == claripy.BVV(concrete_val, size * 8))
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: per-symbol pin failed; the
-                # symbol is left unconstrained while concrete bytes for
-                # the address are still loaded by the page sync. The
-                # solver may pick a different value than what Rust held.
-                l.debug(f"Could not add constraint at 0x{sym_addr:x}: {e}")
 
     def _restore_plugins_to_state(self, state: "angr.SimState", state_id: int):
         """Restore plugins to an exported state from the initial state template.
