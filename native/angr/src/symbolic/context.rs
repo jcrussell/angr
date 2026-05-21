@@ -3639,4 +3639,172 @@ mod tests {
         assert!(stats.get("bvop_concat_count").copied().unwrap() >= base_cat + 1);
         assert!(stats.get("bvop_extract_count").copied().unwrap() >= base_ext + 1);
     }
+
+    // angr-9o4n.1: Constraint round-trip spike via Z3_solver_to_string /
+    // Z3_solver_from_string. Drives whether SMT-LIB2 is the right format for
+    // angr-9o4n state save/restore. See bead notes for measured numbers.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_smtlib2_constraint_round_trip() {
+        use std::time::Instant;
+        use z3::ast::Ast;
+
+        // Build a non-trivial constraint set: 32-bit BVs + Extract + Concat +
+        // multiple assertions. Names are uniquified so we don't collide with
+        // any other test in the same Z3 thread-local context.
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "rt_x_9o4n", 32);
+        let y = RustBV::symbolic(&ctx, "rt_y_9o4n", 32);
+
+        // 10 < x < 20 (unsigned)
+        let ten = RustBV::concrete(10, 32);
+        let twenty = RustBV::concrete(20, 32);
+        ctx.assume_true(&x.ugt(&ten, &ctx));
+        ctx.assume_true(&x.ult(&twenty, &ctx));
+
+        // Extract: high 16 bits of y are zero.
+        let y_high = y.extract(31, 16, &ctx);
+        let zero16 = RustBV::concrete(0, 16);
+        ctx.assume_true(&y_high.eq(&zero16, &ctx));
+
+        // Concat: low(x,16) ++ low(y,16) == 0x000B_0007 (x=11 satisfies low(x,16)=0x000B;
+        // y_low=0x0007 satisfies the concat).
+        let x_low = x.extract(15, 0, &ctx);
+        let y_low = y.extract(15, 0, &ctx);
+        let combined = x_low.concat(&y_low, &ctx);
+        let target = RustBV::concrete(0x000B_0007, 32);
+        ctx.assume_true(&combined.eq(&target, &ctx));
+
+        // Sanity: original is SAT and the witness values fall in expected ranges.
+        let original_sat = ctx.is_sat();
+        assert!(original_sat, "constraint set should be sat");
+        let x_witness = ctx.eval(&x).expect("x evaluable");
+        let y_witness = ctx.eval(&y).expect("y evaluable");
+        assert_eq!(x_witness, 11, "x must be 11 (the only value with 10<x<20 whose low 16 bits = 0x000B)");
+        assert_eq!(y_witness, 0x0000_0007, "y_high=0, y_low=0x0007");
+
+        // Step 1: Serialize via Solver::to_string (SMT-LIB2 S-expression).
+        let serialize_start = Instant::now();
+        let serialized = ctx.debug_solver_string();
+        let serialize_ns = serialize_start.elapsed().as_nanos() as u64;
+        let serialized_bytes = serialized.len();
+        assert!(!serialized.is_empty(), "serialized SMT-LIB2 must be non-empty");
+
+        // Step 2: Parse into a fresh z3::Solver (shares the thread-local Z3
+        // context, but is a logically independent solver). Constants declared
+        // by name in the SMT-LIB2 string re-resolve to the SAME Z3 ASTs as the
+        // originals because Z3 interns named constants in the context.
+        let deserialize_start = Instant::now();
+        let new_solver = z3::Solver::new();
+        new_solver.from_string(serialized.clone());
+        let deserialize_ns = deserialize_start.elapsed().as_nanos() as u64;
+
+        // Step 3a: check_sat matches.
+        let new_check_start = Instant::now();
+        let new_sat = matches!(new_solver.check(), z3::SatResult::Sat);
+        let new_check_ns = new_check_start.elapsed().as_nanos() as u64;
+        assert_eq!(new_sat, original_sat, "round-tripped solver sat-result must match");
+
+        // Step 3b: model values for x, y match the original witness (the
+        // constraint set is restrictive enough that x=11, y_low=7 are forced).
+        let new_model = new_solver.get_model().expect("sat solver must produce model");
+        let new_x_val = new_model
+            .eval(&x.to_z3_ast(), true)
+            .and_then(|bv| bv.as_u64())
+            .expect("model should evaluate x");
+        let new_y_val = new_model
+            .eval(&y.to_z3_ast(), true)
+            .and_then(|bv| bv.as_u64())
+            .expect("model should evaluate y");
+        assert_eq!(new_x_val as u128, x_witness, "round-tripped x model value must match");
+        assert_eq!(new_y_val as u128, y_witness, "round-tripped y model value must match");
+
+        // Step 4: report measurements. Captured by `cargo test -- --nocapture`
+        // or `cargo test test_smtlib2_constraint_round_trip -- --nocapture`,
+        // and pasted into the bead notes.
+        eprintln!(
+            "[angr-9o4n.1] SMT-LIB2 round-trip (small): {} bytes; \
+             to_string={}us from_string={}us check_sat={}us; \
+             5 assertions, 2 32-bit BV vars (Extract+Concat).",
+            serialized_bytes,
+            serialize_ns / 1000,
+            deserialize_ns / 1000,
+            new_check_ns / 1000,
+        );
+    }
+
+    // angr-9o4n.1: scaling check. Mid-sized constraint set (~100 assertions,
+    // 32 BV vars) to give a sense of cost as exploration state grows.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_smtlib2_constraint_round_trip_scaled() {
+        use std::time::Instant;
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new();
+        const NVARS: usize = 32;
+        let vars: Vec<RustBV> = (0..NVARS)
+            .map(|i| RustBV::symbolic(&ctx, &format!("rt_scaled_x{}_9o4n", i), 32))
+            .collect();
+
+        // For each var: low(x) > i, low(x) < i+100 — gives a range constraint.
+        // Then chain pairs: vars[i] != vars[i+1] for i in 0..NVARS-1.
+        for (i, v) in vars.iter().enumerate() {
+            let lo = RustBV::concrete(i as u128, 32);
+            let hi = RustBV::concrete((i + 100) as u128, 32);
+            ctx.assume_true(&v.ugt(&lo, &ctx));
+            ctx.assume_true(&v.ult(&hi, &ctx));
+        }
+        for w in vars.windows(2) {
+            let neq = w[0].eq(&w[1], &ctx);
+            ctx.assume_false(&neq);
+        }
+
+        let original_sat = ctx.is_sat();
+        assert!(original_sat, "scaled constraint set should be sat");
+
+        let serialize_start = Instant::now();
+        let serialized = ctx.debug_solver_string();
+        let serialize_ns = serialize_start.elapsed().as_nanos() as u64;
+        let serialized_bytes = serialized.len();
+
+        let deserialize_start = Instant::now();
+        let new_solver = z3::Solver::new();
+        new_solver.from_string(serialized.clone());
+        let deserialize_ns = deserialize_start.elapsed().as_nanos() as u64;
+
+        let new_check_start = Instant::now();
+        let new_sat = matches!(new_solver.check(), z3::SatResult::Sat);
+        let new_check_ns = new_check_start.elapsed().as_nanos() as u64;
+        assert_eq!(new_sat, original_sat);
+
+        // Spot-check one variable's model value carries across.
+        let original_v0 = ctx.eval(&vars[0]).expect("v0 evaluable");
+        let new_model = new_solver.get_model().expect("sat solver must produce model");
+        let new_v0 = new_model
+            .eval(&vars[0].to_z3_ast(), true)
+            .and_then(|bv| bv.as_u64())
+            .expect("model should evaluate v0");
+        // Note: models from independent solver checks need not be identical.
+        // We assert that the new model also satisfies the constraint (0 < v0 < 100).
+        assert!(
+            new_v0 > 0 && new_v0 < 100,
+            "new model v0={} must satisfy 0 < v0 < 100; original was {}",
+            new_v0,
+            original_v0,
+        );
+
+        let n_assertions = NVARS * 2 + (NVARS - 1);
+        eprintln!(
+            "[angr-9o4n.1] SMT-LIB2 round-trip (scaled): {} bytes; \
+             to_string={}us from_string={}us check_sat={}us; \
+             {} assertions, {} 32-bit BV vars.",
+            serialized_bytes,
+            serialize_ns / 1000,
+            deserialize_ns / 1000,
+            new_check_ns / 1000,
+            n_assertions,
+            NVARS,
+        );
+    }
 }
