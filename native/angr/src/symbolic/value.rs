@@ -639,6 +639,54 @@ impl RustBV {
     // Arithmetic Operations
     // =========================================================================
 
+    /// Canonical sort key for commutative-operand ordering (angr-kkpr).
+    ///
+    /// Z3's mk_bv* hash-cons by AST identity, but `mk_bvadd(x, y)` and
+    /// `mk_bvadd(y, x)` produce DIFFERENT Z3 AST nodes — Z3's preprocessing
+    /// tactics canonicalize commutative arg order only on the formulas given
+    /// to the solver, not on intermediate ASTs used as branch conditions,
+    /// register values, etc. Sorting operands by this key at construction
+    /// time so two callers that build the same commutative op in opposite
+    /// orders produce the same RustBV (and therefore the same Z3 AST).
+    ///
+    /// Ordering (low → high):
+    ///   0: Symbolic    (variables — most "primary")
+    ///   1: Constrained
+    ///   2: Expression  (subtrees with sub-key from operand-Arc pointer)
+    ///   3: Concrete    (constants always end up on the right)
+    ///
+    /// The Expression sub-key uses the operand-Arc pointer for cheap
+    /// within-run determinism. Two structurally-equal Expressions with
+    /// distinct Arc allocations sort differently, but Z3 still merges
+    /// their ASTs via its own hash-cons at to_z3_ast time, so this does
+    /// not weaken Z3-side dedup. The key is not stable across process
+    /// runs — that is intentional: RustBVs don't survive across runs.
+    #[inline]
+    fn canonical_sort_key(&self) -> (u8, u128) {
+        match self {
+            RustBV::Symbolic { id, .. } => (0, *id as u128),
+            RustBV::Constrained { id, .. } => (1, *id as u128),
+            RustBV::Expression { operands, .. } => {
+                (2, Arc::as_ptr(operands) as *const () as usize as u128)
+            }
+            RustBV::Concrete { value, .. } => (3, *value),
+        }
+    }
+
+    /// Sort a commutative operand pair into canonical order.
+    ///
+    /// Call only after constant-folding short-circuits (e.g. `x + 0 → x`,
+    /// `x & all_ones → x`); those rely on the original `(self, other)`
+    /// argument order to fire.
+    #[inline]
+    fn canonicalize_commutative(self, other: Self) -> (Self, Self) {
+        if self.canonical_sort_key() <= other.canonical_sort_key() {
+            (self, other)
+        } else {
+            (other, self)
+        }
+    }
+
     /// Add two bitvectors.
     #[inline]
     pub fn add(&self, other: &Self, ctx: &SymContext) -> Self {
@@ -661,11 +709,12 @@ impl RustBV {
             (Some(0), None) => other,
             _ => {
                 let width = self.width();
+                let (lhs, rhs) = self.canonicalize_commutative(other);
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Add,
-                    operands: Arc::<[RustBV]>::from([self, other]),
+                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
                 }
             }
         }
@@ -728,12 +777,15 @@ impl RustBV {
                 let amt = Self::concrete(k as u128, width);
                 other.shl_into(amt, _ctx)
             }
-            _ => RustBV::Expression {
-                id: Self::EXPRESSION_ID,
-                width,
-                op: BVOp::Mul,
-                operands: Arc::<[RustBV]>::from([self, other]),
-            },
+            _ => {
+                let (lhs, rhs) = self.canonicalize_commutative(other);
+                RustBV::Expression {
+                    id: Self::EXPRESSION_ID,
+                    width,
+                    op: BVOp::Mul,
+                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
+                }
+            }
         }
     }
 
@@ -917,11 +969,12 @@ impl RustBV {
             (Some(v), None) if v == all_ones => other,
             _ => {
                 let width = self.width();
+                let (lhs, rhs) = self.canonicalize_commutative(other);
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::And,
-                    operands: Arc::<[RustBV]>::from([self, other]),
+                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
                 }
             }
         }
@@ -948,11 +1001,12 @@ impl RustBV {
             (Some(v), _) if v == all_ones => Self::ones(self.width()),
             _ => {
                 let width = self.width();
+                let (lhs, rhs) = self.canonicalize_commutative(other);
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Or,
-                    operands: Arc::<[RustBV]>::from([self, other]),
+                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
                 }
             }
         }
@@ -975,11 +1029,12 @@ impl RustBV {
             (Some(0), None) => other,
             _ => {
                 let width = self.width();
+                let (lhs, rhs) = self.canonicalize_commutative(other);
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width,
                     op: BVOp::Xor,
-                    operands: Arc::<[RustBV]>::from([self, other]),
+                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
                 }
             }
         }
@@ -1273,11 +1328,12 @@ impl RustBV {
                 if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Eq, ctx) {
                     return folded;
                 }
+                let (lhs, rhs) = self.canonicalize_commutative(other);
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width: 1,
                     op: BVOp::Eq,
-                    operands: Arc::<[RustBV]>::from([self, other]),
+                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
                 }
             }
         }
@@ -1304,11 +1360,12 @@ impl RustBV {
                 if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ne, ctx) {
                     return folded;
                 }
+                let (lhs, rhs) = self.canonicalize_commutative(other);
                 RustBV::Expression {
                     id: Self::EXPRESSION_ID,
                     width: 1,
                     op: BVOp::Ne,
-                    operands: Arc::<[RustBV]>::from([self, other]),
+                    operands: Arc::<[RustBV]>::from([lhs, rhs]),
                 }
             }
         }
@@ -4493,18 +4550,69 @@ mod tests {
         let q1_ptr = q1.to_z3_ast().get_z3_ast().as_ptr();
         let q2_ptr = q2.to_z3_ast().get_z3_ast().as_ptr();
         assert_eq!(q1_ptr, q2_ptr, "Z3 should canonicalize mul(add(x,5),y)");
+    }
 
-        // BUT: Z3 does NOT canonicalize commutative operand order at
-        // construction. add(x,y) and add(y,x) are distinct AST nodes.
-        // (Z3 only collapses them after a normalization pass.)
+    /// Regression guard for angr-kkpr (2026-05-21):
+    /// RustBV constructors for commutative ops (add/mul/and/or/xor/eq/ne)
+    /// canonicalize operand order via `canonical_sort_key`. After this fix,
+    /// `add(x, y)` and `add(y, x)` produce the SAME RustBV (and therefore
+    /// the same Z3 AST). Z3 itself does NOT normalize commutative arg order
+    /// at mk_bv* time — preprocessing tactics do, but only on assertions —
+    /// so the canonicalization happens on the Rust side at construction.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn commutative_ops_canonicalize_operand_order() {
+        use z3::ast::Ast as Z3AstTrait;
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic_with_id(3001, "x_kkpr", 32);
+        let y = RustBV::symbolic_with_id(3002, "y_kkpr", 32);
+        let c = RustBV::concrete(7, 32);
+
+        // add(x, y) and add(y, x) → same RustBV → same Z3 AST.
         let r1 = x.clone().add_into(y.clone(), &ctx);
         let r2 = y.clone().add_into(x.clone(), &ctx);
-        let r1_ptr = r1.to_z3_ast().get_z3_ast().as_ptr();
-        let r2_ptr = r2.to_z3_ast().get_z3_ast().as_ptr();
-        assert_ne!(
-            r1_ptr, r2_ptr,
-            "Z3 should not canonicalize commutative argument order at construction \
-             (this is the one place where RustBV-side canonicalization could help)"
+        assert_eq!(
+            r1.to_z3_ast().get_z3_ast().as_ptr(),
+            r2.to_z3_ast().get_z3_ast().as_ptr(),
+            "add(x,y) and add(y,x) should canonicalize to the same Z3 AST"
         );
+
+        // add(x, c) and add(c, x) → same RustBV → same Z3 AST.
+        // (concrete should sort to the right, so both become add(x, c).)
+        let r3 = x.clone().add_into(c.clone(), &ctx);
+        let r4 = c.clone().add_into(x.clone(), &ctx);
+        assert_eq!(
+            r3.to_z3_ast().get_z3_ast().as_ptr(),
+            r4.to_z3_ast().get_z3_ast().as_ptr(),
+            "add(x,c) and add(c,x) should canonicalize to the same Z3 AST"
+        );
+        // Verify concrete is in operand[1] after canonicalization.
+        match &r3 {
+            RustBV::Expression { operands, .. } => {
+                assert!(matches!(operands[1], RustBV::Concrete { .. }),
+                        "concrete should sort to the right of symbolic");
+            }
+            _ => panic!("expected Expression for add(x, c)"),
+        }
+
+        // Same property for mul / and / or / xor / eq / ne.
+        let cases: &[(&str, fn(RustBV, RustBV, &SymContext) -> RustBV)] = &[
+            ("mul", |a, b, c| a.mul_into(b, c)),
+            ("and", |a, b, c| a.and_into(b, c)),
+            ("or",  |a, b, c| a.or_into(b, c)),
+            ("xor", |a, b, c| a.xor_into(b, c)),
+            ("eq",  |a, b, c| a.eq_into(b, c)),
+            ("ne",  |a, b, c| a.ne_into(b, c)),
+        ];
+        for (name, build) in cases {
+            let lhs = build(x.clone(), y.clone(), &ctx);
+            let rhs = build(y.clone(), x.clone(), &ctx);
+            assert_eq!(
+                lhs.to_z3_ast().get_z3_ast().as_ptr(),
+                rhs.to_z3_ast().get_z3_ast().as_ptr(),
+                "{}(x,y) and {}(y,x) should canonicalize to the same Z3 AST",
+                name, name
+            );
+        }
     }
 }
