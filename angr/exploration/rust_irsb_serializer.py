@@ -200,7 +200,12 @@ def _serialize_stmt(stmt):
     if name == 'CAS':
         result['end'] = str(stmt.end) if hasattr(stmt, 'end') else "Iend_LE"
         result['oldLo'] = getattr(stmt, 'oldLo', 0)
-        result['oldHi'] = getattr(stmt, 'oldHi', None)
+        # Single-word CAS leaves oldHi=IRTemp_INVALID (0xFFFFFFFF) on the
+        # pyvex side; mirror libpyvex_ffi's convention by mapping the
+        # sentinel to None so the Rust bridge's all-Some/all-None DCAS
+        # validation accepts the converted shape.
+        old_hi = getattr(stmt, 'oldHi', None)
+        result['oldHi'] = None if old_hi == 0xFFFFFFFF else old_hi
         for f in ('addr', 'dataLo', 'dataHi', 'expdLo', 'expdHi'):
             if hasattr(stmt, f):
                 result[f] = _serialize_expr(getattr(stmt, f))

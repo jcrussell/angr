@@ -6017,6 +6017,177 @@ class TestErrorRecovery:
         assert mem_lo == 0xAAAAAAAAAAAAAAAA, f"mem_lo changed: 0x{mem_lo:x}"
         assert mem_hi == 0xBBBBBBBBBBBBBBBB, f"mem_hi changed: 0x{mem_hi:x}"
 
+    def test_lock_cmpxchg_qword_match_updates_memory(self):
+        """Single-word `LOCK CMPXCHG [mem], reg` lifts to a VEX `CAS` with
+        all of `oldHi`/`expdHi`/`dataHi` absent — the non-DCAS branch of
+        `execute_cas_stmt`. When RAX matches `[m64]`, the data is stored
+        and memory ends up holding the source register's value.
+
+        Locks down the angr-4enc fix to the IRSB serializer: pyvex reports
+        `oldHi=0xFFFFFFFF` (IRTemp_INVALID sentinel) for single-word CAS
+        and the Python-side JSON bridge has to map the sentinel to None
+        so the Rust validation accepts the all-Some/all-None shape.
+        Before the fix this test errored with "CAS: oldHi/expdHi/dataHi
+        must be all-Some (DCAS) or all-None (single)".
+        """
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # lock cmpxchg qword ptr [rdi], rcx  -> f0 48 0f b1 0f
+        # ret                                -> c3
+        shellcode = bytes.fromhex("f0480fb10fc3")
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rdi = 0x2000
+        state.memory.store(0x2000, claripy.BVV(0x1234, 64), endness="Iend_LE")
+        state.regs.rax = 0x1234  # matches [rdi]
+        state.regs.rcx = 0xDEADBEEFCAFEBABE  # new value to write on match
+        state.regs.rsp = 0x7FFFFE00
+        state.memory.store(0x7FFFFE00, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.enable_profiling()
+        mgr.run(max_steps=1)
+
+        # Block ran natively, the single-word CAS path fired exactly one
+        # store (no hi half).
+        assert mgr.stats["rust_step_count"] > 0
+        assert mgr.stats["dcas_unsupported_count"] == 0
+        assert mgr.stats["rust_store_stmt_count"] >= 1, (
+            f"single-word CAS should issue >=1 store on match; got "
+            f"{mgr.stats['rust_store_stmt_count']}"
+        )
+
+        survived = (
+            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
+        )
+        assert survived, "CMPXCHG block produced no survived state"
+        s = survived[0]
+        mem = s.solver.eval(s.memory.load(0x2000, 8, endness="Iend_LE"))
+        assert mem == 0xDEADBEEFCAFEBABE, f"mem not updated: 0x{mem:x}"
+
+    def test_lock_cmpxchg_qword_no_match_keeps_memory(self):
+        """Mismatch branch of the non-DCAS CAS path: when RAX does NOT
+        match `[m64]`, the store is suppressed and memory keeps its
+        original value. The CPU also writes the loaded value back to RAX
+        (so subsequent compares see the actual contents).
+        """
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        shellcode = bytes.fromhex("f0480fb10fc3")
+        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.rdi = 0x2000
+        state.memory.store(
+            0x2000, claripy.BVV(0xAAAAAAAAAAAAAAAA, 64), endness="Iend_LE"
+        )
+        state.regs.rax = 0x1234  # NO match (mem holds 0xAA...)
+        state.regs.rcx = 0xDEADBEEF
+        state.regs.rsp = 0x7FFFFE00
+        state.memory.store(0x7FFFFE00, b"\x00" * 8)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.enable_profiling()
+        mgr.run(max_steps=1)
+
+        assert mgr.stats["rust_step_count"] > 0
+        # cmp-false: zero CAS-driven stores.
+        assert mgr.stats["rust_store_stmt_count"] == 0, (
+            f"cmp-false single CAS should not store; got "
+            f"{mgr.stats['rust_store_stmt_count']}"
+        )
+
+        survived = (
+            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
+        )
+        assert survived, "CMPXCHG block produced no survived state"
+        s = survived[0]
+        # Memory is unchanged.
+        mem = s.solver.eval(s.memory.load(0x2000, 8, endness="Iend_LE"))
+        assert mem == 0xAAAAAAAAAAAAAAAA, f"mem changed: 0x{mem:x}"
+        # CPU semantics: on mismatch, RAX is loaded with current `[m64]`.
+        rax = s.solver.eval(s.regs.rax)
+        assert rax == 0xAAAAAAAAAAAAAAAA, f"rax not updated to loaded value: 0x{rax:x}"
+
+    def test_arm_ldrex_lifts_to_llsc_load_linked(self):
+        """ARM LDREX lifts to VEX `LLSC` with `storedata=None` — the
+        load-linked branch of the LLSC statement handler. The handler
+        synthesizes an `IRExpr::Load` from the address temp and writes
+        the loaded value into the result temp (which the lifted IR
+        then puts into the destination register).
+        """
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # ldrex r0, [r1]: 0xE1910F9F -> bytes LE: 9F 0F 91 E1
+        # bx lr        : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
+        shellcode = bytes.fromhex("9f0f91e11eff2fe1")
+        proj = angr.load_shellcode(shellcode, arch="ARM", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.r1 = 0x2000
+        state.memory.store(0x2000, claripy.BVV(0xDEADBEEF, 32), endness="Iend_LE")
+        state.regs.sp = 0x7FFFFE00
+        state.regs.lr = 0x9000
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.enable_profiling()
+        mgr.run(max_steps=2)
+
+        assert mgr.stats["rust_step_count"] > 0
+        survived = (
+            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
+        )
+        assert survived, "LDREX block produced no survived state"
+        s = survived[0]
+        r0 = s.solver.eval(s.regs.r0)
+        assert r0 == 0xDEADBEEF, f"r0 not loaded by LDREX: 0x{r0:x}"
+
+    def test_arm_strex_lifts_to_llsc_store_conditional(self):
+        """ARM STREX lifts to VEX `LLSC` with `storedata=Some(...)` —
+        the store-conditional branch of the LLSC statement handler.
+        In single-state symex the store always succeeds, so `[Rn]`
+        receives Rt's value. The lifted IR also writes the *inverted*
+        LLSC success bit into Rd (the status register), so a successful
+        STREX leaves Rd = 0.
+        """
+        import angr
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # strex r0, r2, [r1]: 0xE1810F92 -> bytes LE: 92 0F 81 E1
+        # bx lr             : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
+        shellcode = bytes.fromhex("920f81e11eff2fe1")
+        proj = angr.load_shellcode(shellcode, arch="ARM", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.r1 = 0x2000
+        state.regs.r2 = claripy.BVV(0xCAFEBABE, 32)
+        state.memory.store(0x2000, claripy.BVV(0xAAAAAAAA, 32), endness="Iend_LE")
+        state.regs.sp = 0x7FFFFE00
+        state.regs.lr = 0x9000
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.enable_profiling()
+        mgr.run(max_steps=2)
+
+        assert mgr.stats["rust_step_count"] > 0
+        survived = (
+            list(mgr.active) + list(mgr.found) + list(mgr.deadended) + list(mgr.unconstrained)
+        )
+        assert survived, "STREX block produced no survived state"
+        s = survived[0]
+        mem = s.solver.eval(s.memory.load(0x2000, 4, endness="Iend_LE"))
+        assert mem == 0xCAFEBABE, f"STREX did not store r2 to [r1]: 0x{mem:x}"
+        r0 = s.solver.eval(s.regs.r0)
+        assert r0 == 0, f"STREX success status (inverted LLSC bit) not 0: 0x{r0:x}"
+
     def test_unsat_state_pruned_during_step(self):
         """State with pre-existing contradictory constraints (x>100 AND x<50)
         must NOT remain in `active` after stepping. Locks down behaviour for
