@@ -251,6 +251,15 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fileops::NativeDup));
         registry.register(Arc::new(fileops::NativeDup2));
         registry.register(Arc::new(fileops::NativePipe));
+        // stdio file ops (angr-karp): allocate _IO_FILE structs and dispatch
+        // through the FILE._fileno field. fopen/fdopen heap-allocate, fclose/
+        // fseek/ftell/rewind read fileno back out.
+        registry.register(Arc::new(fileops::NativeFopen));
+        registry.register(Arc::new(fileops::NativeFdopen));
+        registry.register(Arc::new(fileops::NativeFclose));
+        registry.register(Arc::new(fileops::NativeFseek));
+        registry.register(Arc::new(fileops::NativeFtell));
+        registry.register(Arc::new(fileops::NativeRewind));
         // __libc_start_main: handles the after_main continuation by
         // deadending. Python init (rust_manager._step_python_to_main) covers
         // the entry/run path before Rust takes over, so the only invocation
