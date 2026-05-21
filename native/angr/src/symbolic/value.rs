@@ -4463,4 +4463,48 @@ mod tests {
             _ => panic!("expected narrowed Eq, got {:?}", r),
         }
     }
+
+    /// Regression guard for the angr-behq finding (2026-05-21):
+    /// Z3's AST hash-cons already de-dupes structurally-equal RustBV trees
+    /// at to_z3_ast time. Two structurally-equal Expression trees produce
+    /// the SAME Z3_ast pointer — so RustBV-level construction hash-cons
+    /// would NOT reduce Z3 AST node count for the to_z3_ast() output.
+    ///
+    /// If this test ever fails, the assumption that drove closing
+    /// angr-behq is broken and that bead should be re-opened.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn z3_already_dedupes_structurally_equal_rustbv_trees() {
+        use z3::ast::Ast as Z3AstTrait;
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic_with_id(2001, "x_behq", 32);
+        let y = RustBV::symbolic_with_id(2002, "y_behq", 32);
+
+        // Two structurally-identical add(x, 5) trees built independently.
+        let p1 = x.clone().add_into(RustBV::concrete(5, 32), &ctx);
+        let p2 = x.clone().add_into(RustBV::concrete(5, 32), &ctx);
+        let p1_ptr = p1.to_z3_ast().get_z3_ast().as_ptr();
+        let p2_ptr = p2.to_z3_ast().get_z3_ast().as_ptr();
+        assert_eq!(p1_ptr, p2_ptr, "Z3 should canonicalize add(x,5)");
+
+        // Two structurally-identical mul(add(x,5), y) trees, depth 2.
+        let q1 = p1.mul(&y, &ctx);
+        let q2 = p2.mul(&y, &ctx);
+        let q1_ptr = q1.to_z3_ast().get_z3_ast().as_ptr();
+        let q2_ptr = q2.to_z3_ast().get_z3_ast().as_ptr();
+        assert_eq!(q1_ptr, q2_ptr, "Z3 should canonicalize mul(add(x,5),y)");
+
+        // BUT: Z3 does NOT canonicalize commutative operand order at
+        // construction. add(x,y) and add(y,x) are distinct AST nodes.
+        // (Z3 only collapses them after a normalization pass.)
+        let r1 = x.clone().add_into(y.clone(), &ctx);
+        let r2 = y.clone().add_into(x.clone(), &ctx);
+        let r1_ptr = r1.to_z3_ast().get_z3_ast().as_ptr();
+        let r2_ptr = r2.to_z3_ast().get_z3_ast().as_ptr();
+        assert_ne!(
+            r1_ptr, r2_ptr,
+            "Z3 should not canonicalize commutative argument order at construction \
+             (this is the one place where RustBV-side canonicalization could help)"
+        );
+    }
 }
