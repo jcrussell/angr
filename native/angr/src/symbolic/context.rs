@@ -1386,13 +1386,43 @@ impl SymContext {
     }
 
     /// Batched fast path for `add_constraint_raw`: asserts N constraints under
-    /// one `local_constraints` lock, one `solver()` guard, and one model
-    /// invalidation pass. Each `(z3_ast_ptr, bv, is_true)` tuple corresponds
-    /// to the per-constraint metadata that the single-shot path stores in
-    /// `local_constraints.{z3_assertions, assumed}`.
+    /// one `local_constraints` lock, one solver/lineage transition, and one
+    /// model invalidation pass. Each `(z3_ast_ptr, bv, is_true)` tuple
+    /// corresponds to the per-constraint metadata that the single-shot path
+    /// stores in `local_constraints.{z3_assertions, assumed}`.
     ///
     /// SAFETY: every pointer must be a valid `Z3_ast` Bool in the active
     /// thread-local Z3 context (same precondition as `add_constraint_raw`).
+    ///
+    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2c; mirrors the
+    /// pattern landed in slice 4c.1 for [`Self::add_constraint`], slice 4c.2
+    /// for [`Self::add_constraint_raw`], and slice 4c.2b for
+    /// [`Self::add_constraint_tracked_indexed`]):
+    ///
+    /// - **None** (today's only production path): asserts all N constraints
+    ///   on the per-context Z3 solver under a single solver guard —
+    ///   byte-identical to the pre-slice `self.with_z3_solver(|s| { for c
+    ///   in &constraints { s.assert(c); } })` call.
+    /// - **Some** (shared-lineage): mints N fresh
+    ///   [`ScopeFrame`](super::lineage::ScopeFrame)s carrying clones of the
+    ///   constraints, appends them all to `self.scope_path` under one
+    ///   `scope_path.lock()` acquisition, snapshots the new path, drops the
+    ///   `scope_path` lock, and calls
+    ///   [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
+    ///   once. `switch_to`'s tail walks the divergent suffix (here, the N
+    ///   new frames) and asserts each one under the shared solver — N
+    ///   ref-bumps but only a single round-trip through the lineage Mutex.
+    ///   Cheaper than N separate `add_constraint_raw` calls would be
+    ///   (each of those is one lock + one switch_to call).
+    ///
+    /// Why not just route through `with_z3_solver` in the Some branch: same
+    /// rationale as [`Self::add_constraint`] — `with_z3_solver`'s Some path
+    /// switches to the caller's *current* `scope_path` and then asserts at
+    /// scope_path.len() (the most-recently-pushed level). For a freshly
+    /// forked state with empty `scope_path`, that is scope 0 = the lineage
+    /// base, so the N constraints would leak to all siblings. Mint-N-frames-
+    /// then-switch keeps every constraint inside its own fresh push that
+    /// only this state holds in its `scope_path`.
     #[cfg(feature = "vex-engine-z3")]
     pub unsafe fn add_constraints_raw_batch(
         &self,
@@ -1418,12 +1448,32 @@ impl SymContext {
             local.z3_assertions.extend(constraints.iter().cloned());
             local.assumed.extend(assumed);
         }
-        // Single solver guard for all assertions.
-        self.with_z3_solver(|solver| {
-            for c in &constraints {
-                solver.assert(c);
+        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        match lineage {
+            None => {
+                // Single solver guard for all assertions — byte-identical to
+                // the pre-slice with_z3_solver(|s| { for c { s.assert(c); }})
+                // call.
+                let solver = self.solver();
+                for c in &constraints {
+                    solver.assert(c);
+                }
             }
-        });
+            Some(lin) => {
+                // Mint N frames under one scope_path lock, snapshot, drop,
+                // then a single switch_to call walks the divergent suffix
+                // and asserts each new frame on the shared solver.
+                let path_snapshot = {
+                    let mut sp = self.scope_path.lock();
+                    for c in &constraints {
+                        sp.push(super::lineage::ScopeFrame::new(true, c.clone()));
+                    }
+                    sp.clone()
+                };
+                let mut guard = lin.lock();
+                guard.switch_to(&path_snapshot);
+            }
+        }
         self.constraint_count
             .fetch_add(constraints.len(), Ordering::SeqCst);
         self.sat_cache.set(None);
@@ -3244,7 +3294,15 @@ impl SymContext {
     /// mints a `ScopeFrame` carrying the bare constraint and routes
     /// through `switch_to`, intentionally deferring unsat-core fidelity
     /// (`switch_to` uses plain `assert`, so the tracker is not
-    /// re-registered on lineage reloads).
+    /// re-registered on lineage reloads). Slice 4c.2c migrates
+    /// `add_constraints_raw_batch` off the `with_z3_solver` dispatcher
+    /// onto its own lineage-aware inline match — same shape as 4c.1/
+    /// 4c.2/4c.2b but with N constraints per call. The None branch
+    /// holds the per-context solver guard once and asserts all N
+    /// constraints inside the guard. The Some branch mints N
+    /// `ScopeFrame`s under one `scope_path.lock()` acquisition, then
+    /// makes a single `switch_to` call whose tail walks the divergent
+    /// suffix and asserts each new frame on the shared solver.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
@@ -4692,6 +4750,127 @@ mod tests {
         }
         let after = ctx.export_z3_assertion_ptrs().len();
         assert_eq!(after - before, 2);
+    }
+
+    /// angr-v5a5 slice 4c.2c: with no lineage attached,
+    /// `add_constraints_raw_batch` must hit the per-context Z3 solver and
+    /// leave `scope_path` empty — byte-identical behavior to the pre-slice
+    /// `self.with_z3_solver(|s| { for c in &constraints { s.assert(c); } })`
+    /// call. Mirrors `test_add_constraint_raw_none_branch_no_scope_path`
+    /// for the batched path, with a multi-entry batch.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_none_branch_no_scope_path() {
+        let ctx = SymContext::new();
+        assert!(ctx.lineage_arc().is_none());
+        assert_eq!(ctx.scope_path_len(), 0);
+
+        let x = RustBV::symbolic(&ctx, "x_batch_none", 32);
+        let entries = vec![
+            batch_entry(&x.ugt(&RustBV::concrete(10, 32), &ctx)),
+            batch_entry(&x.ult(&RustBV::concrete(20, 32), &ctx)),
+            batch_entry(&x.uge(&RustBV::concrete(15, 32), &ctx)),
+        ];
+        unsafe {
+            ctx.add_constraints_raw_batch(entries);
+        }
+
+        // None branch must not mint scope frames.
+        assert_eq!(
+            ctx.scope_path_len(),
+            0,
+            "None branch must not mint scope frames"
+        );
+
+        // All three constraints must be in force on the per-context solver.
+        assert!(ctx.solution(&x, 15));
+        assert!(ctx.solution(&x, 19));
+        assert!(!ctx.solution(&x, 14));
+        assert!(!ctx.solution(&x, 20));
+    }
+
+    /// angr-v5a5 slice 4c.2c: with a lineage attached,
+    /// `add_constraints_raw_batch` mints N fresh `ScopeFrame`s under one
+    /// `scope_path.lock()` acquisition and routes a single `switch_to` call
+    /// through the shared solver — the divergent-suffix walk in `switch_to`
+    /// then asserts each new frame inside its own Z3 push. Mirrors
+    /// `test_add_constraint_raw_some_branch_appends_scope_frame` for the
+    /// batched path.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_some_branch_appends_scope_frames() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+        assert_eq!(ctx.scope_path_len(), 0);
+
+        let x = RustBV::symbolic(&ctx, "x_batch_some", 32);
+        let entries = vec![
+            batch_entry(&x.ugt(&RustBV::concrete(10, 32), &ctx)),
+            batch_entry(&x.ult(&RustBV::concrete(20, 32), &ctx)),
+            batch_entry(&x.uge(&RustBV::concrete(15, 32), &ctx)),
+        ];
+        unsafe {
+            ctx.add_constraints_raw_batch(entries);
+        }
+
+        // Some branch must mint exactly N frames on scope_path.
+        assert_eq!(
+            ctx.scope_path_len(),
+            3,
+            "Some branch must mint one scope frame per batch entry"
+        );
+
+        // switch_to must have pushed all three frames onto the shared
+        // solver — loaded_depth equals scope_path's length.
+        assert_eq!(
+            lin.lock().loaded_depth(),
+            3,
+            "switch_to must have pushed all batch frames onto the shared solver"
+        );
+    }
+
+    /// angr-v5a5 slice 4c.2c: sibling isolation invariant for the batched
+    /// raw path — the N constraints minted by sibling A's
+    /// `add_constraints_raw_batch` must NOT be visible when sibling B
+    /// queries the same shared lineage solver. Mirrors
+    /// `test_add_constraint_raw_sibling_isolation` with a multi-entry batch.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraints_raw_batch_sibling_isolation() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let sibling_a = SymContext::new();
+        let sibling_b = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        sibling_a.set_lineage_for_testing(Arc::clone(&lin));
+        sibling_b.set_lineage_for_testing(Arc::clone(&lin));
+
+        // Sibling A batch-adds x > 10 ∧ x < 20.
+        let x_a = RustBV::symbolic(&sibling_a, "x_batch_sibling", 32);
+        let entries = vec![
+            batch_entry(&x_a.ugt(&RustBV::concrete(10, 32), &sibling_a)),
+            batch_entry(&x_a.ult(&RustBV::concrete(20, 32), &sibling_a)),
+        ];
+        unsafe {
+            sibling_a.add_constraints_raw_batch(entries);
+        }
+        assert_eq!(sibling_a.scope_path_len(), 2);
+        assert_eq!(sibling_b.scope_path_len(), 0);
+
+        // Sibling B references the same named symbol but is unconstrained
+        // — switch_to to B's empty scope_path must pop both of A's frames.
+        let x_b = RustBV::symbolic(&sibling_b, "x_batch_sibling", 32);
+        assert!(sibling_b.solution(&x_b, 5));
+        assert!(sibling_b.solution(&x_b, 42));
+
+        // A still sees 10 < x < 20.
+        assert!(sibling_a.solution(&x_a, 15));
+        assert!(!sibling_a.solution(&x_a, 5));
+        assert!(!sibling_a.solution(&x_a, 42));
     }
 
     // -------------------------------------------------------------------------
