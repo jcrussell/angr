@@ -364,10 +364,12 @@ impl RustExplorationManager {
 
     /// Sync constraints from Python callbacks back to the Rust state's solver.
     ///
-    /// This is the critical piece for bidirectional constraint flow:
-    /// - Rust syncs constraints TO Python before callbacks (via sync_before_callback)
-    /// - Python SimProcedures may add new constraints (e.g., strcmp conditions)
-    /// - This method syncs those new constraints BACK to Rust after the callback
+    /// Python SimProcedures may add new constraints (e.g., strcmp conditions);
+    /// this method syncs those new constraints BACK to Rust after the callback.
+    /// The reverse direction (Rust→Python) is handled by attaching a
+    /// `RustSolverContext` to the Python state in
+    /// `rust_callback_dispatch._install_rust_solver_on_callback_state`, so
+    /// constraints never need to be replayed across the FFI.
     ///
     /// Without this, constraints added by SimProcedures would be lost when
     /// Rust resumes execution, leading to incorrect symbolic evaluation.

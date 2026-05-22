@@ -1354,12 +1354,6 @@ impl RustExplorationManager {
         self._fork_state_solver(state_id)
     }
 
-    /// Get the number of constraints in the pending state's solver.
-    /// See [`pending_api::_pending_constraint_count`] for the body.
-    pub fn pending_constraint_count(&self) -> PyResult<usize> {
-        self._pending_constraint_count()
-    }
-
     /// Get the ID of the state currently being stepped.
     pub fn get_current_stepping_state_id(&self) -> Option<u64> {
         self.current_stepping_state_id

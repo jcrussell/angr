@@ -462,13 +462,6 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _pending_constraint_count(&self) -> PyResult<usize> {
-        self.with_pending(|pending| {
-            let solver_ref = pending.state.solver();
-            Ok(solver_ref.borrow().num_constraints())
-        })
-    }
-
     // -------------------------------------------------------------------------
     // Pending memory low-level (page / address access used by callbacks)
     // -------------------------------------------------------------------------

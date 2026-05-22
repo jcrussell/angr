@@ -1029,15 +1029,6 @@ impl RustVEXEngine {
         let (result, blocks_executed, deferred_forks) =
             interp.run_until_event(py, callbacks, max_blocks);
 
-        // angr-h0dv: The post-loop Rust→Python constraint push was removed
-        // after a 20-bench soak proved it was dead code. Path A
-        // (rust_solver_ctx attach in rust_callback_dispatch.py) covers every
-        // live callback site. Clear any tracked constraints so the next
-        // exploration window starts clean.
-        if interp.has_pending_constraints() {
-            interp.clear_pending_constraints();
-        }
-
         // Update engine state from interpreter
         self.pc = interp.get_pc();
         interp.registers.copy_to_bytes(&mut self.registers);

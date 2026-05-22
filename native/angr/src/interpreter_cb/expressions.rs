@@ -134,7 +134,6 @@ impl<'a> CallbackInterpreter<'a> {
                                     && addr_concrete >= 0x400000
                                     && addr_concrete < 0x420000
                                 {}
-                                self.track_concretization_constraint(&addr_val, addr_concrete);
                                 if let Some(data) =
                                     self.try_read_concrete_memory(addr_concrete, size)
                                 {
@@ -143,8 +142,6 @@ impl<'a> CallbackInterpreter<'a> {
                                 self.load_from_callback(py, callbacks, addr_concrete, size)?
                             }
                             ConcretizationResult::Multiple(addrs) => {
-                                // Sync constraints before batch load
-                                self.sync_before_callback(py, callbacks)?;
                                 // Build ITE chain in Rust instead of delegating to Python
                                 // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
                                 self.build_ite_load_from_callbacks(
@@ -156,8 +153,6 @@ impl<'a> CallbackInterpreter<'a> {
                                 stride,
                                 count,
                             } => {
-                                // Sync constraints before batch load
-                                self.sync_before_callback(py, callbacks)?;
                                 // Strided access pattern - generate addresses and build ITE chain in Rust
                                 let addrs: Vec<u64> =
                                     (0..*count).map(|i| base + i * stride).collect();
@@ -678,7 +673,6 @@ impl<'a> CallbackInterpreter<'a> {
         match &*conc {
             ConcretizationResult::Single(a) => {
                 let a = *a;
-                self.track_concretization_constraint(addr_val, a);
                 self.load_from_callback(py, callbacks, a, load_size)
             }
             ConcretizationResult::Multiple(addrs) => {

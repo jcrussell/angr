@@ -373,8 +373,6 @@ impl<'a> CallbackInterpreter<'a> {
                         match &*self.concretize_cached_write(&addr_val) {
                             ConcretizationResult::Single(addr_concrete) => {
                                 let addr_concrete = *addr_concrete;
-                                // Track concretization constraint for Python sync
-                                self.track_concretization_constraint(&addr_val, addr_concrete);
                                 // Load current value and use ITE
                                 let current = self.load_from_callback(
                                     py,
@@ -468,10 +466,6 @@ impl<'a> CallbackInterpreter<'a> {
                                 match &*concret_result {
                                     ConcretizationResult::Single(addr_concrete) => {
                                         let addr_concrete = *addr_concrete;
-                                        self.track_concretization_constraint(
-                                            &addr_val,
-                                            addr_concrete,
-                                        );
                                         callbacks
                                             .call_memory_store_symbolic_value(
                                                 py,
@@ -1009,14 +1003,14 @@ impl<'a> CallbackInterpreter<'a> {
         }
     }
 
-    /// Update load-prefetch cache and concretization-constraint tracking after
-    /// a successful Rust-native store. Single-address writes invalidate that
-    /// (addr, size) entry; otherwise the entire prefetch cache is dropped.
-    /// Also invalidates cached IRSBs when the store hits a loaded binary
-    /// region (self-modifying code support).
+    /// Update load-prefetch cache after a successful Rust-native store.
+    /// Single-address writes invalidate that (addr, size) entry; otherwise
+    /// the entire prefetch cache is dropped. Also invalidates cached IRSBs
+    /// when the store hits a loaded binary region (self-modifying code
+    /// support).
     fn update_prefetch_on_store(
         &mut self,
-        addr_val: &RustBV,
+        _addr_val: &RustBV,
         conc_result: &ConcretizationResult,
         data_size: usize,
     ) {
@@ -1024,7 +1018,6 @@ impl<'a> CallbackInterpreter<'a> {
             ConcretizationResult::Single(addr_concrete) => {
                 self.load_prefetch_cache
                     .remove(&(*addr_concrete, data_size));
-                self.track_concretization_constraint(addr_val, *addr_concrete);
                 if self.is_in_binary(*addr_concrete) {
                     self.invalidate_code_at(*addr_concrete, data_size);
                 }
@@ -1181,8 +1174,6 @@ impl<'a> CallbackInterpreter<'a> {
             match &*concret_result {
                 ConcretizationResult::Single(addr_concrete) => {
                     let addr_concrete = *addr_concrete;
-                    // Track concretization constraint for Python sync
-                    self.track_concretization_constraint(addr_val, addr_concrete);
                     if self.is_in_binary(addr_concrete) {
                         self.invalidate_code_at(addr_concrete, data_size);
                     }
@@ -1199,7 +1190,6 @@ impl<'a> CallbackInterpreter<'a> {
                     }
                 }
                 ConcretizationResult::Multiple(addrs) => {
-                    self.sync_before_callback(py, callbacks)?;
                     // Build ITE chain in Rust for ≤16 addresses
                     if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
                         self.build_ite_store_from_callbacks(
@@ -1216,7 +1206,6 @@ impl<'a> CallbackInterpreter<'a> {
                     stride,
                     count,
                 } => {
-                    self.sync_before_callback(py, callbacks)?;
                     let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
                     if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
                         self.build_ite_store_from_callbacks(
@@ -1232,9 +1221,6 @@ impl<'a> CallbackInterpreter<'a> {
                     let (min, max) = (*min, *max);
                     // Address range too large - delegate to Python's memory model
                     // which has access to angr's address concretization strategies
-
-                    // Sync any pending constraints to Python before fallback
-                    self.sync_before_callback(py, callbacks)?;
 
                     // Use full symbolic callback to preserve expression trees
                     if callbacks.has_memory_store_symbolic_full() {

@@ -32,7 +32,6 @@ use crate::vex::ir::{
 use crate::vex::ops::{OpError, VEXOps, iropclass};
 use crate::vex::{Endness, deserialize_irsb};
 
-mod constraints;
 mod execution;
 mod exits;
 mod expressions;
@@ -421,74 +420,6 @@ pub struct PrefetchedLoad {
     pub is_symbolic: bool,
 }
 
-/// A constraint that was added in Rust and needs to be synced to Python.
-///
-/// When Rust concretizes a symbolic address or makes a branch decision,
-/// it adds constraints to its Z3 context. These constraints must be
-/// communicated to Python's claripy solver to maintain consistency
-/// when falling back to Python for complex operations.
-#[derive(Clone, Debug)]
-pub struct PendingConstraint {
-    /// The symbolic expression that was constrained.
-    /// For address concretization: the address expression
-    /// For branch: the condition
-    pub expression: RustBV,
-    /// The concrete value it was constrained to.
-    pub concrete_value: u128,
-    /// Description for debugging.
-    pub description: String,
-    /// Handle ID for looking up the original claripy AST in Python.
-    /// If the expression came from a Python callback that returned a handle,
-    /// this ID can be used to look up the original AST for constraint sync.
-    pub handle_id: Option<u64>,
-}
-
-impl PendingConstraint {
-    /// Create a new pending constraint for address concretization.
-    pub fn address_concretization(addr_expr: RustBV, concrete_addr: u64) -> Self {
-        PendingConstraint {
-            expression: addr_expr,
-            concrete_value: concrete_addr as u128,
-            description: format!("addr_concretize_0x{:x}", concrete_addr),
-            handle_id: None,
-        }
-    }
-
-    /// Create a new pending constraint for address concretization with handle_id.
-    pub fn address_concretization_with_handle(
-        addr_expr: RustBV,
-        concrete_addr: u64,
-        handle_id: Option<u64>,
-    ) -> Self {
-        PendingConstraint {
-            expression: addr_expr,
-            concrete_value: concrete_addr as u128,
-            description: format!("addr_concretize_0x{:x}", concrete_addr),
-            handle_id,
-        }
-    }
-
-    /// Create a new pending constraint for a branch taken (cond == 1).
-    pub fn branch_true(cond: RustBV) -> Self {
-        PendingConstraint {
-            expression: cond,
-            concrete_value: 1,
-            description: "branch_true".to_string(),
-            handle_id: None,
-        }
-    }
-
-    /// Create a new pending constraint for a branch not taken (cond == 0).
-    pub fn branch_false(cond: RustBV) -> Self {
-        PendingConstraint {
-            expression: cond,
-            concrete_value: 0,
-            description: "branch_false".to_string(),
-            handle_id: None,
-        }
-    }
-}
-
 /// Information about a registered SimProcedure.
 #[derive(Clone, Debug)]
 pub struct SimProcedureInfo {
@@ -637,10 +568,6 @@ pub struct CallbackInterpreter<'a> {
     /// Last branch condition encountered (for symbolic branch handling).
     /// Stored when a SymbolicBranch is created so callers can retrieve it.
     last_branch_condition: Option<RustBV>,
-    /// Pending constraints that need to be synced to Python.
-    /// These accumulate when Rust adds constraints (e.g., address concretization)
-    /// and are synced to Python before falling back to Python callbacks.
-    pending_python_constraints: Vec<PendingConstraint>,
     /// Stored branch conditions by ID for deferred fork handling.
     /// When a deferred fork is created, we store the condition here so
     /// callers can retrieve it to properly constrain forked states.
@@ -741,7 +668,6 @@ impl<'a> CallbackInterpreter<'a> {
             simprocedure_registry: Arc::new(FxHashMap::default()),
             calling_convention: cc,
             last_branch_condition: None,
-            pending_python_constraints: Vec::new(),
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
             stats: ExecutionStats::default(),
@@ -1017,8 +943,6 @@ impl<'a> CallbackInterpreter<'a> {
             )));
         }
 
-        self.sync_before_callback(py, callbacks)?;
-
         let result_ast = callbacks
             .call_memory_load_symbolic_full(py, addr_val, size as u32)
             .map_err(|e| {
@@ -1079,7 +1003,6 @@ impl<'a> CallbackInterpreter<'a> {
             )));
         }
 
-        self.sync_before_callback(py, callbacks)?;
         callbacks
             .call_memory_store_symbolic_full(py, addr_val, data_val)
             .map_err(|e| {
@@ -1641,10 +1564,9 @@ impl<'a> CallbackInterpreter<'a> {
             dirty_dispatch: DirtyHelperDispatch::new(),    // Fresh dispatch (stateless)
             simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
             calling_convention: cc,
-            last_branch_condition: None,               // Fresh for fork
-            pending_python_constraints: Vec::new(),    // Fresh constraints for fork
-            stored_conditions: FxHashMap::default(),   // Fresh for fork
-            fork_snapshots: FxHashMap::default(),      // Fresh for fork
+            last_branch_condition: None,             // Fresh for fork
+            stored_conditions: FxHashMap::default(), // Fresh for fork
+            fork_snapshots: FxHashMap::default(),    // Fresh for fork
             stats: ExecutionStats::default(),          // Fresh stats for fork
             profiling_enabled: self.profiling_enabled, // Inherit profiling setting
             concrete_memory_sorted: self.concrete_memory_sorted, // Inherit sorted flag
