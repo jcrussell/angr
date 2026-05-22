@@ -175,6 +175,17 @@ impl<'a> VEXInterpreter<'a> {
         self.dirty_registers = 0;
     }
 
+    /// Mark the 4-byte register slot containing `offset` as dirty.
+    /// Bitset is 128 bits wide (covers offsets [0, 512)); writes beyond
+    /// that fall back to the always-sync slow path.
+    #[inline]
+    pub(crate) fn mark_register_dirty(&mut self, offset: u32) {
+        let bit_index = offset / 4;
+        if bit_index < 128 {
+            self.dirty_registers |= 1u128 << bit_index;
+        }
+    }
+
     /// Execute a VEX block.
     pub fn execute_block(&mut self, irsb: &IRSB) -> Result<ExecutionResult, ExecutionError> {
         // Reset temps for this block
@@ -232,13 +243,7 @@ impl<'a> VEXInterpreter<'a> {
             IRStmt::Put { offset, data } => {
                 let value = self.eval_expr(data, &irsb.tyenv)?;
                 self.registers.put(*offset, value);
-
-                // Mark register as dirty (4-byte granularity)
-                let bit_index = (*offset / 4) as u32;
-                if bit_index < 128 {
-                    self.dirty_registers |= 1u128 << bit_index;
-                }
-
+                self.mark_register_dirty(*offset);
                 Ok(StmtResult::Continue)
             }
 
