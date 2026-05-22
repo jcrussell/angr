@@ -1448,56 +1448,14 @@ class RustExplorationManager(
                         l.debug(f"Synced constraint from handle {handle_id}: {desc}")
                         continue
 
-                reconstructed = False
-                state_id = self._current_callback_state_id
-                effective_id = self._get_effective_state_id(state_id) if state_id is not None else None
-
-                if desc.startswith("addr_concretize_"):
-                    addr_str = desc.replace("addr_concretize_", "")
-                    try:
-                        addr = int(addr_str, 16)
-                        lookup_id = effective_id if effective_id is not None else state_id
-                        if lookup_id is not None:
-                            addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
-                            entry = addr_map.get(addr)
-                            if entry is not None:
-                                tracked_ast, _ = entry
-                                constraint = tracked_ast == claripy.BVV(concrete_val, width)
-                                state.solver.add(constraint)
-                                added_constraints.append(constraint)
-                                l.debug(f"Reconstructed addr_concretize constraint from desc: {desc}")
-                                reconstructed = True
-                    except ValueError:
-                        # cat-(a) EXPECTED CONTROL FLOW: addr_concretize_<hex> desc had
-                        # malformed hex suffix. Falls through to the warn at the bottom
-                        # of the loop where 'reconstructed' stays False.
-                        pass
-
-                elif desc.startswith("mem_") and "_" in desc:
-                    parts = desc.split("_")
-                    if len(parts) >= 2:
-                        try:
-                            addr = int(parts[1], 16)
-                            lookup_id = effective_id if effective_id is not None else state_id
-                            if lookup_id is not None:
-                                addr_map = self._rust_mgr.get_state_addr_to_ast(lookup_id)
-                                entry = addr_map.get(addr)
-                                if entry is not None:
-                                    tracked_ast, _ = entry
-                                    constraint = tracked_ast == claripy.BVV(concrete_val, width)
-                                    state.solver.add(constraint)
-                                    added_constraints.append(constraint)
-                                    l.debug(f"Reconstructed mem constraint from desc: {desc}")
-                                    reconstructed = True
-                        except ValueError:
-                            # cat-(a) EXPECTED CONTROL FLOW: mem_<hex> desc had malformed hex
-                            # suffix. Same path as the addr_concretize fallback above.
-                            pass
-
-                if not reconstructed:
-                    self._stats_cb_sync_failures += 1
-                    l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
-                    sync_failed = True
+                # angr-wi5m: description-string reconstruction (addr_concretize_<hex>
+                # and mem_<hex>_<...> parsers) removed after 20-bench counter soak
+                # showed cb_sync_failures=0 everywhere. If a constraint reaches here
+                # without a live handle id, the upstream Rust→Python plumbing has
+                # changed; the warning below is the signal to investigate.
+                self._stats_cb_sync_failures += 1
+                l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
+                sync_failed = True
 
             except (SimError, ClaripyError) as e:
                 # cat-(c) WRONG-ANSWER RISK: per-constraint sync failed; sync_failed
