@@ -1033,6 +1033,34 @@ pub struct SymContext {
     /// Z3 solver timeout in milliseconds (default: 30000).
     #[cfg(feature = "vex-engine-z3")]
     timeout_ms: AtomicU32,
+
+    /// Shared-lineage Z3 solver (angr-v5a5 spike, integration in progress).
+    ///
+    /// `None` for seed states and any state whose lineage has not yet been
+    /// established. Set via [`fork()`](Self::fork) once integration is wired
+    /// (next slice). When `Some`, every state descended from a common fork
+    /// shares the same Arc; the inner Mutex serializes solver access across
+    /// sibling states.
+    ///
+    /// This slice (angr-v5a5 fields-only) introduces the field but does not
+    /// yet route queries through it — [`solver()`](Self::solver) still uses
+    /// the lazy-materialize path. The next slice replaces that.
+    #[cfg(feature = "vex-engine-z3")]
+    lineage: Mutex<Option<Arc<Mutex<super::lineage::SharedLineageSolver>>>>,
+
+    /// Per-state scope path: the ordered list of constraint frames this
+    /// state has added since its lineage's base. Empty when `lineage` is
+    /// `None` or when this state sits exactly at the lineage base.
+    ///
+    /// Mirrors the `local_constraints.z3_assertions` Vec in shape but
+    /// stamps each entry with a globally-unique `FrameId` so sibling
+    /// scope paths can share a prefix without RustBV-identity tricks
+    /// (see memory `v5a5-frame-id-design`).
+    ///
+    /// Inert in this slice — the next slice wires `assume_*` to mint
+    /// frames here and routes queries through `SharedLineageSolver::switch_to`.
+    #[cfg(feature = "vex-engine-z3")]
+    scope_path: Mutex<super::lineage::ScopePath>,
 }
 
 impl SymContext {
@@ -1089,6 +1117,8 @@ impl SymContext {
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(timeout_ms),
+            lineage: Mutex::new(None),
+            scope_path: Mutex::new(super::lineage::ScopePath::new()),
         }
     }
 
@@ -2735,6 +2765,13 @@ impl SymContext {
         };
         let assumed_total_len = frozen_assumed.len();
 
+        // angr-v5a5 fields-only slice: child inherits parent's lineage Arc
+        // (if any). The Arc::clone here is cheap and harmless — until the
+        // next slice routes solver() through with_solver(), nothing reads
+        // the inherited lineage. Capturing it now lets sibling-fork tests
+        // verify the propagation invariant ahead of the wiring change.
+        let child_lineage = self.lineage.lock().as_ref().map(Arc::clone);
+
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
             constraint_count: AtomicUsize::new(assumed_total_len),
@@ -2751,7 +2788,45 @@ impl SymContext {
             model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(self.timeout_ms.load(Ordering::SeqCst)),
+            lineage: Mutex::new(child_lineage),
+            scope_path: Mutex::new(super::lineage::ScopePath::new()),
         }
+    }
+
+    /// Clone of this context's lineage Arc, if any (angr-v5a5 spike).
+    ///
+    /// Returns `None` until the v5a5 integration starts creating
+    /// [`SharedLineageSolver`](super::lineage::SharedLineageSolver) on
+    /// fork. Currently a fork only propagates an Arc the parent already
+    /// had, so all states observed via the public API see `None`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn lineage_arc(&self) -> Option<Arc<Mutex<super::lineage::SharedLineageSolver>>> {
+        self.lineage.lock().as_ref().map(Arc::clone)
+    }
+
+    /// Current per-state scope-path depth (angr-v5a5 spike).
+    ///
+    /// Always 0 in this slice — frames are minted by the next slice when
+    /// `assume_*` routes through the lineage solver. Exposed now so the
+    /// integration can have a consistent telemetry surface.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn scope_path_len(&self) -> usize {
+        self.scope_path.lock().len()
+    }
+
+    /// Install a lineage Arc on this context (test-only, angr-v5a5 spike).
+    ///
+    /// Lets unit tests verify the fork-propagation invariant — that a
+    /// child's `lineage_arc()` returns the same Arc as the parent's —
+    /// without yet wiring up the production lineage-creation path in
+    /// [`fork()`](Self::fork). Removed when integration takes ownership
+    /// of lineage creation.
+    #[cfg(all(test, feature = "vex-engine-z3"))]
+    pub(crate) fn set_lineage_for_testing(
+        &self,
+        lin: Arc<Mutex<super::lineage::SharedLineageSolver>>,
+    ) {
+        *self.lineage.lock() = Some(lin);
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
@@ -3145,6 +3220,58 @@ mod tests {
 
         // Forked context should continue from same ID
         assert_eq!(id2, id1 + 1);
+    }
+
+    /// angr-v5a5 spike: fresh contexts have no lineage attached and an
+    /// empty scope path.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_lineage_starts_none() {
+        let ctx = SymContext::new();
+        assert!(ctx.lineage_arc().is_none());
+        assert_eq!(ctx.scope_path_len(), 0);
+    }
+
+    /// angr-v5a5 spike: forking does not auto-create a lineage. The
+    /// inert-fields slice keeps both parent and child at None — the next
+    /// slice will add the lineage-creation path.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fork_keeps_lineage_none() {
+        let ctx = SymContext::new();
+        let forked = ctx.fork();
+        assert!(ctx.lineage_arc().is_none());
+        assert!(forked.lineage_arc().is_none());
+        assert_eq!(forked.scope_path_len(), 0);
+    }
+
+    /// angr-v5a5 spike: when the parent has a lineage Arc, fork
+    /// propagates it to the child by Arc::clone (same allocation).
+    /// Uses set_lineage_for_testing because the integration patch that
+    /// creates the lineage on fork lives in a later slice; today we
+    /// only verify the propagation wiring.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fork_propagates_lineage_arc() {
+        let parent = SymContext::new();
+        let lin = Arc::new(Mutex::new(super::super::lineage::SharedLineageSolver::new(
+            build_solver(30_000),
+        )));
+        parent.set_lineage_for_testing(Arc::clone(&lin));
+
+        let child = parent.fork();
+        let child_arc = child.lineage_arc().expect("child should inherit lineage");
+        let parent_arc = parent.lineage_arc().expect("parent retains its lineage");
+        assert!(
+            Arc::ptr_eq(&child_arc, &parent_arc),
+            "fork must Arc::clone the lineage, not allocate a new one"
+        );
+        assert!(
+            Arc::ptr_eq(&child_arc, &lin),
+            "child arc should point at the same SharedLineageSolver"
+        );
+        // Child starts with an empty scope path even when the lineage is set.
+        assert_eq!(child.scope_path_len(), 0);
     }
 
     #[cfg(feature = "vex-engine-z3")]
