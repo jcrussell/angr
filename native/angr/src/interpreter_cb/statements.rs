@@ -16,6 +16,7 @@ impl<'a> CallbackInterpreter<'a> {
             IRStmt::IMark { addr, len, .. } => {
                 self.current_insn_addr = *addr;
                 self.current_insn_len = *len;
+                self.dispatch_instruction_inspect(py, callbacks, *addr);
                 // Check for hooks at this address
                 if self.is_hooked(*addr) {
                     return Ok(StmtResult::Exit {
@@ -30,6 +31,8 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRStmt::Put { offset, data } => {
                 let value = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
+                let size = ((value.width() + 7) / 8) as u32;
+                self.dispatch_reg_write_inspect(py, callbacks, *offset, size, &value);
                 self.registers.put(*offset, value);
 
                 // Mark register as dirty (4-byte granularity)
@@ -89,6 +92,7 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRStmt::Exit { guard, dst, jk, .. } => {
                 let guard_val = self.eval_expr_with_callbacks(py, callbacks, guard, &irsb.tyenv)?;
+                self.dispatch_exit_inspect(py, callbacks, *dst, *jk, &guard_val);
 
                 // Check if guard is symbolic first (Constrained has concrete value but is still symbolic)
                 if !guard_val.is_symbolic() {
@@ -1568,6 +1572,90 @@ impl<'a> CallbackInterpreter<'a> {
             data_size as u32,
             Some(&value_ast),
             endness_str,
+        );
+    }
+
+    /// Fire a `reg_write` inspect callback into Python for a VEX `Put`.
+    /// Gated on `inspect_event_enabled(RegWrite)`. Dispatches `when='after'`
+    /// with the stored value as `reg_write_expr`.
+    fn dispatch_reg_write_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        offset: u32,
+        size: u32,
+        value: &RustBV,
+    ) {
+        // RegWrite = InspectEvent variant 3.
+        if !callbacks.inspect_event_enabled(3) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_reg_write(
+            py,
+            self.current_state_id,
+            "after",
+            offset,
+            size,
+            Some(&value_ast),
+        );
+    }
+
+    /// Fire an `instruction` inspect callback into Python for a VEX `IMark`.
+    /// Gated on bit 6 of the inspect-enabled bitmask. Bits 0..=5 mirror
+    /// `crate::state::InspectEvent`; bit 6 is custom for the `instruction`
+    /// event (no `InspectEvent` slot — angr Python exposes it but the Rust
+    /// `InspectionManager` enum doesn't track it). Dispatches `when='before'`.
+    fn dispatch_instruction_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr: u64,
+    ) {
+        // Instruction = bit 6 (custom — not in the Rust InspectEvent enum).
+        if !callbacks.inspect_event_enabled(6) {
+            return;
+        }
+        let _ = callbacks.call_inspect_instruction(py, self.current_state_id, "before", addr);
+    }
+
+    /// Fire an `exit` inspect callback into Python for a VEX conditional `Exit`.
+    /// Gated on the Exit bit (InspectEvent::Exit = 5). Dispatches `when='before'`
+    /// with the branch target, jumpkind name (`Ijk_*`), and guard AST.
+    fn dispatch_exit_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        target: u64,
+        jk: JumpKind,
+        guard: &RustBV,
+    ) {
+        // Exit = InspectEvent variant 5.
+        if !callbacks.inspect_event_enabled(5) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let guard_ast = match crate::claripy_bridge::rustbv_to_claripy(py, guard, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_exit(
+            py,
+            self.current_state_id,
+            "before",
+            target,
+            jk.ijk_name(),
+            Some(&guard_ast),
         );
     }
 }

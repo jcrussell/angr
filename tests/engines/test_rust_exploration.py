@@ -1847,14 +1847,19 @@ class TestRustInspectMarshalling:
         assert mgr._callbacks.get_inspect_enabled() == 0
 
     def test_inspect_proxy_rejects_unsupported_events(self, fauxware_project):
-        """Events outside the MVP (reg_read, fork, etc.) still raise loudly."""
+        """Events outside the MVP (call, fork, etc.) still raise loudly.
+
+        reg_read, reg_write, instruction, irsb, exit moved into the
+        supported set in angr-d46u — only events whose dispatchers are
+        not wired (call, fork, return, ...) must still raise.
+        """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         ins = mgr._get_inspect_proxy()
-        for evt in ("reg_read", "reg_write", "call", "exit", "fork"):
-            with pytest.raises(NotImplementedError, match="mem_read"):
+        for evt in ("call", "fork", "return", "syscall", "constraints"):
+            with pytest.raises(NotImplementedError, match="reg_read"):
                 ins.b(evt, when='before', action=lambda s: None)
 
     def _make_mgr_with_state_id(self, project):
@@ -2167,6 +2172,234 @@ class TestRustInspectMemWriteDispatch:
         mgr.run(max_steps=5)
 
         assert fire_count[0] > 0, "BP must fire at least once"
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustInspectExtendedEvents:
+    """Integration tests for the inspect events added in angr-d46u:
+    reg_read, reg_write, instruction, irsb, exit.
+
+    Mirrors the mem_read / mem_write coverage: bitmask flips on BP add,
+    callback round-trip exercises the marshalling layer, and at least
+    one event fires during a short exploration run.
+    """
+
+    def _make_mgr_with_state_id(self, project):
+        from angr.exploration import RustExplorationManager
+        state = project.factory.entry_state()
+        mgr = RustExplorationManager(project, [state])
+        state_ids = list(mgr._rust_mgr.get_state_ids('active'))
+        assert state_ids, "expected at least one active state"
+        return mgr, state_ids[0], state
+
+    def test_callbacks_expose_extended_inspect_slots(self):
+        """PythonCallbacks gained set_inspect_{reg_read,reg_write,instruction,irsb,exit}."""
+        cbs = PythonCallbacks()
+        for name in (
+            'set_inspect_reg_read',
+            'set_inspect_reg_write',
+            'set_inspect_instruction',
+            'set_inspect_irsb',
+            'set_inspect_exit',
+            'call_inspect_reg_read',
+            'call_inspect_reg_write',
+            'call_inspect_instruction',
+            'call_inspect_irsb',
+            'call_inspect_exit',
+        ):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_bitmask_per_event(self, fauxware_project):
+        """Registering a BP for each extended event flips its assigned bit."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._callbacks.get_inspect_enabled() == 0
+
+        proxy_inspect = mgr._get_inspect_proxy()
+        # Bits per _INSPECT_EVENT_BITS: 2/3/5/6/7 for these events.
+        expected = {
+            'reg_read': 1 << 2,
+            'reg_write': 1 << 3,
+            'exit': 1 << 5,
+            'instruction': 1 << 6,
+            'irsb': 1 << 7,
+        }
+        for evt, bit in expected.items():
+            mask_before = mgr._callbacks.get_inspect_enabled()
+            proxy_inspect.b(evt, when='before', action=lambda s: None)
+            mask_after = mgr._callbacks.get_inspect_enabled()
+            assert mask_after & bit != 0, f"{evt} did not set bit {bit:#b}"
+            assert mask_after != mask_before
+
+    def test_dispatch_reg_read_fires_bp(self, fauxware_project):
+        """_cb_inspect_reg_read invokes the user's BP with reg_read_* attrs."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        events = []
+
+        def on_read(s):
+            events.append((
+                s.inspect.reg_read_offset,
+                s.inspect.reg_read_length,
+                s.inspect.reg_read_expr,
+            ))
+
+        mgr._get_inspect_proxy().b('reg_read', when='after', action=on_read)
+        val = claripy.BVV(0xdeadbeef, 32)
+        mgr._cb_inspect_reg_read(sid, 'after', 16, 4, val)
+
+        assert events == [(16, 4, val)]
+
+    def test_dispatch_reg_write_fires_bp(self, fauxware_project):
+        """_cb_inspect_reg_write invokes the user's BP with reg_write_* attrs."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_write(s):
+            seen.append((
+                s.inspect.reg_write_offset,
+                s.inspect.reg_write_length,
+                s.inspect.reg_write_expr,
+            ))
+
+        mgr._get_inspect_proxy().b('reg_write', when='after', action=on_write)
+        val = claripy.BVS('written_reg', 32)
+        mgr._cb_inspect_reg_write(sid, 'after', 32, 4, val)
+
+        assert seen == [(32, 4, val)]
+
+    def test_dispatch_instruction_fires_bp(self, fauxware_project):
+        """_cb_inspect_instruction invokes the user's BP with the IMark addr."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        addrs = []
+
+        def on_insn(s):
+            addrs.append(s.inspect.instruction)
+
+        mgr._get_inspect_proxy().b('instruction', when='before', action=on_insn)
+        mgr._cb_inspect_instruction(sid, 'before', 0x401234)
+        assert addrs == [0x401234]
+
+    def test_dispatch_irsb_fires_bp(self, fauxware_project):
+        """_cb_inspect_irsb invokes the user's BP with the block address."""
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        addrs = []
+
+        def on_irsb(s):
+            addrs.append(s.inspect.address)
+
+        mgr._get_inspect_proxy().b('irsb', when='before', action=on_irsb)
+        mgr._cb_inspect_irsb(sid, 'before', 0x400580)
+        assert addrs == [0x400580]
+
+    def test_dispatch_exit_fires_bp(self, fauxware_project):
+        """_cb_inspect_exit invokes the user's BP with target/guard/jumpkind."""
+        import claripy
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        def on_exit(s):
+            seen.append((
+                s.inspect.exit_target,
+                s.inspect.exit_guard,
+                s.inspect.exit_jumpkind,
+            ))
+
+        mgr._get_inspect_proxy().b('exit', when='before', action=on_exit)
+        guard = claripy.BVS('cond', 1)
+        mgr._cb_inspect_exit(sid, 'before', 0x401500, 'Ijk_Boring', guard)
+
+        assert len(seen) == 1
+        target, g, jk = seen[0]
+        assert isinstance(target, claripy.ast.bv.BV)
+        # Project is AMD64 (fauxware) — addresses are 64-bit.
+        assert target.size() == 64
+        assert g is guard
+        assert jk == 'Ijk_Boring'
+
+    def test_instruction_fires_during_exploration(self, fauxware_project):
+        """instruction BP receives events for every IMark during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_insn(s):
+            fire_count[0] += 1
+
+        mgr._get_inspect_proxy().b('instruction', when='before', action=on_insn)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 6) != 0
+        mgr.run(max_steps=3)
+        assert fire_count[0] > 0, "no instruction events captured"
+
+    def test_irsb_fires_during_exploration(self, fauxware_project):
+        """irsb BP receives at least one event per stepped block."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        addrs = []
+
+        def on_irsb(s):
+            addrs.append(s.inspect.address)
+
+        mgr._get_inspect_proxy().b('irsb', when='before', action=on_irsb)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 7) != 0
+        mgr.run(max_steps=3)
+        assert len(addrs) > 0, "no irsb events captured"
+        # Entry block of fauxware is around 0x400580 (_start) — any
+        # plausible code address suffices.
+        assert all(a > 0 for a in addrs)
+
+    def test_reg_read_fires_during_exploration(self, fauxware_project):
+        """reg_read BP fires on VEX IRExpr::Get during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_read(s):
+            fire_count[0] += 1
+
+        mgr._get_inspect_proxy().b('reg_read', when='after', action=on_read)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 2) != 0
+        mgr.run(max_steps=3)
+        assert fire_count[0] > 0, "no reg_read events captured"
+
+    def test_reg_write_fires_during_exploration(self, fauxware_project):
+        """reg_write BP fires on VEX IRStmt::Put during exploration."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        fire_count = [0]
+
+        def on_write(s):
+            fire_count[0] += 1
+
+        mgr._get_inspect_proxy().b('reg_write', when='after', action=on_write)
+        assert mgr._callbacks.get_inspect_enabled() & (1 << 3) != 0
+        mgr.run(max_steps=3)
+        assert fire_count[0] > 0, "no reg_write events captured"
+
+    def test_extended_events_skipped_when_no_bp(self, fauxware_project):
+        """With no BPs for the extended events, exploration runs normally
+        and the bitmask stays clear."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert mgr._callbacks.get_inspect_enabled() == 0
+        mgr.run(max_steps=3)
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

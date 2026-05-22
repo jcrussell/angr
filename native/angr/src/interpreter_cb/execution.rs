@@ -570,6 +570,13 @@ impl<'a> CallbackInterpreter<'a> {
             self.stats.prefetch_time_ns += start.elapsed().as_nanos() as u64;
         }
 
+        // state.inspect irsb event — fires `when='before'` at block entry,
+        // before any statement runs. Bit 7 in the inspect-enabled bitmask.
+        if callbacks.inspect_event_enabled(7) {
+            let _ =
+                callbacks.call_inspect_irsb(py, self.current_state_id, "before", irsb.addr);
+        }
+
         // Execute statements
         let mut stmt_total_ns: u64 = 0;
         for stmt in &irsb.statements {

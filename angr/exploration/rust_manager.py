@@ -943,14 +943,34 @@ class RustExplorationManager(
         # Track active exploration techniques (applied during exploration steps).
         self._active_techniques: list = []
 
-        # state.inspect MVP storage (angr-uq4n).
+        # state.inspect MVP storage (angr-uq4n, angr-d46u).
         # Manager-wide breakpoint registry — shared across all states this
         # manager owns. RustInspectProxy is the user-facing facade.
         # See docs/advanced-topics/rust_engine.rst for the MVP scope.
-        self._inspect_breakpoints: Dict[str, list] = {"mem_read": [], "mem_write": []}
+        self._inspect_breakpoints: Dict[str, list] = {
+            "mem_read": [],
+            "mem_write": [],
+            "reg_read": [],
+            "reg_write": [],
+            "instruction": [],
+            "irsb": [],
+            "exit": [],
+        }
         # Per-event bit positions on the Rust-side `inspect_enabled` bitmask.
-        # Must match `crate::state::InspectEvent` ordering.
-        self._INSPECT_EVENT_BITS = {"mem_read": 0, "mem_write": 1}
+        # Bits 0..=5 match `crate::state::InspectEvent` ordering; bit 4
+        # (fork) is reserved for future fork-event wiring. Bits 6 and 7 are
+        # custom (instruction, irsb) — angr Python exposes those as inspect
+        # events but they have no slot in the Rust InspectionManager enum.
+        self._INSPECT_EVENT_BITS = {
+            "mem_read": 0,
+            "mem_write": 1,
+            "reg_read": 2,
+            "reg_write": 3,
+            # bit 4 reserved for "fork" (not yet wired)
+            "exit": 5,
+            "instruction": 6,
+            "irsb": 7,
+        }
         # Reentrancy guard: when a user action callback runs, suppress
         # nested inspect dispatch on the same manager. uq4n.4 covers
         # the full guard test.
@@ -1224,13 +1244,23 @@ class RustExplorationManager(
             callbacks.set_memory_store_symbolic_full(self._cb_memory_store_symbolic_full)
         if hasattr(callbacks, 'set_memory_load_symbolic_full'):
             callbacks.set_memory_load_symbolic_full(self._cb_memory_load_symbolic_full)
-        # state.inspect MVP (angr-uq4n.2) — register dispatchers even when
-        # no BPs are set so the Rust side has a target if instrumentation
-        # fires unexpectedly. The bitmask gates actual dispatch.
+        # state.inspect MVP (angr-uq4n.2, angr-d46u) — register dispatchers
+        # even when no BPs are set so the Rust side has a target if
+        # instrumentation fires unexpectedly. The bitmask gates dispatch.
         if hasattr(callbacks, 'set_inspect_mem_read'):
             callbacks.set_inspect_mem_read(self._cb_inspect_mem_read)
         if hasattr(callbacks, 'set_inspect_mem_write'):
             callbacks.set_inspect_mem_write(self._cb_inspect_mem_write)
+        if hasattr(callbacks, 'set_inspect_reg_read'):
+            callbacks.set_inspect_reg_read(self._cb_inspect_reg_read)
+        if hasattr(callbacks, 'set_inspect_reg_write'):
+            callbacks.set_inspect_reg_write(self._cb_inspect_reg_write)
+        if hasattr(callbacks, 'set_inspect_instruction'):
+            callbacks.set_inspect_instruction(self._cb_inspect_instruction)
+        if hasattr(callbacks, 'set_inspect_irsb'):
+            callbacks.set_inspect_irsb(self._cb_inspect_irsb)
+        if hasattr(callbacks, 'set_inspect_exit'):
+            callbacks.set_inspect_exit(self._cb_inspect_exit)
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks
 
@@ -1882,21 +1912,17 @@ class RustExplorationManager(
                 pass
         return self._get_callback_state() or self._get_default_state()
 
-    def _dispatch_inspect_event(
-        self,
-        event_type: str,
-        state_id: int,
-        when: str,
-        addr: int,
-        size: int,
-        value_ast,
-        endness: str,
-    ):
-        """Common dispatch path for mem_read / mem_write inspect events.
+    def _dispatch_inspect_event(self, event_type: str, state_id: int, when: str, **attrs):
+        """Generic dispatch path for state.inspect events.
 
-        Builds kwargs for SimInspector.action — wrapping addr as a
-        claripy BVV when it arrives as a Python int. Reentrancy is
-        suppressed by `_inspect_dispatch_depth`.
+        Builds a RustStateProxy for `state_id`, then forwards `attrs` as
+        keyword arguments to `SimInspector.action` (via the manager-wide
+        RustInspectProxy). Reentrancy is suppressed by
+        `_inspect_dispatch_depth` to prevent a BP action that recursively
+        triggers another event from clobbering in-flight attributes.
+
+        Per-event-type kwargs are constructed by the `_cb_inspect_*`
+        callbacks — this layer is event-agnostic.
         """
         if self._inspect_dispatch_depth > 0:
             return  # reentrancy guard (uq4n.4)
@@ -1906,21 +1932,20 @@ class RustExplorationManager(
         state = self._make_inspect_state_for(state_id)
         if state is None:
             return
-        bits = self._project.arch.bits if self._project is not None else 64
-        addr_attr = claripy.BVV(addr, bits) if isinstance(addr, int) else addr
-        kwargs = {
-            f"{event_type}_address": addr_attr,
-            f"{event_type}_length": size,
-            f"{event_type}_expr": value_ast,
-            f"{event_type}_endness": endness,
-        }
         proxy = self._get_inspect_proxy()
         proxy.set_state(state)
         self._inspect_dispatch_depth += 1
         try:
-            proxy.action(event_type, when, **kwargs)
+            proxy.action(event_type, when, **attrs)
         finally:
             self._inspect_dispatch_depth -= 1
+
+    def _addr_attr_for(self, addr: int):
+        """Wrap an integer address in a claripy BVV at the project's word size."""
+        if not isinstance(addr, int):
+            return addr
+        bits = self._project.arch.bits if self._project is not None else 64
+        return claripy.BVV(addr, bits)
 
     def _cb_inspect_mem_read(
         self,
@@ -1934,7 +1959,11 @@ class RustExplorationManager(
         """PyO3 callback target for mem_read events from Rust."""
         try:
             self._dispatch_inspect_event(
-                "mem_read", state_id, when, addr, size, value_ast, endness
+                "mem_read", state_id, when,
+                mem_read_address=self._addr_attr_for(addr),
+                mem_read_length=size,
+                mem_read_expr=value_ast,
+                mem_read_endness=endness,
             )
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: user BP action errored. Log and
@@ -1954,10 +1983,95 @@ class RustExplorationManager(
         """PyO3 callback target for mem_write events from Rust."""
         try:
             self._dispatch_inspect_event(
-                "mem_write", state_id, when, addr, size, value_ast, endness
+                "mem_write", state_id, when,
+                mem_write_address=self._addr_attr_for(addr),
+                mem_write_length=size,
+                mem_write_expr=value_ast,
+                mem_write_endness=endness,
             )
         except Exception as e:
             l.warning("inspect mem_write dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_reg_read(
+        self,
+        state_id: int,
+        when: str,
+        offset: int,
+        size: int,
+        value_ast,
+    ):
+        """PyO3 callback target for reg_read events from Rust (IRExpr::Get)."""
+        try:
+            self._dispatch_inspect_event(
+                "reg_read", state_id, when,
+                reg_read_offset=offset,
+                reg_read_length=size,
+                reg_read_expr=value_ast,
+                reg_read_condition=None,
+                reg_read_endness=None,
+            )
+        except Exception as e:
+            l.warning("inspect reg_read dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_reg_write(
+        self,
+        state_id: int,
+        when: str,
+        offset: int,
+        size: int,
+        value_ast,
+    ):
+        """PyO3 callback target for reg_write events from Rust (IRStmt::Put)."""
+        try:
+            self._dispatch_inspect_event(
+                "reg_write", state_id, when,
+                reg_write_offset=offset,
+                reg_write_length=size,
+                reg_write_expr=value_ast,
+                reg_write_condition=None,
+                reg_write_endness=None,
+            )
+        except Exception as e:
+            l.warning("inspect reg_write dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_instruction(self, state_id: int, when: str, addr: int):
+        """PyO3 callback target for instruction events (one per IMark)."""
+        try:
+            self._dispatch_inspect_event(
+                "instruction", state_id, when,
+                instruction=addr,
+            )
+        except Exception as e:
+            l.warning("inspect instruction dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_irsb(self, state_id: int, when: str, addr: int):
+        """PyO3 callback target for irsb events (one per basic block)."""
+        try:
+            self._dispatch_inspect_event(
+                "irsb", state_id, when,
+                address=addr,
+            )
+        except Exception as e:
+            l.warning("inspect irsb dispatch failed: %s: %s", type(e).__name__, e)
+
+    def _cb_inspect_exit(
+        self,
+        state_id: int,
+        when: str,
+        target: int,
+        jumpkind: str,
+        guard_ast,
+    ):
+        """PyO3 callback target for VEX conditional exit events."""
+        try:
+            self._dispatch_inspect_event(
+                "exit", state_id, when,
+                exit_target=self._addr_attr_for(target),
+                exit_guard=guard_ast,
+                exit_jumpkind=jumpkind,
+            )
+        except Exception as e:
+            l.warning("inspect exit dispatch failed: %s: %s", type(e).__name__, e)
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""

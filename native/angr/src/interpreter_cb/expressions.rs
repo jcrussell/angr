@@ -43,7 +43,9 @@ impl<'a> CallbackInterpreter<'a> {
 
             IRExpr::Get { offset, ty } => {
                 let size = ty.bytes();
-                Ok(self.registers.get(*offset, size, self.ctx))
+                let value = self.registers.get(*offset, size, self.ctx);
+                self.dispatch_reg_read_inspect(py, callbacks, *offset, size, &value);
+                Ok(value)
             }
 
             IRExpr::Load { addr, ty, endness } => {
@@ -887,6 +889,42 @@ impl<'a> CallbackInterpreter<'a> {
             size as u32,
             Some(&value_ast),
             endness_str,
+        );
+    }
+
+    /// Fire a `reg_read` inspect callback into Python for a VEX `Get`.
+    ///
+    /// Gated on `inspect_event_enabled(RegRead)` so the no-breakpoint case
+    /// is one bitmask test per `IRExpr::Get`. Dispatches `when='after'`
+    /// with the loaded register value as `reg_read_expr`. Errors from the
+    /// Python callback are swallowed and logged on the Python side.
+    fn dispatch_reg_read_inspect(
+        &self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        offset: u32,
+        size: u32,
+        value: &RustBV,
+    ) {
+        // RegRead = InspectEvent variant 2.
+        if !callbacks.inspect_event_enabled(2) {
+            return;
+        }
+        let claripy_mod = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let value_ast = match crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = callbacks.call_inspect_reg_read(
+            py,
+            self.current_state_id,
+            "after",
+            offset,
+            size,
+            Some(&value_ast),
         );
     }
 }

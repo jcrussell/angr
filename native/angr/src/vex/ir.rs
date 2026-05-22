@@ -1306,6 +1306,35 @@ impl JumpKind {
     pub fn is_ret(&self) -> bool {
         matches!(self, JumpKind::Ret)
     }
+
+    /// Return the VEX `Ijk_*` tag name for this jumpkind. Used by the
+    /// state.inspect exit dispatcher to match angr Python's exit_jumpkind
+    /// attribute convention.
+    pub fn ijk_name(&self) -> &'static str {
+        match self {
+            JumpKind::Boring => "Ijk_Boring",
+            JumpKind::Call => "Ijk_Call",
+            JumpKind::Ret => "Ijk_Ret",
+            JumpKind::Sys_syscall => "Ijk_Sys_syscall",
+            JumpKind::Sys_int128 => "Ijk_Sys_int128",
+            JumpKind::Sys_int129 => "Ijk_Sys_int129",
+            JumpKind::Sys_int130 => "Ijk_Sys_int130",
+            JumpKind::Sys_int145 => "Ijk_Sys_int145",
+            JumpKind::Sys_int210 => "Ijk_Sys_int210",
+            JumpKind::Sys_sysenter => "Ijk_Sys_sysenter",
+            JumpKind::ClientReq => "Ijk_ClientReq",
+            JumpKind::Yield => "Ijk_Yield",
+            JumpKind::EmWarn => "Ijk_EmWarn",
+            JumpKind::EmFail => "Ijk_EmFail",
+            JumpKind::NoDecode => "Ijk_NoDecode",
+            JumpKind::MapFail => "Ijk_MapFail",
+            JumpKind::InvalICache => "Ijk_InvalICache",
+            JumpKind::FlushDCache => "Ijk_FlushDCache",
+            JumpKind::FlushDCacheLine => "Ijk_FlushDCacheLine",
+            JumpKind::ExtV128 => "Ijk_ExtV128",
+            JumpKind::Extension => "Ijk_Extension",
+        }
+    }
 }
 
 /// Endianness.

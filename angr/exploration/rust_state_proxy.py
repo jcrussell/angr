@@ -810,12 +810,20 @@ _INSPECT_NOT_IMPLEMENTED_MSG = (
 # Events that the Rust-engine inspect MVP knows how to dispatch.
 # Anything outside this set still raises NotImplementedError on registration
 # so users don't silently miss events. Expand as further events are wired.
-_RUST_INSPECT_SUPPORTED_EVENTS = frozenset({"mem_read", "mem_write"})
+_RUST_INSPECT_SUPPORTED_EVENTS = frozenset({
+    "mem_read",
+    "mem_write",
+    "reg_read",
+    "reg_write",
+    "instruction",
+    "irsb",
+    "exit",
+})
 
 _INSPECT_EVENT_NOT_SUPPORTED_MSG = (
-    "Rust engine inspect MVP only dispatches mem_read / mem_write events; "
-    "got event_type={!r}. Drop to use_rust_engine=False for full "
-    "state.inspect coverage."
+    "Rust engine inspect dispatches mem_read / mem_write / reg_read / "
+    "reg_write / instruction / irsb / exit events; got event_type={!r}. "
+    "Drop to use_rust_engine=False for full state.inspect coverage."
 )
 
 
@@ -860,6 +868,31 @@ _RUST_INSPECT_ATTRS_BY_EVENT = {
         "mem_write_expr",
         "mem_write_condition",
         "mem_write_endness",
+    ),
+    "reg_read": (
+        "reg_read_offset",
+        "reg_read_length",
+        "reg_read_expr",
+        "reg_read_condition",
+        "reg_read_endness",
+    ),
+    "reg_write": (
+        "reg_write_offset",
+        "reg_write_length",
+        "reg_write_expr",
+        "reg_write_condition",
+        "reg_write_endness",
+    ),
+    "instruction": (
+        "instruction",
+    ),
+    "irsb": (
+        "address",
+    ),
+    "exit": (
+        "exit_target",
+        "exit_guard",
+        "exit_jumpkind",
     ),
 }
 

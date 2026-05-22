@@ -379,6 +379,31 @@ pub struct PythonCallbacks {
     /// Signature mirrors `inspect_mem_read` but `value_ast` is the data
     /// being stored (set on BEFORE and AFTER).
     pub inspect_mem_write: Option<Py<PyAny>>,
+    /// Callback for state.inspect reg_read events.
+    /// Signature:
+    ///   fn(state_id: int, when: str, offset: int, size: int,
+    ///      value_ast: object | None) -> None
+    /// `value_ast` carries the loaded register value on AFTER (None on BEFORE).
+    /// Only dispatched when bit InspectEvent::RegRead in `inspect_enabled` is set.
+    pub inspect_reg_read: Option<Py<PyAny>>,
+    /// Callback for state.inspect reg_write events.
+    /// Signature mirrors `inspect_reg_read`; `value_ast` is the value being
+    /// written to the register file.
+    pub inspect_reg_write: Option<Py<PyAny>>,
+    /// Callback for state.inspect instruction events (one per IMark).
+    /// Signature: fn(state_id: int, when: str, addr: int) -> None.
+    /// Fired BEFORE the instruction's VEX statements execute.
+    pub inspect_instruction: Option<Py<PyAny>>,
+    /// Callback for state.inspect irsb events (one per basic block).
+    /// Signature: fn(state_id: int, when: str, addr: int) -> None.
+    /// Fired BEFORE the first statement of the IRSB.
+    pub inspect_irsb: Option<Py<PyAny>>,
+    /// Callback for state.inspect exit events (conditional VEX exits).
+    /// Signature: fn(state_id: int, when: str, target: int, jumpkind: str,
+    ///                guard_ast: object) -> None.
+    /// Fired BEFORE the branch is taken. `guard_ast` is the symbolic guard
+    /// condition (claripy AST). `jumpkind` is the VEX Ijk_* tag name.
+    pub inspect_exit: Option<Py<PyAny>>,
     /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
@@ -421,6 +446,11 @@ impl PythonCallbacks {
             resolve_function: None,
             inspect_mem_read: None,
             inspect_mem_write: None,
+            inspect_reg_read: None,
+            inspect_reg_write: None,
+            inspect_instruction: None,
+            inspect_irsb: None,
+            inspect_exit: None,
             inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
         }
     }
@@ -633,6 +663,39 @@ impl PythonCallbacks {
         self.inspect_mem_write = Some(cb);
     }
 
+    /// Set the inspect reg_read callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, offset: int, size: int,
+    ///                value_ast: object | None) -> None`
+    pub fn set_inspect_reg_read(&mut self, cb: Py<PyAny>) {
+        self.inspect_reg_read = Some(cb);
+    }
+
+    /// Set the inspect reg_write callback.
+    pub fn set_inspect_reg_write(&mut self, cb: Py<PyAny>) {
+        self.inspect_reg_write = Some(cb);
+    }
+
+    /// Set the inspect instruction callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, addr: int) -> None`.
+    pub fn set_inspect_instruction(&mut self, cb: Py<PyAny>) {
+        self.inspect_instruction = Some(cb);
+    }
+
+    /// Set the inspect irsb (block) callback.
+    pub fn set_inspect_irsb(&mut self, cb: Py<PyAny>) {
+        self.inspect_irsb = Some(cb);
+    }
+
+    /// Set the inspect exit (conditional branch) callback.
+    ///
+    /// Signature: `fn(state_id: int, when: str, target: int, jumpkind: str,
+    ///                guard_ast: object) -> None`.
+    pub fn set_inspect_exit(&mut self, cb: Py<PyAny>) {
+        self.inspect_exit = Some(cb);
+    }
+
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
@@ -686,6 +749,75 @@ impl PythonCallbacks {
         self.call_inspect_mem_write(py, state_id, when, addr, size, value_ast.as_ref(), endness)
     }
 
+    /// Test entry point: invoke the registered reg_read callback directly.
+    #[pyo3(name = "call_inspect_reg_read")]
+    #[pyo3(signature = (state_id, when, offset, size, value_ast))]
+    pub fn py_call_inspect_reg_read(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        offset: u32,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.call_inspect_reg_read(py, state_id, when, offset, size, value_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered reg_write callback directly.
+    #[pyo3(name = "call_inspect_reg_write")]
+    #[pyo3(signature = (state_id, when, offset, size, value_ast))]
+    pub fn py_call_inspect_reg_write(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        offset: u32,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.call_inspect_reg_write(py, state_id, when, offset, size, value_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered instruction callback directly.
+    #[pyo3(name = "call_inspect_instruction")]
+    pub fn py_call_inspect_instruction(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+    ) -> PyResult<()> {
+        self.call_inspect_instruction(py, state_id, when, addr)
+    }
+
+    /// Test entry point: invoke the registered irsb callback directly.
+    #[pyo3(name = "call_inspect_irsb")]
+    pub fn py_call_inspect_irsb(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+    ) -> PyResult<()> {
+        self.call_inspect_irsb(py, state_id, when, addr)
+    }
+
+    /// Test entry point: invoke the registered exit callback directly.
+    #[pyo3(name = "call_inspect_exit")]
+    #[pyo3(signature = (state_id, when, target, jumpkind, guard_ast))]
+    pub fn py_call_inspect_exit(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        target: u64,
+        jumpkind: &str,
+        guard_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.call_inspect_exit(py, state_id, when, target, jumpkind, guard_ast.as_ref())
+    }
+
     /// Check if all required callbacks are set.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
@@ -734,6 +866,11 @@ impl PythonCallbacks {
             &self.resolve_function,
             &self.inspect_mem_read,
             &self.inspect_mem_write,
+            &self.inspect_reg_read,
+            &self.inspect_reg_write,
+            &self.inspect_instruction,
+            &self.inspect_irsb,
+            &self.inspect_exit,
         ] {
             if let Some(obj) = opt {
                 visit.call(obj)?;
@@ -766,6 +903,11 @@ impl PythonCallbacks {
         self.resolve_function = None;
         self.inspect_mem_read = None;
         self.inspect_mem_write = None;
+        self.inspect_reg_read = None;
+        self.inspect_reg_write = None;
+        self.inspect_instruction = None;
+        self.inspect_irsb = None;
+        self.inspect_exit = None;
         self.inspect_enabled
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -841,6 +983,104 @@ impl PythonCallbacks {
             None => py.None(),
         };
         cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect reg_read callback.
+    pub fn call_inspect_reg_read(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        offset: u32,
+        size: u32,
+        value_ast: Option<&Py<PyAny>>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_reg_read.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let value_obj: Py<PyAny> = match value_ast {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, offset, size, value_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect reg_write callback.
+    pub fn call_inspect_reg_write(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        offset: u32,
+        size: u32,
+        value_ast: Option<&Py<PyAny>>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_reg_write.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let value_obj: Py<PyAny> = match value_ast {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, offset, size, value_obj))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect instruction callback.
+    pub fn call_inspect_instruction(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_instruction.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        cb.call1(py, (state_id, when, addr))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect irsb (block) callback.
+    pub fn call_inspect_irsb(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_irsb.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        cb.call1(py, (state_id, when, addr))?;
+        Ok(())
+    }
+
+    /// Invoke the Python inspect exit (conditional branch) callback.
+    pub fn call_inspect_exit(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        target: u64,
+        jumpkind: &str,
+        guard_ast: Option<&Py<PyAny>>,
+    ) -> PyResult<()> {
+        let cb = match self.inspect_exit.as_ref() {
+            Some(cb) => cb,
+            None => return Ok(()),
+        };
+        let guard_obj: Py<PyAny> = match guard_ast {
+            Some(v) => v.clone_ref(py),
+            None => py.None(),
+        };
+        cb.call1(py, (state_id, when, target, jumpkind, guard_obj))?;
         Ok(())
     }
 

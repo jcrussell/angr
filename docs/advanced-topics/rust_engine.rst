@@ -13,7 +13,8 @@ users need to know before reaching for the Rust engine. It is the
 single source of truth for:
 
 * which ``angr.sim_options`` flags it actually honors,
-* why ``state.inspect`` does not fire under it, and
+* which ``state.inspect`` events it dispatches (and which still raise),
+  and
 * which benchmarks run slower than pure Python and why.
 
 Overview
@@ -26,9 +27,12 @@ Overview
   ``KEEP_IP_SYMBOLIC``.
   Everything else is either inherited from Python or silently ignored —
   see the matrix below.
-* **No** ``state.inspect`` **dispatch.** Registration raises
-  ``NotImplementedError``. Use the Python engine for breakpoint-driven
-  analyses.
+* **Partial** ``state.inspect`` **dispatch.** The Rust engine dispatches
+  ``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``,
+  ``instruction``, ``irsb``, and ``exit`` events to Python BPs.
+  Unsupported events (``call``, ``fork``, ``return``, ``syscall``,
+  ``constraints``, ``simprocedure``, ``dirty``, …) still raise
+  ``NotImplementedError`` at registration time.
 * **Performance:** Faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side cache pressure,
   x87 transcendental fallbacks, or bimodal Z3 solver nondeterminism.
@@ -942,48 +946,79 @@ read sites in ``angr/exploration/rust_manager.py`` (lines 697–706,
 ``sim_options.py``, add a row here and either wire detection into
 ``rust_manager.py`` (Honored) or classify the silent-ignore reason.
 
-state.inspect is not supported
-------------------------------
+state.inspect dispatch (partial)
+--------------------------------
 
-The Rust symbolic-execution engine (``RustExplorationManager``) does
-**not** dispatch ``state.inspect`` breakpoints. Any code that registers
-an inspect hook on a ``RustStateProxy`` will raise
-``NotImplementedError`` at registration time so that the failure is
-loud.
+The Rust symbolic-execution engine (``RustExplorationManager``)
+dispatches a curated subset of ``state.inspect`` events to Python
+breakpoints. Unsupported events still raise ``NotImplementedError`` at
+registration time so that gaps remain loud.
 
-Affected API
-~~~~~~~~~~~~
+Supported events
+~~~~~~~~~~~~~~~~
 
-All five registration methods on ``state.inspect`` raise:
+============   ============   =====================================================
+Event          Fires when     BP attributes
+============   ============   =====================================================
+``mem_read``    ``after``      ``mem_read_address``, ``mem_read_length``,
+                              ``mem_read_expr``, ``mem_read_endness``
+``mem_write``   ``after``      ``mem_write_address``, ``mem_write_length``,
+                              ``mem_write_expr``, ``mem_write_endness``
+``reg_read``    ``after``      ``reg_read_offset``, ``reg_read_length``,
+                              ``reg_read_expr``
+``reg_write``   ``after``      ``reg_write_offset``, ``reg_write_length``,
+                              ``reg_write_expr``
+``instruction`` ``before``     ``instruction`` (address)
+``irsb``        ``before``     ``address`` (block start)
+``exit``        ``before``     ``exit_target``, ``exit_guard``,
+                              ``exit_jumpkind``
+============   ============   =====================================================
 
-* ``state.inspect.b(event, when=..., action=...)``
-* ``state.inspect.make_breakpoint(event, ...)``
-* ``state.inspect.add_breakpoint(event, bp)``
-* ``state.inspect.remove_breakpoint(event, idx_or_bp)``
-* ``state.inspect.action(event, action)``
+Each event has a corresponding bit in the inspect-enabled bitmask read
+by every Rust dispatch site; with no BPs registered the cost is one
+``& != 0`` branch per VEX statement of that kind. Memory-event BPs
+trigger on concrete addresses only — symbolic-address loads/stores are
+skipped for the MVP.
 
-Inspect events covered (and therefore unsupported) include
-``mem_read``, ``mem_write``, ``reg_read``, ``reg_write``, ``tmp_read``,
-``tmp_write``, ``address_concretization``, ``expr``, ``statement``,
-``instruction``, ``irsb``, ``constraints``, ``exit``, ``fork``,
-``symbolic_variable``, ``simprocedure``, ``engine_process``,
-``path_step``, ``dirty``, and ``syscall``.
+Unsupported events
+~~~~~~~~~~~~~~~~~~
 
-Why it raises instead of warning
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Registering a BP for any of ``call``, ``fork``, ``return``,
+``syscall``, ``constraints``, ``simprocedure``, ``dirty``,
+``address_concretization``, ``expr``, ``statement``, ``tmp_read``,
+``tmp_write``, ``vex_lift``, ``symbolic_variable``, ``engine_process``,
+or ``memory_page_map`` raises ``NotImplementedError`` with a message
+pointing at this document. ``_NoOpInspectProxy`` previously silently
+accepted every registration (see angr-osuu); raising loudly prevents
+users from depending on a feature the engine cannot fulfill.
 
-``_NoOpInspectProxy`` previously silently accepted breakpoint
-registration but never fired any callback (see angr-osuu). That caused
-taint-tracking and analyzer techniques to appear to work but produce
-wrong results. Raising ``NotImplementedError`` at registration prevents
-users from unknowingly depending on a feature the engine cannot
-fulfill.
+Manager-wide BP storage
+~~~~~~~~~~~~~~~~~~~~~~~
 
-Workaround
+Inspect breakpoints are stored on ``RustExplorationManager``, not on
+individual proxies. All ``RustStateProxy.inspect`` accessors return the
+same manager-wide ``RustInspectProxy`` instance, and a BP registered
+once applies to every state in that manager. This is a deviation from
+Python's ``SimInspector`` semantics, where ``state.copy()`` forks
+breakpoints with the state.
+
+Reentrancy
 ~~~~~~~~~~
 
-Drop back to the Python engine for analyses that rely on
-``state.inspect``:
+A BP action that triggers another inspect dispatch on the same manager
+is suppressed via ``_inspect_dispatch_depth`` — outer attrs would
+otherwise be clobbered by the inner action. The state owning the
+firing event is currently held by the interpreter (not in any stash),
+so reads through ``RustStateProxy`` from inside a BP raise a "state not
+found" error that the dispatcher swallows. Use the BP attributes
+(``s.inspect.mem_read_address`` etc.) rather than going through the
+proxy.
+
+Workaround for unsupported events
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Drop back to the Python engine for analyses that rely on events outside
+the supported set:
 
 .. code-block:: python
 
@@ -992,43 +1027,28 @@ Drop back to the Python engine for analyses that rely on
    proj = angr.Project("/path/to/binary", auto_load_libs=False)
    state = proj.factory.entry_state()
 
-   # Python engine (default) — state.inspect works normally
+   # Python engine (default) — full state.inspect coverage
    mgr = proj.factory.simulation_manager(state)
-   state.inspect.b("mem_read", when=angr.BP_BEFORE, action=my_callback)
+   state.inspect.b("call", when=angr.BP_BEFORE, action=my_callback)
    mgr.explore(find=0x401234)
 
-If only part of an exploration needs inspect, run the Rust engine first
-to reach an interesting region and then continue with the Python engine
-from the resulting state(s) — ``mgr.found[i]`` returns full
-``SimState`` objects that can seed a Python ``SimulationManager``.
-
-Why not implement breakpoint plumbing in Rust?
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The Rust ``InspectionManager`` (in ``native/angr/src/state.rs``)
-already has a ring buffer and per-event bitmask scaffold (commit
-a07a999f4), but events are not auto-fired from the interpreter loop.
-Adding dispatch would require:
-
-#. Per-event call sites scattered throughout the VEX interpreter,
-   memory model, solver, and exit handlers.
-#. A marshalling path that turns Rust events into Python callable
-   invocations on the right ``SimState``-equivalent object (today the
-   callback API receives a ``SimState``, not a ``RustStateProxy``).
-#. Care about reentrancy: an ``action`` callback that mutates state
-   must round-trip through the Rust state without breaking interpreter
-   invariants.
-
-That is multi-session work that needs design first. Until and unless
-that demand materializes, the documented limitation is the contract.
+If only part of an exploration needs an unsupported event, run the
+Rust engine first to reach an interesting region and then continue
+with the Python engine from the resulting state(s) — ``mgr.found[i]``
+returns full ``SimState`` objects that can seed a Python
+``SimulationManager``.
 
 Decision history
 ~~~~~~~~~~~~~~~~
 
 * ``angr-osuu`` (2026-05-08): replaced silent no-op with
   ``NotImplementedError`` on registration.
-* ``angr-mq8l`` (2026-05-10): formalized the limitation (Option B),
-  pointed the error message at this document, and updated CLAUDE.md.
+* ``angr-mq8l`` (2026-05-10): formalized the no-dispatch limitation
+  and pointed the error message at this document.
+* ``angr-uq4n`` (2026-05-16): wired ``mem_read`` + ``mem_write``
+  dispatch from VEX ``IRExpr::Load`` / ``IRStmt::Store``.
+* ``angr-d46u`` (2026-05-22): extended dispatch to ``reg_read``,
+  ``reg_write``, ``instruction``, ``irsb``, and ``exit`` events.
 
 Known slower benchmarks
 -----------------------
