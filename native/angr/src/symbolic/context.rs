@@ -1463,6 +1463,32 @@ impl SymContext {
     /// Returns the tracker index assigned to this constraint, which is also
     /// the index that will appear in [`Self::unsat_core`] output if the
     /// constraint participates in the unsat core.
+    ///
+    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2b; mirrors the
+    /// pattern landed in slice 4c.1 for [`Self::add_constraint`] and slice
+    /// 4c.2 for [`Self::add_constraint_raw`]):
+    ///
+    /// - **None** (today's only production path): calls
+    ///   `solver.assert_and_track(&constraint, &track_bool)` on the
+    ///   per-context Z3 solver — byte-identical to the pre-slice
+    ///   `self.with_z3_solver(|s| s.assert_and_track(...))` call. Full
+    ///   unsat-core fidelity preserved.
+    /// - **Some** (shared-lineage): mints a fresh
+    ///   [`ScopeFrame`](super::lineage::ScopeFrame) carrying the bare
+    ///   constraint, appends it to `self.scope_path`, and calls
+    ///   [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
+    ///   to push the new frame onto the shared solver. The tracker is
+    ///   still registered in `constraint_trackers` so the returned index
+    ///   stays stable, but the frame's `z3_assertion` is asserted via
+    ///   plain `assert` inside `switch_to` — Z3's `get_unsat_core()` will
+    ///   NOT report this constraint's tracker if it participates in an
+    ///   unsat core under a lineage-installed context. Lineage-mode
+    ///   unsat-core fidelity is intentionally deferred: switch_to would
+    ///   need an `assert_and_track`-aware variant (and a tracker field on
+    ///   `ScopeFrame`) to re-register the tracker on every state load.
+    ///   See `add_constraint`'s rationale for why the Some branch can't
+    ///   route through `with_z3_solver`'s closure form (it would land
+    ///   the assert at scope 0 = the lineage base = sibling leak).
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_tracked_indexed(&self, constraint: z3::ast::Bool) -> usize {
         let idx = self.constraint_count.load(Ordering::SeqCst);
@@ -1476,7 +1502,24 @@ impl SymContext {
             i
         };
 
-        self.with_z3_solver(|solver| solver.assert_and_track(&constraint, &track_bool));
+        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        match lineage {
+            None => {
+                let solver = self.solver();
+                solver.assert_and_track(&constraint, &track_bool);
+            }
+            Some(lin) => {
+                let frame = super::lineage::ScopeFrame::new(true, constraint.clone());
+                let path_snapshot = {
+                    let mut sp = self.scope_path.lock();
+                    sp.push(frame);
+                    sp.clone()
+                };
+                let mut guard = lin.lock();
+                guard.switch_to(&path_snapshot);
+            }
+        }
+
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
         self.invalidate_model_if_inconsistent(&constraint);
@@ -3193,7 +3236,15 @@ impl SymContext {
     /// lineage (None → bare per-context Z3 push/pop; Some → record/
     /// restore `scope_path.len()` on the new `scope_savepoints`
     /// stack). No public-API callers migrated yet — those come in
-    /// slice 4b.2 (push) and 4b.3 (pop).
+    /// slice 4b.2 (push) and 4b.3 (pop). Slice 4c.2b migrates
+    /// `add_constraint_tracked_indexed` off the `with_z3_solver`
+    /// dispatcher onto its own lineage-aware inline match — same shape
+    /// as 4c.1/4c.2. The None branch keeps full unsat-core fidelity
+    /// (`assert_and_track` on the per-context solver); the Some branch
+    /// mints a `ScopeFrame` carrying the bare constraint and routes
+    /// through `switch_to`, intentionally deferring unsat-core fidelity
+    /// (`switch_to` uses plain `assert`, so the tracker is not
+    /// re-registered on lineage reloads).
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
@@ -4160,6 +4211,135 @@ mod tests {
         // Sibling B references the same named symbol but is unconstrained
         // — switch_to to B's empty scope_path must pop A's frame first.
         let x_b = RustBV::symbolic(&sibling_b, "test_add_constraint_raw_sibling_x", 8);
+        assert!(sibling_b.solution(&x_b, 42));
+        assert!(sibling_b.solution(&x_b, 99));
+
+        // A still sees x == 5.
+        assert!(sibling_a.solution(&x_a, 5));
+        assert!(!sibling_a.solution(&x_a, 42));
+    }
+
+    /// angr-v5a5 slice 4c.2b: with no lineage attached,
+    /// `add_constraint_tracked_indexed` must hit the per-context Z3 solver
+    /// via `assert_and_track` — byte-identical behavior to the pre-slice
+    /// `self.with_z3_solver(|s| s.assert_and_track(...))` call. The
+    /// tracker registers in `constraint_trackers` and the returned index
+    /// matches the trackers vector position. Mirrors
+    /// `test_add_constraint_none_branch_no_scope_path` plus an explicit
+    /// unsat-core fidelity check.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
+        let ctx = SymContext::new();
+        assert!(ctx.lineage_arc().is_none());
+        assert_eq!(ctx.scope_path_len(), 0);
+
+        let x = RustBV::symbolic(&ctx, "test_act_indexed_none_x", 8);
+        let five = RustBV::concrete(5, 8);
+        let ten = RustBV::concrete(10, 8);
+
+        // Tracked constraint 1: x == 5.
+        let c1 = x.eq(&five, &ctx).to_z3_bool();
+        let idx1 = ctx.add_constraint_tracked_indexed(c1);
+        assert_eq!(idx1, 0, "first tracker registered at index 0");
+
+        // None branch must not touch scope_path.
+        assert_eq!(
+            ctx.scope_path_len(),
+            0,
+            "None branch must not mint scope frames"
+        );
+
+        // Constraint must be in force on the per-context solver.
+        assert!(ctx.solution(&x, 5));
+        assert!(!ctx.solution(&x, 6));
+
+        // Tracked constraint 2: x == 10 (deliberately UNSAT against c1).
+        let c2 = x.eq(&ten, &ctx).to_z3_bool();
+        let idx2 = ctx.add_constraint_tracked_indexed(c2);
+        assert_eq!(idx2, 1, "second tracker registered at index 1");
+
+        // Both trackers should appear in the unsat core — full fidelity
+        // is preserved on the None branch.
+        assert!(!ctx.is_sat(), "x == 5 ∧ x == 10 must be UNSAT");
+        let core = ctx.unsat_core();
+        assert!(
+            core.contains(&idx1) && core.contains(&idx2),
+            "None branch unsat_core must include both tracker indices; got {:?}",
+            core
+        );
+    }
+
+    /// angr-v5a5 slice 4c.2b: with a lineage attached,
+    /// `add_constraint_tracked_indexed` mints a fresh `ScopeFrame`,
+    /// appends it to `scope_path`, and routes the assert through the
+    /// shared solver's `switch_to` — same shape as 4c.1/4c.2's Some-branch
+    /// tests. The tracker registers in `constraint_trackers` (so the
+    /// returned index is stable) but `switch_to` uses plain `assert`,
+    /// so unsat-core fidelity is intentionally deferred here.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+        assert_eq!(ctx.scope_path_len(), 0);
+
+        let x = RustBV::symbolic(&ctx, "test_act_indexed_some_x", 8);
+        let five = RustBV::concrete(5, 8);
+        let constraint = x.eq(&five, &ctx).to_z3_bool();
+        let idx = ctx.add_constraint_tracked_indexed(constraint);
+        assert_eq!(
+            idx, 0,
+            "tracker index 0 expected even with lineage installed"
+        );
+
+        // Some branch must mint exactly one frame on scope_path.
+        assert_eq!(
+            ctx.scope_path_len(),
+            1,
+            "Some branch must mint one scope frame per add_constraint_tracked_indexed"
+        );
+
+        // The frame must have been pushed onto the shared solver — its
+        // loaded_depth should match scope_path's length.
+        assert_eq!(
+            lin.lock().loaded_depth(),
+            1,
+            "switch_to must have pushed the new frame onto the shared solver"
+        );
+    }
+
+    /// angr-v5a5 slice 4c.2b: sibling isolation invariant for the
+    /// tracked-indexed path — the constraint minted by sibling A's
+    /// `add_constraint_tracked_indexed` must NOT be visible when sibling
+    /// B issues a query through the same shared lineage solver. Mirrors
+    /// `test_add_constraint_sibling_isolation` for the tracked variant.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_tracked_indexed_sibling_isolation() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let sibling_a = SymContext::new();
+        let sibling_b = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        sibling_a.set_lineage_for_testing(Arc::clone(&lin));
+        sibling_b.set_lineage_for_testing(Arc::clone(&lin));
+
+        // Sibling A adds tracked x == 5.
+        let x_a = RustBV::symbolic(&sibling_a, "test_act_indexed_sibling_x", 8);
+        let five = RustBV::concrete(5, 8);
+        let constraint = x_a.eq(&five, &sibling_a).to_z3_bool();
+        let _ = sibling_a.add_constraint_tracked_indexed(constraint);
+        assert_eq!(sibling_a.scope_path_len(), 1);
+        assert_eq!(sibling_b.scope_path_len(), 0);
+
+        // Sibling B references the same named symbol but is unconstrained
+        // — switch_to to B's empty scope_path must pop A's frame first.
+        let x_b = RustBV::symbolic(&sibling_b, "test_act_indexed_sibling_x", 8);
         assert!(sibling_b.solution(&x_b, 42));
         assert!(sibling_b.solution(&x_b, 99));
 
