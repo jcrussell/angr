@@ -1583,68 +1583,74 @@ impl SymContext {
         // Use native Bool to avoid ITE wrapping overhead
         let bool_ast = cond.to_z3_bool();
 
-        let solver = self.solver();
+        // All three branches share one solver lock acquisition via
+        // with_z3_solver. The push/pop pairs are balanced inside the
+        // closure (every push has a matching pop), so the underlying
+        // Z3 scope stack returns to its pre-closure depth before f
+        // returns — safe for both the None (per-context) and Some
+        // (shared-lineage) dispatch paths.
+        self.with_z3_solver(|solver| {
+            // Try to predict one direction with the cached parent model.
+            let predicted: Option<bool> = self
+                .model_cache
+                .borrow()
+                .as_ref()
+                .and_then(|m| m.eval(&bool_ast, true))
+                .and_then(|b| b.as_bool());
 
-        // Try to predict one direction with the cached parent model.
-        let predicted: Option<bool> = self
-            .model_cache
-            .borrow()
-            .as_ref()
-            .and_then(|m| m.eval(&bool_ast, true))
-            .and_then(|b| b.as_bool());
-
-        match predicted {
-            Some(true) => {
-                Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-                // can_be_true=true is proven by the model. Check the other
-                // direction (¬cond) with Z3.
-                solver.push();
-                solver.assert(&bool_ast.not());
-                let can_false = matches!(
-                    timed_check(&solver, CheckSite::BranchFalse),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
-                (true, can_false)
-            }
-            Some(false) => {
-                Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-                // can_be_false=true is proven by the model. Check cond.
-                solver.push();
-                solver.assert(&bool_ast);
-                let can_true = matches!(
-                    timed_check(&solver, CheckSite::BranchTrue),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
-                (can_true, true)
-            }
-            None => {
-                Z3_BRANCH_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                // No cached model: do the original two-check flow.
-                solver.push();
-                solver.assert(&bool_ast);
-                let can_true = matches!(
-                    timed_check(&solver, CheckSite::BranchTrue),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
-
-                if !can_true {
-                    return (false, true); // Must be false-only
+            match predicted {
+                Some(true) => {
+                    Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    // can_be_true=true is proven by the model. Check the
+                    // other direction (¬cond) with Z3.
+                    solver.push();
+                    solver.assert(&bool_ast.not());
+                    let can_false = matches!(
+                        timed_check(solver, CheckSite::BranchFalse),
+                        z3::SatResult::Sat
+                    );
+                    solver.pop(1);
+                    (true, can_false)
                 }
+                Some(false) => {
+                    Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    // can_be_false=true is proven by the model. Check cond.
+                    solver.push();
+                    solver.assert(&bool_ast);
+                    let can_true = matches!(
+                        timed_check(solver, CheckSite::BranchTrue),
+                        z3::SatResult::Sat
+                    );
+                    solver.pop(1);
+                    (can_true, true)
+                }
+                None => {
+                    Z3_BRANCH_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+                    // No cached model: do the original two-check flow.
+                    solver.push();
+                    solver.assert(&bool_ast);
+                    let can_true = matches!(
+                        timed_check(solver, CheckSite::BranchTrue),
+                        z3::SatResult::Sat
+                    );
+                    solver.pop(1);
 
-                solver.push();
-                solver.assert(&bool_ast.not());
-                let can_false = matches!(
-                    timed_check(&solver, CheckSite::BranchFalse),
-                    z3::SatResult::Sat
-                );
-                solver.pop(1);
+                    if !can_true {
+                        return (false, true); // Must be false-only
+                    }
 
-                (can_true, can_false)
+                    solver.push();
+                    solver.assert(&bool_ast.not());
+                    let can_false = matches!(
+                        timed_check(solver, CheckSite::BranchFalse),
+                        z3::SatResult::Sat
+                    );
+                    solver.pop(1);
+
+                    (can_true, can_false)
+                }
             }
-        }
+        })
     }
 
     /// Evaluate a bitvector to a concrete value if possible.
@@ -2885,8 +2891,16 @@ impl SymContext {
     /// have fired); slice 3i migrated `eval_wide` (same three Z3 ops as
     /// `eval` but returning `Option<Vec<u8>>` via `extract_bv_value_wide`;
     /// no `model_cache`/`sat_cache` writes since the original didn't have
-    /// them). Remaining callers (`check_branch_feasibility`, `min`,
-    /// `max`, push/pop, transaction_*) will migrate in subsequent slices.
+    /// them); slice 3j migrated `check_branch_feasibility` (first
+    /// migration with balanced `push`/`pop` pairs inside the closure and
+    /// a three-armed match on the model-cache prediction — the predicted
+    /// `Option<bool>` is computed inside the closure so the `model_cache`
+    /// borrow and the solver lock are acquired in the same order as the
+    /// pre-slice code, and the early `return (false, true)` in the None
+    /// arm returns from the closure cleanly since the closure return
+    /// type matches the function return type). Remaining callers
+    /// (`min`, `max`, push/pop, transaction_*) will migrate in slice 4
+    /// alongside the actual lineage materialization in `fork()`.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
