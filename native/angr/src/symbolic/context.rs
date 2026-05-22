@@ -1074,6 +1074,27 @@ pub struct SymContext {
     /// frames here and routes queries through `SharedLineageSolver::switch_to`.
     #[cfg(feature = "vex-engine-z3")]
     scope_path: Mutex<super::lineage::ScopePath>,
+
+    /// Per-state stack of saved `scope_path` lengths (angr-v5a5 slice 4b).
+    ///
+    /// Each entry is the value of `scope_path.len()` at the moment a
+    /// matching `scope_savepoint_push()` was called. `scope_savepoint_pop()`
+    /// truncates `scope_path` back to the most-recently-saved length.
+    ///
+    /// Only consulted on the `Some` (shared-lineage) dispatch branch —
+    /// the `None` branch keeps using the per-context Z3 solver's native
+    /// `push()/pop()`, so `scope_savepoints` stays empty in production.
+    /// When slice 4c lights up lineage materialization, this stack
+    /// becomes the per-state savepoint mechanism that lets the
+    /// transactional plumbing (push/pop and transaction_*) coexist with
+    /// the shared Z3 stack — bare Z3 push/pop on the shared solver
+    /// would corrupt sibling state.
+    ///
+    /// Inert in this slice for the same reason `scope_path` is inert:
+    /// production never installs a lineage today. Tests using
+    /// `set_lineage_for_testing` exercise the dispatch.
+    #[cfg(feature = "vex-engine-z3")]
+    scope_savepoints: Mutex<Vec<usize>>,
 }
 
 impl SymContext {
@@ -1132,6 +1153,7 @@ impl SymContext {
             timeout_ms: AtomicU32::new(timeout_ms),
             lineage: Mutex::new(None),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
+            scope_savepoints: Mutex::new(Vec::new()),
         }
     }
 
@@ -2862,6 +2884,7 @@ impl SymContext {
             timeout_ms: AtomicU32::new(self.timeout_ms.load(Ordering::SeqCst)),
             lineage: Mutex::new(child_lineage),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
+            scope_savepoints: Mutex::new(Vec::new()),
         }
     }
 
@@ -2884,6 +2907,93 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn scope_path_len(&self) -> usize {
         self.scope_path.lock().len()
+    }
+
+    /// Current size of this context's scope-savepoint stack (angr-v5a5
+    /// slice 4b).
+    ///
+    /// Always 0 in production until slice 4c lights up lineage
+    /// materialization. Exposed for telemetry and test assertions.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn scope_savepoint_depth(&self) -> usize {
+        self.scope_savepoints.lock().len()
+    }
+
+    /// Save a scope-path savepoint, dispatching by lineage (angr-v5a5
+    /// slice 4b).
+    ///
+    /// In the **None** dispatch path (today's only production path),
+    /// this directly pushes the per-context Z3 solver — preserving the
+    /// pre-slice behavior of `self.solver().push()`. In the **Some**
+    /// (shared-lineage) dispatch path, this records the current
+    /// `scope_path.len()` on `scope_savepoints` so a later
+    /// [`scope_savepoint_pop()`](Self::scope_savepoint_pop) can truncate
+    /// `scope_path` back to this point — no Z3 op is performed against
+    /// the shared solver, because the shared solver's stack reflects the
+    /// most-recently-loaded sibling's scope path and a bare `push()`
+    /// would put assertions in the wrong scope.
+    ///
+    /// The shared-lineage Z3 push is performed lazily by
+    /// [`with_z3_solver`](Self::with_z3_solver) the next time a query
+    /// fires for this state — via `SharedLineageSolver::switch_to`,
+    /// which pushes whatever frames the state has accumulated.
+    ///
+    /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
+    /// the public wrappers (`push()`, `transaction_begin`) own that.
+    #[cfg(feature = "vex-engine-z3")]
+    #[allow(dead_code)] // wired in by slice 4b.2 (push migration)
+    fn scope_savepoint_push(&self) {
+        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        match lineage {
+            None => {
+                let solver = self.solver();
+                solver.push();
+            }
+            Some(_) => {
+                let depth = self.scope_path.lock().len();
+                self.scope_savepoints.lock().push(depth);
+            }
+        }
+    }
+
+    /// Restore the most-recently-saved scope-path savepoint, dispatching
+    /// by lineage (angr-v5a5 slice 4b).
+    ///
+    /// In the **None** dispatch path, this directly pops the per-context
+    /// Z3 solver — preserving the pre-slice behavior of
+    /// `self.solver().pop(1)`. In the **Some** (shared-lineage) dispatch
+    /// path, this pops the most-recent savepoint off `scope_savepoints`
+    /// and truncates `scope_path` back to that length, discarding any
+    /// frames added after the matching
+    /// [`scope_savepoint_push()`](Self::scope_savepoint_push).
+    ///
+    /// Symmetric with [`scope_savepoint_push`](Self::scope_savepoint_push):
+    /// when the call stack is balanced (every push has a matching pop),
+    /// `scope_savepoints` empties out and `scope_path` returns to its
+    /// pre-push length.
+    ///
+    /// Mismatched pops (no preceding push) are silently ignored in the
+    /// Some branch — the public wrappers already validate the
+    /// transaction nesting via `push_level`. The None branch
+    /// inherits z3-rs's behavior (a panic on under-popping the solver).
+    ///
+    /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
+    /// the public wrappers (`pop()`, `transaction_rollback`) own that.
+    #[cfg(feature = "vex-engine-z3")]
+    #[allow(dead_code)] // wired in by slice 4b.3 (pop migration)
+    fn scope_savepoint_pop(&self) {
+        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        match lineage {
+            None => {
+                let solver = self.solver();
+                solver.pop(1);
+            }
+            Some(_) => {
+                if let Some(depth) = self.scope_savepoints.lock().pop() {
+                    self.scope_path.lock().truncate(depth);
+                }
+            }
+        }
     }
 
     /// Run a closure against this context's Z3 solver, dispatching through
@@ -2973,7 +3083,14 @@ impl SymContext {
     /// With 4a.6 the balanced-in-one-call subset of scope-stack
     /// callers is complete; the remaining spans-multiple-calls
     /// subset (push/pop, transaction_*) is queued for slice 4b and
-    /// likely needs a separate scope_path API to migrate.
+    /// likely needs a separate scope_path API to migrate. Slice 4b.1
+    /// lands the scope-savepoint infrastructure:
+    /// [`scope_savepoint_push`](Self::scope_savepoint_push) and
+    /// [`scope_savepoint_pop`](Self::scope_savepoint_pop) dispatch on
+    /// lineage (None → bare per-context Z3 push/pop; Some → record/
+    /// restore `scope_path.len()` on the new `scope_savepoints`
+    /// stack). No public-API callers migrated yet — those come in
+    /// slice 4b.2 (push) and 4b.3 (pop).
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
@@ -3003,6 +3120,17 @@ impl SymContext {
         lin: Arc<Mutex<super::lineage::SharedLineageSolver>>,
     ) {
         *self.lineage.lock() = Some(lin);
+    }
+
+    /// Append a `ScopeFrame` to this context's `scope_path` (test-only,
+    /// angr-v5a5 slice 4b).
+    ///
+    /// Lets unit tests exercise the truncation behavior of
+    /// [`scope_savepoint_pop`](Self::scope_savepoint_pop) before the
+    /// production path that mints frames lands in slice 4c.
+    #[cfg(all(test, feature = "vex-engine-z3"))]
+    pub(crate) fn push_scope_frame_for_testing(&self, frame: super::lineage::ScopeFrame) {
+        self.scope_path.lock().push(frame);
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
@@ -3560,6 +3688,159 @@ mod tests {
             post_switch > pre_switch,
             "lineage_switch_count must advance (pre={pre_switch}, post={post_switch})"
         );
+    }
+
+    /// angr-v5a5 slice 4b: a fresh SymContext has an empty
+    /// scope-savepoint stack.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_scope_savepoints_start_empty() {
+        let ctx = SymContext::new();
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
+    }
+
+    /// angr-v5a5 slice 4b: when no lineage is attached (the None
+    /// dispatch path), `scope_savepoint_push` goes to the per-context
+    /// Z3 solver and does NOT record on `scope_savepoints` — preserving
+    /// the pre-slice behavior of bare `self.solver().push()`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_scope_savepoint_none_branch_skips_stack() {
+        let ctx = SymContext::new();
+        assert!(ctx.lineage_arc().is_none());
+
+        ctx.scope_savepoint_push();
+        assert_eq!(
+            ctx.scope_savepoint_depth(),
+            0,
+            "None branch must not record on scope_savepoints"
+        );
+
+        ctx.scope_savepoint_pop();
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
+    }
+
+    /// angr-v5a5 slice 4b: with a lineage attached (Some dispatch
+    /// path), `scope_savepoint_push` records the current scope_path
+    /// length on `scope_savepoints`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_scope_savepoint_some_branch_records_depth() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+        // Initial state: scope_path empty.
+        assert_eq!(ctx.scope_path_len(), 0);
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
+
+        ctx.scope_savepoint_push();
+        assert_eq!(
+            ctx.scope_savepoint_depth(),
+            1,
+            "Some branch must push onto scope_savepoints"
+        );
+        // No Z3 op was issued — the shared solver's stack is unchanged
+        // and the per-state scope_path is still empty.
+        assert_eq!(ctx.scope_path_len(), 0);
+
+        ctx.scope_savepoint_pop();
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
+        assert_eq!(ctx.scope_path_len(), 0);
+    }
+
+    /// angr-v5a5 slice 4b: with a lineage attached, frames pushed onto
+    /// `scope_path` between `scope_savepoint_push` and
+    /// `scope_savepoint_pop` are truncated by the pop.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_scope_savepoint_truncates_scope_path() {
+        use super::super::lineage::{ScopeFrame, SharedLineageSolver};
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+        let bv_x = z3::ast::BV::new_const("test_scope_savepoint_x", 8);
+        let mk_frame = |is_true: bool, val: u64| {
+            ScopeFrame::new(
+                is_true,
+                bv_x._eq(&z3::ast::BV::from_u64(val, 8)),
+            )
+        };
+
+        // Add an initial frame (simulates a pre-existing per-state
+        // constraint), save a savepoint, then add two more frames.
+        ctx.push_scope_frame_for_testing(mk_frame(true, 1));
+        assert_eq!(ctx.scope_path_len(), 1);
+
+        ctx.scope_savepoint_push();
+        assert_eq!(ctx.scope_savepoint_depth(), 1);
+
+        ctx.push_scope_frame_for_testing(mk_frame(true, 2));
+        ctx.push_scope_frame_for_testing(mk_frame(false, 3));
+        assert_eq!(ctx.scope_path_len(), 3);
+
+        // Pop the savepoint: scope_path truncates to its pre-push
+        // length (1), and the savepoint stack drains.
+        ctx.scope_savepoint_pop();
+        assert_eq!(
+            ctx.scope_path_len(),
+            1,
+            "pop must truncate scope_path back to the saved length"
+        );
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
+    }
+
+    /// angr-v5a5 slice 4b: nested savepoints LIFO correctly. Pushing
+    /// twice then popping once truncates to the inner savepoint;
+    /// popping again truncates to the outer.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_scope_savepoint_nested_lifo() {
+        use super::super::lineage::{ScopeFrame, SharedLineageSolver};
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+        let bv_x = z3::ast::BV::new_const("test_scope_savepoint_nested_x", 8);
+        let mk_frame = |val: u64| {
+            ScopeFrame::new(
+                true,
+                bv_x._eq(&z3::ast::BV::from_u64(val, 8)),
+            )
+        };
+
+        // outer save (depth=0), add 1 frame, inner save (depth=1), add 2,
+        // pop -> truncate to 1, pop -> truncate to 0.
+        ctx.scope_savepoint_push();
+        ctx.push_scope_frame_for_testing(mk_frame(1));
+        ctx.scope_savepoint_push();
+        ctx.push_scope_frame_for_testing(mk_frame(2));
+        ctx.push_scope_frame_for_testing(mk_frame(3));
+        assert_eq!(ctx.scope_path_len(), 3);
+        assert_eq!(ctx.scope_savepoint_depth(), 2);
+
+        ctx.scope_savepoint_pop();
+        assert_eq!(
+            ctx.scope_path_len(),
+            1,
+            "inner pop should truncate to the inner save"
+        );
+        assert_eq!(ctx.scope_savepoint_depth(), 1);
+
+        ctx.scope_savepoint_pop();
+        assert_eq!(
+            ctx.scope_path_len(),
+            0,
+            "outer pop should truncate to the outer save"
+        );
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
     }
 
     #[cfg(feature = "vex-engine-z3")]
