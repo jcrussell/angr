@@ -1275,7 +1275,7 @@ impl SymContext {
         // mutex acquisition on constraint_trackers for every constraint.
         // NOTE: Don't cache here — callers (assume_true, assume_false,
         // add_constraint_raw) cache before calling this to avoid double-cache.
-        self.solver().assert(&constraint);
+        self.with_z3_solver(|solver| solver.assert(&constraint));
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         // Invalidate sat_cache - constraint set has changed.
         self.sat_cache.set(None);
@@ -2856,10 +2856,11 @@ impl SymContext {
     /// any SymContext method that would re-acquire the same lock — the
     /// existing direct `self.solver()` callers have the same invariant.
     ///
-    /// Slice 3c (commit pending) migrated the first caller —
-    /// `debug_solver_string` — so the compiler now sees a real
-    /// consumer. Larger callers (`eval`, `is_sat`, `min`, `max`,
-    /// `check_branch_feasibility`) will migrate in subsequent slices.
+    /// Slice 3c migrated the first caller (`debug_solver_string`);
+    /// slice 3d migrated `add_constraint`, the assume_true/assume_false/
+    /// add_bv_constraint hot path. Remaining callers (`eval`, `is_sat`,
+    /// `min`, `max`, `check_branch_feasibility`, push/pop, transaction_*)
+    /// will migrate in subsequent slices.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
