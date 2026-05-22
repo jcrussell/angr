@@ -68,136 +68,101 @@ struct FMin;
 /// FP max: matches Rust `>` semantics (NaN passes through right).
 struct FMax;
 
-impl FloatLaneOp for FAdd {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        a[0] + a[1]
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        a[0] + a[1]
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-        build_float_expr(FloatOpKind::Add, prec, args)
-    }
+/// Generate a `FloatLaneOp` impl for a binary op whose concrete path is an
+/// infix operator and whose symbolic path is a single `FloatOpKind`.
+macro_rules! impl_float_lane_binop {
+    ($name:ident, $op:tt, $kind:expr) => {
+        impl FloatLaneOp for $name {
+            fn arity(&self) -> usize {
+                2
+            }
+            fn concrete_f32(&self, a: &[f32]) -> f32 {
+                a[0] $op a[1]
+            }
+            fn concrete_f64(&self, a: &[f64]) -> f64 {
+                a[0] $op a[1]
+            }
+            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+                build_float_expr($kind, prec, args)
+            }
+        }
+    };
 }
-impl FloatLaneOp for FSub {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        a[0] - a[1]
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        a[0] - a[1]
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-        build_float_expr(FloatOpKind::Sub, prec, args)
-    }
+
+/// Generate a `FloatLaneOp` impl for a unary op whose concrete path is a
+/// method call on the lane and whose symbolic path is a single `FloatOpKind`.
+macro_rules! impl_float_lane_unop {
+    ($name:ident, $method:ident, $kind:expr) => {
+        impl FloatLaneOp for $name {
+            fn arity(&self) -> usize {
+                1
+            }
+            fn concrete_f32(&self, a: &[f32]) -> f32 {
+                a[0].$method()
+            }
+            fn concrete_f64(&self, a: &[f64]) -> f64 {
+                a[0].$method()
+            }
+            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+                build_float_expr($kind, prec, args)
+            }
+        }
+    };
 }
-impl FloatLaneOp for FMul {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        a[0] * a[1]
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        a[0] * a[1]
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-        build_float_expr(FloatOpKind::Mul, prec, args)
-    }
+
+impl_float_lane_binop!(FAdd, +, FloatOpKind::Add);
+impl_float_lane_binop!(FSub, -, FloatOpKind::Sub);
+impl_float_lane_binop!(FMul, *, FloatOpKind::Mul);
+impl_float_lane_binop!(FDiv, /, FloatOpKind::Div);
+impl_float_lane_unop!(FSqrt, sqrt, FloatOpKind::Sqrt);
+impl_float_lane_unop!(FAbs, abs, FloatOpKind::Abs);
+
+/// Build a symbolic min/max ITE over two operand lanes. `swap_cmp_args=false`
+/// gives `ITE(l < r, l, r)` (min); `true` gives `ITE(r < l, l, r)` (max).
+/// The symbolic path always uses `CmpLt`, swapping operand order rather than
+/// minting a separate `CmpGt` kind.
+fn float_minmax_symbolic(
+    args: Vec<RustBV>,
+    prec: FloatPrec,
+    ctx: &SymContext,
+    swap_cmp_args: bool,
+) -> RustBV {
+    let mut iter = args.into_iter();
+    let l_lane = iter.next().expect("FMin/FMax arity 2");
+    let r_lane = iter.next().expect("FMin/FMax arity 2");
+    let cmp_args = if swap_cmp_args {
+        vec![r_lane.clone(), l_lane.clone()]
+    } else {
+        vec![l_lane.clone(), r_lane.clone()]
+    };
+    let cond = build_float_expr(FloatOpKind::CmpLt, prec, cmp_args);
+    cond.ite_into(l_lane, r_lane, ctx)
 }
-impl FloatLaneOp for FDiv {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        a[0] / a[1]
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        a[0] / a[1]
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-        build_float_expr(FloatOpKind::Div, prec, args)
-    }
+
+/// Generate a `FloatLaneOp` impl for FP min/max. `$cmp` is the operator that
+/// decides "left wins" on the concrete path (e.g. `<` for FMin, `>` for FMax);
+/// `$swap_cmp_args` adapts that to the always-CmpLt symbolic path.
+macro_rules! impl_float_lane_minmax {
+    ($name:ident, $cmp:tt, $swap_cmp_args:expr) => {
+        impl FloatLaneOp for $name {
+            fn arity(&self) -> usize {
+                2
+            }
+            fn concrete_f32(&self, a: &[f32]) -> f32 {
+                if a[0] $cmp a[1] { a[0] } else { a[1] }
+            }
+            fn concrete_f64(&self, a: &[f64]) -> f64 {
+                if a[0] $cmp a[1] { a[0] } else { a[1] }
+            }
+            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV {
+                float_minmax_symbolic(args, prec, ctx, $swap_cmp_args)
+            }
+        }
+    };
 }
-impl FloatLaneOp for FSqrt {
-    fn arity(&self) -> usize {
-        1
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        a[0].sqrt()
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        a[0].sqrt()
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-        build_float_expr(FloatOpKind::Sqrt, prec, args)
-    }
-}
-impl FloatLaneOp for FAbs {
-    fn arity(&self) -> usize {
-        1
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        a[0].abs()
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        a[0].abs()
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-        build_float_expr(FloatOpKind::Abs, prec, args)
-    }
-}
-impl FloatLaneOp for FMin {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        if a[0] < a[1] { a[0] } else { a[1] }
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        if a[0] < a[1] { a[0] } else { a[1] }
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV {
-        // min(l, r) = if l < r then l else r ⟺ ITE(l < r, l, r)
-        let mut iter = args.into_iter();
-        let l_lane = iter.next().expect("FMin arity 2");
-        let r_lane = iter.next().expect("FMin arity 2");
-        let cond = build_float_expr(
-            FloatOpKind::CmpLt,
-            prec,
-            vec![l_lane.clone(), r_lane.clone()],
-        );
-        cond.ite_into(l_lane, r_lane, ctx)
-    }
-}
-impl FloatLaneOp for FMax {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_f32(&self, a: &[f32]) -> f32 {
-        if a[0] > a[1] { a[0] } else { a[1] }
-    }
-    fn concrete_f64(&self, a: &[f64]) -> f64 {
-        if a[0] > a[1] { a[0] } else { a[1] }
-    }
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV {
-        // max(l, r) = if l > r then l else r ⟺ ITE(r < l, l, r)
-        let mut iter = args.into_iter();
-        let l_lane = iter.next().expect("FMax arity 2");
-        let r_lane = iter.next().expect("FMax arity 2");
-        let cond = build_float_expr(
-            FloatOpKind::CmpLt,
-            prec,
-            vec![r_lane.clone(), l_lane.clone()],
-        );
-        cond.ite_into(l_lane, r_lane, ctx)
-    }
-}
+
+impl_float_lane_minmax!(FMin, <, false);
+impl_float_lane_minmax!(FMax, >, true);
 
 /// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
 macro_rules! width_unop {
