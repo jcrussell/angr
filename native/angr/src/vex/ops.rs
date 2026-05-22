@@ -814,8 +814,12 @@ impl VEXOps {
             IROp::F64toI64U => Self::f64_to_i64u_rm(left, right, ctx),
 
             // Scalar-in-vector max/min
-            IROp::VFMaxS { elem } => Self::vec_float_scalar_max(left, right, elem, ctx),
-            IROp::VFMinS { elem } => Self::vec_float_scalar_min(left, right, elem, ctx),
+            IROp::VFMaxS { elem } => {
+                Self::vec_float_scalar_minmax(left, right, elem, /*is_max=*/ true, ctx)
+            }
+            IROp::VFMinS { elem } => {
+                Self::vec_float_scalar_minmax(left, right, elem, /*is_max=*/ false, ctx)
+            }
 
             // SetV128lo: set low bits of V128
             IROp::SetV128lo32 => {
@@ -2543,11 +2547,15 @@ impl VEXOps {
         Ok(Self::concat_le_elements(lanes, ctx))
     }
 
-    /// Scalar max in vector (MAXSS/MAXSD).
-    fn vec_float_scalar_max(
+    /// Scalar max/min in vector (MAXSS/MAXSD/MINSS/MINSD). `is_max` picks the
+    /// `>`/`<` comparison; both encode SSE's "NaN returns right" semantics
+    /// (the concrete branch via Rust's `>`/`<`, the symbolic fallback via
+    /// `vec_float_scalar_lane_minmax`'s ITE).
+    fn vec_float_scalar_minmax(
         left: RustBV,
         right: RustBV,
         elem: IRType,
+        is_max: bool,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(left.width(), 128);
@@ -2558,14 +2566,26 @@ impl VEXOps {
                 IRType::F32 => {
                     let l0 = f32::from_bits(l as u32);
                     let r0 = f32::from_bits(r as u32);
-                    let res0 = if l0 > r0 { l0 } else { r0 };
+                    let res0 = if is_max {
+                        if l0 > r0 { l0 } else { r0 }
+                    } else if l0 < r0 {
+                        l0
+                    } else {
+                        r0
+                    };
                     let upper = l & !0xFFFFFFFFu128;
                     upper | (res0.to_bits() as u128)
                 }
                 IRType::F64 => {
                     let l0 = f64::from_bits(l as u64);
                     let r0 = f64::from_bits(r as u64);
-                    let res0 = if l0 > r0 { l0 } else { r0 };
+                    let res0 = if is_max {
+                        if l0 > r0 { l0 } else { r0 }
+                    } else if l0 < r0 {
+                        l0
+                    } else {
+                        r0
+                    };
                     let upper = l & !0xFFFFFFFFFFFFFFFFu128;
                     upper | (res0.to_bits() as u128)
                 }
@@ -2573,40 +2593,7 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        Self::vec_float_scalar_lane_minmax(left, right, elem, /*is_max=*/ true, ctx)
-    }
-
-    /// Scalar min in vector (MINSS/MINSD).
-    fn vec_float_scalar_min(
-        left: RustBV,
-        right: RustBV,
-        elem: IRType,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(left.width(), 128);
-        debug_assert_eq!(right.width(), 128);
-
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let result = match elem {
-                IRType::F32 => {
-                    let l0 = f32::from_bits(l as u32);
-                    let r0 = f32::from_bits(r as u32);
-                    let res0 = if l0 < r0 { l0 } else { r0 };
-                    let upper = l & !0xFFFFFFFFu128;
-                    upper | (res0.to_bits() as u128)
-                }
-                IRType::F64 => {
-                    let l0 = f64::from_bits(l as u64);
-                    let r0 = f64::from_bits(r as u64);
-                    let res0 = if l0 < r0 { l0 } else { r0 };
-                    let upper = l & !0xFFFFFFFFFFFFFFFFu128;
-                    upper | (res0.to_bits() as u128)
-                }
-                _ => return Err(OpError::InvalidFloatType(elem)),
-            };
-            return Ok(RustBV::concrete(result, 128));
-        }
-        Self::vec_float_scalar_lane_minmax(left, right, elem, /*is_max=*/ false, ctx)
+        Self::vec_float_scalar_lane_minmax(left, right, elem, is_max, ctx)
     }
 
     /// Symbolic fallback for SSE scalar binary float ops (Add/Sub/Mul/Div).
