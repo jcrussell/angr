@@ -2423,9 +2423,19 @@ impl SymContext {
     }
 
     /// Restore solver state.
+    ///
+    /// Dispatches the Z3-side scope restore through
+    /// [`scope_savepoint_pop`](Self::scope_savepoint_pop) (angr-v5a5
+    /// slice 4b.3): in the None lineage branch this is the previous
+    /// `self.solver().pop(1)`; in the Some (shared-lineage) branch it
+    /// pops the most-recent savepoint off `scope_savepoints` and
+    /// truncates `scope_path` back to that length. Cache invalidation
+    /// (`sat_cache`, `model_cache`) is owned here rather than by the
+    /// helper, since different future callers of the savepoint helpers
+    /// may want different invalidation policies.
     #[cfg(feature = "vex-engine-z3")]
     pub fn pop(&self) {
-        self.solver().pop(1);
+        self.scope_savepoint_pop();
         // Invalidate caches since constraint set has changed
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
@@ -2952,8 +2962,9 @@ impl SymContext {
     /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
     /// the public wrappers (`push()`, `transaction_begin`) own that.
     ///
-    /// Wired in by slice 4b.2: [`push()`](Self::push) is the only
-    /// caller until slice 4b.3 migrates `transaction_*`.
+    /// Wired in by slice 4b.2: [`push()`](Self::push) is the public
+    /// caller; `transaction_begin` inherits the dispatch transitively
+    /// since it delegates to `push()`.
     #[cfg(feature = "vex-engine-z3")]
     fn scope_savepoint_push(&self) {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
@@ -2993,7 +3004,6 @@ impl SymContext {
     /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
     /// the public wrappers (`pop()`, `transaction_rollback`) own that.
     #[cfg(feature = "vex-engine-z3")]
-    #[allow(dead_code)] // wired in by slice 4b.3 (pop migration)
     fn scope_savepoint_pop(&self) {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
