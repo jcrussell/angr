@@ -1892,35 +1892,41 @@ impl SymContext {
         let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
 
-        let solver = self.solver();
-        solver.push();
+        // All n check/get_model/assert-exclude iterations share one solver
+        // lock acquisition via with_z3_solver. The outer push/pop pair is
+        // balanced inside the closure, so the Z3 scope stack returns to its
+        // pre-closure depth before f returns — safe for both the None
+        // (per-context) and Some (shared-lineage) dispatch paths.
+        self.with_z3_solver(|solver| {
+            solver.push();
 
-        for _ in 0..n {
-            match timed_check(&solver, CheckSite::EvalUpto) {
-                z3::SatResult::Sat => {
-                    if let Some(model) = solver.get_model() {
-                        if let Some(result) = model.eval(&ast, true) {
-                            if let Some(bytes) = Self::extract_bv_value_wide(&result, width) {
-                                // Exclude this value from future solutions
-                                // Build Z3 constant from bytes for full-precision exclusion
-                                let val_ast = Self::make_bv_from_bytes(&bytes, width);
-                                solver.assert(&ast.eq(&val_ast).not());
-                                results.push(bytes);
+            for _ in 0..n {
+                match timed_check(solver, CheckSite::EvalUpto) {
+                    z3::SatResult::Sat => {
+                        if let Some(model) = solver.get_model() {
+                            if let Some(result) = model.eval(&ast, true) {
+                                if let Some(bytes) = Self::extract_bv_value_wide(&result, width) {
+                                    // Exclude this value from future solutions
+                                    // Build Z3 constant from bytes for full-precision exclusion
+                                    let val_ast = Self::make_bv_from_bytes(&bytes, width);
+                                    solver.assert(&ast.eq(&val_ast).not());
+                                    results.push(bytes);
+                                } else {
+                                    break;
+                                }
                             } else {
                                 break;
                             }
                         } else {
                             break;
                         }
-                    } else {
-                        break;
                     }
+                    _ => break,
                 }
-                _ => break,
             }
-        }
 
-        solver.pop(1);
+            solver.pop(1);
+        });
         results
     }
 
@@ -2921,11 +2927,13 @@ impl SymContext {
     /// stack-caller migration with `eval_upto`: the outer push/pop is
     /// balanced inside the closure (same pattern slice 3j proved with
     /// `check_branch_feasibility`), so the Z3 scope stack returns to
-    /// its pre-closure depth before `f` returns. Remaining scope-stack
-    /// callers (`eval_upto_wide`, `min`, `max`, `min_with_hint`,
-    /// `can_be_value`, push/pop, transaction_*) will follow in 4a.2+,
-    /// with the spans-multiple-calls subset (push/pop, transaction_*)
-    /// likely needing a separate scope_path API.
+    /// its pre-closure depth before `f` returns. Slice 4a.2 extends the
+    /// same wrap to `eval_upto_wide` (the byte-array sibling of
+    /// `eval_upto`). Remaining scope-stack callers (`min`, `max`,
+    /// `min_with_hint`, `can_be_value`, push/pop, transaction_*) will
+    /// follow in 4a.3+, with the spans-multiple-calls subset
+    /// (push/pop, transaction_*) likely needing a separate scope_path
+    /// API.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
