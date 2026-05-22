@@ -1317,12 +1317,11 @@ impl SymContext {
             local.assumed.extend(assumed);
         }
         // Single solver guard for all assertions.
-        {
-            let solver = self.solver();
+        self.with_z3_solver(|solver| {
             for c in &constraints {
                 solver.assert(c);
             }
-        }
+        });
         self.constraint_count
             .fetch_add(constraints.len(), Ordering::SeqCst);
         self.sat_cache.set(None);
@@ -2498,17 +2497,21 @@ impl SymContext {
     /// Call this after checking satisfiability and finding UNSAT.
     #[cfg(feature = "vex-engine-z3")]
     pub fn unsat_core(&self) -> Vec<usize> {
-        let solver = self.solver();
-        let core = solver.get_unsat_core();
+        let core_strs: Vec<String> = self.with_z3_solver(|solver| {
+            solver
+                .get_unsat_core()
+                .iter()
+                .map(|ast| format!("{}", ast))
+                .collect()
+        });
 
         let trackers = self.constraint_trackers.lock();
         let mut result = Vec::new();
 
         // Match core tracking booleans to stored tracker indices by string representation
-        for core_ast in core.iter() {
-            let core_str = format!("{}", core_ast);
+        for core_str in &core_strs {
             for (i, tracker) in trackers.iter().enumerate() {
-                if format!("{}", tracker) == core_str {
+                if format!("{}", tracker) == *core_str {
                     result.push(i);
                     break;
                 }
@@ -2525,12 +2528,13 @@ impl SymContext {
     /// this allows Python to understand what constraints are active.
     #[cfg(feature = "vex-engine-z3")]
     pub fn get_all_constraints_str(&self) -> Vec<String> {
-        let solver = self.solver();
-        solver
-            .get_assertions()
-            .iter()
-            .map(|a| format!("{}", a))
-            .collect()
+        self.with_z3_solver(|solver| {
+            solver
+                .get_assertions()
+                .iter()
+                .map(|a| format!("{}", a))
+                .collect()
+        })
     }
 
     /// Check the total number of assertions in the Z3 solver.
@@ -2538,8 +2542,7 @@ impl SymContext {
     /// This can be used to verify constraint sync between Rust and Python.
     #[cfg(feature = "vex-engine-z3")]
     pub fn z3_assertion_count(&self) -> usize {
-        let solver = self.solver();
-        solver.get_assertions().len()
+        self.with_z3_solver(|solver| solver.get_assertions().len())
     }
 
     // =========================================================================
@@ -2898,9 +2901,22 @@ impl SymContext {
     /// borrow and the solver lock are acquired in the same order as the
     /// pre-slice code, and the early `return (false, true)` in the None
     /// arm returns from the closure cleanly since the closure return
-    /// type matches the function return type). Remaining callers
-    /// (`min`, `max`, push/pop, transaction_*) will migrate in slice 4
-    /// alongside the actual lineage materialization in `fork()`.
+    /// type matches the function return type); slice 3k batch-migrated
+    /// the four remaining flat (no-scope-stack) callers in one commit:
+    /// `add_constraints_raw_batch` (assert N constraints under one lock),
+    /// `unsat_core` (read `solver.get_unsat_core()` and stringify before
+    /// taking the `constraint_trackers` lock — keeps the two locks from
+    /// nesting), `get_all_constraints_str`, and `z3_assertion_count`
+    /// (one-line reads of `solver.get_assertions()`). Bundled into one
+    /// commit because each migration is the same one-line wrap pattern
+    /// as slice 3c/d/e and individually noise-level. With 3k the entire
+    /// "no scope-stack" subset of direct-solver callers is migrated —
+    /// every remaining `self.solver()` call site manipulates Z3's scope
+    /// stack across multiple operations. Remaining callers (`eval_upto`,
+    /// `eval_upto_wide`, `min`, `max`, `can_be_value`, push/pop,
+    /// transaction_*) will migrate in slice 4 alongside the actual
+    /// lineage materialization in `fork()` — they need scope_path
+    /// threading rather than a single `with_z3_solver` wrap.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
