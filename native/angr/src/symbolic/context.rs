@@ -1375,7 +1375,7 @@ impl SymContext {
             i
         };
 
-        self.solver().assert_and_track(&constraint, &track_bool);
+        self.with_z3_solver(|solver| solver.assert_and_track(&constraint, &track_bool));
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         self.sat_cache.set(None);
         self.invalidate_model_if_inconsistent(&constraint);
@@ -2859,8 +2859,9 @@ impl SymContext {
     /// Slice 3c migrated the first caller (`debug_solver_string`);
     /// slice 3d migrated `add_constraint`, the assume_true/assume_false/
     /// add_bv_constraint hot path; slice 3e migrated `add_constraint_raw`
-    /// (the unsafe Python-side raw-Z3-AST bridge). Remaining callers
-    /// (`add_constraint_tracked`, `eval`, `is_sat`, `min`, `max`,
+    /// (the unsafe Python-side raw-Z3-AST bridge); slice 3f migrated
+    /// `add_constraint_tracked_indexed` (the unsat-core-tracked variant).
+    /// Remaining callers (`eval`, `is_sat`, `min`, `max`,
     /// `check_branch_feasibility`, push/pop, transaction_*) will migrate
     /// in subsequent slices.
     #[cfg(feature = "vex-engine-z3")]
