@@ -131,11 +131,17 @@ REGRESSION_SUITE = FAST_SUITE  # overridden in main() if --full
 # ``docs/advanced-topics/rust_bimodal_variance.rst``.
 #
 # google2016_unbreakable_1 was removed on 2026-05-18 (angr-hyiz.4) after a
-# second 20-sample campaign confirmed it has unimodalized at ~2.46s (stdev
-# 0.01s) — see the 2026-05-18 section of rust_bimodal_variance.rst.
+# 20-sample campaign showed 20/20 in 2.43-2.48s. Re-added 2026-05-22
+# (angr-ja0i) after the ralph iter-2 gate flagged it at 5.21s vs 3.5s
+# baseline. A 15-sample re-validation on HEAD 14187073d found a multi-modal
+# distribution: 11/15 in 0.91-0.99s (fast), 2/15 in 1.15s, 1/15 in 1.86s,
+# 1/15 in 2.65s. The fast mode is well below the May-18 median (post-perf-
+# gains from angr-b58a/zdho/9jly), but the slow tail re-emerged. See bd
+# memory `benchmark-unbreakable_1-2026-05-22`.
 BIMODAL_BENCHMARKS = frozenset({
     "securityfest_fairlight",
     "ekopartyctf2016_sokohashv2",
+    "google2016_unbreakable_1",
 })
 
 
