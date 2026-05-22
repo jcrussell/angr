@@ -821,6 +821,14 @@ class RustExplorationManager(
         self._stats_hook_sync_calls = 0      # _sync_hooks_before_step invocations
         self._stats_hook_sync_skips = 0      # fast-path skips (no new hooks)
         self._stats_time_in_callbacks_ns = 0 # cumulative time in callback code
+        # angr-bs71: telemetry on legacy Rust→Python constraint sync paths.
+        # Used to verify the Path A (rust_solver_ctx attach) covers all callback
+        # sites so Path B (description-string reconstruction) can be retired.
+        self._stats_cb_sync_calls = 0        # _cb_sync_constraints invocations from Rust
+        self._stats_cb_sync_constraints = 0  # total constraints pushed via _cb_sync_constraints
+        self._stats_cb_sync_failures = 0     # constraints that could not be reconstructed
+        self._stats_rust_ctx_missing = 0     # _install_rust_solver_on_callback_state with no ctx
+        self._stats_pending_ast_sync_calls = 0  # _sync_rust_constraints_to_python invocations
         _init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -1373,6 +1381,8 @@ class RustExplorationManager(
 
     def _cb_sync_constraints(self, constraints: list) -> bool:
         """Sync constraints from Rust to Python's claripy solver."""
+        self._stats_cb_sync_calls += 1
+        self._stats_cb_sync_constraints += len(constraints)
         state = self._get_default_state()
         if state is None:
             l.debug("sync_constraints called but no state available")
@@ -1439,6 +1449,7 @@ class RustExplorationManager(
                             pass
 
                 if not reconstructed:
+                    self._stats_cb_sync_failures += 1
                     l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
                     sync_failed = True
 
@@ -3689,6 +3700,14 @@ class RustExplorationManager(
         result['time_in_callbacks'] = self._stats_time_in_callbacks_ns / 1e9  # seconds
         result['z3_ptr_cache_hits'] = self._z3_ptr_cache_hits
         result['z3_ptr_cache_misses'] = self._z3_ptr_cache_misses
+        # angr-bs71: legacy Rust→Python constraint-sync telemetry. Used to
+        # confirm Path B (description-string reconstruction in
+        # _cb_sync_constraints) can be retired.
+        result['cb_sync_calls'] = self._stats_cb_sync_calls
+        result['cb_sync_constraints'] = self._stats_cb_sync_constraints
+        result['cb_sync_failures'] = self._stats_cb_sync_failures
+        result['rust_ctx_missing'] = self._stats_rust_ctx_missing
+        result['pending_ast_sync_calls'] = self._stats_pending_ast_sync_calls
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, '_time_in_rust_run_ns'):
             result['time_in_rust_run'] = self._time_in_rust_run_ns / 1e9

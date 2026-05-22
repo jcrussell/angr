@@ -167,7 +167,11 @@ class RustCallbackDispatchMixin:
         """
         rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
         if rust_ctx is None:
-            # No Rust solver available, fall back to constraint sync
+            # angr-bs71: Path A miss — fall back to the legacy Rust→Python
+            # constraint-AST push. This counter should stay at 0 across the
+            # benchmark suite; non-zero readings mean a callback site forgot to
+            # attach rust_solver_ctx.
+            self._stats_rust_ctx_missing += 1
             self._sync_rust_constraints_to_python(state)
             return
 

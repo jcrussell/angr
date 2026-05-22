@@ -1012,6 +1012,9 @@ class RustStateSyncMixin:
         Note: This relies on export_pending_constraints() which converts
         Rust constraints back to claripy ASTs.
         """
+        # angr-bs71: telemetry for legacy AST-rebuild constraint push. Fires
+        # only when rust_solver_ctx attach is unavailable on the callback state.
+        self._stats_pending_ast_sync_calls += 1
         try:
             # Check if export_pending_constraints is available
             if not hasattr(self._rust_mgr, 'export_pending_constraints'):
