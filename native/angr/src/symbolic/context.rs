@@ -1666,26 +1666,29 @@ impl SymContext {
             }
         }
 
-        // Need to get a fresh model - must call check() first for Z3
-        let solver = self.solver();
-        match timed_check(&solver, CheckSite::Eval) {
-            z3::SatResult::Sat => {
-                self.sat_cache.set(Some(true));
+        // Need a fresh model — check(), get_model(), and the AST evaluation
+        // all share one solver lock acquisition via with_z3_solver. The
+        // model_cache write happens inside the closure (model_cache is a
+        // RefCell, independent of the solver Mutex, so this does not nest
+        // locks against the solver guard).
+        self.with_z3_solver(|solver| {
+            match timed_check(solver, CheckSite::Eval) {
+                z3::SatResult::Sat => {
+                    self.sat_cache.set(Some(true));
+                }
+                _ => {
+                    self.sat_cache.set(Some(false));
+                    return None;
+                }
             }
-            _ => {
-                self.sat_cache.set(Some(false));
-                return None;
-            }
-        }
 
-        // Get model from the check we just did
-        let model = solver.get_model()?;
-        let ast = bv.to_z3_ast();
-        let result = model.eval(&ast, true)?;
-        let value = Self::extract_bv_value(&result);
-        drop(solver); // Release lock before borrowing model_cache
-        *self.model_cache.borrow_mut() = Some(model);
-        value
+            let model = solver.get_model()?;
+            let ast = bv.to_z3_ast();
+            let result = model.eval(&ast, true)?;
+            let value = Self::extract_bv_value(&result);
+            *self.model_cache.borrow_mut() = Some(model);
+            value
+        })
     }
 
     /// Evaluate a bv against the cached parent model without doing a SAT
@@ -2868,8 +2871,13 @@ impl SymContext {
     /// slice 3g migrated `is_sat` (first migration with a return value
     /// and an in-closure side effect — the post-check `get_model()` that
     /// populates `model_cache` runs inside the closure so it shares the
-    /// solver lock with the `check()` call). Remaining callers (`eval`,
-    /// `min`, `max`, `check_branch_feasibility`, push/pop, transaction_*)
+    /// solver lock with the `check()` call); slice 3h migrated `eval`
+    /// (three Z3 operations under one lock — `check()`, `get_model()`,
+    /// and `model.eval(ast, true)` — with `?`-propagation on the inner
+    /// `Option<u128>` so a None model or extraction returns from the
+    /// closure cleanly while still letting `sat_cache.set(Some(true))`
+    /// have fired). Remaining callers (`eval_wide`,
+    /// `check_branch_feasibility`, `min`, `max`, push/pop, transaction_*)
     /// will migrate in subsequent slices.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
