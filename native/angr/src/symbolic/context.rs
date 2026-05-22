@@ -2827,6 +2827,57 @@ impl SymContext {
         self.scope_path.lock().len()
     }
 
+    /// Run a closure against this context's Z3 solver, dispatching through
+    /// the shared-lineage solver when one is attached (angr-v5a5 slice 3b).
+    ///
+    /// When `self.lineage` is `None` (today's only production path), this
+    /// is a thin wrapper over [`solver()`](Self::solver): the closure sees
+    /// the per-context lazy-materialized solver exactly as a direct
+    /// `let solver = self.solver();` would. When `self.lineage` is `Some`
+    /// (currently only `set_lineage_for_testing` installs one), the call
+    /// routes through [`SharedLineageSolver::with_solver`], which switches
+    /// the shared solver to this context's `scope_path` before invoking
+    /// `f`.
+    ///
+    /// The dispatcher exists in this slice so subsequent slices can migrate
+    /// individual solver call sites (`is_sat`, `eval`, `min`, `max`, …)
+    /// one at a time without each migration also having to inline the
+    /// dispatch logic.
+    ///
+    /// # Locking
+    ///
+    /// - **None path:** holds the per-context `solver` mutex via
+    ///   [`solver()`](Self::solver) for the duration of `f`.
+    /// - **Some path:** snapshots `scope_path` under its own mutex
+    ///   (released before `f` runs), then holds the lineage mutex for
+    ///   the duration of `f`. The lineage mutex serializes sibling
+    ///   states sharing the same `SharedLineageSolver`.
+    ///
+    /// In either case, `f` must not re-enter into `with_z3_solver` or
+    /// any SymContext method that would re-acquire the same lock — the
+    /// existing direct `self.solver()` callers have the same invariant.
+    ///
+    /// `allow(dead_code)`: this slice ADDS the dispatcher. Slice 3c will
+    /// migrate the first caller (most likely `is_sat` or `eval`); until
+    /// then the only consumers are the unit tests, which are gated out
+    /// of release builds.
+    #[cfg(feature = "vex-engine-z3")]
+    #[allow(dead_code)]
+    pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
+        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        match lineage {
+            None => {
+                let solver = self.solver();
+                f(&solver)
+            }
+            Some(lin) => {
+                let path = self.scope_path.lock().clone();
+                let mut guard = lin.lock();
+                guard.with_solver(&path, f)
+            }
+        }
+    }
+
     /// Install a lineage Arc on this context (test-only, angr-v5a5 spike).
     ///
     /// Lets unit tests verify the fork-propagation invariant — that a
@@ -3326,6 +3377,77 @@ mod tests {
         ] {
             assert!(post.contains_key(key));
         }
+    }
+
+    /// angr-v5a5 slice 3b: with_z3_solver dispatches to self.solver() when
+    /// no lineage is attached. The closure must see the same per-context
+    /// lazy solver that a direct `self.solver()` would.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_with_z3_solver_no_lineage_uses_local_solver() {
+        let ctx = SymContext::new();
+        assert!(ctx.lineage_arc().is_none());
+
+        let x = RustBV::symbolic(&ctx, "test_with_z3_solver_no_lineage_x", 8);
+        let five = RustBV::concrete(5, 8);
+        ctx.assume_true(&x.eq(&five, &ctx));
+
+        // Closure asserts via with_z3_solver — must hit the same solver
+        // that holds the assume_true constraint.
+        let sat = ctx.with_z3_solver(|solver| solver.check());
+        assert_eq!(sat, z3::SatResult::Sat);
+
+        // Add a contradictory temporary constraint inside the closure and
+        // confirm the per-context solver state is the one being queried.
+        let unsat = ctx.with_z3_solver(|solver| {
+            solver.push();
+            solver.assert(&{
+                use z3::ast::Ast;
+                let bv_x =
+                    z3::ast::BV::new_const("test_with_z3_solver_no_lineage_x", 8);
+                bv_x._eq(&z3::ast::BV::from_u64(42, 8))
+            });
+            let r = solver.check();
+            solver.pop(1);
+            r
+        });
+        assert_eq!(unsat, z3::SatResult::Unsat, "x == 5 ∧ x == 42 is UNSAT");
+    }
+
+    /// angr-v5a5 slice 3b: with_z3_solver dispatches into the lineage's
+    /// shared solver when one is attached, bumping the lineage_switch_count
+    /// telemetry. Today the production path never installs a lineage, so
+    /// we use set_lineage_for_testing to exercise the dispatcher.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_with_z3_solver_routes_to_lineage() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+        assert!(ctx.lineage_arc().is_some());
+
+        // The dispatcher should hand a solver to the closure and the
+        // lineage_switch_count counter should advance — that's the
+        // observable proof we routed through SharedLineageSolver::with_solver
+        // instead of the per-context lazy solver.
+        let pre = super::super::lineage::lineage_stats();
+        let pre_switch = pre[0].1;
+
+        let result = ctx.with_z3_solver(|solver| solver.check());
+        assert_eq!(
+            result,
+            z3::SatResult::Sat,
+            "fresh lineage solver with no constraints is trivially Sat"
+        );
+
+        let post = super::super::lineage::lineage_stats();
+        let post_switch = post[0].1;
+        assert!(
+            post_switch > pre_switch,
+            "lineage_switch_count must advance (pre={pre_switch}, post={post_switch})"
+        );
     }
 
     #[cfg(feature = "vex-engine-z3")]
