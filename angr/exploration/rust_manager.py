@@ -834,6 +834,11 @@ class RustExplorationManager(
         # fire to decide between hard-error / Rust-side fresh symbol / delete.
         self._stats_orphan_bvs_mem_thunk = 0
         self._stats_orphan_bvs_sym_load_full_fail = 0
+        # angr-4o7d: snapshot-restore orphan-BVS at rust_state_export.py
+        # _restore_symbolic_regions. Different threat model from the two
+        # rust_manager.py fallbacks above — runs at snapshot-export time,
+        # not in the hot exploration loop.
+        self._stats_orphan_bvs_snapshot_restore = 0
         _init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -3842,6 +3847,8 @@ class RustExplorationManager(
         # angr-ymoe: orphan-BVS fallback counters
         result['orphan_bvs_mem_thunk'] = self._stats_orphan_bvs_mem_thunk
         result['orphan_bvs_sym_load_full_fail'] = self._stats_orphan_bvs_sym_load_full_fail
+        # angr-4o7d: snapshot-restore orphan-BVS counter
+        result['orphan_bvs_snapshot_restore'] = self._stats_orphan_bvs_snapshot_restore
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, '_time_in_rust_run_ns'):
             result['time_in_rust_run'] = self._time_in_rust_run_ns / 1e9

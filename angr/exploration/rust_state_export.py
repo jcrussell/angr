@@ -1036,9 +1036,14 @@ class RustStateExportMixin:
             sym_addr = page_addr + offset
             ast = self._recover_symbolic_ast(snapshot, sym_addr, size)
             if ast is None:
-                # Fallback for symbols created in Rust without a tracked AST
+                # Fallback for symbols created in Rust without a tracked AST.
+                # angr-4o7d (2026-05-22): instrumented to measure fire rate.
+                # Snapshot-export path, not hot exploration loop — distinct
+                # threat model from rust_manager.py's mem_thunk_/sym_load_full_fail_
+                # fallbacks (which counter angr-ymoe showed are dead in practice).
                 sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
                 ast = claripy.BVS(sym_name, size * 8)
+                self._stats_orphan_bvs_snapshot_restore += 1
             state.memory.store(sym_addr, ast,
                                endness=arch.memory_endness,
                                inspect=False)
