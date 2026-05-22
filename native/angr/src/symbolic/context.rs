@@ -2364,16 +2364,20 @@ impl SymContext {
 
         let constraint = ast.eq(&val_ast);
 
-        let solver = self.solver();
-        solver.push();
-        solver.assert(&constraint);
-        let result = matches!(
-            timed_check(&solver, CheckSite::Satisfiable),
-            z3::SatResult::Sat
-        );
-        solver.pop(1);
-
-        result
+        // All push/assert/check/pop work shares one solver lock acquisition via
+        // with_z3_solver. The push/pop pair is balanced inside the closure, so
+        // the Z3 scope stack returns to its pre-closure depth — safe for both
+        // the None (per-context) and Some (shared-lineage) dispatch paths.
+        self.with_z3_solver(|solver| {
+            solver.push();
+            solver.assert(&constraint);
+            let result = matches!(
+                timed_check(solver, CheckSite::Satisfiable),
+                z3::SatResult::Sat
+            );
+            solver.pop(1);
+            result
+        })
     }
 
     /// Save solver state for temporary constraints.
@@ -2963,10 +2967,13 @@ impl SymContext {
     /// outer push/pop brackets two binary-search loops (seeded min in
     /// [0, hi_seed] and seeded max in [lo_seed, max_val]) each with
     /// nested per-iteration push/check/pop pairs. All push/pop pairs
-    /// remain balanced when the closure returns. Remaining scope-stack
-    /// callers (`solution`, push/pop, transaction_*) will follow in
-    /// 4a.6+, with the spans-multiple-calls subset (push/pop,
-    /// transaction_*) likely needing a separate scope_path API.
+    /// remain balanced when the closure returns. Slice 4a.6 extends
+    /// the same wrap to `solution`: a single push/assert/check/pop
+    /// inside the closure (the simplest of the slice-4a migrations).
+    /// With 4a.6 the balanced-in-one-call subset of scope-stack
+    /// callers is complete; the remaining spans-multiple-calls
+    /// subset (push/pop, transaction_*) is queued for slice 4b and
+    /// likely needs a separate scope_path API to migrate.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
