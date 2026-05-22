@@ -1213,6 +1213,17 @@ impl<'a> CallbackInterpreter<'a> {
         self.dirty_registers = 0;
     }
 
+    /// Mark the 4-byte register slot containing `offset` as dirty.
+    /// Bitset is 128 bits wide (covers offsets [0, 512)); writes beyond
+    /// that fall back to the always-sync slow path.
+    #[inline]
+    pub(crate) fn mark_register_dirty(&mut self, offset: u32) {
+        let bit_index = offset / 4;
+        if bit_index < 128 {
+            self.dirty_registers |= 1u128 << bit_index;
+        }
+    }
+
     /// Flush pending stores to Python via batch callback.
     ///
     /// This sends all buffered stores in a single callback, reducing

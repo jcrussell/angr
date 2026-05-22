@@ -34,12 +34,7 @@ impl<'a> CallbackInterpreter<'a> {
                 let size = ((value.width() + 7) / 8) as u32;
                 self.dispatch_reg_write_inspect(py, callbacks, *offset, size, &value);
                 self.registers.put(*offset, value);
-
-                // Mark register as dirty (4-byte granularity)
-                let bit_index = (*offset / 4) as u32;
-                if bit_index < 128 {
-                    self.dirty_registers |= 1u128 << bit_index;
-                }
+                self.mark_register_dirty(*offset);
 
                 Ok(StmtResult::Continue)
             }
@@ -299,12 +294,7 @@ impl<'a> CallbackInterpreter<'a> {
 
                 // Write to the register file
                 self.registers.put(offset, data_val);
-
-                // Mark register as dirty (4-byte granularity)
-                let bit_index = (offset / 4) as u32;
-                if bit_index < 128 {
-                    self.dirty_registers |= 1u128 << bit_index;
-                }
+                self.mark_register_dirty(offset);
 
                 Ok(StmtResult::Continue)
             }
