@@ -1819,44 +1819,49 @@ impl SymContext {
         let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
 
-        // Hold lock for entire operation to avoid lifetime issues
-        let solver = self.solver();
-        solver.push();
+        // All n check/get_model/assert-exclude iterations share one solver
+        // lock acquisition via with_z3_solver. The outer push/pop pair is
+        // balanced inside the closure, so the Z3 scope stack returns to its
+        // pre-closure depth before f returns — safe for both the None
+        // (per-context) and Some (shared-lineage) dispatch paths.
+        self.with_z3_solver(|solver| {
+            solver.push();
 
-        for _ in 0..n {
-            match timed_check(&solver, CheckSite::EvalUpto) {
-                z3::SatResult::Sat => {
-                    if let Some(model) = solver.get_model() {
-                        if let Some(result) = model.eval(&ast, true) {
-                            if let Some(value) = Self::extract_bv_value(&result) {
-                                results.push(value);
-                                // Add constraint to exclude this value
-                                let val_ast = if bv.width() <= 64 {
-                                    z3::ast::BV::from_u64(value as u64, bv.width())
+            for _ in 0..n {
+                match timed_check(solver, CheckSite::EvalUpto) {
+                    z3::SatResult::Sat => {
+                        if let Some(model) = solver.get_model() {
+                            if let Some(result) = model.eval(&ast, true) {
+                                if let Some(value) = Self::extract_bv_value(&result) {
+                                    results.push(value);
+                                    // Add constraint to exclude this value
+                                    let val_ast = if bv.width() <= 64 {
+                                        z3::ast::BV::from_u64(value as u64, bv.width())
+                                    } else {
+                                        let lo = z3::ast::BV::from_u64(value as u64, 64);
+                                        let hi = z3::ast::BV::from_u64(
+                                            (value >> 64) as u64,
+                                            bv.width() - 64,
+                                        );
+                                        hi.concat(&lo)
+                                    };
+                                    solver.assert(&ast.eq(&val_ast).not());
                                 } else {
-                                    let lo = z3::ast::BV::from_u64(value as u64, 64);
-                                    let hi = z3::ast::BV::from_u64(
-                                        (value >> 64) as u64,
-                                        bv.width() - 64,
-                                    );
-                                    hi.concat(&lo)
-                                };
-                                solver.assert(&ast.eq(&val_ast).not());
+                                    break;
+                                }
                             } else {
                                 break;
                             }
                         } else {
                             break;
                         }
-                    } else {
-                        break;
                     }
+                    _ => break,
                 }
-                _ => break,
             }
-        }
 
-        solver.pop(1);
+            solver.pop(1);
+        });
         results
     }
 
@@ -2912,11 +2917,15 @@ impl SymContext {
     /// as slice 3c/d/e and individually noise-level. With 3k the entire
     /// "no scope-stack" subset of direct-solver callers is migrated —
     /// every remaining `self.solver()` call site manipulates Z3's scope
-    /// stack across multiple operations. Remaining callers (`eval_upto`,
-    /// `eval_upto_wide`, `min`, `max`, `can_be_value`, push/pop,
-    /// transaction_*) will migrate in slice 4 alongside the actual
-    /// lineage materialization in `fork()` — they need scope_path
-    /// threading rather than a single `with_z3_solver` wrap.
+    /// stack across multiple operations. Slice 4a.1 begins the scope-
+    /// stack-caller migration with `eval_upto`: the outer push/pop is
+    /// balanced inside the closure (same pattern slice 3j proved with
+    /// `check_branch_feasibility`), so the Z3 scope stack returns to
+    /// its pre-closure depth before `f` returns. Remaining scope-stack
+    /// callers (`eval_upto_wide`, `min`, `max`, `min_with_hint`,
+    /// `can_be_value`, push/pop, transaction_*) will follow in 4a.2+,
+    /// with the spans-multiple-calls subset (push/pop, transaction_*)
+    /// likely needing a separate scope_path API.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
