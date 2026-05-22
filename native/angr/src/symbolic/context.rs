@@ -1732,17 +1732,23 @@ impl SymContext {
             return Some(result);
         }
 
-        // Need to get a model from Z3
-        let solver = self.solver();
-        match timed_check(&solver, CheckSite::Eval) {
-            z3::SatResult::Sat => {}
-            _ => return None,
-        }
+        // Need a fresh model — check(), get_model(), and the AST evaluation
+        // all share one solver lock acquisition via with_z3_solver. Mirrors
+        // the slice 3h pattern from `eval`, minus the model_cache write
+        // (eval_wide neither reads nor populates model_cache today) and
+        // minus the sat_cache update (the original eval_wide didn't set it
+        // either — preserve behavior).
+        self.with_z3_solver(|solver| {
+            match timed_check(solver, CheckSite::Eval) {
+                z3::SatResult::Sat => {}
+                _ => return None,
+            }
 
-        let model = solver.get_model()?;
-        let ast = bv.to_z3_ast();
-        let result = model.eval(&ast, true)?;
-        Self::extract_bv_value_wide(&result, width)
+            let model = solver.get_model()?;
+            let ast = bv.to_z3_ast();
+            let result = model.eval(&ast, true)?;
+            Self::extract_bv_value_wide(&result, width)
+        })
     }
 
     /// Extract a u128 value from a Z3 BV result.
@@ -2876,9 +2882,11 @@ impl SymContext {
     /// and `model.eval(ast, true)` — with `?`-propagation on the inner
     /// `Option<u128>` so a None model or extraction returns from the
     /// closure cleanly while still letting `sat_cache.set(Some(true))`
-    /// have fired). Remaining callers (`eval_wide`,
-    /// `check_branch_feasibility`, `min`, `max`, push/pop, transaction_*)
-    /// will migrate in subsequent slices.
+    /// have fired); slice 3i migrated `eval_wide` (same three Z3 ops as
+    /// `eval` but returning `Option<Vec<u8>>` via `extract_bv_value_wide`;
+    /// no `model_cache`/`sat_cache` writes since the original didn't have
+    /// them). Remaining callers (`check_branch_feasibility`, `min`,
+    /// `max`, push/pop, transaction_*) will migrate in subsequent slices.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
