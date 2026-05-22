@@ -167,12 +167,13 @@ class RustCallbackDispatchMixin:
         """
         rust_ctx = getattr(state.scratch, 'rust_solver_ctx', None)
         if rust_ctx is None:
-            # angr-bs71: Path A miss — fall back to the legacy Rust→Python
-            # constraint-AST push. This counter should stay at 0 across the
-            # benchmark suite; non-zero readings mean a callback site forgot to
-            # attach rust_solver_ctx.
+            # angr-bs71/h0dv: Path A miss — counter should stay at 0 across the
+            # benchmark suite. The legacy Rust→Python constraint-AST push was
+            # removed after a 20-bench soak proved it was dead code; non-zero
+            # readings here mean a callback site forgot to attach
+            # rust_solver_ctx and Python's solver may diverge from Rust's.
             self._stats_rust_ctx_missing += 1
-            self._sync_rust_constraints_to_python(state)
+            l.debug("rust_solver_ctx not attached to callback state; Python solver may diverge")
             return
 
         # Use a mutable container so closures see the latest rust_ctx
@@ -285,8 +286,8 @@ class RustCallbackDispatchMixin:
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: forwarding constraint to Rust solver
                     # failed; the Python solver still has it (added below), but Rust
-                    # may produce different sat/values until the constraint is re-
-                    # synced via _cb_sync_constraints.
+                    # may produce different sat/values until the next callback
+                    # re-attaches rust_solver_ctx.
                     pass
             original_add(*constraints)
 

@@ -821,14 +821,12 @@ class RustExplorationManager(
         self._stats_hook_sync_calls = 0      # _sync_hooks_before_step invocations
         self._stats_hook_sync_skips = 0      # fast-path skips (no new hooks)
         self._stats_time_in_callbacks_ns = 0 # cumulative time in callback code
-        # angr-bs71: telemetry on legacy Rust→Python constraint sync paths.
-        # Used to verify the Path A (rust_solver_ctx attach) covers all callback
-        # sites so Path B (description-string reconstruction) can be retired.
-        self._stats_cb_sync_calls = 0        # _cb_sync_constraints invocations from Rust
-        self._stats_cb_sync_constraints = 0  # total constraints pushed via _cb_sync_constraints
-        self._stats_cb_sync_failures = 0     # constraints that could not be reconstructed
-        self._stats_rust_ctx_missing = 0     # _install_rust_solver_on_callback_state with no ctx
-        self._stats_pending_ast_sync_calls = 0  # _sync_rust_constraints_to_python invocations
+        # angr-bs71/h0dv: defensive counter for Path A (rust_solver_ctx attach)
+        # regressions. Stays at 0 in production; non-zero means a callback site
+        # forgot to attach rust_solver_ctx and Python's solver may diverge from
+        # Rust's. The legacy Path B (Rust→Python constraint AST push) was
+        # removed in angr-h0dv after a 20-bench soak proved it was dead.
+        self._stats_rust_ctx_missing = 0
         # angr-ymoe: orphan-BVS fallback counters. Both paths mint a Python
         # claripy.BVS that has no Rust counterpart — measure how often they
         # fire to decide between hard-error / Rust-side fresh symbol / delete.
@@ -1237,7 +1235,6 @@ class RustExplorationManager(
         callbacks.set_memory_store(self._cb_memory_store)
         callbacks.set_lift_block(self._cb_lift_block)
         callbacks.set_fetch_page(self._cb_fetch_page)
-        callbacks.set_sync_constraints(self._cb_sync_constraints)
         callbacks.set_get_register(self._cb_get_register)
         callbacks.set_put_register(self._cb_put_register)
         callbacks.set_dirty_call(self._cb_dirty_call)
@@ -1424,64 +1421,6 @@ class RustExplorationManager(
                 return (bytes(4096), 0, False)
         finally:
             self._perf_stats.record_fetch_page(time.perf_counter_ns() - _fp_start)
-
-    def _cb_sync_constraints(self, constraints: list) -> bool:
-        """Sync constraints from Rust to Python's claripy solver."""
-        self._stats_cb_sync_calls += 1
-        self._stats_cb_sync_constraints += len(constraints)
-        state = self._get_default_state()
-        if state is None:
-            l.debug("sync_constraints called but no state available")
-            return False
-
-        added_constraints = []
-        sync_failed = False
-
-        for desc, width, concrete_val, handle_id in constraints:
-            try:
-                if handle_id is not None:
-                    ast = self._lookup_handle(handle_id)
-                    if ast is not None:
-                        constraint = ast == claripy.BVV(concrete_val, width)
-                        state.solver.add(constraint)
-                        added_constraints.append(constraint)
-                        l.debug(f"Synced constraint from handle {handle_id}: {desc}")
-                        continue
-
-                # angr-wi5m: description-string reconstruction (addr_concretize_<hex>
-                # and mem_<hex>_<...> parsers) removed after 20-bench counter soak
-                # showed cb_sync_failures=0 everywhere. If a constraint reaches here
-                # without a live handle id, the upstream Rust→Python plumbing has
-                # changed; the warning below is the signal to investigate.
-                self._stats_cb_sync_failures += 1
-                l.warning(f"Could not sync constraint (no handle): {desc} = 0x{concrete_val:x}")
-                sync_failed = True
-
-            except (SimError, ClaripyError) as e:
-                # cat-(c) WRONG-ANSWER RISK: per-constraint sync failed; sync_failed
-                # is set so the caller treats the whole batch as failed. Already
-                # warns.
-                l.warning(f"Error syncing constraint '{desc}': {e}")
-                sync_failed = True
-
-        if added_constraints:
-            try:
-                if not state.solver.satisfiable():
-                    l.warning(f"Constraint sync made solver UNSAT, rolling back {len(added_constraints)} constraints")
-                    state.solver._stored_solver = None
-                    sync_failed = True
-            except (SimError, ClaripyError) as e:
-                # cat-(c) WRONG-ANSWER RISK: post-sync satisfiability check raised;
-                # treated as sync failure. Already warns.
-                l.warning(f"Error validating constraint sync: {e}")
-                sync_failed = True
-
-        if sync_failed:
-            l.debug(f"Constraint sync completed with failures (added {len(added_constraints)} constraints)")
-        else:
-            l.debug(f"Constraint sync succeeded (added {len(added_constraints)} constraints)")
-
-        return not sync_failed
 
     def _cb_get_register(self, offset: int, size: int) -> Tuple[bytes, bool, Optional[object]]:
         state = self._get_callback_state() or self._get_default_state()
@@ -3794,14 +3733,10 @@ class RustExplorationManager(
         result['time_in_callbacks'] = self._stats_time_in_callbacks_ns / 1e9  # seconds
         result['z3_ptr_cache_hits'] = self._z3_ptr_cache_hits
         result['z3_ptr_cache_misses'] = self._z3_ptr_cache_misses
-        # angr-bs71: legacy Rust→Python constraint-sync telemetry. Used to
-        # confirm Path B (description-string reconstruction in
-        # _cb_sync_constraints) can be retired.
-        result['cb_sync_calls'] = self._stats_cb_sync_calls
-        result['cb_sync_constraints'] = self._stats_cb_sync_constraints
-        result['cb_sync_failures'] = self._stats_cb_sync_failures
+        # angr-h0dv: defensive counter for Path A (rust_solver_ctx attach)
+        # regressions. The other legacy constraint-sync counters were retired
+        # after a 20-bench soak proved Path B was dead code.
         result['rust_ctx_missing'] = self._stats_rust_ctx_missing
-        result['pending_ast_sync_calls'] = self._stats_pending_ast_sync_calls
         # angr-ymoe: orphan-BVS fallback counters
         result['orphan_bvs_mem_thunk'] = self._stats_orphan_bvs_mem_thunk
         result['orphan_bvs_sym_load_full_fail'] = self._stats_orphan_bvs_sym_load_full_fail

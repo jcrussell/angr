@@ -337,14 +337,6 @@ pub struct PythonCallbacks {
     /// Callback for batched page fetching: fn(page_addrs: list[u64]) -> list[(bytes, u8, bool)]
     /// Returns list of (data, permissions, is_mapped) for each requested page.
     pub batch_fetch_pages: Option<Py<PyAny>>,
-    /// Callback for syncing constraints to Python: fn(constraints: list[(str, int, int, int | None)]) -> None
-    /// Each constraint is (description, width, concrete_value, handle_id) where:
-    /// - description: human-readable description (e.g., "addr_concretize_0x1234")
-    /// - width: bit width of the constrained expression
-    /// - concrete_value: the value the expression was constrained to
-    /// - handle_id: optional handle ID to look up the original claripy AST
-    /// Python should add these constraints to its claripy solver.
-    pub sync_constraints: Option<Py<PyAny>>,
     /// Callback for storing a symbolic value with full expression tree: fn(addr: int, ast: claripy.AST) -> None
     /// This is called when storing a symbolic value to memory. The AST is reconstructed from
     /// the Rust expression tree, preserving the original symbolic expression structure.
@@ -439,7 +431,6 @@ impl PythonCallbacks {
             dirty_call: None,
             fetch_page: None,
             batch_fetch_pages: None,
-            sync_constraints: None,
             memory_store_symbolic_value: None,
             memory_store_symbolic_full: None,
             memory_load_symbolic_full: None,
@@ -594,18 +585,6 @@ impl PythonCallbacks {
     /// Each result is (page_data_4kb, permissions, is_mapped).
     pub fn set_batch_fetch_pages(&mut self, cb: Py<PyAny>) {
         self.batch_fetch_pages = Some(cb);
-    }
-
-    /// Set the constraint sync callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(constraints: list[tuple[str, int, int, int | None]]) -> None`
-    ///
-    /// Each tuple is (description, width, concrete_value, handle_id).
-    /// Python should add these constraints to its claripy solver.
-    /// The handle_id can be used to look up the original claripy AST.
-    pub fn set_sync_constraints(&mut self, cb: Py<PyAny>) {
-        self.sync_constraints = Some(cb);
     }
 
     /// Set the symbolic value store callback.
@@ -859,7 +838,6 @@ impl PythonCallbacks {
             &self.dirty_call,
             &self.fetch_page,
             &self.batch_fetch_pages,
-            &self.sync_constraints,
             &self.memory_store_symbolic_value,
             &self.memory_store_symbolic_full,
             &self.memory_load_symbolic_full,
@@ -896,7 +874,6 @@ impl PythonCallbacks {
         self.dirty_call = None;
         self.fetch_page = None;
         self.batch_fetch_pages = None;
-        self.sync_constraints = None;
         self.memory_store_symbolic_value = None;
         self.memory_store_symbolic_full = None;
         self.memory_load_symbolic_full = None;
@@ -1536,36 +1513,6 @@ impl PythonCallbacks {
             results.push((data, perms, mapped));
         }
         Ok(results)
-    }
-
-    /// Sync accumulated constraints to Python's claripy solver.
-    ///
-    /// This should be called before falling back to Python for operations
-    /// that depend on solver state (e.g., symbolic memory operations).
-    ///
-    /// # Arguments
-    /// * `py` - Python GIL token
-    /// * `constraints` - List of (description, width, concrete_value, handle_id) tuples
-    ///
-    /// # Returns
-    /// Ok(()) on success, or error if callback fails.
-    pub fn call_sync_constraints(
-        &self,
-        py: Python<'_>,
-        constraints: &[(String, u32, u128, Option<u64>)],
-    ) -> PyResult<()> {
-        if constraints.is_empty() {
-            return Ok(());
-        }
-
-        if let Some(cb) = &self.sync_constraints {
-            // Convert to Python list of tuples
-            let py_constraints: Vec<(String, u32, u128, Option<u64>)> = constraints.to_vec();
-            cb.call1(py, (py_constraints,))?;
-        }
-        // If no callback is set, silently succeed - constraints will be lost
-        // but this allows gradual adoption of the feature
-        Ok(())
     }
 
     /// Store a symbolic value to memory with full expression tree preservation.

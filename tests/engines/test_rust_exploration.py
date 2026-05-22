@@ -7131,89 +7131,30 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected fetch bug"):
             mgr._cb_fetch_page(0x1000)
 
-    def test_legacy_constraint_sync_counters_start_at_zero(self):
-        """angr-bs71: legacy Rust→Python constraint-sync counters all start
-        at zero on a fresh manager. Used to confirm Path A
-        (rust_solver_ctx attach) covers every callback site so Path B
-        (description-string reconstruction in `_cb_sync_constraints` /
-        `_sync_rust_constraints_to_python`) can be retired."""
+    def test_rust_ctx_missing_counter_starts_at_zero(self):
+        """angr-h0dv: defensive `rust_ctx_missing` counter on a fresh
+        manager. Path A (rust_solver_ctx attach in
+        rust_callback_dispatch.py::_install_rust_solver_on_callback_state)
+        covers every live callback site; non-zero here signals a callback
+        site forgot to attach the Rust solver context. The legacy Path B
+        constraint-sync counters (cb_sync_calls, cb_sync_constraints,
+        cb_sync_failures, pending_ast_sync_calls) were retired in this
+        bead after a 20-bench soak proved they stayed at 0."""
         mgr, _ = self._build_load_store_manager()
         stats = mgr.stats
-        assert stats["cb_sync_calls"] == 0
-        assert stats["cb_sync_constraints"] == 0
-        assert stats["cb_sync_failures"] == 0
         assert stats["rust_ctx_missing"] == 0
-        assert stats["pending_ast_sync_calls"] == 0
-
-    def test_cb_sync_constraints_increments_call_counter(self):
-        """`_cb_sync_constraints` records both the call count and the total
-        constraints handed across the FFI, even when the per-constraint
-        reconstruction succeeds via handle id."""
-        import claripy
-        mgr, state = self._build_load_store_manager()
-
-        x = claripy.BVS("x_counter", 32)
-        handle_id = id(x)
-        mgr._register_handle(handle_id, x)
-        self._put_state_in_default_cache(mgr, state)
-
-        ok = mgr._cb_sync_constraints([("test_constraint", 32, 7, handle_id)])
-        assert ok is True
-        stats = mgr.stats
-        assert stats["cb_sync_calls"] == 1
-        assert stats["cb_sync_constraints"] == 1
-        assert stats["cb_sync_failures"] == 0
-
-    def test_cb_sync_constraints_failure_counter_records_unreconstructible(self):
-        """When neither the handle id nor the description matches anything,
-        the reconstruction-failure counter must increment so we can spot
-        legacy-path hits in production benches."""
-        mgr, state = self._build_load_store_manager()
-        self._put_state_in_default_cache(mgr, state)
-
-        ok = mgr._cb_sync_constraints([("unknown_shape", 32, 0xdead, None)])
-        assert ok is False
-        stats = mgr.stats
-        assert stats["cb_sync_calls"] == 1
-        assert stats["cb_sync_constraints"] == 1
-        assert stats["cb_sync_failures"] == 1
-
-    def test_cb_sync_constraints_swallows_sim_solver_error(self):
-        """SimSolverError from state.solver.add() must mark sync as failed
-        rather than propagating — preserves the existing best-effort
-        constraint-replay behavior."""
-        import claripy
-        from angr.errors import SimSolverError
-        mgr, state = self._build_load_store_manager()
-
-        x = claripy.BVS("x_sync", 32)
-        handle_id = id(x)
-        mgr._register_handle(handle_id, x)
-
-        def boom(*args, **kwargs):
-            raise SimSolverError("simulated solver failure")
-        state.solver.add = boom
-        self._put_state_in_default_cache(mgr, state)
-
-        ok = mgr._cb_sync_constraints([("test_constraint", 32, 42, handle_id)])
-        assert ok is False
-
-    def test_cb_sync_constraints_propagates_unrelated_exceptions(self):
-        """Non-Sim/Claripy exceptions must propagate out of _cb_sync_constraints."""
-        import claripy
-        mgr, state = self._build_load_store_manager()
-
-        x = claripy.BVS("x_sync", 32)
-        handle_id = id(x)
-        mgr._register_handle(handle_id, x)
-
-        def boom(*args, **kwargs):
-            raise RuntimeError("unexpected sync bug")
-        state.solver.add = boom
-        self._put_state_in_default_cache(mgr, state)
-
-        with pytest.raises(RuntimeError, match="unexpected sync bug"):
-            mgr._cb_sync_constraints([("test_constraint", 32, 42, handle_id)])
+        # Retired counters must not reappear in stats.
+        for retired in (
+            "cb_sync_calls",
+            "cb_sync_constraints",
+            "cb_sync_failures",
+            "pending_ast_sync_calls",
+        ):
+            assert retired not in stats, f"retired counter resurfaced: {retired}"
+        # _cb_sync_constraints method is also gone.
+        assert not hasattr(mgr, "_cb_sync_constraints")
+        # _sync_rust_constraints_to_python lived on the state-sync mixin.
+        assert not hasattr(mgr, "_sync_rust_constraints_to_python")
 
     def test_cb_memory_store_batch_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.store() must keep being swallowed

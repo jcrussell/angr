@@ -75,25 +75,22 @@ impl<'a> CallbackInterpreter<'a> {
             .collect()
     }
 
-    /// Sync pending constraints to Python before making a callback.
+    /// Clear any pending constraints before making a callback into Python.
     ///
-    /// This ensures that Python's claripy solver has all the constraints
-    /// that Rust has accumulated, which is critical for operations that
-    /// depend on solver state (e.g., symbolic memory operations, SimProcedures).
-    ///
-    /// Call this before any Python callback that may need solver context.
+    /// angr-h0dv: this used to push the constraints into Python's claripy
+    /// solver via `callbacks.call_sync_constraints`, but a 20-bench soak
+    /// proved that path was dead — Path A (rust_solver_ctx attach in
+    /// `rust_callback_dispatch.py::_install_rust_solver_on_callback_state`)
+    /// covers every live callback site, so the Python side already shares
+    /// solver context with Rust. The Rust-internal constraint tracker is
+    /// retained for in-process tests; we just drop the accumulated set so
+    /// the next exploration window starts clean.
     pub fn sync_before_callback(
         &mut self,
-        py: Python<'_>,
-        callbacks: &PythonCallbacks,
+        _py: Python<'_>,
+        _callbacks: &PythonCallbacks,
     ) -> Result<(), CbExecutionError> {
         if self.has_pending_constraints() {
-            let constraints = self.export_constraints_for_python();
-            callbacks
-                .call_sync_constraints(py, &constraints)
-                .map_err(|e| {
-                    CbExecutionError::Callback(format!("constraint sync failed: {}", e))
-                })?;
             self.clear_pending_constraints();
         }
         Ok(())

@@ -1029,14 +1029,12 @@ impl RustVEXEngine {
         let (result, blocks_executed, deferred_forks) =
             interp.run_until_event(py, callbacks, max_blocks);
 
-        // Sync any pending constraints to Python before returning
-        // This ensures Python's solver knows about any concretization decisions Rust made
+        // angr-h0dv: The post-loop Rust→Python constraint push was removed
+        // after a 20-bench soak proved it was dead code. Path A
+        // (rust_solver_ctx attach in rust_callback_dispatch.py) covers every
+        // live callback site. Clear any tracked constraints so the next
+        // exploration window starts clean.
         if interp.has_pending_constraints() {
-            let constraints = interp.export_constraints_for_python();
-            // Best-effort sync - don't fail the whole execution if sync fails
-            if let Err(e) = callbacks.call_sync_constraints(py, &constraints) {
-                log::debug!("Constraint sync failed (non-fatal): {}", e);
-            }
             interp.clear_pending_constraints();
         }
 
