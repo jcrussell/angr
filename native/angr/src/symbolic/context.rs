@@ -1494,24 +1494,28 @@ impl SymContext {
         if let Some(cached) = self.sat_cache.get() {
             return cached;
         }
-        // Perform actual SAT check
-        let solver = self.solver();
-        let result = matches!(
-            timed_check(&solver, CheckSite::Satisfiable),
-            z3::SatResult::Sat
-        );
-        self.sat_cache.set(Some(result));
-        // Populate model_cache if SAT — get_model is essentially free after
-        // a successful check, and the model lets check_branch_feasibility
-        // skip one of two Z3 checks.
-        if result {
-            let mut cache = self.model_cache.borrow_mut();
-            if cache.is_none() {
-                if let Some(m) = solver.get_model() {
-                    *cache = Some(m);
+        // Perform actual SAT check. Both the check() and the post-check
+        // get_model() must happen under the same solver lock, so both run
+        // inside the with_z3_solver closure.
+        let result = self.with_z3_solver(|solver| {
+            let result = matches!(
+                timed_check(solver, CheckSite::Satisfiable),
+                z3::SatResult::Sat
+            );
+            // Populate model_cache if SAT — get_model is essentially free
+            // after a successful check, and the model lets
+            // check_branch_feasibility skip one of two Z3 checks.
+            if result {
+                let mut cache = self.model_cache.borrow_mut();
+                if cache.is_none() {
+                    if let Some(m) = solver.get_model() {
+                        *cache = Some(m);
+                    }
                 }
             }
-        }
+            result
+        });
+        self.sat_cache.set(Some(result));
         result
     }
 
@@ -2860,10 +2864,13 @@ impl SymContext {
     /// slice 3d migrated `add_constraint`, the assume_true/assume_false/
     /// add_bv_constraint hot path; slice 3e migrated `add_constraint_raw`
     /// (the unsafe Python-side raw-Z3-AST bridge); slice 3f migrated
-    /// `add_constraint_tracked_indexed` (the unsat-core-tracked variant).
-    /// Remaining callers (`eval`, `is_sat`, `min`, `max`,
-    /// `check_branch_feasibility`, push/pop, transaction_*) will migrate
-    /// in subsequent slices.
+    /// `add_constraint_tracked_indexed` (the unsat-core-tracked variant);
+    /// slice 3g migrated `is_sat` (first migration with a return value
+    /// and an in-closure side effect — the post-check `get_model()` that
+    /// populates `model_cache` runs inside the closure so it shares the
+    /// solver lock with the `check()` call). Remaining callers (`eval`,
+    /// `min`, `max`, `check_branch_feasibility`, push/pop, transaction_*)
+    /// will migrate in subsequent slices.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
