@@ -407,11 +407,10 @@ class RustStateExportMixin:
                                 self._inject_rust_stdin(angr_state, snapshot.state_id)
                                 # Skip _sync_exported_constraints — it's O(n^2) on
                                 # constraint ASTs (5.9s for sym-write) and causes
-                                # identity mismatches. The Rust solver fallback
-                                # handles eval/eval_upto/min/max/satisfiable via
-                                # Rust's Z3 solver which already has the correct
-                                # constraints from exploration.
-                                self._attach_rust_solver_fallback(angr_state, snapshot.state_id)
+                                # identity mismatches. _snapshot_to_angr above
+                                # already attached the Rust solver fallback,
+                                # which handles eval/eval_upto/min/max/satisfiable
+                                # via Rust's Z3 solver.
                                 self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
                                 self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
