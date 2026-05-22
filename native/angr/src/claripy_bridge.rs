@@ -36,6 +36,15 @@ thread_local! {
         RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).expect("AST_CACHE_SIZE is a non-zero constant")));
 }
 
+/// Short-hand for `CACHE.with(|c| c.borrow_mut().…)` against the thread-local
+/// AST caches in this module. Accepts an arbitrary method/chain so both
+/// mutating operations and `.get(&k).cloned()` reads collapse to one line.
+macro_rules! tl_cache {
+    ($cache:ident, $($call:tt)*) => {
+        $cache.with(|c| c.borrow_mut().$($call)*)
+    };
+}
+
 // Thread-local cache for preserving original claripy ASTs.
 // Maps RustBV symbol ID to the original claripy AST.
 // This is critical for correctly reconstructing expressions that reference
@@ -88,10 +97,7 @@ thread_local! {
 /// This stores in both the global registry (for cross-thread access)
 /// and the thread-local cache (for fast repeated access).
 pub fn store_claripy_ast(symbol_id: u64, ast: Py<PyAny>) {
-    // Store in thread-local cache
-    CLARIPY_AST_CACHE.with(|cache| {
-        cache.borrow_mut().insert(symbol_id, ast.clone());
-    });
+    tl_cache!(CLARIPY_AST_CACHE, insert(symbol_id, ast.clone()));
 
     // Also store in global registry via public method
     // Note: We use a dummy hash (0) since we only have the symbol_id here
@@ -109,10 +115,7 @@ pub fn store_claripy_ast_with_info(
     width: u32,
     ast: Py<PyAny>,
 ) {
-    // Store in thread-local cache
-    CLARIPY_AST_CACHE.with(|cache| {
-        cache.borrow_mut().insert(symbol_id, ast.clone());
-    });
+    tl_cache!(CLARIPY_AST_CACHE, insert(symbol_id, ast.clone()));
 
     // Register in global registry with full information
     global_registry().register(py_hash, symbol_id, name, width, ast);
@@ -130,7 +133,7 @@ pub fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
     }
 
     // Fall back to thread-local cache
-    CLARIPY_AST_CACHE.with(|cache| cache.borrow().get(&symbol_id).cloned())
+    tl_cache!(CLARIPY_AST_CACHE, get(&symbol_id).cloned())
 }
 
 /// Look up a symbol by its Python hash.
@@ -160,35 +163,29 @@ pub fn lookup_symbol_by_name_and_width(
 /// Store a claripy AST in the expression cache by expression hash.
 /// Called when converting claripy→RustBV for compound expressions.
 pub fn store_expression_ast(expr_hash: u64, ast: Py<PyAny>) {
-    EXPRESSION_CACHE.with(|cache| {
-        cache.borrow_mut().put(expr_hash, ast);
-    });
+    tl_cache!(EXPRESSION_CACHE, put(expr_hash, ast));
 }
 
 /// Retrieve a claripy AST from the expression cache by expression hash.
 /// Called when converting RustBV→claripy to return the original AST.
 pub fn get_expression_ast(expr_hash: u64) -> Option<Py<PyAny>> {
-    EXPRESSION_CACHE.with(|cache| cache.borrow_mut().get(&expr_hash).cloned())
+    tl_cache!(EXPRESSION_CACHE, get(&expr_hash).cloned())
 }
 
 /// Store the original claripy AST keyed by an imported Expression's
 /// operands Arc pointer. The BV clone is held alongside to pin the
 /// operands Arc alive (preventing pointer reuse on free).
 pub fn store_expression_ast_by_operands(operands_ptr: usize, bv: RustBV, ast: Py<PyAny>) {
-    EXPRESSION_BY_OPERANDS_PTR.with(|cache| {
-        cache.borrow_mut().put(operands_ptr, (bv, ast));
-    });
+    tl_cache!(EXPRESSION_BY_OPERANDS_PTR, put(operands_ptr, (bv, ast)));
 }
 
 /// Retrieve a previously stored claripy AST by an Expression's operands
 /// Arc pointer. Returns None on miss.
 pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Option<Py<PyAny>> {
-    EXPRESSION_BY_OPERANDS_PTR.with(|cache| {
-        cache
-            .borrow_mut()
-            .get(&operands_ptr)
-            .map(|(_, ast)| ast.clone_ref(py))
-    })
+    tl_cache!(
+        EXPRESSION_BY_OPERANDS_PTR,
+        get(&operands_ptr).map(|(_, ast)| ast.clone_ref(py))
+    )
 }
 
 /// Clear all AST conversion caches.
@@ -197,18 +194,10 @@ pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Op
 /// Note: This clears thread-local caches but NOT the global registry.
 /// Use `clear_all_caches()` to clear everything including global state.
 pub fn clear_ast_cache() {
-    AST_CACHE.with(|cache| {
-        cache.borrow_mut().clear();
-    });
-    CLARIPY_AST_CACHE.with(|cache| {
-        cache.borrow_mut().clear();
-    });
-    EXPRESSION_CACHE.with(|cache| {
-        cache.borrow_mut().clear();
-    });
-    EXPRESSION_BY_OPERANDS_PTR.with(|cache| {
-        cache.borrow_mut().clear();
-    });
+    tl_cache!(AST_CACHE, clear());
+    tl_cache!(CLARIPY_AST_CACHE, clear());
+    tl_cache!(EXPRESSION_CACHE, clear());
+    tl_cache!(EXPRESSION_BY_OPERANDS_PTR, clear());
 }
 
 /// Clear all caches including the global registry.
@@ -359,7 +348,7 @@ pub fn claripy_to_rustbv(
 
     // Check LRU cache for previously converted AST
     if use_cache {
-        let cached = AST_CACHE.with(|cache| cache.borrow_mut().get(&ast_hash).cloned());
+        let cached = tl_cache!(AST_CACHE, get(&ast_hash).cloned());
         if let Some(cached_bv) = cached {
             // Defensive width check — claripy hashes are content-addressed and
             // already include length, so collisions are exceedingly rare, but
@@ -375,9 +364,7 @@ pub fn claripy_to_rustbv(
             }
             // Width mismatch: evict the stale entry and fall through to
             // reconvert. The recomputed BV will be re-cached below.
-            AST_CACHE.with(|cache| {
-                cache.borrow_mut().pop(&ast_hash);
-            });
+            tl_cache!(AST_CACHE, pop(&ast_hash));
         }
     }
 
@@ -864,9 +851,7 @@ pub fn claripy_to_rustbv(
     if use_cache {
         if let Ok(ref bv) = result {
             // Forward cache: claripy hash → RustBV
-            AST_CACHE.with(|cache| {
-                cache.borrow_mut().put(ast_hash, bv.clone());
-            });
+            tl_cache!(AST_CACHE, put(ast_hash, bv.clone()));
             // Reverse cache: store original claripy AST for later retrieval
             // This preserves AST identity when converting back to Python
             // Use the ast_hash as a positive u64 key
