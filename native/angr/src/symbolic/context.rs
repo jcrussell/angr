@@ -2018,88 +2018,95 @@ impl SymContext {
             Z3_EXTREMA_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
         }
 
-        let solver = self.solver();
-        solver.push();
-
-        let (mut lo, mut hi): (u128, u128) = if signed {
-            let sign_bit = 1u128 << (width - 1);
-            let max_val = if width >= 128 {
-                u128::MAX
-            } else {
-                (1u128 << width) - 1
-            };
-            let max_positive = sign_bit - 1;
-
-            // Witness's signed interpretation: negative iff sign bit set.
-            let witness_is_negative = witness.map(|v| (v & sign_bit) != 0).unwrap_or(false);
-
-            // has_negative is true if some satisfying assignment is signed
-            // negative. A negative witness proves it without a Z3 check.
-            let has_negative = if witness_is_negative {
-                true
-            } else {
-                solver.push();
-                let zero = Self::make_bv_const(0, width);
-                solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
-                let r =
-                    matches!(timed_check(&solver, CheckSite::MinInit), z3::SatResult::Sat);
-                solver.pop(1);
-                r
-            };
-
-            if has_negative {
-                // Minimum is negative, search in [sign_bit, max_val] range.
-                let hi_seed = if witness_is_negative {
-                    // Witness is in [sign_bit, max_val] and feasible.
-                    witness.unwrap().min(max_val)
-                } else {
-                    max_val
-                };
-                (sign_bit, hi_seed)
-            } else {
-                // Minimum is non-negative. Witness, if any, is non-negative
-                // (otherwise has_negative would be true), so it's in
-                // [0, max_positive] and tightens the upper bound.
-                let hi_seed = witness.map(|v| v.min(max_positive)).unwrap_or(max_positive);
-                (0, hi_seed)
-            }
-        } else {
-            let max_val = if width >= 128 {
-                u128::MAX
-            } else {
-                (1u128 << width) - 1
-            };
-            let hi_seed = witness.map(|v| v.min(max_val)).unwrap_or(max_val);
-            (0, hi_seed)
-        };
-
-        // Common binary search loop. The signed and unsigned variants only
-        // differ in the comparison operator (bvsle vs bvule).
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-
+        // All push/check/pop work shares one solver lock acquisition via
+        // with_z3_solver. The outer push/pop pair and the per-iteration
+        // push/check/pop pairs are all balanced inside the closure, so the
+        // Z3 scope stack returns to its pre-closure depth before f returns
+        // — safe for both the None (per-context) and Some (shared-lineage)
+        // dispatch paths.
+        self.with_z3_solver(|solver| {
             solver.push();
-            let mid_ast = Self::make_bv_const(mid, width);
-            if signed {
-                solver.assert(&ast.bvsle(&mid_ast));
+
+            let (mut lo, mut hi): (u128, u128) = if signed {
+                let sign_bit = 1u128 << (width - 1);
+                let max_val = if width >= 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << width) - 1
+                };
+                let max_positive = sign_bit - 1;
+
+                // Witness's signed interpretation: negative iff sign bit set.
+                let witness_is_negative = witness.map(|v| (v & sign_bit) != 0).unwrap_or(false);
+
+                // has_negative is true if some satisfying assignment is signed
+                // negative. A negative witness proves it without a Z3 check.
+                let has_negative = if witness_is_negative {
+                    true
+                } else {
+                    solver.push();
+                    let zero = Self::make_bv_const(0, width);
+                    solver.assert(&ast.bvslt(&zero)); // bv < 0 (signed)
+                    let r =
+                        matches!(timed_check(solver, CheckSite::MinInit), z3::SatResult::Sat);
+                    solver.pop(1);
+                    r
+                };
+
+                if has_negative {
+                    // Minimum is negative, search in [sign_bit, max_val] range.
+                    let hi_seed = if witness_is_negative {
+                        // Witness is in [sign_bit, max_val] and feasible.
+                        witness.unwrap().min(max_val)
+                    } else {
+                        max_val
+                    };
+                    (sign_bit, hi_seed)
+                } else {
+                    // Minimum is non-negative. Witness, if any, is non-negative
+                    // (otherwise has_negative would be true), so it's in
+                    // [0, max_positive] and tightens the upper bound.
+                    let hi_seed = witness.map(|v| v.min(max_positive)).unwrap_or(max_positive);
+                    (0, hi_seed)
+                }
             } else {
-                solver.assert(&ast.bvule(&mid_ast));
+                let max_val = if width >= 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << width) - 1
+                };
+                let hi_seed = witness.map(|v| v.min(max_val)).unwrap_or(max_val);
+                (0, hi_seed)
+            };
+
+            // Common binary search loop. The signed and unsigned variants only
+            // differ in the comparison operator (bvsle vs bvule).
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+
+                solver.push();
+                let mid_ast = Self::make_bv_const(mid, width);
+                if signed {
+                    solver.assert(&ast.bvsle(&mid_ast));
+                } else {
+                    solver.assert(&ast.bvule(&mid_ast));
+                }
+                let can_be_le_mid = matches!(
+                    timed_check(solver, CheckSite::MinSearch),
+                    z3::SatResult::Sat
+                );
+                solver.pop(1);
+
+                if can_be_le_mid {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
             }
-            let can_be_le_mid = matches!(
-                timed_check(&solver, CheckSite::MinSearch),
-                z3::SatResult::Sat
-            );
+
             solver.pop(1);
-
-            if can_be_le_mid {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-
-        solver.pop(1);
-        Some(lo)
+            Some(lo)
+        })
     }
 
     /// Get the maximum value of a bitvector using binary search (O(log N)).
@@ -2929,11 +2936,15 @@ impl SymContext {
     /// `check_branch_feasibility`), so the Z3 scope stack returns to
     /// its pre-closure depth before `f` returns. Slice 4a.2 extends the
     /// same wrap to `eval_upto_wide` (the byte-array sibling of
-    /// `eval_upto`). Remaining scope-stack callers (`min`, `max`,
-    /// `min_with_hint`, `can_be_value`, push/pop, transaction_*) will
-    /// follow in 4a.3+, with the spans-multiple-calls subset
-    /// (push/pop, transaction_*) likely needing a separate scope_path
-    /// API.
+    /// `eval_upto`). Slice 4a.3 extends it to `min`: the outer push/pop
+    /// brackets a binary-search loop with nested per-iteration push/
+    /// check/pop pairs (and, in the signed case, an additional
+    /// has_negative pre-check that also push/pops). All push/pop pairs
+    /// remain balanced when the closure returns. Remaining scope-stack
+    /// callers (`max`, `min_with_hint`, `can_be_value`, push/pop,
+    /// transaction_*) will follow in 4a.4+, with the
+    /// spans-multiple-calls subset (push/pop, transaction_*) likely
+    /// needing a separate scope_path API.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
