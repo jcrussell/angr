@@ -829,6 +829,11 @@ class RustExplorationManager(
         self._stats_cb_sync_failures = 0     # constraints that could not be reconstructed
         self._stats_rust_ctx_missing = 0     # _install_rust_solver_on_callback_state with no ctx
         self._stats_pending_ast_sync_calls = 0  # _sync_rust_constraints_to_python invocations
+        # angr-ymoe: orphan-BVS fallback counters. Both paths mint a Python
+        # claripy.BVS that has no Rust counterpart — measure how often they
+        # fire to decide between hard-error / Rust-side fresh symbol / delete.
+        self._stats_orphan_bvs_mem_thunk = 0
+        self._stats_orphan_bvs_sym_load_full_fail = 0
         _init_start = time.perf_counter_ns()
 
         # Track registered hooks to detect dynamically created continuations
@@ -1322,9 +1327,15 @@ class RustExplorationManager(
                         # cat-(b) FALLBACK WITH LOSS: thunk in memory failed to resolve;
                         # replace with a fresh BVS so the load proceeds. Caller pays a
                         # downstream symbolic constraint instead of a hard error.
+                        # angr-ymoe (2026-05-22): measured 0 fires across 21 fast-tier
+                        # benches. Path is dead in practice; counter acts as a watchdog
+                        # — if it ever goes non-zero, escalate to a Rust-side fresh
+                        # symbol (see angr-4pm1's _set_state_register_symbolic_ast
+                        # FFI shim for the pattern).
                         if _DBG:
                             l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
                         val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
+                        self._stats_orphan_bvs_mem_thunk += 1
                         break
 
                 if not hasattr(val, 'op'):
@@ -1865,7 +1876,13 @@ class RustExplorationManager(
             # cat-(c) WRONG-ANSWER RISK: symbolic-address load failed; returns
             # a fresh BVS that has no relationship to the actual symbolic value
             # in memory — downstream constraint sync will diverge. Debug-logs.
+            # angr-ymoe (2026-05-22): measured 0 fires across 21 fast-tier
+            # benches. Path is dead in practice; counter acts as a watchdog.
+            # `test_cb_memory_load_symbolic_full_swallows_sim_memory_error`
+            # locks in the swallowing behavior (Rust upstream wraps the AST
+            # in a sym_pyref_* placeholder via expressions.rs).
             l.debug(f"Symbolic-address load failed: {e}")
+            self._stats_orphan_bvs_sym_load_full_fail += 1
             return claripy.BVS(f"sym_load_full_fail_{size}", size * 8, explicit_name=False)
 
     # ---- state.inspect MVP dispatcher (angr-uq4n.2) ----
@@ -3822,6 +3839,9 @@ class RustExplorationManager(
         result['cb_sync_failures'] = self._stats_cb_sync_failures
         result['rust_ctx_missing'] = self._stats_rust_ctx_missing
         result['pending_ast_sync_calls'] = self._stats_pending_ast_sync_calls
+        # angr-ymoe: orphan-BVS fallback counters
+        result['orphan_bvs_mem_thunk'] = self._stats_orphan_bvs_mem_thunk
+        result['orphan_bvs_sym_load_full_fail'] = self._stats_orphan_bvs_sym_load_full_fail
         # Add timing breakdown for predicate-mode exploration loop
         if hasattr(self, '_time_in_rust_run_ns'):
             result['time_in_rust_run'] = self._time_in_rust_run_ns / 1e9
