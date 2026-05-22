@@ -1290,6 +1290,36 @@ impl SymContext {
     }
 
     /// Add a constraint (fast path: no tracking overhead).
+    ///
+    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.1):
+    ///
+    /// - **None** (today's only production path): asserts the constraint
+    ///   on the per-context Z3 solver — byte-identical to the pre-slice
+    ///   `self.with_z3_solver(|s| s.assert(&constraint))` call.
+    /// - **Some** (shared-lineage): mints a fresh
+    ///   [`ScopeFrame`](super::lineage::ScopeFrame) carrying the constraint,
+    ///   appends it to `self.scope_path`, and calls
+    ///   [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
+    ///   to push the new frame onto the shared solver. The constraint
+    ///   lands in its own scope, visible only to states whose
+    ///   `scope_path` includes this frame's id — preserving per-state
+    ///   isolation across siblings.
+    ///
+    /// Why not just use `with_z3_solver` in the Some path: `with_z3_solver`
+    /// switches the shared solver to the caller's *current* `scope_path`
+    /// and then runs `solver.assert(&c)`. That puts `c` at scope
+    /// `scope_path.len()` (the most-recently-pushed level). For a freshly
+    /// forked state with empty `scope_path`, that scope is 0 — the
+    /// lineage base — so the constraint would leak to every sibling
+    /// instead of being state-private. Mint-frame-then-switch keeps the
+    /// assert inside a fresh push that only this state holds in its
+    /// `scope_path`.
+    ///
+    /// The `is_true` field on the new frame is set to `true` because
+    /// callers (`assume_true`/`assume_false`) have already done the
+    /// negation in the Z3 Bool passed in. The flag is metadata for
+    /// [`switch_to`](super::lineage::SharedLineageSolver::switch_to) — it
+    /// only reads `z3_assertion`, so the flag doesn't affect Z3 semantics.
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint(&self, constraint: z3::ast::Bool) {
         // Use plain assert for fast path (no unsat_core tracking overhead).
@@ -1297,7 +1327,23 @@ impl SymContext {
         // mutex acquisition on constraint_trackers for every constraint.
         // NOTE: Don't cache here — callers (assume_true, assume_false,
         // add_constraint_raw) cache before calling this to avoid double-cache.
-        self.with_z3_solver(|solver| solver.assert(&constraint));
+        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        match lineage {
+            None => {
+                let solver = self.solver();
+                solver.assert(&constraint);
+            }
+            Some(lin) => {
+                let frame = super::lineage::ScopeFrame::new(true, constraint.clone());
+                let path_snapshot = {
+                    let mut sp = self.scope_path.lock();
+                    sp.push(frame);
+                    sp.clone()
+                };
+                let mut guard = lin.lock();
+                guard.switch_to(&path_snapshot);
+            }
+        }
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
         // Invalidate sat_cache - constraint set has changed.
         self.sat_cache.set(None);
@@ -3864,6 +3910,106 @@ mod tests {
             "outer pop should truncate to the outer save"
         );
         assert_eq!(ctx.scope_savepoint_depth(), 0);
+    }
+
+    /// angr-v5a5 slice 4c.1: with no lineage attached, `add_constraint`
+    /// must hit the per-context Z3 solver and leave `scope_path` empty
+    /// — byte-identical behavior to the pre-slice
+    /// `self.with_z3_solver(|s| s.assert(&c))` call.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_none_branch_no_scope_path() {
+        let ctx = SymContext::new();
+        assert!(ctx.lineage_arc().is_none());
+        assert_eq!(ctx.scope_path_len(), 0);
+
+        let x = RustBV::symbolic(&ctx, "test_add_constraint_none_branch_x", 8);
+        let five = RustBV::concrete(5, 8);
+        ctx.assume_true(&x.eq(&five, &ctx));
+
+        // None branch must not touch scope_path.
+        assert_eq!(
+            ctx.scope_path_len(),
+            0,
+            "None branch must not mint scope frames"
+        );
+
+        // Constraint must be in force on the per-context solver.
+        assert!(ctx.solution(&x, 5));
+        assert!(!ctx.solution(&x, 6));
+    }
+
+    /// angr-v5a5 slice 4c.1: with a lineage attached, `add_constraint`
+    /// mints a fresh `ScopeFrame`, appends it to `scope_path`, and
+    /// routes the assert through the shared solver's switch_to —
+    /// the bug-shaped piece the slice-4-blocker-analysis memo called out.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_some_branch_appends_scope_frame() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+        assert_eq!(ctx.scope_path_len(), 0);
+
+        let x = RustBV::symbolic(&ctx, "test_add_constraint_some_branch_x", 8);
+        let five = RustBV::concrete(5, 8);
+        ctx.assume_true(&x.eq(&five, &ctx));
+
+        // Some branch must mint exactly one frame on scope_path.
+        assert_eq!(
+            ctx.scope_path_len(),
+            1,
+            "Some branch must mint one scope frame per add_constraint"
+        );
+
+        // The frame must have been pushed onto the shared solver — its
+        // loaded_depth should match scope_path's length.
+        assert_eq!(
+            lin.lock().loaded_depth(),
+            1,
+            "switch_to must have pushed the new frame onto the shared solver"
+        );
+    }
+
+    /// angr-v5a5 slice 4c.1: sibling isolation invariant — the constraint
+    /// minted by sibling A's `add_constraint` must NOT be visible when
+    /// sibling B (which never added it) issues a query through the same
+    /// shared lineage solver. This is the core invariant the slice-4
+    /// design protects: per-state constraints stay in per-state scope
+    /// frames, never at the lineage base.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_sibling_isolation() {
+        use super::super::lineage::SharedLineageSolver;
+
+        // Both contexts share the same lineage.
+        let sibling_a = SymContext::new();
+        let sibling_b = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        sibling_a.set_lineage_for_testing(Arc::clone(&lin));
+        sibling_b.set_lineage_for_testing(Arc::clone(&lin));
+
+        // Sibling A adds x == 5.
+        let x_a = RustBV::symbolic(&sibling_a, "test_add_constraint_sibling_x", 8);
+        let five = RustBV::concrete(5, 8);
+        sibling_a.assume_true(&x_a.eq(&five, &sibling_a));
+        assert_eq!(sibling_a.scope_path_len(), 1);
+        assert_eq!(sibling_b.scope_path_len(), 0);
+
+        // Sibling B references the same Z3 symbol by name but has not
+        // constrained it. A query from B should see x as unconstrained
+        // — switch_to to B's empty scope_path pops A's frame first.
+        let x_b = RustBV::symbolic(&sibling_b, "test_add_constraint_sibling_x", 8);
+        // B should accept any value for x.
+        assert!(sibling_b.solution(&x_b, 42));
+        assert!(sibling_b.solution(&x_b, 99));
+
+        // A still sees x == 5.
+        assert!(sibling_a.solution(&x_a, 5));
+        assert!(!sibling_a.solution(&x_a, 42));
     }
 
     #[cfg(feature = "vex-engine-z3")]
