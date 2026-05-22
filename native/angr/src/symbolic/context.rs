@@ -2278,53 +2278,61 @@ impl SymContext {
         let hi_seed = smallest_known.min(max_val);
         let lo_seed = largest_known.min(max_val);
 
-        let solver = self.solver();
-        solver.push();
-
-        // Binary search for min in [0, hi_seed].
-        let mut lo: u128 = 0;
-        let mut hi: u128 = hi_seed;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
+        // All push/check/pop work shares one solver lock acquisition via
+        // with_z3_solver. The outer push/pop brackets two binary-search loops
+        // (min in [0, hi_seed], then max in [lo_seed, max_val]) each with
+        // nested per-iteration push/check/pop pairs. All push/pop pairs are
+        // balanced when the closure returns, so the Z3 scope stack returns to
+        // its pre-closure depth — safe for both the None (per-context) and
+        // Some (shared-lineage) dispatch paths.
+        self.with_z3_solver(|solver| {
             solver.push();
-            let mid_ast = Self::make_bv_const(mid, width);
-            solver.assert(&ast.bvule(&mid_ast));
-            let can_be_le_mid = matches!(
-                timed_check(&solver, CheckSite::MinSearch),
-                z3::SatResult::Sat
-            );
-            solver.pop(1);
-            if can_be_le_mid {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-        let min_val = lo;
 
-        // Binary search for max in [lo_seed, max_val].
-        let mut lo: u128 = lo_seed;
-        let mut hi: u128 = max_val;
-        while lo < hi {
-            let mid = lo + (hi - lo + 1) / 2;
-            solver.push();
-            let mid_ast = Self::make_bv_const(mid, width);
-            solver.assert(&ast.bvuge(&mid_ast));
-            let can_be_ge_mid = matches!(
-                timed_check(&solver, CheckSite::MaxSearch),
-                z3::SatResult::Sat
-            );
-            solver.pop(1);
-            if can_be_ge_mid {
-                lo = mid;
-            } else {
-                hi = mid - 1;
+            // Binary search for min in [0, hi_seed].
+            let mut lo: u128 = 0;
+            let mut hi: u128 = hi_seed;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                solver.push();
+                let mid_ast = Self::make_bv_const(mid, width);
+                solver.assert(&ast.bvule(&mid_ast));
+                let can_be_le_mid = matches!(
+                    timed_check(solver, CheckSite::MinSearch),
+                    z3::SatResult::Sat
+                );
+                solver.pop(1);
+                if can_be_le_mid {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
             }
-        }
-        let max_val = lo;
+            let min_val = lo;
 
-        solver.pop(1);
-        Some((min_val, max_val))
+            // Binary search for max in [lo_seed, max_val].
+            let mut lo: u128 = lo_seed;
+            let mut hi: u128 = max_val;
+            while lo < hi {
+                let mid = lo + (hi - lo + 1) / 2;
+                solver.push();
+                let mid_ast = Self::make_bv_const(mid, width);
+                solver.assert(&ast.bvuge(&mid_ast));
+                let can_be_ge_mid = matches!(
+                    timed_check(solver, CheckSite::MaxSearch),
+                    z3::SatResult::Sat
+                );
+                solver.pop(1);
+                if can_be_ge_mid {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            let max_val = lo;
+
+            solver.pop(1);
+            Some((min_val, max_val))
+        })
     }
 
     /// Get up to n concrete solutions for a bitvector.
@@ -2951,10 +2959,14 @@ impl SymContext {
     /// remain balanced when the closure returns. Slice 4a.4 extends
     /// the same wrap to `max` (the dual of `min`: bvsge/bvuge binary
     /// search with a has_non_negative pre-check, same nested-push/pop
-    /// shape). Remaining scope-stack callers (`range_seeded`,
-    /// `solution`, push/pop, transaction_*) will follow in 4a.5+,
-    /// with the spans-multiple-calls subset (push/pop, transaction_*)
-    /// likely needing a separate scope_path API.
+    /// shape). Slice 4a.5 extends the same wrap to `range_seeded`:
+    /// outer push/pop brackets two binary-search loops (seeded min in
+    /// [0, hi_seed] and seeded max in [lo_seed, max_val]) each with
+    /// nested per-iteration push/check/pop pairs. All push/pop pairs
+    /// remain balanced when the closure returns. Remaining scope-stack
+    /// callers (`solution`, push/pop, transaction_*) will follow in
+    /// 4a.6+, with the spans-multiple-calls subset (push/pop,
+    /// transaction_*) likely needing a separate scope_path API.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
