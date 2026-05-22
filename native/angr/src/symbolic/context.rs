@@ -1232,8 +1232,7 @@ impl SymContext {
     /// Debug: dump solver state as string for comparison.
     #[cfg(feature = "vex-engine-z3")]
     pub fn debug_solver_string(&self) -> String {
-        let solver = self.solver();
-        format!("{}", solver)
+        self.with_z3_solver(|solver| format!("{}", solver))
     }
 
     /// Debug: get the Z3 solver's internal push level.
@@ -2857,12 +2856,11 @@ impl SymContext {
     /// any SymContext method that would re-acquire the same lock — the
     /// existing direct `self.solver()` callers have the same invariant.
     ///
-    /// `allow(dead_code)`: this slice ADDS the dispatcher. Slice 3c will
-    /// migrate the first caller (most likely `is_sat` or `eval`); until
-    /// then the only consumers are the unit tests, which are gated out
-    /// of release builds.
+    /// Slice 3c (commit pending) migrated the first caller —
+    /// `debug_solver_string` — so the compiler now sees a real
+    /// consumer. Larger callers (`eval`, `is_sat`, `min`, `max`,
+    /// `check_branch_feasibility`) will migrate in subsequent slices.
     #[cfg(feature = "vex-engine-z3")]
-    #[allow(dead_code)]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
