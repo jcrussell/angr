@@ -7783,6 +7783,58 @@ class TestCallableStepFunc:
         # Should have kept the found states
         assert len(mgr.active) == found_count
 
+    def test_move_filter_func_sees_rust_state_proxy(self, fauxware_project):
+        """move(filter_func=...) passes a RustStateProxy when the predicate stays read-only.
+
+        Verifies the proxy fast-path added for angr-9jly: filter_func receives a
+        lightweight RustStateProxy rather than a fully reconstructed SimState
+        when the predicate only touches proxy-supported attributes (e.g., addr).
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step()  # populate active with forks so move has something to filter
+
+        assert len(mgr.active) > 0
+        active_before = len(mgr.active)
+        proxy_seen = []
+
+        def keep_all(s):
+            proxy_seen.append(isinstance(s, RustStateProxy))
+            return True
+
+        mgr.move(from_stash="active", to_stash="found", filter_func=keep_all)
+
+        assert len(proxy_seen) == active_before, "filter should see every active state"
+        assert all(proxy_seen), "every filter call should receive a RustStateProxy"
+        assert len(mgr.found) == active_before
+        assert len(mgr.active) == 0
+
+    def test_drop_filter_func_sees_rust_state_proxy(self, fauxware_project):
+        """drop(filter_func=...) passes a RustStateProxy when the predicate stays read-only."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step()
+
+        assert len(mgr.active) > 0
+        active_before = len(mgr.active)
+        proxy_seen = []
+
+        def drop_none(s):
+            proxy_seen.append(isinstance(s, RustStateProxy))
+            return False  # never drop
+
+        mgr.drop(stash="active", filter_func=drop_none)
+
+        assert len(proxy_seen) == active_before, "filter should see every active state"
+        assert all(proxy_seen), "every filter call should receive a RustStateProxy"
+        assert len(mgr.active) == active_before, "no state should have been dropped"
+
     def test_callable_with_rust_engine(self, fauxware_project):
         """Full Callable flow works with use_rust_engine=True.
 

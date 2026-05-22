@@ -3832,7 +3832,23 @@ class RustExplorationManager(
 
             for state_id in state_ids:
                 try:
-                    # Export state for predicate evaluation
+                    # Try lightweight proxy first (avoids expensive full state
+                    # export). Falls back to full export if the filter accesses
+                    # something the proxy doesn't support. Mirrors filter().
+                    from angr.exploration.rust_state_proxy import RustStateProxy
+                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project,
+                                           python_mgr=self)
+                    try:
+                        if filter_func(proxy):
+                            move_ids.append(state_id)
+                        else:
+                            keep_ids.append(state_id)
+                        continue  # Proxy worked, skip full export
+                    except (AttributeError, TypeError, NotImplementedError):
+                        # cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an
+                        # attribute the predicate accessed; fall back to full export.
+                        pass
+
                     snapshot = self._rust_mgr.export_state(state_id)
                     py_state = self._snapshot_to_angr(snapshot)
 
@@ -3995,10 +4011,26 @@ class RustExplorationManager(
 
             for state_id in state_ids:
                 try:
-                    snapshot = self._rust_mgr.export_state(state_id)
-                    py_state = self._snapshot_to_angr(snapshot)
+                    # Try lightweight proxy first (avoids expensive full state
+                    # export). Falls back to full export if the filter accesses
+                    # something the proxy doesn't support. Mirrors filter().
+                    from angr.exploration.rust_state_proxy import RustStateProxy
+                    proxy = RustStateProxy(self._rust_mgr, state_id, self._project,
+                                           python_mgr=self)
+                    matched = None
+                    try:
+                        matched = bool(filter_func(proxy))
+                    except (AttributeError, TypeError, NotImplementedError):
+                        # cat-(a) EXPECTED CONTROL FLOW: proxy didn't support an
+                        # attribute the predicate accessed; fall back to full export.
+                        pass
 
-                    if filter_func(py_state):
+                    if matched is None:
+                        snapshot = self._rust_mgr.export_state(state_id)
+                        py_state = self._snapshot_to_angr(snapshot)
+                        matched = filter_func(py_state)
+
+                    if matched:
                         try:
                             self._rust_mgr.move_state(state_id, stash, 'deadended')
                         except (RuntimeError, KeyError):
