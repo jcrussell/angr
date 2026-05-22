@@ -11,6 +11,7 @@ Advanced Topics
    rust_engine
    rust_bimodal_variance
    rust_lazy_memory_design
+   rust_parallel_design
    file_system
    ir
    structured_data
