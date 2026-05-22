@@ -968,7 +968,11 @@ class RustStateExportMixin:
         state.scratch.rust_state_id = snapshot.state_id
         state.scratch.rust_parent_id = snapshot.parent_id
 
-        self._restore_plugins_to_state(state, snapshot.state_id)
+        self._restore_plugins_to_state(
+            state,
+            snapshot.state_id,
+            snapshot_parent_id=snapshot.parent_id,
+        )
         # Eval/min/max/satisfiable defer to the Rust solver — required because
         # _apply_symbolic_constraints no longer pre-pins recovered symbols
         # (pre-pinning was UNSAT-prone, see pre-pinning-dangerous memo).
@@ -1076,40 +1080,95 @@ class RustStateExportMixin:
             return hook_entry[0]
         return None
 
-    def _restore_plugins_to_state(self, state: "angr.SimState", state_id: int):
-        """Restore plugins to an exported state from the initial state template.
+    def _find_plugin_template_state(
+        self,
+        state_id: int,
+        snapshot_parent_id: Optional[int] = None,
+    ) -> Optional["angr.SimState"]:
+        """Locate the best SimState to source plugins (posix/libc/heap/fs/log) from.
 
-        Exported states are missing critical plugins (posix, libc, heap)
-        that scripts expect. This method restores them from the template state.
+        Walks ancestors in proximity order (closest first):
 
-        Args:
-            state: The state to restore plugins to.
-            state_id: The Rust state ID for lookup.
+        1. ``state_id`` itself, if cached. The state's own plugins reflect
+           its specific mutations and are always the right choice.
+        2. ``snapshot_parent_id`` (immediate parent from a snapshot), when
+           the caller has one. Plugin state at fork time is the closest
+           thing to "what this state should have started with."
+        3. ``_state_roots[state_id]`` then a Rust-side ``get_state_root``
+           probe. The root is an entry state — its plugins are the
+           unmutated baseline that descendants forked from.
+        4. As a last resort, any other cached *root* state. Roots have
+           clean baseline plugins so falling back to an unrelated root is
+           safe — it may report the wrong ``posix.argv``, but it cannot
+           leak another path's mid-exploration mutations (e.g., open fd
+           tables, heap allocations) into this state.
+
+        Never falls back to "the first cached state": that was a
+        correctness landmine (angr-2k64) — the arbitrary pick could be a
+        forked descendant whose plugin state has mutations belonging to
+        a different exploration branch.
+
+        Returns ``None`` if nothing usable is cached.
         """
-        # Find the initial state from cache or template
-        template = None
+        cached = self._state_cache.get(state_id)
+        if cached is not None:
+            return cached
 
-        # Try to find root state ID
-        root_id = self._state_roots.get(state_id, state_id)
-        if root_id == state_id:
+        if snapshot_parent_id is not None and snapshot_parent_id >= 0:
+            cached = self._state_cache.get(snapshot_parent_id)
+            if cached is not None:
+                return cached
+
+        root_id = self._state_roots.get(state_id)
+        if root_id is None or root_id == state_id:
             try:
                 rust_root = self._rust_mgr.get_state_root(state_id)
                 if rust_root is not None:
                     root_id = rust_root
             except Exception:
-                # cat-(a) EXPECTED CONTROL FLOW: probing for Rust root;
-                # falls through to the next-state-cache template.
+                # cat-(a) EXPECTED CONTROL FLOW: Rust root probe failed
+                # (state already evicted / unknown id). Falls through to
+                # the any-cached-root fallback below.
                 pass
-        if root_id in self._state_cache:
-            template = self._state_cache[root_id]
+        if root_id is not None:
+            cached = self._state_cache.get(root_id)
+            if cached is not None:
+                return cached
 
-        # Fall back to any cached state for plugin extraction
-        if template is None and self._state_cache:
-            # Use the first cached state as template
-            template = next(iter(self._state_cache.values()))
+        # Last-resort: any cached *root*. Skip non-root descendants — they
+        # carry per-fork mutations that must not leak across paths.
+        for candidate_root in self._state_roots.values():
+            cached = self._state_cache.get(candidate_root)
+            if cached is not None:
+                return cached
+
+        return None
+
+    def _restore_plugins_to_state(
+        self,
+        state: "angr.SimState",
+        state_id: int,
+        snapshot_parent_id: Optional[int] = None,
+    ):
+        """Restore plugins to an exported state from the closest cached ancestor.
+
+        Exported states are missing critical plugins (posix, libc, heap)
+        that scripts expect. This method copies them from the nearest
+        cached ancestor SimState — preferring the state itself, then its
+        snapshot parent, then its tracked root.
+
+        Args:
+            state: The state to restore plugins to.
+            state_id: The Rust state ID for lookup.
+            snapshot_parent_id: Optional immediate parent ID from a state
+                snapshot, used to prefer a same-branch ancestor over the
+                generic root template.
+        """
+        template = self._find_plugin_template_state(state_id, snapshot_parent_id)
 
         if template is None:
-            l.debug("No template state found for plugin restoration")
+            l.debug("No template state found for plugin restoration (state %d)", state_id)
+            _install_rust_history_warning(state)
             return
 
         # Copy plugins that are commonly needed

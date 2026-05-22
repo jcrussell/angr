@@ -4608,6 +4608,159 @@ class TestStateCacheSizeBound:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestPluginTemplateSelection:
+    """Regressions for angr-2k64: ``_restore_plugins_to_state`` must never
+    pick a plugin template from an arbitrary cached state.
+
+    Before the fix, the function fell back to ``next(iter(_state_cache.values()))``
+    when the tracked root for a given ``state_id`` was not cached. That arbitrary
+    pick could land on a forked descendant whose plugin state held mutations
+    (open fds, heap allocations, fs entries) belonging to an unrelated path —
+    silently cross-pollinating exploration branches. The fix walks
+    ``state_id → snapshot.parent_id → tracked root → any cached root`` and
+    refuses to fall through to a non-root descendant.
+    """
+
+    def _make_state_with_marker_fd(self, proj, fd_num, name):
+        """Build an entry state and stamp a distinctive SimFile on ``posix.fd``.
+
+        The fd entry is the divergence marker — restoration that uses a
+        wrong template will leak this entry into an unrelated state.
+        """
+        from angr.storage import SimFile
+        from angr.storage.file import SimFileDescriptor
+        state = proj.factory.entry_state()
+        simfile = SimFile(name, content=b"marker_data")
+        state.fs.insert(name, simfile)
+        simfd = SimFileDescriptor(simfile, 0)
+        simfd.set_state(state)
+        state.posix.fd[fd_num] = simfd
+        return state
+
+    def test_returns_state_itself_when_cached(self, fauxware_project):
+        """If ``state_id`` is in ``_state_cache``, that state must be the
+        template — its own plugins are by definition correct."""
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+
+        # The entry state's id is its own root.
+        root_id = next(iter(mgr._state_roots))
+        cached = mgr._state_cache[root_id]
+
+        template = mgr._find_plugin_template_state(root_id)
+        assert template is cached, (
+            "Expected _find_plugin_template_state to return the cached "
+            f"state itself for state_id={root_id}, got {template!r}"
+        )
+
+    def test_falls_back_to_parent_id_when_state_not_cached(self, fauxware_project):
+        """When ``state_id`` is uncached but its snapshot parent IS cached,
+        the parent must be the template."""
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        parent_id = next(iter(mgr._state_roots))
+        parent_state = mgr._state_cache[parent_id]
+
+        # Synthesize an uncached descendant id.
+        uncached_id = parent_id + 99999
+        template = mgr._find_plugin_template_state(
+            uncached_id, snapshot_parent_id=parent_id
+        )
+        assert template is parent_state, (
+            "Expected parent state as template when state_id is uncached "
+            f"and snapshot_parent_id points at the cached parent; got {template!r}"
+        )
+
+    def test_never_picks_non_root_descendant_as_fallback(self, fauxware_project):
+        """The old fallback was ``next(iter(_state_cache.values()))``, which
+        could land on a forked descendant with mutated plugins (e.g.,
+        ``posix.fd[99]`` from another branch). The fix limits the
+        last-resort fallback to *root* states only — non-root descendants
+        in the cache must never be returned as a template.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        root_state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [root_state])
+        root_id = next(iter(mgr._state_roots))
+
+        # Inject a fake forked-descendant SimState into _state_cache without
+        # registering it as a root. Stamp it with a marker fd so we can detect
+        # cross-pollination if the fallback ever picks it.
+        descendant_id = root_id + 12345
+        descendant = self._make_state_with_marker_fd(proj, 99, '2k64_descendant')
+        mgr._state_cache[descendant_id] = descendant
+        # Critically: _state_roots does NOT contain descendant_id (it's a
+        # forked descendant, not a root).
+
+        # Now temporarily evict the root so the only cached state is the
+        # mutated descendant. Pre-fix this would force "first cached" to
+        # return `descendant`.
+        original_root_state = mgr._state_cache.pop(root_id)
+        try:
+            # Synthesize a third state_id with no known root in the cache.
+            orphan_id = descendant_id + 54321
+            template = mgr._find_plugin_template_state(orphan_id)
+            assert template is None or template is not descendant, (
+                "Plugin template fallback returned a non-root descendant "
+                f"({descendant!r}) whose posix.fd[99] would leak into the "
+                "unrelated state being restored. Old 'first cached' fallback "
+                "regressed."
+            )
+        finally:
+            mgr._state_cache[root_id] = original_root_state
+
+    def test_falls_back_to_root_when_descendant_id_is_unknown(self, fauxware_project):
+        """If the orphan state's tracked root is cached, return it; the
+        empty-baseline root plugins are the safe default."""
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        root_state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [root_state])
+        root_id = next(iter(mgr._state_roots))
+        root_cached = mgr._state_cache[root_id]
+
+        # Synthesize an uncached orphan id and register its root.
+        orphan_id = root_id + 4242
+        mgr._state_roots[orphan_id] = root_id
+
+        template = mgr._find_plugin_template_state(orphan_id)
+        assert template is root_cached, (
+            "Expected the tracked-root state as the template fallback, "
+            f"got {template!r}"
+        )
+
+    def test_returns_none_when_no_root_cached(self, fauxware_project):
+        """No cached ancestor and no cached root → return None (skip plugin
+        restore rather than guess). Better to leave the state with angr's
+        default plugins than to leak mutations from an unrelated branch.
+        """
+        from angr.exploration import RustExplorationManager
+
+        proj = fauxware_project
+        root_state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [root_state])
+        # Drain everything that could match.
+        mgr._state_cache.clear()
+        mgr._state_roots.clear()
+
+        # Use a state_id Rust definitely doesn't know about so get_state_root
+        # returns None.
+        template = mgr._find_plugin_template_state(0xdead_beef_cafe)
+        assert template is None, (
+            f"Expected None when nothing is cached, got {template!r}"
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestAdversarial:
     """Adversarial tests: edge cases, API misuse, resource bounds."""
 
