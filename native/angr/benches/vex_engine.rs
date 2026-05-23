@@ -510,6 +510,110 @@ fn bfs_query_order(n_states: usize, n_queries: usize) -> Vec<usize> {
     out
 }
 
+/// Build a linear descendant-chain workload (angr-3ms1 LIFO hypothesis,
+/// 2026-05-23). `paths[i]` is `ancestor + [chain_frames[0..=i]]` so each
+/// successive state is a direct descendant of the previous (one new frame
+/// appended at the bottom).
+///
+/// Visiting `paths[0..n]` in order models the steady-state pop_back stream
+/// produced by `use_lifo=True`: every transition is "descend by one frame",
+/// which makes `SharedLineageSolver::switch_to` do exactly 0 pops and 1
+/// push per query (best case for the lineage push/pop architecture).
+fn build_lifo_chain_workload(n_chain: usize) -> Vec<ScopePath> {
+    let x = BV::new_const("lineage_bench_chain_x", 32);
+    let zero = BV::from_u64(0, 32);
+    let big = BV::from_u64(1_000_000_000, 32);
+
+    let ancestor: Vec<ScopeFrame> = vec![
+        ScopeFrame::new(true, x.bvugt(&zero)),
+        ScopeFrame::new(true, x.bvult(&big)),
+    ];
+
+    // Mint one fresh frame per chain link. Clone semantics preserve the
+    // FrameId, so every state[j] (j >= i) shares the exact same frame at
+    // depth `i + ancestor.len()`.
+    let chain_frames: Vec<ScopeFrame> = (0..n_chain)
+        .map(|i| {
+            let offset = ((i * 7) + 13) as u64;
+            let term = x.bvadd(&BV::from_u64(offset, 32));
+            let cstr = term.eq(&BV::from_u64(0, 32)).not();
+            ScopeFrame::new(true, cstr)
+        })
+        .collect();
+
+    let mut paths = Vec::with_capacity(n_chain);
+    for i in 0..n_chain {
+        let mut path = ancestor.clone();
+        path.extend(chain_frames[..=i].iter().cloned());
+        paths.push(path);
+    }
+    paths
+}
+
+/// Build a depth-`depth` binary-tree DFS-preorder workload (angr-3ms1
+/// LIFO hypothesis, 2026-05-23). Each leaf's path is `ancestor +
+/// [side_frame_for_each_level]`; sibling leaves share `FrameId`s for the
+/// shared-prefix levels. Visiting `paths[0..2^depth]` in numeric order
+/// is DFS-preorder of a full binary tree (the rightmost spine is visited
+/// first, then we backtrack to a sibling and descend its rightmost spine).
+///
+/// Models the realistic pop_back stream when `use_lifo=True` and the
+/// explorer fans out into 2^depth descendants of a common ancestor: most
+/// transitions are descend-by-1 (the last frame flips L→R), but
+/// occasionally we backtrack `k` levels (when crossing a higher-level
+/// branch), so the amortized transition is O(2) pops + O(2) pushes per
+/// query.
+fn build_lifo_dfs_tree_workload(depth: usize) -> Vec<ScopePath> {
+    let x = BV::new_const("lineage_bench_dfs_x", 32);
+    let zero = BV::from_u64(0, 32);
+    let big = BV::from_u64(1_000_000_000, 32);
+
+    let ancestor: Vec<ScopeFrame> = vec![
+        ScopeFrame::new(true, x.bvugt(&zero)),
+        ScopeFrame::new(true, x.bvult(&big)),
+    ];
+
+    // Mint exactly two frames per level: left-side and right-side. Cloning
+    // into multiple leaf paths preserves the FrameId, so the lineage
+    // common-prefix walk sees siblings as sharing the (level, side) prefix.
+    let level_frames: Vec<(ScopeFrame, ScopeFrame)> = (0..depth)
+        .map(|lvl| {
+            let l_off = ((lvl * 11) + 1) as u64;
+            let r_off = ((lvl * 11) + 503) as u64;
+            let lf = ScopeFrame::new(
+                true,
+                x.bvadd(&BV::from_u64(l_off, 32))
+                    .eq(&BV::from_u64(0, 32))
+                    .not(),
+            );
+            let rf = ScopeFrame::new(
+                true,
+                x.bvadd(&BV::from_u64(r_off, 32))
+                    .eq(&BV::from_u64(0, 32))
+                    .not(),
+            );
+            (lf, rf)
+        })
+        .collect();
+
+    let n_leaves = 1usize << depth;
+    let mut paths = Vec::with_capacity(n_leaves);
+    for leaf in 0..n_leaves {
+        let mut path = ancestor.clone();
+        for lvl in 0..depth {
+            let side = (leaf >> (depth - 1 - lvl)) & 1;
+            let frame = if side == 0 {
+                &level_frames[lvl].0
+            } else {
+                &level_frames[lvl].1
+            };
+            path.push(frame.clone());
+        }
+        paths.push(path);
+    }
+    paths
+}
+
 fn bench_lineage_push_pop_vs_assumptions(c: &mut Criterion) {
     let n_states = 50;
     let k_per_state = 10;
@@ -613,6 +717,89 @@ fn bench_lineage_push_pop_vs_assumptions(c: &mut Criterion) {
                 })
                 .collect();
             for &idx in &batched_order {
+                black_box(solvers[idx].check());
+            }
+        })
+    });
+
+    // angr-3ms1 LIFO hypothesis (2026-05-23): if `use_lifo=True` in the
+    // explorer, pop_back consistently returns a direct descendant of the
+    // last-stepped state. This variant simulates that stream — a 200-deep
+    // linear descendant chain — and is the best-case workload for the
+    // lineage push/pop architecture. The number of states equals
+    // n_queries so each chain link is visited exactly once.
+    let chain_paths = build_lifo_chain_workload(n_queries);
+
+    group.bench_function("push_pop_lifo_chain", |bench| {
+        bench.iter(|| {
+            let solver = z3::Solver::new();
+            let mut lin = SharedLineageSolver::new(solver);
+            for path in &chain_paths {
+                lin.with_solver(path, |s| black_box(s.check()));
+            }
+        })
+    });
+
+    // Per-state-solvers baseline for the chain workload — every state
+    // gets a fresh Z3 solver populated with its full path. This is the
+    // no-lineage reference for the LIFO variant, same role as
+    // `per_state_solvers_bfs_thrash` plays for the BFS variant. Any
+    // lineage variant that doesn't beat this on the chain workload is
+    // a regression.
+    group.bench_function("per_state_solvers_lifo_chain", |bench| {
+        bench.iter(|| {
+            let solvers: Vec<z3::Solver> = chain_paths
+                .iter()
+                .map(|path| {
+                    let s = z3::Solver::new();
+                    for f in path {
+                        s.assert(&f.z3_assertion);
+                    }
+                    s
+                })
+                .collect();
+            for idx in 0..chain_paths.len() {
+                black_box(solvers[idx].check());
+            }
+        })
+    });
+
+    // angr-3ms1 LIFO hypothesis, realistic variant (2026-05-23): DFS
+    // preorder over a depth-8 full binary tree (256 leaves visited in
+    // numeric order). Most transitions are descend-by-1 (last frame
+    // flips L→R, switching to a sibling leaf), but every 2^k-th
+    // transition backtracks k levels and re-descends. Amortized cost
+    // per transition is O(2) pops + O(2) pushes (~1 in 2 transitions
+    // walks deeper into the tree). 256 ≥ 200 so this exceeds n_queries
+    // by design — to keep per-iter cost in the same ballpark as the
+    // other variants, only the first 200 leaves are visited.
+    let dfs_paths = build_lifo_dfs_tree_workload(8);
+    let dfs_order_n: usize = 200;
+
+    group.bench_function("push_pop_lifo_dfs_tree", |bench| {
+        bench.iter(|| {
+            let solver = z3::Solver::new();
+            let mut lin = SharedLineageSolver::new(solver);
+            for idx in 0..dfs_order_n {
+                let path = &dfs_paths[idx];
+                lin.with_solver(path, |s| black_box(s.check()));
+            }
+        })
+    });
+
+    group.bench_function("per_state_solvers_lifo_dfs_tree", |bench| {
+        bench.iter(|| {
+            let solvers: Vec<z3::Solver> = dfs_paths[..dfs_order_n]
+                .iter()
+                .map(|path| {
+                    let s = z3::Solver::new();
+                    for f in path {
+                        s.assert(&f.z3_assertion);
+                    }
+                    s
+                })
+                .collect();
+            for idx in 0..dfs_order_n {
                 black_box(solvers[idx].check());
             }
         })
