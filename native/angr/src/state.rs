@@ -1426,6 +1426,30 @@ impl RustSimState {
         self.keep_ip_symbolic
     }
 
+    /// Set the fork-time `SharedLineageSolver` materialization opt-in on
+    /// this state's solver context (angr-3ms1 step 1b).
+    ///
+    /// Forwards to [`SymContext::set_use_shared_lineage_solver`]. Setting
+    /// on a seed state propagates to every descendant via `fork()` (the
+    /// child SymContext inherits the parent's flag), so a single call at
+    /// state-creation time is sufficient.
+    ///
+    /// Inert in this slice — the materialization gate (step 1c) is the
+    /// first consumer.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn set_use_shared_lineage_solver(&self, enabled: bool) {
+        self.solver
+            .borrow()
+            .set_use_shared_lineage_solver(enabled);
+    }
+
+    /// Whether fork-time `SharedLineageSolver` materialization is opted
+    /// in on this state's solver context (angr-3ms1 step 1b).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn use_shared_lineage_solver(&self) -> bool {
+        self.solver.borrow().use_shared_lineage_solver()
+    }
+
     /// Map memory with initial data.
     pub fn map_memory_data(&mut self, addr: u64, data: &[u8], permissions: Permission) {
         self.memory.map_data(addr, data, permissions);
@@ -2267,6 +2291,29 @@ impl PyRustSimState {
     #[pyo3(name = "keep_ip_symbolic")]
     pub fn py_keep_ip_symbolic(&self) -> bool {
         self.inner.keep_ip_symbolic()
+    }
+
+    /// Opt this state's solver context in to fork-time
+    /// `SharedLineageSolver` materialization (angr-3ms1 step 1b).
+    ///
+    /// Inherited by every descendant via `fork()` so a single call on a
+    /// seed state suffices. Default off — the slice-1c materialization
+    /// gate stays inert on plain `RustExplorationManager` runs to keep
+    /// the v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental
+    /// regression (defcon2016quals_baby-re ~10x slowdown under default
+    /// BFS) out of CI.
+    #[cfg(feature = "vex-engine-z3")]
+    #[pyo3(name = "set_use_shared_lineage_solver")]
+    pub fn py_set_use_shared_lineage_solver(&self, enabled: bool) {
+        self.inner.set_use_shared_lineage_solver(enabled);
+    }
+
+    /// Whether fork-time `SharedLineageSolver` materialization is opted
+    /// in on this state (angr-3ms1 step 1b).
+    #[cfg(feature = "vex-engine-z3")]
+    #[pyo3(name = "use_shared_lineage_solver")]
+    pub fn py_use_shared_lineage_solver(&self) -> bool {
+        self.inner.use_shared_lineage_solver()
     }
 
     /// Load from memory.

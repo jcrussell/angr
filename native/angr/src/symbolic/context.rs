@@ -8,7 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 use smallvec::SmallVec;
@@ -1118,6 +1118,32 @@ pub struct SymContext {
     /// mode this gates against).
     #[cfg(feature = "vex-engine-z3")]
     bare_z3_push_depth: AtomicUsize,
+
+    /// Opt-in flag for fork-time `SharedLineageSolver` materialization
+    /// (angr-3ms1 step 1b).
+    ///
+    /// When `true`, the slice-1c fork-time gate will mint a fresh
+    /// `SharedLineageSolver` on every fork (subject to the
+    /// `bare_z3_push_depth == 0` correctness gate from step 1a). When
+    /// `false` (the default), `fork()` keeps the existing behavior of
+    /// propagating the parent's lineage Arc unchanged — None in
+    /// production today, so no lineage is ever installed.
+    ///
+    /// Set per-state via [`set_use_shared_lineage_solver`](Self::set_use_shared_lineage_solver)
+    /// and inherited from parent to child in [`fork`](Self::fork) so a
+    /// lineage opt-in on a seed state propagates to every descendant
+    /// without per-fork plumbing on the Python side. Inert in this slice
+    /// — the materialization gate (step 1c) will read it.
+    ///
+    /// Kept default-off because the v5a5 spike's
+    /// `v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental` finding
+    /// showed unconditional fork-time materialization regresses
+    /// defcon2016quals_baby-re ~10x under default BFS exploration. The
+    /// opt-in lets the slice-2 canary measure the lineage win on
+    /// DFS/per-state-batched workloads without touching the default CI
+    /// gate.
+    #[cfg(feature = "vex-engine-z3")]
+    use_shared_lineage_solver: AtomicBool,
 }
 
 impl SymContext {
@@ -1178,6 +1204,7 @@ impl SymContext {
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
             scope_savepoints: Mutex::new(Vec::new()),
             bare_z3_push_depth: AtomicUsize::new(0),
+            use_shared_lineage_solver: AtomicBool::new(false),
         }
     }
 
@@ -3116,6 +3143,12 @@ impl SymContext {
             bare_z3_push_depth: AtomicUsize::new(
                 self.bare_z3_push_depth.load(Ordering::Relaxed),
             ),
+            // angr-3ms1 step 1b: inherit the opt-in flag from parent so
+            // a lineage opt-in on a seed state propagates to every
+            // descendant without per-fork plumbing on the Python side.
+            use_shared_lineage_solver: AtomicBool::new(
+                self.use_shared_lineage_solver.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -3167,6 +3200,41 @@ impl SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub fn bare_z3_push_depth(&self) -> usize {
         self.bare_z3_push_depth.load(Ordering::Relaxed)
+    }
+
+    /// Whether fork-time `SharedLineageSolver` materialization is opted
+    /// in for this context (angr-3ms1 step 1b).
+    ///
+    /// Returns `false` by default. When `true`, the slice-1c fork-time
+    /// gate will mint a fresh `SharedLineageSolver` on every fork
+    /// (subject to the `bare_z3_push_depth == 0` correctness gate from
+    /// step 1a). Inherited from parent to child in [`fork`](Self::fork).
+    ///
+    /// Inert in this slice — the materialization gate (step 1c) will
+    /// be the first consumer.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn use_shared_lineage_solver(&self) -> bool {
+        self.use_shared_lineage_solver.load(Ordering::Relaxed)
+    }
+
+    /// Set the fork-time `SharedLineageSolver` materialization opt-in
+    /// (angr-3ms1 step 1b).
+    ///
+    /// Takes effect at the next [`fork`](Self::fork) call — slice-1c's
+    /// gate reads this on every fork to decide whether to mint a fresh
+    /// `SharedLineageSolver`. Existing in-flight lineages on this
+    /// context are unaffected; flipping the flag off does NOT tear down
+    /// an already-installed lineage.
+    ///
+    /// Default is `false`. Wired from Python via the
+    /// `use_shared_lineage_solver=` kwarg on
+    /// `RustExplorationManager.__init__`; the manager calls this on
+    /// each seed state's solver context so descendants inherit the
+    /// opt-in through `fork()`.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn set_use_shared_lineage_solver(&self, v: bool) {
+        self.use_shared_lineage_solver
+            .store(v, Ordering::Relaxed);
     }
 
     /// Save a scope-path savepoint, dispatching by lineage (angr-v5a5
@@ -5533,6 +5601,63 @@ mod tests {
             child_two.bare_z3_push_depth(),
             2,
             "child's counter is independent of parent's post-fork mutations"
+        );
+    }
+
+    /// angr-3ms1 step 1b: a freshly constructed context has
+    /// `use_shared_lineage_solver == false`. Setter flips it; the value
+    /// round-trips through the getter.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_use_shared_lineage_solver_default_and_setter() {
+        let ctx = SymContext::new();
+        assert!(
+            !ctx.use_shared_lineage_solver(),
+            "default must be off so the slice-1c gate stays inert on plain RustExplorationManager runs"
+        );
+
+        ctx.set_use_shared_lineage_solver(true);
+        assert!(ctx.use_shared_lineage_solver());
+
+        ctx.set_use_shared_lineage_solver(false);
+        assert!(!ctx.use_shared_lineage_solver());
+    }
+
+    /// angr-3ms1 step 1b: `fork()` copies the parent's
+    /// `use_shared_lineage_solver` value into the child so a single
+    /// setter call on the seed state propagates to every descendant via
+    /// fork — no per-fork plumbing on the Python side. Like
+    /// `bare_z3_push_depth`, the child carries its own AtomicBool, so
+    /// post-fork mutations on either side don't bleed into the other.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_use_shared_lineage_solver_inherited_on_fork() {
+        let parent = SymContext::new();
+        assert!(!parent.use_shared_lineage_solver());
+
+        // Default-off parent forks a default-off child.
+        let child_off = parent.fork();
+        assert!(
+            !child_off.use_shared_lineage_solver(),
+            "fork before opt-in must hand the child a false flag"
+        );
+
+        // Opt the parent in; subsequent fork hands the child the same
+        // value.
+        parent.set_use_shared_lineage_solver(true);
+        let child_on = parent.fork();
+        assert!(
+            child_on.use_shared_lineage_solver(),
+            "child must inherit the parent's opt-in at fork time"
+        );
+
+        // Per-context independence: flipping the parent off does not
+        // disturb the child's already-inherited true.
+        parent.set_use_shared_lineage_solver(false);
+        assert!(!parent.use_shared_lineage_solver());
+        assert!(
+            child_on.use_shared_lineage_solver(),
+            "child's flag is independent of parent's post-fork mutations"
         );
     }
 }

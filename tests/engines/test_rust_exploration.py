@@ -8824,6 +8824,60 @@ class TestExplorationStrategy:
                 fauxware_project, [state], exploration_strategy='random'
             )
 
+    def test_init_kwarg_use_shared_lineage_solver_default_off(self, fauxware_project):
+        """Default ``use_shared_lineage_solver=False`` keeps the opt-in off and
+        exploration matches an explicit ``False`` (angr-3ms1 step 1b).
+
+        The flag is inert in this slice — slice-1c will be the first
+        consumer at fork time — so this test asserts the wiring is in
+        place (default value stored, explicit False round-trips) without
+        depending on any observable engine behavior change.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state_default = fauxware_project.factory.entry_state()
+        mgr_default = RustExplorationManager(fauxware_project, [state_default])
+        assert mgr_default._use_shared_lineage_solver is False
+
+        state_explicit = fauxware_project.factory.entry_state()
+        mgr_explicit = RustExplorationManager(
+            fauxware_project, [state_explicit],
+            use_shared_lineage_solver=False,
+        )
+        assert mgr_explicit._use_shared_lineage_solver is False
+
+        # The explore-to-find golden path still works when the kwarg is
+        # off — guards against an accidental gate flip in the default
+        # path.
+        find_addr = 0x4006ed
+        mgr_default.explore(find=find_addr)
+        assert len(mgr_default.found) > 0
+
+    def test_init_kwarg_use_shared_lineage_solver_on(self, fauxware_project):
+        """``use_shared_lineage_solver=True`` is inert today but must not
+        break exploration (angr-3ms1 step 1b).
+
+        Slice-1c will be the first consumer of the flag at fork time;
+        until then, an opt-in run must explore identically to a
+        default-off run. This guards against a stray gate that fires on
+        the read alone — easy to introduce by mistake while wiring
+        slice-1c later.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state],
+            use_shared_lineage_solver=True,
+        )
+        assert mgr._use_shared_lineage_solver is True
+
+        find_addr = 0x4006ed
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, (
+            "explore() must succeed with the opt-in enabled (flag is inert today)"
+        )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestVexOperationCoverage:

@@ -750,6 +750,7 @@ class RustExplorationManager(
         max_history: int = 1000,
         clear_caches_on_cleanup: bool = False,
         exploration_strategy: str = "bfs",
+        use_shared_lineage_solver: bool = False,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -782,6 +783,15 @@ class RustExplorationManager(
                 construction time so techniques and other one-shot setup
                 code observe the chosen order from the first step. Raises
                 ``ValueError`` for any other value.
+            use_shared_lineage_solver: Opt this manager's seed states in
+                to fork-time ``SharedLineageSolver`` materialization
+                (angr-3ms1 step 1b). Default off: the slice-1c fork-time
+                gate stays inert so plain BFS runs keep their current
+                solver shape and CI baselines hold. When on, every seed
+                state's solver context gets the flag set and forks
+                inherit it (so descendants opt in transparently). Inert
+                in this slice — slice-1c will be the first consumer of
+                the flag at fork time.
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
@@ -819,6 +829,14 @@ class RustExplorationManager(
         # bad value raises ValueError eagerly during construction; the
         # default-bfs path is cheap (one FFI hop into the Rust setter).
         self.set_exploration_strategy(exploration_strategy)
+
+        # angr-3ms1 step 1b: opt-in flag for fork-time
+        # SharedLineageSolver materialization. Stashed here so
+        # _add_rust_state can push the value onto every seed state's
+        # solver context. Default off keeps slice-1c's gate inert (and
+        # the v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental
+        # baby-re regression out of CI).
+        self._use_shared_lineage_solver = bool(use_shared_lineage_solver)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()
@@ -2703,6 +2721,14 @@ class RustExplorationManager(
         # Create Rust state from angr state
         is_le = self._project.arch.memory_endness == 'Iend_LE'
         rust_state = _RustSimState(self._project.arch.name, little_endian=is_le)
+
+        # angr-3ms1 step 1b: push the manager-wide opt-in for fork-time
+        # SharedLineageSolver materialization onto this seed state's
+        # solver context. Descendants inherit via SymContext::fork, so
+        # this single call propagates to every state derived from this
+        # seed. Default off keeps slice-1c's gate inert.
+        if self._use_shared_lineage_solver:
+            rust_state.set_use_shared_lineage_solver(True)
 
         # Set PC
         rust_state.pc = angr_state.addr
