@@ -8778,6 +8778,52 @@ class TestExplorationStrategy:
         mgr.explore(find=find_addr)
         assert len(mgr.found) > 0, "DFS technique should find at least one state"
 
+    def test_init_kwarg_strategy_dfs(self, fauxware_project):
+        """Constructing with exploration_strategy='dfs' picks LIFO state selection.
+
+        Equivalent to a post-init set_exploration_strategy('dfs') call but
+        applied during __init__ so the first step already sees the chosen
+        order. Regression for the angr-3ms1 Flavor-1 wiring step.
+        """
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(
+            fauxware_project, [state], exploration_strategy='dfs'
+        )
+        mgr.explore(find=find_addr)
+        assert len(mgr.found) > 0, "DFS-at-init should find at least one state"
+
+    def test_init_kwarg_strategy_bfs_default(self, fauxware_project):
+        """Default exploration_strategy is 'bfs' and explicit 'bfs' both work."""
+        from angr.exploration import RustExplorationManager
+
+        find_addr = 0x4006ed
+        # Default — no kwarg.
+        state1 = fauxware_project.factory.entry_state()
+        mgr1 = RustExplorationManager(fauxware_project, [state1])
+        mgr1.explore(find=find_addr)
+        assert len(mgr1.found) > 0
+
+        # Explicit 'bfs' — same as default.
+        state2 = fauxware_project.factory.entry_state()
+        mgr2 = RustExplorationManager(
+            fauxware_project, [state2], exploration_strategy='bfs'
+        )
+        mgr2.explore(find=find_addr)
+        assert len(mgr2.found) > 0
+
+    def test_init_kwarg_strategy_invalid(self, fauxware_project):
+        """Invalid exploration_strategy at construction time raises ValueError."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        with pytest.raises(ValueError, match="Unknown exploration strategy"):
+            RustExplorationManager(
+                fauxware_project, [state], exploration_strategy='random'
+            )
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestVexOperationCoverage:

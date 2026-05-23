@@ -749,6 +749,7 @@ class RustExplorationManager(
         max_active_states: Optional[int] = None,
         max_history: int = 1000,
         clear_caches_on_cleanup: bool = False,
+        exploration_strategy: str = "bfs",
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -774,6 +775,13 @@ class RustExplorationManager(
                 spawn many short-lived managers on the same thread
                 (e.g. mma_howtouse runs 45 ``callable()`` invocations
                 and the cache accumulates O(n) entries across them).
+            exploration_strategy: ``"bfs"`` (default, FIFO state selection)
+                or ``"dfs"`` (LIFO). Equivalent to constructing with the
+                default and then calling
+                :meth:`set_exploration_strategy`, but settable at
+                construction time so techniques and other one-shot setup
+                code observe the chosen order from the first step. Raises
+                ``ValueError`` for any other value.
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
@@ -805,6 +813,12 @@ class RustExplorationManager(
         # a non-default value to keep the FFI surface quiet in the common case)
         if max_history != 1000:
             self._rust_mgr.set_max_history(max_history)
+
+        # Configure exploration strategy. Reuses the post-init setter so the
+        # validation and FFI-call shape live in one place. Always invoke so a
+        # bad value raises ValueError eagerly during construction; the
+        # default-bfs path is cheap (one FFI hop into the Rust setter).
+        self.set_exploration_strategy(exploration_strategy)
 
         # Performance profiling counters
         self._perf_stats = PerformanceTracker()
