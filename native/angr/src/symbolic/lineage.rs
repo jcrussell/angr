@@ -98,6 +98,7 @@ pub type ScopePath = Vec<ScopeFrame>;
 
 static LINEAGE_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_SWITCH_HOT_COUNT: AtomicU64 = AtomicU64::new(0);
+static LINEAGE_SWITCH_FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_POP_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -106,7 +107,14 @@ static LINEAGE_POP_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Returned as a fixed-size array of `(name, value)` so the integration
 /// patch can fold it into the existing `HashMap<String, u64>` shape used
 /// by [`crate::symbolic::get_solver_stats`].
-pub fn lineage_stats() -> [(&'static str, u64); 4] {
+///
+/// `lineage_switch_hot_count` is the broader hot-no-op count (includes
+/// both the O(1) tail-id+depth fast path and the prefix-walk-then-(0,0)
+/// fallback). `lineage_switch_fast_path_count` is the strict subset that
+/// hit the O(1) check — useful for measuring how often consecutive
+/// queries land on the same state (the hot-cache win the BFS-thrash
+/// motivation in angr-v5a5 design targets).
+pub fn lineage_stats() -> [(&'static str, u64); 5] {
     [
         (
             "lineage_switch_count",
@@ -115,6 +123,10 @@ pub fn lineage_stats() -> [(&'static str, u64); 4] {
         (
             "lineage_switch_hot_count",
             LINEAGE_SWITCH_HOT_COUNT.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_switch_fast_path_count",
+            LINEAGE_SWITCH_FAST_PATH_COUNT.load(Ordering::Relaxed),
         ),
         (
             "lineage_push_count",
@@ -132,6 +144,7 @@ pub fn lineage_stats() -> [(&'static str, u64); 4] {
 pub fn reset_lineage_stats() {
     LINEAGE_SWITCH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_SWITCH_HOT_COUNT.store(0, Ordering::Relaxed);
+    LINEAGE_SWITCH_FAST_PATH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_PUSH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_POP_COUNT.store(0, Ordering::Relaxed);
 }
@@ -181,18 +194,46 @@ impl SharedLineageSolver {
 
     /// Switch the solver to match `target_path`, returning `(pops, pushes)`.
     ///
-    /// Computes longest common prefix between `loaded_path` and
-    /// `target_path` by [`FrameId`], pops the divergent suffix off the
-    /// solver, and pushes the target tail. The fast path — `target_path`
-    /// already loaded — is a no-op (no FFI calls).
+    /// Two fast paths sit ahead of the general prefix walk:
+    ///
+    /// 1. **O(1) hot-cache short-circuit.** When `target_path` has the
+    ///    same length as `loaded_path` AND the same tail [`FrameId`], the
+    ///    two paths are necessarily identical: [`FrameId`]s are globally
+    ///    unique and minted only at constraint-add time, so a frame with
+    ///    id `K` was pushed exactly once on one specific scope path. Every
+    ///    state that holds frame `K` inherited it from that pushing state,
+    ///    so every path ending in id `K` at depth `D` shares the same
+    ///    `D-1` ancestor frames. This O(1) check avoids the O(min(|loaded|,
+    ///    |target|)) walk through [`common_prefix_len`] when consecutive
+    ///    queries come from the same state (the BFS-step intra-state query
+    ///    burst that motivates the hot-state cache in the angr-v5a5 design).
+    ///
+    /// 2. **General prefix walk.** If the O(1) cache misses, fall back to
+    ///    [`common_prefix_len`] for the full prefix calculation. Pops the
+    ///    divergent suffix off the solver and pushes the target tail.
     pub fn switch_to(&mut self, target_path: &ScopePath) -> (usize, usize) {
         LINEAGE_SWITCH_COUNT.fetch_add(1, Ordering::Relaxed);
+
+        // O(1) hot-cache fast path. See doc comment for the FrameId
+        // uniqueness argument that justifies skipping the prefix walk.
+        if target_path.len() == self.loaded_path.len()
+            && target_path.last().map(|f| f.id) == self.loaded_path.last().map(|f| f.id)
+        {
+            LINEAGE_SWITCH_HOT_COUNT.fetch_add(1, Ordering::Relaxed);
+            LINEAGE_SWITCH_FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            return (0, 0);
+        }
 
         let prefix = common_prefix_len(&self.loaded_path, target_path);
         let pops = self.loaded_path.len() - prefix;
         let pushes = target_path.len() - prefix;
 
         if pops == 0 && pushes == 0 {
+            // Paths share a prefix that covers both fully but the O(1)
+            // tail-id check missed — should be unreachable in practice
+            // (tail+depth equality is iff identity). Counted under
+            // SWITCH_HOT but NOT SWITCH_FAST_PATH to keep the fast-path
+            // counter a strict measure of the O(1) short-circuit.
             LINEAGE_SWITCH_HOT_COUNT.fetch_add(1, Ordering::Relaxed);
             return (0, 0);
         }
@@ -332,20 +373,49 @@ mod tests {
         let path = vec![ScopeFrame::new(true, eq_bv_const(&x, 7))];
 
         // Switch into path (1 switch, 1 push), then switch to same path
-        // (1 switch, 1 hot no-op), then back to empty (1 switch, 1 pop).
+        // (1 switch, 1 hot no-op via O(1) fast path), then back to empty
+        // (1 switch, 1 pop).
         lin.switch_to(&path);
         lin.switch_to(&path);
         lin.switch_to(&ScopePath::new());
 
         let post = lineage_stats();
-        let delta = |i: usize| post[i].1.saturating_sub(pre[i].1);
+        let delta = |name: &str| {
+            let pre_v = pre.iter().find(|(n, _)| *n == name).map_or(0, |(_, v)| *v);
+            let post_v = post
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map_or(0, |(_, v)| *v);
+            post_v.saturating_sub(pre_v)
+        };
         // Lower bounds: other parallel tests can only ADD to these
         // counters, never subtract — but we must contribute at least
         // this many ourselves.
-        assert!(delta(0) >= 3, "≥3 switches (got {})", delta(0));
-        assert!(delta(1) >= 1, "≥1 hot no-op (got {})", delta(1));
-        assert!(delta(2) >= 1, "≥1 push (got {})", delta(2));
-        assert!(delta(3) >= 1, "≥1 pop (got {})", delta(3));
+        assert!(
+            delta("lineage_switch_count") >= 3,
+            "≥3 switches (got {})",
+            delta("lineage_switch_count")
+        );
+        assert!(
+            delta("lineage_switch_hot_count") >= 1,
+            "≥1 hot no-op (got {})",
+            delta("lineage_switch_hot_count")
+        );
+        assert!(
+            delta("lineage_switch_fast_path_count") >= 1,
+            "≥1 fast-path hit (got {})",
+            delta("lineage_switch_fast_path_count")
+        );
+        assert!(
+            delta("lineage_push_count") >= 1,
+            "≥1 push (got {})",
+            delta("lineage_push_count")
+        );
+        assert!(
+            delta("lineage_pop_count") >= 1,
+            "≥1 pop (got {})",
+            delta("lineage_pop_count")
+        );
     }
 
     /// Sibling paths sharing a 2-frame prefix only pop+push the diverging
@@ -468,6 +538,167 @@ mod tests {
         // B→C: 1-frame prefix (a) reused; pop 2 (b, d), push 1 (e).
         let (pops, pushes) = lin.switch_to(&path_ae);
         assert_eq!((pops, pushes), (2, 1));
+        assert_eq!(lin.loaded_depth(), 2);
+    }
+
+    /// O(1) hot-cache fast path: a same-path re-switch must return
+    /// (0, 0) AND increment `lineage_switch_fast_path_count`. Divergent
+    /// switches return non-zero pop/push counts. Counter is a lower-bound
+    /// check because other parallel tests in the module also bump it.
+    #[test]
+    fn test_switch_fast_path_counter_only_fires_on_same_path() {
+        let read = |name: &str, snapshot: &[(&'static str, u64)]| {
+            snapshot
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map_or(0, |(_, v)| *v)
+        };
+
+        let pre = lineage_stats();
+        let fp_pre = read("lineage_switch_fast_path_count", &pre);
+
+        let mut lin = SharedLineageSolver::new(make_solver());
+        let x = bvconst("test_switch_fast_path_counter_x", 8);
+        let path = vec![ScopeFrame::new(true, eq_bv_const(&x, 7))];
+
+        // First switch: divergent (empty → 1-frame). NOT a fast-path hit;
+        // the return value reflects that 1 frame was pushed.
+        let (pops, pushes) = lin.switch_to(&path);
+        assert_eq!((pops, pushes), (0, 1), "first switch pushes 1 frame");
+
+        // Second switch: same path → O(1) fast path fires, returns (0, 0).
+        let (pops, pushes) = lin.switch_to(&path);
+        assert_eq!(
+            (pops, pushes),
+            (0, 0),
+            "second same-path switch must be a no-op"
+        );
+
+        // Third switch: back to empty → divergent, returns (1, 0).
+        let (pops, pushes) = lin.switch_to(&ScopePath::new());
+        assert_eq!((pops, pushes), (1, 0), "third switch pops 1 frame");
+
+        // Lower-bound check: at least one fast-path hit was contributed
+        // by us (the second switch). Other parallel tests can only ADD
+        // to the global counter, never subtract.
+        let post = lineage_stats();
+        let fp_post = read("lineage_switch_fast_path_count", &post);
+        assert!(
+            fp_post.saturating_sub(fp_pre) >= 1,
+            "at least 1 fast-path hit expected (got {})",
+            fp_post.saturating_sub(fp_pre)
+        );
+    }
+
+    /// Repeated re-entry on the SAME deep path (the BFS intra-state
+    /// query-burst pattern the hot-cache targets) hits the fast path on
+    /// every call after the first.
+    #[test]
+    fn test_switch_fast_path_deep_path_repeated_reentry() {
+        let mut lin = SharedLineageSolver::new(make_solver());
+        let x = bvconst("test_switch_fast_path_deep_path_x", 32);
+
+        // 10-frame deep path representing many accumulated constraints
+        // (e.g., from a long-running state).
+        let path: ScopePath = (0..10)
+            .map(|i| {
+                ScopeFrame::new(
+                    true,
+                    x.bvugt(&z3::ast::BV::from_u64(i as u64, 32)),
+                )
+            })
+            .collect();
+
+        // Initial switch into the deep path.
+        lin.switch_to(&path);
+        assert_eq!(lin.loaded_depth(), 10);
+
+        // Capture fast-path counter, then re-enter 100 times. Every
+        // re-entry must hit the O(1) cache (same path, same tail id,
+        // same depth) — no Z3 push/pop should fire.
+        let before = lineage_stats();
+        let fp_before = before
+            .iter()
+            .find(|(n, _)| *n == "lineage_switch_fast_path_count")
+            .map_or(0, |(_, v)| *v);
+        let push_before = before
+            .iter()
+            .find(|(n, _)| *n == "lineage_push_count")
+            .map_or(0, |(_, v)| *v);
+        let pop_before = before
+            .iter()
+            .find(|(n, _)| *n == "lineage_pop_count")
+            .map_or(0, |(_, v)| *v);
+
+        let mut local_push = 0u64;
+        let mut local_pop = 0u64;
+        for _ in 0..100 {
+            let (pops, pushes) = lin.switch_to(&path);
+            assert_eq!(
+                (pops, pushes),
+                (0, 0),
+                "every same-path re-entry must be a no-op"
+            );
+            local_push += pushes as u64;
+            local_pop += pops as u64;
+        }
+        // Behavioural proof, race-free: this caller's own switch_to
+        // calls returned 0 pops and 0 pushes for every re-entry.
+        assert_eq!(local_push, 0);
+        assert_eq!(local_pop, 0);
+
+        let after = lineage_stats();
+        let fp_after = after
+            .iter()
+            .find(|(n, _)| *n == "lineage_switch_fast_path_count")
+            .map_or(0, |(_, v)| *v);
+        // Counter check: at least 100 fast-path hits contributed by us.
+        // Lower-bound rather than equality because other parallel tests
+        // in this module also share the global counter.
+        assert!(
+            fp_after.saturating_sub(fp_before) >= 100,
+            "expected ≥100 fast-path hits, got {}",
+            fp_after.saturating_sub(fp_before)
+        );
+        // push_before/pop_before remain unused snapshots in the race-safe
+        // version — kept as documentation of the invariant being
+        // demonstrated. The behavioural assertions above (local_push,
+        // local_pop) are the authoritative check.
+        let _ = (push_before, pop_before);
+    }
+
+    /// Two distinct paths that happen to share the same length but
+    /// diverge in the tail must NOT collide on the fast path (different
+    /// tail FrameIds).
+    #[test]
+    fn test_switch_fast_path_does_not_collide_on_different_tails() {
+        let mut lin = SharedLineageSolver::new(make_solver());
+        let x = bvconst("test_switch_fast_path_no_collide_x", 16);
+
+        // Two paths of identical length 2, sharing the first frame `a`
+        // but diverging in the tail (`c` vs `d`).
+        let a = ScopeFrame::new(true, x.bvugt(&z3::ast::BV::from_u64(0, 16)));
+        let c = ScopeFrame::new(true, eq_bv_const(&x, 5));
+        let d = ScopeFrame::new(true, eq_bv_const(&x, 42));
+
+        let path_ac = vec![a.clone(), c];
+        let path_ad = vec![a, d];
+
+        lin.switch_to(&path_ac);
+
+        // Switch to a different path that has the same length but a
+        // different tail id. Must NOT fire the fast path; the (pops,
+        // pushes) return value of (1, 1) is the race-free behavioural
+        // proof that the prefix walk did execute and identified the
+        // tail-only divergence. (Global counter delta cannot prove
+        // negative "did not fire" because other parallel tests in this
+        // module also bump the same atomic.)
+        let (pops, pushes) = lin.switch_to(&path_ad);
+        assert_eq!(
+            (pops, pushes),
+            (1, 1),
+            "different-tail switch must pop+push the diverging frame"
+        );
         assert_eq!(lin.loaded_depth(), 2);
     }
 }
