@@ -1131,6 +1131,22 @@ class RustExplorationManager(
         lines.append(f"  Total time: {s['callback_lift_block_total_ns']/1e6:.1f}ms")
         if s['callback_lift_block_count'] > 0:
             lines.append(f"  Avg per call: {s['callback_lift_block_total_ns']/s['callback_lift_block_count']/1e3:.1f}us")
+        # angr-xtse.1: per-category Python callback timing for upper-bound
+        # speedup analysis. All five paths are instrumented from the public
+        # _handle_* entry points in rust_callback_dispatch.py.
+        for label, key in (
+            ("Syscall", "syscall"),
+            ("Find predicate", "find_predicate"),
+            ("Avoid predicate", "avoid_predicate"),
+            ("Symbolic branch", "symbolic_branch"),
+            ("Python VEX fallback", "vex_fallback"),
+        ):
+            count = s.get(f"callback_{key}_count", 0)
+            ns = s.get(f"callback_{key}_total_ns", 0)
+            lines.append(f"{label} callbacks: {count}")
+            lines.append(f"  Total time: {ns/1e6:.1f}ms")
+            if count > 0:
+                lines.append(f"  Avg per call: {ns/count/1e3:.1f}us")
         # Per-category fallback counters (angr-md0m). Pulled live from
         # self.stats — values may be 0 if the run never tripped the path.
         try:
@@ -3733,6 +3749,14 @@ class RustExplorationManager(
         result['time_in_callbacks'] = self._stats_time_in_callbacks_ns / 1e9  # seconds
         result['z3_ptr_cache_hits'] = self._z3_ptr_cache_hits
         result['z3_ptr_cache_misses'] = self._z3_ptr_cache_misses
+        # angr-xtse.1: surface PerformanceTracker callback counts/times so
+        # run_single.py --counters-json picks them up alongside the Rust-side
+        # counters. Keys are kept verbatim ("callback_<kind>_count",
+        # "callback_<kind>_total_ns") so downstream analysis can extract the
+        # bucket by name without translation.
+        for key, val in self._perf_stats.as_dict().items():
+            if key.startswith("callback_"):
+                result[key] = val
         # angr-h0dv: defensive counter for Path A (rust_solver_ctx attach)
         # regressions. The other legacy constraint-sync counters were retired
         # after a 20-bench soak proved Path B was dead code.

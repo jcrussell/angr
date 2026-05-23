@@ -41,6 +41,16 @@ class PerformanceTracker:
         "callback_fetch_page_total_ns",
         "callback_lift_block_count",
         "callback_lift_block_total_ns",
+        "callback_syscall_count",
+        "callback_syscall_total_ns",
+        "callback_find_predicate_count",
+        "callback_find_predicate_total_ns",
+        "callback_avoid_predicate_count",
+        "callback_avoid_predicate_total_ns",
+        "callback_symbolic_branch_count",
+        "callback_symbolic_branch_total_ns",
+        "callback_vex_fallback_count",
+        "callback_vex_fallback_total_ns",
     )
 
     def __init__(self) -> None:
@@ -79,6 +89,26 @@ class PerformanceTracker:
     def record_lift_block(self, ns: int) -> None:
         self._stats["callback_lift_block_count"] += 1
         self._stats["callback_lift_block_total_ns"] += ns
+
+    def record_syscall_call(self, total_ns: int) -> None:
+        self._stats["callback_syscall_count"] += 1
+        self._stats["callback_syscall_total_ns"] += total_ns
+
+    def record_find_predicate_call(self, total_ns: int) -> None:
+        self._stats["callback_find_predicate_count"] += 1
+        self._stats["callback_find_predicate_total_ns"] += total_ns
+
+    def record_avoid_predicate_call(self, total_ns: int) -> None:
+        self._stats["callback_avoid_predicate_count"] += 1
+        self._stats["callback_avoid_predicate_total_ns"] += total_ns
+
+    def record_symbolic_branch_call(self, total_ns: int) -> None:
+        self._stats["callback_symbolic_branch_count"] += 1
+        self._stats["callback_symbolic_branch_total_ns"] += total_ns
+
+    def record_vex_fallback_call(self, total_ns: int) -> None:
+        self._stats["callback_vex_fallback_count"] += 1
+        self._stats["callback_vex_fallback_total_ns"] += total_ns
 
     # ---- Read access (mapping-like) ----
 

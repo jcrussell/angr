@@ -1354,6 +1354,13 @@ class RustCallbackDispatchMixin:
         Uses cached state to preserve symbolic memory and constraints,
         then syncs changes back to Rust after syscall execution.
         """
+        _sc_total_start = time.perf_counter_ns()
+        try:
+            self._handle_syscall_callback_inner(event)
+        finally:
+            self._perf_stats.record_syscall_call(time.perf_counter_ns() - _sc_total_start)
+
+    def _handle_syscall_callback_inner(self, event: "_ExplorationEvent"):
         syscall_num = event.callback_syscall_num
         state_id = event.callback_state_id
 
@@ -1435,6 +1442,13 @@ class RustCallbackDispatchMixin:
         Args:
             event: The exploration event from Rust.
         """
+        _fp_total_start = time.perf_counter_ns()
+        try:
+            self._handle_find_predicate_callback_inner(event)
+        finally:
+            self._perf_stats.record_find_predicate_call(time.perf_counter_ns() - _fp_total_start)
+
+    def _handle_find_predicate_callback_inner(self, event: "_ExplorationEvent"):
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state_id = event.callback_state_id
@@ -1492,6 +1506,13 @@ class RustCallbackDispatchMixin:
         Args:
             event: The exploration event from Rust.
         """
+        _ap_total_start = time.perf_counter_ns()
+        try:
+            self._handle_avoid_predicate_callback_inner(event)
+        finally:
+            self._perf_stats.record_avoid_predicate_call(time.perf_counter_ns() - _ap_total_start)
+
+    def _handle_avoid_predicate_callback_inner(self, event: "_ExplorationEvent"):
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state_id = event.callback_state_id
@@ -1542,6 +1563,13 @@ class RustCallbackDispatchMixin:
         2. Creates two forked states with appropriate constraints
         3. Adds both states back to Rust's active stash
         """
+        _sb_total_start = time.perf_counter_ns()
+        try:
+            self._handle_symbolic_branch_callback_inner(event)
+        finally:
+            self._perf_stats.record_symbolic_branch_call(time.perf_counter_ns() - _sb_total_start)
+
+    def _handle_symbolic_branch_callback_inner(self, event: "_ExplorationEvent"):
         true_target = event.branch_true_target
         false_target = event.branch_false_target
         condition_id = event.branch_condition_id
@@ -2018,6 +2046,13 @@ class RustCallbackDispatchMixin:
         (CAS, dirty calls, SIMD, etc.), it returns to Python to step the
         block using SimEngineVEX, then syncs results back to Rust.
         """
+        _vf_total_start = time.perf_counter_ns()
+        try:
+            self._handle_python_vex_fallback_inner(event)
+        finally:
+            self._perf_stats.record_vex_fallback_call(time.perf_counter_ns() - _vf_total_start)
+
+    def _handle_python_vex_fallback_inner(self, event: "_ExplorationEvent"):
         addr = event.callback_addr
         state_id = event.callback_state_id
         reason = event.callback_name or "unknown"
