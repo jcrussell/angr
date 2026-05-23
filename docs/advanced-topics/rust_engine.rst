@@ -34,8 +34,8 @@ Overview
   ``constraints``, ``simprocedure``, ``dirty``, …) still raise
   ``NotImplementedError`` at registration time.
 * **Performance:** Faster than Python on most benchmarks, with a small
-  number of known slower cases driven by Python-side cache pressure,
-  x87 transcendental fallbacks, or bimodal Z3 solver nondeterminism.
+  number of known slower cases driven by Python-side cache pressure or
+  bimodal Z3 solver nondeterminism.
 
 Usage
 -----
@@ -1164,37 +1164,43 @@ slowdown is purely CPU time.
 ekopartyctf2016_sokohashv2 — 0.36x (Py 5.83s / Rust 16.0s baseline; ~9.5s typical)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Workload:** Sokoban-style CTF binary that uses x87 transcendentals
-(``fyl2x``, ``fscale``, ``f2xm1``) inside its hash routine. The
-baseline 16.0s value is set at slow-mode to absorb known bimodal
-variance — actual fast runs land near 9.5s (~21% improvement since
-commit a571d4634 from FxHash adoption, freeze-local-assertions, and
-Arc-wrap fork fields).
+**Workload:** Sokoban-style CTF binary whose source uses x87
+transcendentals (``fyl2x``, ``fscale``, ``f2xm1``) inside its hash
+routine, but the test driver (``solve.py``) hooks every transcendental
+call site with ``do_nothing`` (lines 95–107 of the example), so the
+symbolically-executed code path never touches them. The baseline 16.0s
+value is set at slow-mode to absorb known bimodal variance — actual
+fast runs land near 9.5s (~21% improvement since commit a571d4634 from
+FxHash adoption, freeze-local-assertions, and Arc-wrap fork fields).
 
-**Root cause — two separate factors:**
+**Root cause — Z3 solver dominates:**
 
-#. **x87 transcendental fallback to Python.** ``fyl2x``, ``fscale``,
-   and ``f2xm1`` are not implemented natively in ``vex/ops.rs``.
-   Previously these silently returned 0 (see memory
-   ``avoid-silent-zero-raw-fallback``, fixed in angr-n28w / commit
-   ``ef020d101``). Now they correctly route to Python claripy
-   operations, which means each transcendental crosses the FFI
-   boundary. The benchmark hits these on every hash iteration.
-#. **Bimodal Z3 nondeterminism.** The solver picks one of two model
-   shapes per run, producing either ~9.5s or ~15.4s wall time.
-   ``rust_only=True`` is set in ``run_regression.py`` because the same
-   nondeterminism causes output divergence between Rust and Python.
-   The 0.36x baseline reflects the slow mode; the typical 0.58x figure
-   reflects the fast mode.
+A 2026-05-23 counters dump (``run_single.py --dump-counters``) shows:
+
+* ``z3_check_time_ns`` ≈ 8.73s (out of ~10s total walltime)
+* ``z3_site_eval_upto_time_ns`` ≈ 7.62s (the final ``eval_upto(buffer, 1)``)
+* ``rust_run_loop_time_ns`` ≈ 144ms (Rust interpreter is negligible)
+* ``vex_op_other`` = 0, ``vex_op_fp`` = 0, ``python_vex_*_fallback_count`` = 0
+  — **no transcendentals (concrete or symbolic) execute under the test
+  driver's hooks**
+
+The slowdown is structurally **Z3 nondeterminism** on the final
+``eval_upto`` query, not transcendentals. The solver picks one of two
+(now ~three) model shapes per run, producing the historical bimodal
+9.5s / 15.4s spread — now softened into a trimodal-ish ~9-17s spread
+after the angr-ctct + angr-fv81 hash-divergence fixes (2026-05-14).
+``rust_only=True`` in ``run_regression.py`` reflects that the same
+nondeterminism causes output divergence between Rust and Python.
 
 **Memory:** Peak memory is not an issue here; the slowdown is pure CPU
-in the x87 fallbacks plus solver nondeterminism.
+inside Z3.
 
-**Why not chase a Rust fix?** Implementing x87 transcendentals
-natively in Rust would close part of the gap but the binary is the
-only known benchmark exercising them — high implementation cost for a
-niche win. Z3 nondeterminism is structural; nothing in the engine
-controls it.
+**Why not chase a Rust fix?** Z3 nondeterminism is structural —
+nothing in the engine controls it. The x87 transcendental code path
+*is not exercised* on this benchmark (verified 2026-05-23 via counters
+dump), so implementing them natively would not move sokohashv2. See bd
+memory ``sokohashv2-no-transcendental-hits-2026-05-23`` and
+``angr-9l1y-closed-2026-05-23``.
 
 **2026-05-18 re-validation (post-fix):** After the angr-ctct
 (commit ``c6b2824cb``) + angr-fv81 (commit ``13bb9f741``) memory-sync
@@ -1216,7 +1222,8 @@ unchanged. Median 11.98s gives ~0.49x; the typical 0.4x in
 **Relevant memories:** ``avoid-silent-zero-raw-fallback``,
 ``invariant-bimodal-variance-benchmarks``,
 ``benchmark-perf-wins-2026-05-09``,
-``benchmark-sokohashv2-2026-05-18``.
+``benchmark-sokohashv2-2026-05-18``,
+``sokohashv2-no-transcendental-hits-2026-05-23``.
 
 Other benchmarks below 1.0x
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
