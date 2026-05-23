@@ -1095,6 +1095,29 @@ pub struct SymContext {
     /// `set_lineage_for_testing` exercise the dispatch.
     #[cfg(feature = "vex-engine-z3")]
     scope_savepoints: Mutex<Vec<usize>>,
+
+    /// Outstanding bare Z3 pushes on the per-context solver (angr-3ms1
+    /// step 1a).
+    ///
+    /// Tracks calls to [`scope_savepoint_push`](Self::scope_savepoint_push)
+    /// that took the **None** dispatch branch — i.e. those that issued
+    /// `solver.push()` directly on the per-context Z3 solver and have not
+    /// yet been balanced by a matching pop. The **Some** branch records
+    /// on `scope_savepoints` instead and leaves this counter alone, so in
+    /// production today (no lineage ever installed) the counter mirrors
+    /// the per-context solver's push depth exactly.
+    ///
+    /// Inert in this slice — exposed via
+    /// [`bare_z3_push_depth`](Self::bare_z3_push_depth) for telemetry and
+    /// for the slice-1c fork-time materialization gate. That gate will
+    /// refuse to mint a fresh `SharedLineageSolver` frame when this
+    /// counter is non-zero: the child's lineage would otherwise steal
+    /// ownership of the Z3 stack and the parent's unbalanced bare pushes
+    /// would leak into the child's base (see the
+    /// `v5a5-bare-z3-push-depth-counter-design` memo for the failure
+    /// mode this gates against).
+    #[cfg(feature = "vex-engine-z3")]
+    bare_z3_push_depth: AtomicUsize,
 }
 
 impl SymContext {
@@ -1154,6 +1177,7 @@ impl SymContext {
             lineage: Mutex::new(None),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
             scope_savepoints: Mutex::new(Vec::new()),
+            bare_z3_push_depth: AtomicUsize::new(0),
         }
     }
 
@@ -3079,6 +3103,19 @@ impl SymContext {
             lineage: Mutex::new(child_lineage),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
             scope_savepoints: Mutex::new(Vec::new()),
+            // angr-3ms1 step 1a: child inherits parent's bare-push depth
+            // so a fork inside a `push()` region keeps a consistent
+            // accounting of outstanding bare pushes. The slice-1c
+            // materialization gate reads the *parent's* value at the
+            // moment of fork to decide whether to mint a lineage; copying
+            // it into the child also keeps post-fork pop accounting
+            // consistent if a child somehow inherits a pushed region
+            // (today's fork semantics reset push_level, so in practice
+            // the child observes 0 unless future code threads bare pushes
+            // through fork).
+            bare_z3_push_depth: AtomicUsize::new(
+                self.bare_z3_push_depth.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -3113,6 +3150,25 @@ impl SymContext {
         self.scope_savepoints.lock().len()
     }
 
+    /// Current count of outstanding bare Z3 pushes (angr-3ms1 step 1a).
+    ///
+    /// Returns the number of [`scope_savepoint_push`](Self::scope_savepoint_push)
+    /// calls on the **None** lineage branch that have not yet been
+    /// balanced by a matching [`scope_savepoint_pop`](Self::scope_savepoint_pop).
+    /// Always 0 immediately after construction and when every push has
+    /// been popped. Always 0 along the Some (shared-lineage) branch —
+    /// that branch records on `scope_savepoints` rather than touching
+    /// the Z3 stack directly.
+    ///
+    /// Exposed for telemetry and for the slice-1c fork-time
+    /// materialization gate: the gate will refuse to mint a fresh
+    /// `SharedLineageSolver` frame at fork time when the parent's
+    /// `bare_z3_push_depth` is non-zero.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn bare_z3_push_depth(&self) -> usize {
+        self.bare_z3_push_depth.load(Ordering::Relaxed)
+    }
+
     /// Save a scope-path savepoint, dispatching by lineage (angr-v5a5
     /// slice 4b).
     ///
@@ -3145,6 +3201,11 @@ impl SymContext {
             None => {
                 let solver = self.solver();
                 solver.push();
+                // angr-3ms1 step 1a: track the bare push so the slice-1c
+                // fork-time materialization gate can refuse to mint a
+                // lineage while bare pushes are outstanding.
+                self.bare_z3_push_depth
+                    .fetch_add(1, Ordering::Relaxed);
             }
             Some(_) => {
                 let depth = self.scope_path.lock().len();
@@ -3183,6 +3244,17 @@ impl SymContext {
             None => {
                 let solver = self.solver();
                 solver.pop(1);
+                // angr-3ms1 step 1a: decrement after the Z3 pop succeeds.
+                // z3-rs panics on under-pop, so we never reach this on
+                // an unbalanced sequence — the counter stays in sync
+                // with the per-context solver's actual push depth.
+                let prev = self
+                    .bare_z3_push_depth
+                    .fetch_sub(1, Ordering::Relaxed);
+                debug_assert!(
+                    prev > 0,
+                    "bare_z3_push_depth underflowed — pop without matching push"
+                );
             }
             Some(_) => {
                 if let Some(depth) = self.scope_savepoints.lock().pop() {
@@ -5353,6 +5425,114 @@ mod tests {
             new_ctx_usize_for_assert,
             original_x_ast_usize,
             new_x_ast_usize,
+        );
+    }
+
+    /// angr-3ms1 step 1a: on the None (no-lineage) branch,
+    /// `scope_savepoint_push`/`pop` bump `bare_z3_push_depth` in lockstep
+    /// with the per-context Z3 solver's stack. Nested pushes accumulate;
+    /// matching pops drain the counter back to 0.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_bare_z3_push_depth_none_branch_balanced() {
+        let ctx = SymContext::new();
+        assert!(ctx.lineage_arc().is_none());
+        assert_eq!(ctx.bare_z3_push_depth(), 0);
+
+        ctx.scope_savepoint_push();
+        assert_eq!(ctx.bare_z3_push_depth(), 1);
+
+        ctx.scope_savepoint_push();
+        assert_eq!(ctx.bare_z3_push_depth(), 2);
+
+        ctx.scope_savepoint_pop();
+        assert_eq!(ctx.bare_z3_push_depth(), 1);
+
+        ctx.scope_savepoint_pop();
+        assert_eq!(
+            ctx.bare_z3_push_depth(),
+            0,
+            "counter must drain back to 0 after balanced pops"
+        );
+
+        // The Some-branch sibling test lives separately
+        // (`test_bare_z3_push_depth_some_branch_inert`); here we also
+        // confirm the None branch left `scope_savepoints` untouched, so
+        // the two paths don't accidentally double-count.
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
+    }
+
+    /// angr-3ms1 step 1a: on the Some (shared-lineage) branch,
+    /// `scope_savepoint_push`/`pop` record on `scope_savepoints` and must
+    /// NOT touch `bare_z3_push_depth` — the counter only tracks pushes
+    /// against the per-context Z3 solver.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_bare_z3_push_depth_some_branch_inert() {
+        use super::super::lineage::SharedLineageSolver;
+
+        let ctx = SymContext::new();
+        let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
+        ctx.set_lineage_for_testing(Arc::clone(&lin));
+
+        assert_eq!(ctx.bare_z3_push_depth(), 0);
+
+        ctx.scope_savepoint_push();
+        ctx.scope_savepoint_push();
+        assert_eq!(ctx.scope_savepoint_depth(), 2);
+        assert_eq!(
+            ctx.bare_z3_push_depth(),
+            0,
+            "Some branch must not touch bare_z3_push_depth"
+        );
+
+        ctx.scope_savepoint_pop();
+        ctx.scope_savepoint_pop();
+        assert_eq!(ctx.scope_savepoint_depth(), 0);
+        assert_eq!(ctx.bare_z3_push_depth(), 0);
+    }
+
+    /// angr-3ms1 step 1a: `fork()` copies the parent's
+    /// `bare_z3_push_depth` into the child. The slice-1c materialization
+    /// gate inspects the parent's value at fork time, but copying the
+    /// value into the child keeps the post-fork accounting consistent
+    /// for any future code path that threads bare pushes across fork.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_bare_z3_push_depth_inherited_on_fork() {
+        let parent = SymContext::new();
+        assert_eq!(parent.bare_z3_push_depth(), 0);
+
+        // A fork before any push: child inherits the 0.
+        let child_zero = parent.fork();
+        assert_eq!(
+            child_zero.bare_z3_push_depth(),
+            0,
+            "fork before any push must hand the child a 0 depth"
+        );
+
+        // After two bare pushes, the parent's counter is 2; a fork at
+        // that point hands the child the same depth.
+        parent.scope_savepoint_push();
+        parent.scope_savepoint_push();
+        assert_eq!(parent.bare_z3_push_depth(), 2);
+
+        let child_two = parent.fork();
+        assert_eq!(
+            child_two.bare_z3_push_depth(),
+            2,
+            "child must inherit the parent's bare_z3_push_depth at fork time"
+        );
+
+        // Drain the parent's pushes; the child's copy stays at 2 — it's
+        // a per-context counter, not a shared cell.
+        parent.scope_savepoint_pop();
+        parent.scope_savepoint_pop();
+        assert_eq!(parent.bare_z3_push_depth(), 0);
+        assert_eq!(
+            child_two.bare_z3_push_depth(),
+            2,
+            "child's counter is independent of parent's post-fork mutations"
         );
     }
 }
