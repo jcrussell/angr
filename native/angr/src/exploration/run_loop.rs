@@ -41,6 +41,22 @@ impl RustExplorationManager {
         };
 
         for _ in 0..max_steps {
+            // angr-v5ht: runtime thrash detection for the
+            // `use_shared_lineage_solver` opt-in. Hooks at the TOP of
+            // the for-loop iteration (BEFORE any early-return path)
+            // because callback-heavy workloads (e.g.
+            // google2016_unbreakable_0: every iteration returns via
+            // `need_simprocedure`) never reach `self.steps += 1` and
+            // would otherwise never sample. `tick_and_sample_for_thrash`
+            // uses its own internal tick counter so the sampling cadence
+            // is independent of `self.steps`. Always-on: cheap (single
+            // atomic load + branch on `LINEAGE_DISMANTLED`) and a no-op
+            // until the kill switch is turned on. Sample every 10 ticks;
+            // dismantle when ≥20 lineage_switch events show <35% hot
+            // ratio over a window.
+            #[cfg(feature = "vex-engine-z3")]
+            crate::symbolic::lineage::tick_and_sample_for_thrash(10, 20, 35);
+
             // Check if we have enough solutions
             if self.found_count() >= self.num_find {
                 return Ok(ExplorationEvent::found(

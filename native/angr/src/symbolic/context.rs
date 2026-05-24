@@ -423,6 +423,15 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     for (name, value) in super::lineage::lineage_stats() {
         stats.insert(name.into(), value);
     }
+    // angr-v5ht: runtime thrash detector state alongside the lineage
+    // counters. `lineage_dismantled` is the bool kill switch (0/1);
+    // `lineage_dismantle_count` is the number of times the sampler has
+    // flipped the switch on across resets (typically 0 or 1 per
+    // exploration since dismantle is sticky until reset).
+    #[cfg(feature = "vex-engine-z3")]
+    for (name, value) in super::lineage::dismantle_stats() {
+        stats.insert(name.into(), value);
+    }
     #[cfg(feature = "vex-engine-z3")]
     for i in 0..NUM_CHECK_SITES {
         let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
@@ -3131,10 +3140,33 @@ impl SymContext {
         // separately. Subsequent constraints added on the child go
         // through the slice-4c migrated `add_constraint*` paths, which
         // mint per-state ScopeFrames on top of the lineage base.
+        // angr-v5ht adds the third gate (c): if the runtime thrash
+        // detector has dismantled lineage minting (the hot-cache hit
+        // ratio dropped below threshold over a recent sampling window),
+        // skip lineage minting AND drop the lineage Arc on the child.
+        //
+        // Note we cannot simply Arc::clone the parent's lineage into
+        // the dismantled child: the parent's lineage's base assertions
+        // were frozen at the moment the lineage was first minted (an
+        // earlier ancestor), but the parent has since accumulated more
+        // constraints (in its per-state scope_path). A child starting
+        // with an empty scope_path would call switch_to(empty), popping
+        // the shared solver back to its base — missing every constraint
+        // the parent added post-mint. That stale constraint set leaks
+        // unconstrained SAT solutions on the find state (see the
+        // baby-re chr() repro from this iter). Setting child_lineage
+        // to None puts the child on the per-context solver path, which
+        // builds from frozen_shared = the parent's FULL constraint set,
+        // preserving correctness at the cost of the lineage win for
+        // this child. Existing in-flight lineage Arcs on ancestors keep
+        // working — the simple dismantle variant only suppresses
+        // minting on FUTURE forks.
+        let dismantled = super::lineage::is_lineage_dismantled();
         let child_lineage = if self
             .use_shared_lineage_solver
             .load(Ordering::Relaxed)
             && self.bare_z3_push_depth.load(Ordering::Relaxed) == 0
+            && !dismantled
         {
             let lineage_solver = super::lineage::SharedLineageSolver::new(build_solver(
                 self.timeout_ms.load(Ordering::SeqCst),
@@ -3143,6 +3175,8 @@ impl SymContext {
                 lineage_solver.assert_base(constraint);
             }
             Some(Arc::new(Mutex::new(lineage_solver)))
+        } else if dismantled {
+            None
         } else {
             self.lineage.lock().as_ref().map(Arc::clone)
         };

@@ -40,7 +40,7 @@
 
 #![cfg(feature = "vex-engine-z3")]
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use z3::ast::Bool;
 
@@ -102,6 +102,185 @@ static LINEAGE_SWITCH_FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_POP_COUNT: AtomicU64 = AtomicU64::new(0);
 
+// =============================================================================
+// Runtime thrash detection (angr-v5ht)
+// =============================================================================
+// Global kill switch for fork-time lineage minting. Set when
+// `sample_for_thrash` detects the hot-cache hit ratio has fallen below
+// the configured threshold over a sampling window. The fork-gate in
+// `SymContext::fork` consults `is_lineage_dismantled()` and, when true,
+// falls through to the pre-lineage behavior (Arc-clone the parent's
+// lineage, which is None in production without opt-in). Existing
+// in-flight lineage Arcs are NOT torn down — the SIMPLE variant of the
+// design (see angr-v5ht bead description).
+
+static LINEAGE_DISMANTLED: AtomicBool = AtomicBool::new(false);
+static LINEAGE_DISMANTLE_COUNT: AtomicU64 = AtomicU64::new(0);
+// Counts every `sample_for_thrash` invocation that lands on a sample
+// step (i.e. is not short-circuited by the off-step / interval-zero /
+// already-dismantled fast paths). Lets us distinguish 'sampler never
+// ran' from 'sampler ran but never crossed the threshold' when
+// debugging benchmark misses.
+static LINEAGE_SAMPLE_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+// Counts every sample call that crossed the `min_switches` gate and
+// produced a verdict (whether dismantle or keep-on).
+static LINEAGE_SAMPLE_DECISION_COUNT: AtomicU64 = AtomicU64::new(0);
+// Counters tracking the value at the last sampling window boundary.
+// Used to compute the per-window delta in `sample_for_thrash`.
+static LAST_SAMPLE_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAST_SAMPLE_HOT_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAST_SAMPLE_STEP: AtomicU64 = AtomicU64::new(0);
+
+/// Return whether the runtime thrash detector has dismantled lineage
+/// minting. When true, [`SymContext::fork`] takes the pre-lineage path.
+pub fn is_lineage_dismantled() -> bool {
+    LINEAGE_DISMANTLED.load(Ordering::Relaxed)
+}
+
+/// Force the dismantle flag to `v`. Tests use this to exercise both
+/// states without going through the sampler. Production code should
+/// reach the dismantled state only via [`sample_for_thrash`].
+pub fn set_lineage_dismantled(v: bool) {
+    LINEAGE_DISMANTLED.store(v, Ordering::Relaxed);
+}
+
+/// Sample the lineage counters and flip [`is_lineage_dismantled`] on if
+/// the hot-cache hit ratio over the current window is below
+/// `hot_threshold_pct`. Returns true iff the dismantle flag transitioned
+/// from false to true on this call.
+///
+/// `step` is the current step counter; the sampler only does work on
+/// steps where `step.is_multiple_of(sample_interval)`. `min_switches` is
+/// the minimum number of lineage_switch events that must have occurred
+/// in the window before the threshold can fire — protects against very
+/// early dismantle on tiny windows. Suggested defaults (see angr-v5ht):
+/// `sample_interval=10`, `min_switches=20`, `hot_threshold_pct=35`.
+///
+/// Idempotent once dismantled: subsequent calls see the flag already
+/// set and exit cheaply without re-sampling. Cheap on the off-step
+/// fast path (one mod, one branch).
+pub fn sample_for_thrash(
+    tick: u64,
+    sample_interval: u64,
+    min_switches: u64,
+    hot_threshold_pct: u32,
+) -> bool {
+    if LINEAGE_DISMANTLED.load(Ordering::Relaxed) {
+        return false;
+    }
+    if sample_interval == 0 || tick == 0 || tick % sample_interval != 0 {
+        return false;
+    }
+    LINEAGE_SAMPLE_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let switch_now = LINEAGE_SWITCH_COUNT.load(Ordering::Relaxed);
+    let hot_now = LINEAGE_SWITCH_HOT_COUNT.load(Ordering::Relaxed);
+    let switch_prev = LAST_SAMPLE_SWITCH_COUNT.load(Ordering::Relaxed);
+    let hot_prev = LAST_SAMPLE_HOT_COUNT.load(Ordering::Relaxed);
+
+    let switch_delta = switch_now.saturating_sub(switch_prev);
+    let hot_delta = hot_now.saturating_sub(hot_prev);
+
+    // Accumulate across sample windows until min_switches is met —
+    // workloads with low switch volume per N-tick window (e.g.
+    // google2016_unbreakable_0: ~110 switches over the whole run)
+    // would otherwise never collect enough samples to fire. Reset the
+    // window snapshot ONLY when a decision is made; before that, keep
+    // accumulating into the same window across multiple sampler calls.
+    if switch_delta < min_switches {
+        LAST_SAMPLE_STEP.store(tick, Ordering::Relaxed);
+        return false;
+    }
+
+    LINEAGE_SAMPLE_DECISION_COUNT.fetch_add(1, Ordering::Relaxed);
+    LAST_SAMPLE_SWITCH_COUNT.store(switch_now, Ordering::Relaxed);
+    LAST_SAMPLE_HOT_COUNT.store(hot_now, Ordering::Relaxed);
+    LAST_SAMPLE_STEP.store(tick, Ordering::Relaxed);
+
+    // hot_delta * 100 < threshold * switch_delta -> ratio below threshold.
+    // u64 multiplication is safe at any plausible counter scale: a
+    // workload exceeding 2^57 switches per window dwarfs anything
+    // observed in the v5ht analysis.
+    let threshold = hot_threshold_pct as u64;
+    if hot_delta.saturating_mul(100) < threshold.saturating_mul(switch_delta) {
+        LINEAGE_DISMANTLED.store(true, Ordering::Relaxed);
+        LINEAGE_DISMANTLE_COUNT.fetch_add(1, Ordering::Relaxed);
+        return true;
+    }
+    false
+}
+
+/// Internal tick counter for [`tick_and_sample_for_thrash`]: bumped
+/// once per call. Lets the sampler fire on a fixed cadence of
+/// invocations, independent of the manager-level `self.steps` counter
+/// (which only advances on a state-step without a Python-callback
+/// return — workloads heavy in SimProcedure callbacks like
+/// google2016_unbreakable_0 never bump it and would never trigger
+/// step-count-based sampling).
+static SAMPLER_TICK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Convenience wrapper that bumps an internal tick counter and calls
+/// [`sample_for_thrash`] with the bumped value. Hook from the run loop
+/// (one call per for-loop iteration, BEFORE any early returns) so the
+/// sampler sees a monotonic per-iteration clock.
+pub fn tick_and_sample_for_thrash(
+    sample_interval: u64,
+    min_switches: u64,
+    hot_threshold_pct: u32,
+) -> bool {
+    let tick = SAMPLER_TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    sample_for_thrash(tick, sample_interval, min_switches, hot_threshold_pct)
+}
+
+/// Snapshot the runtime-thrash-detection counters. Exposed alongside
+/// [`lineage_stats`] so the integration patch can fold them into
+/// `get_solver_stats`.
+pub fn dismantle_stats() -> [(&'static str, u64); 4] {
+    [
+        (
+            "lineage_dismantled",
+            LINEAGE_DISMANTLED.load(Ordering::Relaxed) as u64,
+        ),
+        (
+            "lineage_dismantle_count",
+            LINEAGE_DISMANTLE_COUNT.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_sample_call_count",
+            LINEAGE_SAMPLE_CALL_COUNT.load(Ordering::Relaxed),
+        ),
+        (
+            "lineage_sample_decision_count",
+            LINEAGE_SAMPLE_DECISION_COUNT.load(Ordering::Relaxed),
+        ),
+    ]
+}
+
+/// Test helper: clear only the runtime-thrash-detection state without
+/// touching the global LINEAGE_SWITCH_*/HOT_* counters. The broader
+/// [`reset_lineage_stats`] is unsafe to call from a single test in a
+/// multi-test module because it resets the workload counters that other
+/// parallel tests have already snapshotted; this narrower variant lets
+/// the sampler tests start from a clean dismantle baseline without
+/// disturbing peer tests. Also primes LAST_SAMPLE_SWITCH_COUNT /
+/// LAST_SAMPLE_HOT_COUNT to the current global values so that
+/// [`sample_for_thrash`]'s next call sees only the delta the test
+/// generates, plus any contemporaneous pollution from parallel tests.
+#[doc(hidden)]
+pub fn reset_dismantle_state_for_test() {
+    LINEAGE_DISMANTLED.store(false, Ordering::Relaxed);
+    LINEAGE_DISMANTLE_COUNT.store(0, Ordering::Relaxed);
+    LAST_SAMPLE_SWITCH_COUNT.store(
+        LINEAGE_SWITCH_COUNT.load(Ordering::Relaxed),
+        Ordering::Relaxed,
+    );
+    LAST_SAMPLE_HOT_COUNT.store(
+        LINEAGE_SWITCH_HOT_COUNT.load(Ordering::Relaxed),
+        Ordering::Relaxed,
+    );
+    LAST_SAMPLE_STEP.store(0, Ordering::Relaxed);
+}
+
 /// Snapshot of the lineage-solver counters.
 ///
 /// Returned as a fixed-size array of `(name, value)` so the integration
@@ -140,13 +319,24 @@ pub fn lineage_stats() -> [(&'static str, u64); 5] {
 }
 
 /// Reset lineage-solver counters. Pairs with [`lineage_stats`] when the
-/// integration patch wires resets into `reset_solver_stats`.
+/// integration patch wires resets into `reset_solver_stats`. Also
+/// clears the runtime-thrash-detection state (dismantle flag, sample
+/// window, dismantle count) so a fresh exploration starts with lineage
+/// minting enabled.
 pub fn reset_lineage_stats() {
     LINEAGE_SWITCH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_SWITCH_HOT_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_SWITCH_FAST_PATH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_PUSH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_POP_COUNT.store(0, Ordering::Relaxed);
+    LINEAGE_DISMANTLED.store(false, Ordering::Relaxed);
+    LINEAGE_DISMANTLE_COUNT.store(0, Ordering::Relaxed);
+    LINEAGE_SAMPLE_CALL_COUNT.store(0, Ordering::Relaxed);
+    LINEAGE_SAMPLE_DECISION_COUNT.store(0, Ordering::Relaxed);
+    SAMPLER_TICK_COUNT.store(0, Ordering::Relaxed);
+    LAST_SAMPLE_SWITCH_COUNT.store(0, Ordering::Relaxed);
+    LAST_SAMPLE_HOT_COUNT.store(0, Ordering::Relaxed);
+    LAST_SAMPLE_STEP.store(0, Ordering::Relaxed);
 }
 
 /// Z3 solver shared by all states in one lineage, with a scope-tracked
@@ -665,6 +855,162 @@ mod tests {
         // demonstrated. The behavioural assertions above (local_push,
         // local_pop) are the authoritative check.
         let _ = (push_before, pop_before);
+    }
+
+    /// Test-only mutex serializing the sampler tests. Sampler tests
+    /// touch the global LAST_SAMPLE_* / LINEAGE_DISMANTLED state and the
+    /// shared LINEAGE_SWITCH_*/HOT_* counters in ways that would race
+    /// with each other or with the rest of this module's parallel
+    /// tests. Take this lock for the duration of any test that calls
+    /// `sample_for_thrash` or asserts on the dismantle flag.
+    static SAMPLER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// `sample_for_thrash` is a no-op on steps that are not a multiple
+    /// of the sample interval. Pure logic — no counter reads.
+    #[test]
+    fn test_sample_for_thrash_off_step_is_noop() {
+        let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+        reset_dismantle_state_for_test();
+        assert!(!is_lineage_dismantled());
+        for step in 1..10 {
+            let fired = sample_for_thrash(step, 10, 1, 35);
+            assert!(!fired, "step {step} should not sample");
+        }
+        assert!(!is_lineage_dismantled());
+    }
+
+    /// Insufficient switch volume keeps the dismantle flag off even
+    /// when the hot-ratio over the (tiny) window is zero. Uses a very
+    /// high `min_switches` value to dwarf any pollution from parallel
+    /// non-sampler tests in the module.
+    #[test]
+    fn test_sample_for_thrash_min_switches_gate() {
+        let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+        reset_dismantle_state_for_test();
+        let mut lin = SharedLineageSolver::new(make_solver());
+        let x = bvconst("test_sample_min_switches_x", 8);
+        for i in 0..5u64 {
+            let path = vec![ScopeFrame::new(true, eq_bv_const(&x, i))];
+            lin.switch_to(&path);
+        }
+        // 1,000,000 min_switches: parallel tests cannot plausibly bump
+        // the global to that height during one sample window — keeps
+        // this test asserting "below min" deterministically.
+        let fired = sample_for_thrash(10, 10, 1_000_000, 35);
+        assert!(!fired, "fewer than min_switches must not trigger");
+        assert!(!is_lineage_dismantled());
+    }
+
+    /// Cold workload (no hot-cache hits) triggers dismantle once
+    /// min_switches is met. Generates 200 cold switches; even if
+    /// parallel tests dump a handful of hot-cache hits into the global
+    /// during our window, the ratio stays well below 35%.
+    #[test]
+    fn test_sample_for_thrash_cold_workload_triggers() {
+        let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+        reset_dismantle_state_for_test();
+        let mut lin = SharedLineageSolver::new(make_solver());
+        let x = bvconst("test_sample_cold_x", 8);
+        for i in 0..200u64 {
+            let path = vec![ScopeFrame::new(true, eq_bv_const(&x, i))];
+            lin.switch_to(&path);
+        }
+        let fired = sample_for_thrash(10, 10, 100, 35);
+        assert!(fired, "cold workload must trigger dismantle");
+        assert!(is_lineage_dismantled());
+
+        let stats = dismantle_stats();
+        let dismantled = stats
+            .iter()
+            .find(|(n, _)| *n == "lineage_dismantled")
+            .map_or(0, |(_, v)| *v);
+        let count = stats
+            .iter()
+            .find(|(n, _)| *n == "lineage_dismantle_count")
+            .map_or(0, |(_, v)| *v);
+        assert_eq!(dismantled, 1);
+        // dismantle_count is RESET to 0 by reset_dismantle_state_for_test()
+        // and the SAMPLER_TEST_LOCK serializes against other tests that
+        // would call sample_for_thrash, so this is exact.
+        assert_eq!(count, 1);
+    }
+
+    /// Hot workload (every switch hits the fast path after the first)
+    /// stays above threshold and does NOT trigger dismantle. 1000 hot
+    /// hits dwarfs any cold-switch pollution from parallel tests.
+    #[test]
+    fn test_sample_for_thrash_hot_workload_stays_on() {
+        let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+        reset_dismantle_state_for_test();
+        let mut lin = SharedLineageSolver::new(make_solver());
+        let x = bvconst("test_sample_hot_x", 8);
+        let path = vec![ScopeFrame::new(true, eq_bv_const(&x, 7))];
+        lin.switch_to(&path);
+        for _ in 0..1000 {
+            lin.switch_to(&path);
+        }
+        let fired = sample_for_thrash(10, 10, 100, 35);
+        assert!(!fired, "hot workload must not trigger dismantle");
+        assert!(!is_lineage_dismantled());
+    }
+
+    /// After dismantle has fired, subsequent sampler calls are cheap
+    /// no-ops (idempotent and don't double-count).
+    #[test]
+    fn test_sample_for_thrash_is_idempotent_once_dismantled() {
+        let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+        reset_dismantle_state_for_test();
+        set_lineage_dismantled(true);
+        for step in (10..=100).step_by(10) {
+            let fired = sample_for_thrash(step, 10, 1, 35);
+            assert!(!fired, "already dismantled — must not re-fire");
+        }
+        let stats = dismantle_stats();
+        let count = stats
+            .iter()
+            .find(|(n, _)| *n == "lineage_dismantle_count")
+            .map_or(0, |(_, v)| *v);
+        assert_eq!(count, 0, "dismantle_count must not increment on no-op calls");
+    }
+
+    /// `reset_dismantle_state_for_test()` clears the dismantle flag so
+    /// the sampler can fire again, without disturbing the shared
+    /// LINEAGE_SWITCH_*/HOT_* counters that other parallel tests
+    /// snapshot.
+    #[test]
+    fn test_reset_dismantle_state_for_test_is_narrow() {
+        let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+        // Capture counters before reset.
+        let pre = lineage_stats();
+        let switch_pre = pre
+            .iter()
+            .find(|(n, _)| *n == "lineage_switch_count")
+            .map_or(0, |(_, v)| *v);
+
+        set_lineage_dismantled(true);
+        assert!(is_lineage_dismantled());
+        reset_dismantle_state_for_test();
+        assert!(!is_lineage_dismantled());
+
+        // LINEAGE_SWITCH_COUNT must NOT have been reset (other tests
+        // depend on it being monotonically nondecreasing). It can only
+        // have grown via parallel test contributions.
+        let post = lineage_stats();
+        let switch_post = post
+            .iter()
+            .find(|(n, _)| *n == "lineage_switch_count")
+            .map_or(0, |(_, v)| *v);
+        assert!(
+            switch_post >= switch_pre,
+            "narrow reset must not touch LINEAGE_SWITCH_COUNT"
+        );
+
+        let stats = dismantle_stats();
+        let count = stats
+            .iter()
+            .find(|(n, _)| *n == "lineage_dismantle_count")
+            .map_or(0, |(_, v)| *v);
+        assert_eq!(count, 0);
     }
 
     /// Two distinct paths that happen to share the same length but
