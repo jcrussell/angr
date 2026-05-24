@@ -82,7 +82,8 @@ EXAMPLE_CATALOG = {
 
 
 def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bfs",
-                  diff_state=False, diff_interval=1, diff_max_snapshots=200):
+                  diff_state=False, diff_interval=1, diff_max_snapshots=200,
+                  use_shared_lineage_solver=False):
     """Run a single example in a subprocess. Called via multiprocessing spawn."""
     import io
     import importlib.util
@@ -147,7 +148,10 @@ def _run_in_child(example_name, engine, examples_dir, mem_limit_mb, strategy="bf
                 states = list(thing)
             else:
                 states = [thing]
-            rust_mgr_instance = RustExplorationManager(factory_self.project, states)
+            rust_mgr_instance = RustExplorationManager(
+                factory_self.project, states,
+                use_shared_lineage_solver=use_shared_lineage_solver,
+            )
             rust_mgr_instance.enable_profiling()
             if strategy == 'dfs':
                 rust_mgr_instance.set_exploration_strategy('dfs')
@@ -379,7 +383,8 @@ def _dump_counters_json(stats):
 
 def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMIT_MB, strategy="bfs",
                 diff_state=False, diff_interval=1, diff_max_snapshots=200,
-                dump_counters=False, counters_json=False):
+                dump_counters=False, counters_json=False,
+                use_shared_lineage_solver=False):
     """Run an example in an isolated subprocess and print results."""
     examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
     solve_script = os.path.join(examples_dir, example_name, "solve.py")
@@ -393,7 +398,8 @@ def run_example(example_name, engine, timeout=180, mem_limit_mb=DEFAULT_MEM_LIMI
         async_result = pool.apply_async(
             _run_in_child,
             (example_name, engine, examples_dir, mem_limit_mb, strategy,
-             diff_state, diff_interval, diff_max_snapshots),
+             diff_state, diff_interval, diff_max_snapshots,
+             use_shared_lineage_solver),
         )
         result = async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
@@ -578,6 +584,11 @@ def main():
                              "JSON to stdout for machine consumption. Rust "
                              "engine only. Mutually exclusive with --dump-counters "
                              "(JSON wins when both are set).")
+    parser.add_argument("--use-shared-lineage-solver", action="store_true",
+                        help="Rust engine only. Construct RustExplorationManager "
+                             "with use_shared_lineage_solver=True so the fork-time "
+                             "SharedLineageSolver materialization gate engages "
+                             "(angr-v5a5 slice 4c.3 step 1c canary measurement).")
     args = parser.parse_args()
 
     if args.list:
@@ -601,11 +612,13 @@ def main():
                 print()
                 run_example(name, "rust", args.timeout, args.mem_limit, args.strategy,
                             dump_counters=args.dump_counters,
-                            counters_json=args.counters_json)
+                            counters_json=args.counters_json,
+                            use_shared_lineage_solver=args.use_shared_lineage_solver)
             else:
                 run_example(name, args.engine, args.timeout, args.mem_limit, args.strategy,
                             dump_counters=args.dump_counters,
-                            counters_json=args.counters_json)
+                            counters_json=args.counters_json,
+                            use_shared_lineage_solver=args.use_shared_lineage_solver)
         return
 
     if not args.example:
@@ -618,11 +631,13 @@ def main():
         print()
         run_example(args.example, "rust", args.timeout, args.mem_limit, args.strategy,
                     dump_counters=args.dump_counters,
-                    counters_json=args.counters_json)
+                    counters_json=args.counters_json,
+                    use_shared_lineage_solver=args.use_shared_lineage_solver)
     else:
         run_example(args.example, args.engine, args.timeout, args.mem_limit, args.strategy,
                     dump_counters=args.dump_counters,
-                    counters_json=args.counters_json)
+                    counters_json=args.counters_json,
+                    use_shared_lineage_solver=args.use_shared_lineage_solver)
 
 
 def _run_diff_state(args) -> int:
