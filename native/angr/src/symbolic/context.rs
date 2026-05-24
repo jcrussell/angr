@@ -3104,12 +3104,48 @@ impl SymContext {
         };
         let assumed_total_len = frozen_assumed.len();
 
-        // angr-v5a5 fields-only slice: child inherits parent's lineage Arc
-        // (if any). The Arc::clone here is cheap and harmless — until the
-        // next slice routes solver() through with_solver(), nothing reads
-        // the inherited lineage. Capturing it now lets sibling-fork tests
-        // verify the propagation invariant ahead of the wiring change.
-        let child_lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        // angr-3ms1 step 1c: fork-time SharedLineageSolver materialization
+        // gate. When BOTH (a) the parent opted in via
+        // `use_shared_lineage_solver` AND (b) no bare Z3 pushes are
+        // outstanding on the parent's per-context solver, mint a fresh
+        // `SharedLineageSolver` for the child seeded with `frozen_shared`
+        // as base assertions (scope 0, never popped). Otherwise, keep the
+        // pre-1c behavior of Arc::cloning the parent's lineage Arc — which
+        // is `None` by default in production today.
+        //
+        // The two-gate check is load-bearing. Condition (a) keeps the
+        // BFS-thrash regression (defcon2016quals_baby-re ~10x;
+        // `v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental`) out of
+        // the default CI gate by holding minting OFF until a caller
+        // explicitly opts in via the kwarg on `RustExplorationManager`.
+        // Condition (b) protects the per-context solver's bare-push frames
+        // from being clobbered by a sibling that takes over Z3 stack
+        // ownership through the new lineage (the exact correctness bug
+        // that `test_fork_inside_push_isolation` exposes in earlier
+        // attempts; see `v5a5-bare-z3-push-depth-counter-design`).
+        //
+        // Seeding via `assert_base` puts the parent's frozen constraints
+        // at scope 0 of the lineage's solver, so the child's first query
+        // (which runs `switch_to(empty scope_path)`) sees the parent's
+        // constraints without needing to also walk `frozen_shared`
+        // separately. Subsequent constraints added on the child go
+        // through the slice-4c migrated `add_constraint*` paths, which
+        // mint per-state ScopeFrames on top of the lineage base.
+        let child_lineage = if self
+            .use_shared_lineage_solver
+            .load(Ordering::Relaxed)
+            && self.bare_z3_push_depth.load(Ordering::Relaxed) == 0
+        {
+            let lineage_solver = super::lineage::SharedLineageSolver::new(build_solver(
+                self.timeout_ms.load(Ordering::SeqCst),
+            ));
+            for constraint in frozen_shared.iter() {
+                lineage_solver.assert_base(constraint);
+            }
+            Some(Arc::new(Mutex::new(lineage_solver)))
+        } else {
+            self.lineage.lock().as_ref().map(Arc::clone)
+        };
 
         SymContext {
             next_id: AtomicU64::new(self.next_id.load(Ordering::SeqCst)),
@@ -5658,6 +5694,150 @@ mod tests {
         assert!(
             child_on.use_shared_lineage_solver(),
             "child's flag is independent of parent's post-fork mutations"
+        );
+    }
+
+    /// angr-3ms1 step 1c: when the parent has opted in AND has no bare
+    /// Z3 pushes outstanding, `fork()` mints a fresh `SharedLineageSolver`
+    /// and installs it in the child. The parent's own lineage is not
+    /// touched — staying `None` so the parent keeps querying its
+    /// per-context solver. The two contexts therefore hold distinct
+    /// solver instances after the fork.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fork_mints_lineage_when_gate_passes() {
+        let parent = SymContext::new();
+        parent.set_use_shared_lineage_solver(true);
+        assert_eq!(parent.bare_z3_push_depth(), 0);
+        assert!(
+            parent.lineage_arc().is_none(),
+            "parent starts without a lineage"
+        );
+
+        let child = parent.fork();
+        assert!(
+            child.lineage_arc().is_some(),
+            "child must receive a freshly minted lineage when the gate passes"
+        );
+        assert!(
+            parent.lineage_arc().is_none(),
+            "parent's lineage must NOT change as a side effect of forking — \
+             minting only installs on the child"
+        );
+    }
+
+    /// angr-3ms1 step 1c: with the opt-in flag off (the default),
+    /// `fork()` keeps the pre-1c behavior of Arc::cloning the parent's
+    /// lineage Arc. Default `None` parent → `None` child.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fork_skips_mint_when_flag_off() {
+        let parent = SymContext::new();
+        assert!(!parent.use_shared_lineage_solver());
+
+        let child = parent.fork();
+        assert!(
+            child.lineage_arc().is_none(),
+            "default-off flag must keep the slice-1c gate inert — no mint"
+        );
+    }
+
+    /// angr-3ms1 step 1c: condition (b) of the gate refuses to mint
+    /// while the parent's per-context solver has outstanding bare Z3
+    /// pushes (`bare_z3_push_depth > 0`). Without this guard the child's
+    /// new lineage would take over Z3 stack ownership while the parent's
+    /// unbalanced pushes are still live, leaking the parent's pushed-only
+    /// constraints into the new lineage base — the failure mode that
+    /// `test_fork_inside_push_isolation` exposed in earlier slice 4c.3
+    /// attempts (see `v5a5-bare-z3-push-depth-counter-design`).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fork_skips_mint_when_bare_push_outstanding() {
+        let parent = SymContext::new();
+        parent.set_use_shared_lineage_solver(true);
+
+        // A bare push on the None lineage branch bumps bare_z3_push_depth
+        // to 1 — the gate must refuse to mint while this is non-zero.
+        parent.scope_savepoint_push();
+        assert_eq!(parent.bare_z3_push_depth(), 1);
+
+        let child = parent.fork();
+        assert!(
+            child.lineage_arc().is_none(),
+            "gate must refuse to mint while parent has outstanding bare pushes"
+        );
+
+        // Clean up the parent's push so the test's per-context solver
+        // returns to a balanced state (avoids tripping debug_asserts in
+        // later teardown).
+        parent.scope_savepoint_pop();
+        assert_eq!(parent.bare_z3_push_depth(), 0);
+    }
+
+    /// angr-3ms1 step 1c: a newly minted lineage is seeded with the
+    /// parent's existing assertions as base assertions (scope 0). The
+    /// child's first query routes through `with_z3_solver`'s Some branch,
+    /// running `switch_to(empty)` then `solver.check()` — which respects
+    /// the base assertions installed at fork time. Verifies the child's
+    /// solver returns UNSAT when the parent's constraints already entail
+    /// it, even though the child added no constraints of its own.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fork_minted_lineage_seeded_with_parent_constraints() {
+        let parent = SymContext::new();
+        parent.set_use_shared_lineage_solver(true);
+
+        // Parent asserts x == 5 on its per-context solver (None branch).
+        let x = RustBV::symbolic(&parent, "fork_mint_seed_x", 8);
+        let five = RustBV::concrete(5, 8);
+        parent.assume_true(&x.eq(&five, &parent));
+
+        // Fork → child gets a fresh lineage seeded with x == 5.
+        let child = parent.fork();
+        assert!(child.lineage_arc().is_some());
+
+        // The child's lineage solver knows about x == 5: assume_true(x == 6)
+        // through the lineage path produces UNSAT.
+        let six = RustBV::concrete(6, 8);
+        child.assume_true(&x.eq(&six, &parent));
+        assert!(
+            !child.is_sat(),
+            "child must see parent's x == 5 (base) ∧ self-added x == 6 → UNSAT"
+        );
+
+        // The parent's per-context solver is untouched — adding the
+        // child's contradictory constraint did NOT leak into the parent.
+        assert!(
+            parent.is_sat(),
+            "parent must remain SAT — its per-context solver only holds x == 5"
+        );
+    }
+
+    /// angr-3ms1 step 1c: the opt-in flag inherits parent→child in
+    /// fork(), so a single setter call on a seed state propagates the
+    /// minting behavior to every descendant. Each fork along that chain
+    /// mints its own fresh lineage (the gate keeps passing because the
+    /// flag stays true and bare_z3_push_depth stays 0).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_fork_chain_mints_fresh_lineage_at_each_level() {
+        let parent = SymContext::new();
+        parent.set_use_shared_lineage_solver(true);
+
+        let child = parent.fork();
+        let grandchild = child.fork();
+
+        let child_lin = child.lineage_arc().expect("child must have a lineage");
+        let grandchild_lin = grandchild
+            .lineage_arc()
+            .expect("grandchild must have a lineage");
+        assert!(
+            !Arc::ptr_eq(&child_lin, &grandchild_lin),
+            "each fork mints its own fresh lineage — Arc identities must differ"
+        );
+        assert!(
+            grandchild.use_shared_lineage_solver(),
+            "flag inherits down the chain"
         );
     }
 }
