@@ -580,6 +580,13 @@ class RustScratchProxy:
 class RustHistoryProxy:
     """Provides state.history.recent_bbl_addrs and similar."""
 
+    # Tail length used when materializing recent_bbl_addrs. Matches the
+    # spirit of angr's SimStateHistory.recent_bbl_addrs ("most recent" rather
+    # than the full lineage chain). Long-running benches accumulate 100k+ bbl
+    # entries; cloning the full Vec across FFI was the regression risk
+    # called out in angr-kwpi.1.
+    _RECENT_TAIL_DEFAULT = 256
+
     def __init__(self, rust_mgr, state_id):
         self._mgr = rust_mgr
         self._state_id = state_id
@@ -588,8 +595,10 @@ class RustHistoryProxy:
     @property
     def recent_bbl_addrs(self):
         if self._bbl_addrs is None:
-            snapshot = self._mgr.export_state(self._state_id)
-            self._bbl_addrs = snapshot.get_history()
+            tail = self._mgr.get_state_bbl_history_tail(
+                self._state_id, self._RECENT_TAIL_DEFAULT,
+            )
+            self._bbl_addrs = list(tail) if tail is not None else []
         return self._bbl_addrs
 
     @property

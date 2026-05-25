@@ -860,6 +860,17 @@ impl RustExplorationManager {
         self.find_state(state_id).map(|s| s.pc())
     }
 
+    /// Get the tail of a state's bbl history (last `n` addresses).
+    /// Avoids cloning the full Vec on long benches where max_history=0 means
+    /// `history` may grow to 100k+ entries.
+    /// `n == 0` is treated as "all entries". Returns None if state not found.
+    #[pyo3(signature = (state_id, n=256))]
+    pub fn get_state_bbl_history_tail(&self, state_id: u64, n: usize) -> Option<Vec<u64>> {
+        let hist = self.find_state(state_id)?.history();
+        let start = if n == 0 { 0 } else { hist.len().saturating_sub(n) };
+        Some(hist[start..].to_vec())
+    }
+
     /// Get state IDs in a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn get_state_ids(&self, stash: &str) -> Vec<u64> {

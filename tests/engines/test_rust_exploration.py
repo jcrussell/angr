@@ -10586,6 +10586,59 @@ class TestEdgeCases:
             f"got {[str(w.message) for w in history_warnings]!r}"
         )
 
+    def test_recent_bbl_addrs_uses_tail_ffi_not_export_state(self, fauxware_project):
+        """angr-kwpi.1: RustHistoryProxy.recent_bbl_addrs must use the
+        lightweight get_state_bbl_history_tail FFI accessor, not the heavy
+        export_state path. Verifies (1) the FFI accessor exists and returns
+        the tail of history, (2) the proxy delegates to the tail accessor
+        and NOT export_state.
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustHistoryProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.run(max_steps=2)
+
+        sids = mgr._rust_mgr.get_state_ids("active") or mgr._rust_mgr.get_state_ids("deadended")
+        assert sids, "expected at least one state to inspect"
+        sid = sids[0]
+
+        # Direct FFI exercise: the accessor exists and returns a list.
+        tail = mgr._rust_mgr.get_state_bbl_history_tail(sid, 256)
+        assert isinstance(tail, list)
+        assert len(tail) <= RustHistoryProxy._RECENT_TAIL_DEFAULT
+
+        # Behavioral check via a stand-in manager that records which
+        # accessors the proxy calls. PyO3 classes do not allow attribute
+        # patching, so wrap with a recorder rather than monkeypatching.
+        class _RecordingMgr:
+            def __init__(self, inner):
+                self._inner = inner
+                self.tail_calls = []
+                self.export_calls = 0
+
+            def get_state_bbl_history_tail(self, state_id, n):
+                self.tail_calls.append((state_id, n))
+                return self._inner.get_state_bbl_history_tail(state_id, n)
+
+            def export_state(self, state_id):
+                self.export_calls += 1
+                return self._inner.export_state(state_id)
+
+        rec = _RecordingMgr(mgr._rust_mgr)
+        proxy = RustHistoryProxy(rec, sid)
+        addrs = proxy.recent_bbl_addrs
+        _ = proxy.bbl_addrs       # delegate
+        _ = proxy.block_count     # delegate
+
+        assert rec.export_calls == 0, "recent_bbl_addrs must not export_state"
+        assert rec.tail_calls == [(sid, RustHistoryProxy._RECENT_TAIL_DEFAULT)], (
+            f"expected one tail call with default N, got {rec.tail_calls}"
+        )
+        assert isinstance(addrs, list)
+        assert addrs == tail
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestUnconstrainedRet:
