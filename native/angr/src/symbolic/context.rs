@@ -176,6 +176,37 @@ static BVOP_EXTRACT_COUNT: AtomicU64 = AtomicU64::new(0);
 static ZEXT_CMP_COLLAPSE_COUNT: AtomicU64 = AtomicU64::new(0);
 static ZEXT_CMP_TRIVIAL_DECIDE_COUNT: AtomicU64 = AtomicU64::new(0);
 
+// angr-1joc: constraint-dedup measurement counters. Three signals to decide
+// whether canonicalization/dedup at add_constraint_raw is worth implementing
+// (threshold: any >=10% wins a follow-up bead). See bd memory
+// invariant-z3-construction-canonicalization for the underlying Z3 contract.
+//
+// (a) commutative-arg-order: how often the RustBV-level
+// `canonicalize_commutative` actually swaps operands. Swap rate ≈ how often
+// the un-canonicalized RustBV order WOULD have produced a distinct Z3 AST.
+// Bumped from `value.rs::canonicalize_commutative`.
+static RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
+static RUSTBV_COMMUTATIVE_SWAP_COUNT: AtomicU64 = AtomicU64::new(0);
+// (b) branch-condition simplify-skip: sampled across assume_true /
+// assume_false / add_constraint_raw. `BRANCH_COND_SIMPLIFY_REDUCED_COUNT`
+// increments only when Z3 simplify() returns a STRUCTURALLY-DIFFERENT AST
+// (different Z3_ast pointer). Population total = Z3_ASSUME_SYMBOLIC_COUNT +
+// ADD_CONSTRAINT_RAW_TOTAL_COUNT — both pre-existing/added below.
+static ADD_CONSTRAINT_RAW_TOTAL_COUNT: AtomicU64 = AtomicU64::new(0);
+static BRANCH_COND_SIMPLIFY_SAMPLED_COUNT: AtomicU64 = AtomicU64::new(0);
+static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Every Nth assertion runs Z3 simplify() for measurement.  Driven by a
+/// shared atomic counter across all three assert sites.  N=64 gives ~1.5%
+/// overhead with a single simplify call per sample.
+const SIMPLIFY_SAMPLE_STRIDE: u64 = 64;
+static SIMPLIFY_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
+// (c) full-list assertion-dedup: how often the incoming Z3_ast ptr ALREADY
+// appears in `local_constraints.z3_assertions` (post-fork additions). The scan
+// is O(local_n) per assertion — guarded by ANGR_RUST_INSTRUMENT_CONSTRAINT_DEDUP
+// to keep production paths free. Default 0 (off).
+static ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Per-site counters and timers for solver.check() calls.
 /// Indexed by `CheckSite as usize`.
 const NUM_CHECK_SITES: usize = 9;
@@ -413,6 +444,35 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "zext_cmp_trivial_decide_count".into(),
         ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed),
     );
+    // angr-1joc: constraint-dedup measurement counters.
+    stats.insert(
+        "rustbv_commutative_canonicalize_count".into(),
+        RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "rustbv_commutative_swap_count".into(),
+        RUSTBV_COMMUTATIVE_SWAP_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "add_constraint_raw_total".into(),
+        ADD_CONSTRAINT_RAW_TOTAL_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "branch_cond_simplify_sampled".into(),
+        BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "branch_cond_simplify_reduced".into(),
+        BRANCH_COND_SIMPLIFY_REDUCED_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "add_constraint_raw_dedup_scanned".into(),
+        ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.load(Ordering::Relaxed),
+    );
+    stats.insert(
+        "add_constraint_raw_dedup_hit".into(),
+        ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed),
+    );
     // angr-v5a5: shared-lineage solver telemetry. The counters live in
     // `super::lineage` and are atomically incremented by `switch_to`; this
     // is the only place that surfaces them to the Python caller via
@@ -498,6 +558,15 @@ pub fn reset_solver_stats() {
     BVOP_EXTRACT_COUNT.store(0, Ordering::Relaxed);
     ZEXT_CMP_COLLAPSE_COUNT.store(0, Ordering::Relaxed);
     ZEXT_CMP_TRIVIAL_DECIDE_COUNT.store(0, Ordering::Relaxed);
+    // angr-1joc constraint-dedup measurement counters.
+    RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.store(0, Ordering::Relaxed);
+    RUSTBV_COMMUTATIVE_SWAP_COUNT.store(0, Ordering::Relaxed);
+    ADD_CONSTRAINT_RAW_TOTAL_COUNT.store(0, Ordering::Relaxed);
+    BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.store(0, Ordering::Relaxed);
+    BRANCH_COND_SIMPLIFY_REDUCED_COUNT.store(0, Ordering::Relaxed);
+    SIMPLIFY_SAMPLE_TICKER.store(0, Ordering::Relaxed);
+    ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.store(0, Ordering::Relaxed);
+    ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.store(0, Ordering::Relaxed);
     // angr-v5a5: clear lineage telemetry alongside the rest.
     #[cfg(feature = "vex-engine-z3")]
     super::lineage::reset_lineage_stats();
@@ -696,6 +765,50 @@ pub fn record_zext_cmp_collapse() {
 #[inline]
 pub fn record_zext_cmp_trivial_decide() {
     ZEXT_CMP_TRIVIAL_DECIDE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// angr-1joc: record a `canonicalize_commutative` invocation. `swapped` is
+/// true when the canonical order required swapping the operand pair.
+#[inline]
+pub fn record_commutative_canonicalize(swapped: bool) {
+    RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if swapped {
+        RUSTBV_COMMUTATIVE_SWAP_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// angr-1joc: sampled Z3 simplify() check on a freshly-added Bool. Every
+/// Nth call (N = SIMPLIFY_SAMPLE_STRIDE) runs `simplify()` and records
+/// whether the resulting Z3 AST ptr differs from the input. The ticker is
+/// shared across `assume_true`, `assume_false`, and `add_constraint_raw`.
+#[cfg(feature = "vex-engine-z3")]
+#[inline]
+fn sample_simplify_skip(constraint: &z3::ast::Bool) {
+    use z3::ast::Ast;
+    let tick = SIMPLIFY_SAMPLE_TICKER.fetch_add(1, Ordering::Relaxed);
+    if !tick.is_multiple_of(SIMPLIFY_SAMPLE_STRIDE) {
+        return;
+    }
+    BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.fetch_add(1, Ordering::Relaxed);
+    let simplified = constraint.simplify();
+    if simplified.get_z3_ast().as_ptr() != constraint.get_z3_ast().as_ptr() {
+        BRANCH_COND_SIMPLIFY_REDUCED_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// angr-1joc: cached parse of `ANGR_RUST_INSTRUMENT_CONSTRAINT_DEDUP`. Truthy
+/// values ("1", "true", "yes") enable the O(local_n) full-list dedup scan in
+/// `add_constraint_raw`. Read once on first call via OnceLock.
+#[cfg(feature = "vex-engine-z3")]
+fn dedup_instrumentation_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| match std::env::var("ANGR_RUST_INSTRUMENT_CONSTRAINT_DEDUP") {
+        Ok(v) => {
+            let v = v.trim();
+            v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+        }
+        Err(_) => false,
+    })
 }
 
 /// Timed wrapper around solver.check() — records count, total time, and per-site stats.
@@ -1348,11 +1461,37 @@ impl SymContext {
     /// assert at scope 0 = lineage base = leak to all siblings).
     #[cfg(feature = "vex-engine-z3")]
     pub unsafe fn add_constraint_raw(&self, z3_ast_ptr: usize) {
+        use z3::ast::Ast;
         let ctx = z3::Context::thread_local();
         let constraint: z3::ast::Bool = unsafe {
             let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
             z3::ast::Ast::wrap(&ctx, raw_ast)
         };
+        // angr-1joc measurement: volume counter + sampled simplify-skip check.
+        ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
+        sample_simplify_skip(&constraint);
+        // angr-1joc (c) — full-list dedup scan, env-gated. Lock order matches
+        // `export_z3_assertion_ptrs`: shared snapshot first, then local. The
+        // shared lock is released before local is acquired to avoid deadlock
+        // hazard with any local→shared ordering elsewhere.
+        if dedup_instrumentation_enabled() {
+            let new_ptr = constraint.get_z3_ast().as_ptr();
+            let shared_snapshot = Arc::clone(&self.z3_assertions_shared.lock());
+            let mut hit = shared_snapshot
+                .iter()
+                .any(|c| c.get_z3_ast().as_ptr() == new_ptr);
+            if !hit {
+                let local = self.local_constraints.lock();
+                hit = local
+                    .z3_assertions
+                    .iter()
+                    .any(|c| c.get_z3_ast().as_ptr() == new_ptr);
+            }
+            ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
+            if hit {
+                ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         // Cache Z3 Bool for fast fork replay
         self.local_constraints
             .lock()
@@ -1700,6 +1839,8 @@ impl SymContext {
         // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
         // avoiding ITE(cmp, BV(1,1), BV(0,1))._eq(BV(1,1)) round-trip.
         let constraint = cond.to_z3_bool();
+        // angr-1joc measurement: sampled simplify-skip check.
+        sample_simplify_skip(&constraint);
         // Single lock: track for export and cache Z3 Bool for fast fork replay.
         {
             let mut local = self.local_constraints.lock();
@@ -1728,6 +1869,8 @@ impl SymContext {
         Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
         // Negate the bool directly
         let constraint = cond.to_z3_bool().not();
+        // angr-1joc measurement: sampled simplify-skip check.
+        sample_simplify_skip(&constraint);
         // Single lock: track for export and cache Z3 Bool for fast fork replay.
         {
             let mut local = self.local_constraints.lock();

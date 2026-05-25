@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use super::SymContext;
 use super::context::{
-    record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_zext_cmp_collapse,
-    record_zext_cmp_trivial_decide,
+    record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_commutative_canonicalize,
+    record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
 };
 
 /// Bitvector operation type for expression tree reconstruction.
@@ -773,8 +773,10 @@ impl RustBV {
     #[inline]
     fn canonicalize_commutative(self, other: Self) -> (Self, Self) {
         if self.canonical_sort_key() <= other.canonical_sort_key() {
+            record_commutative_canonicalize(false);
             (self, other)
         } else {
+            record_commutative_canonicalize(true);
             (other, self)
         }
     }
