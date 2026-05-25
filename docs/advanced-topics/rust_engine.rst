@@ -421,6 +421,181 @@ incorrect results on ``csgames2018`` and ``securityfest_fairlight``
 unwrap). Avoid pipelines beginning with ``sat-preprocess`` until that
 is debugged.
 
+Shared-lineage Z3 solver — rejected
+-----------------------------------
+
+The 2026-05 attempt to amortize per-fork solver construction by sharing
+a single Z3 solver across a forked lineage of states was investigated,
+implemented, measured, and rejected as a default. This section records
+the verdict so future investigators do not re-derive the same findings.
+
+Why it was tried
+~~~~~~~~~~~~~~~~
+
+The ``angr-hk7k`` research spike (2026-05-21) ranked four design options
+for cutting the high-prefix fork path (~5 ms / materialization). Option
+A — per-lineage shared Z3 solver, with each forked state tracking its
+local diff as a scope path off a common base and manipulating Z3 with
+``push`` / ``pop`` on context switch — was recommended. The pitch: per-
+query cost becomes ``O(local_diff)``, not ``O(total_assertions)``.
+
+The implementation spike landed under ``angr-v5a5`` (commit
+``5b5689e2c``). It introduced ``SharedLineageSolver`` in
+``native/angr/src/symbolic/lineage.rs`` — scope paths, push/pop
+bookkeeping, a ``switch_to`` hot-cache fast path
+(commit ``caa07ebf5``), and a fork-time materialization gate keyed on
+``bare_z3_push_depth == 0`` to keep external bare-push frames correct.
+
+BFS-thrash finding
+~~~~~~~~~~~~~~~~~~
+
+Fork-time lineage materialization (``angr-v5a5`` slice 4c.3, two
+independent attempts on 2026-05-23) regressed
+``defcon2016quals_baby-re`` ~10x: 0.46 s baseline → 3.89–5.13 s
+(5-sample medians). The ``angr-3ms1`` follow-up quantified the cause:
+
+* **Hot-cache hit rate 15.6%** (15 / 96 ``switch_to`` calls) — exactly
+  the theoretical 1/N expected for BFS uniformly interleaving queries
+  across N = 5–10 active states.
+* **Z3 per-check time exploded 155x:** 0.88 ms baseline (29 checks) →
+  137 ms with lineage (3,972 ms total). The cost is not from
+  ``push`` / ``pop`` ops (only ~400 total), suggesting Z3's incremental
+  solver re-derives learned clauses after each push.
+
+The ``switch_to`` hot-cache fast path is *necessary-but-insufficient*:
+lowering the fixed cost does not raise the hit rate, which is bounded
+below by 1/N for the BFS access pattern.
+
+End-to-end confirmation (``angr-awqp``, 2026-05-24): a
+``--use-shared-lineage-solver`` opt-in flag on
+``tests/benchmarks/run_single.py`` measured 5-sample medians:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 22 22 24
+
+   * - Benchmark
+     - default (s)
+     - lineage (s)
+     - delta
+   * - ``defcon2016quals_baby-re``
+     - 0.47
+     - 3.19
+     - **+579 %** (6.79x slower)
+   * - ``google2016_unbreakable_0``
+     - 0.94
+     - 1.44
+     - **+53 %**
+   * - ``defcamp_r100``
+     - 0.23
+     - 0.23
+     - neutral
+   * - ``ais3_crackme``
+     - 0.88
+     - 0.71
+     - **−19 %** (1.24x faster)
+
+Workload shape — not exploration strategy — discriminates WIN from
+LOSE: both ``ais3_crackme`` and ``baby-re`` run BFS under the harness.
+Predictors: hot-cache hit rate, active-state count distribution, and
+``lineage_pop_count / lineage_push_count`` ratio.
+
+The simple variant that survived
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Rather than ship the opt-in flag default-on (catastrophic on baby-re)
+or default-off (the ais3 win never appears), ``angr-v5ht`` (commit
+``971d35545``, 2026-05-24) added a runtime thrash detector. A sampler
+hooks at the top of each ``run_loop`` iteration; every 10 ticks, once
+≥ 20 ``lineage_switch`` events have accumulated, it computes the
+hot-cache hit rate and trips a sticky ``LINEAGE_DISMANTLED``
+``AtomicBool`` if the rate falls below 35%. Once tripped,
+``SymContext::fork`` skips lineage minting and parent-arc inheritance;
+children fall back to per-context solvers seeded from
+``frozen_shared``. In-flight lineages from the pre-dismantle phase
+keep running until their states die.
+
+5-sample medians with the detector active under default-on:
+
+* ``baby-re`` 3.17 s → 1.03 s (1.54x over the 0.67 s baseline; the
+  residual gap is from in-flight lineages — see below).
+* ``ais3_crackme`` 0.72 s (lineage win preserved).
+* ``google2016_unbreakable_0`` 1.06 s (faster than the 1.39 s baseline
+  — the detector also catches the regression on this canary).
+
+The simple variant ships the ais3-class win without exposing the
+baby-re catastrophe. New counters: ``lineage_dismantled``,
+``lineage_dismantle_count``, ``lineage_sample_call_count``,
+``lineage_sample_decision_count``.
+
+Why alternatives (a), (b), (d) were not pursued
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``angr-3ms1`` enumerated four architectural responses to the
+BFS-thrash finding. Their fates:
+
+* **(a) Engine-level per-state query batching.** Restructures
+  exploration so consecutive Z3 queries land on the same state. The
+  LIFO microbench ``push_pop_lifo_chain`` (commit ``5e59ff48b``)
+  confirmed the hypothesis: 10.3 ms vs 13.2 ms per-state batched,
+  3.16x faster than BFS thrash. **Not pursued because the
+  ``angr-v5ht`` runtime detector captures the same WIN workloads
+  without an exploration-strategy rewrite.** If a future workload
+  shows the detector is too coarse, (a) becomes the next step.
+* **(b) Per-state solvers with shared trunk.** Defeats the lineage
+  purpose by construction (separate Z3 instances erase the
+  shared-trunk win). Not implemented.
+* **(d) Z3 ``check`` with assumptions instead of push/pop.**
+  Implemented as a spike
+  (``native/angr/src/symbolic/lineage_assumptions.rs``, commit
+  ``561aa838b``). Microbench measured 2.1x SLOWER on ``bfs_thrash``
+  and 3.9x SLOWER on ``per_state_batched`` than ``push`` / ``pop``.
+  The hypothesised learned-clause preservation never overcame the
+  per-check overhead of growing assertion tables. **Negative
+  result; spike retained as a building block but not integrated.**
+
+Alternative (c) — runtime thrash-detect + lineage dismantle — is the
+surviving variant (``angr-v5ht`` simple form). The premise that
+``strategy='dfs'`` could be used as a default-on discriminator was
+rejected independently: both the WIN canary (ais3) and LOSE canary
+(baby-re) run BFS, so strategy is not the predictor. Any future "just
+enable shared lineage when X" proposal must demonstrate X
+discriminates WIN vs LOSE on multiple benches, not just one.
+
+Why the full-variant teardown was reverted
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``angr-0dgq`` implemented the full-variant dismantle: on trip, walk
+all active ``SymContext``\ s, drop their lineage ``Arc``\ s, and
+rebuild per-context ``z3::Solver`` instances from
+``z3_assertions_shared + local_constraints``. Goal: close the
+residual gap by killing in-flight lineages.
+
+5-sample baby-re measurement (2026-05-24, HEAD ``971d35545``): simple
+median 1.00 s / 552 MB vs full median 1.13 s / 509 MB. **Memory wins
+8 %, wall time loses 13 % with higher variance (outliers up to
+1.63 s).** The 13-state Z3 solver rebuild at dismantle time costs
+more than the ``switch_to`` overhead it eliminates. Reverted before
+commit; do not retry without an incremental rebuild that hands the
+lineage's ``z3::Solver`` to the per-context path instead of dropping
+and rebuilding.
+
+Verdict
+~~~~~~~
+
+The materialize-cost win that motivated ``angr-hk7k`` is not
+capturable within the current engine architecture under BFS
+exploration. The shipped form (``angr-v5ht`` simple-variant runtime
+dismantle plus the default-off ``use_shared_lineage_solver`` kwarg
+on ``RustExplorationManager``) ships the ais3-class win where it
+exists, falls back to baseline elsewhere, and adds no overhead on
+the default code path — the detector hooks only when the flag is
+on.
+
+Bead trail: ``angr-v5a5`` (spike rejected), ``angr-3ms1``
+(alternatives enumerated), ``angr-v5ht`` (simple-variant landed),
+``angr-0dgq`` (full-variant reverted).
+
 SimOption coverage matrix
 -------------------------
 
