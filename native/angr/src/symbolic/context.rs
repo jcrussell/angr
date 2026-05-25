@@ -6,7 +6,7 @@
 //! - Satisfiability checking (when Z3 is available)
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -26,12 +26,32 @@ type PushStack = SmallVec<[usize; 8]>;
 /// (cached Z3 Bool nodes for fast fork replay) under a single Mutex so that
 /// the hot path (`assume_true`/`assume_false`/`add_constraint_raw`) only
 /// acquires one lock instead of two.
+///
+/// Also carries a `dedup_set` side-table of Z3_ast ptrs (angr-sfp9) used
+/// by [`SymContext::add_constraint_raw`] to skip the push+assert work when
+/// the incoming constraint is already asserted on the current solver. Z3's
+/// hash-cons gives `ptr-equality == structural-equality` for live ASTs, so
+/// the raw ptr is a valid identity key. The set is lazily seeded on first
+/// access from `z3_assertions_shared` + `z3_assertions`, then maintained
+/// incrementally by every path that pushes into `z3_assertions`.
 struct LocalConstraints {
     /// Local assumed (RustBV, is_assumed_true) pairs added after fork.
     assumed: Vec<(RustBV, bool)>,
     /// Local Z3 Bool assertions added after fork — only these are cloned on fork.
     #[cfg(feature = "vex-engine-z3")]
     z3_assertions: Vec<z3::ast::Bool>,
+    /// HashSet of Z3_ast ptrs for O(1) dedup in `add_constraint_raw`.
+    /// Holds ptrs for every assertion known to be currently asserted on the
+    /// solver (i.e. everything in `z3_assertions_shared` + `z3_assertions`).
+    /// Lazily seeded — `dedup_set_seeded == false` means the set is stale
+    /// and must be rebuilt from the shared+local vecs before consultation.
+    #[cfg(feature = "vex-engine-z3")]
+    dedup_set: HashSet<usize>,
+    /// True once `dedup_set` has been populated from shared+local for this
+    /// context. Reset to false by `fork()`, `merge()` (via `new()`), and
+    /// `transaction_rollback()` (which truncates `z3_assertions`).
+    #[cfg(feature = "vex-engine-z3")]
+    dedup_set_seeded: bool,
 }
 
 impl LocalConstraints {
@@ -40,6 +60,37 @@ impl LocalConstraints {
             assumed: Vec::new(),
             #[cfg(feature = "vex-engine-z3")]
             z3_assertions: Vec::new(),
+            #[cfg(feature = "vex-engine-z3")]
+            dedup_set: HashSet::new(),
+            #[cfg(feature = "vex-engine-z3")]
+            dedup_set_seeded: false,
+        }
+    }
+
+    /// Insert a Z3 Bool into `z3_assertions` and, when the dedup set is
+    /// already seeded, record its ptr too.
+    #[cfg(feature = "vex-engine-z3")]
+    fn push_assertion(&mut self, b: z3::ast::Bool) {
+        if self.dedup_set_seeded {
+            use z3::ast::Ast;
+            let ptr = b.get_z3_ast().as_ptr() as usize;
+            self.dedup_set.insert(ptr);
+        }
+        self.z3_assertions.push(b);
+    }
+
+    /// Bulk variant of [`Self::push_assertion`].
+    #[cfg(feature = "vex-engine-z3")]
+    fn extend_assertions<I: IntoIterator<Item = z3::ast::Bool>>(&mut self, iter: I) {
+        if self.dedup_set_seeded {
+            use z3::ast::Ast;
+            for b in iter {
+                let ptr = b.get_z3_ast().as_ptr() as usize;
+                self.dedup_set.insert(ptr);
+                self.z3_assertions.push(b);
+            }
+        } else {
+            self.z3_assertions.extend(iter);
         }
     }
 }
@@ -201,9 +252,11 @@ static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new(0);
 const SIMPLIFY_SAMPLE_STRIDE: u64 = 64;
 static SIMPLIFY_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
 // (c) full-list assertion-dedup: how often the incoming Z3_ast ptr ALREADY
-// appears in `local_constraints.z3_assertions` (post-fork additions). The scan
-// is O(local_n) per assertion — guarded by ANGR_RUST_INSTRUMENT_CONSTRAINT_DEDUP
-// to keep production paths free. Default 0 (off).
+// appears in shared+local `z3_assertions` (angr-sfp9). Always-on via the
+// `dedup_set` HashSet side-table inside `LocalConstraints` — O(1) ptr lookup
+// per call after a one-time lazy seed from shared+local.
+// SCANNED bumps once per `add_constraint_raw` call. HIT bumps when the ptr
+// was already present, in which case the push+assert are skipped.
 static ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -794,21 +847,6 @@ fn sample_simplify_skip(constraint: &z3::ast::Bool) {
     if simplified.get_z3_ast().as_ptr() != constraint.get_z3_ast().as_ptr() {
         BRANCH_COND_SIMPLIFY_REDUCED_COUNT.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-/// angr-1joc: cached parse of `ANGR_RUST_INSTRUMENT_CONSTRAINT_DEDUP`. Truthy
-/// values ("1", "true", "yes") enable the O(local_n) full-list dedup scan in
-/// `add_constraint_raw`. Read once on first call via OnceLock.
-#[cfg(feature = "vex-engine-z3")]
-fn dedup_instrumentation_enabled() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| match std::env::var("ANGR_RUST_INSTRUMENT_CONSTRAINT_DEDUP") {
-        Ok(v) => {
-            let v = v.trim();
-            v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
-        }
-        Err(_) => false,
-    })
 }
 
 /// Timed wrapper around solver.check() — records count, total time, and per-site stats.
@@ -1467,36 +1505,52 @@ impl SymContext {
             let raw_ast = std::ptr::NonNull::new_unchecked(z3_ast_ptr as *mut _);
             z3::ast::Ast::wrap(&ctx, raw_ast)
         };
-        // angr-1joc measurement: volume counter + sampled simplify-skip check.
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
-        // angr-1joc (c) — full-list dedup scan, env-gated. Lock order matches
-        // `export_z3_assertion_ptrs`: shared snapshot first, then local. The
-        // shared lock is released before local is acquired to avoid deadlock
-        // hazard with any local→shared ordering elsewhere.
-        if dedup_instrumentation_enabled() {
-            let new_ptr = constraint.get_z3_ast().as_ptr();
-            let shared_snapshot = Arc::clone(&self.z3_assertions_shared.lock());
-            let mut hit = shared_snapshot
-                .iter()
-                .any(|c| c.get_z3_ast().as_ptr() == new_ptr);
-            if !hit {
-                let local = self.local_constraints.lock();
-                hit = local
+        // angr-sfp9: ptr-keyed dedup against the side-table. Z3 hash-cons
+        // makes ptr-equality == structural-equality among live ASTs, so a
+        // hit means this exact Bool is already asserted on the solver via
+        // an earlier assert (in shared+local z3_assertions) — skipping the
+        // re-assert is correct (Z3 internally treats repeated asserts as a
+        // single fact) and avoids growing `z3_assertions` with a duplicate
+        // that would scale constraint-export work for nothing.
+        let new_ptr = constraint.get_z3_ast().as_ptr() as usize;
+        let was_dup = {
+            let mut local = self.local_constraints.lock();
+            if !local.dedup_set_seeded {
+                let shared = Arc::clone(&self.z3_assertions_shared.lock());
+                let local_len = local.z3_assertions.len();
+                local.dedup_set.reserve(shared.len() + local_len);
+                for c in shared.iter() {
+                    local.dedup_set.insert(c.get_z3_ast().as_ptr() as usize);
+                }
+                // Collect local ptrs into a local Vec to avoid the
+                // simultaneous mut+ref borrow on `local`.
+                let local_ptrs: Vec<usize> = local
                     .z3_assertions
                     .iter()
-                    .any(|c| c.get_z3_ast().as_ptr() == new_ptr);
+                    .map(|c| c.get_z3_ast().as_ptr() as usize)
+                    .collect();
+                local.dedup_set.extend(local_ptrs);
+                local.dedup_set_seeded = true;
             }
             ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
-            if hit {
+            if local.dedup_set.contains(&new_ptr) {
                 ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                true
+            } else {
+                local.dedup_set.insert(new_ptr);
+                local.z3_assertions.push(constraint.clone());
+                false
             }
+        };
+        if was_dup {
+            // Already asserted on the solver and tracked in z3_assertions —
+            // no solver work, no cache invalidation, no constraint_count
+            // bump (the logical assertion was already counted on the
+            // initial add).
+            return;
         }
-        // Cache Z3 Bool for fast fork replay
-        self.local_constraints
-            .lock()
-            .z3_assertions
-            .push(constraint.clone());
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
             None => {
@@ -1644,7 +1698,7 @@ impl SymContext {
         // Single lock on local_constraints for both vectors.
         {
             let mut local = self.local_constraints.lock();
-            local.z3_assertions.extend(constraints.iter().cloned());
+            local.extend_assertions(constraints.iter().cloned());
             local.assumed.extend(assumed);
         }
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
@@ -1845,7 +1899,7 @@ impl SymContext {
         {
             let mut local = self.local_constraints.lock();
             local.assumed.push((cond.clone(), true));
-            local.z3_assertions.push(constraint.clone());
+            local.push_assertion(constraint.clone());
         }
         self.add_constraint(constraint);
     }
@@ -1875,7 +1929,7 @@ impl SymContext {
         {
             let mut local = self.local_constraints.lock();
             local.assumed.push((cond.clone(), false));
-            local.z3_assertions.push(constraint.clone());
+            local.push_assertion(constraint.clone());
         }
         self.add_constraint(constraint);
     }
@@ -2897,6 +2951,12 @@ impl SymContext {
             if let Some(prev_len) = prev_assumed_len {
                 local.assumed.truncate(prev_len);
             }
+            // angr-sfp9: stale dedup_set entries from the rolled-back
+            // assertions could falsely dedup a re-assert. Drop the side-
+            // table and let the next add_constraint_raw call rebuild it
+            // from shared + post-truncate local.
+            local.dedup_set.clear();
+            local.dedup_set_seeded = false;
         }
 
         self.push_level.fetch_sub(1, Ordering::SeqCst);
@@ -3819,8 +3879,7 @@ impl SymContext {
                 merged
                     .local_constraints
                     .lock()
-                    .z3_assertions
-                    .push(guarded.clone());
+                    .push_assertion(guarded.clone());
                 merged.add_constraint(guarded);
             }
 
@@ -3840,8 +3899,7 @@ impl SymContext {
         merged
             .local_constraints
             .lock()
-            .z3_assertions
-            .push(or_conds.clone());
+            .push_assertion(or_conds.clone());
         merged.add_constraint(or_conds);
 
         merged
@@ -4628,6 +4686,82 @@ mod tests {
         // A still sees x == 5.
         assert!(sibling_a.solution(&x_a, 5));
         assert!(!sibling_a.solution(&x_a, 42));
+    }
+
+    /// angr-sfp9: a second `add_constraint_raw` with the SAME Z3_ast ptr
+    /// must hit the dedup side-table — z3_assertions stays at 1 entry, the
+    /// per-call hit counter increments, and the constraint stays in force.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_raw_dedup_repeat_skips_push() {
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "test_dedup_repeat_x", 8);
+        let five = RustBV::concrete(5, 8);
+        let ptr = raw_entry(&x.eq(&five, &ctx));
+
+        let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
+
+        unsafe {
+            ctx.add_constraint_raw(ptr);
+            ctx.add_constraint_raw(ptr);
+            ctx.add_constraint_raw(ptr);
+        }
+
+        // Only one entry should land in local.z3_assertions despite three
+        // calls — the side-table catches reps 2 and 3.
+        {
+            let local = ctx.local_constraints.lock();
+            assert_eq!(local.z3_assertions.len(), 1, "dedup must skip the push");
+            assert!(local.dedup_set_seeded, "first call seeds the set");
+            assert_eq!(local.dedup_set.len(), 1);
+        }
+        // Two of the three calls hit dedup.
+        assert_eq!(
+            ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed) - hits_before,
+            2
+        );
+
+        // Constraint still in force despite skipping reps 2 and 3.
+        assert!(ctx.solution(&x, 5));
+        assert!(!ctx.solution(&x, 6));
+    }
+
+    /// angr-sfp9: a ptr already present in shared (post-fork) must be
+    /// caught by the lazy seed on first `add_constraint_raw` call in the
+    /// child — verifies the seed walks `z3_assertions_shared`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_add_constraint_raw_dedup_seeds_from_shared() {
+        let parent = SymContext::new();
+        let x = RustBV::symbolic(&parent, "test_dedup_shared_x", 8);
+        let five = RustBV::concrete(5, 8);
+        let ptr = raw_entry(&x.eq(&five, &parent));
+        unsafe {
+            parent.add_constraint_raw(ptr);
+        }
+        // Fork the parent; child's frozen_shared should contain the
+        // assertion, and child's local.dedup_set is unseeded.
+        let child = parent.fork();
+        assert!(!child.local_constraints.lock().dedup_set_seeded);
+        let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
+        unsafe {
+            child.add_constraint_raw(ptr);
+        }
+        // Seeded from shared; the ptr was already there, so this call is
+        // a dedup hit. Child's local.z3_assertions stays empty.
+        {
+            let local = child.local_constraints.lock();
+            assert!(local.dedup_set_seeded);
+            assert_eq!(
+                local.z3_assertions.len(),
+                0,
+                "dedup against shared must skip push on child local"
+            );
+        }
+        assert_eq!(
+            ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed) - hits_before,
+            1
+        );
     }
 
     /// angr-v5a5 slice 4c.2b: with no lineage attached,
