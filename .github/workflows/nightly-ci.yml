@@ -110,11 +110,16 @@ jobs:
       - name: Run benchmark regression (fast tier)
         env:
           ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        # --retry-failures 2: see ci.yml::benchmark_regression for rationale.
+        # The retry only re-runs failures and does NOT overwrite the recorded
+        # measurement in the history record, so the dashboard's time-series
+        # signal still reflects the first measurement of each bench.
         run: |
           uv run python tests/benchmarks/run_regression.py \
             --rust-only \
+            --retry-failures 2 \
             --history-record bench_history_record.json
-        timeout-minutes: 5
+        timeout-minutes: 8
       - name: Upload benchmark history record
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

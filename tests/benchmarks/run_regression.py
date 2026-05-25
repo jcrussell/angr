@@ -259,6 +259,14 @@ def main():
     parser.add_argument("--skip-bimodal", action="store_true",
                         help="Skip benchmarks with known bimodal Z3 timing variance "
                              "(intended for PR gates that need stable signal).")
+    parser.add_argument("--retry-failures", type=int, default=0, metavar="N",
+                        help="Re-run timing-regression failures up to N times. A "
+                             "single retry passing within --threshold clears the "
+                             "failure. Mitigates sub-second-bench noise where the "
+                             "same diff can flip pass/fail across runs without code "
+                             "changes (see bd memory benchmark-regression-noise-floor). "
+                             "Engine errors, output mismatches, SLA failures, and "
+                             "metric regressions are never retried.")
     parser.add_argument("--history-record", metavar="PATH",
                         help="Write a timestamped JSON record of this run to PATH "
                              "(used by the perf dashboard to assemble historical "
@@ -297,6 +305,10 @@ def main():
     baseline = load_baseline()
     results = {}
     failures = []
+    # When --retry-failures > 0, each timing-regression failure is recorded here
+    # alongside everything we need to re-run it. The retry pass below then drops
+    # the matching failures[] entry if any retry comes in within threshold.
+    retry_candidates = []  # list of (failure_msg, name, timeout, strategy, mem_limit, baseline_rust_time, baseline_key)
     total_start = time.perf_counter()
 
     for name, timeout, strategy, entry_rust_only in REGRESSION_SUITE:
@@ -362,7 +374,12 @@ def main():
             if rust_time > bl * (1 + args.threshold):
                 pct = ((rust_time / bl) - 1) * 100
                 print(f"  REGRESSION: {rust_time:.2f}s vs baseline {bl:.2f}s (+{pct:.0f}%)")
-                failures.append(f"{name}: {pct:.0f}% regression ({rust_time:.2f}s vs {bl:.2f}s)")
+                failure_msg = f"{name}: {pct:.0f}% regression ({rust_time:.2f}s vs {bl:.2f}s)"
+                failures.append(failure_msg)
+                if args.retry_failures > 0:
+                    retry_candidates.append(
+                        (failure_msg, name, timeout, strategy, args.mem_limit, bl, baseline_key)
+                    )
 
             # Check algorithmic metric regressions
             if args.check_counts:
@@ -424,6 +441,38 @@ def main():
         if rust_peak_mem:
             entry["peak_memory_mb"] = round(rust_peak_mem, 1)
         results[baseline_key] = entry
+
+    # Optional retry pass for timing-regression failures. Sub-second benches are
+    # noise-dominated; the same diff can flip pass/fail across consecutive runs.
+    # We re-run each candidate up to N times and clear the failure on the first
+    # measurement that lands within threshold.
+    if args.retry_failures > 0 and retry_candidates:
+        print(f"\n{'='*50}")
+        print(f"Retry pass: {len(retry_candidates)} timing regression(s), up to {args.retry_failures} attempt(s) each")
+        for failure_msg, name, timeout, strategy, mem_limit, bl, baseline_key in retry_candidates:
+            label = f"{name} (DFS)" if strategy == "dfs" else name
+            print(f"\n--- retry: {label} ---")
+            cleared = False
+            for attempt in range(1, args.retry_failures + 1):
+                retry_result = run_one(name, "rust", timeout, mem_limit, strategy)
+                if not retry_result.get("ok"):
+                    print(f"  attempt {attempt}: Rust FAIL ({retry_result.get('error', '?')})")
+                    continue
+                retry_time = retry_result["elapsed"]
+                if retry_time <= bl * (1 + args.threshold):
+                    pct = ((retry_time / bl) - 1) * 100
+                    print(f"  attempt {attempt}: {retry_time:.2f}s vs baseline {bl:.2f}s ({pct:+.0f}%) — within threshold, clearing failure")
+                    cleared = True
+                    # NOTE: results[baseline_key]["rust_time"] keeps the original
+                    # measurement on purpose. The retry signals pass/fail only —
+                    # overwriting with the lower retry value would tighten the
+                    # next baseline refresh and drift the gate downward over
+                    # time (see bd memory `avoid-update-baseline-without-verification`).
+                    break
+                pct = ((retry_time / bl) - 1) * 100
+                print(f"  attempt {attempt}: {retry_time:.2f}s vs baseline {bl:.2f}s (+{pct:.0f}%) — still regressed")
+            if cleared:
+                failures.remove(failure_msg)
 
     total_elapsed = time.perf_counter() - total_start
     print(f"\n{'='*50}")

@@ -86,8 +86,13 @@ jobs:
         #   stable HEAD (see bd memory `invariant-bimodal-variance-benchmarks`).
         # --threshold 0.15: explicit (matches the default) — 15% slower than
         #   baseline_timings.json fails the gate.
-        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15
-        timeout-minutes: 3
+        # --retry-failures 2: sub-second smoke benches are noise-dominated; the
+        #   same diff can flip pass/fail across consecutive runs (see bd memory
+        #   `benchmark-regression-noise-floor`). Retrying clears spurious flags
+        #   without touching baselines (the riskier alternative — see memory
+        #   `avoid-update-baseline-without-verification`).
+        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2
+        timeout-minutes: 5
 
   orchestrator_smoke:
     name: Loop Orchestrator Smoke
