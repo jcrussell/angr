@@ -64,6 +64,38 @@ form returns a wrapper that exposes the same interface as the standard
 ``SimulationManager`` (``explore``, ``step``, ``found``, ``avoid``,
 etc.) while running the Rust engine underneath.
 
+Lightweight proxy accessors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``mgr.found`` (and the other stash properties) materialize each Rust
+state as a full angr ``SimState`` so that ``state.posix.dumps`` and
+other plugins work. That materialization is the dominant cost when a
+caller only needs to read the program counter, a register, or a few
+constraints across many states.
+
+For those read-mostly use cases, every stash also has a
+proxy-returning counterpart that returns ``list[RustStateProxy]`` —
+O(1) per state, no ``SimState`` plugin chain, no cache sync:
+
+.. code-block:: python
+
+   # How many of the active states are at addr 0x401234?
+   target = 0x401234
+   count = sum(1 for s in mgr.active_proxies() if s.addr == target)
+
+   # Bulk-eval a tracked symbol across every found state.
+   for proxy in mgr.found_proxies():
+       print(hex(proxy.solver.eval(stdin_var)))
+
+The five accessors are ``mgr.found_proxies()``,
+``mgr.active_proxies()``, ``mgr.avoid_proxies()``,
+``mgr.deadended_proxies()``, and ``mgr.unconstrained_proxies()``. They
+are direct shortcuts to ``mgr.proxy.<stash>`` for callers who do not
+need the full ``RustSimulationManagerProxy`` wrapper. Use the full
+``mgr.found`` / ``mgr.active`` / etc. properties when downstream code
+needs full ``SimState`` plugins (``posix.dumps(0)``, ``simgr.explore``
+seeding, claripy AST round-trips).
+
 Architecture
 ------------
 

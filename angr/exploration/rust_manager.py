@@ -3732,6 +3732,62 @@ class RustExplorationManager(
     # State export methods (_get_stash_states, _snapshot_to_angr, etc.)
     # are inherited from RustStateExportMixin in rust_state_export.py
 
+    def _stash_proxies(self, stash_name: str) -> list:
+        """Wrap every state_id in ``stash_name`` as a ``RustStateProxy``.
+
+        O(1) per state — no SimState materialization, no cache sync. Used by
+        the ``X_proxies()`` accessors below as a single chokepoint so the
+        proxy-construction args stay in sync with ``mgr.proxy``.
+        """
+        from angr.exploration.rust_state_proxy import RustStateProxy
+        stdin_vars = getattr(self, '_stdin_vars', None)
+        stdout_tracker = getattr(self, '_stdout_tracker', {}) or {}
+        state_ids = self._rust_mgr.get_state_ids(stash_name)
+        return [
+            RustStateProxy(
+                self._rust_mgr,
+                sid,
+                project=self._project,
+                stdin_vars=stdin_vars,
+                stdout_data=stdout_tracker.get(sid, b""),
+                python_mgr=self,
+            )
+            for sid in state_ids
+        ]
+
+    def found_proxies(self) -> list:
+        """Return the ``found`` stash as ``list[RustStateProxy]``.
+
+        Counterpart to :attr:`found`, but returns lightweight proxies that
+        delegate reads to Rust via PyO3 instead of materializing full angr
+        ``SimState`` objects. Use this when querying many states cheaply
+        (e.g. counting states matching ``proxy.addr == X``); use
+        :attr:`found` when you need full SimState plugins (``posix.dumps``,
+        ``solver.eval`` of complex claripy ASTs, etc.).
+        """
+        return self._stash_proxies('found')
+
+    def active_proxies(self) -> list:
+        """Return the ``active`` stash as ``list[RustStateProxy]``. See
+        :meth:`found_proxies` for when to prefer proxies over full states."""
+        return self._stash_proxies('active')
+
+    def avoid_proxies(self) -> list:
+        """Return the ``avoid`` stash as ``list[RustStateProxy]``. See
+        :meth:`found_proxies` for when to prefer proxies over full states."""
+        return self._stash_proxies('avoid')
+
+    def deadended_proxies(self) -> list:
+        """Return the ``deadended`` stash as ``list[RustStateProxy]``. See
+        :meth:`found_proxies` for when to prefer proxies over full states."""
+        return self._stash_proxies('deadended')
+
+    def unconstrained_proxies(self) -> list:
+        """Return the ``unconstrained`` stash as ``list[RustStateProxy]``.
+        See :meth:`found_proxies` for when to prefer proxies over full
+        states."""
+        return self._stash_proxies('unconstrained')
+
     def eval_register(self, state_id: int, name: str) -> Optional[int]:
         """Evaluate a register from a Rust state.
 

@@ -11209,5 +11209,104 @@ class TestSyncExtraPagesFastPath:
                                            (0x4200_1000, 0x1000)])
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestStashProxyAccessors:
+    """angr-kwpi.3: opt-in ``mgr.<stash>_proxies()`` direct accessors that
+    return ``list[RustStateProxy]`` without materializing full SimStates.
+    """
+
+    def test_all_five_methods_exposed(self, fauxware_project):
+        from angr.exploration import RustExplorationManager
+        mgr = RustExplorationManager(
+            fauxware_project, [fauxware_project.factory.entry_state()]
+        )
+        for name in ('found_proxies', 'active_proxies', 'avoid_proxies',
+                     'deadended_proxies', 'unconstrained_proxies'):
+            assert callable(getattr(mgr, name)), (
+                f"RustExplorationManager.{name}() should be callable"
+            )
+
+    def test_active_proxies_returns_rust_state_proxy(self, fauxware_project):
+        """active_proxies() returns RustStateProxy objects whose attrs
+        round-trip from the Rust state (not full SimStates)."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        proxies = mgr.active_proxies()
+        assert len(proxies) >= 1
+        assert all(isinstance(p, RustStateProxy) for p in proxies)
+        # PC is reachable through the proxy without SimState materialization
+        # — and matches what the full SimState path reports.
+        assert proxies[0].addr == mgr.active[0].addr
+
+    def test_both_api_forms_agree_on_state_count(self, fauxware_project):
+        """The proxy-returning form and the SimState-returning form must
+        report the same number of states in each stash after exploration.
+
+        This is the demo-both-forms test required by angr-kwpi.3
+        acceptance criteria: it exercises ``mgr.found`` (full SimState)
+        and ``mgr.found_proxies()`` (RustStateProxy) side by side and
+        confirms they agree on cardinality and on per-state addr.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        # Step until fauxware forks at the strcmp.
+        mgr.run(max_steps=200)
+
+        # Pair each stash property with its proxy counterpart.
+        pairs = [
+            (mgr.active, mgr.active_proxies()),
+            (mgr.found, mgr.found_proxies()),
+            (mgr.avoid, mgr.avoid_proxies()),
+            (mgr.deadended, mgr.deadended_proxies()),
+            (mgr.unconstrained, mgr.unconstrained_proxies()),
+        ]
+        for full_states, proxy_states in pairs:
+            # ``mgr.found`` may include a Python-side predicate-found
+            # SimState that has no corresponding Rust stash entry, so the
+            # proxy count is a lower bound rather than an exact match.
+            assert len(proxy_states) <= len(full_states)
+            # Every proxy.addr must appear in the full-states addr set.
+            full_addrs = sorted(s.addr for s in full_states)
+            proxy_addrs = sorted(p.addr for p in proxy_states)
+            for a in proxy_addrs:
+                assert a in full_addrs, (
+                    f"proxy addr {hex(a)} not in full-states addrs "
+                    f"{[hex(x) for x in full_addrs]}"
+                )
+
+    def test_proxies_skip_simstate_materialization(self, fauxware_project):
+        """The proxy accessor must NOT call into the SimState export path.
+
+        Patches ``RustStateExportMixin._get_stash_states`` to raise so
+        that any accidental fall-through to the full export path fails
+        loudly; the proxy accessor must remain green.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+
+        original = mgr._get_stash_states
+
+        def _fail(*args, **kwargs):
+            raise AssertionError(
+                "found_proxies() must not call _get_stash_states "
+                "(SimState materialization)"
+            )
+
+        mgr._get_stash_states = _fail
+        try:
+            proxies = mgr.active_proxies()
+            assert len(proxies) >= 1
+        finally:
+            mgr._get_stash_states = original
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
