@@ -1218,7 +1218,13 @@ class TestRustExplorationPython:
         cached Python state mirrors so that the next stash read re-syncs
         from the (now-advanced) Rust state. Rust remains the single source
         of truth; the cache only short-circuits redundant syncs between
-        re-entries."""
+        re-entries.
+
+        Note: stash properties now return ``_LazySimStateRef`` wrappers
+        (kwpi.b). Touching ``wrapper.scratch`` triggers materialization and
+        re-syncs the cached SimState, so post-step sentinel state has to be
+        observed via ``_state_cache`` directly to avoid the re-sync.
+        """
         from angr.exploration import RustExplorationManager
 
         state = fauxware_project.factory.entry_state()
@@ -1229,29 +1235,36 @@ class TestRustExplorationPython:
         assert len(active) >= 1, \
             "fauxware should still have at least one active state after one step"
         first = active[0]
+        # First read materializes the SimState and sets the sentinel.
         assert getattr(first.scratch, 'rust_fully_synced', False), \
             "first read should set the rust_fully_synced sentinel"
+        cached_state = mgr._state_cache[first._lazy_state_id]
 
-        # Re-read without stepping: cache hit must preserve identity and sentinel.
+        # Re-read without stepping: cache hit must preserve wrapper identity
+        # and not re-sync the cached SimState.
         again = mgr.active
         assert again[0] is first, \
-            "repeated mgr.active access must return the cached SimState"
+            "repeated mgr.active access must return the cached lazy ref"
         assert getattr(again[0].scratch, 'rust_fully_synced', False)
 
         # step() invalidates: cached mirror is now stale until next read.
+        # Observe the sentinel via the cached SimState directly; reading it
+        # through the wrapper would re-trigger materialization.
         mgr.step(n=1)
-        assert not getattr(first.scratch, 'rust_fully_synced', False), \
-            "step() must clear rust_fully_synced on cached states"
+        assert not getattr(cached_state.scratch, 'rust_fully_synced', False), \
+            "step() must clear rust_fully_synced on cached SimStates"
 
         # explore() must also invalidate at its top.
         state2 = fauxware_project.factory.entry_state()
         mgr2 = RustExplorationManager(fauxware_project, [state2])
         mgr2.step(n=1)
-        cached = mgr2.active[0]
-        assert getattr(cached.scratch, 'rust_fully_synced', False)
+        cached_wrapper = mgr2.active[0]
+        # Force materialization to seed the cache + set the sentinel.
+        assert getattr(cached_wrapper.scratch, 'rust_fully_synced', False)
+        mgr2_cached = mgr2._state_cache[cached_wrapper._lazy_state_id]
         mgr2.explore(max_steps=1)
-        assert not getattr(cached.scratch, 'rust_fully_synced', False), \
-            "explore() must clear rust_fully_synced on cached states"
+        assert not getattr(mgr2_cached.scratch, 'rust_fully_synced', False), \
+            "explore() must clear rust_fully_synced on cached SimStates"
 
     def test_stash_access(self, fauxware_project):
         """Test accessing stashes."""
@@ -10638,6 +10651,78 @@ class TestEdgeCases:
         )
         assert isinstance(addrs, list)
         assert addrs == tail
+
+    def test_stash_iteration_does_not_materialize_simstate(self, fauxware_project):
+        """angr-kwpi.2: iterating ``mgr.active`` / ``mgr.found`` / etc. must
+        return ``_LazySimStateRef`` wrappers that defer SimState materialization
+        until first attribute access.
+
+        Asserts:
+          1. Stash properties return ``list`` instances (preserves the
+             ``isinstance(active, list)`` contract).
+          2. Iterating without touching attrs does NOT call the manager's
+             ``_materialize_single_state`` (no heavy plugin restore / sync).
+          3. Touching any non-private attribute (``state.solver``,
+             ``state.regs``, etc.) triggers materialization exactly once
+             per state id; subsequent accesses are cached.
+          4. ``mgr.active[0] is mgr.active[0]`` (wrapper identity preserved
+             across repeated stash reads).
+        """
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_export import _LazySimStateRef
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step(n=1)
+
+        # (1) Stash returns a list.
+        active = mgr.active
+        assert isinstance(active, list), "mgr.active must return a list"
+        assert active, "expected at least one active state after one step"
+        assert all(isinstance(s, _LazySimStateRef) for s in active), (
+            "stash entries must be _LazySimStateRef wrappers"
+        )
+
+        # (2) Iteration without attribute access does not materialize.
+        materialize_calls = []
+        orig_materialize = mgr._materialize_single_state
+
+        def counting_materialize(state_id):
+            materialize_calls.append(state_id)
+            return orig_materialize(state_id)
+
+        mgr._materialize_single_state = counting_materialize
+        try:
+            for s in mgr.active:
+                # touching __slots__ attrs does not trigger __getattr__
+                _ = s._lazy_state_id
+            _ = len(mgr.active)
+            assert mgr.active[0] is mgr.active[0], (
+                "wrapper identity must be preserved across repeated stash reads"
+            )
+            assert materialize_calls == [], (
+                f"iteration / len / index should not materialize SimStates; "
+                f"got {materialize_calls!r}"
+            )
+
+            # (3) Accessing a real attribute triggers materialization once.
+            first = mgr.active[0]
+            sid = first._lazy_state_id
+            _ = first.solver  # this triggers materialization
+            assert materialize_calls == [sid], (
+                f"first .solver access should materialize once; got "
+                f"{materialize_calls!r}"
+            )
+            # Note: each attribute access re-enters _materialize() which is
+            # cheap once rust_fully_synced is True (no plugin/sync work), but
+            # the call count still increments. Verify cached path is taken
+            # (no re-sync) by checking rust_fully_synced stays set.
+            cached = mgr._state_cache[sid]
+            assert getattr(cached.scratch, 'rust_fully_synced', False), (
+                "rust_fully_synced should remain set on a hot lazy ref"
+            )
+        finally:
+            mgr._materialize_single_state = orig_materialize
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

@@ -258,6 +258,55 @@ class RustSolverFallback:
             raise
 
 
+class _LazySimStateRef:
+    """Proxy that defers SimState materialization until first attribute access.
+
+    Returned from `_get_stash_states` in place of eagerly-materialized
+    ``SimState`` instances. Iterating a stash list, taking ``len()``, or
+    comparing identity does **not** trigger the heavy ``_restore_plugins_to_state``
+    / ``_sync_rust_*`` calls. The first read of any non-private attribute
+    forwards to ``RustStateExportMixin._materialize_single_state`` and then
+    delegates the lookup to the materialized SimState.
+
+    Identity is preserved across repeated stash reads via the per-manager
+    ``_lazy_state_refs`` cache (one wrapper per Rust state id).
+    """
+
+    __slots__ = ('_lazy_mgr', '_lazy_state_id')
+
+    def __init__(self, mgr, state_id):
+        object.__setattr__(self, '_lazy_mgr', mgr)
+        object.__setattr__(self, '_lazy_state_id', state_id)
+
+    def _materialize(self):
+        return self._lazy_mgr._materialize_single_state(self._lazy_state_id)
+
+    def __getattr__(self, name):
+        # __getattr__ only fires when normal lookup misses, so the two slot
+        # attributes never recurse. Guard private/dunder names so debugger /
+        # pickle / inspect probes don't accidentally materialize the state.
+        if name.startswith('_') or name.startswith('__'):
+            raise AttributeError(name)
+        return getattr(self._materialize(), name)
+
+    def __setattr__(self, name, value):
+        if name in type(self).__slots__:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._materialize(), name, value)
+
+    def __repr__(self):
+        return f"<_LazySimStateRef state_id={self._lazy_state_id}>"
+
+    def __hash__(self):
+        return hash(('_LazySimStateRef', self._lazy_state_id))
+
+    def __eq__(self, other):
+        if isinstance(other, _LazySimStateRef):
+            return self._lazy_state_id == other._lazy_state_id
+        return NotImplemented
+
+
 class RustStateExportMixin:
     """Mixin providing state export/conversion methods for RustExplorationManager.
 
@@ -266,6 +315,7 @@ class RustStateExportMixin:
     - self._project: The angr Project
     - self._state_cache: Dict[int, SimState]
     - self._state_roots: Dict[int, int]
+    - self._lazy_state_refs: Dict[int, _LazySimStateRef]
     - self._identity_tracker: SymbolicIdentityTracker
     """
 
@@ -282,187 +332,150 @@ class RustStateExportMixin:
                 scratch.rust_fully_synced = False
 
     def _get_stash_states(self, stash: str) -> list:
-        """Get states from a stash as angr SimStates.
+        """Return lazy SimState references for the given stash.
+
+        Iteration / ``len`` / identity comparisons on the result do NOT
+        materialize the underlying SimStates. Materialization happens on
+        first attribute access (``state.solver``, ``state.regs``, etc.) and
+        is delegated to ``_materialize_single_state``.
 
         Args:
             stash: The stash name ('found', 'active', 'avoid', etc.)
 
         Returns:
-            List of angr SimStates converted from Rust states.
+            List of ``_LazySimStateRef`` objects (one per state id in the
+            stash). Identity is preserved across repeated calls via
+            ``self._lazy_state_refs``.
         """
-        states = []
-
-        # First try cached Python states (have proper memory from forking)
         state_ids = self._rust_mgr.get_state_ids(stash)
-        for state_id in state_ids:
-            if state_id in self._state_cache:
-                state = self._state_cache[state_id]
-                # Per-state export cache: once a state has been fully synced
-                # from Rust, its memory/registers/callstack are stable for as
-                # long as the Rust state is not stepped again. Repeated property
-                # accesses (`len(mgr.found)` then `mgr.found[0]`) re-enter this
-                # method; without this short-circuit each visit re-runs the
-                # heavy syncs (>500ms per state for sym-write). The
-                # `rust_fully_synced` sentinel is cleared by `step()` / `run()`
-                # via `_invalidate_state_export_cache`.
-                if getattr(state.scratch, 'rust_fully_synced', False):
-                    states.append(state)
-                    continue
-                self._restore_plugins_to_state(state, state_id)
-                self._inject_rust_stdout(state, state_id)
-                self._inject_rust_stdin(state, state_id)
-                # Attach Rust solver fallback BEFORE constraint sync.
-                # The Rust solver has the correct constraints from exploration.
-                # Constraint sync is expensive (5.9s for sym-write) and often
-                # causes identity mismatches. The fallback handles eval/eval_upto/
-                # min/max/satisfiable directly via Rust solver.
-                self._attach_rust_solver_fallback(state, state_id)
-                # Sync concrete memory from Rust to Python state so that
-                # memory modified during Rust execution is visible to the user
-                self._sync_rust_memory_to_state(state, state_id)
-                # Sync all registers from Rust state to Python state so that
-                # register values computed during Rust execution are visible
-                # (e.g., rdi holding a computed flag address in asisctf).
-                self._sync_rust_registers_to_state(state, state_id)
-                # Sync Rust-tracked call frames so state.callstack reflects
-                # the call/ret events that happened during Rust execution.
-                self._sync_rust_callstack_to_state(state, state_id)
-                self._sync_rust_mmap_base_to_state(state, state_id)
-                self._sync_rust_posix_brk_to_state(state, state_id)
-                state.scratch.rust_fully_synced = True
-                states.append(state)
+        refs = self._lazy_state_refs
+        result = []
+        for sid in state_ids:
+            ref = refs.get(sid)
+            if ref is None:
+                ref = _LazySimStateRef(self, sid)
+                refs[sid] = ref
+            result.append(ref)
+        return result
 
-        # For states not in cache, try parent state or snapshot export
-        cached_ids = {sid for sid in state_ids if sid in self._state_cache}
-        uncached_ids = [sid for sid in state_ids if sid not in self._state_cache]
+    def _materialize_single_state(self, state_id: int):
+        """Materialize one Rust state as a fully-synced angr SimState.
 
-        if uncached_ids:
-            # First try: look up parent state in cache (for intercepted find/avoid states)
-            for sid in uncached_ids:
-                root = self._state_roots.get(sid)
-                if root is None:
-                    try:
-                        root = self._rust_mgr.get_state_root(sid)
-                    except Exception:
-                        # cat-(a) EXPECTED CONTROL FLOW: probing for a Rust
-                        # root id; absence is normal for entry / unparented
-                        # states. Caller falls through to other lookups.
-                        pass
-                if root is not None and root in self._state_cache:
-                    state = self._state_cache[root].copy()
-                    self._restore_plugins_to_state(state, sid)
-                    self._inject_rust_stdout(state, sid)
-                    self._inject_rust_stdin(state, sid)
-                    # Skip _sync_exported_constraints — Rust solver fallback
-                    # handles all solver operations directly.
-                    self._attach_rust_solver_fallback(state, sid)
-                    # Sync memory and registers from Rust (state was copied from
-                    # root, so it doesn't have Rust-computed values yet)
-                    self._sync_rust_memory_to_state(state, sid)
-                    self._sync_rust_registers_to_state(state, sid)
-                    self._sync_rust_callstack_to_state(state, sid)
-                    self._sync_rust_mmap_base_to_state(state, sid)
-                    self._sync_rust_posix_brk_to_state(state, sid)
-                    state.scratch.rust_fully_synced = True
-                    # Cache the copy so it stays alive (prevents weakref death
-                    # during chained attribute access like sm.active[1].posix.dumps())
-                    self._state_cache[sid] = state
-                    states.append(state)
-                    cached_ids.add(sid)
+        Path order matches the legacy ``_get_stash_states`` logic:
+          1. Cached SimState in ``_state_cache`` — re-sync if stale
+             (``rust_fully_synced == False``).
+          2. Parent-root copy if the root is cached.
+          3. Currently-stepping-state copy if available in cache.
+          4. Full ``export_state(state_id)`` snapshot as last resort.
 
-            # Remaining: try stepping state (the state that was being stepped
-            # when the find/avoid was detected)
-            stepping_id = getattr(self, '_current_stepping_state_id', None)
-            for sid in uncached_ids:
-                if sid in cached_ids:
-                    continue
-                if stepping_id is not None and stepping_id in self._state_cache:
-                    state = self._state_cache[stepping_id].copy()
-                    self._restore_plugins_to_state(state, sid)
-                    self._inject_rust_stdout(state, sid)
-                    self._inject_rust_stdin(state, sid)
-                    # Skip _sync_exported_constraints — Rust solver fallback
-                    # handles all solver operations directly.
-                    self._attach_rust_solver_fallback(state, sid)
-                    self._sync_rust_memory_to_state(state, sid)
-                    self._sync_rust_registers_to_state(state, sid)
-                    self._sync_rust_callstack_to_state(state, sid)
-                    self._sync_rust_mmap_base_to_state(state, sid)
-                    self._sync_rust_posix_brk_to_state(state, sid)
-                    state.scratch.rust_fully_synced = True
-                    self._state_cache[sid] = state
-                    states.append(state)
-                    cached_ids.add(sid)
+        Always finishes with ``rust_fully_synced = True``, stdin content
+        restore, and a posix weakref fix.
+        """
+        state = self._state_cache.get(state_id)
+        if state is not None:
+            if not getattr(state.scratch, 'rust_fully_synced', False):
+                self._sync_cached_state(state, state_id)
+            self._finalize_materialized_state(state)
+            return state
 
-            # Last resort: snapshot export
-            remaining = [sid for sid in uncached_ids if sid not in cached_ids]
-            if remaining:
-                try:
-                    snapshots = self._rust_mgr.export_stash(stash)
-                    for snapshot in snapshots:
-                        if snapshot.state_id not in cached_ids:
-                            try:
-                                angr_state = self._snapshot_to_angr(snapshot)
-                                self._inject_rust_stdout(angr_state, snapshot.state_id)
-                                self._inject_rust_stdin(angr_state, snapshot.state_id)
-                                # Skip _sync_exported_constraints — it's O(n^2) on
-                                # constraint ASTs (5.9s for sym-write) and causes
-                                # identity mismatches. _snapshot_to_angr above
-                                # already attached the Rust solver fallback,
-                                # which handles eval/eval_upto/min/max/satisfiable
-                                # via Rust's Z3 solver.
-                                self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
-                                self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
-                                self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
-                                self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
-                                self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
-                                angr_state.scratch.rust_fully_synced = True
-                                self._state_cache[snapshot.state_id] = angr_state
-                                states.append(angr_state)
-                            except Exception as e:
-                                # cat-(c) WRONG-ANSWER RISK: a state in
-                                # the Rust stash is dropped from the
-                                # Python-visible result. The user expects
-                                # N states and sees fewer. WARN ensures
-                                # the missing state is observable.
-                                l.warning(f"Failed to convert state from {stash}: {e}")
-                except Exception as e:
-                    # cat-(c) WRONG-ANSWER RISK: entire export_stash() FFI
-                    # failed; *all* uncached states are dropped from the
-                    # result. Caller will see fewer states than the Rust
-                    # mgr reports.
-                    l.warning(f"export_stash failed for {stash}: {e}")
+        # Parent-root copy
+        root = self._state_roots.get(state_id)
+        if root is None:
+            try:
+                root = self._rust_mgr.get_state_root(state_id)
+            except Exception:
+                # cat-(a) EXPECTED CONTROL FLOW: probing for a Rust root id;
+                # absence is normal for entry / unparented states.
+                root = None
+        if root is not None and root in self._state_cache:
+            state = self._state_cache[root].copy()
+            self._sync_cached_state(state, state_id)
+            # Cache the copy so it stays alive (prevents weakref death
+            # during chained attribute access like sm.active[1].posix.dumps()).
+            self._state_cache[state_id] = state
+            self._finalize_materialized_state(state)
+            return state
 
-        # Restore stdin content for states that were forked purely in Rust.
-        # These states have empty posix.stdin.content because they never went
-        # through a SimProcedure callback in Python. The _stdin_content tracks
-        # BVS packets captured during callbacks (fgets, read, etc.).
+        # Currently-stepping-state copy
+        stepping_id = getattr(self, '_current_stepping_state_id', None)
+        if stepping_id is not None and stepping_id in self._state_cache:
+            state = self._state_cache[stepping_id].copy()
+            self._sync_cached_state(state, state_id)
+            self._state_cache[state_id] = state
+            self._finalize_materialized_state(state)
+            return state
+
+        # Last resort: full snapshot export
+        try:
+            snapshot = self._rust_mgr.export_state(state_id)
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: export_state FFI failed; the caller
+            # raises so the missing state is loud rather than silent.
+            l.warning("export_state failed for state %d: %s", state_id, e)
+            raise
+        try:
+            angr_state = self._snapshot_to_angr(snapshot)
+            self._inject_rust_stdout(angr_state, snapshot.state_id)
+            self._inject_rust_stdin(angr_state, snapshot.state_id)
+            # Skip _sync_exported_constraints — it's O(n^2) on constraint
+            # ASTs (5.9s for sym-write) and causes identity mismatches.
+            # _snapshot_to_angr already attached the Rust solver fallback.
+            self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
+            self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
+            self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
+            self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
+            self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
+            angr_state.scratch.rust_fully_synced = True
+            self._state_cache[snapshot.state_id] = angr_state
+            self._finalize_materialized_state(angr_state)
+            return angr_state
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: caller expected a state and gets an
+            # exception; surface the failure rather than returning a wrong
+            # placeholder.
+            l.warning("Failed to materialize state %d: %s", state_id, e)
+            raise
+
+    def _sync_cached_state(self, state, state_id: int) -> None:
+        """Run the heavy plugin restore + register/memory/callstack sync.
+
+        Sets ``state.scratch.rust_fully_synced = True`` on success. The
+        sentinel is cleared by ``_invalidate_state_export_cache`` whenever
+        Rust takes another step.
+        """
+        self._restore_plugins_to_state(state, state_id)
+        self._inject_rust_stdout(state, state_id)
+        self._inject_rust_stdin(state, state_id)
+        # Attach Rust solver fallback BEFORE constraint sync. The Rust solver
+        # has the correct constraints from exploration; constraint sync is
+        # expensive and often causes identity mismatches.
+        self._attach_rust_solver_fallback(state, state_id)
+        self._sync_rust_memory_to_state(state, state_id)
+        self._sync_rust_registers_to_state(state, state_id)
+        self._sync_rust_callstack_to_state(state, state_id)
+        self._sync_rust_mmap_base_to_state(state, state_id)
+        self._sync_rust_posix_brk_to_state(state, state_id)
+        state.scratch.rust_fully_synced = True
+
+    def _finalize_materialized_state(self, state) -> None:
+        """Per-state stdin restore + posix weakref fix.
+
+        Equivalent to the per-state body of the old end-of-``_get_stash_states``
+        loop; called once for every successful materialization.
+        """
         if self._stdin_content:
-            for s in states:
-                try:
-                    posix = getattr(s, 'posix', None)
-                    if posix is None:
-                        continue
+            try:
+                posix = getattr(state, 'posix', None)
+                if posix is not None:
                     stdin = getattr(posix, 'stdin', None)
-                    if stdin is None or not hasattr(stdin, 'content'):
-                        continue
-                    if not stdin.content:
+                    if stdin is not None and hasattr(stdin, 'content') and not stdin.content:
                         stdin.content = list(self._stdin_content)
-                except Exception as e:
-                    # cat-(b) FALLBACK WITH LOSS: stdin restore best-effort;
-                    # state's posix plugin shape may differ from the template
-                    # (e.g., custom posix subclass). Original (empty) content
-                    # remains; user solving for stdin won't see the captured
-                    # packets but the exploration result is still valid.
-                    l.debug("Could not restore stdin content for state: %s", e)
-
-        # Fix posix nested weakrefs on all returned states
-        # This ensures stdin/stdout/stderr have valid state references
-        # regardless of which code path created the state
-        for s in states:
-            self._fix_posix_weakrefs(s)
-
-        return states
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: stdin restore best-effort; state's
+                # posix plugin shape may differ from the template. Original
+                # (empty) content remains.
+                l.debug("Could not restore stdin content for state: %s", e)
+        self._fix_posix_weakrefs(state)
 
     @staticmethod
     def _fix_posix_weakrefs(state):

@@ -900,6 +900,15 @@ class RustExplorationManager(
         # Using regular dict with periodic cleanup to prevent memory leaks
         self._state_cache: Dict[int, "angr.SimState"] = {}
 
+        # Lazy SimState references handed out by _get_stash_states. Keyed by
+        # Rust state id so repeated stash reads return the same wrapper
+        # (preserves the `mgr.active[0] is mgr.active[0]` invariant). Wrappers
+        # materialize their SimState on first attribute access — see
+        # `_LazySimStateRef` in rust_state_export.py. Pruned in
+        # `_cleanup_state_cache` alongside _state_cache.
+        from angr.exploration.rust_state_export import _LazySimStateRef
+        self._lazy_state_refs: Dict[int, _LazySimStateRef] = {}
+
         # Maximum state cache size. Cache is bounded to the in-flight callback
         # state plus a small LRU window of recently-mutated states; root states
         # are pinned and never count against the cap. Pre-angr-qm7w this was
@@ -3546,6 +3555,13 @@ class RustExplorationManager(
         matched = getattr(self, '_predicate_matched_ids', None)
         if matched is not None:
             matched.intersection_update(any_stash)
+
+        # Drop _LazySimStateRef wrappers for state ids that no longer exist
+        # in any Rust stash. The wrappers are cheap (two slots) but pruning
+        # them keeps the dict bounded by live stash size across long runs.
+        for sid in list(self._lazy_state_refs.keys()):
+            if sid not in any_stash:
+                del self._lazy_state_refs[sid]
 
         pinned = set(self._state_roots.values())
         if self._current_callback_state_id is not None:
