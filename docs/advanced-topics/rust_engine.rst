@@ -560,6 +560,32 @@ baby-re catastrophe. New counters: ``lineage_dismantled``,
 ``lineage_dismantle_count``, ``lineage_sample_call_count``,
 ``lineage_sample_decision_count``.
 
+Threshold justification (35 %)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The 35 % hot-cache threshold (``run_loop.rs`` —
+``tick_and_sample_for_thrash(10, 20, 35)``) was tuned on N = 4 workload
+data points (``angr-1gfa``, 2026-05-25), running each with
+``use_shared_lineage_solver=True`` and reading
+``lineage_switch_hot_count / lineage_switch_count`` from
+``get_solver_stats()`` at end-of-bench:
+
+* ``defcon2016quals_baby-re`` (LOSE; 6.79 x slower under shared
+  lineage): **30.2 %** — sampler would dismantle (correct).
+* ``ais3_crackme`` (WIN; 1.24 x faster): **44.7 %** — stays on
+  (correct).
+* ``defcamp_r100`` (WIN; 4.4 x baseline): **51.0 %** — stays on
+  (correct).
+* ``csaw_wyvern`` (WIN; 16.9 x baseline): **84.2 %** — stays on
+  (correct).
+
+The WIN cluster spans 44.7–84.2 %; the LOSE point is at 30.2 %; 35 %
+sits in the gap with 4.8 pp margin to LOSE and 9.7 pp margin to the
+closest WIN (ais3). No data point in the current corpus moves the
+threshold: raising it would tighten the WIN margin without value;
+lowering it would shrink the LOSE margin and risk false negatives on
+borderline thrash workloads.
+
 Why alternatives (a), (b), (d) were not pursued
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
