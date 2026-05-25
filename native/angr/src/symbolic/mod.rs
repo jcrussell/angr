@@ -11,8 +11,6 @@ mod context;
 mod handle;
 #[cfg(feature = "vex-engine-z3")]
 pub mod lineage;
-#[cfg(feature = "vex-engine-z3")]
-pub mod lineage_assumptions;
 pub mod registry;
 mod table;
 mod value;

@@ -6,9 +6,6 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rustylib::concretize::AddressConcretizer;
 use rustylib::memory::{Permission, SymbolicMemory};
 use rustylib::symbolic::lineage::{ScopeFrame, ScopePath, SharedLineageSolver};
-use rustylib::symbolic::lineage_assumptions::{
-    AssumptionFrame, AssumptionPath, SharedLineageSolverAssumptions,
-};
 use rustylib::symbolic::{RustBV, SymContext};
 use rustylib::vex::ir::Endness;
 use rustylib::vex::{IROp, IRType, VEXOps};
@@ -438,46 +435,32 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Lineage variant head-to-head: push/pop vs check-with-assumptions
-// (angr-3ms1 alternative-d spike, 2026-05-23)
+// Lineage variant head-to-head: push/pop vs per-state-solvers
+// (angr-3ms1 / angr-v5a5, 2026-05-23). The assumption-based alt-d spike
+// was deleted in angr-0hdq.2 (microbench measured 2.1x–3.9x SLOWER than
+// push/pop; commit 561aa838b retains the historical implementation).
 // ---------------------------------------------------------------------------
 
 /// Build N synthetic per-state paths sharing a 2-frame ancestor prefix
 /// (`x > 0`, `x < BIG`) and diverging at the leaf with a unique
-/// `x == k_i` constraint. Returns the parallel push/pop `ScopePath` list
-/// and assumption `AssumptionPath` list. Frame ids match up across the
-/// two lists for the shared-ancestor frames (not the leaves — separate
-/// FrameId mints) so each variant builds its own shared-prefix shape.
+/// `x == k_i` constraint.
 ///
 /// Choosing `x == k_i` per leaf means each per-state path is satisfiable
 /// in isolation but pairwise-UNSAT — realistic for symbolic-execution
 /// path constraints.
-fn build_workload(
-    n_states: usize,
-    k_per_state: usize,
-) -> (Vec<ScopePath>, Vec<AssumptionPath>) {
+fn build_workload(n_states: usize, k_per_state: usize) -> Vec<ScopePath> {
     let x = BV::new_const("lineage_bench_x", 32);
     let zero = BV::from_u64(0, 32);
     let big = BV::from_u64(1_000_000_000, 32);
 
-    // Push/pop variant: one shared ancestor prefix for all states.
     let pp_ancestor: Vec<ScopeFrame> = vec![
         ScopeFrame::new(true, x.bvugt(&zero)),
         ScopeFrame::new(true, x.bvult(&big)),
     ];
-    // Assumption variant: separate ancestor frames (different FrameIds
-    // and different tag Bools — they describe the same constraints but
-    // are independent of the push/pop ancestor frames).
-    let asm_ancestor: Vec<AssumptionFrame> = vec![
-        AssumptionFrame::new(x.bvugt(&zero)),
-        AssumptionFrame::new(x.bvult(&big)),
-    ];
 
     let mut pp_paths = Vec::with_capacity(n_states);
-    let mut asm_paths = Vec::with_capacity(n_states);
     for i in 0..n_states {
         let mut pp = pp_ancestor.clone();
-        let mut asm = asm_ancestor.clone();
         for j in 0..k_per_state {
             // Different shape per (state, frame): x + i*100 + j*7 != 0
             // (always SAT in isolation, gives each frame a distinct AST
@@ -485,13 +468,11 @@ fn build_workload(
             let offset = ((i * 100) + (j * 7)) as u64;
             let term = x.bvadd(&BV::from_u64(offset, 32));
             let cstr = term.eq(&BV::from_u64(0, 32)).not();
-            pp.push(ScopeFrame::new(true, cstr.clone()));
-            asm.push(AssumptionFrame::new(cstr));
+            pp.push(ScopeFrame::new(true, cstr));
         }
         pp_paths.push(pp);
-        asm_paths.push(asm);
     }
-    (pp_paths, asm_paths)
+    pp_paths
 }
 
 /// Deterministic pseudo-random state ordering — interleaves between
@@ -614,12 +595,12 @@ fn build_lifo_dfs_tree_workload(depth: usize) -> Vec<ScopePath> {
     paths
 }
 
-fn bench_lineage_push_pop_vs_assumptions(c: &mut Criterion) {
+fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
     let n_states = 50;
     let k_per_state = 10;
     let n_queries = 200;
 
-    let (pp_paths, asm_paths) = build_workload(n_states, k_per_state);
+    let pp_paths = build_workload(n_states, k_per_state);
     let order = bfs_query_order(n_states, n_queries);
 
     let mut group = c.benchmark_group("lineage_variants");
@@ -632,17 +613,6 @@ fn bench_lineage_push_pop_vs_assumptions(c: &mut Criterion) {
             for &idx in &order {
                 let path = &pp_paths[idx];
                 lin.with_solver(path, |s| black_box(s.check()));
-            }
-        })
-    });
-
-    group.bench_function("assumptions_bfs_thrash", |bench| {
-        bench.iter(|| {
-            let solver = z3::Solver::new();
-            let mut lin = SharedLineageSolverAssumptions::new(solver);
-            for &idx in &order {
-                let path = &asm_paths[idx];
-                lin.with_solver(path, |s, tags| black_box(s.check_assumptions(tags)));
             }
         })
     });
@@ -662,17 +632,6 @@ fn bench_lineage_push_pop_vs_assumptions(c: &mut Criterion) {
             for &idx in &batched_order {
                 let path = &pp_paths[idx];
                 lin.with_solver(path, |s| black_box(s.check()));
-            }
-        })
-    });
-
-    group.bench_function("assumptions_per_state_batched", |bench| {
-        bench.iter(|| {
-            let solver = z3::Solver::new();
-            let mut lin = SharedLineageSolverAssumptions::new(solver);
-            for &idx in &batched_order {
-                let path = &asm_paths[idx];
-                lin.with_solver(path, |s, tags| black_box(s.check_assumptions(tags)));
             }
         })
     });
@@ -827,6 +786,6 @@ criterion_group!(
     bench_memory_fork,
     bench_state_fork,
     bench_rustbv_neon_ops,
-    bench_lineage_push_pop_vs_assumptions,
+    bench_lineage_push_pop_vs_per_state,
 );
 criterion_main!(benches);

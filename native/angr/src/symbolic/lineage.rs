@@ -1013,6 +1013,69 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    /// Per-call overhead of [`tick_and_sample_for_thrash`] (the always-on
+    /// run-loop hook) must stay well under the angr-v5ht 0.1ms budget,
+    /// even when the sampler does real work on every sample step. The
+    /// hook is invoked once per `run_loop` iteration; a bench at the
+    /// 0.1ms ceiling would alone account for a 10% regression at 1000
+    /// iterations/s.
+    ///
+    /// Measures 10k invocations of the production-default hook
+    /// (`sample_interval=10`, `min_switches=20`, `hot_threshold_pct=35`)
+    /// and asserts mean per-call cost <50µs. The implementation does at
+    /// most ~6 atomic loads + 1 fetch_add + 1 multiply + 2 stores on the
+    /// sample-step path and 1 load + 1 branch on the off-step path —
+    /// expected actual cost is well under 1µs/call. The 50µs assertion
+    /// gives a 2x safety margin to the 0.1ms gate while still flagging
+    /// any future change that orders-of-magnitude regresses the hook
+    /// (e.g. accidentally taking a lock per call).
+    #[test]
+    fn test_sampler_hook_overhead_under_budget() {
+        let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+        reset_dismantle_state_for_test();
+        // Bump LINEAGE_SWITCH_COUNT well past min_switches so the
+        // sample-step path lands in the decision branch (not the
+        // "accumulate window" early-return).
+        let mut lin = SharedLineageSolver::new(make_solver());
+        let x = bvconst("test_sampler_hook_overhead_x", 8);
+        for i in 0..500u64 {
+            let path = vec![ScopeFrame::new(true, eq_bv_const(&x, i))];
+            lin.switch_to(&path);
+        }
+
+        const N: u64 = 10_000;
+        // Re-snapshot LAST_SAMPLE_* so the first sample inside the loop
+        // sees a window with switch_delta >= min_switches. Without this,
+        // the 500 switches above are folded into the first window only.
+        reset_dismantle_state_for_test();
+
+        let start = std::time::Instant::now();
+        for _ in 0..N {
+            // Bump switch count between calls so each sample window
+            // continues to find delta >= min_switches and continues
+            // taking the decision-path branch. Without this, after the
+            // first decision the window is empty and subsequent calls
+            // short-circuit through the "accumulate" branch.
+            LINEAGE_SWITCH_COUNT.fetch_add(50, Ordering::Relaxed);
+            LINEAGE_SWITCH_HOT_COUNT.fetch_add(30, Ordering::Relaxed);
+            // 30/50 = 60% hot, above 35% threshold → no dismantle, so
+            // subsequent iterations continue to take the same path.
+            let _ = tick_and_sample_for_thrash(10, 20, 35);
+        }
+        let elapsed_ns = start.elapsed().as_nanos();
+        let per_call_ns = elapsed_ns / N as u128;
+
+        assert!(
+            !is_lineage_dismantled(),
+            "60% hot ratio must not trigger dismantle"
+        );
+        assert!(
+            per_call_ns < 50_000,
+            "sampler hook too slow: {per_call_ns} ns/call exceeds 50_000 ns budget \
+             (acceptance gate: <100_000 ns per angr-0hdq.2)"
+        );
+    }
+
     /// Two distinct paths that happen to share the same length but
     /// diverge in the tail must NOT collide on the fast path (different
     /// tail FrameIds).

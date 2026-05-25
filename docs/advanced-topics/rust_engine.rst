@@ -546,13 +546,14 @@ BFS-thrash finding. Their fates:
   purpose by construction (separate Z3 instances erase the
   shared-trunk win). Not implemented.
 * **(d) Z3 ``check`` with assumptions instead of push/pop.**
-  Implemented as a spike
-  (``native/angr/src/symbolic/lineage_assumptions.rs``, commit
-  ``561aa838b``). Microbench measured 2.1x SLOWER on ``bfs_thrash``
-  and 3.9x SLOWER on ``per_state_batched`` than ``push`` / ``pop``.
-  The hypothesised learned-clause preservation never overcame the
-  per-check overhead of growing assertion tables. **Negative
-  result; spike retained as a building block but not integrated.**
+  Implemented as a spike at ``native/angr/src/symbolic/lineage_assumptions.rs``
+  in commit ``561aa838b`` and microbenched in ``5e59ff48b``.
+  Measured 2.1x SLOWER on ``bfs_thrash`` and 3.9x SLOWER on
+  ``per_state_batched`` than ``push`` / ``pop``. The hypothesised
+  learned-clause preservation never overcame the per-check overhead
+  of growing assertion tables. **Negative result; spike deleted in
+  ``angr-0hdq.2`` — recover from git history (commit ``561aa838b``)
+  if anyone revisits the assumption strategy.**
 
 Alternative (c) — runtime thrash-detect + lineage dismantle — is the
 surviving variant (``angr-v5ht`` simple form). The premise that
