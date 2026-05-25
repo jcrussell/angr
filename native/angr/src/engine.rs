@@ -17,11 +17,13 @@ use crate::callbacks::{
 };
 use crate::claripy_bridge::claripy_to_rustbv;
 use crate::concretize::AddressConcretizer;
-use crate::interpreter::{ExecutionResult, VEXInterpreter};
+use crate::errors::RustExecError;
+use crate::interpreter::{ExecutionError, ExecutionResult, VEXInterpreter};
 use crate::interpreter_cb::CallbackInterpreter;
 use crate::memory::{Permission, SymbolicMemory};
 use crate::solver::RustSolverContext;
 use crate::symbolic::{RustBV, SymContext};
+use crate::vex::ops::OpError;
 use crate::vex::{Endness, IRSB, VexArch, deserialize_irsb};
 
 /// Execution event returned to Python.
@@ -109,16 +111,30 @@ impl ExecutionEvent {
         }
     }
 
-    fn error(msg: String) -> Self {
-        ExecutionEvent {
-            event_type: "error".to_string(),
-            next_addr: None,
-            jumpkind: None,
-            syscall_num: None,
-            error: Some(msg),
-            true_target: None,
-            false_target: None,
-        }
+}
+
+/// Map an [`ExecutionError`] from the legacy VEX interpreter to a typed
+/// [`RustExecError`] for surfacing as a Python exception.
+///
+/// `arch` is the engine's `arch_name`; carried into `UnsupportedVexOp` so
+/// the Python message can name the arch as well as the op (acceptance
+/// criterion for angr-tkbr.3).
+fn execution_error_to_typed(err: ExecutionError, addr: u64, arch: &str) -> RustExecError {
+    match err {
+        ExecutionError::Op(OpError::UnsupportedNeon { name }) => RustExecError::UnsupportedVexOp {
+            op_name: name.to_string(),
+            arch: arch.to_string(),
+        },
+        ExecutionError::Op(OpError::UnsupportedVectorOp(name)) => RustExecError::UnsupportedVexOp {
+            op_name: name,
+            arch: arch.to_string(),
+        },
+        ExecutionError::InvalidIR(reason) => RustExecError::MalformedIRSB { addr, reason },
+        ExecutionError::Memory(_)
+        | ExecutionError::Op(_)
+        | ExecutionError::Unsupported(_)
+        | ExecutionError::TypeMismatch { .. }
+        | ExecutionError::UnknownTemp(_) => RustExecError::Other(err.to_string()),
     }
 }
 
@@ -1470,7 +1486,12 @@ impl RustVEXEngine {
 
                 Ok(ExecutionEvent::from_result(result))
             }
-            Err(e) => Ok(ExecutionEvent::error(format!("{}", e))),
+            // Map typed `ExecutionError` variants to the typed Python
+            // exception hierarchy in `crate::errors`. Replaces the prior
+            // string-coerced `ExecutionEvent::error(format!(...))` shim so
+            // callers can `pytest.raises(angr.RustUnsupportedVexOpError, ...)`.
+            // See angr-tkbr.3.
+            Err(e) => Err(execution_error_to_typed(e, self.pc, &self.arch_name).into()),
         }
     }
 }
@@ -1614,8 +1635,52 @@ fn clear_ast_cache() {
     crate::claripy_bridge::clear_ast_cache();
 }
 
+/// Raise a typed [`RustExecError`] for unit tests.
+///
+/// Lets the pytest.raises tests cover exception variants whose real-path
+/// trigger is gated behind sibling beads (e.g. the 48 syscall panics in
+/// angr-tkbr.1). When tkbr.1 lands, syscall handlers raise these directly
+/// and this helper becomes redundant — keep it as the API smoke test.
+///
+/// `kind` selects the variant: "malformed_irsb" | "unsupported_syscall"
+/// | "unsupported_vex_op" | "z3" | "oom" | "other". `name` carries the
+/// op/syscall name for the relevant variants.
+#[pyfunction]
+#[pyo3(signature = (kind, name=None, num=None, arch=None, message=None))]
+fn _raise_typed_test_error(
+    kind: &str,
+    name: Option<&str>,
+    num: Option<u64>,
+    arch: Option<&str>,
+    message: Option<&str>,
+) -> PyResult<()> {
+    let err = match kind {
+        "malformed_irsb" => RustExecError::MalformedIRSB {
+            addr: num.unwrap_or(0),
+            reason: message.unwrap_or("test").to_string(),
+        },
+        "unsupported_syscall" => RustExecError::UnsupportedSyscall {
+            name: name.unwrap_or("unknown").to_string(),
+            num: num.unwrap_or(0),
+            arch: arch.unwrap_or("AMD64").to_string(),
+            reason: message.unwrap_or("no native handler").to_string(),
+        },
+        "unsupported_vex_op" => RustExecError::UnsupportedVexOp {
+            op_name: name.unwrap_or("unknown").to_string(),
+            arch: arch.unwrap_or("AMD64").to_string(),
+        },
+        "z3" => RustExecError::Z3(message.unwrap_or("z3 test").to_string()),
+        "oom" => RustExecError::Oom(message.unwrap_or("oom test").to_string()),
+        _ => RustExecError::Other(message.unwrap_or("test").to_string()),
+    };
+    Err(err.into())
+}
+
 /// Register the VEX engine module with Python.
 pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Typed exception classes (angr-tkbr.3).
+    crate::errors::register(m)?;
+    m.add_function(pyo3::wrap_pyfunction!(_raise_typed_test_error, m)?)?;
     m.add_class::<RustVEXEngine>()?;
     m.add_class::<ExecutionEvent>()?;
     m.add_class::<StateSnapshot>()?;

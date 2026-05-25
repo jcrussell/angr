@@ -530,9 +530,11 @@ impl VEXOps {
                 dst_signed,
             } => Self::vec_qnarrow_un(arg, from, count, src_signed, dst_signed, ctx),
 
-            // NEON scaffolding: fail loudly rather than silently fall back to
-            // a fresh-symbolic result. Implementations land in angr-bkcs.2.
-            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
+            // NEON scaffolding: surface as a typed error rather than silently
+            // falling back. interpreter_cb::expressions special-cases
+            // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
+            // Implementations land in angr-bkcs.2.
+            IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
             _ => Err(OpError::NotUnary(op)),
         }
@@ -802,8 +804,10 @@ impl VEXOps {
             // unop_with_rm instead of falling back to a fresh symbolic.
             IROp::FSqrt(_) => Self::unop_with_rm(op, left, right, ctx),
 
-            // NEON scaffolding: fail loudly rather than silently fall back.
-            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
+            // NEON scaffolding: surface as a typed error rather than silently
+            // falling back. interpreter_cb::expressions special-cases
+            // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
+            IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
             _ => Err(OpError::NotBinary(op)),
         }
@@ -832,8 +836,10 @@ impl VEXOps {
                 let lo = low_bit as u32;
                 Ok(arg1.extract_into(hi, lo, ctx))
             }
-            // NEON scaffolding: fail loudly rather than silently fall back.
-            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
+            // NEON scaffolding: surface as a typed error rather than silently
+            // falling back. interpreter_cb::expressions special-cases
+            // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
+            IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
             _ => Err(OpError::NotTernary(op)),
         }
     }
@@ -856,8 +862,10 @@ impl VEXOps {
         match op {
             IROp::FMAdd(ty) => Self::float_madd(a, b, c, ty, ctx),
             IROp::FMSub(ty) => Self::float_msub(a, b, c, ty, ctx),
-            // NEON scaffolding: fail loudly rather than silently fall back.
-            IROp::NeonUnimplemented(name) => panic!("NEON op {} not yet implemented", name),
+            // NEON scaffolding: surface as a typed error rather than silently
+            // falling back. interpreter_cb::expressions special-cases
+            // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
+            IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
             _ => Err(OpError::NotQuaternary(op)),
         }
     }
@@ -3552,6 +3560,16 @@ pub enum OpError {
     /// Unsupported vector operation.
     #[error("unsupported vector operation: {0}")]
     UnsupportedVectorOp(String),
+    /// NEON op that hasn't been implemented yet (angr-bkcs scaffold).
+    ///
+    /// Distinct from [`Self::UnsupportedVectorOp`] because the silent
+    /// fresh-symbolic fallback in `interpreter_cb::expressions` swallows
+    /// generic `OpError`s — this variant is propagated explicitly so
+    /// missing NEON coverage surfaces as `RustUnsupportedVexOpError`
+    /// instead of producing wrong results that are hard to attribute.
+    /// See `invariant-neon-scaffolding-panic-not-fallback` (bd memories).
+    #[error("NEON op {name} not yet implemented")]
+    UnsupportedNeon { name: &'static str },
     /// Raw/unimplemented opcode.
     #[error("raw/unimplemented opcode: {0}")]
     RawOpcode(u32),

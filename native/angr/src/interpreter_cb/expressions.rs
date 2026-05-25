@@ -192,6 +192,9 @@ impl<'a> CallbackInterpreter<'a> {
                 let arg_is_sym = arg_val.is_symbolic();
                 match VEXOps::unop(*op, arg_val, self.ctx) {
                     Ok(v) => Ok(v),
+                    // NEON scaffolding: surface explicitly. See
+                    // `invariant-neon-scaffolding-panic-not-fallback`.
+                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         // Fallback for unsupported unary ops (e.g., float conversions).
                         // Return fresh symbolic if input was symbolic, else zero.
@@ -222,6 +225,9 @@ impl<'a> CallbackInterpreter<'a> {
                 let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
                 match VEXOps::binop(*op, left_val, right_val, self.ctx) {
                     Ok(v) => Ok(v),
+                    // NEON scaffolding: surface explicitly. See
+                    // `invariant-neon-scaffolding-panic-not-fallback`.
+                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         // Fallback for unsupported binary ops (e.g., vector float ops).
                         self.stats.python_vex_op_fallback_count += 1;
@@ -305,6 +311,9 @@ impl<'a> CallbackInterpreter<'a> {
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                 match VEXOps::binop_with_rm(*op, rm, v2, v3, self.ctx) {
                     Ok(v) => Ok(v),
+                    // NEON scaffolding: surface explicitly. See
+                    // `invariant-neon-scaffolding-panic-not-fallback`.
+                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         self.stats.python_vex_op_fallback_count += 1;
                         self.stats.python_vex_triop_fallback_count += 1;
@@ -340,6 +349,9 @@ impl<'a> CallbackInterpreter<'a> {
                 let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
                 match VEXOps::qop(*op, v2, v3, v4, self.ctx) {
                     Ok(v) => Ok(v),
+                    // NEON scaffolding: surface explicitly. See
+                    // `invariant-neon-scaffolding-panic-not-fallback`.
+                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         self.stats.python_vex_op_fallback_count += 1;
                         self.stats.python_vex_qop_fallback_count += 1;

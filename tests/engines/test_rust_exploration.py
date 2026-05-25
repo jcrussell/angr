@@ -11372,5 +11372,157 @@ class TestStashProxyAccessors:
             mgr._get_stash_states = original
 
 
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustExecutionErrorHierarchy:
+    """Typed exception classes surfaced by the Rust engine (angr-tkbr.3).
+
+    The Rust engine previously string-coerced internal errors into
+    ``ExecutionEvent.error`` so Python could only ``re.search`` the
+    message to discriminate. tkbr.3 adds a typed ``RustExecutionError``
+    base + five sibling subclasses so user code can ``pytest.raises``
+    against a specific failure mode. Acceptance criteria checked by
+    this class:
+
+    * Exception classes are importable from ``angr.exploration``.
+    * ``RustExecutionError`` is the base; the five siblings each
+      inherit from it (so ``except RustExecutionError`` catches all).
+    * Each class is also ``Exception``-derived (PyO3 base class
+      ``PyException`` shows up in the MRO).
+    * Real-path coverage: ``pytest.raises(RustUnsupportedVexOpError,
+      match="<op_name>.*<arch>")`` for a NEON op via ``execute_irsb_json``.
+    * Demo coverage for the syscall path (full panic-site conversion
+      lives in angr-tkbr.1): ``pytest.raises(RustUnsupportedSyscallError,
+      match="<syscall_name>")`` via the ``_raise_typed_test_error`` helper.
+    """
+
+    def test_classes_importable_from_angr_exploration(self):
+        """The 6 typed exception classes re-export from ``angr.exploration``."""
+        from angr.exploration import (
+            RustExecutionError,
+            RustMalformedIRSBError,
+            RustOomError,
+            RustUnsupportedSyscallError,
+            RustUnsupportedVexOpError,
+            RustZ3Error,
+        )
+        # Sanity: each is a class object.
+        for cls in (
+            RustExecutionError,
+            RustMalformedIRSBError,
+            RustOomError,
+            RustUnsupportedSyscallError,
+            RustUnsupportedVexOpError,
+            RustZ3Error,
+        ):
+            assert isinstance(cls, type), f"{cls!r} is not a class"
+
+    def test_subclass_hierarchy(self):
+        """All five typed errors inherit from ``RustExecutionError``,
+        which inherits from ``Exception``."""
+        from angr.exploration import (
+            RustExecutionError,
+            RustMalformedIRSBError,
+            RustOomError,
+            RustUnsupportedSyscallError,
+            RustUnsupportedVexOpError,
+            RustZ3Error,
+        )
+        subclasses = (
+            RustMalformedIRSBError,
+            RustOomError,
+            RustUnsupportedSyscallError,
+            RustUnsupportedVexOpError,
+            RustZ3Error,
+        )
+        for cls in subclasses:
+            assert issubclass(cls, RustExecutionError), (
+                f"{cls.__name__} must subclass RustExecutionError"
+            )
+        assert issubclass(RustExecutionError, Exception)
+
+    def test_pytest_raises_catches_subclass_via_base(self):
+        """``pytest.raises(RustExecutionError)`` catches every sibling.
+
+        This is the key downstream contract: callers can write a single
+        ``except RustExecutionError`` to handle all engine failures.
+        """
+        from angr.exploration import RustExecutionError
+        from angr.rustylib.vex_engine import _raise_typed_test_error
+
+        for kind in (
+            "malformed_irsb",
+            "unsupported_syscall",
+            "unsupported_vex_op",
+            "z3",
+            "oom",
+            "other",
+        ):
+            with pytest.raises(RustExecutionError):
+                _raise_typed_test_error(kind, name="probe", num=1, arch="AMD64")
+
+    def test_raise_unsupported_syscall_match(self):
+        """The syscall acceptance: ``pytest.raises(RustUnsupportedSyscallError,
+        match="<syscall_name>")`` works.
+
+        The 48 syscall handler panic sites currently still ``panic!`` on
+        unexpected dispatcher outcomes; their conversion to typed
+        ``SyscallError`` lives in sibling bead angr-tkbr.1. This test
+        exercises the typed-exception API via ``_raise_typed_test_error``
+        — the API tkbr.1 will route into. Replace with a real-path test
+        once tkbr.1 lands.
+        """
+        from angr.exploration import RustUnsupportedSyscallError
+        from angr.rustylib.vex_engine import _raise_typed_test_error
+
+        with pytest.raises(RustUnsupportedSyscallError, match=r"brk"):
+            _raise_typed_test_error(
+                "unsupported_syscall",
+                name="brk",
+                num=12,
+                arch="AMD64",
+                message="no native handler",
+            )
+
+    def test_raise_unsupported_neon_op_via_execute_irsb(self):
+        """The NEON acceptance: ``pytest.raises(RustUnsupportedVexOpError,
+        match="<op_name>.*<arch>")`` for a currently-unimplemented NEON op.
+
+        Constructs a minimal AArch64 IRSB that applies ``Iop_Cnt8x8`` (a
+        Unop on Ity_I64 routed through ``IROp::NeonUnimplemented``) to a
+        zero constant. Before tkbr.3 the dispatcher in
+        ``VEXOps::unop`` panicked, which PyO3 surfaced as
+        ``pyo3_runtime.PanicException``; after tkbr.3 the panic is
+        replaced with ``OpError::UnsupportedNeon`` and surfaces as
+        ``RustUnsupportedVexOpError`` carrying op name + arch.
+        """
+        import json
+        from angr.exploration import RustUnsupportedVexOpError
+        from angr.rustylib.vex_engine import RustVEXEngine
+
+        engine = RustVEXEngine("arm64")
+        irsb = {
+            "addr": 4096,
+            "arch": "ARM64",
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                    "tag": "Iex_Const",
+                    "con": {"tag": "Ico_U64", "value": 0},
+                }},
+                {"tag": "Ist_WrTmp", "tmp": 1, "data": {
+                    "tag": "Iex_Unop",
+                    "op": "Iop_Cnt8x8",
+                    "arg": {"tag": "Iex_RdTmp", "tmp": 0},
+                }},
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": 272,
+            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
+        }
+        with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_Cnt8x8.*arm64"):
+            engine.execute_irsb_json(json.dumps(irsb))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

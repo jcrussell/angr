@@ -20,6 +20,8 @@ pub mod concretize;
 #[cfg(feature = "vex-engine")]
 pub mod engine;
 #[cfg(feature = "vex-engine")]
+pub mod errors;
+#[cfg(feature = "vex-engine")]
 pub mod exploration;
 #[cfg(feature = "vex-engine")]
 pub mod interpreter;

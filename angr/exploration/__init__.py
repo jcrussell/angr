@@ -28,6 +28,24 @@ and the standard stash API (active, found, deadended, …) are supported.
 """
 from __future__ import annotations
 
-from .rust_manager import RustExplorationManager, RustErrorRecord
+from angr.rustylib.vex_engine import (
+    RustExecutionError,
+    RustMalformedIRSBError,
+    RustOomError,
+    RustUnsupportedSyscallError,
+    RustUnsupportedVexOpError,
+    RustZ3Error,
+)
 
-__all__ = ['RustExplorationManager', 'RustErrorRecord']
+from .rust_manager import RustErrorRecord, RustExplorationManager
+
+__all__ = [
+    'RustErrorRecord',
+    'RustExecutionError',
+    'RustExplorationManager',
+    'RustMalformedIRSBError',
+    'RustOomError',
+    'RustUnsupportedSyscallError',
+    'RustUnsupportedVexOpError',
+    'RustZ3Error',
+]
