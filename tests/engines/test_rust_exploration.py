@@ -4247,6 +4247,45 @@ class TestSolverOperations:
         ctx_bad.add_constraint_ast(x == 30)
         assert not ctx_bad.satisfiable(), "x=30 must be ruled out"
 
+    def test_z3_seed_pin_not_attempted(self):
+        """``build_solver_params`` does NOT pin ``smt.random_seed`` /
+        ``sat.random_seed`` — a deliberate non-pin documented in
+        angr-iaol.1 (2026-05-25).
+
+        The audit (parent iaol) hypothesized pinning would deliver model
+        stability across fresh ``RustSolverContext`` instances. Empirically
+        the three reachable param-name forms via the z3-0.19.7
+        ``Params::set_u32`` route are all problematic:
+
+        * ``smt.random_seed`` / ``sat.random_seed``: corrupt the solver.
+          ``eval()`` returns models that *violate* the asserted
+          constraints (eg ``x=0`` for ``x>=100``).
+        * ``random_seed`` (no module prefix): accepted but produces
+          *more* variation across instances than no pin, **and** breaks
+          ``test_model_stability_constraint_order`` (which passes
+          without any pin).
+
+        This test is a sanity check that the solver still respects
+        asserted constraints — i.e. no broken seed pin was reintroduced.
+        See ``iaol1-seed-pin-empirically-broken`` memory for full
+        details and follow-up paths (Z3_global_param_set before
+        ``Solver::new``).
+        """
+        from angr.rustylib.vex_engine import RustSolverContext
+        import claripy
+
+        x = claripy.BVS("x", 32)
+        ctx = RustSolverContext()
+        ctx.add_constraint_ast(x >= 100)
+        ctx.add_constraint_ast(x <= 200)
+        v = ctx.eval(x)
+        assert v is not None and 100 <= v <= 200, (
+            f"Sanity: eval(x) must satisfy x in [100, 200]; got {v}. "
+            "If this fails, a seed-pin attempt likely corrupted the solver "
+            "— see angr-iaol.1 close-out memory "
+            "iaol1-seed-pin-empirically-broken."
+        )
+
     def test_model_stability_constraint_order(self):
         """Adding the same constraints in two orders yields the same eval(x).
 

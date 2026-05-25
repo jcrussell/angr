@@ -416,23 +416,52 @@ No std::HashMap site currently leaks iteration order into the
 exploration *result* (found/avoid stashes, evaluated bytes, or
 constraint sets). The remaining nondeterminism comes from Z3.
 
-Z3 seed pinning (currently unset)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Z3 seed pinning attempted and rejected (angr-iaol.1)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``build_solver_params`` (``native/angr/src/symbolic/context.rs``)
-sets ``timeout``, ``bv_extract_prop``, and ``mul2concat`` but **does
-not** pin ``smt.random_seed`` or ``sat.random_seed``. Two consequences:
+``build_solver_params`` (``native/angr/src/symbolic/context.rs``) does
+**not** pin ``smt.random_seed`` or ``sat.random_seed``. The audit
+hypothesis (parent iaol) was that pinning would deliver model
+stability across fresh ``RustSolverContext`` instances. iaol.1
+(2026-05-25) tried all three reachable param-name forms via
+``z3-0.19.7`` ``Params::set_u32`` against the
+``test_model_stability_constraint_order`` and a new constraint-
+identity test, and **all three failed**:
 
-* The trailing-byte mismatch in ``defcamp_r100`` — unconstrained
-  stdin bytes receive different fill values run-to-run. ``run_regression.py``
-  papers over this with output normalization.
-* ``test_model_stability_constraint_order`` only verifies
-  order-independence *within a process*, not run-to-run stability.
+* ``smt.random_seed`` / ``sat.random_seed``: corrupt the solver.
+  ``eval()`` returns models that *violate* the asserted constraints
+  (eg ``x = 0`` for the constraint ``x >= 100``). Both forms have the
+  same failure mode, suggesting they hit the same invalid-key error
+  path in ``Z3_solver_set_params`` (Z3 4.13 expects these as
+  *module-level* keys via ``Z3_global_param_set``, not solver-level).
+* ``random_seed`` (no module prefix, the in-descriptor short name):
+  accepted by Z3 without corruption, but produces *more* variation
+  across instances than no pin at all, and breaks
+  ``test_model_stability_constraint_order`` (which passes with no
+  pin).
 
-A ``RustExplorationManager(deterministic=True)`` flag that pins
-``smt.random_seed=0`` / ``sat.random_seed=0`` would close most of this
-gap. ``parallel.enable=true`` must remain off
+Z3 4.13 model determinism across fresh solver instances is therefore
+**not reachable through ``Z3_solver_set_params``** for these keys. To
+make any seed pin take effect, the call has to land via
+``Z3_global_param_set`` *before* the first ``Solver::new`` — and even
+then Z3 reserves variable / restart heuristic latitude that is not
+pinned by these keys. ``parallel.enable=true`` remains off
 (``avoid-z3-parallel-enable``).
+
+Residual nondeterminism the engine still carries:
+
+* The trailing-byte mismatch in ``defcamp_r100`` (unconstrained stdin
+  fill values) — ``run_regression.py`` normalizes output.
+* ``test_model_stability_constraint_order`` only verifies
+  order-independence *within a process*, not run-to-run stability
+  across Z3 rebuilds.
+* Two fresh ``RustSolverContext`` instances with identical constraints
+  may eval the same underconstrained variable to different witnesses.
+
+A future ``RustExplorationManager(deterministic=True)`` flag
+(angr-iaol.2) would need to route through ``Z3_global_param_set``
+before any solver creation, and even then would only narrow — not
+close — the residual gap.
 
 Pipeline instrumentation counters
 ---------------------------------

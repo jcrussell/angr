@@ -884,6 +884,25 @@ fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
 /// rejected: looked like a fairlight winner combined with mul2concat
 /// (median 8.10s) but blows up defcon2016quals_baby-re by 7x (0.50s ->
 /// 3.71s) and adds +25% to flareon2015_2.
+///
+/// Seed pinning attempted and rejected (angr-iaol.1, 2026-05-25): three
+/// param-name forms tried with the z3-0.19.7 `Params::set_u32` route:
+/// - `smt.random_seed`: corrupts the solver. `eval()` returns models
+///   that **violate the asserted constraints** (eg `x=0` for `x>=100`).
+/// - `sat.random_seed`: same corruption mode.
+/// - `random_seed` (the in-descriptor short name): is accepted without
+///   corruption but does **not** stabilize models across two fresh
+///   `RustSolverContext` instances with identical asserted constraints
+///   (eval witnesses differ run-to-run by >10^6). The order-stability
+///   test that *passed* without any seed pin now fails when this form
+///   is set.
+/// So Z3 4.13 model determinism across solver instances is not
+/// reachable through `Z3_solver_set_params` for these keys; pinning
+/// must instead happen via `Z3_global_param_set` *before* the first
+/// `Solver::new` — and even that does not eliminate variable /
+/// restart heuristic latitude. Tracked in iaol.1 close-out memory
+/// `iaol1-seed-pin-empirically-broken`. AVOID `parallel.enable=true`
+/// (`avoid-z3-parallel-enable`).
 #[cfg(feature = "vex-engine-z3")]
 fn build_solver_params(timeout_ms: u32) -> z3::Params {
     let mut params = z3::Params::new();
