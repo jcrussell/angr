@@ -329,6 +329,111 @@ Counters are global (shared across ``SymContext`` instances). Call
 window. The same dict is also merged into ``mgr.stats`` for
 convenience.
 
+Determinism contract
+--------------------
+
+The Rust engine is **not** bit-for-bit deterministic across runs by
+default. Two sources of nondeterminism dominate, and a third is
+inherent to Z3:
+
+* **std::HashMap iteration order.** ``std::collections::HashMap`` is
+  seeded with a per-process random value; iteration produces a fresh
+  order on every run. ``rustc_hash::FxHashMap`` uses a fixed seed and
+  *is* deterministic for a given insertion sequence.
+* **Z3 internal heuristics.** Z3's SAT engine uses pseudo-random
+  variable / restart ordering whose seed is not pinned by the engine.
+  Two ``solver.check()`` calls with identical assertions added in
+  identical order can return different satisfying models.
+* **Residual Z3 nondeterminism** (cannot be eliminated). Even with
+  ``smt.random_seed`` and ``sat.random_seed`` pinned, Z3 4.13 reserves
+  some heuristic latitude for simplification / preprocessing ordering.
+  ``solver.check()`` *result* (sat/unsat) is reproducible at a given
+  seed; ``solver.model()`` *eval answers* are not strictly guaranteed
+  across rebuilds.
+
+Iteration-order audit (HashMap)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Audit of every ``std::HashMap`` in ``native/angr/src/`` against the
+question *"does iteration order leak into observable output (state
+ordering, branch enumeration, eval answer)?"*:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 25 40
+
+   * - Site
+     - Iteration?
+     - Verdict
+   * - ``stash.rs`` ``stashes`` / ``state_index`` / ``state_roots``
+     - Yes (``stashes_mut().values_mut()`` in
+       ``exploration/mod.rs:set_max_history`` and the slow path of
+       ``find_state_by_id``)
+     - **Not output-affecting.** Per-stash order is the VecDeque
+       (FIFO/LIFO is honored). Cross-stash iteration only writes the
+       same value to every state or finds a unique ``state_id``.
+   * - ``state.rs`` ``symbolic_pages`` / ``hook_symbolic_memory`` /
+       ``addr_to_ast``
+     - Yes (``state_api.rs:_get_state_symbolic_pages`` etc. dump into
+       ``PyDict``)
+     - **Not output-affecting.** Python consumers read by key; the
+       resulting ``PyDict`` is data-equivalent run-to-run. Iteration
+       order leaks only into ``dict.__repr__`` for debug prints.
+   * - ``state.rs`` ``simprocedures`` / ``vex_fallback_addrs`` /
+       ``simprocedure_fallback_by_name``
+     - Lookup-only
+     - **Not output-affecting.**
+   * - ``claripy_bridge.rs`` ``CLARIPY_AST_CACHE`` + ``deepcopy_memo``
+     - Lookup-only (LRU caches)
+     - **Not output-affecting.** Keyed by Python id / hash.
+   * - ``vex/lifter.rs`` IRSB lift cache
+     - Lookup-only
+     - **Not output-affecting.**
+   * - ``vex/dirty.rs`` ``handlers`` / ``syscalls/mod.rs`` ``handlers``
+       / ``procedures/mod.rs`` ``procedures``
+     - Lookup-only
+     - **Not output-affecting.** Static registries.
+   * - ``symbolic/registry.rs`` ``py_hash_to_rust_id`` /
+       ``rust_id_to_py`` / ``name_to_info``
+     - Lookup-only
+     - **Not output-affecting.**
+   * - ``symbolic/table.rs`` ``symbols``
+     - Lookup-only
+     - **Not output-affecting.**
+   * - ``automaton/subset_construction.rs``
+       ``inverse_mapping: HashMap<StateId, Vec<StateId>>``
+     - Stored on DFA; not iterated for output during regex matching.
+     - **Not output-affecting.**
+   * - Stats / profiling maps (``ExecutionStats``,
+       ``profiling::accumulated_stats``, ``analyze_constraint_sharing``,
+       ``py_get_execution_stats``, ``get_solver_stats``,
+       ``get_registers_named``)
+     - Yes (returned to Python as dicts)
+     - **Not exploration-affecting.** Values are summed counters or
+       per-name lookups; order leaks only into stringified debug output.
+
+No std::HashMap site currently leaks iteration order into the
+exploration *result* (found/avoid stashes, evaluated bytes, or
+constraint sets). The remaining nondeterminism comes from Z3.
+
+Z3 seed pinning (currently unset)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``build_solver_params`` (``native/angr/src/symbolic/context.rs``)
+sets ``timeout``, ``bv_extract_prop``, and ``mul2concat`` but **does
+not** pin ``smt.random_seed`` or ``sat.random_seed``. Two consequences:
+
+* The trailing-byte mismatch in ``defcamp_r100`` — unconstrained
+  stdin bytes receive different fill values run-to-run. ``run_regression.py``
+  papers over this with output normalization.
+* ``test_model_stability_constraint_order`` only verifies
+  order-independence *within a process*, not run-to-run stability.
+
+A ``RustExplorationManager(deterministic=True)`` flag that pins
+``smt.random_seed=0`` / ``sat.random_seed=0`` would close most of this
+gap. ``parallel.enable=true`` must remain off
+(``avoid-z3-parallel-enable``).
+
 Pipeline instrumentation counters
 ---------------------------------
 
