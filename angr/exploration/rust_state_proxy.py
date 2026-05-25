@@ -816,24 +816,122 @@ _INSPECT_NOT_IMPLEMENTED_MSG = (
     "analyses. See docs/advanced-topics/rust_engine.rst for details."
 )
 
-# Events that the Rust-engine inspect MVP knows how to dispatch.
-# Anything outside this set still raises NotImplementedError on registration
-# so users don't silently miss events. Expand as further events are wired.
-_RUST_INSPECT_SUPPORTED_EVENTS = frozenset({
-    "mem_read",
-    "mem_write",
-    "reg_read",
-    "reg_write",
-    "instruction",
-    "irsb",
-    "exit",
-})
 
-_INSPECT_EVENT_NOT_SUPPORTED_MSG = (
-    "Rust engine inspect dispatches mem_read / mem_write / reg_read / "
-    "reg_write / instruction / irsb / exit events; got event_type={!r}. "
-    "Drop to use_rust_engine=False for full state.inspect coverage."
-)
+# Single source of truth for the Rust engine's state.inspect dispatch.
+#
+# Each entry maps an angr `event_types` member to a spec dict with:
+#   - bit: position in the Rust callbacks `inspect_enabled` u8 bitmask
+#   - attrs: SimInspector attribute names this event populates
+#   - when_fired: 'before' or 'after' — when in the Rust pipeline it fires
+#
+# Bits 0..=5 mirror `crate::state::InspectEvent` ordering; bit 4 (fork) is
+# reserved for future wiring; bits 6 and 7 are custom (instruction / irsb)
+# with no InspectionManager enum slot in Rust.
+#
+# Wiring a new event requires (mirror the angr-d46u 5-touchpoint pattern):
+#   1. Add a row here with a unique bit, attrs, when_fired.
+#   2. Add a PythonCallbacks slot + setter + dispatch helper in
+#      native/angr/src/callbacks.rs and the interpreter_cb dispatch
+#      helpers.
+#   3. Instrument the corresponding interpreter site in
+#      native/angr/src/interpreter_cb/.
+#   4. Add a `_cb_inspect_<name>` method on RustExplorationManager
+#      that builds the attrs dict and calls `_dispatch_inspect_event`.
+#   5. Register the callback in RustExplorationManager.set_callbacks().
+#
+# The CI test `test_inspect_allowlist_complete_and_consistent` enforces
+# that every event in `angr.state_plugins.inspect.event_types` is either
+# present here with a `_cb_inspect_<name>` method, or registering a
+# breakpoint for it raises NotImplementedError. No silent pass-through.
+_INSPECT_EVENT_SPECS: dict = {
+    "mem_read": {
+        "bit": 0,
+        "attrs": (
+            "mem_read_address",
+            "mem_read_length",
+            "mem_read_expr",
+            "mem_read_condition",
+            "mem_read_endness",
+        ),
+        "when_fired": "after",
+    },
+    "mem_write": {
+        "bit": 1,
+        "attrs": (
+            "mem_write_address",
+            "mem_write_length",
+            "mem_write_expr",
+            "mem_write_condition",
+            "mem_write_endness",
+        ),
+        "when_fired": "after",
+    },
+    "reg_read": {
+        "bit": 2,
+        "attrs": (
+            "reg_read_offset",
+            "reg_read_length",
+            "reg_read_expr",
+            "reg_read_condition",
+            "reg_read_endness",
+        ),
+        "when_fired": "after",
+    },
+    "reg_write": {
+        "bit": 3,
+        "attrs": (
+            "reg_write_offset",
+            "reg_write_length",
+            "reg_write_expr",
+            "reg_write_condition",
+            "reg_write_endness",
+        ),
+        "when_fired": "after",
+    },
+    # bit 4 reserved for "fork" (not yet wired)
+    "exit": {
+        "bit": 5,
+        "attrs": (
+            "exit_target",
+            "exit_guard",
+            "exit_jumpkind",
+        ),
+        "when_fired": "before",
+    },
+    "instruction": {
+        "bit": 6,
+        "attrs": (
+            "instruction",
+        ),
+        "when_fired": "before",
+    },
+    "irsb": {
+        "bit": 7,
+        "attrs": (
+            "address",
+        ),
+        "when_fired": "before",
+    },
+}
+
+# Derived views — DO NOT add entries here; edit _INSPECT_EVENT_SPECS instead.
+_RUST_INSPECT_SUPPORTED_EVENTS = frozenset(_INSPECT_EVENT_SPECS)
+_RUST_INSPECT_ATTRS_BY_EVENT = {
+    name: spec["attrs"] for name, spec in _INSPECT_EVENT_SPECS.items()
+}
+_RUST_INSPECT_EVENT_BITS = {
+    name: spec["bit"] for name, spec in _INSPECT_EVENT_SPECS.items()
+}
+
+
+def _format_unsupported_event_msg(event_type: str) -> str:
+    """Build the NotImplementedError message for a non-honored inspect event."""
+    supported = ", ".join(sorted(_RUST_INSPECT_SUPPORTED_EVENTS))
+    return (
+        f"Rust engine inspect dispatches {supported} events; "
+        f"got event_type={event_type!r}. "
+        "Drop to use_rust_engine=False for full state.inspect coverage."
+    )
 
 
 class _NoOpInspectProxy:
@@ -859,51 +957,6 @@ class _NoOpInspectProxy:
 
     def action(self, *args, **kwargs):
         raise NotImplementedError(_INSPECT_NOT_IMPLEMENTED_MSG)
-
-
-# Inspect-attribute names per supported event. Mirrors angr.state_plugins.inspect.
-# Used by RustInspectProxy.action() to reset attrs between fires.
-_RUST_INSPECT_ATTRS_BY_EVENT = {
-    "mem_read": (
-        "mem_read_address",
-        "mem_read_length",
-        "mem_read_expr",
-        "mem_read_condition",
-        "mem_read_endness",
-    ),
-    "mem_write": (
-        "mem_write_address",
-        "mem_write_length",
-        "mem_write_expr",
-        "mem_write_condition",
-        "mem_write_endness",
-    ),
-    "reg_read": (
-        "reg_read_offset",
-        "reg_read_length",
-        "reg_read_expr",
-        "reg_read_condition",
-        "reg_read_endness",
-    ),
-    "reg_write": (
-        "reg_write_offset",
-        "reg_write_length",
-        "reg_write_expr",
-        "reg_write_condition",
-        "reg_write_endness",
-    ),
-    "instruction": (
-        "instruction",
-    ),
-    "irsb": (
-        "address",
-    ),
-    "exit": (
-        "exit_target",
-        "exit_guard",
-        "exit_jumpkind",
-    ),
-}
 
 
 class RustInspectProxy:
@@ -1012,7 +1065,7 @@ class RustInspectProxy:
     def _check_event(self, event_type):
         if event_type not in self.SUPPORTED_EVENTS:
             raise NotImplementedError(
-                _INSPECT_EVENT_NOT_SUPPORTED_MSG.format(event_type)
+                _format_unsupported_event_msg(event_type)
             )
 
     def _set_inspect_attrs(self, **kwargs):

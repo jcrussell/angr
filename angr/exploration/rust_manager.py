@@ -995,31 +995,18 @@ class RustExplorationManager(
         # state.inspect MVP storage (angr-uq4n, angr-d46u).
         # Manager-wide breakpoint registry — shared across all states this
         # manager owns. RustInspectProxy is the user-facing facade.
+        # Initialized from the single source of truth in rust_state_proxy
+        # (`_INSPECT_EVENT_SPECS`); to wire a new event, edit that table
+        # and follow the 5-touchpoint pattern documented there.
         # See docs/advanced-topics/rust_engine.rst for the MVP scope.
+        from angr.exploration.rust_state_proxy import (
+            _RUST_INSPECT_EVENT_BITS,
+            _RUST_INSPECT_SUPPORTED_EVENTS,
+        )
         self._inspect_breakpoints: Dict[str, list] = {
-            "mem_read": [],
-            "mem_write": [],
-            "reg_read": [],
-            "reg_write": [],
-            "instruction": [],
-            "irsb": [],
-            "exit": [],
+            evt: [] for evt in _RUST_INSPECT_SUPPORTED_EVENTS
         }
-        # Per-event bit positions on the Rust-side `inspect_enabled` bitmask.
-        # Bits 0..=5 match `crate::state::InspectEvent` ordering; bit 4
-        # (fork) is reserved for future fork-event wiring. Bits 6 and 7 are
-        # custom (instruction, irsb) — angr Python exposes those as inspect
-        # events but they have no slot in the Rust InspectionManager enum.
-        self._INSPECT_EVENT_BITS = {
-            "mem_read": 0,
-            "mem_write": 1,
-            "reg_read": 2,
-            "reg_write": 3,
-            # bit 4 reserved for "fork" (not yet wired)
-            "exit": 5,
-            "instruction": 6,
-            "irsb": 7,
-        }
+        self._INSPECT_EVENT_BITS = dict(_RUST_INSPECT_EVENT_BITS)
         # Reentrancy guard: when a user action callback runs, suppress
         # nested inspect dispatch on the same manager. uq4n.4 covers
         # the full guard test.
@@ -1311,20 +1298,17 @@ class RustExplorationManager(
         # state.inspect MVP (angr-uq4n.2, angr-d46u) — register dispatchers
         # even when no BPs are set so the Rust side has a target if
         # instrumentation fires unexpectedly. The bitmask gates dispatch.
-        if hasattr(callbacks, 'set_inspect_mem_read'):
-            callbacks.set_inspect_mem_read(self._cb_inspect_mem_read)
-        if hasattr(callbacks, 'set_inspect_mem_write'):
-            callbacks.set_inspect_mem_write(self._cb_inspect_mem_write)
-        if hasattr(callbacks, 'set_inspect_reg_read'):
-            callbacks.set_inspect_reg_read(self._cb_inspect_reg_read)
-        if hasattr(callbacks, 'set_inspect_reg_write'):
-            callbacks.set_inspect_reg_write(self._cb_inspect_reg_write)
-        if hasattr(callbacks, 'set_inspect_instruction'):
-            callbacks.set_inspect_instruction(self._cb_inspect_instruction)
-        if hasattr(callbacks, 'set_inspect_irsb'):
-            callbacks.set_inspect_irsb(self._cb_inspect_irsb)
-        if hasattr(callbacks, 'set_inspect_exit'):
-            callbacks.set_inspect_exit(self._cb_inspect_exit)
+        # Iterate the single source of truth so adding a new event
+        # auto-wires registration. Read directly from the module rather
+        # than self._INSPECT_EVENT_BITS so this method works even before
+        # __init__ has finished. The hasattr() check tolerates older .so
+        # builds.
+        from angr.exploration.rust_state_proxy import _RUST_INSPECT_EVENT_BITS
+        for evt in _RUST_INSPECT_EVENT_BITS:
+            setter_name = f'set_inspect_{evt}'
+            cb_name = f'_cb_inspect_{evt}'
+            if hasattr(callbacks, setter_name):
+                getattr(callbacks, setter_name)(getattr(self, cb_name))
         self._rust_mgr.set_callbacks(callbacks)
         self._callbacks = callbacks
 

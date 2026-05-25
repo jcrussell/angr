@@ -2416,6 +2416,125 @@ class TestRustInspectExtendedEvents:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestRustInspectAllowlistConsistency:
+    """CI-style guard tests that the inspect dispatch allowlist is a single
+    source of truth, and that every event angr's SimInspector exposes
+    is either honored (with dispatch wired) or loudly rejected.
+
+    angr-ji7h: prevents silent pass-through when a future angr release
+    adds a new state.inspect event.
+    """
+
+    def test_event_specs_keys_match_supported_set(self):
+        """Derived views agree with the source-of-truth keys."""
+        from angr.exploration.rust_state_proxy import (
+            _INSPECT_EVENT_SPECS,
+            _RUST_INSPECT_ATTRS_BY_EVENT,
+            _RUST_INSPECT_EVENT_BITS,
+            _RUST_INSPECT_SUPPORTED_EVENTS,
+        )
+        assert _RUST_INSPECT_SUPPORTED_EVENTS == frozenset(_INSPECT_EVENT_SPECS)
+        assert set(_RUST_INSPECT_ATTRS_BY_EVENT) == set(_INSPECT_EVENT_SPECS)
+        assert set(_RUST_INSPECT_EVENT_BITS) == set(_INSPECT_EVENT_SPECS)
+
+    def test_event_bits_are_unique_and_in_range(self):
+        """Every supported event has a unique bit position fitting in u8."""
+        from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
+        bits = [spec["bit"] for spec in _INSPECT_EVENT_SPECS.values()]
+        assert len(bits) == len(set(bits)), f"duplicate bits in specs: {bits}"
+        assert all(0 <= b < 8 for b in bits), (
+            "inspect_enabled is a u8 — bits must be in 0..=7"
+        )
+
+    def test_every_supported_event_has_dispatch_method(self):
+        """A supported event without a `_cb_inspect_<event>` method on
+        RustExplorationManager would silently be enabled in the bitmask
+        but never fire — assert one exists per event."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
+        for evt in _INSPECT_EVENT_SPECS:
+            attr = f"_cb_inspect_{evt}"
+            assert hasattr(RustExplorationManager, attr), (
+                f"event {evt!r} is in _INSPECT_EVENT_SPECS but "
+                f"RustExplorationManager.{attr} is missing — adding to "
+                f"the allowlist without wiring dispatch produces a "
+                f"silent pass-through"
+            )
+
+    def test_every_supported_event_has_rust_callback_slot(self):
+        """PythonCallbacks must expose a `set_inspect_<event>` slot for
+        every honored event; otherwise the dispatcher would never run
+        even with a BP registered."""
+        from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
+        cbs = PythonCallbacks()
+        for evt in _INSPECT_EVENT_SPECS:
+            slot = f"set_inspect_{evt}"
+            assert hasattr(cbs, slot), (
+                f"event {evt!r} is in _INSPECT_EVENT_SPECS but "
+                f"PythonCallbacks.{slot} is missing — Rust-side "
+                f"dispatch is not wired"
+            )
+
+    def test_every_angr_event_is_honored_or_rejected(self, fauxware_project):
+        """The full safety guarantee: for every event angr exposes,
+        either the Rust engine dispatches it (in _INSPECT_EVENT_SPECS),
+        or registering a BP for it raises NotImplementedError. No silent
+        accepts."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
+        from angr.state_plugins.inspect import event_types
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        ins = mgr._get_inspect_proxy()
+
+        unhandled = []
+        for evt in event_types:
+            if evt in _RUST_INSPECT_SUPPORTED_EVENTS:
+                continue
+            try:
+                ins.b(evt, when='before', action=lambda s: None)
+            except NotImplementedError:
+                continue
+            unhandled.append(evt)
+
+        assert not unhandled, (
+            f"event(s) {unhandled} are not in the supported set yet "
+            f"registering them did NOT raise NotImplementedError — "
+            f"this is a silent pass-through. Add them to "
+            f"_INSPECT_EVENT_SPECS (with dispatch wired) or tighten "
+            f"the check in RustInspectProxy._check_event."
+        )
+
+    def test_unsupported_event_message_lists_supported_set(self):
+        """The NotImplementedError message must list every currently
+        supported event so users know what they CAN use."""
+        from angr.exploration.rust_state_proxy import (
+            _RUST_INSPECT_SUPPORTED_EVENTS,
+            _format_unsupported_event_msg,
+        )
+        msg = _format_unsupported_event_msg("call")
+        for evt in _RUST_INSPECT_SUPPORTED_EVENTS:
+            assert evt in msg, (
+                f"supported event {evt!r} missing from rejection "
+                f"message — would mislead users about what is "
+                f"available"
+            )
+
+    def test_manager_breakpoint_storage_matches_specs(self, fauxware_project):
+        """The manager-wide BP registry uses exactly the supported event
+        keys. Adding a key here without a corresponding spec entry, or
+        vice versa, breaks _update_inspect_bitmask."""
+        from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        assert set(mgr._inspect_breakpoints) == set(_RUST_INSPECT_SUPPORTED_EVENTS)
+        assert set(mgr._INSPECT_EVENT_BITS) == set(_RUST_INSPECT_SUPPORTED_EVENTS)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestStatePluginsProxy:
     """Tests for state.options, state.globals, and state.heap on RustStateProxy.
 

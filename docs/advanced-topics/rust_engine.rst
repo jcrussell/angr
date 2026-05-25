@@ -1214,6 +1214,30 @@ with the Python engine from the resulting state(s) — ``mgr.found[i]``
 returns full ``SimState`` objects that can seed a Python
 ``SimulationManager``.
 
+Single source of truth
+~~~~~~~~~~~~~~~~~~~~~~
+
+The supported-event table above is derived from
+``_INSPECT_EVENT_SPECS`` in ``angr/exploration/rust_state_proxy.py`` —
+the single source of truth for which inspect events the Rust engine
+dispatches, what attributes each populates, and which bit they occupy
+in the Rust callbacks ``inspect_enabled`` u8 bitmask. The
+manager-side registry (``_inspect_breakpoints``, ``_INSPECT_EVENT_BITS``
+in ``rust_manager.py``) and the registration-time rejection in
+``RustInspectProxy._check_event`` both read from this table; the
+``set_inspect_<event>`` callback registration in
+``RustExplorationManager.set_callbacks`` iterates over it.
+
+To wire a new event, add a row to ``_INSPECT_EVENT_SPECS`` and follow
+the 5-touchpoint pattern documented next to the table (Rust callbacks
+slot + setter + dispatch helper, instrumentation site, manager-side
+``_cb_inspect_<name>`` method). The
+``TestRustInspectAllowlistConsistency`` test class enforces that no
+event ends up in the table without a working dispatch, and that every
+event in ``angr.state_plugins.inspect.event_types`` either dispatches
+or raises ``NotImplementedError`` on registration (no silent
+pass-through).
+
 Decision history
 ~~~~~~~~~~~~~~~~
 
@@ -1225,6 +1249,8 @@ Decision history
   dispatch from VEX ``IRExpr::Load`` / ``IRStmt::Store``.
 * ``angr-d46u`` (2026-05-22): extended dispatch to ``reg_read``,
   ``reg_write``, ``instruction``, ``irsb``, and ``exit`` events.
+* ``angr-ji7h`` (2026-05-25): consolidated the allowlist to a single
+  source of truth + CI tests guarding against silent pass-through.
 
 Known slower benchmarks
 -----------------------
