@@ -195,6 +195,10 @@ impl<'a> CallbackInterpreter<'a> {
                     // NEON scaffolding: surface explicitly. See
                     // `invariant-neon-scaffolding-panic-not-fallback`.
                     Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
+                    // the silent fresh-symbolic fallback so the engine
+                    // surfaces RustUnsupportedVexOpError with op + arch.
+                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         // Fallback for unsupported unary ops (e.g., float conversions).
                         // Return fresh symbolic if input was symbolic, else zero.
@@ -228,6 +232,10 @@ impl<'a> CallbackInterpreter<'a> {
                     // NEON scaffolding: surface explicitly. See
                     // `invariant-neon-scaffolding-panic-not-fallback`.
                     Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
+                    // the silent fresh-symbolic fallback so the engine
+                    // surfaces RustUnsupportedVexOpError with op + arch.
+                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         // Fallback for unsupported binary ops (e.g., vector float ops).
                         self.stats.python_vex_op_fallback_count += 1;
@@ -314,6 +322,10 @@ impl<'a> CallbackInterpreter<'a> {
                     // NEON scaffolding: surface explicitly. See
                     // `invariant-neon-scaffolding-panic-not-fallback`.
                     Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
+                    // the silent fresh-symbolic fallback so the engine
+                    // surfaces RustUnsupportedVexOpError with op + arch.
+                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         self.stats.python_vex_op_fallback_count += 1;
                         self.stats.python_vex_triop_fallback_count += 1;
@@ -352,6 +364,10 @@ impl<'a> CallbackInterpreter<'a> {
                     // NEON scaffolding: surface explicitly. See
                     // `invariant-neon-scaffolding-panic-not-fallback`.
                     Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
+                    // the silent fresh-symbolic fallback so the engine
+                    // surfaces RustUnsupportedVexOpError with op + arch.
+                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
                     Err(_) => {
                         self.stats.python_vex_op_fallback_count += 1;
                         self.stats.python_vex_qop_fallback_count += 1;

@@ -4,6 +4,28 @@
 //! operations like `IROp::Add(IRType::I32)`. This module provides the translation.
 
 use super::ir::{FCmpKind, IROp, IRType};
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+
+/// Intern an unmapped opcode name into a `&'static str` so it can ride in
+/// `IROp::Unmapped(&'static str)` without breaking the enum's `Copy`
+/// derive. Same string contents always return the same interned pointer —
+/// repeated lookups for the same opcode name do not leak duplicates.
+///
+/// Used only on the unmapped-opcode error path (angr-tkbr.2). The set of
+/// unmapped names is small and bounded in practice (a few dozen per arch
+/// at most), so the persistent leak is acceptable.
+fn intern_unmapped_op(op_str: &str) -> &'static str {
+    static INTERN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let intern = INTERN.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = intern.lock().expect("unmapped-op intern mutex poisoned");
+    if let Some(s) = guard.get(op_str) {
+        return *s;
+    }
+    let leaked: &'static str = Box::leak(op_str.to_string().into_boxed_str());
+    guard.insert(leaked);
+    leaked
+}
 
 // =============================================================================
 // Width-family macros (angr-hfr0)
@@ -154,7 +176,14 @@ macro_rules! fcmp_scalar_arms {
 
 /// Convert a pyvex operation string to Rust IROp.
 ///
-/// Returns `IROp::Raw(0)` with a log warning for unmapped operations.
+/// Returns `IROp::Unmapped(name)` (interned `&'static str`) for opcodes
+/// with no entry in the parse_* dispatch. Dispatch in
+/// `VEXOps::unop`/`binop`/`ternop`/`qop` surfaces this as
+/// `OpError::UnsupportedVexOp { op_name }`, which the engine maps to
+/// `RustUnsupportedVexOpError(op_name, arch)`. Before angr-tkbr.2 this
+/// path silently rewrote to `IROp::Raw(0)` and `log::warn!`-ed the
+/// name, which masked missing coverage and produced fresh-symbolic
+/// results that were hard to attribute.
 pub fn parse_opcode(op_str: &str) -> IROp {
     // Fast path for common operations
     if let Some(op) = parse_arithmetic(op_str) {
@@ -185,9 +214,11 @@ pub fn parse_opcode(op_str: &str) -> IROp {
         return op;
     }
 
-    // Unmapped operation
+    // Unmapped operation — capture the name so dispatch can surface
+    // RustUnsupportedVexOpError instead of silently producing fresh
+    // symbolic results. See angr-tkbr.2.
     log::warn!("Unmapped VEX operation: {}", op_str);
-    IROp::Raw(0)
+    IROp::Unmapped(intern_unmapped_op(op_str))
 }
 
 /// Parse arithmetic operations: Add, Sub, Mul, Div, Mod, Neg, Mull
@@ -277,6 +308,14 @@ fn parse_comparison(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_CmpNE"    => CmpNE { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     // ExpCmpNE ("expensive" compare) has identical semantics to CmpNE.
     tuple_arms!(op_str; "Iop_ExpCmpNE" => CmpNE { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
+    // CasCmpEQ / CasCmpNE: identical semantics to CmpEQ / CmpNE — the "Cas"
+    // prefix only signals to optimizers that the operand pattern came from
+    // a CAS lowering (see parse_opcode_from_u32's 0x1431-0x1438 arms for
+    // the integer-code path). Before angr-tkbr.2 these silently rewrote
+    // to IROp::Raw(0) and produced a fresh-symbolic zero, which masked
+    // the missing mapping for cmpxchg/cmpxchg16b lifts.
+    tuple_arms!(op_str; "Iop_CasCmpEQ" => CmpEQ { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
+    tuple_arms!(op_str; "Iop_CasCmpNE" => CmpNE { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
 
     tuple_arms!(op_str; "Iop_CmpLT" => CmpLT  { "32S" => I32, "64S" => I64 });
     tuple_arms!(op_str; "Iop_CmpLE" => CmpLE  { "32S" => I32, "64S" => I64 });
@@ -1325,8 +1364,24 @@ mod tests {
 
     #[test]
     fn test_unmapped_opcode() {
-        // Unknown opcodes should return Raw(0)
-        assert_eq!(parse_opcode("Iop_UnknownOp"), IROp::Raw(0));
+        // Unknown opcodes now route through IROp::Unmapped (angr-tkbr.2).
+        // Dispatch in VEXOps::unop/binop/triop/qop surfaces this as
+        // OpError::UnsupportedVexOp, which the engine maps to
+        // RustUnsupportedVexOpError.
+        match parse_opcode("Iop_UnknownOp") {
+            IROp::Unmapped(name) => assert_eq!(name, "Iop_UnknownOp"),
+            other => panic!("expected Unmapped, got {:?}", other),
+        }
+        // The interner must dedupe — same name returns the same pointer.
+        let a = match parse_opcode("Iop_UnknownOp") {
+            IROp::Unmapped(n) => n,
+            _ => unreachable!(),
+        };
+        let b = match parse_opcode("Iop_UnknownOp") {
+            IROp::Unmapped(n) => n,
+            _ => unreachable!(),
+        };
+        assert!(std::ptr::eq(a, b), "interner must dedupe by string");
     }
 
     #[test]

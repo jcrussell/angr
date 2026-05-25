@@ -249,7 +249,8 @@ pub struct VEXOps;
 ///
 /// `Vec` captures everything prefixed with `V*` (SIMD/NEON). `Fp` captures
 /// scalar FP plus the unprefixed FP conversions. `Other` is the catch-all
-/// for `Raw` opcode escapes and the `NeonUnimplemented` panic sentinel.
+/// for `Raw` opcode escapes, the `NeonUnimplemented` typed-error sentinel,
+/// and the `Unmapped` typed-error sentinel (angr-tkbr.2).
 #[inline]
 pub fn iropclass(op: &IROp) -> VexOpFamily {
     match op {
@@ -392,8 +393,9 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::PclmulHQLQ
         | IROp::Crc32C => VexOpFamily::Arith,
 
-        // Raw opcode escape + NEON panic sentinel: not pre-classified.
-        IROp::NeonUnimplemented(_) | IROp::Raw(_) => VexOpFamily::Other,
+        // Raw opcode escape + NEON panic sentinel + unmapped-opcode
+        // typed-error sentinel (angr-tkbr.2): not pre-classified.
+        IROp::NeonUnimplemented(_) | IROp::Unmapped(_) | IROp::Raw(_) => VexOpFamily::Other,
     }
 }
 
@@ -535,6 +537,12 @@ impl VEXOps {
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             // Implementations land in angr-bkcs.2.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
+
+            // Unmapped opcode — captured at parse time, surfaces here so the
+            // engine maps it to RustUnsupportedVexOpError (angr-tkbr.2).
+            IROp::Unmapped(name) => Err(OpError::UnsupportedVexOp {
+                op_name: name.to_string(),
+            }),
 
             _ => Err(OpError::NotUnary(op)),
         }
@@ -809,6 +817,11 @@ impl VEXOps {
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
+            // Unmapped opcode (angr-tkbr.2).
+            IROp::Unmapped(name) => Err(OpError::UnsupportedVexOp {
+                op_name: name.to_string(),
+            }),
+
             _ => Err(OpError::NotBinary(op)),
         }
     }
@@ -840,6 +853,11 @@ impl VEXOps {
             // falling back. interpreter_cb::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
+
+            // Unmapped opcode (angr-tkbr.2).
+            IROp::Unmapped(name) => Err(OpError::UnsupportedVexOp {
+                op_name: name.to_string(),
+            }),
             _ => Err(OpError::NotTernary(op)),
         }
     }
@@ -866,6 +884,11 @@ impl VEXOps {
             // falling back. interpreter_cb::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
+
+            // Unmapped opcode (angr-tkbr.2).
+            IROp::Unmapped(name) => Err(OpError::UnsupportedVexOp {
+                op_name: name.to_string(),
+            }),
             _ => Err(OpError::NotQuaternary(op)),
         }
     }
@@ -3570,6 +3593,15 @@ pub enum OpError {
     /// See `invariant-neon-scaffolding-panic-not-fallback` (bd memories).
     #[error("NEON op {name} not yet implemented")]
     UnsupportedNeon { name: &'static str },
+    /// Opcode string with no entry in `parse_opcode` (angr-tkbr.2).
+    ///
+    /// Routed from `IROp::Unmapped(name)`. Like `UnsupportedNeon`, this
+    /// is propagated explicitly past the silent fresh-symbolic fallback
+    /// in `interpreter_cb::expressions` so callers see the real op name
+    /// in a typed `RustUnsupportedVexOpError` instead of getting a
+    /// fresh-symbolic value of the wrong width.
+    #[error("unmapped VEX opcode: {op_name}")]
+    UnsupportedVexOp { op_name: String },
     /// Raw/unimplemented opcode.
     #[error("raw/unimplemented opcode: {0}")]
     RawOpcode(u32),

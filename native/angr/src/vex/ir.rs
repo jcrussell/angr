@@ -982,6 +982,19 @@ pub enum IROp {
     NeonUnimplemented(&'static str),
 
     // =========================================================================
+    // Unmapped opcode (no entry in `parse_opcode`)
+    // =========================================================================
+    /// Opcode string that `parse_opcode` could not match to any known
+    /// `IROp` variant. Holds an interned `&'static str` of the original
+    /// pyvex opcode name (e.g. `"Iop_FakeNotARealOp"`). Dispatch in
+    /// `VEXOps::unop`/`binop`/`ternop`/`qop` surfaces this as
+    /// `OpError::UnsupportedVexOp { op_name }`, which the engine maps to
+    /// `RustUnsupportedVexOpError(op_name, arch)` (angr-tkbr.2). Replaces
+    /// the previous silent `IROp::Raw(0)` fallback that lost the name
+    /// and produced fresh-symbolic results.
+    Unmapped(&'static str),
+
+    // =========================================================================
     // Raw VEX opcode (for unhandled operations)
     // =========================================================================
     /// Fallback for operations not yet implemented.
@@ -1218,6 +1231,10 @@ impl IROp {
             // in expressions.rs) won't crash, but in practice the dispatch
             // panic fires first.
             IROp::NeonUnimplemented(_) => None,
+
+            // Unmapped opcode — dispatch surfaces UnsupportedVexOp before
+            // result_type is consulted. None matches the Raw(_) convention.
+            IROp::Unmapped(_) => None,
 
             IROp::Raw(_) => None,
         }

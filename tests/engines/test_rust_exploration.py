@@ -11523,6 +11523,52 @@ class TestRustExecutionErrorHierarchy:
         with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_Cnt8x8.*arm64"):
             engine.execute_irsb_json(json.dumps(irsb))
 
+    def test_raise_unmapped_op_via_execute_irsb(self):
+        """The angr-tkbr.2 acceptance: an opcode string with NO entry in
+        ``parse_opcode`` (not in any ``parse_*`` table, not in
+        ``parse_neon_unimplemented``) surfaces as
+        ``RustUnsupportedVexOpError`` carrying the original op name +
+        arch.
+
+        Before tkbr.2 the unmapped fallback silently rewrote to
+        ``IROp::Raw(0)`` (just a ``log::warn!``) and the dispatcher
+        produced a fresh-symbolic value of the wrong width. After
+        tkbr.2 ``parse_opcode`` returns ``IROp::Unmapped(name)`` and
+        the dispatcher emits ``OpError::UnsupportedVexOp`` which the
+        engine maps to ``RustUnsupportedVexOpError(op_name, arch)``.
+
+        Uses a deliberately fake name (``Iop_NotARealOp1234``) so the
+        test stays valid even as real opcodes get mapped over time.
+        """
+        import json
+        from angr.exploration import RustUnsupportedVexOpError
+        from angr.rustylib.vex_engine import RustVEXEngine
+
+        engine = RustVEXEngine("amd64")
+        fake_op = "Iop_NotARealOp1234"
+        irsb = {
+            "addr": 4096,
+            "arch": "AMD64",
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                    "tag": "Iex_Const",
+                    "con": {"tag": "Ico_U64", "value": 0},
+                }},
+                {"tag": "Ist_WrTmp", "tmp": 1, "data": {
+                    "tag": "Iex_Unop",
+                    "op": fake_op,
+                    "arg": {"tag": "Iex_RdTmp", "tmp": 0},
+                }},
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": 184,
+            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
+        }
+        with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_NotARealOp1234.*amd64"):
+            engine.execute_irsb_json(json.dumps(irsb))
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

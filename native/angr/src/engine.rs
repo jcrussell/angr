@@ -129,6 +129,14 @@ fn execution_error_to_typed(err: ExecutionError, addr: u64, arch: &str) -> RustE
             op_name: name,
             arch: arch.to_string(),
         },
+        // angr-tkbr.2: unmapped pyvex opcode (no entry in parse_opcode).
+        // The op_name was captured at parse time via IROp::Unmapped(name).
+        ExecutionError::Op(OpError::UnsupportedVexOp { op_name }) => {
+            RustExecError::UnsupportedVexOp {
+                op_name,
+                arch: arch.to_string(),
+            }
+        }
         ExecutionError::InvalidIR(reason) => RustExecError::MalformedIRSB { addr, reason },
         ExecutionError::Memory(_)
         | ExecutionError::Op(_)
