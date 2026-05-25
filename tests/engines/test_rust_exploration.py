@@ -3050,6 +3050,31 @@ class TestProxyLiskovGaps:
         with pytest.raises(claripy.errors.UnsatError):
             proxy.memory.load(addr_sym, 4)
 
+    def test_memory_store_raises_with_documented_workaround(self, fauxware_project):
+        """``proxy.memory.store`` raises NotImplementedError and the message
+        names the documented workaround (angr-nt4q).
+
+        Proxy writes were evaluated in rust_proxy_writes_design.rst and
+        deferred; instead of staying silent the proxy must point users at
+        the SimProcedure-hook path that DOES write through. Pattern matches
+        the loud-error model from angr-osuu (state.inspect unsupported
+        events): the error message is part of the documented API.
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        with pytest.raises(NotImplementedError) as exc_info:
+            proxy.memory.store(0x1000, b"\x90\x90")
+
+        msg = str(exc_info.value)
+        # The error must name the SimProcedure-hook workaround (the path
+        # users redirect to) and reference the documentation entry.
+        assert "proj.hook" in msg, f"workaround not surfaced in error: {msg}"
+        assert "rust_engine.rst" in msg, f"doc pointer missing: {msg}"
+
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestMmapBaseSync:

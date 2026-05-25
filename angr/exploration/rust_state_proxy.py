@@ -418,9 +418,38 @@ class RustMemoryProxy:
         return claripy.BVV(val, size * 8)
 
     def store(self, addr, data, **kwargs):
-        """Store not supported on proxy (read-only view)."""
+        """Store not supported on proxy (read-only view).
+
+        ``RustStateProxy`` is the lightweight view used by find/avoid
+        predicates and ``state.inspect`` breakpoints — paths where
+        materializing a full ``SimState`` per state would dominate cost.
+        Mutating memory through the proxy was evaluated as the
+        ``set_state_memory`` write-through path in
+        ``docs/advanced-topics/rust_proxy_writes_design.rst`` and
+        explicitly deferred (high plugin-contract risk, <=7% wall savings
+        on the worst-affected bench).
+
+        Workarounds (see ``docs/advanced-topics/rust_engine.rst``
+        "RustStateProxy read-only contract"):
+
+        * To mutate memory before exploration: write to the seed
+          ``SimState`` via ``state.memory.store(...)`` before adding it
+          to the manager.
+        * To mutate memory at an address during exploration: register a
+          SimProcedure-style hook (``proj.hook(addr, fn)``). SimProcedure
+          callbacks receive a full ``SimState`` and ``memory.store``
+          writes are synced back to Rust via the diff-and-push path at
+          ``rust_state_sync.py``.
+        * For analyses that fundamentally need mutating predicates,
+          drop back to the Python engine
+          (omit ``use_rust_engine=True``).
+        """
         raise NotImplementedError(
-            "memory store not supported on RustStateProxy (read-only)"
+            "memory store not supported on RustStateProxy (read-only). "
+            "Workaround: use a SimProcedure-style hook (proj.hook(addr, fn)) "
+            "for in-exploration writes, or mutate the seed state before "
+            "adding it to the manager. See docs/advanced-topics/"
+            "rust_engine.rst 'RustStateProxy read-only contract' for details."
         )
 
 

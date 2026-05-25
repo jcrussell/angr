@@ -96,6 +96,51 @@ need the full ``RustSimulationManagerProxy`` wrapper. Use the full
 needs full ``SimState`` plugins (``posix.dumps(0)``, ``simgr.explore``
 seeding, claripy AST round-trips).
 
+RustStateProxy read-only contract
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``RustStateProxy`` is a **read-only** view. Calling
+``proxy.memory.store(addr, data)`` or
+``proxy.regs.<name> = value`` from inside a find/avoid predicate or a
+``state.inspect`` breakpoint raises ``NotImplementedError`` — the proxy
+delegates reads to Rust but does not push writes back. Constraints are
+the one exception: ``proxy.solver.add(...)`` writes through to a forked
+Rust solver via the ``_rust_add`` interceptor in
+``rust_callback_dispatch.py``.
+
+The asymmetry is by design. Proxy-backed register/memory writes were
+evaluated end-to-end and explicitly deferred in
+:doc:`rust_proxy_writes_design` (Option A): the measured per-callback
+diff-and-push cost is 1–14 ms, the aggregate is at most ~7 % of wall
+time on the fastest bench and well under 1 % on the rest, and the
+plugin-substitution refactor needed to write-through cleanly carries
+the same silent-divergence risk that
+``avoid-state-copy-optimization`` flagged on the diff path.
+
+Workarounds:
+
+* **Mutate the seed state before exploration.** Write to the
+  ``SimState`` you pass to ``RustExplorationManager`` (or
+  ``proj.factory.simulation_manager(use_rust_engine=True)``) before
+  ``run``/``explore`` — those writes land in Rust at seed time.
+* **Use a SimProcedure-style hook** (``proj.hook(addr, fn)``) when you
+  need an in-exploration mutation at a specific address. SimProcedure
+  callbacks receive a **full** ``SimState`` (not a proxy), and
+  ``state.memory.store(...)`` / ``state.regs.<name> = ...`` are synced
+  back to the Rust state via the diff-and-push path in
+  ``rust_state_sync.py`` after the callback returns.
+* **Drop back to the Python engine** for analyses whose find/avoid
+  predicates fundamentally need to mutate state. Omit
+  ``use_rust_engine=True`` and the standard angr predicate API
+  applies.
+
+Read-only paths the proxy supports — ``proxy.regs.<name>`` /
+``proxy.memory.load(addr, size)`` / ``proxy.solver.eval(...)`` /
+``proxy.solver.add(...)`` — are stable. The reopen condition for
+proxy-write support is the same as for the other deferred
+write-through items in :doc:`rust_proxy_writes_design` (callback
+density 10K+/bench or an unblocking dependency from ``angr-2k64``).
+
 Architecture
 ------------
 
