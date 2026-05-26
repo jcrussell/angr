@@ -1,4 +1,63 @@
-#!/bin/sh
-# post-iteration: runs after every iteration. Iteration JSON is on stdin.
-cat >/dev/null
-exit 0
+#!/usr/bin/env python3
+"""post-iteration: track gate-fail streaks and emit a warning marker into session.md.
+
+Workaround until ralph upstream gains native ConsecutiveGateFail tracking and
+a {{.GateFailStreak}} template variable. When that lands, revert this file to
+the 3-line shell stub.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+STREAK_THRESHOLD = 3
+HISTORY = Path(".ralph/state/gate-history.jsonl")
+SESSION = Path(".ralph/state/session.md")
+MARKER_PREFIX = "⚠ gate-fail streak:"
+
+
+def main() -> int:
+    try:
+        record = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    with HISTORY.open("a") as fh:
+        fh.write(
+            json.dumps(
+                {"iter": record.get("iter"), "gate_result": record.get("gate_result")}
+            )
+            + "\n"
+        )
+
+    recent = HISTORY.read_text().splitlines()[-STREAK_THRESHOLD:]
+    streak = len(recent) == STREAK_THRESHOLD and all(
+        json.loads(line).get("gate_result") == "failed" for line in recent
+    )
+
+    existing = SESSION.read_text() if SESSION.exists() else ""
+    stripped = "\n".join(
+        line for line in existing.splitlines() if not line.startswith(MARKER_PREFIX)
+    ).lstrip("\n")
+
+    if streak:
+        marker = (
+            f"{MARKER_PREFIX} {STREAK_THRESHOLD} consecutive gate failures — "
+            "deprioritize perf work, audit regressions before continuing."
+        )
+        body = (marker + "\n\n" + stripped) if stripped else marker + "\n"
+    else:
+        body = stripped
+
+    if body != existing:
+        SESSION.parent.mkdir(parents=True, exist_ok=True)
+        if body and not body.endswith("\n"):
+            body += "\n"
+        SESSION.write_text(body)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

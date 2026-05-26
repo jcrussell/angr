@@ -9,4 +9,5 @@ set -e
 export PATH="$HOME/.cargo/bin:$PATH"
 # shellcheck disable=SC1091
 . /home/ubuntu/repos/angr/.venv/bin/activate
-exec claude --dangerously-skip-permissions --output-format=json "$@"
+exec claude --dangerously-skip-permissions --output-format=json \
+            --model claude-opus-4-7 "$@"
