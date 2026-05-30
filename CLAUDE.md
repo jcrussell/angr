@@ -1,5 +1,24 @@
 # Claude Code Notes
 
+## Memory system
+
+Project memory lives in **bd**, not in Claude's per-project auto-memory
+markdown files. As of 2026-05-30 there are 977 project memories already
+in `bd remember`.
+
+- **Recall** a specific memory: `bd recall <key>` (keys are kebab-case, e.g.
+  `core-goal-design-philosophy`, `constraint-export-no-pre-pin`).
+- **Search** memories: `bd memories <keyword>` (no arg lists all).
+- **Save** a new memory: `bd remember "<insight>" --key <kebab-key>` — updates
+  in place if `--key` already exists.
+- **Remove**: `bd forget <key>`.
+- **Prime context**: `bd prime` injects bd's workflow context (~80 lines) and
+  is auto-called by `bd hooks install` at session start where installed.
+
+This **overrides** the default Claude auto-memory instructions to
+write per-memory markdown files. Do not write those files for this
+project; they fragment across accounts and drift from bd.
+
 ## Makefile Shortcuts
 
 Common dev workflows are wired up in the repo-root `Makefile`. Run `make help`
@@ -91,7 +110,7 @@ pip install. Pass `--keep-cargo-cache` to skip `cargo clean` (faster), or
 ## Running Tests
 
 ```bash
-# Run RustExplorationManager tests (332/332 passing as of 2026-05-08)
+# Run RustExplorationManager tests (484/484 passing — see Current Status below)
 python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 
 # Run benchmark regression tests (7 fast-tier benchmarks)
