@@ -2669,6 +2669,30 @@ impl RustBV {
     /// is properly tracked — passing raw `Z3_ast` pointers to multiple FFI
     /// calls is unsafe because Z3's ref-counted contexts may GC the
     /// intermediate ASTs between calls.
+    ///
+    /// # SAFETY invariants for all `unsafe { z3_sys::… }` calls in this and
+    /// the sibling `build_fp_*_cached` helpers
+    ///
+    /// 1. **Context validity**: `raw_ctx` is `z3::Context::thread_local()
+    ///    .get_z3_context()`. The thread-local context lives for the
+    ///    duration of the thread, so the handle is valid for the call.
+    /// 2. **Pointer validity**: All `Z3_ast` operands are obtained from
+    ///    `.get_z3_ast()` on live wrappers (`RustBV`, `Float`, `Bool`,
+    ///    `RoundingMode`, `Sort`) bound in the same scope, so Z3 holds at
+    ///    least one refcount on each for the duration of the FFI call.
+    /// 3. **Null handling**: Every `Z3_mk_fpa_*` is followed by
+    ///    `.expect(…)`, converting the only failure mode (NULL) into a
+    ///    panic — so any pointer that escapes the `unsafe` block is
+    ///    non-null and points at a fresh Z3 AST with one refcount.
+    /// 4. **Refcount discipline**: Each fresh raw `Z3_ast` is immediately
+    ///    handed to `Float::wrap` / `BV::wrap` / `Bool::wrap`, which takes
+    ///    over the refcount Z3 added at construction. The wrapper is then
+    ///    held in a local for the rest of its use. The wrap functions are
+    ///    `unsafe` only because they require this caller-supplied refcount
+    ///    discipline; no other invariant is needed.
+    /// 5. **Thread-safety**: All ASTs in this helper live in the
+    ///    thread-local context; nothing escapes the calling thread, so
+    ///    Z3's per-context single-thread requirement is upheld.
     #[cfg(feature = "vex-engine-z3")]
     fn build_fp_z3_ast_cached(
         kind: FloatOpKind,
@@ -2744,10 +2768,16 @@ impl RustBV {
             .iter()
             .map(|bv| {
                 let bv_ast = bv.to_z3_ast_cached(cache);
+                // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
+                // `bv_ast` is a live `BV` wrapper; `raw_sort` is a live
+                // `Sort` handle. `Z3_mk_fpa_to_fp_bv` returns a fresh AST
+                // (or NULL → panic via `.expect`).
                 let raw = unsafe {
                     Z3_mk_fpa_to_fp_bv(raw_ctx, bv_ast.get_z3_ast(), raw_sort)
                         .expect("Z3_mk_fpa_to_fp_bv returned NULL")
                 };
+                // SAFETY: `raw` is a fresh non-null Z3_ast in `z3_ctx`
+                // with one refcount held by Z3; `Float::wrap` takes it.
                 unsafe { Float::wrap(&z3_ctx, raw) }
             })
             .collect();
@@ -2763,6 +2793,11 @@ impl RustBV {
         let raw_b = || fp_args[1].get_z3_ast();
         let raw_c = || fp_args[2].get_z3_ast();
 
+        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
+        // `rm_raw` is held by the `rm: RoundingMode` wrapper; `raw_a`,
+        // `raw_b()`, `raw_c()` come from the `fp_args` Float wrappers and
+        // remain live for the duration of this match. Every `Z3_mk_fpa_*`
+        // returns a fresh AST (or NULL → panic via `.expect`).
         let result_raw = unsafe {
             match kind {
                 FloatOpKind::Add => Z3_mk_fpa_add(raw_ctx, rm_raw, raw_a, raw_b()),
@@ -2800,14 +2835,24 @@ impl RustBV {
         };
 
         if kind.is_compare() {
+            // SAFETY: `result_raw` is the fresh Z3 Bool produced by the
+            // comparison op above (one refcount held by Z3); `Bool::wrap`
+            // takes that refcount. Same context as the wrapper.
             let cmp_bool = unsafe { Bool::wrap(&z3_ctx, result_raw) };
             cmp_bool.ite(&BV::from_u64(1, 1), &BV::from_u64(0, 1))
         } else {
+            // SAFETY: `result_raw` is the fresh Z3 Float produced above;
+            // `Float::wrap` takes its refcount.
             let result_fp = unsafe { Float::wrap(&z3_ctx, result_raw) };
+            // SAFETY: `result_fp` is a live Float in `z3_ctx`;
+            // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL →
+            // panic via `.expect`).
             let ieee_bv_raw = unsafe {
                 Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
                     .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
             };
+            // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call
+            // above; `BV::wrap` takes its refcount.
             unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
         }
     }
@@ -2844,6 +2889,10 @@ impl RustBV {
 
         // Convert the value BV to a Z3 Float; keep the wrapper alive.
         let value_z3 = value_bv.to_z3_ast_cached(cache);
+        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
+        // `value_z3` is a live BV in `z3_ctx`; `raw_sort` is a live Sort
+        // handle; `Z3_mk_fpa_to_fp_bv` returns a fresh AST whose refcount
+        // `Float::wrap` immediately takes.
         let value_fp = unsafe {
             let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), raw_sort)
                 .expect("Z3_mk_fpa_to_fp_bv returned NULL");
@@ -2860,10 +2909,16 @@ impl RustBV {
                 3 => RoundingMode::round_towards_zero(),
                 _ => unreachable!(),
             };
+            // SAFETY: `rm` is a live RoundingMode in `z3_ctx`; `value_raw`
+            // is held alive by the `value_fp` wrapper above.
+            // `Z3_mk_fpa_round_to_integral` returns a fresh AST (or NULL →
+            // panic via `.expect`).
             let raw = unsafe {
                 Z3_mk_fpa_round_to_integral(raw_ctx, rm.get_z3_ast(), value_raw)
                     .expect("Z3_mk_fpa_round_to_integral returned NULL")
             };
+            // SAFETY: `raw` is the fresh Float AST from the call above;
+            // `Float::wrap` takes its refcount.
             unsafe { Float::wrap(&z3_ctx, raw) }
         };
 
@@ -2886,10 +2941,15 @@ impl RustBV {
             rm_low2.eq(&zero).ite(&r0, &pick123)
         };
 
+        // SAFETY: `result_fp` is a live Float in `z3_ctx`;
+        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
+        // via `.expect`).
         let ieee_bv_raw = unsafe {
             Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
                 .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
         };
+        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
+        // `BV::wrap` takes its refcount.
         unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
     }
 
@@ -2929,10 +2989,16 @@ impl RustBV {
         let to_fp =
             |bv: &RustBV, cache: &mut std::collections::HashMap<usize, z3::ast::BV>| -> Float {
                 let z3 = bv.to_z3_ast_cached(cache);
+                // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
+                // `z3` is a live BV in `z3_ctx`; `raw_sort` is a live Sort.
+                // `Z3_mk_fpa_to_fp_bv` returns a fresh AST (or NULL →
+                // panic via `.expect`).
                 let raw = unsafe {
                     Z3_mk_fpa_to_fp_bv(raw_ctx, z3.get_z3_ast(), raw_sort)
                         .expect("Z3_mk_fpa_to_fp_bv returned NULL")
                 };
+                // SAFETY: `raw` is the fresh Float AST from above;
+                // `Float::wrap` takes its refcount.
                 unsafe { Float::wrap(&z3_ctx, raw) }
             };
         let a_fp = to_fp(&operands[1], cache);
@@ -2952,6 +3018,11 @@ impl RustBV {
             };
             let rm_raw = rm.get_z3_ast();
             let raw_a = a_fp.get_z3_ast();
+            // SAFETY: `rm` (RoundingMode) and `a_fp` / `b_fp` (Float) are
+            // live wrappers in `z3_ctx` for the duration of this closure
+            // body, so `rm_raw`, `raw_a` and the `get_z3_ast()` calls on
+            // `b_fp` all yield valid Z3_ast pointers. Each `Z3_mk_fpa_*`
+            // returns a fresh AST (or NULL → panic via `.expect`).
             let raw = unsafe {
                 match kind {
                     FloatOpKind::AddRm => {
@@ -2971,6 +3042,8 @@ impl RustBV {
                 }
                 .expect("Z3 FPA arith op returned NULL")
             };
+            // SAFETY: `raw` is the fresh Float AST from the call above;
+            // `Float::wrap` takes its refcount.
             unsafe { Float::wrap(&z3_ctx, raw) }
         };
 
@@ -2993,10 +3066,15 @@ impl RustBV {
             rm_low2.eq(&zero).ite(&r0, &pick123)
         };
 
+        // SAFETY: `result_fp` is a live Float in `z3_ctx`;
+        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
+        // via `.expect`).
         let ieee_bv_raw = unsafe {
             Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
                 .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
         };
+        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
+        // `BV::wrap` takes its refcount.
         unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
     }
 
@@ -3030,6 +3108,11 @@ impl RustBV {
         let rm = RoundingMode::round_nearest_ties_to_even();
         let rm_raw = rm.get_z3_ast();
 
+        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
+        // `rm_raw` is held by `rm: RoundingMode`; `src_z3` is a live BV
+        // wrapper; `raw_sort` is a live Sort. The signed/unsigned
+        // `Z3_mk_fpa_to_fp_*` calls return a fresh Float AST (or NULL →
+        // panic via `.expect`).
         let fp_raw = unsafe {
             if signed {
                 Z3_mk_fpa_to_fp_signed(raw_ctx, rm_raw, src_z3.get_z3_ast(), raw_sort)
@@ -3039,11 +3122,18 @@ impl RustBV {
                     .expect("Z3_mk_fpa_to_fp_unsigned returned NULL")
             }
         };
+        // SAFETY: `fp_raw` is the fresh Float AST from the call above;
+        // `Float::wrap` takes its refcount.
         let fp_wrap = unsafe { Float::wrap(&z3_ctx, fp_raw) };
+        // SAFETY: `fp_wrap` is a live Float in `z3_ctx`;
+        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
+        // via `.expect`).
         let ieee_bv_raw = unsafe {
             Z3_mk_fpa_to_ieee_bv(raw_ctx, fp_wrap.get_z3_ast())
                 .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
         };
+        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
+        // `BV::wrap` takes its refcount.
         unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
     }
 
@@ -3081,6 +3171,10 @@ impl RustBV {
 
         // Convert the operand BV to a Z3 Float; keep the wrapper alive.
         let value_z3 = value_bv.to_z3_ast_cached(cache);
+        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
+        // `value_z3` is a live BV in `z3_ctx`; `raw_sort` is a live Sort.
+        // `Z3_mk_fpa_to_fp_bv` returns a fresh AST whose refcount
+        // `Float::wrap` immediately takes.
         let value_fp = unsafe {
             let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), raw_sort)
                 .expect("Z3_mk_fpa_to_fp_bv returned NULL");
@@ -3097,6 +3191,10 @@ impl RustBV {
                 3 => RoundingMode::round_towards_zero(),
                 _ => unreachable!(),
             };
+            // SAFETY: `rm` is a live RoundingMode in `z3_ctx`; `value_raw`
+            // is held alive by `value_fp` above. The signed/unsigned
+            // `Z3_mk_fpa_to_*bv` calls return a fresh BV AST (or NULL →
+            // panic via `.expect`).
             let raw = unsafe {
                 if signed {
                     Z3_mk_fpa_to_sbv(raw_ctx, rm.get_z3_ast(), value_raw, dst_bits as u32)
@@ -3106,6 +3204,8 @@ impl RustBV {
                         .expect("Z3_mk_fpa_to_ubv returned NULL")
                 }
             };
+            // SAFETY: `raw` is the fresh BV AST from the call above;
+            // `BV::wrap` takes its refcount.
             unsafe { BV::wrap(&z3_ctx, raw) }
         };
 
@@ -3171,6 +3271,10 @@ impl RustBV {
 
         // Convert the source operand BV to a Z3 Float at src_prec.
         let value_z3 = value_bv.to_z3_ast_cached(cache);
+        // SAFETY: see invariants block on `build_fp_z3_ast_cached`.
+        // `value_z3` is a live BV in `z3_ctx`; `src_raw_sort` is a live
+        // Sort handle. `Z3_mk_fpa_to_fp_bv` returns a fresh AST whose
+        // refcount `Float::wrap` immediately takes.
         let value_fp = unsafe {
             let raw = Z3_mk_fpa_to_fp_bv(raw_ctx, value_z3.get_z3_ast(), src_raw_sort)
                 .expect("Z3_mk_fpa_to_fp_bv returned NULL");
@@ -3186,10 +3290,16 @@ impl RustBV {
                 3 => RoundingMode::round_towards_zero(),
                 _ => unreachable!(),
             };
+            // SAFETY: `rm` is a live RoundingMode in `z3_ctx`; `value_raw`
+            // is held alive by `value_fp` above; `dst_raw_sort` is a live
+            // Sort handle. `Z3_mk_fpa_to_fp_float` returns a fresh Float
+            // AST (or NULL → panic via `.expect`).
             let raw = unsafe {
                 Z3_mk_fpa_to_fp_float(raw_ctx, rm.get_z3_ast(), value_raw, dst_raw_sort)
                     .expect("Z3_mk_fpa_to_fp_float returned NULL")
             };
+            // SAFETY: `raw` is the fresh Float AST from above;
+            // `Float::wrap` takes its refcount.
             unsafe { Float::wrap(&z3_ctx, raw) }
         };
 
@@ -3215,10 +3325,15 @@ impl RustBV {
             }
         };
 
+        // SAFETY: `result_fp` is a live Float in `z3_ctx`;
+        // `Z3_mk_fpa_to_ieee_bv` returns a fresh BV AST (or NULL → panic
+        // via `.expect`).
         let ieee_bv_raw = unsafe {
             Z3_mk_fpa_to_ieee_bv(raw_ctx, result_fp.get_z3_ast())
                 .expect("Z3_mk_fpa_to_ieee_bv returned NULL")
         };
+        // SAFETY: `ieee_bv_raw` is the fresh BV AST from the call above;
+        // `BV::wrap` takes its refcount.
         unsafe { BV::wrap(&z3_ctx, ieee_bv_raw) }
     }
 }
