@@ -11569,6 +11569,48 @@ class TestRustExecutionErrorHierarchy:
         with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_NotARealOp1234.*amd64"):
             engine.execute_irsb_json(json.dumps(irsb))
 
+    def test_unhandled_ccall_surfaces_error_not_concrete_zero(self):
+        """The angr-ppgx acceptance: unhandled ``Iex_CCall`` in the legacy
+        ``VEXInterpreter`` must surface as a ``RustExecutionError`` instead
+        of silently returning concrete 0.
+
+        Before this fix, ``interpreter.rs::IRExpr::CCall`` fell back to
+        ``RustBV::concrete(0, retty.bits())`` when ``ccall::handle_ccall``
+        had no entry — on amd64/x86 that corrupts ``rflags``/``eflags``
+        and miscompiles downstream conditional branches. The fix returns
+        ``ExecutionError::Unsupported("CCall {name}")`` which the engine
+        maps through ``execution_error_to_typed`` to the base
+        ``RustExecutionError`` class.
+        """
+        import json
+        from angr.exploration import RustExecutionError
+        from angr.rustylib.vex_engine import RustVEXEngine
+
+        engine = RustVEXEngine("amd64")
+        irsb = {
+            "addr": 4096,
+            "arch": "AMD64",
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                {"tag": "Ist_WrTmp", "tmp": 0, "data": {
+                    "tag": "Iex_CCall",
+                    "cee": {
+                        "name": "amd64g_NotARealCCall",
+                        "addr": 0,
+                        "mcx_mask": 0,
+                    },
+                    "retty": "Ity_I64",
+                    "args": [],
+                }},
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": 184,
+            "tyenv": {"types": ["Ity_I64"]},
+        }
+        with pytest.raises(RustExecutionError, match=r"CCall.*amd64g_NotARealCCall"):
+            engine.execute_irsb_json(json.dumps(irsb))
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

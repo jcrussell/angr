@@ -454,9 +454,10 @@ impl<'a> VEXInterpreter<'a> {
                     return Ok(result);
                 }
 
-                // Fallback: return zero for unhandled calls
-                // This allows execution to continue, though results may be imprecise.
-                Ok(RustBV::concrete(0, retty.bits()))
+                // Surface unhandled CCalls as errors rather than silently
+                // returning concrete 0 — on amd64/x86 that corrupts the
+                // rflags/eflags result and miscompiles downstream branches.
+                Err(ExecutionError::Unsupported(format!("CCall {}", cee.name)))
             }
 
             IRExpr::VECRET | IRExpr::GSPTR => {
