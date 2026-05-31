@@ -642,6 +642,54 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "32Sx4" => (I32, 4, true), "32Ux4" => (I32, 4, false),
     });
 
+    // NEON per-byte popcount — `Iop_Cnt8x{8,16}` (unary, 8-bit lanes only).
+    // ARM CNT (DDI 0487 C7.2.62).
+    match op_str {
+        "Iop_Cnt8x8" => return Some(IROp::VCnt { count: 8 }),
+        "Iop_Cnt8x16" => return Some(IROp::VCnt { count: 16 }),
+        _ => {}
+    }
+
+    // NEON per-lane count leading zeros — `Iop_Clz{N}x{M}` (unary). ARM CLZ
+    // (DDI 0487 C7.2.57). D-reg (total=64) and Q-reg (total=128) shapes for
+    // 8/16/32-bit lanes.
+    vec_arms!(op_str; "Iop_Clz" => VClz {
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
+        "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4),
+    });
+
+    // NEON per-lane count leading sign bits — `Iop_Cls{N}x{M}` (unary). ARM
+    // CLS (DDI 0487 C7.2.56). Same shapes as Clz.
+    vec_arms!(op_str; "Iop_Cls" => VCls {
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
+        "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4),
+    });
+
+    // NEON GF(2) polynomial multiply — `Iop_PolynomialMul8x{8,16}` (non-
+    // widening) and `Iop_PolynomialMull8x8` (widening). ARM PMUL / PMULL
+    // (DDI 0487 C7.2.281). Only 8-bit lanes are emitted by libVEX.
+    match op_str {
+        "Iop_PolynomialMul8x8" => {
+            return Some(IROp::VPolynomialMul {
+                count: 8,
+                widen: false,
+            });
+        }
+        "Iop_PolynomialMul8x16" => {
+            return Some(IROp::VPolynomialMul {
+                count: 16,
+                widen: false,
+            });
+        }
+        "Iop_PolynomialMull8x8" => {
+            return Some(IROp::VPolynomialMul {
+                count: 8,
+                widen: true,
+            });
+        }
+        _ => {}
+    }
+
     // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON.
     vec_arms!(op_str; "Iop_Mul" => VMul {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
@@ -880,26 +928,14 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // only Pw* still unimplemented.
         "Iop_PwAdd32Fx2" => "Iop_PwAdd32Fx2",
 
-        // Polynomial multiply (carry-less, NEON crypto-adjacent)
-        "Iop_PolynomialMul8x8" => "Iop_PolynomialMul8x8",
-        "Iop_PolynomialMul8x16" => "Iop_PolynomialMul8x16",
-        "Iop_PolynomialMull8x8" => "Iop_PolynomialMull8x8",
+        // NOTE: Iop_PolynomialMul8x{8,16} / Iop_PolynomialMull8x8 (NEON GF(2)
+        // carry-less multiply) implemented in angr-tukg.6 — routed through
+        // parse_vector to IROp::VPolynomialMul.
 
-        // Per-lane count operations
-        "Iop_Cnt8x8" => "Iop_Cnt8x8",
-        "Iop_Cnt8x16" => "Iop_Cnt8x16",
-        "Iop_Clz8x8" => "Iop_Clz8x8",
-        "Iop_Clz16x4" => "Iop_Clz16x4",
-        "Iop_Clz32x2" => "Iop_Clz32x2",
-        "Iop_Clz8x16" => "Iop_Clz8x16",
-        "Iop_Clz16x8" => "Iop_Clz16x8",
-        "Iop_Clz32x4" => "Iop_Clz32x4",
-        "Iop_Cls8x8" => "Iop_Cls8x8",
-        "Iop_Cls16x4" => "Iop_Cls16x4",
-        "Iop_Cls32x2" => "Iop_Cls32x2",
-        "Iop_Cls8x16" => "Iop_Cls8x16",
-        "Iop_Cls16x8" => "Iop_Cls16x8",
-        "Iop_Cls32x4" => "Iop_Cls32x4",
+        // NOTE: Iop_Cnt8x{8,16} (per-byte popcount), Iop_Clz{N}x{M} and
+        // Iop_Cls{N}x{M} (per-lane count-leading-zeros / count-leading-sign-
+        // bits) implemented in angr-tukg.6 — routed through parse_vector to
+        // IROp::VCnt / VClz / VCls.
 
         // Vector shift by *vector* (Shl/Shr/Sar/Sal{N}x{M}) routed to
         // parse_vector → IROp::VShl / VShr / VSar (Sal → VShl) in angr-tukg.7.
@@ -1440,12 +1476,7 @@ mod tests {
         // panics on this variant — the scaffolding makes missing NEON
         // coverage visible immediately instead of silently producing a
         // fresh-symbolic value.
-        for op in [
-            "Iop_RecipEst32Ux4",
-            "Iop_PwAdd32Fx2",
-            "Iop_PolynomialMull8x8",
-            "Iop_Cnt8x8",
-        ] {
+        for op in ["Iop_RecipEst32Ux4", "Iop_PwAdd32Fx2"] {
             match parse_opcode(op) {
                 IROp::NeonUnimplemented(name) => assert_eq!(name, op),
                 other => panic!("{} expected NeonUnimplemented, got {:?}", op, other),

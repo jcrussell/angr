@@ -11653,8 +11653,8 @@ class TestRustExecutionErrorHierarchy:
         """The NEON acceptance: ``pytest.raises(RustUnsupportedVexOpError,
         match="<op_name>.*<arch>")`` for a currently-unimplemented NEON op.
 
-        Constructs a minimal AArch64 IRSB that applies ``Iop_Cnt8x8`` (a
-        Unop on Ity_I64 routed through ``IROp::NeonUnimplemented``) to a
+        Constructs a minimal AArch64 IRSB that applies ``Iop_RecipEst32Ux2``
+        (a Unop on Ity_I64 routed through ``IROp::NeonUnimplemented``) to a
         zero constant. Before tkbr.3 the dispatcher in
         ``VEXOps::unop`` panicked, which PyO3 surfaced as
         ``pyo3_runtime.PanicException``; after tkbr.3 the panic is
@@ -11676,7 +11676,7 @@ class TestRustExecutionErrorHierarchy:
                 }},
                 {"tag": "Ist_WrTmp", "tmp": 1, "data": {
                     "tag": "Iex_Unop",
-                    "op": "Iop_Cnt8x8",
+                    "op": "Iop_RecipEst32Ux2",
                     "arg": {"tag": "Iex_RdTmp", "tmp": 0},
                 }},
             ],
@@ -11685,7 +11685,7 @@ class TestRustExecutionErrorHierarchy:
             "offsIP": 272,
             "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
         }
-        with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_Cnt8x8.*arm64"):
+        with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_RecipEst32Ux2.*arm64"):
             execute_irsb_for_test(json.dumps(irsb), "arm64")
 
     def test_raise_unmapped_op_via_execute_irsb(self):

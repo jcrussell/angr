@@ -960,6 +960,48 @@ pub enum IROp {
         signed: bool,
     },
 
+    /// NEON per-byte population count — `Iop_Cnt8x{8,16}`. Unary; each 8-bit
+    /// lane is replaced by the number of set bits in that lane (0..=8). Result
+    /// width preserved (8 * count bits). Maps to ARM CNT (DDI 0487 C7.2.62).
+    /// VEX only defines this op for 8-bit lanes — wider element popcounts are
+    /// not part of the NEON ISA.
+    VCnt {
+        count: u8,
+    },
+
+    /// NEON per-lane count leading zeros — `Iop_Clz{N}x{M}`. Unary; each
+    /// `elem`-wide lane is replaced by its leading-zero count (0..=N). Result
+    /// width preserved. Maps to ARM CLZ (DDI 0487 C7.2.57); lanes are 8/16/32
+    /// bits across D-reg (total=64) and Q-reg (total=128) shapes.
+    VClz {
+        elem: IRType,
+        count: u8,
+    },
+
+    /// NEON per-lane count leading sign bits — `Iop_Cls{N}x{M}`. Unary; each
+    /// `elem`-wide lane is replaced by the number of consecutive bits below
+    /// the most significant bit that equal the MSB (range 0..=N-1). All-sign
+    /// lanes yield `N-1`. Maps to ARM CLS (DDI 0487 C7.2.56); lanes are 8/16/32
+    /// bits across D-reg (total=64) and Q-reg (total=128) shapes.
+    VCls {
+        elem: IRType,
+        count: u8,
+    },
+
+    /// NEON GF(2) polynomial multiply — `Iop_PolynomialMul8x{8,16}` (non-
+    /// widening, `widen=false`) and `Iop_PolynomialMull8x8` (widening,
+    /// `widen=true`). Per-lane carry-less multiply over GF(2): for `a*b` with
+    /// `a,b` being 8-bit polynomials, the result is XOR of shifted copies of
+    /// `b` selected by the bits of `a`. Non-widening returns the low 8 bits
+    /// per lane (width preserved). Widening returns 16 bits per lane (output
+    /// total = 2 * input total). Maps to ARM PMUL / PMULL (DDI 0487 C7.2.281).
+    /// Claripy has no generic equivalent — universality tests use the spec-
+    /// replay template against the same XOR-shift primitive.
+    VPolynomialMul {
+        count: u8,
+        widen: bool,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1391,6 +1433,38 @@ impl IROp {
                 match total {
                     64 => Some(IRType::I64),
                     128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
+
+            // Per-byte popcount (Iop_Cnt8x{8,16}): width preserved.
+            IROp::VCnt { count } => match *count {
+                8 => Some(IRType::I64),
+                16 => Some(IRType::V128),
+                _ => None,
+            },
+
+            // Per-lane Clz/Cls: width preserved (lane width = elem bits).
+            IROp::VClz { elem, count } | IROp::VCls { elem, count } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
+
+            // Polynomial multiply (Iop_PolynomialMul / Mull): non-widening
+            // preserves width; widening doubles per-lane width (8 → 16) so
+            // 8x8 → V128 and the (theoretical) 8x16 widening shape (not
+            // emitted by libVEX) would be V256.
+            IROp::VPolynomialMul { count, widen } => {
+                let elem_out = if *widen { 16 } else { 8 };
+                let total = elem_out * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    256 => Some(IRType::V256),
                     _ => None,
                 }
             }
