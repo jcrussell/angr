@@ -648,6 +648,14 @@ impl VEXOps {
     // =========================================================================
 
     /// Execute a binary operation.
+    ///
+    /// Top-level dispatch routes each `IROp` variant to a per-family helper
+    /// (`binop_arith`, `binop_bitwise_shift_cmp`, `binop_float`,
+    /// `binop_vec_int`, `binop_vec_float`, `binop_misc`). Each helper is
+    /// exhaustive over its assigned arms; unguarded variants fall through
+    /// to `binop_misc` which returns `OpError::NotBinary` for the default
+    /// case along with the typed-error sentinels (`NeonUnimplemented`,
+    /// `Unmapped`, `Raw`, `SetV128lo*`, `FSqrt`).
     #[inline]
     pub fn binop(
         op: IROp,
@@ -655,8 +663,125 @@ impl VEXOps {
         right: RustBV,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
+        match &op {
+            // -- Scalar arithmetic (incl widening, mul-hi, divmod) --
+            IROp::Add(_)
+            | IROp::Sub(_)
+            | IROp::Mul(_)
+            | IROp::DivU(_)
+            | IROp::DivS(_)
+            | IROp::ModU(_)
+            | IROp::ModS(_)
+            | IROp::MullU(_)
+            | IROp::MullS(_)
+            | IROp::MulHi { .. }
+            | IROp::DivModU64to32
+            | IROp::DivModS64to32
+            | IROp::DivModU128to64
+            | IROp::DivModS128to64 => Self::binop_arith(op, left, right, ctx),
+
+            // -- Scalar bitwise / shift / compare --
+            IROp::And(_)
+            | IROp::Or(_)
+            | IROp::Xor(_)
+            | IROp::Shl(_)
+            | IROp::Shr(_)
+            | IROp::Sar(_)
+            | IROp::CmpEQ(_)
+            | IROp::CmpNE(_)
+            | IROp::CmpLT(_)
+            | IROp::CmpLE(_)
+            | IROp::CmpLTU(_)
+            | IROp::CmpLEU(_) => Self::binop_bitwise_shift_cmp(op, left, right, ctx),
+
+            // -- Scalar floating point (arith, cmp, com, rounding, conversions w/ rm) --
+            IROp::FAdd(_)
+            | IROp::FSub(_)
+            | IROp::FMul(_)
+            | IROp::FDiv(_)
+            | IROp::FCmpEQ(_)
+            | IROp::FCmpLT(_)
+            | IROp::FCmpLE(_)
+            | IROp::FComCC(_)
+            | IROp::RoundF32toInt
+            | IROp::RoundF64toInt
+            | IROp::F64toF32
+            | IROp::F32toI32S
+            | IROp::F64toI32S
+            | IROp::F32toI64S
+            | IROp::F64toI64S
+            | IROp::F32toI32U
+            | IROp::F64toI32U
+            | IROp::F32toI64U
+            | IROp::F64toI64U => Self::binop_float(op, left, right, ctx),
+
+            // -- Vector integer (packed integer ops, narrows, interleaves, shifts, bitwise) --
+            IROp::VAnd(_)
+            | IROp::VOr(_)
+            | IROp::VXor(_)
+            | IROp::Concat { .. }
+            | IROp::VAdd { .. }
+            | IROp::VSub { .. }
+            | IROp::VMul { .. }
+            | IROp::VMulLo { .. }
+            | IROp::VQAdd { .. }
+            | IROp::VQSub { .. }
+            | IROp::VQShlSat { .. }
+            | IROp::VPwAdd { .. }
+            | IROp::VPwMin { .. }
+            | IROp::VPwMax { .. }
+            | IROp::VAvg { .. }
+            | IROp::VPolynomialMul { .. }
+            | IROp::VCmpEQ { .. }
+            | IROp::VCmpGT { .. }
+            | IROp::VGetElem { .. }
+            | IROp::VNarrowBin { .. }
+            | IROp::VQNarrowBin { .. }
+            | IROp::VInterleaveLO { .. }
+            | IROp::VInterleaveHI { .. }
+            | IROp::VShlN { .. }
+            | IROp::VShrN { .. }
+            | IROp::VSarN { .. }
+            | IROp::VShl { .. }
+            | IROp::VShr { .. }
+            | IROp::VSar { .. }
+            | IROp::VMin { .. }
+            | IROp::VMax { .. } => Self::binop_vec_int(op, left, right, ctx),
+
+            // -- Vector floating point (packed FP + scalar-in-vector FP) --
+            IROp::FCmpScalarLane { .. }
+            | IROp::FCmpVecPacked { .. }
+            | IROp::VFAddS { .. }
+            | IROp::VFSubS { .. }
+            | IROp::VFMulS { .. }
+            | IROp::VFDivS { .. }
+            | IROp::VFAdd { .. }
+            | IROp::VFSub { .. }
+            | IROp::VFMul { .. }
+            | IROp::VFDiv { .. }
+            | IROp::VFMin { .. }
+            | IROp::VFMax { .. }
+            | IROp::VFRecipStep { .. }
+            | IROp::VFRSqrtStep { .. }
+            | IROp::VFMaxS { .. }
+            | IROp::VFMinS { .. } => Self::binop_vec_float(op, left, right, ctx),
+
+            // -- Misc: Raw transcendentals, SetV128lo*, FSqrt(rm), NEON
+            // sentinels, unmapped, default NotBinary --
+            _ => Self::binop_misc(op, left, right, ctx),
+        }
+    }
+
+    /// Scalar integer arithmetic (same-width add/sub/mul/div/mod, widening
+    /// multiply, high-half multiply, packed divmod). All arms are guarded
+    /// by the top-level `binop()` dispatch.
+    fn binop_arith(
+        op: IROp,
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         match op {
-            // Arithmetic
             IROp::Add(ty) => width_binop!(left, right, ty, add_into, ctx),
             IROp::Sub(ty) => width_binop!(left, right, ty, sub_into, ctx),
             IROp::Mul(ty) => width_binop!(left, right, ty, mul_into, ctx),
@@ -665,46 +790,58 @@ impl VEXOps {
             IROp::ModU(ty) => width_binop!(left, right, ty, urem_into, ctx),
             IROp::ModS(ty) => width_binop!(left, right, ty, srem_into, ctx),
 
-            // Widening multiply
+            // Widening multiply (result width is 2 * ty.bits()).
             IROp::MullU(ty) => Self::widening_mul(left, right, ty, false, ctx),
             IROp::MullS(ty) => Self::widening_mul(left, right, ty, true, ctx),
 
-            // High half of multiplication
+            // High half of multiplication.
             IROp::MulHi { ty, signed } => Self::mul_hi(left, right, ty, signed, ctx),
 
-            // DivMod: 64-bit / 32-bit -> 64-bit (low=quotient, high=remainder)
+            // DivMod: 64-bit / 32-bit -> 64-bit (low=quotient, high=remainder).
             IROp::DivModU64to32 => Self::divmod_64_to_32(left, right, false, ctx),
             IROp::DivModS64to32 => Self::divmod_64_to_32(left, right, true, ctx),
 
-            // DivMod: 128-bit / 64-bit -> 128-bit (low=quotient, high=remainder)
+            // DivMod: 128-bit / 64-bit -> 128-bit (low=quotient, high=remainder).
             IROp::DivModU128to64 => Self::divmod_128_to_64(left, right, false, ctx),
             IROp::DivModS128to64 => Self::divmod_128_to_64(left, right, true, ctx),
 
-            // Bitwise
+            _ => unreachable!("binop_arith called with non-arith op: {op:?}"),
+        }
+    }
+
+    /// Scalar bitwise (and/or/xor), shifts (shl/shr/sar with shift-amount
+    /// width normalization), and integer comparisons. All arms are guarded
+    /// by the top-level `binop()` dispatch.
+    fn binop_bitwise_shift_cmp(
+        op: IROp,
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        match op {
+            // Bitwise.
             IROp::And(ty) => width_binop!(left, right, ty, and_into, ctx),
             IROp::Or(ty) => width_binop!(left, right, ty, or_into, ctx),
             IROp::Xor(ty) => width_binop!(left, right, ty, xor_into, ctx),
 
-            // Shifts — normalize shift amount width to match operand
+            // Shifts — normalize shift amount width to match operand.
             IROp::Shl(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.shl_into(amt, ctx))
             }
-
             IROp::Shr(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.lshr_into(amt, ctx))
             }
-
             IROp::Sar(ty) => {
                 debug_assert_eq!(left.width(), ty.bits());
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.ashr_into(amt, ctx))
             }
 
-            // Comparisons
+            // Integer comparisons (signed and unsigned).
             IROp::CmpEQ(ty) => width_binop!(left, right, ty, eq_into, ctx),
             IROp::CmpNE(ty) => width_binop!(left, right, ty, ne_into, ctx),
             IROp::CmpLT(ty) => width_binop!(left, right, ty, slt_into, ctx),
@@ -712,56 +849,78 @@ impl VEXOps {
             IROp::CmpLTU(ty) => width_binop!(left, right, ty, ult_into, ctx),
             IROp::CmpLEU(ty) => width_binop!(left, right, ty, ule_into, ctx),
 
-            // Float arithmetic
+            _ => unreachable!("binop_bitwise_shift_cmp called with non-bitwise/shift/cmp op: {op:?}"),
+        }
+    }
+
+    /// Scalar floating point: arithmetic, comparisons, comparison-with-CC,
+    /// rounding, and the float-conversion-with-rm family. All arms are
+    /// guarded by the top-level `binop()` dispatch.
+    fn binop_float(
+        op: IROp,
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        match op {
+            // FP arithmetic.
             IROp::FAdd(ty) => Self::float_add(left, right, ty, ctx),
             IROp::FSub(ty) => Self::float_sub(left, right, ty, ctx),
             IROp::FMul(ty) => Self::float_mul(left, right, ty, ctx),
             IROp::FDiv(ty) => Self::float_div(left, right, ty, ctx),
 
-            // Float comparisons
+            // FP comparisons.
             IROp::FCmpEQ(ty) => Self::float_cmp_eq(left, right, ty, ctx),
             IROp::FCmpLT(ty) => Self::float_cmp_lt(left, right, ty, ctx),
             IROp::FCmpLE(ty) => Self::float_cmp_le(left, right, ty, ctx),
-
-            IROp::FCmpScalarLane { kind, ty } => {
-                Self::vec_float_scalar_lane_cmp(left, right, kind, ty, ctx)
-            }
-            IROp::FCmpVecPacked { kind, elem, count } => {
-                Self::vec_float_packed_cmp(left, right, kind, elem, count, ctx)
-            }
             IROp::FComCC(ty) => Self::float_com_cc(left, right, ty, ctx),
 
-            // Float rounding with mode (left = rounding mode, right = value)
+            // Float rounding with mode (left = rounding mode, right = value).
             IROp::RoundF32toInt => Self::round_f32_to_int_with_mode(left, right, ctx),
             IROp::RoundF64toInt => Self::round_f64_to_int_with_mode(left, right, ctx),
 
-            // Scalar-in-vector float operations (SSE scalar ops)
-            IROp::VFAddS { elem } => {
-                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Add, ctx)
-            }
-            IROp::VFSubS { elem } => {
-                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Sub, ctx)
-            }
-            IROp::VFMulS { elem } => {
-                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Mul, ctx)
-            }
-            IROp::VFDivS { elem } => {
-                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Div, ctx)
-            }
+            // Float conversions that take a rounding mode as the first arg.
+            // VEX rounding modes: 0=nearest, 1=down, 2=up, 3=zero (truncate).
+            IROp::F64toF32 => Self::f64_to_f32_rm(left, right, ctx),
+            IROp::F32toI32S => Self::f32_to_i32s_rm(left, right, ctx),
+            IROp::F64toI32S => Self::f64_to_i32s_rm(left, right, ctx),
+            IROp::F32toI64S => Self::f32_to_i64s_rm(left, right, ctx),
+            IROp::F64toI64S => Self::f64_to_i64s_rm(left, right, ctx),
+            IROp::F32toI32U => Self::f32_to_i32u_rm(left, right, ctx),
+            IROp::F64toI32U => Self::f64_to_i32u_rm(left, right, ctx),
+            IROp::F32toI64U => Self::f32_to_i64u_rm(left, right, ctx),
+            IROp::F64toI64U => Self::f64_to_i64u_rm(left, right, ctx),
 
-            // Vector bitwise
+            _ => unreachable!("binop_float called with non-float op: {op:?}"),
+        }
+    }
+
+    /// Packed integer ops: arithmetic, saturating, pairwise, shifts (by
+    /// immediate and by vector), min/max, narrowing, interleave, GF(2)
+    /// polynomial multiply, lane extract, plus vector bitwise (VAnd/Or/Xor)
+    /// and the scalar Concat (lumped here because it shares the structural
+    /// "produce wider vector from two narrower" shape). All arms are guarded
+    /// by the top-level `binop()` dispatch.
+    fn binop_vec_int(
+        op: IROp,
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        match op {
+            // Vector bitwise (whole-vector and/or/xor — same-width).
             IROp::VAnd(ty) => width_binop!(left, right, ty, and_into, ctx),
             IROp::VOr(ty) => width_binop!(left, right, ty, or_into, ctx),
             IROp::VXor(ty) => width_binop!(left, right, ty, xor_into, ctx),
 
-            // Concatenate
+            // Concatenate (scalar; ty is the result width).
             IROp::Concat { ty } => {
                 let result = left.concat_into(right, ctx);
                 debug_assert_eq!(result.width(), ty.bits());
                 Ok(result)
             }
 
-            // Vector operations (simplified - just doing element-wise)
+            // Vector arithmetic (element-wise).
             IROp::VAdd { elem, count } => Self::vec_binop(left, right, elem, count, "add", ctx),
             IROp::VSub { elem, count } => Self::vec_binop(left, right, elem, count, "sub", ctx),
             IROp::VMul { elem, count } => Self::vec_binop(left, right, elem, count, "mul", ctx),
@@ -831,19 +990,19 @@ impl VEXOps {
                 Self::vec_polynomial_mul(left, right, count, widen, ctx)
             }
 
-            // Vector compare operations
+            // Vector compare operations.
             IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
             IROp::VCmpGT { elem, count } => Self::vec_cmp(left, right, elem, count, "gt", ctx),
 
             // NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> lane.
             IROp::VGetElem { elem, count } => Self::vec_get_elem(left, right, elem, count, ctx),
 
-            // NEON binary narrow (truncating)
+            // NEON binary narrow (truncating).
             IROp::VNarrowBin { from, count } => {
                 Self::vec_narrow_bin(left, right, from, count, ctx)
             }
 
-            // NEON binary saturating narrow
+            // NEON binary saturating narrow.
             IROp::VQNarrowBin {
                 from,
                 count,
@@ -851,11 +1010,11 @@ impl VEXOps {
                 dst_signed,
             } => Self::vec_qnarrow_bin(left, right, from, count, src_signed, dst_signed, ctx),
 
-            // Vector interleave
+            // Vector interleave.
             IROp::VInterleaveLO { elem } => Self::vec_interleave_lo(left, right, elem, ctx),
             IROp::VInterleaveHI { elem } => Self::vec_interleave_hi(left, right, elem, ctx),
 
-            // Vector shifts by immediate
+            // Vector shifts by immediate.
             IROp::VShlN { elem, count } => Self::vec_shl_n(left, right, elem, count, ctx),
             IROp::VShrN { elem, count } => Self::vec_shr_n(left, right, elem, count, ctx),
             IROp::VSarN { elem, count } => Self::vec_sar_n(left, right, elem, count, ctx),
@@ -871,25 +1030,58 @@ impl VEXOps {
                 Self::vec_shift_vec(left, right, elem, count, VecShiftKind::Sar, ctx)
             }
 
-            // Packed integer min/max
+            // Packed integer min/max.
             IROp::VMin {
                 elem,
                 count,
                 signed,
-            } => {
-                Self::vec_int_minmax(
-                    left, right, elem, count, signed, /*is_max=*/ false, ctx,
-                )
-            }
+            } => Self::vec_int_minmax(
+                left, right, elem, count, signed, /*is_max=*/ false, ctx,
+            ),
             IROp::VMax {
                 elem,
                 count,
                 signed,
-            } => {
-                Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ true, ctx)
+            } => Self::vec_int_minmax(left, right, elem, count, signed, /*is_max=*/ true, ctx),
+
+            _ => unreachable!("binop_vec_int called with non-vec-int op: {op:?}"),
+        }
+    }
+
+    /// Packed floating point: arithmetic, min/max, comparison helpers
+    /// (scalar-lane and packed), scalar-in-vector arith and min/max, and
+    /// Newton-Raphson reciprocal/rsqrt-step (fresh symbolic per lane).
+    /// All arms are guarded by the top-level `binop()` dispatch.
+    fn binop_vec_float(
+        op: IROp,
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        match op {
+            // Scalar-lane / packed FP comparison helpers.
+            IROp::FCmpScalarLane { kind, ty } => {
+                Self::vec_float_scalar_lane_cmp(left, right, kind, ty, ctx)
+            }
+            IROp::FCmpVecPacked { kind, elem, count } => {
+                Self::vec_float_packed_cmp(left, right, kind, elem, count, ctx)
             }
 
-            // Packed FP arithmetic
+            // Scalar-in-vector float arithmetic (SSE scalar ops).
+            IROp::VFAddS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Add, ctx)
+            }
+            IROp::VFSubS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Sub, ctx)
+            }
+            IROp::VFMulS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Mul, ctx)
+            }
+            IROp::VFDivS { elem } => {
+                Self::vec_float_scalar_op(left, right, elem, FloatOpKind::Div, ctx)
+            }
+
+            // Packed FP arithmetic.
             IROp::VFAdd { elem, count } => {
                 Self::vec_float_lane_op(&[left, right], elem, count, &FAdd, ctx)
             }
@@ -903,7 +1095,7 @@ impl VEXOps {
                 Self::vec_float_lane_op(&[left, right], elem, count, &FDiv, ctx)
             }
 
-            // Packed FP min/max
+            // Packed FP min/max.
             IROp::VFMin { elem, count } => {
                 Self::vec_float_lane_op(&[left, right], elem, count, &FMin, ctx)
             }
@@ -911,11 +1103,11 @@ impl VEXOps {
                 Self::vec_float_lane_op(&[left, right], elem, count, &FMax, ctx)
             }
 
-            // NEON Newton-Raphson reciprocal / rsqrt step. Operands consumed but
-            // the result is a fresh symbolic per lane (matches angr Python's
+            // NEON Newton-Raphson reciprocal / rsqrt step. Operands consumed
+            // but the result is a fresh symbolic per lane (matches angr Python's
             // conservative handling — no `_op_fgeneric_RecipStep` /
-            // `_op_fgeneric_RSqrtStep`). Refinement loops typically follow with
-            // additional steps that converge regardless of the seed.
+            // `_op_fgeneric_RSqrtStep`). Refinement loops typically follow
+            // with additional steps that converge regardless of the seed.
             IROp::VFRecipStep { elem, count } => {
                 let _ = (left, right);
                 Self::vec_float_fresh_per_lane(elem, count, "RecipStep", ctx)
@@ -925,6 +1117,30 @@ impl VEXOps {
                 Self::vec_float_fresh_per_lane(elem, count, "RSqrtStep", ctx)
             }
 
+            // Scalar-in-vector max/min.
+            IROp::VFMaxS { elem } => {
+                Self::vec_float_scalar_minmax(left, right, elem, /*is_max=*/ true, ctx)
+            }
+            IROp::VFMinS { elem } => {
+                Self::vec_float_scalar_minmax(left, right, elem, /*is_max=*/ false, ctx)
+            }
+
+            _ => unreachable!("binop_vec_float called with non-vec-float op: {op:?}"),
+        }
+    }
+
+    /// Miscellaneous binops that don't fit a single family: x87
+    /// transcendental fast path via `IROp::Raw`, SetV128lo32/64, the
+    /// `IROp::FSqrt(rm, value)` arrival pattern, and the typed-error
+    /// sentinels (NeonUnimplemented, Unmapped). Also serves as the
+    /// dispatch fallback returning `OpError::NotBinary` for unmatched ops.
+    fn binop_misc(
+        op: IROp,
+        left: RustBV,
+        right: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        match op {
             // Raw opcode — try concrete x87 transcendental fast path first
             // (Iop_SinF64, Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_RecpExp*).
             // These arrive as Binop(rm, x); `left` carries rm, `right` the value.
@@ -937,44 +1153,9 @@ impl VEXOps {
                 }
             }
 
-            // Float conversions that take a rounding mode as the first argument
-            // VEX rounding modes: 0=nearest, 1=down, 2=up, 3=zero (truncate)
-            IROp::F64toF32 => {
-                // left = rounding mode, right = F64 value
-                Self::f64_to_f32_rm(left, right, ctx)
-            }
-            IROp::F32toI32S => {
-                // left = rounding mode, right = F32 value
-                Self::f32_to_i32s_rm(left, right, ctx)
-            }
-            IROp::F64toI32S => {
-                // left = rounding mode, right = F64 value
-                Self::f64_to_i32s_rm(left, right, ctx)
-            }
-            IROp::F32toI64S => Self::f32_to_i64s_rm(left, right, ctx),
-            IROp::F64toI64S => Self::f64_to_i64s_rm(left, right, ctx),
-            IROp::F32toI32U => Self::f32_to_i32u_rm(left, right, ctx),
-            IROp::F64toI32U => Self::f64_to_i32u_rm(left, right, ctx),
-            IROp::F32toI64U => Self::f32_to_i64u_rm(left, right, ctx),
-            IROp::F64toI64U => Self::f64_to_i64u_rm(left, right, ctx),
-
-            // Scalar-in-vector max/min
-            IROp::VFMaxS { elem } => {
-                Self::vec_float_scalar_minmax(left, right, elem, /*is_max=*/ true, ctx)
-            }
-            IROp::VFMinS { elem } => {
-                Self::vec_float_scalar_minmax(left, right, elem, /*is_max=*/ false, ctx)
-            }
-
-            // SetV128lo: set low bits of V128
-            IROp::SetV128lo32 => {
-                // left = V128, right = I32 value to put in low 32 bits
-                Self::set_v128_lo32(left, right, ctx)
-            }
-            IROp::SetV128lo64 => {
-                // left = V128, right = I64 value to put in low 64 bits
-                Self::set_v128_lo64(left, right, ctx)
-            }
+            // SetV128lo: set low bits of V128.
+            IROp::SetV128lo32 => Self::set_v128_lo32(left, right, ctx),
+            IROp::SetV128lo64 => Self::set_v128_lo64(left, right, ctx),
 
             // Iop_SqrtF{32,64} is a VEX Binop (arg1=rm, arg2=value) that we
             // model as IROp::FSqrt — keep the translation here so the
@@ -992,7 +1173,7 @@ impl VEXOps {
                 op_name: name.to_string(),
             }),
 
-            _ => Err(OpError::NotBinary(op)),
+            other => Err(OpError::NotBinary(other)),
         }
     }
 
