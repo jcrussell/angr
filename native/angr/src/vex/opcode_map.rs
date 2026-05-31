@@ -517,6 +517,30 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "32x2" => (I32, 2), "32x4" => (I32, 4), "32x8" => (I32, 8),
         "64x2" => (I64, 2), "64x4" => (I64, 4),
     });
+
+    // NEON saturating add/sub — Iop_QAdd{N}{S/U}x{M} / Iop_QSub{N}{S/U}x{M}.
+    // Per-lane saturating arithmetic; S/U selects clamp range. D-reg
+    // (total=64) and Q-reg (total=128) variants.
+    vec_signed_arms!(op_str; "Iop_QAdd" => VQAdd {
+        "8Sx8" => (I8, 8, true), "16Sx4" => (I16, 4, true),
+        "32Sx2" => (I32, 2, true), "64Sx1" => (I64, 1, true),
+        "8Ux8" => (I8, 8, false), "16Ux4" => (I16, 4, false),
+        "32Ux2" => (I32, 2, false), "64Ux1" => (I64, 1, false),
+        "8Sx16" => (I8, 16, true), "16Sx8" => (I16, 8, true),
+        "32Sx4" => (I32, 4, true), "64Sx2" => (I64, 2, true),
+        "8Ux16" => (I8, 16, false), "16Ux8" => (I16, 8, false),
+        "32Ux4" => (I32, 4, false), "64Ux2" => (I64, 2, false),
+    });
+    vec_signed_arms!(op_str; "Iop_QSub" => VQSub {
+        "8Sx8" => (I8, 8, true), "16Sx4" => (I16, 4, true),
+        "32Sx2" => (I32, 2, true), "64Sx1" => (I64, 1, true),
+        "8Ux8" => (I8, 8, false), "16Ux4" => (I16, 4, false),
+        "32Ux2" => (I32, 2, false), "64Ux1" => (I64, 1, false),
+        "8Sx16" => (I8, 16, true), "16Sx8" => (I16, 8, true),
+        "32Sx4" => (I32, 4, true), "64Sx2" => (I64, 2, true),
+        "8Ux16" => (I8, 16, false), "16Ux8" => (I16, 8, false),
+        "32Ux4" => (I32, 4, false), "64Ux2" => (I64, 2, false),
+    });
     // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON.
     vec_arms!(op_str; "Iop_Mul" => VMul {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
@@ -737,39 +761,9 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         "Iop_RSqrtEst32Ux2" => "Iop_RSqrtEst32Ux2",
         "Iop_RSqrtEst32Ux4" => "Iop_RSqrtEst32Ux4",
 
-        // Saturating integer add/sub (NEON Q-prefixed)
-        "Iop_QAdd8Sx8" => "Iop_QAdd8Sx8",
-        "Iop_QAdd16Sx4" => "Iop_QAdd16Sx4",
-        "Iop_QAdd32Sx2" => "Iop_QAdd32Sx2",
-        "Iop_QAdd64Sx1" => "Iop_QAdd64Sx1",
-        "Iop_QAdd8Ux8" => "Iop_QAdd8Ux8",
-        "Iop_QAdd16Ux4" => "Iop_QAdd16Ux4",
-        "Iop_QAdd32Ux2" => "Iop_QAdd32Ux2",
-        "Iop_QAdd64Ux1" => "Iop_QAdd64Ux1",
-        "Iop_QAdd8Sx16" => "Iop_QAdd8Sx16",
-        "Iop_QAdd16Sx8" => "Iop_QAdd16Sx8",
-        "Iop_QAdd32Sx4" => "Iop_QAdd32Sx4",
-        "Iop_QAdd64Sx2" => "Iop_QAdd64Sx2",
-        "Iop_QAdd8Ux16" => "Iop_QAdd8Ux16",
-        "Iop_QAdd16Ux8" => "Iop_QAdd16Ux8",
-        "Iop_QAdd32Ux4" => "Iop_QAdd32Ux4",
-        "Iop_QAdd64Ux2" => "Iop_QAdd64Ux2",
-        "Iop_QSub8Sx8" => "Iop_QSub8Sx8",
-        "Iop_QSub16Sx4" => "Iop_QSub16Sx4",
-        "Iop_QSub32Sx2" => "Iop_QSub32Sx2",
-        "Iop_QSub64Sx1" => "Iop_QSub64Sx1",
-        "Iop_QSub8Ux8" => "Iop_QSub8Ux8",
-        "Iop_QSub16Ux4" => "Iop_QSub16Ux4",
-        "Iop_QSub32Ux2" => "Iop_QSub32Ux2",
-        "Iop_QSub64Ux1" => "Iop_QSub64Ux1",
-        "Iop_QSub8Sx16" => "Iop_QSub8Sx16",
-        "Iop_QSub16Sx8" => "Iop_QSub16Sx8",
-        "Iop_QSub32Sx4" => "Iop_QSub32Sx4",
-        "Iop_QSub64Sx2" => "Iop_QSub64Sx2",
-        "Iop_QSub8Ux16" => "Iop_QSub8Ux16",
-        "Iop_QSub16Ux8" => "Iop_QSub16Ux8",
-        "Iop_QSub32Ux4" => "Iop_QSub32Ux4",
-        "Iop_QSub64Ux2" => "Iop_QSub64Ux2",
+        // NOTE: Iop_QAdd{N}{S/U}x{M} / Iop_QSub{N}{S/U}x{M} (NEON saturating
+        // integer add/sub) implemented in angr-tukg.1 — routed through
+        // parse_vector to IROp::VQAdd / IROp::VQSub.
 
         // Averaging
         "Iop_Avg8Ux8" => "Iop_Avg8Ux8",
@@ -1429,7 +1423,6 @@ mod tests {
         // fresh-symbolic value.
         for op in [
             "Iop_RecipEst32Ux4",
-            "Iop_QAdd8Sx8",
             "Iop_Avg8Ux8",
             "Iop_PwAdd16x4",
             "Iop_PolynomialMull8x8",

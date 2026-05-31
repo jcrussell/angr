@@ -837,6 +837,26 @@ pub enum IROp {
         count: u8,
     },
 
+    /// NEON saturating integer add — Iop_QAdd{N}{S/U}x{M}.
+    /// Per-lane addition where positive/negative overflow clamps to the lane
+    /// type's max/min. Signed lanes clamp to `[-2^(N-1), 2^(N-1)-1]`; unsigned
+    /// lanes clamp to `[0, 2^N - 1]`. Maps to ARM VQADD (DDI 0487 C7.2.379)
+    /// and SSE PADDS{B,W}/PADDUS{B,W}.
+    VQAdd {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
+
+    /// NEON saturating integer sub — Iop_QSub{N}{S/U}x{M}.
+    /// Per-lane subtraction with the same clamp semantics as VQAdd. Maps to
+    /// ARM VQSUB (DDI 0487 C7.2.395) and SSE PSUBS{B,W}/PSUBUS{B,W}.
+    VQSub {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1198,6 +1218,16 @@ impl IROp {
 
             // Reverse: width preserved (sub-units permuted within each lane).
             IROp::VReverse { elem, count, .. } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
+
+            // Saturating add/sub: width preserved.
+            IROp::VQAdd { elem, count, .. } | IROp::VQSub { elem, count, .. } => {
                 let total = elem.bits() * (*count as u32);
                 match total {
                     64 => Some(IRType::I64),

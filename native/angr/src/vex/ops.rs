@@ -368,6 +368,8 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VQNarrowUn { .. }
         | IROp::VQNarrowBin { .. }
         | IROp::VReverse { .. }
+        | IROp::VQAdd { .. }
+        | IROp::VQSub { .. }
         | IROp::VMin { .. }
         | IROp::VMax { .. }
         | IROp::VAbs { .. }
@@ -679,6 +681,22 @@ impl VEXOps {
             IROp::VSub { elem, count } => Self::vec_binop(left, right, elem, count, "sub", ctx),
             IROp::VMul { elem, count } => Self::vec_binop(left, right, elem, count, "mul", ctx),
             IROp::VMulLo { elem, count } => Self::vec_mul_lo(left, right, elem, count, ctx),
+
+            // NEON saturating integer add/sub.
+            IROp::VQAdd {
+                elem,
+                count,
+                signed,
+            } => Self::vec_int_saturating(
+                left, right, elem, count, signed, /*is_sub=*/ false, ctx,
+            ),
+            IROp::VQSub {
+                elem,
+                count,
+                signed,
+            } => Self::vec_int_saturating(
+                left, right, elem, count, signed, /*is_sub=*/ true, ctx,
+            ),
 
             // Vector compare operations
             IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
@@ -2803,6 +2821,172 @@ impl VEXOps {
                 (false, false) => l_elem.clone().ule_into(r_elem.clone(), ctx),
             };
             elements.push(cond.ite_into(l_elem, r_elem, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON per-lane saturating integer add/sub —
+    /// Iop_QAdd{N}{S/U}x{M} / Iop_QSub{N}{S/U}x{M}.
+    ///
+    /// Mirrors the claripy reference at
+    /// `angr/engines/vex/claripy/irop.py::_op_generic_QAdd` (signed):
+    ///   * Detect overflow with sign-bit algebra:
+    ///       QAdd: `(~(top_a ^ top_b)) & (top_a ^ top_r)` — both inputs same
+    ///         sign, result flips → overflow.
+    ///       QSub: `( (top_a ^ top_b)) & (top_a ^ top_r)` — inputs differ,
+    ///         result's sign differs from minuend → overflow.
+    ///   * Saturated cap: `INT_MAX + ~top_r` — yields INT_MAX when the result
+    ///     would be "too positive" (top_r=0 → +1 wraps to INT_MIN) and INT_MIN
+    ///     when "too negative" (top_r=1 → +0 keeps INT_MAX). Actually:
+    ///       top_r=1 (negative result, meaning positive overflow) → ~top_r=0
+    ///         → cap = INT_MAX.
+    ///       top_r=0 (positive result, meaning negative overflow) → ~top_r=1
+    ///         → cap = INT_MAX + 1 = INT_MIN (two's complement wrap).
+    /// Unsigned QAdd: overflow iff `res < a` (carry); cap = UINT_MAX.
+    /// Unsigned QSub: overflow iff `res > a` (borrow); cap = 0.
+    fn vec_int_saturating(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        is_sub: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+
+        // Concrete fast path (fits in u128 — total_width <= 128 covers all
+        // currently-mapped NEON shapes).
+        if total_width <= 128 {
+            if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = if elem_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << elem_width) - 1
+                };
+                let sign_bit: u128 = 1u128 << (elem_width - 1);
+                let smax: u128 = sign_bit - 1; // 0x7F... in elem_width bits
+                let smin: u128 = sign_bit; // 0x80...
+                let umax: u128 = elem_mask;
+
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let a = (l >> lo) & elem_mask;
+                    let b = (r >> lo) & elem_mask;
+
+                    let sat = if signed {
+                        // Sign-extend each lane to i128 to compute the true
+                        // arithmetic result, then clamp into [-smax-1, smax].
+                        let a_signed = if a & sign_bit != 0 {
+                            (a | !elem_mask) as i128
+                        } else {
+                            a as i128
+                        };
+                        let b_signed = if b & sign_bit != 0 {
+                            (b | !elem_mask) as i128
+                        } else {
+                            b as i128
+                        };
+                        let raw: i128 = if is_sub {
+                            a_signed - b_signed
+                        } else {
+                            a_signed + b_signed
+                        };
+                        let max_signed = smax as i128;
+                        let min_signed = -(sign_bit as i128);
+                        if raw > max_signed {
+                            smax
+                        } else if raw < min_signed {
+                            smin
+                        } else {
+                            (raw as u128) & elem_mask
+                        }
+                    } else if is_sub {
+                        // Unsigned subtract: clamp underflow to 0.
+                        if a >= b {
+                            (a - b) & elem_mask
+                        } else {
+                            0
+                        }
+                    } else {
+                        // Unsigned add: clamp overflow to UINT_MAX.
+                        let raw = a + b; // both < 2^N, sum < 2^(N+1) ≤ 2^128
+                        if raw > umax {
+                            umax
+                        } else {
+                            raw
+                        }
+                    };
+
+                    result |= (sat & elem_mask) << lo;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback. Translates the claripy algorithm:
+        //   top_x = lane[N-1]; res = a ± b; top_r = res[N-1].
+        //   signed:   cap_cond = (xor_sign_match ^ (top_a XOR top_r)) == 1.
+        //             cap      = (-1)/2 + ~top_r   (signed semantics).
+        //   unsigned add: cap_cond = ULT(res, a); cap = -1.
+        //   unsigned sub: cap_cond = UGT(res, a); cap =  0.
+        let smax_bv = RustBV::concrete(((1u128 << (elem_width - 1)) - 1) & ((!0u128) >> (128 - elem_width)), elem_width);
+        let smin_bv = RustBV::concrete(
+            (1u128 << (elem_width - 1)) & ((!0u128) >> (128 - elem_width)),
+            elem_width,
+        );
+        let umax_bv = RustBV::concrete((!0u128) >> (128 - elem_width), elem_width);
+        let zero_bv = RustBV::concrete(0, elem_width);
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let a = left.extract(hi, lo, ctx);
+            let b = right.extract(hi, lo, ctx);
+
+            let res = if is_sub {
+                a.clone().sub_into(b.clone(), ctx)
+            } else {
+                a.clone().add_into(b.clone(), ctx)
+            };
+
+            let lane = if signed {
+                // Sign-bit relationships dictate the cap and the overflow flag.
+                let top_a = a.extract(elem_width - 1, elem_width - 1, ctx);
+                let top_b = b.extract(elem_width - 1, elem_width - 1, ctx);
+                let top_r = res.extract(elem_width - 1, elem_width - 1, ctx);
+
+                // QAdd: ~(a ^ b) & (a ^ r); QSub: (a ^ b) & (a ^ r).
+                let a_xor_b = top_a.clone().xor_into(top_b, ctx);
+                let a_xor_r = top_a.xor_into(top_r.clone(), ctx);
+                let lhs = if is_sub {
+                    a_xor_b
+                } else {
+                    a_xor_b.not_into(ctx)
+                };
+                let overflow_flag = lhs.and_into(a_xor_r, ctx);
+                let cap_cond = overflow_flag.eq(&RustBV::concrete(1, 1), ctx);
+
+                // cap = INT_MAX when top_r = 1 (positive overflow → clamp high),
+                // cap = INT_MIN when top_r = 0 (negative overflow → clamp low).
+                let top_r_one = top_r.eq(&RustBV::concrete(1, 1), ctx);
+                let cap = top_r_one.ite(&smax_bv, &smin_bv, ctx);
+
+                cap_cond.ite(&cap, &res, ctx)
+            } else if is_sub {
+                let cap_cond = res.ugt(&a, ctx);
+                cap_cond.ite(&zero_bv, &res, ctx)
+            } else {
+                let cap_cond = res.ult(&a, ctx);
+                cap_cond.ite(&umax_bv, &res, ctx)
+            };
+
+            elements.push(lane);
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }
@@ -6863,5 +7047,265 @@ mod tests {
         let model_idx = ctx.eval(&sym_idx).expect("eval(idx) None");
         // idx must be 5 mod 8 (modulo because ITE chain ignores high bits).
         assert_eq!(model_idx & 0x7, 5, "expected idx&7 == 5, got {}", model_idx);
+    }
+
+    // =========================================================================
+    // angr-tukg.1 — NEON saturating add/sub (VQAdd / VQSub).
+    // =========================================================================
+
+    /// Iop_QAdd8Sx8 — signed 8-bit saturating add over 8 lanes. Exercises:
+    /// non-overflowing add, positive overflow → INT8_MAX (0x7F), negative
+    /// overflow → INT8_MIN (0x80), exact-boundary cases.
+    #[test]
+    fn test_vqadd_8sx8_concrete() {
+        let ctx = SymContext::new_mock();
+        // Lane layout (LSB→MSB):
+        //   0:  100 + 100 = 200, signed overflow → clamp to +127 (0x7F).
+        //   1:  -100 + -100 = -200, signed underflow → clamp to -128 (0x80).
+        //   2:   50 + 60 = 110, no overflow → 110 (0x6E).
+        //   3:  -50 + -60 = -110, no overflow → -110 (0x92).
+        //   4:  127 + 1  = INT_MAX+1 → clamp to +127.
+        //   5: -128 + -1 = INT_MIN-1 → clamp to -128.
+        //   6:  127 + -1 = 126 (no overflow).
+        //   7: -128 + 1  = -127 (no overflow).
+        let lanes_a: [i8; 8] = [100, -100, 50, -50, 127, -128, 127, -128];
+        let lanes_b: [i8; 8] = [100, -100, 60, -60, 1, -1, -1, 1];
+        let lanes_e: [i8; 8] = [127, -128, 110, -110, 127, -128, 126, -127];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            a |= ((lanes_a[i] as u8) as u128) << (i * 8);
+            b |= ((lanes_b[i] as u8) as u128) << (i * 8);
+            e |= ((lanes_e[i] as u8) as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VQAdd {
+                elem: IRType::I8,
+                count: 8,
+                signed: true,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_QAdd8Ux8 — unsigned 8-bit saturating add. Overflow clamps to 0xFF.
+    #[test]
+    fn test_vqadd_8ux8_concrete() {
+        let ctx = SymContext::new_mock();
+        // 0: 200+100 = 300 → clamp to 255 (0xFF).
+        // 1: 255+1   = 256 → clamp to 255.
+        // 2: 0+0 → 0.
+        // 3: 200+55 = 255 (boundary, no clamp).
+        // 4: 200+56 = 256 → clamp.
+        // 5: 50+50  = 100.
+        // 6,7: 0 fillers.
+        let lanes_a: [u8; 8] = [200, 255, 0, 200, 200, 50, 0, 0];
+        let lanes_b: [u8; 8] = [100, 1, 0, 55, 56, 50, 0, 0];
+        let lanes_e: [u8; 8] = [255, 255, 0, 255, 255, 100, 0, 0];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            a |= (lanes_a[i] as u128) << (i * 8);
+            b |= (lanes_b[i] as u128) << (i * 8);
+            e |= (lanes_e[i] as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VQAdd {
+                elem: IRType::I8,
+                count: 8,
+                signed: false,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_QSub16Sx4 — signed 16-bit saturating sub. Verify both overflow
+    /// directions and the no-overflow path.
+    #[test]
+    fn test_vqsub_16sx4_concrete() {
+        let ctx = SymContext::new_mock();
+        // 0:  30000 - (-10000) = 40000 → clamp to 32767.
+        // 1: -30000 - 10000    = -40000 → clamp to -32768.
+        // 2: 100 - 50 = 50 (no overflow).
+        // 3: -100 - (-50) = -50 (no overflow).
+        let lanes_a: [i16; 4] = [30000, -30000, 100, -100];
+        let lanes_b: [i16; 4] = [-10000, 10000, 50, -50];
+        let lanes_e: [i16; 4] = [32767, -32768, 50, -50];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..4 {
+            a |= ((lanes_a[i] as u16) as u128) << (i * 16);
+            b |= ((lanes_b[i] as u16) as u128) << (i * 16);
+            e |= ((lanes_e[i] as u16) as u128) << (i * 16);
+        }
+        let result = VEXOps::binop(
+            IROp::VQSub {
+                elem: IRType::I16,
+                count: 4,
+                signed: true,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_QSub32Ux4 — unsigned 32-bit saturating sub on a 128-bit Q-reg.
+    /// Underflow clamps to 0.
+    #[test]
+    fn test_vqsub_32ux4_concrete() {
+        let ctx = SymContext::new_mock();
+        let lanes_a: [u32; 4] = [100, 0xFFFF_FFFF, 1, 0];
+        let lanes_b: [u32; 4] = [50, 1, 5, 5]; // underflow on lane 2 and 3
+        let lanes_e: [u32; 4] = [50, 0xFFFF_FFFE, 0, 0];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..4 {
+            a |= (lanes_a[i] as u128) << (i * 32);
+            b |= (lanes_b[i] as u128) << (i * 32);
+            e |= (lanes_e[i] as u128) << (i * 32);
+        }
+        let result = VEXOps::binop(
+            IROp::VQSub {
+                elem: IRType::I32,
+                count: 4,
+                signed: false,
+            },
+            RustBV::concrete(a, 128),
+            RustBV::concrete(b, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Symbolic universality: Iop_QAdd8Sx8 must produce the same bits as the
+    /// claripy reference at `_op_generic_QAdd` for any 64-bit input. Built per
+    /// lane using the explicit sign-bit overflow formula (cap_cond + cap).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vqadd_8sx8_symbolic_matches_python_ref() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "vqadd_a", 64);
+        let b = RustBV::symbolic(&ctx, "vqadd_b", 64);
+        let got = VEXOps::binop(
+            IROp::VQAdd {
+                elem: IRType::I8,
+                count: 8,
+                signed: true,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        // Reference: per-lane signed saturating add as in irop.py.
+        let smax = RustBV::concrete(0x7F, 8);
+        let smin = RustBV::concrete(0x80, 8);
+        let mut lanes = Vec::with_capacity(8);
+        for i in 0..8u32 {
+            let lo = i * 8;
+            let hi = lo + 7;
+            let a_lane = a.extract(hi, lo, &ctx);
+            let b_lane = b.extract(hi, lo, &ctx);
+            let res = a_lane.clone().add_into(b_lane.clone(), &ctx);
+            let top_a = a_lane.extract(7, 7, &ctx);
+            let top_b = b_lane.extract(7, 7, &ctx);
+            let top_r = res.extract(7, 7, &ctx);
+            // ~(top_a ^ top_b) & (top_a ^ top_r) == 1
+            let signs_match = top_a
+                .clone()
+                .xor_into(top_b, &ctx)
+                .not_into(&ctx);
+            let r_flipped = top_a.xor_into(top_r.clone(), &ctx);
+            let overflow = signs_match
+                .and_into(r_flipped, &ctx)
+                .eq(&RustBV::concrete(1, 1), &ctx);
+            let cap = top_r
+                .eq(&RustBV::concrete(1, 1), &ctx)
+                .ite(&smax, &smin, &ctx);
+            lanes.push(overflow.ite(&cap, &res, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VQAdd 8Sx8 must match the claripy QAdd reference for all 64-bit inputs"
+        );
+        ctx.pop();
+    }
+
+    /// Parse routing: Iop_QAdd / Iop_QSub variants land on VQAdd / VQSub with
+    /// the expected (elem, count, signed) decomposition. Covers a sampling
+    /// across D-reg (total=64) and Q-reg (total=128) shapes plus both
+    /// signedness conventions.
+    #[test]
+    fn test_parse_vqaddsub_routing() {
+        use crate::vex::opcode_map::parse_opcode;
+
+        let qadd_cases: &[(&str, IRType, u8, bool)] = &[
+            ("Iop_QAdd8Sx8", IRType::I8, 8, true),
+            ("Iop_QAdd16Ux4", IRType::I16, 4, false),
+            ("Iop_QAdd32Sx2", IRType::I32, 2, true),
+            ("Iop_QAdd64Ux1", IRType::I64, 1, false),
+            ("Iop_QAdd8Ux16", IRType::I8, 16, false),
+            ("Iop_QAdd16Sx8", IRType::I16, 8, true),
+            ("Iop_QAdd64Sx2", IRType::I64, 2, true),
+        ];
+        for (op, e, c, s) in qadd_cases {
+            match parse_opcode(op) {
+                IROp::VQAdd {
+                    elem,
+                    count,
+                    signed,
+                } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                    assert_eq!(signed, *s, "{}: signed", op);
+                }
+                other => panic!("{}: expected VQAdd, got {:?}", op, other),
+            }
+        }
+
+        let qsub_cases: &[(&str, IRType, u8, bool)] = &[
+            ("Iop_QSub8Sx8", IRType::I8, 8, true),
+            ("Iop_QSub32Ux4", IRType::I32, 4, false),
+            ("Iop_QSub64Sx2", IRType::I64, 2, true),
+        ];
+        for (op, e, c, s) in qsub_cases {
+            match parse_opcode(op) {
+                IROp::VQSub {
+                    elem,
+                    count,
+                    signed,
+                } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                    assert_eq!(signed, *s, "{}: signed", op);
+                }
+                other => panic!("{}: expected VQSub, got {:?}", op, other),
+            }
+        }
     }
 }
