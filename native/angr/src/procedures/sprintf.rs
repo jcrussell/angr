@@ -4,6 +4,7 @@
 //! with width, zero-padding, and left-alignment flags. Falls back to
 //! Python for symbolic format strings or arguments.
 
+use super::format_common::{parse_length_modifier, parse_width_digits};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -87,7 +88,7 @@ fn format_string(
         }
 
         // Parse width
-        let mut width: usize = 0;
+        let width: usize;
         if i < fmt.len() && fmt[i] == b'*' {
             // Width from argument
             if arg_idx >= args.len() {
@@ -98,10 +99,9 @@ fn format_string(
             arg_idx += 1;
             i += 1;
         } else {
-            while i < fmt.len() && fmt[i].is_ascii_digit() {
-                width = width * 10 + (fmt[i] - b'0') as usize;
-                i += 1;
-            }
+            let (w, advanced) = parse_width_digits(fmt, i);
+            width = w;
+            i += advanced;
         }
 
         // Parse precision (skip for now, just consume it)
@@ -129,32 +129,11 @@ fn format_string(
         }
 
         // Parse length modifier
-        let mut long = false;
-        let mut long_long = false;
-        if i < fmt.len() {
-            match fmt[i] {
-                b'l' => {
-                    i += 1;
-                    if i < fmt.len() && fmt[i] == b'l' {
-                        long_long = true;
-                        i += 1;
-                    } else {
-                        long = true;
-                    }
-                }
-                b'h' => {
-                    i += 1;
-                    if i < fmt.len() && fmt[i] == b'h' {
-                        i += 1; // hh
-                    }
-                }
-                b'z' | b'j' | b't' => {
-                    long = true; // treat as long on 64-bit
-                    i += 1;
-                }
-                _ => {}
-            }
-        }
+        let (modifier, m_adv) = parse_length_modifier(fmt, i);
+        i += m_adv;
+        let long_long = matches!(modifier, super::format_common::LengthModifier::LongLong);
+        // `z`, `j`, `t` are treated as `long` on 64-bit.
+        let long = !long_long && modifier.is_64bit();
 
         if i >= fmt.len() {
             break;

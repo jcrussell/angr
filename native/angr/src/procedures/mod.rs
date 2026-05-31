@@ -24,6 +24,7 @@ pub mod ctype;
 pub mod exit;
 pub mod fgets;
 pub mod fileops;
+pub mod format_common;
 pub mod getenv;
 pub mod libc_start_main;
 pub mod malloc;

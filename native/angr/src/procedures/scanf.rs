@@ -7,6 +7,7 @@
 //! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %ld, %lld, %lu, %lx, %%
 //! Falls back to Python for symbolic format strings or pointer arguments.
 
+use super::format_common::{LengthModifier, parse_length_modifier, parse_width_digits};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -76,36 +77,23 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
         };
 
         // Parse field width
-        let mut field_width: u64 = 0;
-        let mut has_width = false;
-        while i < fmt.len() && fmt[i].is_ascii_digit() {
-            field_width = field_width * 10 + (fmt[i] - b'0') as u64;
-            has_width = true;
-            i += 1;
-        }
+        let (width_val, w_adv) = parse_width_digits(fmt, i);
+        let has_width = w_adv > 0;
+        let field_width = width_val as u64;
+        i += w_adv;
 
-        // Parse length modifier
-        let mut long_count = 0u8; // 0=int, 1=long, 2=long long
-        if i < fmt.len() {
-            match fmt[i] {
-                b'l' => {
-                    long_count = 1;
-                    i += 1;
-                    if i < fmt.len() && fmt[i] == b'l' {
-                        long_count = 2;
-                        i += 1;
-                    }
-                }
-                b'h' => {
-                    i += 1;
-                    if i < fmt.len() && fmt[i] == b'h' {
-                        i += 1; // hh = char
-                    }
-                    // short/char — still store as int-width for simplicity
-                }
-                _ => {}
-            }
-        }
+        // Parse length modifier. `Short`/`Char` (`h`/`hh`) are consumed
+        // but still stored at int-width for simplicity; `z`/`j`/`t` are
+        // honoured as 64-bit (glibc accepts them in scanf).
+        let (modifier, m_adv) = parse_length_modifier(fmt, i);
+        i += m_adv;
+        let long_count: u8 = if matches!(modifier, LengthModifier::LongLong) {
+            2
+        } else if modifier.is_64bit() {
+            1
+        } else {
+            0
+        };
 
         if i >= fmt.len() {
             break;
