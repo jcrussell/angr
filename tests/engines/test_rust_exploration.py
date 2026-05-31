@@ -11652,6 +11652,70 @@ class TestRustExecutionErrorHierarchy:
         with pytest.raises(RustExecutionError, match=r"CCall.*amd64g_NotARealCCall"):
             execute_irsb_for_test(json.dumps(irsb), "amd64")
 
+    def test_malformed_irsb_surfaces_typed_error_with_addr(self):
+        """The angr-95up.1 acceptance: a structurally-invalid IRSB surfaces
+        as ``RustMalformedIRSBError`` carrying the block address — not as a
+        panic, ``PyValueError``, or silent fallthrough.
+
+        ``RustMalformedIRSBError`` is the typed-error variant covering VEX
+        lift / IR validation failure: ``engine.rs::cb_execution_error_to_typed``
+        maps ``CbExecutionError::InvalidIR(reason)`` to
+        ``RustExecError::MalformedIRSB { addr, reason }``.
+
+        This pins the contract ahead of the ``angr-tkbr.5`` hot-path-unwrap
+        audit, so the audit can rely on lift/IR-validation failures landing
+        in a typed class rather than panicking. The trigger here is the
+        cheapest InvalidIR site: an ``Ist_LLSC`` whose ``result`` temp index
+        sits past the end of the block's ``tyenv``. Dispatch hits
+        ``statements.rs::execute_llsc_statement`` line ~708 and returns
+        ``InvalidIR("LLSC result temp <n> not in tyenv")``.
+
+        Note: ``RustExplorationManager.run()`` does NOT raise typed errors
+        end-to-end on malformed bytes — the Python lift callback in
+        ``rust_manager.py::_cb_lift_block`` catches PyVEXError /
+        SimEngineError / ClaripyError and returns ``'{}'``, and the
+        ``stepping.rs`` heuristic deadends states whose error message
+        contains ``"lift"`` (see memory ``rust-engine-lift-failure-silent-deadend``).
+        ``execute_irsb_for_test`` is therefore the testbench that exercises
+        the typed-error surface for VEX lift validation; the silent-deadend
+        contract for the run-loop path is locked down separately via
+        ``test_cb_lift_block_*`` in ``TestRustManagerCallbacksUnit``.
+        """
+        import json
+        from angr.exploration import RustMalformedIRSBError
+        from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        addr = 0x1000
+        irsb = {
+            "addr": addr,
+            "arch": "AMD64",
+            "statements": [
+                {"tag": "Ist_IMark", "addr": addr, "len": 4, "delta": 0},
+                # LLSC `result` references temp 99, but tyenv only declares
+                # one type (t0:Ity_I64). The dispatcher resolves the temp
+                # type via `irsb.tyenv.get(99)` -> None -> InvalidIR.
+                {"tag": "Ist_LLSC",
+                 "result": 99,
+                 "addr": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x2000}},
+                 "storedata": None,
+                 "end": "Iend_LE"},
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": addr + 4}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": 184,
+            "tyenv": {"types": ["Ity_I64"]},
+        }
+
+        with pytest.raises(RustMalformedIRSBError) as exc_info:
+            execute_irsb_for_test(json.dumps(irsb), "amd64")
+
+        # The typed-error contract: address is in the message so callers
+        # can correlate the failure to a specific block, and the reason
+        # names the IR construct that tripped validation.
+        msg = str(exc_info.value)
+        assert "0x1000" in msg, f"missing addr context in: {msg}"
+        assert "LLSC" in msg, f"missing IR-construct context in: {msg}"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
