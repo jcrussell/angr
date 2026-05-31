@@ -1,7 +1,7 @@
 use super::helpers::bv_to_bytes;
 use super::*;
 
-impl<'a> CallbackInterpreter<'a> {
+impl<'a> VEXInterpreter<'a> {
     /// Execute a single statement using Python callbacks.
     pub(super) fn execute_stmt_with_callbacks(
         &mut self,
@@ -1641,8 +1641,8 @@ mod tests {
     use super::*;
     use crate::vex::ir::{Endness, IRType, MBusEvent};
 
-    fn new_interp(ctx: &SymContext) -> CallbackInterpreter<'_> {
-        CallbackInterpreter::new(VexArch::AMD64, ctx)
+    fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
+        VEXInterpreter::new(VexArch::AMD64, ctx)
     }
 
     fn make_irsb_with_temps(addr: u64, temp_types: &[IRType]) -> IRSB {

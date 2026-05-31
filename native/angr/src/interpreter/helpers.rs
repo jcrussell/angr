@@ -113,14 +113,14 @@ mod tests {
     #[test]
     fn test_interpreter_creation() {
         let ctx = SymContext::new_mock();
-        let interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        let interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
         assert_eq!(interp.get_pc(), 0);
     }
 
     #[test]
     fn test_hook_management() {
         let ctx = SymContext::new_mock();
-        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        let mut interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
 
         interp.add_hook(0x1000);
         assert!(interp.is_hooked(0x1000));

@@ -1,6 +1,6 @@
 use super::*;
 use crate::arch::RegisterFile;
-use crate::interpreter_cb::BranchSnapshot;
+use crate::interpreter::BranchSnapshot;
 use crate::memory::SymbolicMemory;
 use crate::state::{CallStackEntry, HistoryEntry};
 use crate::vex::IRSB;
@@ -928,7 +928,7 @@ impl RustExplorationManager {
 
     /// Run the VEX interpreter for one step and recover all owned state from it.
     ///
-    /// This wraps the borrow scope around the state's solver: a `CallbackInterpreter`
+    /// This wraps the borrow scope around the state's solver: a `VEXInterpreter`
     /// is constructed against the borrowed solver, run until its next event, then
     /// fully drained (registers, memory, history, block cache, profiling stats)
     /// before being dropped at scope end.
@@ -945,7 +945,7 @@ impl RustExplorationManager {
         let solver_ref = solver_rc.borrow();
 
         // Create interpreter with the state's solver
-        let mut interp = CallbackInterpreter::with_config(
+        let mut interp = VEXInterpreter::with_config(
             self.environment.vex_arch,
             &*solver_ref,
             self.exec_config.clone(),
@@ -1091,7 +1091,7 @@ impl RustExplorationManager {
         successors: &mut Vec<RustSimState>,
         deferred_forks: Vec<DeferredFork>,
         stored_conditions: &FxHashMap<u64, RustBV>,
-        mut fork_snapshots: FxHashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+        mut fork_snapshots: FxHashMap<u64, crate::interpreter::BranchSnapshot>,
     ) {
         if deferred_forks.is_empty() {
             return;

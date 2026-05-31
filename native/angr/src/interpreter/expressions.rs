@@ -1,7 +1,7 @@
 use super::helpers::{build_balanced_ite, bytes_to_bv};
 use super::*;
 
-impl<'a> CallbackInterpreter<'a> {
+impl<'a> VEXInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
     pub(super) fn eval_expr_with_callbacks(
         &mut self,
@@ -956,8 +956,8 @@ mod tests {
     use super::*;
     use crate::vex::ir::{Endness, IRType};
 
-    fn new_interp(ctx: &SymContext) -> CallbackInterpreter<'_> {
-        CallbackInterpreter::new(VexArch::AMD64, ctx)
+    fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
+        VEXInterpreter::new(VexArch::AMD64, ctx)
     }
 
     #[test]

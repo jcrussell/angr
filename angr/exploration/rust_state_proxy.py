@@ -515,7 +515,7 @@ class RustScratchProxy:
     Python's SimStateScratch carries per-block transient values used by the
     Python VEX engine (irsb, bbl_addr, ins_addr, stmt_idx, jumpkind, temps,
     tyenv, ...). The Rust engine doesn't store most of those because they
-    belong to the in-flight CallbackInterpreter, not the persistent state.
+    belong to the in-flight VEXInterpreter, not the persistent state.
 
     This proxy exposes the subset that *is* recoverable from the Rust state:
     the most recently entered block address (mirrors `state.pc`) and the
@@ -555,7 +555,7 @@ class RustScratchProxy:
     def ins_addr(self):
         """Address of the most recently executed instruction.
 
-        The Rust interpreter tracks this in CallbackInterpreter.current_insn_addr
+        The Rust interpreter tracks this in VEXInterpreter.current_insn_addr
         but doesn't persist it on the state — once the block finishes, the
         interpreter is dropped. We surface state.pc as a best-effort proxy:
         for a found state, pc is the find address (the last IMark seen).
@@ -860,10 +860,10 @@ _INSPECT_NOT_IMPLEMENTED_MSG = (
 # Wiring a new event requires (mirror the angr-d46u 5-touchpoint pattern):
 #   1. Add a row here with a unique bit, attrs, when_fired.
 #   2. Add a PythonCallbacks slot + setter + dispatch helper in
-#      native/angr/src/callbacks.rs and the interpreter_cb dispatch
+#      native/angr/src/callbacks.rs and the interpreter dispatch
 #      helpers.
 #   3. Instrument the corresponding interpreter site in
-#      native/angr/src/interpreter_cb/.
+#      native/angr/src/interpreter/.
 #   4. Add a `_cb_inspect_<name>` method on RustExplorationManager
 #      that builds the attrs dict and calls `_dispatch_inspect_event`.
 #   5. Register the callback in RustExplorationManager.set_callbacks().

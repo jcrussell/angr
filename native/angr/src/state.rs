@@ -1795,7 +1795,7 @@ impl RustSimState {
     /// Create a forked state using a full branch snapshot (solver + registers + memory).
     /// The resulting state has the correct state from the branch point, not from
     /// the continuation of the taken path.
-    pub fn fork_from_snapshot(&self, snapshot: crate::interpreter_cb::BranchSnapshot) -> Self {
+    pub fn fork_from_snapshot(&self, snapshot: crate::interpreter::BranchSnapshot) -> Self {
         let forked_solver = Rc::new(RefCell::new(snapshot.solver));
         let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
         RustSimState {

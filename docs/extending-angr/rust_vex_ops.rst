@@ -43,7 +43,7 @@ head as you read the worked examples below:
        ``qop`` dispatch on the ``IROp`` variant and produce a
        ``RustBV``. Concrete fast paths live next to their Z3 symbolic
        fallbacks.
-   * - ``native/angr/src/interpreter_cb/expressions.rs``
+   * - ``native/angr/src/interpreter/expressions.rs``
      - The interpreter site that calls ``VEXOps::*``. You only edit
        this file for *non-op* IR features (``IRExpr::Load``,
        ``IRStmt::Store``, etc. — see examples 3 and 4).
@@ -226,7 +226,7 @@ plane, which ``VEXOps`` deliberately does not have (its inputs are
 ``RustBV`` plus a solver context — nothing more).
 
 The dispatch site is in
-``native/angr/src/interpreter_cb/expressions.rs:49``:
+``native/angr/src/interpreter/expressions.rs:49``:
 
 .. code-block:: rust
 
@@ -241,10 +241,10 @@ If you're adding a *new* memory-access shape (e.g. a guarded load,
 load-linked, gather), the corresponding ``IRStmt`` / ``IRExpr``
 variant goes into ``ir.rs``, the lifter wiring goes into
 ``vex/pyvex_bridge.rs`` (string side) and ``vex/libpyvex_ffi.rs``
-(native side), and the *execution* goes into ``interpreter_cb`` — not
+(native side), and the *execution* goes into ``interpreter`` — not
 ``ops.rs``. The split is durable: pure value-to-value transforms are
 in ``ops.rs``; anything that touches memory, registers, temps,
-constraints, or call frames goes through ``interpreter_cb``.
+constraints, or call frames goes through ``interpreter``.
 
 Worked example 4 — memory write: ``IRStmt::Store``
 --------------------------------------------------
@@ -260,7 +260,7 @@ Same story as ``Load`` but on the statement side
        // …
    }
 
-The dispatch site is ``interpreter_cb/statements.rs:54``:
+The dispatch site is ``interpreter/statements.rs:54``:
 
 .. code-block:: rust
 
@@ -273,7 +273,7 @@ The dispatch site is ``interpreter_cb/statements.rs:54``:
 
 A new store-shaped statement (CAS, LL/SC, guarded store) goes the same
 way: variant in ``ir.rs``, wiring in the lifter, execution in
-``interpreter_cb/statements.rs``. If the op is *also* width-parameterized
+``interpreter/statements.rs``. If the op is *also* width-parameterized
 (e.g., the CAS payload is an ``IROp::Add``), the body still calls
 ``VEXOps::binop`` — which is exactly how the two layers compose.
 
@@ -344,7 +344,7 @@ What *not* to do
   proliferation libvex pays for; the Rust engine's terseness is
   earned by *not* doing that.
 * Don't put memory or register access in ``ops.rs``. The split between
-  ``ops.rs`` (pure ``RustBV`` transforms) and ``interpreter_cb`` (state
+  ``ops.rs`` (pure ``RustBV`` transforms) and ``interpreter`` (state
   access) is the engine's most useful internal boundary; preserving it
   keeps the test surface small (``SymContext::new_mock()`` is enough
   to test any pure op).

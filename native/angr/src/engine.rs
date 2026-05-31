@@ -11,7 +11,7 @@ use crate::callbacks::{
     BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks,
 };
 use crate::errors::RustExecError;
-use crate::interpreter_cb::CbExecutionError;
+use crate::interpreter::CbExecutionError;
 use crate::solver::RustSolverContext;
 use crate::symbolic::SymContext;
 use crate::vex::deserialize_irsb;
@@ -50,7 +50,7 @@ fn cb_execution_error_to_typed(err: CbExecutionError, addr: u64, arch: &str) -> 
     }
 }
 
-/// Run a single VEX block through [`CallbackInterpreter`] for unit tests.
+/// Run a single VEX block through [`VEXInterpreter`] for unit tests.
 ///
 /// Driven directly from Python tests that exercise the typed-error mapping
 /// (e.g. NEON / unmapped-opcode / unhandled-CCall → typed exception).
@@ -71,7 +71,7 @@ pub fn execute_irsb_for_test(py: Python<'_>, irsb_json: &str, arch_name: &str) -
 
     let ctx = SymContext::new_mock();
     let callbacks = PythonCallbacks::new();
-    let mut interp = crate::interpreter_cb::CallbackInterpreter::new(vex_arch, &ctx);
+    let mut interp = crate::interpreter::VEXInterpreter::new(vex_arch, &ctx);
 
     let addr = irsb.addr;
     match interp.execute_block(py, &callbacks, &irsb) {

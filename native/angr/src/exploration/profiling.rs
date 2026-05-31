@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::interpreter_cb::ExecutionStats;
+use crate::interpreter::ExecutionStats;
 
 /// Statistics for native procedure execution.
 #[derive(Debug, Clone, Default)]

@@ -474,7 +474,7 @@ zero-cost when not read. They reset alongside the Z3 counters via
 ``mgr.reset_solver_stats()``.
 
 * **VEX op dispatch** (bumped at the ``IRExpr::{Unop,Binop,Triop,Qop}``
-  dispatch in ``interpreter_cb/expressions.rs``):
+  dispatch in ``interpreter/expressions.rs``):
 
   * ``vex_unop_total`` / ``vex_binop_total`` / ``vex_triop_total`` /
     ``vex_qop_total`` — count per arity.
@@ -921,7 +921,7 @@ Honored options
        ``_apply_state_metadata`` on cache reuse)
      - Calls ``RustSimState::set_enforce_nx(True)``; instruction fetches
        from mapped non-X pages raise ``SimSegfaultError`` at
-       ``CallbackInterpreter::get_or_lift_block``. Matches Python: the X
+       ``VEXInterpreter::get_or_lift_block``. Matches Python: the X
        check fires only when ``ENABLE_NX`` AND ``STRICT_PAGE_ACCESS`` are
        both set (``angr/engines/vex/heavy/heavy.py:115-124``).
    * - ``NO_IP_CONCRETIZATION``
@@ -930,8 +930,8 @@ Honored options
      - Calls ``RustSimState::set_no_ip_concretization(True)``; at block
        boundaries with a symbolic jump target the state routes to the
        ``unconstrained`` stash silently instead of being enumerated. The
-       check fires inside ``CallbackInterpreter::eval_next_addr_concretized``
-       (``native/angr/src/interpreter_cb/exits.rs``). Matches Python's
+       check fires inside ``VEXInterpreter::eval_next_addr_concretized``
+       (``native/angr/src/interpreter/exits.rs``). Matches Python's
        ``engines/successors.py:292-296`` behavior
        (``max_targets=0`` with ``skip_max_targets_warning=True``).
    * - ``NO_SYMBOLIC_JUMP_RESOLUTION``
@@ -946,7 +946,7 @@ Honored options
        before ``AddressConcretizer`` is invoked).
    * - ``NO_SYMBOLIC_SYSCALL_RESOLUTION``
      - Inherited through the Python syscall fallback
-     - ``CallbackInterpreter::get_syscall_num`` returns ``Option<u64>``
+     - ``VEXInterpreter::get_syscall_num`` returns ``Option<u64>``
        (``None`` when the syscall register is symbolic), and
        ``stepping.rs::RunResult::Syscall`` skips the native syscall
        registry when ``num`` is ``None``, forcing a Python callback. The
@@ -968,7 +968,7 @@ Honored options
        ``symbolic_ip_at_exit`` and the manager restores it via
        ``state.set_ip`` after ``state.set_pc(next_pc)``
        (``native/angr/src/exploration/stepping.rs``,
-       ``native/angr/src/interpreter_cb/exits.rs``). Multi-target forks are
+       ``native/angr/src/interpreter/exits.rs``). Multi-target forks are
        handled by ``handle_symbolic_jump_target``. Mirrors Python's
        ``engines/successors.py:297-307,326-331``.
 

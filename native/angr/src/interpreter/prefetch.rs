@@ -1,7 +1,7 @@
 use super::helpers::bytes_to_bv;
 use super::*;
 
-impl<'a> CallbackInterpreter<'a> {
+impl<'a> VEXInterpreter<'a> {
     /// Enable or disable load prefetching.
     pub fn set_load_prefetch(&mut self, enabled: bool) {
         self.use_load_prefetch = enabled;
@@ -482,8 +482,8 @@ mod tests {
     use super::*;
     use crate::vex::ir::{Endness, IRType};
 
-    fn new_interp(ctx: &SymContext) -> CallbackInterpreter<'_> {
-        CallbackInterpreter::new(VexArch::AMD64, ctx)
+    fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
+        VEXInterpreter::new(VexArch::AMD64, ctx)
     }
 
     fn make_irsb_load(addr: u64, load_addr: u64, size: IRType) -> IRSB {
@@ -521,7 +521,7 @@ mod tests {
     fn set_page_prefetch_count_overrides_default() {
         let ctx = SymContext::new_mock();
         let mut interp = new_interp(&ctx);
-        // Default established in CallbackInterpreter::new.
+        // Default established in VEXInterpreter::new.
         let original = interp.page_prefetch_count;
         interp.set_page_prefetch_count(8);
         assert_eq!(interp.page_prefetch_count, 8);

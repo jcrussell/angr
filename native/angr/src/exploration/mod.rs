@@ -25,7 +25,7 @@ use pyo3::types::PyDict;
 use crate::arch::{arch_from_name, default_cc_for_arch};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
-use crate::interpreter_cb::{CallbackInterpreter, DCAS_UNSUPPORTED_REASON, ExecutionStats};
+use crate::interpreter::{VEXInterpreter, DCAS_UNSUPPORTED_REASON, ExecutionStats};
 use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcedureError};
 use crate::solver::RustSolverContext;
@@ -290,7 +290,7 @@ pub(crate) struct PendingCallback {
     pub(crate) stored_conditions: FxHashMap<u64, RustBV>,
     /// Full state snapshots from before branch constraints were added.
     /// Keyed by condition_id, enables correct alternate-path forking.
-    pub(crate) fork_snapshots: FxHashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+    pub(crate) fork_snapshots: FxHashMap<u64, crate::interpreter::BranchSnapshot>,
 }
 
 impl PendingCallback {
@@ -319,7 +319,7 @@ impl PendingCallback {
         solver_ctx: Option<RustSolverContext>,
         deferred_forks: Vec<DeferredFork>,
         stored_conditions: FxHashMap<u64, RustBV>,
-        fork_snapshots: FxHashMap<u64, crate::interpreter_cb::BranchSnapshot>,
+        fork_snapshots: FxHashMap<u64, crate::interpreter::BranchSnapshot>,
     ) -> Self {
         PendingCallback {
             state,

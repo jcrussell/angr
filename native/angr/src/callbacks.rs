@@ -187,7 +187,7 @@ impl Default for ExecutionConfig {
             max_deferred_forks: 500, // Increased from 100 for complex binaries
             branch_policy: BranchPolicy::TakeTrue,
             // Deferred forks enabled with one-per-step limit:
-            // interpreter_cb.rs limits to one deferred fork per
+            // interpreter.rs limits to one deferred fork per
             // run_until_event call, then falls back to non-deferred
             // mode. This gives single-exit blocks the performance
             // benefit while multi-exit blocks are handled by Python.

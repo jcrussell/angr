@@ -24,7 +24,7 @@ pub mod errors;
 #[cfg(feature = "vex-engine")]
 pub mod exploration;
 #[cfg(feature = "vex-engine")]
-pub mod interpreter_cb;
+pub mod interpreter;
 #[cfg(feature = "vex-engine")]
 pub mod memory;
 #[cfg(feature = "vex-engine")]

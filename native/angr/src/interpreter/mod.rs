@@ -439,7 +439,7 @@ pub struct SimProcedureInfo {
 /// When `use_rust_memory` is true, the interpreter uses `rust_memory` for
 /// memory operations, falling back to Python callbacks only for unmapped pages.
 /// This provides significant performance improvement for memory-intensive code.
-pub struct CallbackInterpreter<'a> {
+pub struct VEXInterpreter<'a> {
     /// Register file (local cache, synced via callbacks).
     pub registers: RegisterFile,
     /// Temporary variables for current block.
@@ -614,7 +614,7 @@ pub struct CallbackInterpreter<'a> {
     /// e.g. fresh interpreter from tests, or fork paths that never set it.
     pub current_state_id: i64,
 }
-impl<'a> CallbackInterpreter<'a> {
+impl<'a> VEXInterpreter<'a> {
     /// Create a new callback-aware interpreter.
     pub fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
         Self::with_config(arch, ctx, ExecutionConfig::default())
@@ -626,7 +626,7 @@ impl<'a> CallbackInterpreter<'a> {
         let arch_name = arch_box.name();
         let cc = default_cc_for_arch(arch_name);
 
-        CallbackInterpreter {
+        VEXInterpreter {
             registers: RegisterFile::new(arch_box),
             temps: Vec::with_capacity(64), // Pre-allocate for typical block size
             ctx,
@@ -1517,12 +1517,12 @@ impl<'a> CallbackInterpreter<'a> {
     /// Run the execution loop until an event requires Python handling.
 
     /// Fork the interpreter state.
-    pub fn fork(&self) -> CallbackInterpreter<'a> {
+    pub fn fork(&self) -> VEXInterpreter<'a> {
         // Clone the calling convention based on its type
         let arch_box = arch_from_vex(self.arch);
         let cc = default_cc_for_arch(arch_box.name());
 
-        CallbackInterpreter {
+        VEXInterpreter {
             registers: self.registers.fork(),
             temps: self.temps.clone(),
             ctx: self.ctx,
@@ -1655,7 +1655,7 @@ mod smc_tests {
     #[test]
     fn invalidate_removes_overlapping_block_and_marks_page_dirty() {
         let ctx = SymContext::new_mock();
-        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        let mut interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
         interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
         // Block at 0x1010 covering 8 bytes -> [0x1010, 0x1018).
         interp.cache_block(0x1010, make_irsb(0x1010, 8));
@@ -1670,7 +1670,7 @@ mod smc_tests {
     #[test]
     fn invalidate_skips_non_overlapping_blocks() {
         let ctx = SymContext::new_mock();
-        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        let mut interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
         interp.add_concrete_memory(0x1000, vec![0u8; 0x2000]);
         interp.cache_block(0x1010, make_irsb(0x1010, 8));
         // Write a byte at 0x1100 — different bytes, but same page (0x1).
@@ -1685,7 +1685,7 @@ mod smc_tests {
     #[test]
     fn invalidate_handles_multi_page_writes() {
         let ctx = SymContext::new_mock();
-        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        let mut interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
         interp.add_concrete_memory(0x1000, vec![0u8; 0x4000]);
         // 16-byte write straddles 0x1ff8..0x2008 — pages 0x1 and 0x2.
         interp.invalidate_code_at(0x1ff8, 16);
@@ -1696,7 +1696,7 @@ mod smc_tests {
     #[test]
     fn is_code_range_dirtied_spans_pages() {
         let ctx = SymContext::new_mock();
-        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        let mut interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
         interp.add_concrete_memory(0x1000, vec![0u8; 0x4000]);
         // Dirty just page 0x2.
         interp.invalidate_code_at(0x2000, 1);
@@ -1709,7 +1709,7 @@ mod smc_tests {
     #[test]
     fn fork_inherits_dirtied_pages() {
         let ctx = SymContext::new_mock();
-        let mut interp = CallbackInterpreter::new(VexArch::AMD64, &ctx);
+        let mut interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
         interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
         interp.invalidate_code_at(0x1500, 1);
         let child = interp.fork();

@@ -566,7 +566,7 @@ class RustErrorRecord:
                            (e.g. 'unsupported', 'memory', 'lift', 'callback').
                            Derived from the message prefix; matches the
                            CbExecutionError variants in
-                           native/angr/src/interpreter_cb/mod.rs.
+                           native/angr/src/interpreter/mod.rs.
         constraint_count:  Number of solver constraints on the state at error
                            time. 0 if state is None or the count cannot be read.
         registers:         dict mapping register name -> int (concrete) or str
@@ -578,7 +578,7 @@ class RustErrorRecord:
     """
 
     # Stable error-class taxonomy. Prefixes match the Display impls of
-    # CbExecutionError variants in native/angr/src/interpreter_cb/mod.rs and
+    # CbExecutionError variants in native/angr/src/interpreter/mod.rs and
     # the formatted error strings in native/angr/src/exploration/stepping.rs.
     _ERROR_CLASS_PREFIXES = (
         ('memory error',           'memory'),
@@ -1724,7 +1724,7 @@ class RustExplorationManager(
         """Store a symbolic value at a *symbolic* address.
 
         Called from Rust when address concretization yields TooLarge (or for the
-        Multiple/StoreG fallback paths in interpreter_cb/statements.rs). Python's
+        Multiple/StoreG fallback paths in interpreter/statements.rs). Python's
         memory model natively supports symbolic addresses via angr's
         SimConcretizationStrategy chain, which is the whole reason the *_full
         callback exists.

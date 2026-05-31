@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a> CallbackInterpreter<'a> {
+impl<'a> VEXInterpreter<'a> {
     /// Run the execution loop until an event requires Python handling.
     ///
     /// This is the main entry point for the callback-based execution model.
@@ -691,8 +691,8 @@ impl<'a> CallbackInterpreter<'a> {
 mod tests {
     use super::*;
 
-    fn new_interp(ctx: &SymContext) -> CallbackInterpreter<'_> {
-        CallbackInterpreter::new(VexArch::AMD64, ctx)
+    fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
+        VEXInterpreter::new(VexArch::AMD64, ctx)
     }
 
     fn make_irsb(addr: u64, len_bytes: u32) -> IRSB {

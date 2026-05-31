@@ -89,7 +89,7 @@ For each task, follow this loop:
 12. Write a brief session summary to stdout before exiting.
 
 Key files:
-- Rust: native/angr/src/ (exploration/, interpreter_cb.rs, callbacks.rs, state.rs, symbolic/context.rs, symbolic/value.rs)
+- Rust: native/angr/src/ (exploration/, interpreter/, callbacks.rs, state.rs, symbolic/context.rs, symbolic/value.rs)
 - Python: angr/exploration/rust_manager.py, rust_state_export.py, rust_state_sync.py, rust_state_proxy.py
 - Tests: tests/engines/test_rust_exploration.py (146 tests)
 - Single runner: tests/benchmarks/run_single.py <example> [--engine rust|python] [--both]

@@ -245,7 +245,7 @@ pub struct VEXOps;
 /// Classify an `IROp` into a coarse-grained family for instrumentation
 /// (angr-2j5v). Counts roll up into `vex_op_<family>` counters via the
 /// `record_vex_*` recorder fns at the entry of the IRExpr dispatch in
-/// `interpreter_cb/expressions.rs`.
+/// `interpreter/expressions.rs`.
 ///
 /// `Vec` captures everything prefixed with `V*` (SIMD/NEON). `Fp` captures
 /// scalar FP plus the unprefixed FP conversions. `Other` is the catch-all
@@ -533,7 +533,7 @@ impl VEXOps {
             } => Self::vec_qnarrow_un(arg, from, count, src_signed, dst_signed, ctx),
 
             // NEON scaffolding: surface as a typed error rather than silently
-            // falling back. interpreter_cb::expressions special-cases
+            // falling back. interpreter::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             // Implementations land in angr-bkcs.2.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
@@ -813,7 +813,7 @@ impl VEXOps {
             IROp::FSqrt(_) => Self::unop_with_rm(op, left, right, ctx),
 
             // NEON scaffolding: surface as a typed error rather than silently
-            // falling back. interpreter_cb::expressions special-cases
+            // falling back. interpreter::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
@@ -850,7 +850,7 @@ impl VEXOps {
                 Ok(arg1.extract_into(hi, lo, ctx))
             }
             // NEON scaffolding: surface as a typed error rather than silently
-            // falling back. interpreter_cb::expressions special-cases
+            // falling back. interpreter::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
@@ -881,7 +881,7 @@ impl VEXOps {
             IROp::FMAdd(ty) => Self::float_madd(a, b, c, ty, ctx),
             IROp::FMSub(ty) => Self::float_msub(a, b, c, ty, ctx),
             // NEON scaffolding: surface as a typed error rather than silently
-            // falling back. interpreter_cb::expressions special-cases
+            // falling back. interpreter::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
@@ -3586,7 +3586,7 @@ pub enum OpError {
     /// NEON op that hasn't been implemented yet (angr-bkcs scaffold).
     ///
     /// Distinct from [`Self::UnsupportedVectorOp`] because the silent
-    /// fresh-symbolic fallback in `interpreter_cb::expressions` swallows
+    /// fresh-symbolic fallback in `interpreter::expressions` swallows
     /// generic `OpError`s — this variant is propagated explicitly so
     /// missing NEON coverage surfaces as `RustUnsupportedVexOpError`
     /// instead of producing wrong results that are hard to attribute.
@@ -3597,7 +3597,7 @@ pub enum OpError {
     ///
     /// Routed from `IROp::Unmapped(name)`. Like `UnsupportedNeon`, this
     /// is propagated explicitly past the silent fresh-symbolic fallback
-    /// in `interpreter_cb::expressions` so callers see the real op name
+    /// in `interpreter::expressions` so callers see the real op name
     /// in a typed `RustUnsupportedVexOpError` instead of getting a
     /// fresh-symbolic value of the wrong width.
     #[error("unmapped VEX opcode: {op_name}")]

@@ -1,7 +1,7 @@
 use super::helpers::extract_ite_targets;
 use super::*;
 
-impl<'a> CallbackInterpreter<'a> {
+impl<'a> VEXInterpreter<'a> {
     /// Evaluate the next address from an IRSB.
     /// Used for Exit statements where we still need callbacks for complex expressions.
     pub(super) fn eval_next_addr(
@@ -278,11 +278,11 @@ mod tests {
     use super::*;
     use crate::state::CallStackEntry;
 
-    fn new_interp(ctx: &SymContext) -> CallbackInterpreter<'_> {
-        CallbackInterpreter::new(VexArch::AMD64, ctx)
+    fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
+        VEXInterpreter::new(VexArch::AMD64, ctx)
     }
 
-    fn add_internal_region(interp: &mut CallbackInterpreter<'_>) {
+    fn add_internal_region(interp: &mut VEXInterpreter<'_>) {
         // Define a "binary" region so is_in_binary returns true for 0x1000..0x2000.
         interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
     }

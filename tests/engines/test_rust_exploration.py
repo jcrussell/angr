@@ -7467,13 +7467,13 @@ class TestErrorRecovery:
             mgr._cb_memory_store_symbolic_value(0x1000, ast)
 
     # angr-b1qq: wire memory_{store,load}_symbolic_full so the existing
-    # interpreter_cb fallbacks (statements.rs:368/444/710/1174,
+    # interpreter fallbacks (statements.rs:368/444/710/1174,
     # expressions.rs:149) can actually delegate to Python instead of returning
     # CbExecutionError::Unsupported on TooLarge symbolic addresses.
 
     def test_symbolic_full_callbacks_are_wired(self):
         """_init_callbacks must bind both *_symbolic_full callbacks. Without
-        them the Rust TooLarge branches at interpreter_cb/statements.rs:368/
+        them the Rust TooLarge branches at interpreter/statements.rs:368/
         444/710/1174 and expressions.rs:149 hard-error instead of falling
         back to Python's memory model."""
         mgr, _ = self._build_load_store_manager()
@@ -7770,7 +7770,7 @@ class TestErrorRecovery:
 
     def test_loadg_symbolic_address_dispatches_through_resolve_loadg_load(self):
         """A hand-built IRSB containing a LoadG with a symbolic address must
-        dispatch through `resolve_loadg_load` (interpreter_cb/expressions.rs:546).
+        dispatch through `resolve_loadg_load` (interpreter/expressions.rs:546).
 
         The address comes from an inner `Iex_Load` whose `memory_load`
         callback returns `(zeros, True, claripy_ast)` — Rust's bridge picks
@@ -7884,7 +7884,7 @@ class TestErrorRecovery:
         `_cb_memory_load_symbolic_full` callback returns must flow back into
         the LoadG dst temp via either the handle table or the claripy
         bridge.  This test directly exercises the callback return-path used
-        by `fallback_load_symbolic_full` (interpreter_cb/mod.rs:947) by
+        by `fallback_load_symbolic_full` (interpreter/mod.rs:947) by
         invoking the manager-level callback the way Rust would.
         """
         import claripy
@@ -7909,7 +7909,7 @@ class TestErrorRecovery:
             "memory_load_symbolic_full must return an AST when Python's "
             "memory model can resolve the address; returning None would "
             "force Rust to fabricate a fresh symbolic placeholder via the "
-            "sym_pyref_* fallback (interpreter_cb/mod.rs:972)."
+            "sym_pyref_* fallback (interpreter/mod.rs:972)."
         )
         assert state.solver.eval(result) == 0xCAFED00D
 
@@ -10918,7 +10918,7 @@ class TestUnconstrainedRet:
     symbolic stack as a `<BV64 mem_*>` with >256 solutions and overflows into
     `unconstrained_successors`. Rust's state sync materialises the lazy stack
     to concrete zeros, so the popped IP is concrete 0; the fix in
-    interpreter_cb/exits.rs detects `Ijk_Ret` with an empty call stack to
+    interpreter/exits.rs detects `Ijk_Ret` with an empty call stack to
     an out-of-binary target and routes to the unconstrained stash instead.
     """
 
