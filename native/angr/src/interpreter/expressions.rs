@@ -1,5 +1,6 @@
 use super::helpers::{build_balanced_ite, bytes_to_bv};
 use super::*;
+use crate::vex::ir::{IRCallee, IRRegArray};
 
 impl<'a> VEXInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
@@ -49,255 +50,23 @@ impl<'a> VEXInterpreter<'a> {
             }
 
             IRExpr::Load { addr, ty, endness } => {
-                let load_start = if self.profiling_enabled {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-                let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
-                let size = ty.bytes() as usize;
-                if self.profiling_enabled {
-                    self.stats.load_stmt_count += 1;
-                }
-
-                let value: RustBV = 'load: {
-                    // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
-                    if self.use_rust_memory {
-                        if let Some(value) =
-                            self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
-                        {
-                            break 'load value;
-                        }
-                    }
-
-                    if let Some(addr_concrete) = addr_val.as_u64() {
-                        // FAST PATH 0: Check pending stores buffer
-                        // Stores within the same block are buffered in pending_stores.
-                        // We must check this buffer before falling through to Python
-                        // callbacks, which have stale state.
-
-                        // First check symbolic stores (preserves symbolic values)
-                        if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
-                            if sym_val.width() == (size * 8) as u32 {
-                                break 'load sym_val.clone();
-                            } else if sym_val.width() > (size * 8) as u32 {
-                                break 'load sym_val.extract((size * 8 - 1) as u32, 0, self.ctx);
-                            }
-                        }
-
-                        // Then check concrete stores via the indexed buffer.
-                        // try_load fast-skips when no pending store overlaps the
-                        // load address; falls back to a reverse scan only when the
-                        // most recent covering store is smaller than the load.
-                        if let Some(data) = self.pending_stores.try_load(addr_concrete, size) {
-                            break 'load bytes_to_bv(data, (size * 8) as u32);
-                        }
-
-                        // Also check previously flushed symbolic stores (cross-block)
-                        if let Some(sym_val) =
-                            self.all_flushed_symbolic_stores.get(&addr_concrete)
-                        {
-                            if sym_val.width() == (size * 8) as u32 {
-                                break 'load sym_val.clone();
-                            } else if sym_val.width() > (size * 8) as u32 {
-                                break 'load sym_val.extract((size * 8 - 1) as u32, 0, self.ctx);
-                            }
-                        }
-
-                        // Also check previously flushed concrete stores (cross-block)
-                        if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
-                            if size <= store_data.len() {
-                                let data = &store_data[..size];
-                                break 'load bytes_to_bv(data, (size * 8) as u32);
-                            }
-                        }
-
-                        // FAST PATH 1: Check prefetch cache (batch-loaded values)
-                        if let Some(prefetched) =
-                            self.load_prefetch_cache.get(&(addr_concrete, size))
-                        {
-                            break 'load prefetched.value.clone();
-                        }
-
-                        // FAST PATH 2: Check if address is in Rust-cached concrete memory
-                        if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
-                            break 'load bytes_to_bv(data, (size * 8) as u32);
-                        }
-                        // SLOW PATH: Fall back to Python callback
-                        self.load_from_callback(py, callbacks, addr_concrete, size)?
-                    } else {
-                        // Symbolic address - try to concretize for read
-                        match &*self.concretize_cached_read(&addr_val) {
-                            ConcretizationResult::Single(addr_concrete) => {
-                                let addr_concrete = *addr_concrete;
-                                if self.arch.pointer_size() == 32
-                                    && addr_concrete >= 0x400000
-                                    && addr_concrete < 0x420000
-                                {}
-                                if let Some(data) =
-                                    self.try_read_concrete_memory(addr_concrete, size)
-                                {
-                                    break 'load bytes_to_bv(data, (size * 8) as u32);
-                                }
-                                self.load_from_callback(py, callbacks, addr_concrete, size)?
-                            }
-                            ConcretizationResult::Multiple(addrs) => {
-                                // Build ITE chain in Rust instead of delegating to Python
-                                // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
-                                self.build_ite_load_from_callbacks(
-                                    py, callbacks, addrs, &addr_val, size,
-                                )?
-                            }
-                            ConcretizationResult::Strided {
-                                base,
-                                stride,
-                                count,
-                            } => {
-                                // Strided access pattern - generate addresses and build ITE chain in Rust
-                                let addrs: Vec<u64> =
-                                    (0..*count).map(|i| base + i * stride).collect();
-                                self.build_ite_load_from_callbacks(
-                                    py, callbacks, &addrs, &addr_val, size,
-                                )?
-                            }
-                            ConcretizationResult::TooLarge { min, max, .. } => {
-                                let descr = format!("range 0x{:x}-0x{:x}", min, max);
-                                self.fallback_load_symbolic_full(
-                                    py, callbacks, &addr_val, size, "Load", &descr,
-                                )?
-                            }
-                            ConcretizationResult::Failed(reason) => {
-                                // Concretization failed entirely (e.g., timeout, no
-                                // strategy applies). Try the full symbolic load callback;
-                                // Python's memory model can still resolve it via its
-                                // own address concretization strategies.
-                                let descr = format!("concretize failed: {}", reason);
-                                self.fallback_load_symbolic_full(
-                                    py, callbacks, &addr_val, size, "Load", &descr,
-                                )?
-                            }
-                        }
-                    }
-                };
-
-                self.dispatch_mem_read_inspect(
-                    py, callbacks, &addr_val, &value, size, *endness,
-                );
-                Ok(value)
+                self.eval_load(py, callbacks, addr, *ty, *endness, tyenv)
             }
 
-            IRExpr::Unop { op, arg } => {
-                record_vex_unop(iropclass(op));
-                let arg_val = self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?;
-                let arg_is_sym = arg_val.is_symbolic();
-                match VEXOps::unop(*op, arg_val, self.ctx) {
-                    Ok(v) => Ok(v),
-                    // NEON scaffolding: surface explicitly. See
-                    // `invariant-neon-scaffolding-panic-not-fallback`.
-                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
-                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
-                    // the silent fresh-symbolic fallback so the engine
-                    // surfaces RustUnsupportedVexOpError with op + arch.
-                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-                    Err(_) => {
-                        // Fallback for unsupported unary ops (e.g., float conversions).
-                        // Return fresh symbolic if input was symbolic, else zero.
-                        self.stats.python_vex_op_fallback_count += 1;
-                        self.stats.python_vex_unop_fallback_count += 1;
-                        let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                        if arg_is_sym {
-                            Ok(RustBV::symbolic(
-                                self.ctx,
-                                format!("unsup_unop_{:x}", self.pc),
-                                width,
-                            ))
-                        } else {
-                            Ok(RustBV::concrete(0, width))
-                        }
-                    }
-                }
-            }
+            IRExpr::Unop { op, arg } => self.eval_unop(py, callbacks, *op, arg, tyenv),
 
             IRExpr::Binop { op, left, right } => {
-                record_vex_binop(iropclass(op));
-                let left_val = self.eval_expr_with_callbacks(py, callbacks, left, tyenv)?;
-                let right_val = self.eval_expr_with_callbacks(py, callbacks, right, tyenv)?;
-                let fallback_width = op
-                    .result_type()
-                    .map(|t| t.bits())
-                    .unwrap_or(left_val.width().max(right_val.width()));
-                let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
-                match VEXOps::binop(*op, left_val, right_val, self.ctx) {
-                    Ok(v) => Ok(v),
-                    // NEON scaffolding: surface explicitly. See
-                    // `invariant-neon-scaffolding-panic-not-fallback`.
-                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
-                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
-                    // the silent fresh-symbolic fallback so the engine
-                    // surfaces RustUnsupportedVexOpError with op + arch.
-                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-                    Err(_) => {
-                        // Fallback for unsupported binary ops (e.g., vector float ops).
-                        self.stats.python_vex_op_fallback_count += 1;
-                        self.stats.python_vex_binop_fallback_count += 1;
-                        if any_sym {
-                            Ok(RustBV::symbolic(
-                                self.ctx,
-                                format!("unsup_binop_{:x}", self.pc),
-                                fallback_width,
-                            ))
-                        } else {
-                            Ok(RustBV::concrete(0, fallback_width))
-                        }
-                    }
-                }
+                self.eval_binop(py, callbacks, *op, left, right, tyenv)
             }
 
             IRExpr::ITE {
                 cond,
                 iftrue,
                 iffalse,
-            } => {
-                let cond_val = self.eval_expr_with_callbacks(py, callbacks, cond, tyenv)?;
-                // Short-circuit: skip evaluating the dead branch when condition is concrete
-                if let Some(v) = cond_val.as_u128() {
-                    return if v != 0 {
-                        self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)
-                    } else {
-                        self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)
-                    };
-                }
-                let true_val = self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)?;
-                let false_val = self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)?;
-                Ok(cond_val.ite(&true_val, &false_val, self.ctx))
-            }
+            } => self.eval_ite(py, callbacks, cond, iftrue, iffalse, tyenv),
 
             IRExpr::GetI { descr, ix, bias } => {
-                // Evaluate the index expression
-                let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, tyenv)?;
-
-                // GetI requires a concrete index to compute the register offset
-                let idx = if let Some(idx) = ix_val.as_u64() {
-                    idx
-                } else {
-                    // Symbolic index - concretize using solver
-                    if let Some(concrete) = self.ctx.eval(&ix_val) {
-                        concrete as u64
-                    } else {
-                        return Err(CbExecutionError::Unsupported(
-                            "GetI index concretization failed".to_string(),
-                        ));
-                    }
-                };
-
-                // Calculate the rotating register offset:
-                // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
-                let elem_size = descr.elemTy.bytes();
-                let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
-                let offset = descr.base + index * elem_size;
-
-                // Read from the register file
-                Ok(self.registers.get(offset, elem_size, self.ctx))
+                self.eval_geti(py, callbacks, *descr, ix, *bias, tyenv)
             }
 
             IRExpr::Triop {
@@ -305,42 +74,7 @@ impl<'a> VEXInterpreter<'a> {
                 arg1,
                 arg2,
                 arg3,
-            } => {
-                record_vex_triop(iropclass(op));
-                // VEX Triops are float arithmetic with a rounding mode:
-                // (rm, a, b). For FAdd/FSub/FMul/FDiv we route through
-                // `binop_with_rm` which honors the VEX rm bits when non-RNE;
-                // RNE keeps the native-f{32,64} fast path. Other Triops
-                // ignore rm and fall through to `binop`.
-                let rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
-                let any_sym = v2.is_symbolic() || v3.is_symbolic() || rm.is_symbolic();
-                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                match VEXOps::binop_with_rm(*op, rm, v2, v3, self.ctx) {
-                    Ok(v) => Ok(v),
-                    // NEON scaffolding: surface explicitly. See
-                    // `invariant-neon-scaffolding-panic-not-fallback`.
-                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
-                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
-                    // the silent fresh-symbolic fallback so the engine
-                    // surfaces RustUnsupportedVexOpError with op + arch.
-                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-                    Err(_) => {
-                        self.stats.python_vex_op_fallback_count += 1;
-                        self.stats.python_vex_triop_fallback_count += 1;
-                        if any_sym {
-                            Ok(RustBV::symbolic(
-                                self.ctx,
-                                format!("triop_{:x}", self.pc),
-                                width,
-                            ))
-                        } else {
-                            Ok(RustBV::concrete(0, width))
-                        }
-                    }
-                }
-            }
+            } => self.eval_triop(py, callbacks, *op, arg1, arg2, arg3, tyenv),
 
             IRExpr::Qop {
                 op,
@@ -348,81 +82,10 @@ impl<'a> VEXInterpreter<'a> {
                 arg2,
                 arg3,
                 arg4,
-            } => {
-                record_vex_qop(iropclass(op));
-                // VEX Qops are typically fused multiply-add/sub with a
-                // rounding mode: (rm, a, b, c). Drop rm for the same reason
-                // as Triop above.
-                let _rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
-                let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
-                let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
-                let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
-                let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
-                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                match VEXOps::qop(*op, v2, v3, v4, self.ctx) {
-                    Ok(v) => Ok(v),
-                    // NEON scaffolding: surface explicitly. See
-                    // `invariant-neon-scaffolding-panic-not-fallback`.
-                    Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
-                    // angr-tkbr.2: unmapped pyvex opcode — propagate past
-                    // the silent fresh-symbolic fallback so the engine
-                    // surfaces RustUnsupportedVexOpError with op + arch.
-                    Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-                    Err(_) => {
-                        self.stats.python_vex_op_fallback_count += 1;
-                        self.stats.python_vex_qop_fallback_count += 1;
-                        if any_sym {
-                            Ok(RustBV::symbolic(
-                                self.ctx,
-                                format!("qop_{:x}", self.pc),
-                                width,
-                            ))
-                        } else {
-                            Ok(RustBV::concrete(0, width))
-                        }
-                    }
-                }
-            }
+            } => self.eval_qop(py, callbacks, *op, arg1, arg2, arg3, arg4, tyenv),
 
             IRExpr::CCall { cee, retty, args } => {
-                let mut arg_vals = Vec::with_capacity(args.len());
-                for arg in args {
-                    arg_vals.push(self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?);
-                }
-
-                if let Some(result) =
-                    ccall::handle_ccall_with_ctx(&cee.name, &arg_vals, retty.bits(), Some(self.ctx))
-                {
-                    return Ok(result);
-                }
-
-                // For eflags/rflags CCalls that we couldn't handle symbolically,
-                // return a fresh symbolic variable rather than concrete 0.
-                // Concrete 0 corrupts register values; a symbolic variable is sound
-                // (unconstrained) and lets the solver handle it.
-                let is_cond_ccall = cee.name.contains("calculate_condition")
-                    || cee.name.contains("calculate_eflags")
-                    || cee.name.contains("calculate_rflags");
-                if is_cond_ccall {
-                    log::debug!(
-                        "CCall '{}' not handled symbolically at 0x{:x}, returning symbolic variable",
-                        cee.name,
-                        self.pc
-                    );
-                    return Ok(RustBV::symbolic(
-                        self.ctx,
-                        format!("ccall_unsupported_{:x}", self.pc),
-                        retty.bits(),
-                    ));
-                }
-
-                // Any other unsupported CCall must defer to Python's VEX engine.
-                // Returning concrete(0) would silently corrupt the result and let
-                // execution continue with bad data.
-                Err(CbExecutionError::NeedPythonFallback(format!(
-                    "unsupported CCall '{}' at 0x{:x}",
-                    cee.name, self.pc
-                )))
+                self.eval_ccall(py, callbacks, cee, *retty, args, tyenv)
             }
 
             IRExpr::VECRET | IRExpr::GSPTR => {
@@ -434,6 +97,441 @@ impl<'a> VEXInterpreter<'a> {
                 )))
             }
         }
+    }
+
+    fn eval_load(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr: &IRExpr,
+        ty: IRType,
+        endness: Endness,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        let load_start = if self.profiling_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
+        let size = ty.bytes() as usize;
+        if self.profiling_enabled {
+            self.stats.load_stmt_count += 1;
+        }
+
+        let value: RustBV = 'load: {
+            // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
+            if self.use_rust_memory {
+                if let Some(value) =
+                    self.try_rust_memory_load(py, callbacks, &addr_val, size, load_start)?
+                {
+                    break 'load value;
+                }
+            }
+
+            if let Some(addr_concrete) = addr_val.as_u64() {
+                self.load_concrete_addr(py, callbacks, addr_concrete, size)?
+            } else {
+                self.load_symbolic_addr(py, callbacks, &addr_val, size)?
+            }
+        };
+
+        self.dispatch_mem_read_inspect(py, callbacks, &addr_val, &value, size, endness);
+        Ok(value)
+    }
+
+    /// Concrete-address load path: walk pending/flushed store buffers, prefetch
+    /// and concrete-memory caches before falling back to the Python callback.
+    fn load_concrete_addr(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        // FAST PATH 0: Check pending stores buffer
+        // Stores within the same block are buffered in pending_stores.
+        // We must check this buffer before falling through to Python
+        // callbacks, which have stale state.
+
+        // First check symbolic stores (preserves symbolic values)
+        if let Some(sym_val) = self.pending_symbolic_stores.get(&addr_concrete) {
+            if sym_val.width() == (size * 8) as u32 {
+                return Ok(sym_val.clone());
+            } else if sym_val.width() > (size * 8) as u32 {
+                return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+            }
+        }
+
+        // Then check concrete stores via the indexed buffer.
+        // try_load fast-skips when no pending store overlaps the
+        // load address; falls back to a reverse scan only when the
+        // most recent covering store is smaller than the load.
+        if let Some(data) = self.pending_stores.try_load(addr_concrete, size) {
+            return Ok(bytes_to_bv(data, (size * 8) as u32));
+        }
+
+        // Also check previously flushed symbolic stores (cross-block)
+        if let Some(sym_val) = self.all_flushed_symbolic_stores.get(&addr_concrete) {
+            if sym_val.width() == (size * 8) as u32 {
+                return Ok(sym_val.clone());
+            } else if sym_val.width() > (size * 8) as u32 {
+                return Ok(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+            }
+        }
+
+        // Also check previously flushed concrete stores (cross-block)
+        if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete) {
+            if size <= store_data.len() {
+                let data = &store_data[..size];
+                return Ok(bytes_to_bv(data, (size * 8) as u32));
+            }
+        }
+
+        // FAST PATH 1: Check prefetch cache (batch-loaded values)
+        if let Some(prefetched) = self.load_prefetch_cache.get(&(addr_concrete, size)) {
+            return Ok(prefetched.value.clone());
+        }
+
+        // FAST PATH 2: Check if address is in Rust-cached concrete memory
+        if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+            return Ok(bytes_to_bv(data, (size * 8) as u32));
+        }
+        // SLOW PATH: Fall back to Python callback
+        self.load_from_callback(py, callbacks, addr_concrete, size)
+    }
+
+    /// Symbolic-address load path: concretize, then dispatch by result shape
+    /// (single / multiple / strided / too-large / failed).
+    fn load_symbolic_addr(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        match &*self.concretize_cached_read(addr_val) {
+            ConcretizationResult::Single(addr_concrete) => {
+                let addr_concrete = *addr_concrete;
+                if self.arch.pointer_size() == 32
+                    && addr_concrete >= 0x400000
+                    && addr_concrete < 0x420000
+                {}
+                if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+                    return Ok(bytes_to_bv(data, (size * 8) as u32));
+                }
+                self.load_from_callback(py, callbacks, addr_concrete, size)
+            }
+            ConcretizationResult::Multiple(addrs) => {
+                // Build ITE chain in Rust instead of delegating to Python
+                // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
+                self.build_ite_load_from_callbacks(py, callbacks, addrs, addr_val, size)
+            }
+            ConcretizationResult::Strided {
+                base,
+                stride,
+                count,
+            } => {
+                // Strided access pattern - generate addresses and build ITE chain in Rust
+                let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
+                self.build_ite_load_from_callbacks(py, callbacks, &addrs, addr_val, size)
+            }
+            ConcretizationResult::TooLarge { min, max, .. } => {
+                let descr = format!("range 0x{:x}-0x{:x}", min, max);
+                self.fallback_load_symbolic_full(py, callbacks, addr_val, size, "Load", &descr)
+            }
+            ConcretizationResult::Failed(reason) => {
+                // Concretization failed entirely (e.g., timeout, no
+                // strategy applies). Try the full symbolic load callback;
+                // Python's memory model can still resolve it via its
+                // own address concretization strategies.
+                let descr = format!("concretize failed: {}", reason);
+                self.fallback_load_symbolic_full(py, callbacks, addr_val, size, "Load", &descr)
+            }
+        }
+    }
+
+    fn eval_unop(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        op: IROp,
+        arg: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        record_vex_unop(iropclass(&op));
+        let arg_val = self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?;
+        let arg_is_sym = arg_val.is_symbolic();
+        match VEXOps::unop(op, arg_val, self.ctx) {
+            Ok(v) => Ok(v),
+            // NEON scaffolding: surface explicitly. See
+            // `invariant-neon-scaffolding-panic-not-fallback`.
+            Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+            // angr-tkbr.2: unmapped pyvex opcode — propagate past
+            // the silent fresh-symbolic fallback so the engine
+            // surfaces RustUnsupportedVexOpError with op + arch.
+            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            Err(_) => {
+                // Fallback for unsupported unary ops (e.g., float conversions).
+                // Return fresh symbolic if input was symbolic, else zero.
+                self.stats.python_vex_op_fallback_count += 1;
+                self.stats.python_vex_unop_fallback_count += 1;
+                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+                if arg_is_sym {
+                    Ok(RustBV::symbolic(
+                        self.ctx,
+                        format!("unsup_unop_{:x}", self.pc),
+                        width,
+                    ))
+                } else {
+                    Ok(RustBV::concrete(0, width))
+                }
+            }
+        }
+    }
+
+    fn eval_binop(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        op: IROp,
+        left: &IRExpr,
+        right: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        record_vex_binop(iropclass(&op));
+        let left_val = self.eval_expr_with_callbacks(py, callbacks, left, tyenv)?;
+        let right_val = self.eval_expr_with_callbacks(py, callbacks, right, tyenv)?;
+        let fallback_width = op
+            .result_type()
+            .map(|t| t.bits())
+            .unwrap_or(left_val.width().max(right_val.width()));
+        let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
+        match VEXOps::binop(op, left_val, right_val, self.ctx) {
+            Ok(v) => Ok(v),
+            // NEON scaffolding: surface explicitly. See
+            // `invariant-neon-scaffolding-panic-not-fallback`.
+            Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+            // angr-tkbr.2: unmapped pyvex opcode — propagate past
+            // the silent fresh-symbolic fallback so the engine
+            // surfaces RustUnsupportedVexOpError with op + arch.
+            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            Err(_) => {
+                // Fallback for unsupported binary ops (e.g., vector float ops).
+                self.stats.python_vex_op_fallback_count += 1;
+                self.stats.python_vex_binop_fallback_count += 1;
+                if any_sym {
+                    Ok(RustBV::symbolic(
+                        self.ctx,
+                        format!("unsup_binop_{:x}", self.pc),
+                        fallback_width,
+                    ))
+                } else {
+                    Ok(RustBV::concrete(0, fallback_width))
+                }
+            }
+        }
+    }
+
+    fn eval_ite(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        cond: &IRExpr,
+        iftrue: &IRExpr,
+        iffalse: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        let cond_val = self.eval_expr_with_callbacks(py, callbacks, cond, tyenv)?;
+        // Short-circuit: skip evaluating the dead branch when condition is concrete
+        if let Some(v) = cond_val.as_u128() {
+            return if v != 0 {
+                self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)
+            } else {
+                self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)
+            };
+        }
+        let true_val = self.eval_expr_with_callbacks(py, callbacks, iftrue, tyenv)?;
+        let false_val = self.eval_expr_with_callbacks(py, callbacks, iffalse, tyenv)?;
+        Ok(cond_val.ite(&true_val, &false_val, self.ctx))
+    }
+
+    fn eval_geti(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        descr: IRRegArray,
+        ix: &IRExpr,
+        bias: u32,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        // Evaluate the index expression
+        let ix_val = self.eval_expr_with_callbacks(py, callbacks, ix, tyenv)?;
+
+        // GetI requires a concrete index to compute the register offset
+        let idx = if let Some(idx) = ix_val.as_u64() {
+            idx
+        } else {
+            // Symbolic index - concretize using solver
+            if let Some(concrete) = self.ctx.eval(&ix_val) {
+                concrete as u64
+            } else {
+                return Err(CbExecutionError::Unsupported(
+                    "GetI index concretization failed".to_string(),
+                ));
+            }
+        };
+
+        // Calculate the rotating register offset:
+        // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+        let elem_size = descr.elemTy.bytes();
+        let index = ((idx as u32).wrapping_add(bias)) % descr.nElems;
+        let offset = descr.base + index * elem_size;
+
+        // Read from the register file
+        Ok(self.registers.get(offset, elem_size, self.ctx))
+    }
+
+    fn eval_triop(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        op: IROp,
+        arg1: &IRExpr,
+        arg2: &IRExpr,
+        arg3: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        record_vex_triop(iropclass(&op));
+        // VEX Triops are float arithmetic with a rounding mode:
+        // (rm, a, b). For FAdd/FSub/FMul/FDiv we route through
+        // `binop_with_rm` which honors the VEX rm bits when non-RNE;
+        // RNE keeps the native-f{32,64} fast path. Other Triops
+        // ignore rm and fall through to `binop`.
+        let rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+        let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+        let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+        let any_sym = v2.is_symbolic() || v3.is_symbolic() || rm.is_symbolic();
+        let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+        match VEXOps::binop_with_rm(op, rm, v2, v3, self.ctx) {
+            Ok(v) => Ok(v),
+            // NEON scaffolding: surface explicitly. See
+            // `invariant-neon-scaffolding-panic-not-fallback`.
+            Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+            // angr-tkbr.2: unmapped pyvex opcode — propagate past
+            // the silent fresh-symbolic fallback so the engine
+            // surfaces RustUnsupportedVexOpError with op + arch.
+            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            Err(_) => {
+                self.stats.python_vex_op_fallback_count += 1;
+                self.stats.python_vex_triop_fallback_count += 1;
+                if any_sym {
+                    Ok(RustBV::symbolic(
+                        self.ctx,
+                        format!("triop_{:x}", self.pc),
+                        width,
+                    ))
+                } else {
+                    Ok(RustBV::concrete(0, width))
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_qop(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        op: IROp,
+        arg1: &IRExpr,
+        arg2: &IRExpr,
+        arg3: &IRExpr,
+        arg4: &IRExpr,
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        record_vex_qop(iropclass(&op));
+        // VEX Qops are typically fused multiply-add/sub with a
+        // rounding mode: (rm, a, b, c). Drop rm for the same reason
+        // as Triop above.
+        let _rm = self.eval_expr_with_callbacks(py, callbacks, arg1, tyenv)?;
+        let v2 = self.eval_expr_with_callbacks(py, callbacks, arg2, tyenv)?;
+        let v3 = self.eval_expr_with_callbacks(py, callbacks, arg3, tyenv)?;
+        let v4 = self.eval_expr_with_callbacks(py, callbacks, arg4, tyenv)?;
+        let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
+        let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+        match VEXOps::qop(op, v2, v3, v4, self.ctx) {
+            Ok(v) => Ok(v),
+            // NEON scaffolding: surface explicitly. See
+            // `invariant-neon-scaffolding-panic-not-fallback`.
+            Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
+            // angr-tkbr.2: unmapped pyvex opcode — propagate past
+            // the silent fresh-symbolic fallback so the engine
+            // surfaces RustUnsupportedVexOpError with op + arch.
+            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            Err(_) => {
+                self.stats.python_vex_op_fallback_count += 1;
+                self.stats.python_vex_qop_fallback_count += 1;
+                if any_sym {
+                    Ok(RustBV::symbolic(
+                        self.ctx,
+                        format!("qop_{:x}", self.pc),
+                        width,
+                    ))
+                } else {
+                    Ok(RustBV::concrete(0, width))
+                }
+            }
+        }
+    }
+
+    fn eval_ccall(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        cee: &IRCallee,
+        retty: IRType,
+        args: &[IRExpr],
+        tyenv: &TypeEnv,
+    ) -> Result<RustBV, CbExecutionError> {
+        let mut arg_vals = Vec::with_capacity(args.len());
+        for arg in args {
+            arg_vals.push(self.eval_expr_with_callbacks(py, callbacks, arg, tyenv)?);
+        }
+
+        if let Some(result) =
+            ccall::handle_ccall_with_ctx(&cee.name, &arg_vals, retty.bits(), Some(self.ctx))
+        {
+            return Ok(result);
+        }
+
+        // For eflags/rflags CCalls that we couldn't handle symbolically,
+        // return a fresh symbolic variable rather than concrete 0.
+        // Concrete 0 corrupts register values; a symbolic variable is sound
+        // (unconstrained) and lets the solver handle it.
+        let is_cond_ccall = cee.name.contains("calculate_condition")
+            || cee.name.contains("calculate_eflags")
+            || cee.name.contains("calculate_rflags");
+        if is_cond_ccall {
+            log::debug!(
+                "CCall '{}' not handled symbolically at 0x{:x}, returning symbolic variable",
+                cee.name,
+                self.pc
+            );
+            return Ok(RustBV::symbolic(
+                self.ctx,
+                format!("ccall_unsupported_{:x}", self.pc),
+                retty.bits(),
+            ));
+        }
+
+        // Any other unsupported CCall must defer to Python's VEX engine.
+        // Returning concrete(0) would silently corrupt the result and let
+        // execution continue with bad data.
+        Err(CbExecutionError::NeedPythonFallback(format!(
+            "unsupported CCall '{}' at 0x{:x}",
+            cee.name, self.pc
+        )))
     }
 
     /// Convert one batched-load result entry to a RustBV.
