@@ -856,117 +856,76 @@ impl CcArch {
     }
 }
 
+/// Build the body of a per-arch `cc_op_info` decoder. Expands to an explicit
+/// `match cc_op { ... }`, so the compiled dispatch is identical to a hand-
+/// written match (jump-table or sorted compare per rustc's strategy) — no
+/// runtime table or virtual dispatch is introduced. The macro just collapses
+/// the per-family B/W/L[/Q] repetition at the source level.
+///
+/// `widths: [(bits, suffix-token-list)...]` groups widths under a category;
+/// e.g. amd64 uses `[(8, B), (16, W), (32, L), (64, Q)]` while x86 omits Q.
+/// Constants are still named explicitly per family
+/// (`avoid-arithmetic-cc-op-decoder`: no cc_op-value arithmetic — explicit
+/// names survive any VEX enum reordering).
+macro_rules! cc_op_match {
+    (
+        $cc_op:expr;
+        copy = $copy_path:path => $copy_bits:expr;
+        $(
+            $cat:ident { $( $bits:expr => $pat:path ),+ $(,)? }
+        ),+ $(,)?
+    ) => {{
+        let (nbits, category) = match $cc_op {
+            $copy_path => ($copy_bits, OpCategory::Copy),
+            $($(
+                $pat => ($bits, OpCategory::$cat),
+            )+)+
+            _ => return None,
+        };
+        Some(CcOpInfo { nbits, category })
+    }};
+}
+
 /// Decode an AMD64 CC_OP into (nbits, category). Returns `None` for unknown values.
 fn amd64_cc_op_info(cc_op: u64) -> Option<CcOpInfo> {
-    use OpCategory::*;
     use amd64_cc_op::*;
-    let (nbits, category) = match cc_op {
-        G_CC_OP_COPY => (64, Copy),
-        G_CC_OP_ADDB => (8, Add),
-        G_CC_OP_ADDW => (16, Add),
-        G_CC_OP_ADDL => (32, Add),
-        G_CC_OP_ADDQ => (64, Add),
-        G_CC_OP_SUBB => (8, Sub),
-        G_CC_OP_SUBW => (16, Sub),
-        G_CC_OP_SUBL => (32, Sub),
-        G_CC_OP_SUBQ => (64, Sub),
-        G_CC_OP_ADCB => (8, Adc),
-        G_CC_OP_ADCW => (16, Adc),
-        G_CC_OP_ADCL => (32, Adc),
-        G_CC_OP_ADCQ => (64, Adc),
-        G_CC_OP_SBBB => (8, Sbb),
-        G_CC_OP_SBBW => (16, Sbb),
-        G_CC_OP_SBBL => (32, Sbb),
-        G_CC_OP_SBBQ => (64, Sbb),
-        G_CC_OP_LOGICB => (8, Logic),
-        G_CC_OP_LOGICW => (16, Logic),
-        G_CC_OP_LOGICL => (32, Logic),
-        G_CC_OP_LOGICQ => (64, Logic),
-        G_CC_OP_INCB => (8, Inc),
-        G_CC_OP_INCW => (16, Inc),
-        G_CC_OP_INCL => (32, Inc),
-        G_CC_OP_INCQ => (64, Inc),
-        G_CC_OP_DECB => (8, Dec),
-        G_CC_OP_DECW => (16, Dec),
-        G_CC_OP_DECL => (32, Dec),
-        G_CC_OP_DECQ => (64, Dec),
-        G_CC_OP_SHLB => (8, Shl),
-        G_CC_OP_SHLW => (16, Shl),
-        G_CC_OP_SHLL => (32, Shl),
-        G_CC_OP_SHLQ => (64, Shl),
-        G_CC_OP_SHRB => (8, Shr),
-        G_CC_OP_SHRW => (16, Shr),
-        G_CC_OP_SHRL => (32, Shr),
-        G_CC_OP_SHRQ => (64, Shr),
-        G_CC_OP_ROLB => (8, Rol),
-        G_CC_OP_ROLW => (16, Rol),
-        G_CC_OP_ROLL => (32, Rol),
-        G_CC_OP_ROLQ => (64, Rol),
-        G_CC_OP_RORB => (8, Ror),
-        G_CC_OP_RORW => (16, Ror),
-        G_CC_OP_RORL => (32, Ror),
-        G_CC_OP_RORQ => (64, Ror),
-        G_CC_OP_UMULB => (8, Umul),
-        G_CC_OP_UMULW => (16, Umul),
-        G_CC_OP_UMULL => (32, Umul),
-        G_CC_OP_UMULQ => (64, Umul),
-        G_CC_OP_SMULB => (8, Smul),
-        G_CC_OP_SMULW => (16, Smul),
-        G_CC_OP_SMULL => (32, Smul),
-        G_CC_OP_SMULQ => (64, Smul),
-        _ => return None,
-    };
-    Some(CcOpInfo { nbits, category })
+    cc_op_match!(cc_op;
+        copy = G_CC_OP_COPY => 64;
+        Add   { 8 => G_CC_OP_ADDB,   16 => G_CC_OP_ADDW,   32 => G_CC_OP_ADDL,   64 => G_CC_OP_ADDQ },
+        Sub   { 8 => G_CC_OP_SUBB,   16 => G_CC_OP_SUBW,   32 => G_CC_OP_SUBL,   64 => G_CC_OP_SUBQ },
+        Adc   { 8 => G_CC_OP_ADCB,   16 => G_CC_OP_ADCW,   32 => G_CC_OP_ADCL,   64 => G_CC_OP_ADCQ },
+        Sbb   { 8 => G_CC_OP_SBBB,   16 => G_CC_OP_SBBW,   32 => G_CC_OP_SBBL,   64 => G_CC_OP_SBBQ },
+        Logic { 8 => G_CC_OP_LOGICB, 16 => G_CC_OP_LOGICW, 32 => G_CC_OP_LOGICL, 64 => G_CC_OP_LOGICQ },
+        Inc   { 8 => G_CC_OP_INCB,   16 => G_CC_OP_INCW,   32 => G_CC_OP_INCL,   64 => G_CC_OP_INCQ },
+        Dec   { 8 => G_CC_OP_DECB,   16 => G_CC_OP_DECW,   32 => G_CC_OP_DECL,   64 => G_CC_OP_DECQ },
+        Shl   { 8 => G_CC_OP_SHLB,   16 => G_CC_OP_SHLW,   32 => G_CC_OP_SHLL,   64 => G_CC_OP_SHLQ },
+        Shr   { 8 => G_CC_OP_SHRB,   16 => G_CC_OP_SHRW,   32 => G_CC_OP_SHRL,   64 => G_CC_OP_SHRQ },
+        Rol   { 8 => G_CC_OP_ROLB,   16 => G_CC_OP_ROLW,   32 => G_CC_OP_ROLL,   64 => G_CC_OP_ROLQ },
+        Ror   { 8 => G_CC_OP_RORB,   16 => G_CC_OP_RORW,   32 => G_CC_OP_RORL,   64 => G_CC_OP_RORQ },
+        Umul  { 8 => G_CC_OP_UMULB,  16 => G_CC_OP_UMULW,  32 => G_CC_OP_UMULL,  64 => G_CC_OP_UMULQ },
+        Smul  { 8 => G_CC_OP_SMULB,  16 => G_CC_OP_SMULW,  32 => G_CC_OP_SMULL,  64 => G_CC_OP_SMULQ },
+    )
 }
 
 /// Decode an X86 CC_OP into (nbits, category). Returns `None` for unknown values.
 fn x86_cc_op_info(cc_op: u64) -> Option<CcOpInfo> {
-    use OpCategory::*;
     use x86_cc_op::*;
-    let (nbits, category) = match cc_op {
-        G_CC_OP_COPY => (32, Copy),
-        G_CC_OP_ADDB => (8, Add),
-        G_CC_OP_ADDW => (16, Add),
-        G_CC_OP_ADDL => (32, Add),
-        G_CC_OP_SUBB => (8, Sub),
-        G_CC_OP_SUBW => (16, Sub),
-        G_CC_OP_SUBL => (32, Sub),
-        G_CC_OP_ADCB => (8, Adc),
-        G_CC_OP_ADCW => (16, Adc),
-        G_CC_OP_ADCL => (32, Adc),
-        G_CC_OP_SBBB => (8, Sbb),
-        G_CC_OP_SBBW => (16, Sbb),
-        G_CC_OP_SBBL => (32, Sbb),
-        G_CC_OP_LOGICB => (8, Logic),
-        G_CC_OP_LOGICW => (16, Logic),
-        G_CC_OP_LOGICL => (32, Logic),
-        G_CC_OP_INCB => (8, Inc),
-        G_CC_OP_INCW => (16, Inc),
-        G_CC_OP_INCL => (32, Inc),
-        G_CC_OP_DECB => (8, Dec),
-        G_CC_OP_DECW => (16, Dec),
-        G_CC_OP_DECL => (32, Dec),
-        G_CC_OP_SHLB => (8, Shl),
-        G_CC_OP_SHLW => (16, Shl),
-        G_CC_OP_SHLL => (32, Shl),
-        G_CC_OP_SHRB => (8, Shr),
-        G_CC_OP_SHRW => (16, Shr),
-        G_CC_OP_SHRL => (32, Shr),
-        G_CC_OP_ROLB => (8, Rol),
-        G_CC_OP_ROLW => (16, Rol),
-        G_CC_OP_ROLL => (32, Rol),
-        G_CC_OP_RORB => (8, Ror),
-        G_CC_OP_RORW => (16, Ror),
-        G_CC_OP_RORL => (32, Ror),
-        G_CC_OP_UMULB => (8, Umul),
-        G_CC_OP_UMULW => (16, Umul),
-        G_CC_OP_UMULL => (32, Umul),
-        G_CC_OP_SMULB => (8, Smul),
-        G_CC_OP_SMULW => (16, Smul),
-        G_CC_OP_SMULL => (32, Smul),
-        _ => return None,
-    };
-    Some(CcOpInfo { nbits, category })
+    cc_op_match!(cc_op;
+        copy = G_CC_OP_COPY => 32;
+        Add   { 8 => G_CC_OP_ADDB,   16 => G_CC_OP_ADDW,   32 => G_CC_OP_ADDL },
+        Sub   { 8 => G_CC_OP_SUBB,   16 => G_CC_OP_SUBW,   32 => G_CC_OP_SUBL },
+        Adc   { 8 => G_CC_OP_ADCB,   16 => G_CC_OP_ADCW,   32 => G_CC_OP_ADCL },
+        Sbb   { 8 => G_CC_OP_SBBB,   16 => G_CC_OP_SBBW,   32 => G_CC_OP_SBBL },
+        Logic { 8 => G_CC_OP_LOGICB, 16 => G_CC_OP_LOGICW, 32 => G_CC_OP_LOGICL },
+        Inc   { 8 => G_CC_OP_INCB,   16 => G_CC_OP_INCW,   32 => G_CC_OP_INCL },
+        Dec   { 8 => G_CC_OP_DECB,   16 => G_CC_OP_DECW,   32 => G_CC_OP_DECL },
+        Shl   { 8 => G_CC_OP_SHLB,   16 => G_CC_OP_SHLW,   32 => G_CC_OP_SHLL },
+        Shr   { 8 => G_CC_OP_SHRB,   16 => G_CC_OP_SHRW,   32 => G_CC_OP_SHRL },
+        Rol   { 8 => G_CC_OP_ROLB,   16 => G_CC_OP_ROLW,   32 => G_CC_OP_ROLL },
+        Ror   { 8 => G_CC_OP_RORB,   16 => G_CC_OP_RORW,   32 => G_CC_OP_RORL },
+        Umul  { 8 => G_CC_OP_UMULB,  16 => G_CC_OP_UMULW,  32 => G_CC_OP_UMULL },
+        Smul  { 8 => G_CC_OP_SMULB,  16 => G_CC_OP_SMULW,  32 => G_CC_OP_SMULL },
+    )
 }
 
 /// Arch-dispatched decoder.
