@@ -458,10 +458,59 @@ Residual nondeterminism the engine still carries:
 * Two fresh ``RustSolverContext`` instances with identical constraints
   may eval the same underconstrained variable to different witnesses.
 
-A future ``RustExplorationManager(deterministic=True)`` flag
-(angr-iaol.2) would need to route through ``Z3_global_param_set``
-before any solver creation, and even then would only narrow — not
-close — the residual gap.
+Deterministic mode (``deterministic=True``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``RustExplorationManager(deterministic=True)`` (angr-iaol.2) pins
+``smt.random_seed`` and ``sat.random_seed`` to ``0`` via
+``Z3_global_param_set`` before any new solver is constructed. The pin
+is process-global and applies to every solver built afterwards —
+including solvers in other managers in the same process — but solvers
+that already exist are unaffected.
+
+Usage::
+
+    from angr.exploration import RustExplorationManager
+
+    state = proj.factory.entry_state()
+    mgr = RustExplorationManager(proj, [state], deterministic=True)
+    mgr.explore(find=target_addr, max_steps=50000)
+
+Implementation:
+
+* ``angr/exploration/rust_manager.py::_apply_deterministic_z3_globals``
+  guards the pin with a module-level boolean so repeated manager
+  constructions are no-ops after the first.
+* The pin routes through the new ``set_z3_global_param`` PyO3 binding
+  in ``native/angr/src/engine.rs`` (cfg-gated on ``vex-engine-z3``)
+  rather than ``Z3_solver_set_params`` — the solver-level path
+  empirically *corrupts* the solver for these keys (see iaol.1
+  finding above).
+
+What the flag does **not** close:
+
+* Z3 4.13 retains heuristic latitude (variable selection ordering,
+  restart timing, internal simplification passes) that is not bounded
+  by the two pinned seeds. Two fresh ``RustSolverContext`` instances
+  with identical asserted constraints can still produce different
+  ``eval()`` witnesses for under-constrained variables.
+* The ``defcamp_r100`` trailing-byte mismatch is the canonical
+  residual case — ``run_regression.py`` normalizes the symbolic-fill
+  padding so the bench still passes, but raw ``posix.dumps(0)`` bytes
+  can differ across runs even with the flag set.
+
+Coverage is exercised by
+``tests/engines/test_rust_exploration.py::TestDeterministicMode`` —
+fauxware ``explore(find=0x4006ed, avoid=0x4006fd)`` produces the same
+found-stash size and the same evaluated stdin across two fresh
+managers when ``deterministic=True`` is set. The std::HashMap audit
+above already confirmed no HashMap site leaks iteration order into
+exploration output, so this flag does **not** need to be paired with
+an FxHashMap conversion.
+
+Default is ``deterministic=False`` to preserve current behavior and
+keep the call free for the common case (no global Z3 state mutation
+during normal manager construction).
 
 Pipeline instrumentation counters
 ---------------------------------

@@ -314,6 +314,41 @@ def _setup_shared_z3_context():
         l.debug("Z3 context sharing not available: %s", e)
 
 
+_z3_deterministic_applied = False
+
+
+def _apply_deterministic_z3_globals() -> None:
+    """Pin Z3 module-level random seeds for run-to-run model stability.
+
+    Sets ``smt.random_seed`` and ``sat.random_seed`` to 0 via
+    ``Z3_global_param_set``. Z3 reads these on every subsequent
+    ``Solver::new`` call (existing solvers are unaffected). Idempotent:
+    safe to call from every manager constructed with
+    ``deterministic=True``.
+
+    Caveat: Z3 4.13 still reserves variable / restart heuristic latitude
+    that is not bound by these seeds. See angr-iaol.1 close-out memory
+    ``iaol1-seed-pin-empirically-broken`` for the full audit and the
+    rust_engine.rst "Deterministic mode" section for user-facing docs.
+    """
+    global _z3_deterministic_applied
+    if _z3_deterministic_applied:
+        return
+    try:
+        from angr.rustylib.vex_engine import set_z3_global_param
+    except ImportError:
+        # cat-(b) FALLBACK WITH LOSS: the Rust extension was built without
+        # the vex-engine-z3 feature; determinism pin cannot be applied.
+        # Manager construction proceeds with current (nondeterministic)
+        # Z3 globals.
+        l.debug("set_z3_global_param not available; deterministic=True ignored")
+        return
+    set_z3_global_param("smt.random_seed", "0")
+    set_z3_global_param("sat.random_seed", "0")
+    _z3_deterministic_applied = True
+    l.debug("Pinned Z3 smt.random_seed=0 + sat.random_seed=0 (deterministic mode)")
+
+
 def set_rust_log_level(level: str = "info") -> None:
     """Set the Rust-side log level.
 
@@ -751,6 +786,7 @@ class RustExplorationManager(
         clear_caches_on_cleanup: bool = False,
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
+        deterministic: bool = False,
         **kwargs,
     ):
         """Initialize the Rust exploration manager.
@@ -792,10 +828,30 @@ class RustExplorationManager(
                 inherit it (so descendants opt in transparently). Inert
                 in this slice — slice-1c will be the first consumer of
                 the flag at fork time.
+            deterministic: If True, pin ``smt.random_seed`` and
+                ``sat.random_seed`` to 0 via ``Z3_global_param_set``
+                before any new solver is constructed (angr-iaol.2).
+                The pin is process-wide and applies to every solver
+                built afterwards (including in other managers in the
+                same process). Z3 4.13 still reserves variable /
+                restart heuristic latitude that is not bounded by
+                these seeds, so this flag *narrows* but does not
+                *close* run-to-run model variation. Default False
+                preserves the current non-deterministic behavior.
         """
         # Ensure Z3 context is shared (one-time setup)
         _setup_shared_z3_context()
         _apply_rust_log_env()
+
+        # angr-iaol.2: pin Z3 module-level random seeds BEFORE the first
+        # Solver::new. The per-solver Z3_solver_set_params route is
+        # broken for these keys (angr-iaol.1) — only the global path
+        # takes effect. Apply early in __init__ before _RustExplorationManager
+        # constructs its first solver. The pin is process-global; once
+        # set it persists for every subsequent solver.
+        if deterministic:
+            _apply_deterministic_z3_globals()
+        self._deterministic = bool(deterministic)
 
         if not RUST_EXPLORATION_AVAILABLE:
             raise ImportError(

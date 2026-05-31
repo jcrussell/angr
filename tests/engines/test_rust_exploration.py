@@ -4381,6 +4381,75 @@ class TestSolverOperations:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestDeterministicMode:
+    """``RustExplorationManager(deterministic=True)`` — angr-iaol.2.
+
+    The flag pins ``smt.random_seed`` + ``sat.random_seed`` to 0 via
+    ``Z3_global_param_set`` before any new solver is constructed. Z3 4.13
+    still reserves variable / restart heuristic latitude that is not
+    bounded by these seeds, so the flag *narrows* but does not *close*
+    run-to-run model variation. See iaol1-seed-pin-empirically-broken
+    memory for the prior solver-level attempt that failed.
+    """
+
+    def test_set_z3_global_param_smoke(self):
+        """``set_z3_global_param`` FFI accepts well-known module keys."""
+        from angr.rustylib.vex_engine import set_z3_global_param
+
+        # No assertion on solver behavior — just that the FFI hop succeeds
+        # and Z3 does not raise on these keys. The actual model-stability
+        # effect is exercised by the fauxware end-to-end test below.
+        set_z3_global_param("smt.random_seed", "0")
+        set_z3_global_param("sat.random_seed", "0")
+
+    def test_deterministic_kwarg_accepted(self, fauxware_project):
+        """``deterministic=True`` constructs cleanly + records flag on self."""
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], deterministic=True)
+        assert mgr._deterministic is True
+
+        # Default keeps existing behavior — flag absent → False.
+        state2 = fauxware_project.factory.entry_state()
+        mgr2 = RustExplorationManager(fauxware_project, [state2])
+        assert mgr2._deterministic is False
+
+    def test_fauxware_explore_stable_under_deterministic(self, fauxware_project):
+        """Two fauxware explorations with ``deterministic=True`` produce the
+        same found-stash size and the same evaluated stdin for the first
+        found state. Constructs fresh managers per run so the global pin
+        is the only thing tying the runs together (not in-process solver
+        state).
+
+        Z3 4.13 retains heuristic latitude even with the seeds pinned —
+        if this test ever flakes on the stdin equality, the right move is
+        to weaken to "decoded text equal modulo trailing 0xff padding"
+        (the canonical residual from defcamp_r100) rather than disable
+        the test. See rust_engine.rst "Deterministic mode" for context.
+        """
+        from angr.exploration import RustExplorationManager
+
+        def _run() -> tuple[int, bytes]:
+            state = fauxware_project.factory.entry_state()
+            mgr = RustExplorationManager(fauxware_project, [state], deterministic=True)
+            mgr.explore(find=0x4006ed, avoid=0x4006fd, max_steps=50000)
+            assert len(mgr.found) > 0, "expected at least one found state"
+            stdin = mgr.found[0].posix.dumps(0)
+            return len(mgr.found), bytes(stdin)
+
+        n_a, stdin_a = _run()
+        n_b, stdin_b = _run()
+        assert n_a == n_b, f"found-stash size differs run-to-run: {n_a} vs {n_b}"
+        assert stdin_a == stdin_b, (
+            f"stdin differs run-to-run despite deterministic=True: "
+            f"{stdin_a!r} vs {stdin_b!r}. Z3 heuristic latitude may have "
+            "drifted; consider weakening to a padding-tolerant comparison "
+            "rather than disabling — see rust_engine.rst 'Deterministic mode'."
+        )
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestRustStateRegisters:
     """Tests for register operations on RustSimState."""
 

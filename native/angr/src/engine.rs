@@ -152,6 +152,34 @@ fn reset_shared_z3_context() -> PyResult<()> {
     Ok(())
 }
 
+/// Set a Z3 module-level parameter via `Z3_global_param_set`.
+///
+/// Module-level params (e.g. `smt.random_seed`, `sat.random_seed`,
+/// `parallel.enable`) are process-global and read by every
+/// `z3::Solver` constructed AFTER the call. Solvers that already
+/// exist are not affected.
+///
+/// This is the only path that takes effect for keys like
+/// `smt.random_seed` — the per-solver `Z3_solver_set_params` route
+/// is empirically broken for those keys (see angr-iaol.1 memory
+/// `iaol1-seed-pin-empirically-broken` and the
+/// `build_solver_params` docstring in `symbolic/context.rs`).
+///
+/// Used by `RustExplorationManager(deterministic=True)` (angr-iaol.2)
+/// to pin `smt.random_seed` + `sat.random_seed` before the first
+/// `Solver::new`. Z3 4.13 still reserves variable / restart
+/// heuristic latitude that is not bounded by these seeds, so the
+/// flag narrows but does not close residual model variation.
+///
+/// AVOID setting `parallel.enable=true` — see
+/// `avoid-z3-parallel-enable` memory.
+#[cfg(feature = "vex-engine-z3")]
+#[pyfunction]
+fn set_z3_global_param(key: &str, value: &str) -> PyResult<()> {
+    z3::set_global_param(key, value);
+    Ok(())
+}
+
 /// Minimal stderr logger for Rust log messages.
 struct StderrLogger;
 
@@ -313,6 +341,8 @@ pub fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(set_shared_z3_context, m)?)?;
     #[cfg(feature = "vex-engine-z3")]
     m.add_function(pyo3::wrap_pyfunction!(reset_shared_z3_context, m)?)?;
+    #[cfg(feature = "vex-engine-z3")]
+    m.add_function(pyo3::wrap_pyfunction!(set_z3_global_param, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
