@@ -5333,9 +5333,8 @@ class TestAdversarial:
         from angr.rustylib.vex_engine import RustSolverContext
         ctx = RustSolverContext()
         h = ctx.create_concrete(0, 0)
-        assert h.length == 0
+        assert h.width == 0
         assert h.is_concrete is True
-        assert h.symbolic is False
         assert h.concrete() == 0
 
     def test_solver_very_wide_bitvector_round_trip(self):

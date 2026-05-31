@@ -34,6 +34,7 @@ pub struct RustBVHandle {
     concrete: Option<u128>,
 }
 
+// Rust-only constructors and mutators (not exposed to Python).
 impl RustBVHandle {
     /// Create a new handle for a symbolic value.
     pub fn new_symbolic(id: u64, width: u32) -> Self {
@@ -53,65 +54,36 @@ impl RustBVHandle {
         }
     }
 
-    /// Get the handle ID.
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// Get the bit width.
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// Get the cached concrete value if available.
-    pub fn concrete_value(&self) -> Option<u128> {
-        self.concrete
-    }
-
-    /// Check if this handle has a cached concrete value.
-    pub fn is_concrete(&self) -> bool {
-        self.concrete.is_some()
-    }
-
     /// Set the concrete value (used when a symbolic value becomes constrained).
     pub fn set_concrete(&mut self, value: u128) {
         self.concrete = Some(value);
     }
 }
 
+// Accessors and Python dunders — single source of truth for both Rust and
+// Python callers. `#[getter]` exposes these as Python properties; Rust code
+// can still call them as plain methods.
 #[pymethods]
 impl RustBVHandle {
-    /// Get the handle ID (for debugging).
+    /// Unique identifier of this handle within the symbol table.
     #[getter]
-    pub fn get_id(&self) -> u64 {
+    pub fn id(&self) -> u64 {
         self.id
     }
 
-    /// Get the bit width.
+    /// Bit width of the value.
     #[getter]
-    pub fn get_width(&self) -> u32 {
+    pub fn width(&self) -> u32 {
         self.width
     }
 
-    /// Get the length in bits (alias for width, for claripy compatibility).
+    /// Whether the handle carries a cached concrete value.
     #[getter]
-    pub fn length(&self) -> u32 {
-        self.width
+    pub fn is_concrete(&self) -> bool {
+        self.concrete.is_some()
     }
 
-    /// Check if this handle represents a concrete value.
-    #[getter]
-    pub fn get_is_concrete(&self) -> bool {
-        self.is_concrete()
-    }
-
-    /// Check if this handle represents a symbolic value.
-    #[getter]
-    pub fn symbolic(&self) -> bool {
-        !self.is_concrete()
-    }
-
-    /// Get the concrete value if available (returns None for symbolic).
+    /// Cached concrete value if available (returns None for symbolic).
     pub fn concrete(&self) -> Option<u128> {
         self.concrete
     }
@@ -160,6 +132,6 @@ mod tests {
         assert_eq!(h.id(), 2);
         assert_eq!(h.width(), 32);
         assert!(h.is_concrete());
-        assert_eq!(h.concrete_value(), Some(42));
+        assert_eq!(h.concrete(), Some(42));
     }
 }

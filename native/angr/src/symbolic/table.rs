@@ -326,7 +326,7 @@ mod tests {
         let handle = table.create_concrete(42, 32);
         assert_eq!(handle.width(), 32);
         assert!(handle.is_concrete());
-        assert_eq!(handle.concrete_value(), Some(42));
+        assert_eq!(handle.concrete(), Some(42));
     }
 
     #[test]
