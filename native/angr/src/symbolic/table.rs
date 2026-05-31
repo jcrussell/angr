@@ -349,7 +349,7 @@ mod tests {
         let h3 = table.op_add(h1.id(), h2.id(), &ctx).unwrap();
         assert_eq!(h3.width(), 32);
         assert!(h3.is_concrete());
-        assert_eq!(h3.concrete_value(), Some(42));
+        assert_eq!(h3.concrete(), Some(42));
     }
 
     #[test]
