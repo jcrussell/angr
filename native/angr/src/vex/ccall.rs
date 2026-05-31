@@ -325,12 +325,27 @@ fn sym_extract_flag(packed: &RustBV, shift: u32, ctx: &SymContext) -> RustBV {
     packed.extract(shift, shift, ctx)
 }
 
+/// Why `sym_flags_for_category` may decline to build a `SymFlags`.
+///
+/// Distinguishing these lets callers fall back to the Python ccall path
+/// deliberately (and lets future profiling code attribute the fallback to a
+/// specific category) instead of swallowing an unannotated `None`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SymFlagsError {
+    /// `OpCategory::Copy` was passed. Copy's flags live directly in `dep1`;
+    /// callers must invoke `sym_flags_from_copy` instead.
+    CopyHandledByCaller,
+    /// No symbolic builder yet for this category — rare in branch flags but
+    /// hit by Adc/Sbb/Shl/Shr/Rol/Ror/Umul/Smul. Caller should fall back to
+    /// the Python ccall implementation.
+    Unsupported(OpCategory),
+}
+
 /// Dispatch table: build `SymFlags` for a non-Copy category.
 ///
-/// Returns `None` for categories where we don't yet have a symbolic builder
-/// (Adc/Sbb/Shl/Shr/Rol/Ror/Umul/Smul). Callers MUST handle `OpCategory::Copy`
-/// before calling this — Copy's flags live directly in `dep1` and need a
-/// different extraction path.
+/// Callers MUST handle `OpCategory::Copy` before invoking this — Copy is
+/// reported as `Err(SymFlagsError::CopyHandledByCaller)` rather than handled
+/// in-place because Copy's flags live in `dep1` and need a different extraction.
 fn sym_flags_for_category(
     category: OpCategory,
     nbits: u32,
@@ -338,16 +353,22 @@ fn sym_flags_for_category(
     dep2: &RustBV,
     ndep: &RustBV,
     ctx: &SymContext,
-) -> Option<SymFlags> {
+) -> Result<SymFlags, SymFlagsError> {
     match category {
-        OpCategory::Copy => None, // caller must handle Copy explicitly
-        OpCategory::Sub => Some(sym_flags_sub(nbits, dep1, dep2, ctx)),
-        OpCategory::Add => Some(sym_flags_add(nbits, dep1, dep2, ctx)),
-        OpCategory::Logic => Some(sym_flags_logic(nbits, dep1, ctx)),
-        OpCategory::Inc => Some(sym_flags_inc(nbits, dep1, ndep, ctx)),
-        OpCategory::Dec => Some(sym_flags_dec(nbits, dep1, ndep, ctx)),
-        // Adc/Sbb/Shl/Shr/Rol/Ror/Umul/Smul: TODO — rare in branch flags.
-        _ => None,
+        OpCategory::Copy => Err(SymFlagsError::CopyHandledByCaller),
+        OpCategory::Sub => Ok(sym_flags_sub(nbits, dep1, dep2, ctx)),
+        OpCategory::Add => Ok(sym_flags_add(nbits, dep1, dep2, ctx)),
+        OpCategory::Logic => Ok(sym_flags_logic(nbits, dep1, ctx)),
+        OpCategory::Inc => Ok(sym_flags_inc(nbits, dep1, ndep, ctx)),
+        OpCategory::Dec => Ok(sym_flags_dec(nbits, dep1, ndep, ctx)),
+        OpCategory::Adc
+        | OpCategory::Sbb
+        | OpCategory::Shl
+        | OpCategory::Shr
+        | OpCategory::Rol
+        | OpCategory::Ror
+        | OpCategory::Umul
+        | OpCategory::Smul => Err(SymFlagsError::Unsupported(category)),
     }
 }
 
@@ -1607,17 +1628,25 @@ pub fn handle_ccall_with_ctx(
             if let Some(info) = cc_op_info(arch, cc_op) {
                 let flags = if info.category == OpCategory::Copy {
                     sym_flags_from_copy(&args[2], sym_ctx)
-                } else if let Some(f) = sym_flags_for_category(
-                    info.category,
-                    info.nbits,
-                    &args[2],
-                    &args[3],
-                    &args[4],
-                    sym_ctx,
-                ) {
-                    f
                 } else {
-                    return None;
+                    match sym_flags_for_category(
+                        info.category,
+                        info.nbits,
+                        &args[2],
+                        &args[3],
+                        &args[4],
+                        sym_ctx,
+                    ) {
+                        Ok(f) => f,
+                        Err(SymFlagsError::Unsupported(cat)) => {
+                            log::debug!(
+                                "ccall {name}: no symbolic SymFlags builder for {cat:?}; falling back to Python"
+                            );
+                            return None;
+                        }
+                        // Unreachable: the surrounding `if` handles Copy first.
+                        Err(SymFlagsError::CopyHandledByCaller) => return None,
+                    }
                 };
                 if let Some(bit) = eval_sym_condition(cond, &flags, sym_ctx) {
                     return Some(bit.zero_extend(ret_bits, sym_ctx));
