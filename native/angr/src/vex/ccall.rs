@@ -464,6 +464,23 @@ fn get_sign_bit(nbits: u32) -> u64 {
     1u64 << (nbits - 1)
 }
 
+/// Sign-extend the low `nbits` of `val` to a full i64.
+/// `nbits` must be one of {8, 16, 32, 64}.
+#[inline]
+fn sign_extend_to_i64(val: u64, nbits: u32) -> i64 {
+    if nbits == 64 {
+        val as i64
+    } else {
+        let sign_bit = get_sign_bit(nbits);
+        let mask = get_mask(nbits);
+        if (val & sign_bit) != 0 {
+            (val | !mask) as i64
+        } else {
+            val as i64
+        }
+    }
+}
+
 /// Calculate flags for SUB operation (CMP uses this)
 fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     let mask = get_mask(nbits);
@@ -787,27 +804,8 @@ fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     let mask = get_mask(nbits);
 
     // Sign-extend operands
-    let arg1_signed = if nbits == 64 {
-        cc_dep1 as i64
-    } else {
-        let sign_bit = get_sign_bit(nbits);
-        if (cc_dep1 & sign_bit) != 0 {
-            (cc_dep1 | !mask) as i64
-        } else {
-            cc_dep1 as i64
-        }
-    };
-
-    let arg2_signed = if nbits == 64 {
-        cc_dep2 as i64
-    } else {
-        let sign_bit = get_sign_bit(nbits);
-        if (cc_dep2 & sign_bit) != 0 {
-            (cc_dep2 | !mask) as i64
-        } else {
-            cc_dep2 as i64
-        }
-    };
+    let arg1_signed = sign_extend_to_i64(cc_dep1, nbits);
+    let arg2_signed = sign_extend_to_i64(cc_dep2, nbits);
 
     let result = (arg1_signed as i128) * (arg2_signed as i128);
     let lo = (result as u64) & mask;
