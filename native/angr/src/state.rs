@@ -1107,6 +1107,22 @@ impl RustSimState {
         addr
     }
 
+    /// Bump-allocate `size` bytes with the returned address aligned to
+    /// `alignment` (must be a power of 2). The size bump is rounded up to 16,
+    /// matching `heap_alloc`, so consecutive allocations remain aligned.
+    /// Falls back to `heap_alloc` semantics when `alignment` is 0 or 1.
+    pub fn heap_alloc_aligned(&mut self, size: u64, alignment: u64) -> u64 {
+        if alignment <= 1 {
+            return self.heap_alloc(size);
+        }
+        let mask = alignment - 1;
+        let addr = self.heap_brk.wrapping_add(mask) & !mask;
+        let aligned = (size + 15) & !15;
+        self.heap_brk = addr.wrapping_add(aligned);
+        self.heap_metadata.record_alloc(addr, size);
+        addr
+    }
+
     /// Record a heap free. Returns the original allocation size if tracked.
     pub fn heap_free(&mut self, addr: u64) -> Option<u64> {
         self.heap_metadata.record_free(addr)

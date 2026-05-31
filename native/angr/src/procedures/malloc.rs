@@ -186,6 +186,109 @@ impl NativeSimProcedure for NativeRealloc {
     }
 }
 
+/// Native memalign implementation.
+///
+/// ```c
+/// void *memalign(size_t alignment, size_t size);
+/// ```
+///
+/// glibc semantics: returns a pointer to `size` bytes aligned to `alignment`.
+/// `alignment` must be a power of two; if it is 0 or 1 we treat the call
+/// as a plain `malloc` to match the bump-allocator behavior used elsewhere.
+pub struct NativeMemalign;
+
+impl NativeSimProcedure for NativeMemalign {
+    fn name(&self) -> &'static str {
+        "memalign"
+    }
+
+    fn num_args(&self) -> usize {
+        2
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let alignment = extract_concrete_arg(&args[0], "alignment")?;
+        let size = extract_concrete_arg(&args[1], "size")?;
+
+        if alignment > 1 && !alignment.is_power_of_two() {
+            return Err(ProcedureError::Other(format!(
+                "memalign alignment {} is not a power of two",
+                alignment
+            )));
+        }
+        if size > 1024 * 1024 {
+            return Err(ProcedureError::Other(format!(
+                "memalign size {} exceeds 1MB limit",
+                size
+            )));
+        }
+
+        let addr = state.heap_alloc_aligned(size, alignment);
+        let bits = state.arch().bits();
+        Ok(Some(RustBV::concrete(addr as u128, bits)))
+    }
+}
+
+/// Native posix_memalign implementation.
+///
+/// ```c
+/// int posix_memalign(void **memptr, size_t alignment, size_t size);
+/// ```
+///
+/// On success, stores the allocated pointer at `*memptr` and returns 0.
+/// On invalid alignment (non-power-of-2, or not a multiple of `sizeof(void*)`),
+/// returns `EINVAL` (22) without touching `*memptr`. The return value is the
+/// errno code itself — glibc does NOT set the global `errno`.
+pub struct NativePosixMemalign;
+
+impl NativeSimProcedure for NativePosixMemalign {
+    fn name(&self) -> &'static str {
+        "posix_memalign"
+    }
+
+    fn num_args(&self) -> usize {
+        3
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let memptr = extract_concrete_arg(&args[0], "memptr")?;
+        let alignment = extract_concrete_arg(&args[1], "alignment")?;
+        let size = extract_concrete_arg(&args[2], "size")?;
+
+        let bits = state.arch().bits();
+        let ptr_bytes = (bits / 8) as u64;
+
+        let einval = 22u64;
+        if alignment < ptr_bytes
+            || !alignment.is_power_of_two()
+            || alignment % ptr_bytes != 0
+        {
+            return Ok(Some(RustBV::concrete(einval as u128, 32)));
+        }
+        if size > 1024 * 1024 {
+            return Err(ProcedureError::Other(format!(
+                "posix_memalign size {} exceeds 1MB limit",
+                size
+            )));
+        }
+
+        let addr = state.heap_alloc_aligned(size, alignment);
+        // Store the allocated pointer at *memptr.
+        let ptr_bv = RustBV::concrete(addr as u128, bits);
+        state.memory_store(memptr, ptr_bv)?;
+
+        Ok(Some(RustBV::concrete(0, 32)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +494,146 @@ mod tests {
         // Data should be copied
         let val = state.memory_load(new_addr, 4).unwrap();
         assert_eq!(val.as_u64(), Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn test_memalign_returns_aligned_addr() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        // Force the bump cursor to a non-aligned value so the alignment math
+        // actually has to round up.
+        let _ = NativeMalloc
+            .call(&mut state, &[RustBV::concrete(1, 64)])
+            .unwrap();
+        for &alignment in &[32u64, 64, 128, 4096] {
+            let r = NativeMemalign
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(alignment as u128, 64),
+                        RustBV::concrete(48, 64),
+                    ],
+                )
+                .unwrap();
+            let addr = r.unwrap().as_u64().unwrap();
+            assert!(addr > 0);
+            assert_eq!(
+                addr % alignment,
+                0,
+                "addr {:#x} not aligned to {}",
+                addr,
+                alignment
+            );
+            assert!(state.heap_metadata().is_allocated(addr));
+        }
+    }
+
+    #[test]
+    fn test_memalign_rejects_non_power_of_two() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let result = NativeMemalign.call(
+            &mut state,
+            &[RustBV::concrete(24, 64), RustBV::concrete(16, 64)],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_memalign_symbolic_size_falls_back() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "size", 64);
+        drop(ctx);
+        let result = NativeMemalign
+            .call(&mut state, &[RustBV::concrete(32, 64), sym]);
+        assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+    }
+
+    #[test]
+    fn test_posix_memalign_writes_pointer_and_returns_zero() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+        // memptr lives in a writable region — reuse the heap region with a
+        // 16-byte allocation as scratch space for the void** out-parameter.
+        let scratch = NativeMalloc
+            .call(&mut state, &[RustBV::concrete(16, 64)])
+            .unwrap()
+            .unwrap()
+            .as_u64()
+            .unwrap();
+
+        let r = NativePosixMemalign
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(scratch as u128, 64),
+                    RustBV::concrete(64, 64),
+                    RustBV::concrete(100, 64),
+                ],
+            )
+            .unwrap();
+        // Return value is the errno int (0 on success).
+        assert_eq!(r.unwrap().as_u64(), Some(0));
+
+        // *memptr should hold an aligned heap pointer.
+        let stored = state.memory_load(scratch, 8).unwrap();
+        let stored_addr = stored.as_u64().unwrap();
+        assert!(stored_addr > 0);
+        assert_eq!(stored_addr % 64, 0);
+        assert!(state.heap_metadata().is_allocated(stored_addr));
+    }
+
+    #[test]
+    fn test_posix_memalign_rejects_bad_alignment() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+        let scratch = NativeMalloc
+            .call(&mut state, &[RustBV::concrete(16, 64)])
+            .unwrap()
+            .unwrap()
+            .as_u64()
+            .unwrap();
+
+        // Alignment < sizeof(void*) (8) — must return EINVAL (22).
+        let r = NativePosixMemalign
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(scratch as u128, 64),
+                    RustBV::concrete(4, 64),
+                    RustBV::concrete(100, 64),
+                ],
+            )
+            .unwrap();
+        assert_eq!(r.unwrap().as_u64(), Some(22));
+
+        // Alignment not power of two — must return EINVAL.
+        let r = NativePosixMemalign
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(scratch as u128, 64),
+                    RustBV::concrete(24, 64),
+                    RustBV::concrete(100, 64),
+                ],
+            )
+            .unwrap();
+        assert_eq!(r.unwrap().as_u64(), Some(22));
+    }
+
+    #[test]
+    fn test_posix_memalign_symbolic_size_falls_back() {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "size", 64);
+        drop(ctx);
+        let result = NativePosixMemalign.call(
+            &mut state,
+            &[
+                RustBV::concrete(0xC000_0000, 64),
+                RustBV::concrete(64, 64),
+                sym,
+            ],
+        );
+        assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
     }
 }

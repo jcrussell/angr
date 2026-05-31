@@ -201,6 +201,8 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(malloc::NativeFree));
         registry.register(Arc::new(malloc::NativeCalloc));
         registry.register(Arc::new(malloc::NativeRealloc));
+        registry.register(Arc::new(malloc::NativeMemalign));
+        registry.register(Arc::new(malloc::NativePosixMemalign));
         // Character classification (ctype.h)
         registry.register(Arc::new(ctype::NativeIsDigit));
         registry.register(Arc::new(ctype::NativeIsAlpha));

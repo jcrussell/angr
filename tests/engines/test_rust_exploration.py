@@ -10240,6 +10240,141 @@ class TestNativeFileDescriptorErrorReturns:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeMemoryAlignedAllocators:
+    """Integration tests for NativeMemalign / NativePosixMemalign (angr-f16h.2).
+
+    angr has no Python SimProcedure for `memalign` / `posix_memalign` — they
+    are declared in `procedures/definitions/common/glibc.json` but no Python
+    file backs them. The native registry is the only path that handles these
+    calls, so these tests exercise both the dispatch and the alignment math.
+
+    Same in-binary non-executable hook-addr pattern as TestNativeFile-
+    DescriptorProcedures (see that class docstring for the rationale).
+    """
+
+    HOOK_ADDR = 0x600e30   # in fauxware's .ctors (non-executable, in-binary)
+    DEAD_ADDR = 0x4008b0
+    BUF_ADDR = 0x601100    # past .bss, lazy-mapped
+
+    @staticmethod
+    def _make_stub(proc_name: str, num_args: int):
+        """Python SimProcedure stub whose class name matches the native key.
+        The `run` is bypassed when native dispatch fires (the expected path),
+        but the class must exist so `proj.hook` is valid."""
+        runs = {
+            2: lambda self, a0, a1: 0,         # noqa: ARG005
+            3: lambda self, a0, a1, a2: 0,     # noqa: ARG005
+        }
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": num_args, "run": runs[num_args]},
+        )
+
+    def test_memalign_returns_aligned_pointer(self, fauxware_project):
+        """memalign(64, 100) must dispatch natively, return an aligned
+        non-zero pointer in rax, and tick the call_counts['memalign']
+        counter exactly once."""
+        import claripy
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("memalign", 2)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            from angr.exploration import RustExplorationManager
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = 64     # alignment
+            state.regs.rsi = 100    # size
+            state.memory.store(state.regs.rsp,
+                               claripy.BVV(self.DEAD_ADDR, 64),
+                               endness="Iend_LE")
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("memalign", 0) == 1, (
+                f"expected native memalign dispatch, got stats={stats}"
+            )
+
+            sid = None
+            for stash in ("active", "deadended", "errored", "unconstrained"):
+                ids = mgr._rust_mgr.get_state_ids(stash)
+                if ids:
+                    sid = ids[0]
+                    break
+            assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
+
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax != 0, "memalign returned NULL"
+            assert rax % 64 == 0, f"rax={rax:#x} not aligned to 64"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_posix_memalign_writes_pointer_and_returns_zero(self, fauxware_project):
+        """posix_memalign(memptr, 32, 80) must dispatch natively, return 0
+        in rax, and write an aligned pointer to *memptr in memory."""
+        import claripy
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("posix_memalign", 3)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            from angr.exploration import RustExplorationManager
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rdi = self.BUF_ADDR    # memptr (void**)
+            state.regs.rsi = 32               # alignment
+            state.regs.rdx = 80               # size
+            state.memory.store(state.regs.rsp,
+                               claripy.BVV(self.DEAD_ADDR, 64),
+                               endness="Iend_LE")
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("posix_memalign", 0) == 1, (
+                f"expected native posix_memalign dispatch, got stats={stats}"
+            )
+
+            sid = None
+            for stash in ("active", "deadended", "errored", "unconstrained"):
+                ids = mgr._rust_mgr.get_state_ids(stash)
+                if ids:
+                    sid = ids[0]
+                    break
+            assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
+
+            # eax holds the errno-style return; 0 on success.
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax & 0xFFFFFFFF == 0, (
+                f"expected eax=0 success, got rax={rax:#x}"
+            )
+
+            # *memptr must hold an aligned non-zero pointer.
+            stored = mgr._rust_mgr.get_state_memory(sid, self.BUF_ADDR, 8)
+            stored_addr = int.from_bytes(stored, "little")
+            assert stored_addr != 0, "*memptr not written"
+            assert stored_addr % 32 == 0, (
+                f"*memptr={stored_addr:#x} not aligned to 32"
+            )
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeReadCacheSync:
     """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
     requires the cached Python SimState to be invalidate-and-replayed per
