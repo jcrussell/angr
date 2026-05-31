@@ -9,6 +9,52 @@ use crate::memory::SymbolicMemory;
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
+/// Errors produced by [`CallingConvention::extract_args`] when the stack
+/// portion of the argument list cannot be read.
+///
+/// Procedures previously relied on silent fabrication (the trait method
+/// would mint a fresh `RustBV::symbolic("stack_arg_N", …)` whenever
+/// `mem.load_concrete_lazy` failed). That made real stack-setup bugs
+/// indistinguishable from intentional symbolic input. Returning an
+/// explicit error variant forces callers to decide policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtractionError {
+    /// The caller asked for stack-resident arguments but did not supply a
+    /// memory view. The trait method has no way to materialise stack
+    /// arguments without it.
+    MemoryUnavailable,
+    /// The stack pointer is symbolic. We cannot compute the stack-slot
+    /// addresses without committing to a concrete SP, which would silently
+    /// pin the value of a symbol the caller may want to reason about.
+    SpSymbolic,
+    /// A specific stack slot could not be read from memory (typically
+    /// unmapped page or permission failure). `arg_index` is the
+    /// zero-based position of the failing argument within the full
+    /// `num_args` request; `addr` is the absolute address that failed.
+    StackUnmapped { arg_index: usize, addr: u64 },
+}
+
+impl core::fmt::Display for ExtractionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MemoryUnavailable => write!(
+                f,
+                "extract_args: stack argument requested without a memory view",
+            ),
+            Self::SpSymbolic => write!(
+                f,
+                "extract_args: stack pointer is symbolic; cannot compute stack-slot addresses",
+            ),
+            Self::StackUnmapped { arg_index, addr } => write!(
+                f,
+                "extract_args: stack argument {arg_index} at address {addr:#x} is unmapped",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExtractionError {}
+
 /// Calling convention trait for extracting function arguments.
 pub trait CallingConvention: Send + Sync {
     /// Get the name of this calling convention.
@@ -56,54 +102,56 @@ pub trait CallingConvention: Send + Sync {
 
     /// Extract up to N arguments from registers and memory.
     ///
-    /// Arguments are extracted in order: first from registers, then from stack.
-    /// Returns a vector of extracted argument values.
+    /// Arguments are extracted in order: first from registers, then from
+    /// stack. Returns a vector of extracted argument values on success.
+    ///
+    /// If the request can be satisfied entirely from registers (i.e.
+    /// `num_args <= arg_registers().len()`), this always succeeds — `memory`
+    /// is unused. Otherwise the trait reads the stack-resident slots from
+    /// `memory`; any failure (no memory view, symbolic SP, unmapped slot)
+    /// produces a structured [`ExtractionError`] so the caller can decide
+    /// whether to abort, retry, or fabricate placeholders explicitly.
     fn extract_args(
         &self,
         regs: &RegisterFile,
         memory: Option<&SymbolicMemory>,
         ctx: &SymContext,
         num_args: usize,
-    ) -> Vec<RustBV> {
+    ) -> Result<Vec<RustBV>, ExtractionError> {
         let mut args = Vec::with_capacity(num_args);
         let arg_regs = self.arg_registers();
         let ptr_size = self.pointer_size();
 
-        // First extract from registers
-        for (_i, &offset) in arg_regs.iter().enumerate() {
+        for &offset in arg_regs.iter() {
             if args.len() >= num_args {
                 break;
             }
-            let value = regs.get(offset, ptr_size, ctx);
+            args.push(regs.get(offset, ptr_size, ctx));
+        }
+
+        if args.len() >= num_args {
+            return Ok(args);
+        }
+
+        let mem = memory.ok_or(ExtractionError::MemoryUnavailable)?;
+        let sp = regs.get(regs.arch().sp_offset(), ptr_size, ctx);
+        let sp_val = sp.as_u64().ok_or(ExtractionError::SpSymbolic)?;
+        let stack_start = sp_val + self.stack_arg_offset();
+        let already = args.len();
+        let remaining = num_args - already;
+
+        for i in 0..remaining {
+            let addr = stack_start + (i as u64 * ptr_size as u64);
+            let value = mem
+                .load_concrete_lazy(addr, ptr_size, ctx)
+                .map_err(|_| ExtractionError::StackUnmapped {
+                    arg_index: already + i,
+                    addr,
+                })?;
             args.push(value);
         }
 
-        // If we need more args, get them from stack
-        if args.len() < num_args {
-            if let Some(mem) = memory {
-                let sp = regs.get(regs.arch().sp_offset(), ptr_size, ctx);
-                if let Some(sp_val) = sp.as_u64() {
-                    let stack_start = sp_val + self.stack_arg_offset();
-
-                    for i in 0..(num_args - args.len()) {
-                        let addr = stack_start + (i as u64 * ptr_size as u64);
-                        match mem.load_concrete_lazy(addr, ptr_size, ctx) {
-                            Ok(value) => args.push(value),
-                            Err(_) => {
-                                // Can't read stack - push a symbolic placeholder
-                                args.push(RustBV::symbolic(
-                                    ctx,
-                                    &format!("stack_arg_{}", i),
-                                    ptr_size * 8,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        args
+        Ok(args)
     }
 
     /// Get the return address from the stack.
@@ -812,10 +860,41 @@ mod tests {
         // RDX (arg3) = 0x3000
         regs.put(32, RustBV::concrete(0x3000, 64));
 
-        let args = cc.extract_args(&regs, None, &ctx, 3);
+        let args = cc.extract_args(&regs, None, &ctx, 3).expect("regs-only");
         assert_eq!(args.len(), 3);
         assert_eq!(args[0].as_u64(), Some(0x1000));
         assert_eq!(args[1].as_u64(), Some(0x2000));
         assert_eq!(args[2].as_u64(), Some(0x3000));
+    }
+
+    #[test]
+    fn test_extract_args_stack_without_memory_errors() {
+        // amd64 SystemV has 6 register slots; asking for a 7th forces the
+        // trait to consult memory. With no memory view supplied, it must
+        // return MemoryUnavailable rather than silently fabricate a
+        // placeholder.
+        let ctx = SymContext::new_mock();
+        let cc = SystemVAMD64;
+        let regs = RegisterFile::new(Box::new(AMD64));
+        let err = cc
+            .extract_args(&regs, None, &ctx, 7)
+            .expect_err("no memory => should fail");
+        assert!(
+            matches!(err, ExtractionError::MemoryUnavailable),
+            "expected MemoryUnavailable, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn test_extract_args_register_only_path_ignores_missing_memory() {
+        // The reverse: 6 register args with no memory view must succeed —
+        // no stack slot is ever consulted.
+        let ctx = SymContext::new_mock();
+        let cc = SystemVAMD64;
+        let regs = RegisterFile::new(Box::new(AMD64));
+        let args = cc
+            .extract_args(&regs, None, &ctx, 6)
+            .expect("6 args fit in registers; memory unused");
+        assert_eq!(args.len(), 6);
     }
 }

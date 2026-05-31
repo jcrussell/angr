@@ -1399,8 +1399,15 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Extract arguments for a SimProcedure call.
     ///
-    /// Uses the calling convention to extract arguments from registers and stack.
-    pub fn extract_simprocedure_args(&self, num_args: usize) -> Vec<RustBV> {
+    /// Uses the calling convention to extract arguments from registers and
+    /// stack. Returns the structured [`ExtractionError`] from the trait so
+    /// callers see *why* extraction failed (stack unmapped vs symbolic SP
+    /// vs missing memory view) instead of receiving silently-fabricated
+    /// placeholders.
+    pub fn extract_simprocedure_args(
+        &self,
+        num_args: usize,
+    ) -> Result<Vec<RustBV>, crate::arch::calling_conventions::ExtractionError> {
         self.calling_convention.extract_args(
             &self.registers,
             self.rust_memory.as_ref(),

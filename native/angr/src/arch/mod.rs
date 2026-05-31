@@ -17,7 +17,8 @@ pub use amd64::AMD64;
 pub use arm::ARM;
 pub use arm64::ARM64;
 pub use calling_conventions::{
-    AArch64CC, ARMEABI, CallingConvention, Cdecl, MicrosoftX64, SystemVAMD64, default_cc_for_arch,
+    AArch64CC, ARMEABI, CallingConvention, Cdecl, ExtractionError, MicrosoftX64, SystemVAMD64,
+    default_cc_for_arch,
 };
 pub use mips::{MIPS32, MIPS64};
 pub use x86::X86;
