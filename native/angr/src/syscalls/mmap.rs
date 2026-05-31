@@ -33,7 +33,7 @@
 //! interleave with successful native calls; future cross-engine sync
 //! work (see angr-0z34 / state-cache sync) should address both.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -106,24 +106,12 @@ impl NativeSyscall for NativeMmapSyscall {
                 args.len()
             )));
         }
-        let addr = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mmap addr".into()))?;
-        let length = args[1]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mmap length".into()))?;
-        let prot = args[2]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mmap prot".into()))?;
-        let flags = args[3]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mmap flags".into()))?;
-        let fd_full = args[4]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mmap fd".into()))?;
-        let _offset = args[5]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mmap offset".into()))?;
+        let addr = extract_concrete_arg(&args[0], "mmap addr")?;
+        let length = extract_concrete_arg(&args[1], "mmap length")?;
+        let prot = extract_concrete_arg(&args[2], "mmap prot")?;
+        let flags = extract_concrete_arg(&args[3], "mmap flags")?;
+        let fd_full = extract_concrete_arg(&args[4], "mmap fd")?;
+        let _offset = extract_concrete_arg(&args[5], "mmap offset")?;
 
         // Bad-flags fast path: Python's mmap returns BVV(-1, bits) when
         // exactly-one-of(MAP_SHARED, MAP_PRIVATE) doesn't hold.

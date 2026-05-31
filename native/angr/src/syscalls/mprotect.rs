@@ -14,7 +14,7 @@
 //! `read=0x4, write=0x2, execute=0x1` (reversed). We translate the
 //! Linux bits explicitly here rather than going through `from_bits`.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -52,15 +52,9 @@ impl NativeSyscall for NativeMprotectSyscall {
                 args.len()
             )));
         }
-        let addr = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mprotect addr".into()))?;
-        let length = args[1]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mprotect length".into()))?;
-        let prot = args[2]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("mprotect prot".into()))?;
+        let addr = extract_concrete_arg(&args[0], "mprotect addr")?;
+        let length = extract_concrete_arg(&args[1], "mprotect length")?;
+        let prot = extract_concrete_arg(&args[2], "mprotect prot")?;
 
         // Linux: misaligned addr → EINVAL. Python returns -1 here too.
         if addr & PAGE_MASK != 0 {

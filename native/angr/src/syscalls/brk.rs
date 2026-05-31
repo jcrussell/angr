@@ -18,7 +18,7 @@
 //! detect that any page in the to-be-mapped range is already mapped
 //! we fall back to the Python path to preserve semantics.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -45,9 +45,7 @@ impl NativeSyscall for NativeBrkSyscall {
         if args.is_empty() {
             return Err(SyscallError::Other("brk expected 1 arg, got 0".into()));
         }
-        let new_brk = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("brk new_brk".into()))?;
+        let new_brk = extract_concrete_arg(&args[0], "brk new_brk")?;
 
         let current = state.posix_brk();
 

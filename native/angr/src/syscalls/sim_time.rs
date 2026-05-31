@@ -32,7 +32,7 @@
 //!   which we propagate as `SyscallError::Other` so Python (which
 //!   auto-faults pages via the default plugin) can handle the store.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -63,9 +63,7 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
                 args.len()
             )));
         }
-        let tv = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("gettimeofday tv".into()))?;
+        let tv = extract_concrete_arg(&args[0], "gettimeofday tv")?;
         // tz is intentionally not extracted; Python ignores it too.
 
         if tv == 0 {
@@ -127,9 +125,7 @@ impl NativeSyscall for NativeTimeSyscall {
                 args.len()
             )));
         }
-        let pointer = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("time pointer".into()))?;
+        let pointer = extract_concrete_arg(&args[0], "time pointer")?;
 
         let bits = state.arch().bits();
         let (sys_time, monotonic_constraint) = {
@@ -176,9 +172,7 @@ impl NativeSyscall for NativeClockGettimeSyscall {
                 args.len()
             )));
         }
-        let which_clock = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("clock_gettime which_clock".into()))?;
+        let which_clock = extract_concrete_arg(&args[0], "clock_gettime which_clock")?;
         if which_clock != CLOCK_REALTIME {
             // Python raises SimProcedureError for non-REALTIME clocks; let
             // it run so the same diagnostic path fires.
@@ -186,9 +180,7 @@ impl NativeSyscall for NativeClockGettimeSyscall {
                 "clock_gettime: unsupported clock {which_clock}"
             )));
         }
-        let ts = args[1]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("clock_gettime ts".into()))?;
+        let ts = extract_concrete_arg(&args[1], "clock_gettime ts")?;
         if ts == 0 {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }

@@ -46,6 +46,14 @@ pub enum SyscallError {
     Other(String),
 }
 
+/// Extract a concrete u64 value from a syscall argument, or return
+/// `SymbolicArgument(name)`. Mirrors `procedures::extract_concrete_arg`
+/// to centralize the symbolic-fallthrough error context across handlers.
+pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, SyscallError> {
+    arg.as_u64()
+        .ok_or_else(|| SyscallError::SymbolicArgument(name.to_string()))
+}
+
 /// What the dispatcher should do after a syscall handler runs.
 #[derive(Debug)]
 pub enum SyscallOutcome {

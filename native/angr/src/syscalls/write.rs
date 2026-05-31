@@ -10,7 +10,7 @@
 //! path. The Python path goes through `state.posix.get_fd(fd).write(...)`,
 //! which has the symbolic-content + non-stdio fd plumbing.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -38,21 +38,15 @@ impl NativeSyscall for NativeWriteSyscall {
                 args.len()
             )));
         }
-        let fd = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("write fd".into()))?;
+        let fd = extract_concrete_arg(&args[0], "write fd")?;
         if fd != 1 && fd != 2 {
             return Err(SyscallError::Other(format!(
                 "write to fd={} not supported natively",
                 fd
             )));
         }
-        let buf = args[1]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("write buf".into()))?;
-        let count = args[2]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("write count".into()))?;
+        let buf = extract_concrete_arg(&args[1], "write buf")?;
+        let count = extract_concrete_arg(&args[2], "write count")?;
 
         if count > MAX_WRITE_SIZE {
             return Err(SyscallError::Other(format!(

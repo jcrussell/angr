@@ -11,7 +11,7 @@
 //! `signum == 33` constraint. The other three args are intentionally
 //! ignored; they may be symbolic without forcing fallback.
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -42,9 +42,7 @@ impl NativeSyscall for NativeRtSigactionSyscall {
                 "rt_sigaction expected ≥1 arg, got 0".into(),
             ));
         }
-        let signum = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("rt_sigaction signum".into()))?;
+        let signum = extract_concrete_arg(&args[0], "rt_sigaction signum")?;
         if signum == 33 {
             return Ok(SyscallOutcome::Continue { ret: NEG_EINVAL });
         }

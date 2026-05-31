@@ -12,7 +12,7 @@
 //! Hit early during glibc's TLS initialization (the "frequently called
 //! during early init" rationale in angr-4e3q).
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -44,9 +44,7 @@ impl NativeSyscall for NativeArchPrctlSyscall {
                 args.len()
             )));
         }
-        let code = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("arch_prctl code".into()))?;
+        let code = extract_concrete_arg(&args[0], "arch_prctl code")?;
 
         match code {
             ARCH_SET_FS => {
@@ -71,9 +69,7 @@ impl NativeSyscall for NativeArchPrctlSyscall {
                 } else {
                     "gs_const"
                 };
-                let addr = args[1]
-                    .as_u64()
-                    .ok_or_else(|| SyscallError::SymbolicArgument("arch_prctl addr".into()))?;
+                let addr = extract_concrete_arg(&args[1], "arch_prctl addr")?;
                 let value = state
                     .get_register(reg)
                     .ok_or_else(|| SyscallError::Other(format!("arch_prctl: {reg} unreadable")))?;

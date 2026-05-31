@@ -14,7 +14,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome};
+use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -48,21 +48,15 @@ impl NativeSyscall for NativeReadSyscall {
                 args.len()
             )));
         }
-        let fd = args[0]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("read fd".into()))?;
+        let fd = extract_concrete_arg(&args[0], "read fd")?;
         if fd != 0 {
             return Err(SyscallError::Other(format!(
                 "read from fd={} not supported natively",
                 fd
             )));
         }
-        let buf = args[1]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("read buf".into()))?;
-        let count = args[2]
-            .as_u64()
-            .ok_or_else(|| SyscallError::SymbolicArgument("read count".into()))?;
+        let buf = extract_concrete_arg(&args[1], "read buf")?;
+        let count = extract_concrete_arg(&args[2], "read count")?;
 
         if count > MAX_READ_SIZE {
             return Err(SyscallError::Other(format!(
