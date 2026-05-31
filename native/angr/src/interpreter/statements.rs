@@ -62,11 +62,7 @@ impl<'a> VEXInterpreter<'a> {
             }
 
             IRStmt::Store { addr, data, endness } => {
-                let store_start = if self.profiling_enabled {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
+                let store_start = profile_start!(self);
                 let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
                 let data_size = ((data_val.width() + 7) / 8) as usize;
@@ -960,9 +956,7 @@ impl<'a> VEXInterpreter<'a> {
             Ok(()) => {
                 self.update_prefetch_on_store(addr_val, &conc_result, data_size);
                 // Rust owns memory — no need to sync stores to Python.
-                if let Some(start) = store_start {
-                    self.stats.store_stmt_time_ns += start.elapsed().as_nanos() as u64;
-                }
+                profile_add!(store_start, self.stats.store_stmt_time_ns);
                 Ok(true)
             }
             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {

@@ -14,11 +14,7 @@ impl<'a> VEXInterpreter<'a> {
         callbacks: &PythonCallbacks,
         max_blocks: u32,
     ) -> (RunResult, u32, Vec<DeferredFork>) {
-        let total_start = if self.profiling_enabled {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let total_start = profile_start!(self);
         let mut blocks_executed = 0u32;
 
         // Sort concrete memory regions for binary search if needed
@@ -80,17 +76,11 @@ impl<'a> VEXInterpreter<'a> {
             };
 
             // Execute the block
-            let block_start = if self.profiling_enabled {
-                Some(Instant::now())
-            } else {
-                None
-            };
+            let block_start = profile_start!(self);
             match self.execute_block_with_callbacks(py, callbacks, &irsb) {
                 Ok(result) => {
                     blocks_executed += 1;
-                    if let Some(start) = block_start {
-                        self.stats.block_exec_time_ns += start.elapsed().as_nanos() as u64;
-                    }
+                    profile_add!(block_start, self.stats.block_exec_time_ns);
 
                     match result {
                         BlockResult::Continue { next_addr } => {
@@ -303,10 +293,8 @@ impl<'a> VEXInterpreter<'a> {
         let forks = self.take_deferred_forks();
         if self.profiling_enabled {
             self.stats.blocks_executed += blocks_executed as u64;
-            if let Some(start) = total_start {
-                self.stats.total_time_ns += start.elapsed().as_nanos() as u64;
-            }
         }
+        profile_add!(total_start, self.stats.total_time_ns);
         (RunResult::MaxBlocks { pc: self.pc }, blocks_executed, forks)
     }
 
@@ -343,11 +331,7 @@ impl<'a> VEXInterpreter<'a> {
             self.stats.cache_miss_count += 1;
         }
 
-        let lift_start = if self.profiling_enabled {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let lift_start = profile_start!(self);
 
         // Try native lifting if available
         #[cfg(feature = "native-lift")]
@@ -390,10 +374,7 @@ impl<'a> VEXInterpreter<'a> {
                                         "Native lift from rust_memory (SMC) at 0x{:x}",
                                         addr
                                     );
-                                    if let Some(start) = lift_start {
-                                        self.stats.lift_time_ns +=
-                                            start.elapsed().as_nanos() as u64;
-                                    }
+                                    profile_add!(lift_start, self.stats.lift_time_ns);
                                     let arc_irsb = Arc::new(irsb);
                                     self.block_cache.put(addr, Arc::clone(&arc_irsb));
                                     return Ok(arc_irsb);
@@ -447,10 +428,7 @@ impl<'a> VEXInterpreter<'a> {
                                     Ok(irsb) => {
                                         // Native lift succeeded!
                                         log::trace!("Native lift succeeded at 0x{:x}", addr);
-                                        if let Some(start) = lift_start {
-                                            self.stats.lift_time_ns +=
-                                                start.elapsed().as_nanos() as u64;
-                                        }
+                                        profile_add!(lift_start, self.stats.lift_time_ns);
                                         let arc_irsb = Arc::new(irsb);
                                         self.block_cache.put(addr, Arc::clone(&arc_irsb));
                                         return Ok(arc_irsb);
@@ -469,11 +447,7 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Fall back to lifting via Python callback
-        let callback_start = if self.profiling_enabled {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let callback_start = profile_start!(self);
         // Resolve VEX opt_level: per-address override > global > None (pyvex default)
         let opt_level = self
             .vex_opt_level_overrides
@@ -505,18 +479,16 @@ impl<'a> VEXInterpreter<'a> {
         let irsb_json = callbacks
             .call_lift_block(py, addr, opt_level, dirty_bytes.as_deref())
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {}", e)))?;
-        if let Some(start) = callback_start {
+        if self.profiling_enabled {
             self.stats.python_callback_count += 1;
-            self.stats.python_callback_time_ns += start.elapsed().as_nanos() as u64;
         }
+        profile_add!(callback_start, self.stats.python_callback_time_ns);
 
         let irsb = deserialize_irsb(&irsb_json).map_err(|e| {
             CbExecutionError::LiftError(format!("IRSB deserialization failed: {}", e))
         })?;
 
-        if let Some(start) = lift_start {
-            self.stats.lift_time_ns += start.elapsed().as_nanos() as u64;
-        }
+        profile_add!(lift_start, self.stats.lift_time_ns);
 
         // Cache it - Arc allows O(1) cloning
         let arc_irsb = Arc::new(irsb);
@@ -565,15 +537,9 @@ impl<'a> VEXInterpreter<'a> {
         self.current_insn_addr = irsb.addr;
 
         // Prefetch loads for this block (reduces individual FFI calls)
-        let prefetch_start = if self.profiling_enabled {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let prefetch_start = profile_start!(self);
         self.prefetch_loads_for_block(py, callbacks, irsb)?;
-        if let Some(start) = prefetch_start {
-            self.stats.prefetch_time_ns += start.elapsed().as_nanos() as u64;
-        }
+        profile_add!(prefetch_start, self.stats.prefetch_time_ns);
 
         // state.inspect irsb event — fires `when='before'` at block entry,
         // before any statement runs. Bit 7 in the inspect-enabled bitmask.
@@ -587,11 +553,7 @@ impl<'a> VEXInterpreter<'a> {
             if self.profiling_enabled {
                 self.stats.stmt_count += 1;
             }
-            let stmt_start = if self.profiling_enabled {
-                Some(Instant::now())
-            } else {
-                None
-            };
+            let stmt_start = profile_start!(self);
             match self.execute_stmt_with_callbacks(py, callbacks, stmt, irsb)? {
                 StmtResult::Continue => {
                     if let Some(start) = stmt_start {

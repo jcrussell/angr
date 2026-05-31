@@ -11,14 +11,10 @@ impl<'a> VEXInterpreter<'a> {
         expr: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
-        let expr_start = if self.profiling_enabled {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let expr_start = profile_start!(self);
         let result = self.eval_expr_with_callbacks_inner(py, callbacks, expr, tyenv);
-        if let Some(start) = expr_start {
-            self.stats.expr_eval_time_ns += start.elapsed().as_nanos() as u64;
+        profile_add!(expr_start, self.stats.expr_eval_time_ns);
+        if self.profiling_enabled {
             self.stats.expr_eval_count += 1;
         }
         result
@@ -108,11 +104,7 @@ impl<'a> VEXInterpreter<'a> {
         endness: Endness,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
-        let load_start = if self.profiling_enabled {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let load_start = profile_start!(self);
         let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
         let size = ty.bytes() as usize;
         if self.profiling_enabled {
@@ -817,9 +809,7 @@ impl<'a> VEXInterpreter<'a> {
 
         match first_result {
             Ok(value) => {
-                if let Some(start) = load_start {
-                    self.stats.load_stmt_time_ns += start.elapsed().as_nanos() as u64;
-                }
+                profile_add!(load_start, self.stats.load_stmt_time_ns);
                 Ok(Some(value))
             }
             Err(MemoryError::UnmappedPageInRegion { page_addr }) => {

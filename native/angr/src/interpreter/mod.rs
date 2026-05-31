@@ -32,6 +32,30 @@ use crate::vex::ir::{
 use crate::vex::ops::{OpError, VEXOps, iropclass};
 use crate::vex::{Endness, deserialize_irsb};
 
+/// Start a profiling timer iff `self.profiling_enabled`. Yields `Option<Instant>`.
+///
+/// Pair with [`profile_add!`] to fold the elapsed nanoseconds into a `u64`
+/// stats field. When profiling is off both macros collapse to a single branch.
+macro_rules! profile_start {
+    ($self:expr) => {
+        if $self.profiling_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        }
+    };
+}
+
+/// Add the elapsed time since `$start` (an `Option<Instant>` from
+/// [`profile_start!`]) to a `u64` field. No-op when `$start` is `None`.
+macro_rules! profile_add {
+    ($start:expr, $field:expr) => {
+        if let Some(__profile_start) = $start {
+            $field += __profile_start.elapsed().as_nanos() as u64;
+        }
+    };
+}
+
 mod execution;
 mod exits;
 mod expressions;
