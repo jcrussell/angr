@@ -738,6 +738,35 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
+
+    /// NEON vector shift left by vector — `Iop_Shl{N}x{M}` (and `Iop_Sal{N}x{M}`,
+    /// which has identical bit-level semantics: left shift on two's complement
+    /// is the same operation whether labelled "logical" or "arithmetic").
+    /// Both operands are the full vector width; lane `i` of the result is
+    /// `lane_a[i] << lane_b[i]`, with the shift amount treated as unsigned
+    /// (Z3 `bvshl` semantics — counts ≥ lane width produce zero). Maps to
+    /// ARM USHL (DDI 0487 C7.2.310) when the count vector is non-negative;
+    /// the negative-count branch of NEON USHL/SSHL is decomposed by libVEX
+    /// into a separate `Iop_Shr`/`Iop_Sar`, so this op only sees the
+    /// unsigned-count case.
+    VShl {
+        elem: IRType,
+        count: u8,
+    },
+    /// NEON vector shift right logical by vector — `Iop_Shr{N}x{M}`.
+    /// Same shape as `VShl`; uses Z3 `bvlshr`. Maps to ARM USHL with negative
+    /// (right) count after libVEX decomposition.
+    VShr {
+        elem: IRType,
+        count: u8,
+    },
+    /// NEON vector shift right arithmetic by vector — `Iop_Sar{N}x{M}`.
+    /// Same shape as `VShl`; uses Z3 `bvashr` (sign-replicating). Maps to
+    /// ARM SSHL with negative (right) count after libVEX decomposition.
+    VSar {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector compare equal
     VCmpEQ {
         elem: IRType,
@@ -1161,6 +1190,19 @@ impl IROp {
             | IROp::VSarN { .. }
             | IROp::VCmpEQ { .. }
             | IROp::VCmpGT { .. } => Some(IRType::V128),
+
+            // Vector shift by vector (Iop_Shl/Shr/Sar/Sal{N}x{M}): width
+            // preserved — total = elem * count, either 64 or 128 bits.
+            IROp::VShl { elem, count }
+            | IROp::VShr { elem, count }
+            | IROp::VSar { elem, count } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
             IROp::VInterleaveLO { .. } | IROp::VInterleaveHI { .. } | IROp::VPerm { .. } => {
                 Some(IRType::V128)
             }

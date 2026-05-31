@@ -242,6 +242,18 @@ macro_rules! define_float_to_int_unsigned {
 /// This struct provides methods to execute VEX operations on `RustBV` values.
 pub struct VEXOps;
 
+/// Per-lane shift kind for `vec_shift_vec` (the shift-by-vector dispatch
+/// shared by `VShl`, `VShr`, and `VSar`).
+#[derive(Copy, Clone, Debug)]
+enum VecShiftKind {
+    /// Logical left shift (Z3 `bvshl`); `Iop_Shl` / `Iop_Sal`.
+    Shl,
+    /// Logical right shift (Z3 `bvlshr`); `Iop_Shr`.
+    Shr,
+    /// Arithmetic right shift (Z3 `bvashr`); `Iop_Sar`.
+    Sar,
+}
+
 /// Classify an `IROp` into a coarse-grained family for instrumentation
 /// (angr-2j5v). Counts roll up into `vex_op_<family>` counters via the
 /// `record_vex_*` recorder fns at the entry of the IRExpr dispatch in
@@ -354,6 +366,9 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VShlN { .. }
         | IROp::VShrN { .. }
         | IROp::VSarN { .. }
+        | IROp::VShl { .. }
+        | IROp::VShr { .. }
+        | IROp::VSar { .. }
         | IROp::VCmpEQ { .. }
         | IROp::VCmpGT { .. }
         | IROp::VInterleaveLO { .. }
@@ -726,6 +741,17 @@ impl VEXOps {
             IROp::VShlN { elem, count } => Self::vec_shl_n(left, right, elem, count, ctx),
             IROp::VShrN { elem, count } => Self::vec_shr_n(left, right, elem, count, ctx),
             IROp::VSarN { elem, count } => Self::vec_sar_n(left, right, elem, count, ctx),
+
+            // Vector shifts by vector (per-lane shift count).
+            IROp::VShl { elem, count } => {
+                Self::vec_shift_vec(left, right, elem, count, VecShiftKind::Shl, ctx)
+            }
+            IROp::VShr { elem, count } => {
+                Self::vec_shift_vec(left, right, elem, count, VecShiftKind::Shr, ctx)
+            }
+            IROp::VSar { elem, count } => {
+                Self::vec_shift_vec(left, right, elem, count, VecShiftKind::Sar, ctx)
+            }
 
             // Packed integer min/max
             IROp::VMin {
@@ -2290,6 +2316,105 @@ impl VEXOps {
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
             let shifted = elem_val.ashr_into(resized_shift.clone(), ctx);
+            elements.push(shifted);
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON vector shift by *vector*: lane `i` of result = `lane_a[i] OP lane_b[i]`
+    /// where `OP` is logical-left / logical-right / arithmetic-right per `kind`.
+    /// Maps to `Iop_Shl{N}x{M}` / `Iop_Sal{N}x{M}` (left), `Iop_Shr{N}x{M}` (lshr),
+    /// and `Iop_Sar{N}x{M}` (ashr); see ARM USHL/SSHL (DDI 0487 C7.2.310, C7.2.291).
+    /// Z3 `bvshl`/`bvlshr`/`bvashr` semantics handle out-of-range counts the
+    /// same way the concrete fast path does (≥ lane width → 0 for shl/lshr,
+    /// sign-fill for ashr).
+    fn vec_shift_vec(
+        vec: RustBV,
+        amts: RustBV,
+        elem: IRType,
+        count: u8,
+        kind: VecShiftKind,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(vec.width(), total_width);
+        debug_assert_eq!(amts.width(), total_width);
+
+        // Concrete fast path: both operands fit in u128 (covers every NEON
+        // shape we route here — 64- and 128-bit vectors).
+        if total_width <= 128 {
+            if let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128()) {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = if elem_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << elem_width) - 1
+                };
+                let sign_bit: u128 = 1u128 << (elem_width - 1);
+
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let a = (v >> lo) & elem_mask;
+                    // Use the full elem_width-wide count as an unsigned int
+                    // — matches Z3 bvshl/bvlshr/bvashr semantics (count ≥
+                    // operand width collapses to 0 or sign-fill).
+                    let amt = (s >> lo) & elem_mask;
+
+                    let shifted: u128 = match kind {
+                        VecShiftKind::Shl => {
+                            if amt >= elem_width as u128 {
+                                0
+                            } else {
+                                (a << amt) & elem_mask
+                            }
+                        }
+                        VecShiftKind::Shr => {
+                            if amt >= elem_width as u128 {
+                                0
+                            } else {
+                                a >> amt
+                            }
+                        }
+                        VecShiftKind::Sar => {
+                            let neg = a & sign_bit != 0;
+                            if amt >= elem_width as u128 {
+                                if neg {
+                                    elem_mask
+                                } else {
+                                    0
+                                }
+                            } else if neg {
+                                let shifted_val = a >> amt;
+                                let fill_mask =
+                                    (elem_mask << (elem_width as u128 - amt)) & elem_mask;
+                                (shifted_val | fill_mask) & elem_mask
+                            } else {
+                                a >> amt
+                            }
+                        }
+                    };
+
+                    result |= (shifted & elem_mask) << lo;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback. Both operands are split into lane-width
+        // slices; Z3 bvshl/bvlshr/bvashr produce the matching out-of-range
+        // behaviour, so no extra width guards are needed.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let a = vec.extract(hi, lo, ctx);
+            let b = amts.extract(hi, lo, ctx);
+            let shifted = match kind {
+                VecShiftKind::Shl => a.shl_into(b, ctx),
+                VecShiftKind::Shr => a.lshr_into(b, ctx),
+                VecShiftKind::Sar => a.ashr_into(b, ctx),
+            };
             elements.push(shifted);
         }
         Ok(Self::concat_le_elements(elements, ctx))
@@ -7305,6 +7430,344 @@ mod tests {
                     assert_eq!(signed, *s, "{}: signed", op);
                 }
                 other => panic!("{}: expected VQSub, got {:?}", op, other),
+            }
+        }
+    }
+
+    // =========================================================================
+    // angr-tukg.7 — NEON vector-shift-by-vector (VShl / VShr / VSar).
+    // =========================================================================
+
+    /// Iop_Shl8x8 — left shift each of 8 lanes by the corresponding count lane.
+    /// Covers: zero shift (identity), in-range shifts, and out-of-range counts
+    /// (≥ lane width → zero, matching Z3 bvshl).
+    #[test]
+    fn test_vshl_8x8_concrete() {
+        let ctx = SymContext::new_mock();
+        // Lane layout (LSB→MSB): vec lanes, then shift lanes.
+        //   0:  0x01 << 0  = 0x01.
+        //   1:  0x01 << 1  = 0x02.
+        //   2:  0x01 << 7  = 0x80.
+        //   3:  0x01 << 8  = 0 (count == lane width).
+        //   4:  0x01 << 255 = 0 (count > lane width).
+        //   5:  0xFF << 4  = 0xF0 (high bits shifted out).
+        //   6:  0x55 << 1  = 0xAA.
+        //   7:  0x80 << 1  = 0 (high bit shifted out).
+        let lanes_v: [u8; 8] = [0x01, 0x01, 0x01, 0x01, 0x01, 0xFF, 0x55, 0x80];
+        let lanes_s: [u8; 8] = [0, 1, 7, 8, 255, 4, 1, 1];
+        let lanes_e: [u8; 8] = [0x01, 0x02, 0x80, 0x00, 0x00, 0xF0, 0xAA, 0x00];
+        let mut v: u128 = 0;
+        let mut s: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            v |= (lanes_v[i] as u128) << (i * 8);
+            s |= (lanes_s[i] as u128) << (i * 8);
+            e |= (lanes_e[i] as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VShl {
+                elem: IRType::I8,
+                count: 8,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_Shr16x8 — logical right shift over 8x i16 lanes on a 128-bit vector.
+    /// Verifies zero-fill (Shr discards the sign bit) and out-of-range counts.
+    #[test]
+    fn test_vshr_16x8_concrete() {
+        let ctx = SymContext::new_mock();
+        let lanes_v: [u16; 8] = [
+            0x8000, 0xFFFF, 0xABCD, 0x0001, 0xFFFF, 0x4000, 0x0F0F, 0x1234,
+        ];
+        let lanes_s: [u16; 8] = [15, 8, 4, 0, 16, 1, 4, 100];
+        // 0x8000 >> 15 = 1 (no sign extend).
+        // 0xFFFF >> 8  = 0x00FF.
+        // 0xABCD >> 4  = 0x0ABC.
+        // 0x0001 >> 0  = 0x0001.
+        // 0xFFFF >> 16 = 0 (count == width).
+        // 0x4000 >> 1  = 0x2000.
+        // 0x0F0F >> 4  = 0x00F0.
+        // 0x1234 >> 100 = 0 (count > width).
+        let lanes_e: [u16; 8] = [1, 0x00FF, 0x0ABC, 0x0001, 0, 0x2000, 0x00F0, 0];
+        let mut v: u128 = 0;
+        let mut s: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            v |= (lanes_v[i] as u128) << (i * 16);
+            s |= (lanes_s[i] as u128) << (i * 16);
+            e |= (lanes_e[i] as u128) << (i * 16);
+        }
+        let result = VEXOps::binop(
+            IROp::VShr {
+                elem: IRType::I16,
+                count: 8,
+            },
+            RustBV::concrete(v, 128),
+            RustBV::concrete(s, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_Sar32x2 — arithmetic right shift over 2x i32 lanes on a 64-bit
+    /// vector. Verifies sign-fill on negative inputs and out-of-range counts.
+    #[test]
+    fn test_vsar_32x2_concrete() {
+        let ctx = SymContext::new_mock();
+        // 0: -1i32 (0xFFFF_FFFF) >> 4   = -1 (sign-fill keeps all bits set).
+        // 1: 0x4000_0000   >> 1   = 0x2000_0000 (positive → logical shift).
+        // Note: 0xFFFF_FFFF >> 32 would also be all-1 in arithmetic shift,
+        // but Z3 bvashr semantics for count >= width are sign-fill which is
+        // matched by our concrete fast path.
+        let lanes_v: [u32; 2] = [0xFFFF_FFFF, 0x4000_0000];
+        let lanes_s: [u32; 2] = [4, 1];
+        let lanes_e: [u32; 2] = [0xFFFF_FFFF, 0x2000_0000];
+        let mut v: u128 = 0;
+        let mut s: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..2 {
+            v |= (lanes_v[i] as u128) << (i * 32);
+            s |= (lanes_s[i] as u128) << (i * 32);
+            e |= (lanes_e[i] as u128) << (i * 32);
+        }
+        let result = VEXOps::binop(
+            IROp::VSar {
+                elem: IRType::I32,
+                count: 2,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_Sar32x2 — out-of-range count produces sign-fill (-1 for negative
+    /// lanes, 0 for positive). Concrete fast path mirrors Z3 bvashr.
+    #[test]
+    fn test_vsar_32x2_oor_sign_fill() {
+        let ctx = SymContext::new_mock();
+        // 0: -1i32 >> 64 = sign-fill = 0xFFFF_FFFF.
+        // 1:  1i32 >> 32 = sign-fill = 0 (positive).
+        let lanes_v: [u32; 2] = [0xFFFF_FFFF, 0x0000_0001];
+        let lanes_s: [u32; 2] = [64, 32];
+        let lanes_e: [u32; 2] = [0xFFFF_FFFF, 0];
+        let mut v: u128 = 0;
+        let mut s: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..2 {
+            v |= (lanes_v[i] as u128) << (i * 32);
+            s |= (lanes_s[i] as u128) << (i * 32);
+            e |= (lanes_e[i] as u128) << (i * 32);
+        }
+        let result = VEXOps::binop(
+            IROp::VSar {
+                elem: IRType::I32,
+                count: 2,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_Sal8x8 (== Iop_Shl8x8 bit-for-bit): a single concrete check that
+    /// both opcodes parse to VShl and produce identical results.
+    #[test]
+    fn test_vsal_routes_to_vshl_and_matches() {
+        use crate::vex::opcode_map::parse_opcode;
+        let ctx = SymContext::new_mock();
+        let v = 0x1234_5678_9ABC_DEF0u128;
+        let s = 0x0102_0304_0506_0708u128; // per-lane counts 8,7,6,5,4,3,2,1
+        let shl_res = VEXOps::binop(
+            IROp::VShl {
+                elem: IRType::I8,
+                count: 8,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        // Sal{N}x{M} must parse to the same IROp variant.
+        assert!(matches!(parse_opcode("Iop_Sal8x8"), IROp::VShl { .. }));
+        let sal_op = parse_opcode("Iop_Sal8x8");
+        let sal_res = VEXOps::binop(
+            sal_op,
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(sal_res.as_u128().unwrap(), shl_res.as_u128().unwrap());
+    }
+
+    /// Z3 universality parity vs the explicit claripy reference for
+    /// `Iop_Shl16x4` (operation_map["Shl"] = "__lshift__"; vector dispatch
+    /// per `_op_vector_mapped` extracts each lane and applies `bvshl`).
+    /// Symbolic inputs + add_constraint(got ≠ py).not() → assert UNSAT.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vshl_16x4_symbolic_matches_python_ref() {
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "shl_a_16x4", 64);
+        let b = RustBV::symbolic(&ctx, "shl_b_16x4", 64);
+        let got = VEXOps::binop(
+            IROp::VShl {
+                elem: IRType::I16,
+                count: 4,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+        // Build the claripy reference: per-lane bvshl. _op_vector_mapped
+        // concats lanes high→low; we use concat_le_elements (low→high), so
+        // the resulting BV is structurally equivalent.
+        let mut lanes: Vec<RustBV> = Vec::with_capacity(4);
+        for i in 0..4 {
+            let lo = i * 16;
+            let hi = lo + 15;
+            let al = a.extract(hi, lo, &ctx);
+            let bl = b.extract(hi, lo, &ctx);
+            lanes.push(al.shl_into(bl, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        let universal = !ctx.is_sat();
+        ctx.pop();
+        assert!(
+            universal,
+            "VShl 16x4 must match the claripy __lshift__ reference for all 64-bit inputs"
+        );
+    }
+
+    /// Z3 universality parity vs the claripy reference for `Iop_Sar8x16`
+    /// (operation_map["Sar"] = "__rshift__" → bvashr; 16 lanes of 8 bits
+    /// across a 128-bit vector).
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vsar_8x16_symbolic_matches_python_ref() {
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "sar_a_8x16", 128);
+        let b = RustBV::symbolic(&ctx, "sar_b_8x16", 128);
+        let got = VEXOps::binop(
+            IROp::VSar {
+                elem: IRType::I8,
+                count: 16,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+        let mut lanes: Vec<RustBV> = Vec::with_capacity(16);
+        for i in 0..16 {
+            let lo = i * 8;
+            let hi = lo + 7;
+            let al = a.extract(hi, lo, &ctx);
+            let bl = b.extract(hi, lo, &ctx);
+            lanes.push(al.ashr_into(bl, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        let universal = !ctx.is_sat();
+        ctx.pop();
+        assert!(
+            universal,
+            "VSar 8x16 must match the claripy __rshift__ reference for all 128-bit inputs"
+        );
+    }
+
+    /// Parse routing: all 8 VShl shapes (8x8 .. 64x2) and the matching Sal
+    /// aliases land on VShl with the expected (elem, count); same for VShr/VSar.
+    #[test]
+    fn test_parse_vshift_routing() {
+        use crate::vex::opcode_map::parse_opcode;
+        let shl_cases: &[(&str, IRType, u8)] = &[
+            ("Iop_Shl8x8", IRType::I8, 8),
+            ("Iop_Shl16x4", IRType::I16, 4),
+            ("Iop_Shl32x2", IRType::I32, 2),
+            ("Iop_Shl64x1", IRType::I64, 1),
+            ("Iop_Shl8x16", IRType::I8, 16),
+            ("Iop_Shl16x8", IRType::I16, 8),
+            ("Iop_Shl32x4", IRType::I32, 4),
+            ("Iop_Shl64x2", IRType::I64, 2),
+            // Sal aliases route to the same variant.
+            ("Iop_Sal8x8", IRType::I8, 8),
+            ("Iop_Sal16x4", IRType::I16, 4),
+            ("Iop_Sal32x2", IRType::I32, 2),
+            ("Iop_Sal64x1", IRType::I64, 1),
+            ("Iop_Sal8x16", IRType::I8, 16),
+            ("Iop_Sal16x8", IRType::I16, 8),
+            ("Iop_Sal32x4", IRType::I32, 4),
+            ("Iop_Sal64x2", IRType::I64, 2),
+        ];
+        for (op, e, c) in shl_cases {
+            match parse_opcode(op) {
+                IROp::VShl { elem, count } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                }
+                other => panic!("{}: expected VShl, got {:?}", op, other),
+            }
+        }
+
+        let shr_cases: &[(&str, IRType, u8)] = &[
+            ("Iop_Shr8x8", IRType::I8, 8),
+            ("Iop_Shr16x4", IRType::I16, 4),
+            ("Iop_Shr32x2", IRType::I32, 2),
+            ("Iop_Shr64x1", IRType::I64, 1),
+            ("Iop_Shr8x16", IRType::I8, 16),
+            ("Iop_Shr16x8", IRType::I16, 8),
+            ("Iop_Shr32x4", IRType::I32, 4),
+            ("Iop_Shr64x2", IRType::I64, 2),
+        ];
+        for (op, e, c) in shr_cases {
+            match parse_opcode(op) {
+                IROp::VShr { elem, count } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                }
+                other => panic!("{}: expected VShr, got {:?}", op, other),
+            }
+        }
+
+        let sar_cases: &[(&str, IRType, u8)] = &[
+            ("Iop_Sar8x8", IRType::I8, 8),
+            ("Iop_Sar16x4", IRType::I16, 4),
+            ("Iop_Sar32x2", IRType::I32, 2),
+            ("Iop_Sar64x1", IRType::I64, 1),
+            ("Iop_Sar8x16", IRType::I8, 16),
+            ("Iop_Sar16x8", IRType::I16, 8),
+            ("Iop_Sar32x4", IRType::I32, 4),
+            ("Iop_Sar64x2", IRType::I64, 2),
+        ];
+        for (op, e, c) in sar_cases {
+            match parse_opcode(op) {
+                IROp::VSar { elem, count } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                }
+                other => panic!("{}: expected VSar, got {:?}", op, other),
             }
         }
     }

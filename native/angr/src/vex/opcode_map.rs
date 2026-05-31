@@ -541,6 +541,29 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "8Ux16" => (I8, 16, false), "16Ux8" => (I16, 8, false),
         "32Ux4" => (I32, 4, false), "64Ux2" => (I64, 2, false),
     });
+
+    // NEON vector shift by vector — `Iop_Shl{N}x{M}` / `Iop_Shr{N}x{M}` /
+    // `Iop_Sar{N}x{M}` / `Iop_Sal{N}x{M}`. Both operands are full-vector;
+    // each lane shifts by the corresponding count lane (Z3 bvshl/bvlshr/bvashr
+    // semantics — counts ≥ lane width produce zero or sign-fill). `Sal` shares
+    // semantics with `Shl` on two's complement; libVEX emits both names from
+    // ARM SSHL/USHL decomposition (positive-count branches).
+    vec_arms!(op_str; "Iop_Shl" => VShl {
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
+        "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
+    });
+    vec_arms!(op_str; "Iop_Sal" => VShl {
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
+        "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
+    });
+    vec_arms!(op_str; "Iop_Shr" => VShr {
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
+        "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
+    });
+    vec_arms!(op_str; "Iop_Sar" => VSar {
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
+        "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
+    });
     // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON.
     vec_arms!(op_str; "Iop_Mul" => VMul {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
@@ -837,39 +860,8 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         "Iop_Cls16x8" => "Iop_Cls16x8",
         "Iop_Cls32x4" => "Iop_Cls32x4",
 
-        // Vector shift by *vector* (NEON-only; ShlN/ShrN/SarN are by immediate)
-        "Iop_Shl8x8" => "Iop_Shl8x8",
-        "Iop_Shl16x4" => "Iop_Shl16x4",
-        "Iop_Shl32x2" => "Iop_Shl32x2",
-        "Iop_Shl64x1" => "Iop_Shl64x1",
-        "Iop_Shl8x16" => "Iop_Shl8x16",
-        "Iop_Shl16x8" => "Iop_Shl16x8",
-        "Iop_Shl32x4" => "Iop_Shl32x4",
-        "Iop_Shl64x2" => "Iop_Shl64x2",
-        "Iop_Shr8x8" => "Iop_Shr8x8",
-        "Iop_Shr16x4" => "Iop_Shr16x4",
-        "Iop_Shr32x2" => "Iop_Shr32x2",
-        "Iop_Shr64x1" => "Iop_Shr64x1",
-        "Iop_Shr8x16" => "Iop_Shr8x16",
-        "Iop_Shr16x8" => "Iop_Shr16x8",
-        "Iop_Shr32x4" => "Iop_Shr32x4",
-        "Iop_Shr64x2" => "Iop_Shr64x2",
-        "Iop_Sar8x8" => "Iop_Sar8x8",
-        "Iop_Sar16x4" => "Iop_Sar16x4",
-        "Iop_Sar32x2" => "Iop_Sar32x2",
-        "Iop_Sar64x1" => "Iop_Sar64x1",
-        "Iop_Sar8x16" => "Iop_Sar8x16",
-        "Iop_Sar16x8" => "Iop_Sar16x8",
-        "Iop_Sar32x4" => "Iop_Sar32x4",
-        "Iop_Sar64x2" => "Iop_Sar64x2",
-        "Iop_Sal8x8" => "Iop_Sal8x8",
-        "Iop_Sal16x4" => "Iop_Sal16x4",
-        "Iop_Sal32x2" => "Iop_Sal32x2",
-        "Iop_Sal64x1" => "Iop_Sal64x1",
-        "Iop_Sal8x16" => "Iop_Sal8x16",
-        "Iop_Sal16x8" => "Iop_Sal16x8",
-        "Iop_Sal32x4" => "Iop_Sal32x4",
-        "Iop_Sal64x2" => "Iop_Sal64x2",
+        // Vector shift by *vector* (Shl/Shr/Sar/Sal{N}x{M}) routed to
+        // parse_vector → IROp::VShl / VShr / VSar (Sal → VShl) in angr-tukg.7.
 
         // Saturating shifts (NEON QShl/QSal/QShlN)
         "Iop_QShl8x8" => "Iop_QShl8x8",
@@ -1427,7 +1419,7 @@ mod tests {
             "Iop_PwAdd16x4",
             "Iop_PolynomialMull8x8",
             "Iop_Cnt8x8",
-            "Iop_Shl8x16",
+            "Iop_QShl8x16",
         ] {
             match parse_opcode(op) {
                 IROp::NeonUnimplemented(name) => assert_eq!(name, op),
@@ -1502,6 +1494,17 @@ mod tests {
             parse_opcode("Iop_QNarrowBin16Sto8Sx8"),
             IROp::VQNarrowBin { .. }
         ));
+        // angr-tukg.7: Shl/Shr/Sar/Sal{N}x{M} are real shift-by-vector ops,
+        // not the by-immediate ShlN/ShrN/SarN variants and not unimplemented
+        // placeholders. Sal routes to VShl (same bit semantics on LE shift).
+        assert!(matches!(parse_opcode("Iop_Shl8x8"), IROp::VShl { .. }));
+        assert!(matches!(parse_opcode("Iop_Shl64x2"), IROp::VShl { .. }));
+        assert!(matches!(parse_opcode("Iop_Shr16x4"), IROp::VShr { .. }));
+        assert!(matches!(parse_opcode("Iop_Shr32x4"), IROp::VShr { .. }));
+        assert!(matches!(parse_opcode("Iop_Sar8x16"), IROp::VSar { .. }));
+        assert!(matches!(parse_opcode("Iop_Sar64x2"), IROp::VSar { .. }));
+        assert!(matches!(parse_opcode("Iop_Sal8x8"), IROp::VShl { .. }));
+        assert!(matches!(parse_opcode("Iop_Sal64x2"), IROp::VShl { .. }));
     }
 
     #[test]
