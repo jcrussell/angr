@@ -117,6 +117,9 @@ pub enum FloatOpKind {
     CmpEq,
     CmpLt,
     CmpLe,
+    /// Unary IEEE-754 isNaN predicate; 1-bit result. Lets NaN detection
+    /// avoid building `CmpEq(v, v)` with the operand cloned twice.
+    IsNaN,
     /// Round to integer with rounding mode.
     /// operand[0] = rm BV (32-bit, VEX rounding mode 0..3),
     /// operand[1] = value BV (prec.bits()).
@@ -170,6 +173,7 @@ impl FloatOpKind {
             FloatOpKind::Sqrt
             | FloatOpKind::Neg
             | FloatOpKind::Abs
+            | FloatOpKind::IsNaN
             | FloatOpKind::ConvertItoF { .. }
             | FloatOpKind::ConvertFtoI { .. }
             | FloatOpKind::ConvertFtoF { .. } => 1,
@@ -198,7 +202,10 @@ impl FloatOpKind {
     pub fn is_compare(&self) -> bool {
         matches!(
             self,
-            FloatOpKind::CmpEq | FloatOpKind::CmpLt | FloatOpKind::CmpLe
+            FloatOpKind::CmpEq
+                | FloatOpKind::CmpLt
+                | FloatOpKind::CmpLe
+                | FloatOpKind::IsNaN
         )
     }
 
@@ -209,7 +216,10 @@ impl FloatOpKind {
     #[inline]
     pub fn result_bits(&self, prec: FloatPrec) -> u32 {
         match self {
-            FloatOpKind::CmpEq | FloatOpKind::CmpLt | FloatOpKind::CmpLe => 1,
+            FloatOpKind::CmpEq
+            | FloatOpKind::CmpLt
+            | FloatOpKind::CmpLe
+            | FloatOpKind::IsNaN => 1,
             FloatOpKind::ConvertFtoI { dst_bits, .. }
             | FloatOpKind::ConvertFtoIRm { dst_bits, .. } => *dst_bits as u32,
             _ => prec.bits(),
@@ -2703,8 +2713,8 @@ impl RustBV {
         use z3::ast::{Ast, BV, Bool, Float, RoundingMode};
         use z3_sys::{
             Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq, Z3_mk_fpa_fma,
-            Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul, Z3_mk_fpa_neg, Z3_mk_fpa_sqrt,
-            Z3_mk_fpa_sub, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
+            Z3_mk_fpa_is_nan, Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul, Z3_mk_fpa_neg,
+            Z3_mk_fpa_sqrt, Z3_mk_fpa_sub, Z3_mk_fpa_to_fp_bv, Z3_mk_fpa_to_ieee_bv,
         };
 
         // RoundToInt has a non-Float operand (the rm BV) and needs its own path.
@@ -2819,6 +2829,7 @@ impl RustBV {
                 FloatOpKind::CmpEq => Z3_mk_fpa_eq(raw_ctx, raw_a, raw_b()),
                 FloatOpKind::CmpLt => Z3_mk_fpa_lt(raw_ctx, raw_a, raw_b()),
                 FloatOpKind::CmpLe => Z3_mk_fpa_leq(raw_ctx, raw_a, raw_b()),
+                FloatOpKind::IsNaN => Z3_mk_fpa_is_nan(raw_ctx, raw_a),
                 FloatOpKind::RoundToInt
                 | FloatOpKind::ConvertItoF { .. }
                 | FloatOpKind::ConvertFtoI { .. }

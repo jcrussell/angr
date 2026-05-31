@@ -3035,11 +3035,11 @@ impl VEXOps {
             FCmpKind::Gt => build_float_expr(FloatOpKind::CmpLt, prec, vec![r_lo, l_lo]),
             FCmpKind::Ge => build_float_expr(FloatOpKind::CmpLe, prec, vec![r_lo, l_lo]),
             FCmpKind::Un => {
-                // IEEE 754: NaN != NaN. So `(x == x)` is false iff x is NaN.
-                // un = NOT(l_eq_l) OR NOT(r_eq_r)
-                let l_eq_l = build_float_expr(FloatOpKind::CmpEq, prec, vec![l_lo.clone(), l_lo]);
-                let r_eq_r = build_float_expr(FloatOpKind::CmpEq, prec, vec![r_lo.clone(), r_lo]);
-                l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx)
+                // un = isNaN(l) OR isNaN(r). IsNaN is a unary primitive so no
+                // operand clone is needed (vs. CmpEq(x, x) which doubles x).
+                let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![l_lo]);
+                let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![r_lo]);
+                l_nan.or_into(r_nan, ctx)
             }
         };
         let lane = cmp_1bit.sign_extend_into(lane_bits, ctx);
@@ -3148,12 +3148,10 @@ impl VEXOps {
                 FCmpKind::Gt => build_float_expr(FloatOpKind::CmpLt, prec, vec![r_lane, l_lane]),
                 FCmpKind::Ge => build_float_expr(FloatOpKind::CmpLe, prec, vec![r_lane, l_lane]),
                 FCmpKind::Un => {
-                    // IEEE 754: NaN != NaN. So `(x == x)` is false iff x is NaN.
-                    let l_eq_l =
-                        build_float_expr(FloatOpKind::CmpEq, prec, vec![l_lane.clone(), l_lane]);
-                    let r_eq_r =
-                        build_float_expr(FloatOpKind::CmpEq, prec, vec![r_lane.clone(), r_lane]);
-                    l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx)
+                    // un = isNaN(l) OR isNaN(r); IsNaN is a unary primitive.
+                    let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![l_lane]);
+                    let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![r_lane]);
+                    l_nan.or_into(r_nan, ctx)
                 }
             };
             elements.push(cmp_1bit.sign_extend_into(elem_width, ctx));
@@ -3206,12 +3204,12 @@ impl VEXOps {
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
 
         // Symbolic: compose un/lt/eq predicates, then nest ITEs.
-        // un  = NOT(l == l) OR NOT(r == r)   [IEEE 754 NaN check]
-        // lt  = l < r                         [false if either is NaN]
-        // eq  = l == r                        [false if either is NaN]
-        let l_eq_l = build_float_expr(FloatOpKind::CmpEq, prec, vec![left.clone(), left.clone()]);
-        let r_eq_r = build_float_expr(FloatOpKind::CmpEq, prec, vec![right.clone(), right.clone()]);
-        let un = l_eq_l.not_into(ctx).or_into(r_eq_r.not_into(ctx), ctx);
+        // un  = isNaN(l) OR isNaN(r)   [unary primitive, no operand clone]
+        // lt  = l < r                  [false if either is NaN]
+        // eq  = l == r                 [false if either is NaN]
+        let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![left.clone()]);
+        let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![right.clone()]);
+        let un = l_nan.or_into(r_nan, ctx);
         let lt = build_float_expr(FloatOpKind::CmpLt, prec, vec![left.clone(), right.clone()]);
         let eq = build_float_expr(FloatOpKind::CmpEq, prec, vec![left, right]);
 
