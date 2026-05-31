@@ -93,24 +93,3 @@ jobs:
         #   `avoid-update-baseline-without-verification`).
         run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2
         timeout-minutes: 5
-
-  orchestrator_smoke:
-    name: Loop Orchestrator Smoke
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
-        with:
-          python-version: "3.10"
-      - name: Dry-run orchestrator
-        run: |
-          out=$(python run_optimization_loop.py --dry-run)
-          echo "$out"
-          echo "$out" | grep -q '^--- Prompt type:' || { echo "ERROR: missing prompt header"; exit 1; }
-          echo "$out" | grep -q '^--- Git state:' || { echo "ERROR: missing git state header"; exit 1; }
-          test "$(echo "$out" | wc -l)" -gt 20 || { echo "ERROR: prompt too short"; exit 1; }
-      - name: Stress-test argparse + logging
-        run: |
-          # --stress-test --dry-run validates the stress-test preset path
-          # without spending real Claude budget.
-          python run_optimization_loop.py --stress-test --dry-run > /dev/null

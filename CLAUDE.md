@@ -266,9 +266,6 @@ ralph trace <iter>                # drill into one iteration
 ralph hook run states/clean/gate  # standalone gate hook test
 ```
 
-The legacy `run_optimization_loop.py` is kept in the repo root during a soak
-period — do not run both simultaneously.
-
 ## Current Status
 
 **Tests:** 510 `def test_` functions, 521 after pytest parametrize expansion

@@ -1,9 +1,9 @@
 # .ralph/config.toml — rust-symex optimization loop config.
 #
-# Built-in defaults from internal/config.Defaults() already match what the
-# legacy run_optimization_loop.py used: max_iterations=30, session_timeout=3600s,
-# memory_limit=7G, dirty_revert_threshold=3, gate timeout=600s, soft_fail=true,
-# run_when="commits-only". We override only what's different.
+# Built-in defaults from internal/config.Defaults() are: max_iterations=30,
+# session_timeout=3600s, memory_limit=7G, dirty_revert_threshold=3, gate
+# timeout=600s, soft_fail=true, run_when="commits-only". We override only
+# what's different.
 
 [runner]
 # Wrapper script that exports PATH for ~/.cargo/bin and sources .venv before
