@@ -10049,6 +10049,128 @@ class TestNativeFileDescriptorProcedures:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeFileDescriptorErrorReturns:
+    """Error-return contract for native fileops procedures (angr-95up.3).
+
+    Each native proc in `native/angr/src/procedures/fileops.rs` returns -1
+    (the EBADF-style sentinel) when handed a never-opened fd. The Cargo
+    unit tests pin the per-proc behavior; this Python-level test pins the
+    full integration contract that's relevant to Python callers:
+
+      1. The native registry dispatches the procedure (no Python fallback)
+         even on the error path — `native_procedure_stats` `call_counts`
+         ticks under the registered name.
+      2. The return register holds the -1 sentinel (0xFFFFFFFFFFFFFFFF on
+         amd64), so a C-level `if (close(fd) == -1)` check would fire.
+      3. The post-call `FileSystem` is unchanged for the bad fd: the
+         error path early-returns before any state mutation, so the bad
+         fd does NOT silently get registered as open.
+    """
+
+    # Same in-binary non-executable address pattern as
+    # TestNativeFileDescriptorProcedures (see that class docstring for
+    # the address-selection rationale).
+    HOOK_ADDR = 0x600e30
+    DEAD_ADDR = 0x4008b0
+
+    @staticmethod
+    def _make_stub(proc_name: str, num_args: int):
+        """Build a Python SimProcedure stub whose class name matches the
+        native-registry key. The stub's `run` is only invoked on Python
+        fallback — if native dispatch fires (as expected here), `run` is
+        bypassed, but the stub still has to exist for `proj.hook` to be
+        valid and for `_register_simprocedures` to forward the name to
+        the Rust manager."""
+        runs = {
+            1: lambda self, a0: 0,                # noqa: ARG005
+            2: lambda self, a0, a1: 0,            # noqa: ARG005
+            3: lambda self, a0, a1, a2: 0,        # noqa: ARG005
+        }
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": num_args, "run": runs[num_args]},
+        )
+
+    @pytest.mark.parametrize(
+        "proc_name,num_args,reg_args,bad_fd",
+        [
+            ("close", 1, (99,),       99),  # close(99) — fd never opened
+            ("dup",   1, (99,),       99),  # dup(99)   — fd never opened
+            ("dup2",  2, (99, 7),     7),   # dup2(99, 7) — newfd 7 must NOT be created
+            ("lseek", 3, (99, 0, 0),  99),  # lseek(99, 0, SEEK_SET)
+        ],
+    )
+    def test_native_error_returns_minus_one(
+        self, fauxware_project, proc_name, num_args, reg_args, bad_fd,
+    ):
+        import claripy
+        proj = fauxware_project
+
+        stub_cls = self._make_stub(proc_name, num_args)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            from angr.exploration import RustExplorationManager
+
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            # Load args into the AMD64 SysV argument registers in order.
+            for reg, val in zip(("rdi", "rsi", "rdx"), reg_args):
+                setattr(state.regs, reg, val)
+            state.memory.store(
+                state.regs.rsp,
+                claripy.BVV(self.DEAD_ADDR, 64),
+                endness="Iend_LE",
+            )
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            # (1) Native dispatch fired (the Python stub's `run` was
+            # bypassed). No `python_fallbacks` bump is required by the
+            # contract — what matters is the call_count tick.
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get(proc_name, 0) == 1, (
+                f"expected native {proc_name} dispatch on error path, "
+                f"got stats={stats}"
+            )
+
+            sid = None
+            for stash in ("active", "deadended", "errored", "unconstrained"):
+                ids = mgr._rust_mgr.get_state_ids(stash)
+                if ids:
+                    sid = ids[0]
+                    break
+            assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
+
+            # (2) Return value sentinel: -1 as u64 == 0xFFFFFFFFFFFFFFFF.
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 0xFFFFFFFFFFFFFFFF, (
+                f"expected rax=-1 sentinel from native {proc_name} error path, "
+                f"got rax={rax:#x}"
+            )
+
+            # (3) Post-call FileSystem invariant: the bad fd was not
+            # silently registered.
+            fds = {
+                fd: (name, flags, is_open)
+                for fd, name, _pos, flags, _len, is_open
+                in mgr._rust_mgr.get_state_open_fds(sid)
+            }
+            assert bad_fd not in fds, (
+                f"native {proc_name} error path must NOT register bad fd "
+                f"{bad_fd}; got fds={fds}"
+            )
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeReadCacheSync:
     """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
     requires the cached Python SimState to be invalidate-and-replayed per
