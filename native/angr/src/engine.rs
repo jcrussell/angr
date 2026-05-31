@@ -23,30 +23,57 @@ use crate::vex::ops::OpError;
 /// `arch` is the engine's `arch_name`; carried into `UnsupportedVexOp` so
 /// the Python message can name the arch as well as the op (acceptance
 /// criterion for angr-tkbr.3).
+///
+/// The match is fully exhaustive (no `_` wildcard) so adding a new
+/// `CbExecutionError` or `OpError` variant fails to compile until each
+/// new case is explicitly triaged here — protecting the Python boundary
+/// from silently degrading new failures to `RustExecError::Other`.
 fn cb_execution_error_to_typed(err: CbExecutionError, addr: u64, arch: &str) -> RustExecError {
     match err {
-        CbExecutionError::Op(OpError::UnsupportedNeon { name }) => {
-            RustExecError::UnsupportedVexOp {
-                op_name: name.to_string(),
-                arch: arch.to_string(),
-            }
-        }
-        CbExecutionError::Op(OpError::UnsupportedVectorOp(name)) => {
-            RustExecError::UnsupportedVexOp {
-                op_name: name,
-                arch: arch.to_string(),
-            }
-        }
+        CbExecutionError::InvalidIR(reason) => RustExecError::MalformedIRSB { addr, reason },
+        CbExecutionError::Op(op_err) => op_error_to_typed(op_err, arch),
+        // Variants that intentionally collapse to `Other`. Listed by name
+        // (no `_` wildcard) so adding a CbExecutionError variant produces
+        // a compile error and forces a decision instead of silently
+        // surfacing as `Other`.
+        e @ (CbExecutionError::Memory(_)
+        | CbExecutionError::TypeMismatch { .. }
+        | CbExecutionError::UnknownTemp(_)
+        | CbExecutionError::Callback(_)
+        | CbExecutionError::LiftError(_)
+        | CbExecutionError::Unsupported(_)
+        | CbExecutionError::NeedPythonFallback(_)) => RustExecError::Other(e.to_string()),
+    }
+}
+
+/// Map a VEX [`OpError`] to a typed [`RustExecError`].
+///
+/// Exhaustive (no `_` wildcard) — see [`cb_execution_error_to_typed`] for
+/// the rationale.
+fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
+    match err {
+        OpError::UnsupportedNeon { name } => RustExecError::UnsupportedVexOp {
+            op_name: name.to_string(),
+            arch: arch.to_string(),
+        },
+        OpError::UnsupportedVectorOp(op_name) => RustExecError::UnsupportedVexOp {
+            op_name,
+            arch: arch.to_string(),
+        },
         // angr-tkbr.2: unmapped pyvex opcode (no entry in parse_opcode).
         // The op_name was captured at parse time via IROp::Unmapped(name).
-        CbExecutionError::Op(OpError::UnsupportedVexOp { op_name }) => {
-            RustExecError::UnsupportedVexOp {
-                op_name,
-                arch: arch.to_string(),
-            }
-        }
-        CbExecutionError::InvalidIR(reason) => RustExecError::MalformedIRSB { addr, reason },
-        _ => RustExecError::Other(err.to_string()),
+        OpError::UnsupportedVexOp { op_name } => RustExecError::UnsupportedVexOp {
+            op_name,
+            arch: arch.to_string(),
+        },
+        e @ (OpError::NotUnary(_)
+        | OpError::NotBinary(_)
+        | OpError::NotTernary(_)
+        | OpError::NotQuaternary(_)
+        | OpError::TypeMismatch { .. }
+        | OpError::InvalidFloatType(_)
+        | OpError::SymbolicFloatUnsupported
+        | OpError::RawOpcode(_)) => RustExecError::Other(e.to_string()),
     }
 }
 
