@@ -1,6 +1,18 @@
 use super::helpers::bv_to_bytes;
 use super::*;
 
+/// DCAS-only state bundled together so the single-CAS path can pass `None`
+/// and the DCAS path can pass `Some(&DcasState)` through `cas_writeback` and
+/// the oldHi temp-assignment in `execute_cas_stmt`.
+struct DcasState<'a> {
+    addr_hi_expr: IRExpr,
+    data_hi_expr: &'a IRExpr,
+    current_hi: RustBV,
+    expd_hi_val: RustBV,
+    data_hi_val: RustBV,
+    old_hi_idx: u32,
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Execute a single statement using Python callbacks.
     pub(super) fn execute_stmt_with_callbacks(
@@ -1315,114 +1327,182 @@ impl<'a> VEXInterpreter<'a> {
         let data_lo_val = self.eval_expr_with_callbacks(py, callbacks, data_lo, &irsb.tyenv)?;
 
         // For DCAS, also load the high half at addr + sizeof(half).
-        let (current_hi, expd_hi_val, data_hi_val, addr_hi_expr) = if is_dcas {
-            let addr_ty = addr
-                .get_type(&irsb.tyenv)
-                .ok_or_else(|| CbExecutionError::InvalidIR("CAS addr has no type".to_string()))?;
-            let half_bytes = half_ty.bytes() as u64;
-            let offset_const = match addr_ty {
-                IRType::I32 => IRExpr::Const(IRConst::U32(half_bytes as u32)),
-                IRType::I64 => IRExpr::Const(IRConst::U64(half_bytes)),
-                _ => {
-                    return Err(CbExecutionError::InvalidIR(
-                        "CAS addr must be I32 or I64".to_string(),
-                    ));
-                }
-            };
-            let addr_hi_expr = IRExpr::Binop {
-                op: IROp::Add(addr_ty),
-                left: Box::new(addr.clone()),
-                right: Box::new(offset_const),
-            };
-            let load_hi_expr = IRExpr::Load {
-                addr: Box::new(addr_hi_expr.clone()),
-                ty: half_ty,
+        let dcas = if is_dcas {
+            let addr_hi_expr = Self::cas_compute_addr_hi(addr, half_ty, irsb)?;
+            let (current_hi, expd_hi_val, data_hi_val) = self.cas_load_dcas_high(
+                py,
+                callbacks,
+                &addr_hi_expr,
+                expd_hi.unwrap(),
+                data_hi.unwrap(),
+                half_ty,
                 endness,
-            };
-            let current_hi =
-                self.eval_expr_with_callbacks(py, callbacks, &load_hi_expr, &irsb.tyenv)?;
-            let expd_hi_val =
-                self.eval_expr_with_callbacks(py, callbacks, expd_hi.unwrap(), &irsb.tyenv)?;
-            let data_hi_val =
-                self.eval_expr_with_callbacks(py, callbacks, data_hi.unwrap(), &irsb.tyenv)?;
-            (
-                Some(current_hi),
-                Some(expd_hi_val),
-                Some(data_hi_val),
-                Some(addr_hi_expr),
-            )
+                irsb,
+            )?;
+            Some(DcasState {
+                addr_hi_expr,
+                data_hi_expr: data_hi.unwrap(),
+                current_hi,
+                expd_hi_val,
+                data_hi_val,
+                old_hi_idx: old_hi.unwrap(),
+            })
         } else {
-            (None, None, None, None)
+            None
         };
 
         // Combined cmp = (current_lo == expd_lo) & (current_hi == expd_hi)?
         let cmp_lo = current_lo.eq(&expd_lo_val, self.ctx);
-        let cmp = if is_dcas {
-            let cmp_hi = current_hi
-                .as_ref()
-                .unwrap()
-                .eq(expd_hi_val.as_ref().unwrap(), self.ctx);
+        let cmp = if let Some(d) = &dcas {
+            let cmp_hi = d.current_hi.eq(&d.expd_hi_val, self.ctx);
             cmp_lo.and(&cmp_hi, self.ctx)
         } else {
             cmp_lo
         };
 
-        // Decide what to write back:
-        //   cmp concrete true  → write data (use original IRExpr when possible)
-        //   cmp concrete false → skip store
-        //   cmp symbolic       → write ITE(cmp, data, current) (always symbolic)
-        match cmp.as_u64() {
-            Some(0) => { /* no store */ }
-            Some(_) => {
-                // Concrete-true: store data_lo (and data_hi for DCAS).
-                self.cas_dispatch_store(py, callbacks, addr, data_lo, &data_lo_val, endness, irsb)?;
-                if is_dcas {
-                    self.cas_dispatch_store(
-                        py,
-                        callbacks,
-                        addr_hi_expr.as_ref().unwrap(),
-                        data_hi.unwrap(),
-                        data_hi_val.as_ref().unwrap(),
-                        endness,
-                        irsb,
-                    )?;
-                }
-            }
-            None => {
-                // Symbolic cmp: store ITE(cmp, data, current) for each half.
-                let store_lo = cmp.ite(&data_lo_val, &current_lo, self.ctx);
-                self.cas_store_symbolic_data(py, callbacks, addr, &store_lo, irsb)?;
-                if is_dcas {
-                    let store_hi = cmp.ite(
-                        data_hi_val.as_ref().unwrap(),
-                        current_hi.as_ref().unwrap(),
-                        self.ctx,
-                    );
-                    self.cas_store_symbolic_data(
-                        py,
-                        callbacks,
-                        addr_hi_expr.as_ref().unwrap(),
-                        &store_hi,
-                        irsb,
-                    )?;
-                }
-            }
-        }
+        self.cas_writeback(
+            py,
+            callbacks,
+            &cmp,
+            addr,
+            data_lo,
+            &data_lo_val,
+            &current_lo,
+            dcas.as_ref(),
+            endness,
+            irsb,
+        )?;
 
         // Write current values to oldLo (and oldHi for DCAS).
         if (old_lo as usize) >= self.temps.len() {
             return Err(CbExecutionError::UnknownTemp(old_lo));
         }
         self.temps[old_lo as usize] = Some(current_lo);
-        if is_dcas {
-            let old_hi_idx = old_hi.unwrap();
-            if (old_hi_idx as usize) >= self.temps.len() {
-                return Err(CbExecutionError::UnknownTemp(old_hi_idx));
+        if let Some(d) = dcas {
+            if (d.old_hi_idx as usize) >= self.temps.len() {
+                return Err(CbExecutionError::UnknownTemp(d.old_hi_idx));
             }
-            self.temps[old_hi_idx as usize] = Some(current_hi.unwrap());
+            self.temps[d.old_hi_idx as usize] = Some(d.current_hi);
         }
 
         Ok(StmtResult::Continue)
+    }
+
+    /// Compute the address of the DCAS high half: `addr + sizeof(half_ty)`.
+    /// Synthesised as a fresh `IRExpr::Binop(Add)` rather than mutating the
+    /// per-IRSB tyenv — see the `dcas-irexpr-binop-addr-hi` invariant.
+    fn cas_compute_addr_hi(
+        addr: &IRExpr,
+        half_ty: IRType,
+        irsb: &IRSB,
+    ) -> Result<IRExpr, CbExecutionError> {
+        let addr_ty = addr
+            .get_type(&irsb.tyenv)
+            .ok_or_else(|| CbExecutionError::InvalidIR("CAS addr has no type".to_string()))?;
+        let half_bytes = half_ty.bytes() as u64;
+        let offset_const = match addr_ty {
+            IRType::I32 => IRExpr::Const(IRConst::U32(half_bytes as u32)),
+            IRType::I64 => IRExpr::Const(IRConst::U64(half_bytes)),
+            _ => {
+                return Err(CbExecutionError::InvalidIR(
+                    "CAS addr must be I32 or I64".to_string(),
+                ));
+            }
+        };
+        Ok(IRExpr::Binop {
+            op: IROp::Add(addr_ty),
+            left: Box::new(addr.clone()),
+            right: Box::new(offset_const),
+        })
+    }
+
+    /// Load and evaluate the DCAS high half. Returns
+    /// `(current_hi, expd_hi_val, data_hi_val)`.
+    #[allow(clippy::too_many_arguments)]
+    fn cas_load_dcas_high(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        addr_hi_expr: &IRExpr,
+        expd_hi: &IRExpr,
+        data_hi: &IRExpr,
+        half_ty: IRType,
+        endness: Endness,
+        irsb: &IRSB,
+    ) -> Result<(RustBV, RustBV, RustBV), CbExecutionError> {
+        let load_hi_expr = IRExpr::Load {
+            addr: Box::new(addr_hi_expr.clone()),
+            ty: half_ty,
+            endness,
+        };
+        let current_hi =
+            self.eval_expr_with_callbacks(py, callbacks, &load_hi_expr, &irsb.tyenv)?;
+        let expd_hi_val = self.eval_expr_with_callbacks(py, callbacks, expd_hi, &irsb.tyenv)?;
+        let data_hi_val = self.eval_expr_with_callbacks(py, callbacks, data_hi, &irsb.tyenv)?;
+        Ok((current_hi, expd_hi_val, data_hi_val))
+    }
+
+    /// Perform the CAS writeback. Three cases on `cmp`:
+    ///   - concrete false: no store.
+    ///   - concrete true:  store `data` (reusing the original IRExpr).
+    ///   - symbolic:       store `ITE(cmp, data, current)` — the deferred-fork
+    ///                     branch, where both outcomes are encoded into a single
+    ///                     state via ITE rather than splitting into two states.
+    #[allow(clippy::too_many_arguments)]
+    fn cas_writeback(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        cmp: &RustBV,
+        addr: &IRExpr,
+        data_lo_expr: &IRExpr,
+        data_lo_val: &RustBV,
+        current_lo: &RustBV,
+        dcas: Option<&DcasState>,
+        endness: Endness,
+        irsb: &IRSB,
+    ) -> Result<(), CbExecutionError> {
+        match cmp.as_u64() {
+            Some(0) => Ok(()),
+            Some(_) => {
+                self.cas_dispatch_store(
+                    py,
+                    callbacks,
+                    addr,
+                    data_lo_expr,
+                    data_lo_val,
+                    endness,
+                    irsb,
+                )?;
+                if let Some(d) = dcas {
+                    self.cas_dispatch_store(
+                        py,
+                        callbacks,
+                        &d.addr_hi_expr,
+                        d.data_hi_expr,
+                        &d.data_hi_val,
+                        endness,
+                        irsb,
+                    )?;
+                }
+                Ok(())
+            }
+            None => {
+                let store_lo = cmp.ite(data_lo_val, current_lo, self.ctx);
+                self.cas_store_symbolic_data(py, callbacks, addr, &store_lo, irsb)?;
+                if let Some(d) = dcas {
+                    let store_hi = cmp.ite(&d.data_hi_val, &d.current_hi, self.ctx);
+                    self.cas_store_symbolic_data(
+                        py,
+                        callbacks,
+                        &d.addr_hi_expr,
+                        &store_hi,
+                        irsb,
+                    )?;
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Dispatch a CAS store: if the precomputed RustBV is concrete, synthesize
