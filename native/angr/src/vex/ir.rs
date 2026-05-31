@@ -946,6 +946,20 @@ pub enum IROp {
         signed: bool,
     },
 
+    /// NEON rounding halving add (a.k.a. rounding-average) —
+    /// `Iop_Avg{N}{S/U}x{M}`. Binary; output has the same lane shape as the
+    /// inputs. Per-lane semantics (widening to `elem+1` bits avoids overflow):
+    ///   result[i] = ((a[i] + b[i] + 1) >> 1) truncated to `elem` bits.
+    /// Unsigned variants map to ARM URHADD (DDI 0487 C7.2.420) and SSE
+    /// PAVGB/PAVGW (which are unsigned-only). Signed variants map to ARM
+    /// SRHADD (DDI 0487 C7.2.353). Distinct from the truncating halving add
+    /// `(a+b) >> 1` exposed in claripy as `_op_generic_HAdd`.
+    VAvg {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1363,6 +1377,16 @@ impl IROp {
             // Pairwise widening add: output total = input total = elem * count
             // (lane width doubles, lane count halves).
             IROp::VPwAddL { elem, count, .. } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
+
+            // Rounding halving add (Iop_Avg*): width preserved.
+            IROp::VAvg { elem, count, .. } => {
                 let total = elem.bits() * (*count as u32);
                 match total {
                     64 => Some(IRType::I64),

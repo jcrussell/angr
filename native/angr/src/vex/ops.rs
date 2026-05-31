@@ -406,6 +406,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VPwAddL { .. }
         | IROp::VPwMin { .. }
         | IROp::VPwMax { .. }
+        | IROp::VAvg { .. }
         | IROp::VMin { .. }
         | IROp::VMax { .. }
         | IROp::VAbs { .. }
@@ -776,6 +777,13 @@ impl VEXOps {
                 if signed { PwOp::MaxS } else { PwOp::MaxU },
                 ctx,
             ),
+
+            // NEON rounding halving add (a.k.a. rounding-average).
+            IROp::VAvg {
+                elem,
+                count,
+                signed,
+            } => Self::vec_rounding_avg(left, right, elem, count, signed, ctx),
 
             // Vector compare operations
             IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
@@ -3120,6 +3128,53 @@ impl VEXOps {
                 cond.ite_into(a, b, ctx)
             }
         }
+    }
+
+    /// NEON rounding halving add — `Iop_Avg{N}{S/U}x{M}`. Per-lane:
+    ///   `((a[i] + b[i] + 1) >> 1)` truncated to `elem` bits.
+    /// Each lane is sign- or zero-extended to `elem+1` bits to absorb the carry
+    /// from `+1`, summed, shifted right by 1 (logical — the high bit of the
+    /// widened sum carries the rounding bit for both signedness conventions),
+    /// then truncated back to `elem` bits.
+    fn vec_rounding_avg(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+        let wide = elem_width + 1;
+        let one_wide = RustBV::concrete(1, wide);
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count as u32 {
+            let lo = i * elem_width;
+            let hi = lo + elem_width - 1;
+            let a_lane = left.extract(hi, lo, ctx);
+            let b_lane = right.extract(hi, lo, ctx);
+            let a_wide = if signed {
+                a_lane.sign_extend_into(wide, ctx)
+            } else {
+                a_lane.zero_extend_into(wide, ctx)
+            };
+            let b_wide = if signed {
+                b_lane.sign_extend_into(wide, ctx)
+            } else {
+                b_lane.zero_extend_into(wide, ctx)
+            };
+            let sum = a_wide.add_into(b_wide, ctx).add_into(one_wide.clone(), ctx);
+            let shifted = sum.lshr_into(RustBV::concrete(1, wide), ctx);
+            // Truncate to elem bits — for signed, the (elem)th bit of `shifted`
+            // is the original sign bit by construction, so the low `elem` bits
+            // are the correct two's-complement representation.
+            elements.push(shifted.extract(elem_width - 1, 0, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// NEON per-lane saturating integer add/sub —
@@ -8239,6 +8294,252 @@ mod tests {
         match parse_opcode("Iop_PwAdd32Fx2") {
             IROp::NeonUnimplemented(name) => assert_eq!(name, "Iop_PwAdd32Fx2"),
             other => panic!("Iop_PwAdd32Fx2 expected NeonUnimplemented, got {:?}", other),
+        }
+    }
+
+    // =========================================================================
+    // angr-tukg.3 — NEON rounding halving add (VAvg).
+    // =========================================================================
+
+    /// Iop_Avg8Ux8 — unsigned rounding-average over 8 lanes of 8 bits.
+    /// Exercises the round-up at the half-way point (`(a+b+1) >> 1`) and the
+    /// no-overflow guarantee for 0xFF+0xFF.
+    #[test]
+    fn test_vavg_8ux8_concrete() {
+        let ctx = SymContext::new_mock();
+        // Per-lane: rounded average of u8 values.
+        //   lane 0: avg(0, 0) = 0.
+        //   lane 1: avg(1, 1) = 1.
+        //   lane 2: avg(1, 2) = 2  (round up; truncating would give 1).
+        //   lane 3: avg(0xFF, 0xFF) = 0xFF (no overflow — widening absorbs +1).
+        //   lane 4: avg(0xFE, 0xFF) = 0xFF (round up; truncating would give 0xFE).
+        //   lane 5: avg(0x10, 0x20) = 0x18.
+        //   lane 6: avg(0x80, 0x80) = 0x80.
+        //   lane 7: avg(0x7F, 0x01) = 0x40.
+        let a_lanes: [u8; 8] = [0, 1, 1, 0xFF, 0xFE, 0x10, 0x80, 0x7F];
+        let b_lanes: [u8; 8] = [0, 1, 2, 0xFF, 0xFF, 0x20, 0x80, 0x01];
+        let e_lanes: [u8; 8] = [0, 1, 2, 0xFF, 0xFF, 0x18, 0x80, 0x40];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            a |= (a_lanes[i] as u128) << (i * 8);
+            b |= (b_lanes[i] as u128) << (i * 8);
+            e |= (e_lanes[i] as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VAvg {
+                elem: IRType::I8,
+                count: 8,
+                signed: false,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_Avg16Ux8 — Q-reg variant: 8 lanes of 16 bits. 0xFFFF+0xFFFF
+    /// rounding-average must stay 0xFFFF (no truncation loss).
+    #[test]
+    fn test_vavg_16ux8_concrete() {
+        let ctx = SymContext::new_mock();
+        let a_lanes: [u16; 8] = [0, 1, 0xFFFF, 0xFFFE, 0x1000, 0x8000, 0x7FFF, 0x0123];
+        let b_lanes: [u16; 8] = [0, 2, 0xFFFF, 0xFFFF, 0x2000, 0x8000, 0x0001, 0x0456];
+        // Avg = (a+b+1) >> 1
+        let e_lanes: [u16; 8] = [0, 2, 0xFFFF, 0xFFFF, 0x1800, 0x8000, 0x4000, 0x02BD];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            a |= (a_lanes[i] as u128) << (i * 16);
+            b |= (b_lanes[i] as u128) << (i * 16);
+            e |= (e_lanes[i] as u128) << (i * 16);
+        }
+        let result = VEXOps::binop(
+            IROp::VAvg {
+                elem: IRType::I16,
+                count: 8,
+                signed: false,
+            },
+            RustBV::concrete(a, 128),
+            RustBV::concrete(b, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_Avg8Sx8 — signed rounding-average. Validates that two -128 lanes
+    /// give -128 (sign-extension fence) and mixed-sign lanes round correctly.
+    #[test]
+    fn test_vavg_8sx8_concrete() {
+        let ctx = SymContext::new_mock();
+        // Per-lane signed avg with round-half-up.
+        //   lane 0: avg(-128, -128) = -128.
+        //   lane 1: avg(127, 127)   = 127.
+        //   lane 2: avg(-1, 0)      = 0 (round up: (-1+0+1)/2=0).
+        //   lane 3: avg(-2, -1)     = -1.
+        //   lane 4: avg(-100, 100)  = 0.
+        //   lane 5: avg(-100, 101)  = 1.
+        //   lane 6: avg(127, -128)  = 0 (the +1 makes the sum -1+1=0; >>1=0).
+        //   lane 7: avg(50, 51)     = 51.
+        let a_lanes: [i8; 8] = [-128, 127, -1, -2, -100, -100, 127, 50];
+        let b_lanes: [i8; 8] = [-128, 127, 0, -1, 100, 101, -128, 51];
+        let e_lanes: [i8; 8] = [-128, 127, 0, -1, 0, 1, 0, 51];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            a |= ((a_lanes[i] as u8) as u128) << (i * 8);
+            b |= ((b_lanes[i] as u8) as u128) << (i * 8);
+            e |= ((e_lanes[i] as u8) as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VAvg {
+                elem: IRType::I8,
+                count: 8,
+                signed: true,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Symbolic universality (spec-replay): Iop_Avg16Ux4 must equal the
+    /// reference `((zext(a)+zext(b)+1) >> 1)[15:0]` per lane for all 64-bit
+    /// inputs. Claripy has no `_op_generic_Avg`; the test uses the
+    /// `z3-spec-replay-test-template` pattern.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vavg_16ux4_symbolic_universal_unsigned() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "vavg_a", 64);
+        let b = RustBV::symbolic(&ctx, "vavg_b", 64);
+        let got = VEXOps::binop(
+            IROp::VAvg {
+                elem: IRType::I16,
+                count: 4,
+                signed: false,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        let mut lanes = Vec::with_capacity(4);
+        for i in 0..4u32 {
+            let lo = i * 16;
+            let hi = lo + 15;
+            let al = a.extract(hi, lo, &ctx).zero_extend_into(17, &ctx);
+            let bl = b.extract(hi, lo, &ctx).zero_extend_into(17, &ctx);
+            let sum = al
+                .add_into(bl, &ctx)
+                .add_into(RustBV::concrete(1, 17), &ctx);
+            let shifted = sum.lshr_into(RustBV::concrete(1, 17), &ctx);
+            lanes.push(shifted.extract(15, 0, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VAvg 16Ux4 must match the unsigned spec-replay reference"
+        );
+        ctx.pop();
+    }
+
+    /// Symbolic universality (spec-replay): Iop_Avg8Sx8 signed rounding-avg.
+    /// Reference sign-extends each lane to 9 bits before summing.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vavg_8sx8_symbolic_universal_signed() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "vavg_sa", 64);
+        let b = RustBV::symbolic(&ctx, "vavg_sb", 64);
+        let got = VEXOps::binop(
+            IROp::VAvg {
+                elem: IRType::I8,
+                count: 8,
+                signed: true,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        let mut lanes = Vec::with_capacity(8);
+        for i in 0..8u32 {
+            let lo = i * 8;
+            let hi = lo + 7;
+            let al = a.extract(hi, lo, &ctx).sign_extend_into(9, &ctx);
+            let bl = b.extract(hi, lo, &ctx).sign_extend_into(9, &ctx);
+            let sum = al
+                .add_into(bl, &ctx)
+                .add_into(RustBV::concrete(1, 9), &ctx);
+            let shifted = sum.lshr_into(RustBV::concrete(1, 9), &ctx);
+            lanes.push(shifted.extract(7, 0, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VAvg 8Sx8 must match the signed spec-replay reference"
+        );
+        ctx.pop();
+    }
+
+    /// Parse routing: all 12 Iop_Avg variants land on IROp::VAvg with the
+    /// expected `(elem, count, signed)` decomposition. No Avg op should remain
+    /// in NeonUnimplemented.
+    #[test]
+    fn test_parse_avg_routing() {
+        use crate::vex::opcode_map::parse_opcode;
+
+        let cases: &[(&str, IRType, u8, bool)] = &[
+            ("Iop_Avg8Ux8", IRType::I8, 8, false),
+            ("Iop_Avg16Ux4", IRType::I16, 4, false),
+            ("Iop_Avg32Ux2", IRType::I32, 2, false),
+            ("Iop_Avg8Sx8", IRType::I8, 8, true),
+            ("Iop_Avg16Sx4", IRType::I16, 4, true),
+            ("Iop_Avg32Sx2", IRType::I32, 2, true),
+            ("Iop_Avg8Ux16", IRType::I8, 16, false),
+            ("Iop_Avg16Ux8", IRType::I16, 8, false),
+            ("Iop_Avg32Ux4", IRType::I32, 4, false),
+            ("Iop_Avg8Sx16", IRType::I8, 16, true),
+            ("Iop_Avg16Sx8", IRType::I16, 8, true),
+            ("Iop_Avg32Sx4", IRType::I32, 4, true),
+        ];
+        for (op, e, c, s) in cases {
+            match parse_opcode(op) {
+                IROp::VAvg {
+                    elem,
+                    count,
+                    signed,
+                } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                    assert_eq!(signed, *s, "{}: signed", op);
+                }
+                other => panic!("{}: expected VAvg, got {:?}", op, other),
+            }
         }
     }
 

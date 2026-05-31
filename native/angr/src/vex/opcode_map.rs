@@ -629,6 +629,19 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "32Sx2" => (I32, 2, true), "32Ux2" => (I32, 2, false),
     });
 
+    // NEON rounding halving add (a.k.a. rounding-average) —
+    // `Iop_Avg{N}{S/U}x{M}`. Binary; output shape matches inputs. Both D-reg
+    // (total=64) and Q-reg (total=128) variants exist for 8/16/32-bit lanes.
+    // Maps to ARM URHADD/SRHADD; SSE PAVGB/PAVGW (unsigned-only) lifts here too.
+    vec_signed_arms!(op_str; "Iop_Avg" => VAvg {
+        "8Sx8"  => (I8, 8, true),  "8Ux8"  => (I8, 8, false),
+        "16Sx4" => (I16, 4, true), "16Ux4" => (I16, 4, false),
+        "32Sx2" => (I32, 2, true), "32Ux2" => (I32, 2, false),
+        "8Sx16" => (I8, 16, true), "8Ux16" => (I8, 16, false),
+        "16Sx8" => (I16, 8, true), "16Ux8" => (I16, 8, false),
+        "32Sx4" => (I32, 4, true), "32Ux4" => (I32, 4, false),
+    });
+
     // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON.
     vec_arms!(op_str; "Iop_Mul" => VMul {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
@@ -853,19 +866,8 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // integer add/sub) implemented in angr-tukg.1 — routed through
         // parse_vector to IROp::VQAdd / IROp::VQSub.
 
-        // Averaging
-        "Iop_Avg8Ux8" => "Iop_Avg8Ux8",
-        "Iop_Avg16Ux4" => "Iop_Avg16Ux4",
-        "Iop_Avg32Ux2" => "Iop_Avg32Ux2",
-        "Iop_Avg8Sx8" => "Iop_Avg8Sx8",
-        "Iop_Avg16Sx4" => "Iop_Avg16Sx4",
-        "Iop_Avg32Sx2" => "Iop_Avg32Sx2",
-        "Iop_Avg8Ux16" => "Iop_Avg8Ux16",
-        "Iop_Avg16Ux8" => "Iop_Avg16Ux8",
-        "Iop_Avg32Ux4" => "Iop_Avg32Ux4",
-        "Iop_Avg8Sx16" => "Iop_Avg8Sx16",
-        "Iop_Avg16Sx8" => "Iop_Avg16Sx8",
-        "Iop_Avg32Sx4" => "Iop_Avg32Sx4",
+        // NOTE: Iop_Avg{N}{S/U}x{M} (rounding halving add) implemented in
+        // angr-tukg.3 — routed through parse_vector to IROp::VAvg.
 
         // NOTE: Iop_Reverse{N}sIn{M}_x{K} (byte/halfword/word/bit reversal
         // within lane) implemented in angr-tukg.4 — routed through
@@ -1440,7 +1442,6 @@ mod tests {
         // fresh-symbolic value.
         for op in [
             "Iop_RecipEst32Ux4",
-            "Iop_Avg8Ux8",
             "Iop_PwAdd32Fx2",
             "Iop_PolynomialMull8x8",
             "Iop_Cnt8x8",
