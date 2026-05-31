@@ -129,6 +129,10 @@ impl DirtyHelperDispatch {
 
 /// Simulated CPUID values for a modern x86-64 CPU.
 /// These are safe defaults that indicate support for common features.
+/// All four fields preserve the natural EAX/EBX/ECX/EDX register quartet
+/// emitted by CPUID; `pack_cpuid_result` currently consumes only eax + edx,
+/// so ebx/ecx are inert today but kept for table symmetry and to make
+/// extending the packing trivial if a new handler needs them.
 #[allow(dead_code)]
 struct CpuidValues {
     eax: u32,

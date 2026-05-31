@@ -2061,7 +2061,7 @@ impl RustBV {
     /// Build a Z3 AST from an operation and its operands.
     /// Called lazily when a Z3 AST is actually needed (e.g., for constraint solving).
     #[cfg(feature = "vex-engine-z3")]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // see angr-hyj0
     fn build_z3_ast(op: &BVOp, operands: &[RustBV], _width: u32) -> z3::ast::BV {
         match op {
             // Arithmetic

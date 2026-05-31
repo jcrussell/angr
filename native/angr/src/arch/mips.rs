@@ -15,7 +15,7 @@ pub struct MIPS32;
 pub struct MIPS64;
 
 // MIPS32 VEX guest state offsets (from VEX/pub/libvex_guest_mips32.h)
-#[allow(dead_code)]
+#[allow(dead_code)] // see angr-w2gj
 mod offsets32 {
     pub const R0: u32 = 8; // zero
     pub const R1: u32 = 12; // at
@@ -98,7 +98,7 @@ mod offsets32 {
 }
 
 // MIPS64 VEX guest state offsets (from VEX/pub/libvex_guest_mips64.h)
-#[allow(dead_code)]
+#[allow(dead_code)] // see angr-w2gj
 mod offsets64 {
     pub const R0: u32 = 16; // zero
     pub const R1: u32 = 24; // at

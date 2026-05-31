@@ -12,7 +12,7 @@ pub struct X86;
 
 // x86 VEX guest state offsets (from archinfo.ArchX86)
 // These match pyvex's register layout for compatibility.
-#[allow(dead_code)]
+#[allow(dead_code)] // see angr-5spy
 mod offsets {
     // General purpose registers
     pub const EAX: u32 = 8;

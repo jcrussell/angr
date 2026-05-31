@@ -46,7 +46,7 @@ const MAP_PRIVATE: u64 = 0x02;
 /// Linux MAP_FIXED. Not consulted by the native fast path (collisions
 /// fall back to Python regardless), but kept here for the spec and used
 /// by the `map_fixed_collision_falls_back` test below.
-#[allow(dead_code)]
+#[allow(dead_code)] // see angr-ttr7
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
 
