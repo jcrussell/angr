@@ -826,6 +826,17 @@ pub enum IROp {
         dst_signed: bool,
     },
 
+    /// NEON byte/halfword/word/bit reversal within each lane —
+    /// Iop_Reverse{sub_width}sIn{elem.bits()}_x{count}. Reverse the order of
+    /// `sub_width`-bit sub-units inside each `elem`-wide lane; `count` lanes
+    /// total. Maps to ARM REV16/REV32/REV64 (sub_width = 8/16/32) and RBIT
+    /// (sub_width = 1). Result width = elem.bits() * count.
+    VReverse {
+        sub_width: u8,
+        elem: IRType,
+        count: u8,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1181,6 +1192,16 @@ impl IROp {
                     64 => Some(IRType::I64),
                     128 => Some(IRType::V128),
                     256 => Some(IRType::V256),
+                    _ => None,
+                }
+            }
+
+            // Reverse: width preserved (sub-units permuted within each lane).
+            IROp::VReverse { elem, count, .. } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
                     _ => None,
                 }
             }

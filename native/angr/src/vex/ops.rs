@@ -367,6 +367,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VNarrowBin { .. }
         | IROp::VQNarrowUn { .. }
         | IROp::VQNarrowBin { .. }
+        | IROp::VReverse { .. }
         | IROp::VMin { .. }
         | IROp::VMax { .. }
         | IROp::VAbs { .. }
@@ -531,6 +532,13 @@ impl VEXOps {
                 src_signed,
                 dst_signed,
             } => Self::vec_qnarrow_un(arg, from, count, src_signed, dst_signed, ctx),
+
+            // NEON byte/halfword/word/bit reversal within each lane
+            IROp::VReverse {
+                sub_width,
+                elem,
+                count,
+            } => Self::vec_reverse(arg, sub_width, elem, count, ctx),
 
             // NEON scaffolding: surface as a typed error rather than silently
             // falling back. interpreter::expressions special-cases
@@ -1584,6 +1592,79 @@ impl VEXOps {
         };
         let clamped = val_i.clamp(min_i, max_i);
         (clamped as u128) & to_mask
+    }
+
+    /// NEON byte/halfword/word/bit reversal within each lane —
+    /// `Iop_Reverse{sub_width}sIn{elem.bits()}_x{count}`. Reverses the
+    /// `elem.bits() / sub_width` sub-units of width `sub_width` inside each
+    /// `elem`-wide lane (`count` lanes total). Total width is preserved at
+    /// `elem.bits() * count`.
+    ///
+    /// Encodes the ARM AArch64 REV*/RBIT semantics that pyvex lifts from
+    /// VRBIT (sub_width=1), VREV16 (8-in-16), VREV32 (8/16-in-32), and
+    /// VREV64 (8/16/32-in-64) — see ARM DDI 0487 C7.2.297-300 (REV*) and
+    /// C7.2.288 (RBIT). Matches angr Python's only explicit reference,
+    /// `_op_Iop_Reverse32sIn64_x2` in
+    /// `angr/engines/vex/claripy/irop.py:599`, generalised to the full
+    /// family of `Iop_Reverse{n}sIn{m}_x{k}` opcodes that the Python engine
+    /// otherwise marks unsupported.
+    fn vec_reverse(
+        arg: RustBV,
+        sub_width: u8,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let sub_width_u32 = sub_width as u32;
+        let total = elem_width * count as u32;
+        debug_assert_eq!(arg.width(), total);
+        debug_assert!(sub_width_u32 > 0 && sub_width_u32 <= elem_width);
+        debug_assert_eq!(elem_width % sub_width_u32, 0);
+        let sub_per_elem = elem_width / sub_width_u32;
+
+        // Concrete fast path: shuffle bits within each lane using integer ops.
+        if total <= 128 {
+            if let Some(v) = arg.as_u128() {
+                let elem_mask: u128 = if elem_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << elem_width) - 1
+                };
+                let sub_mask: u128 = (1u128 << sub_width_u32) - 1;
+                let mut result: u128 = 0;
+                for i in 0..count as u32 {
+                    let lane_lo = i * elem_width;
+                    let lane = (v >> lane_lo) & elem_mask;
+                    let mut reversed_lane: u128 = 0;
+                    for j in 0..sub_per_elem {
+                        let src_lo = j * sub_width_u32;
+                        let dst_lo = (sub_per_elem - 1 - j) * sub_width_u32;
+                        let sub = (lane >> src_lo) & sub_mask;
+                        reversed_lane |= sub << dst_lo;
+                    }
+                    result |= reversed_lane << lane_lo;
+                }
+                return Ok(RustBV::concrete(result, total));
+            }
+        }
+
+        // Symbolic: extract each sub-unit, place at the mirrored position
+        // inside its lane, concat back together.
+        let n_subs = (count as u32) * sub_per_elem;
+        let mut elements: Vec<RustBV> = Vec::with_capacity(n_subs as usize);
+        // concat_le_elements puts elements[0] at LSB, elements[n-1] at MSB.
+        // Walk output sub-units from LSB to MSB; within each lane, output
+        // sub-unit `j` pulls from input sub-unit `sub_per_elem - 1 - j`.
+        for lane in 0..count as u32 {
+            let lane_lo = lane * elem_width;
+            for j in 0..sub_per_elem {
+                let src_lo = lane_lo + (sub_per_elem - 1 - j) * sub_width_u32;
+                let src_hi = src_lo + sub_width_u32 - 1;
+                elements.push(arg.extract(src_hi, src_lo, ctx));
+            }
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// NEON unary saturating narrow (Iop_QNarrowUn{N}{S/U}to{N/2}{S/U}x{M}).
@@ -4854,6 +4935,206 @@ mod tests {
                 i, exp[i], lane
             );
         }
+    }
+
+    // =========================================================================
+    // VReverse — byte/halfword/word/bit reversal within lane (angr-tukg.4).
+    // =========================================================================
+
+    /// Iop_Reverse8sIn32_x2 — byte-swap within each 32-bit word (REV32
+    /// applied to a NEON D-register). 64-bit total.
+    #[test]
+    fn test_vec_reverse_8in32_x2_concrete() {
+        let ctx = SymContext::new_mock();
+        // Two 32-bit lanes: low = 0x11223344, high = 0xAABBCCDD.
+        let v: u128 = 0xAABBCCDD_11223344u128;
+        let result = VEXOps::unop(
+            IROp::VReverse {
+                sub_width: 8,
+                elem: IRType::I32,
+                count: 2,
+            },
+            RustBV::concrete(v, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        // Low lane bytes reversed: 0x11223344 → 0x44332211.
+        // High lane: 0xAABBCCDD → 0xDDCCBBAA.
+        let expected: u128 = 0xDDCCBBAA_44332211u128;
+        assert_eq!(result.as_u128().unwrap(), expected);
+    }
+
+    /// Iop_Reverse32sIn64_x2 — swap the two 32-bit halves of each 64-bit
+    /// lane. Directly mirrors the only explicit Python reference at
+    /// `angr/engines/vex/claripy/irop.py:_op_Iop_Reverse32sIn64_x2`.
+    #[test]
+    fn test_vec_reverse_32in64_x2_concrete_matches_python_ref() {
+        let ctx = SymContext::new_mock();
+        // Python ref: Concat(arg[95:64], arg[127:96], arg[31:0], arg[63:32]).
+        // Pick a 128-bit value with distinct 32-bit slices to exercise every
+        // permutation slot.
+        let v: u128 = 0xAAAAAAAA_BBBBBBBB_CCCCCCCC_DDDDDDDDu128;
+        let result = VEXOps::unop(
+            IROp::VReverse {
+                sub_width: 32,
+                elem: IRType::I64,
+                count: 2,
+            },
+            RustBV::concrete(v, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        // Slices of v (LSB → MSB indexing): [31:0]=DDDDDDDD, [63:32]=CCCCCCCC,
+        //                                  [95:64]=BBBBBBBB, [127:96]=AAAAAAAA.
+        // Python Concat(MSB→LSB): [95:64], [127:96], [31:0], [63:32]
+        //   = BBBBBBBB AAAAAAAA DDDDDDDD CCCCCCCC (MSB→LSB)
+        let expected: u128 = 0xBBBBBBBB_AAAAAAAA_DDDDDDDD_CCCCCCCCu128;
+        assert_eq!(result.as_u128().unwrap(), expected);
+    }
+
+    /// Iop_Reverse1sIn8_x8 — RBIT: reverse the bit order inside each byte.
+    #[test]
+    fn test_vec_reverse_1in8_x8_concrete() {
+        let ctx = SymContext::new_mock();
+        // Byte 0 = 0b10110010 = 0xB2; reversed = 0b01001101 = 0x4D.
+        // Byte 1 = 0xFF (palindrome); reversed = 0xFF.
+        // Byte 2 = 0x01; reversed = 0x80.
+        // Byte 3 = 0x80; reversed = 0x01.
+        // Byte 4 = 0xA5; reversed = 0xA5 (10100101 → 10100101).
+        // Byte 5 = 0x00; reversed = 0x00.
+        // Byte 6 = 0x0F; reversed = 0xF0.
+        // Byte 7 = 0xF0; reversed = 0x0F.
+        let in_bytes: [u8; 8] = [0xB2, 0xFF, 0x01, 0x80, 0xA5, 0x00, 0x0F, 0xF0];
+        let exp_bytes: [u8; 8] = [0x4D, 0xFF, 0x80, 0x01, 0xA5, 0x00, 0xF0, 0x0F];
+        let mut v: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            v |= (in_bytes[i] as u128) << (i * 8);
+            e |= (exp_bytes[i] as u128) << (i * 8);
+        }
+        let result = VEXOps::unop(
+            IROp::VReverse {
+                sub_width: 1,
+                elem: IRType::I8,
+                count: 8,
+            },
+            RustBV::concrete(v, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_Reverse16sIn64_x2 — halfword swap inside each 64-bit lane,
+    /// applied across two lanes (128-bit Q-register form).
+    #[test]
+    fn test_vec_reverse_16in64_x2_concrete() {
+        let ctx = SymContext::new_mock();
+        // Lane 0 (low 64): halfwords [0x1111, 0x2222, 0x3333, 0x4444] (LSB→MSB).
+        // After reversal: [0x4444, 0x3333, 0x2222, 0x1111].
+        // Lane 1 (high 64): halfwords [0xAAAA, 0xBBBB, 0xCCCC, 0xDDDD].
+        // After reversal: [0xDDDD, 0xCCCC, 0xBBBB, 0xAAAA].
+        let v: u128 = 0xDDDD_CCCC_BBBB_AAAA_4444_3333_2222_1111u128;
+        let expected: u128 = 0xAAAA_BBBB_CCCC_DDDD_1111_2222_3333_4444u128;
+        let result = VEXOps::unop(
+            IROp::VReverse {
+                sub_width: 16,
+                elem: IRType::I64,
+                count: 2,
+            },
+            RustBV::concrete(v, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), expected);
+    }
+
+    /// Involution: applying VReverse twice is the identity (any permutation
+    /// that swaps positions i ↔ n-1-i is its own inverse). Exercise on a
+    /// symbolic 128-bit input via a Z3 equivalence check.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_reverse_double_apply_is_identity() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        for (sub_width, elem, count) in [
+            (8u8, IRType::I32, 4u8),  // Reverse8sIn32_x4
+            (16, IRType::I64, 2),     // Reverse16sIn64_x2
+            (32, IRType::I64, 2),     // Reverse32sIn64_x2
+            (1, IRType::I8, 16),      // Reverse1sIn8_x16
+        ] {
+            let width = elem.bits() * count as u32;
+            let arg = RustBV::symbolic(&ctx, "vrev_arg", width);
+            let op = IROp::VReverse {
+                sub_width,
+                elem,
+                count,
+            };
+            let once = VEXOps::unop(op, arg.clone(), &ctx).unwrap();
+            let twice = VEXOps::unop(op, once, &ctx).unwrap();
+            // Assert there is no satisfying assignment where twice != arg.
+            ctx.push();
+            ctx.add_constraint(twice.to_z3_ast()._eq(&arg.to_z3_ast()).not());
+            assert!(
+                !ctx.is_sat(),
+                "double-apply must equal identity for sub_width={} elem={:?} count={}",
+                sub_width, elem, count
+            );
+            ctx.pop();
+        }
+    }
+
+    /// Symbolic parity vs claripy reference: `Iop_Reverse32sIn64_x2` must
+    /// produce the same bits as the explicit Python implementation
+    /// `Concat(arg[95:64], arg[127:96], arg[31:0], arg[63:32])` for any
+    /// 128-bit input. Verified through a Z3 universality check.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::symbolic(&ctx, "vrev_arg", 128);
+        let got = VEXOps::unop(
+            IROp::VReverse {
+                sub_width: 32,
+                elem: IRType::I64,
+                count: 2,
+            },
+            arg.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        // Build the Python reference: Concat(arg[95:64], arg[127:96],
+        //                                    arg[31:0],  arg[63:32]).
+        // `concat_le_elements` indexes 0 → LSB, so push in LSB→MSB order:
+        //   bits [31:0]  output  ← arg[63:32]
+        //   bits [63:32] output  ← arg[31:0]
+        //   bits [95:64] output  ← arg[127:96]
+        //   bits [127:96] output ← arg[95:64]
+        let py = VEXOps::concat_le_elements(
+            vec![
+                arg.extract(63, 32, &ctx),
+                arg.extract(31, 0, &ctx),
+                arg.extract(127, 96, &ctx),
+                arg.extract(95, 64, &ctx),
+            ],
+            &ctx,
+        );
+
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VReverse 32sIn64_x2 must match the Python reference Concat pattern"
+        );
+        ctx.pop();
     }
 
     /// Symbolic VMax (signed): constrain right == 7, derive left from a free

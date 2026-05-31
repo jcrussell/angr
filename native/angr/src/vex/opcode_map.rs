@@ -207,6 +207,9 @@ pub fn parse_opcode(op_str: &str) -> IROp {
     if let Some(op) = parse_vector(op_str) {
         return op;
     }
+    if let Some(op) = parse_vreverse(op_str) {
+        return op;
+    }
     if let Some(op) = parse_special(op_str) {
         return op;
     }
@@ -656,6 +659,51 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     }
 }
 
+/// Parse NEON byte/halfword/word/bit reversal opcodes —
+/// `Iop_Reverse{sub_width}sIn{elem_width}_x{count}`. Returns
+/// `IROp::VReverse { sub_width, elem, count }` which dispatches through
+/// `VEXOps::unop` to `vec_reverse`. Implemented in angr-tukg.4.
+///
+/// ARM ISA mapping (DDI 0487 C7.2.288 / C7.2.297-300):
+///   - `Reverse1sIn8_*`   → RBIT (bit reverse within each byte)
+///   - `Reverse8sIn16_*`  → REV16 (byte swap within halfwords)
+///   - `Reverse8sIn32_*`  → REV32 (byte swap within words)
+///   - `Reverse8sIn64_*`  → REV64 (byte swap within doublewords)
+///   - `Reverse16sIn32_*` → REV32 (halfword swap within words)
+///   - `Reverse16sIn64_*` → REV64 (halfword swap within doublewords)
+///   - `Reverse32sIn64_*` → REV64 (word swap within doublewords)
+fn parse_vreverse(op_str: &str) -> Option<IROp> {
+    let (sub_width, elem, count) = match op_str {
+        // Byte reversal within 16-bit halfwords (REV16).
+        "Iop_Reverse8sIn16_x4" => (8u8, IRType::I16, 4u8),
+        "Iop_Reverse8sIn16_x8" => (8, IRType::I16, 8),
+        // Byte reversal within 32-bit words (REV32 / x86 BSWAP-like).
+        "Iop_Reverse8sIn32_x2" => (8, IRType::I32, 2),
+        "Iop_Reverse8sIn32_x4" => (8, IRType::I32, 4),
+        // Byte reversal within 64-bit doublewords (REV64).
+        "Iop_Reverse8sIn64_x1" => (8, IRType::I64, 1),
+        "Iop_Reverse8sIn64_x2" => (8, IRType::I64, 2),
+        // Halfword reversal within 32-bit words.
+        "Iop_Reverse16sIn32_x2" => (16, IRType::I32, 2),
+        "Iop_Reverse16sIn32_x4" => (16, IRType::I32, 4),
+        // Halfword reversal within 64-bit doublewords.
+        "Iop_Reverse16sIn64_x1" => (16, IRType::I64, 1),
+        "Iop_Reverse16sIn64_x2" => (16, IRType::I64, 2),
+        // Word swap within 64-bit doublewords.
+        "Iop_Reverse32sIn64_x1" => (32, IRType::I64, 1),
+        "Iop_Reverse32sIn64_x2" => (32, IRType::I64, 2),
+        // Bit reversal within each byte (RBIT).
+        "Iop_Reverse1sIn8_x8" => (1, IRType::I8, 8),
+        "Iop_Reverse1sIn8_x16" => (1, IRType::I8, 16),
+        _ => return None,
+    };
+    Some(IROp::VReverse {
+        sub_width,
+        elem,
+        count,
+    })
+}
+
 /// Parse ARM/AArch64 NEON SIMD opcodes that have been claimed but not yet
 /// implemented. Hits here route through `IROp::NeonUnimplemented(name)` so
 /// dispatch in `VEXOps::unop` / `binop` / etc. panics with the original
@@ -737,21 +785,9 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         "Iop_Avg16Sx8" => "Iop_Avg16Sx8",
         "Iop_Avg32Sx4" => "Iop_Avg32Sx4",
 
-        // Reverse bytes within lanes
-        "Iop_Reverse8sIn16_x4" => "Iop_Reverse8sIn16_x4",
-        "Iop_Reverse8sIn32_x2" => "Iop_Reverse8sIn32_x2",
-        "Iop_Reverse8sIn64_x1" => "Iop_Reverse8sIn64_x1",
-        "Iop_Reverse16sIn32_x2" => "Iop_Reverse16sIn32_x2",
-        "Iop_Reverse16sIn64_x1" => "Iop_Reverse16sIn64_x1",
-        "Iop_Reverse32sIn64_x1" => "Iop_Reverse32sIn64_x1",
-        "Iop_Reverse8sIn16_x8" => "Iop_Reverse8sIn16_x8",
-        "Iop_Reverse8sIn32_x4" => "Iop_Reverse8sIn32_x4",
-        "Iop_Reverse8sIn64_x2" => "Iop_Reverse8sIn64_x2",
-        "Iop_Reverse16sIn32_x4" => "Iop_Reverse16sIn32_x4",
-        "Iop_Reverse16sIn64_x2" => "Iop_Reverse16sIn64_x2",
-        "Iop_Reverse32sIn64_x2" => "Iop_Reverse32sIn64_x2",
-        "Iop_Reverse1sIn8_x8" => "Iop_Reverse1sIn8_x8",
-        "Iop_Reverse1sIn8_x16" => "Iop_Reverse1sIn8_x16",
+        // NOTE: Iop_Reverse{N}sIn{M}_x{K} (byte/halfword/word/bit reversal
+        // within lane) implemented in angr-tukg.4 — routed through
+        // parse_vreverse to IROp::VReverse.
 
         // Pairwise add/min/max (NEON)
         "Iop_PwAdd8x8" => "Iop_PwAdd8x8",
@@ -1395,7 +1431,6 @@ mod tests {
             "Iop_RecipEst32Ux4",
             "Iop_QAdd8Sx8",
             "Iop_Avg8Ux8",
-            "Iop_Reverse8sIn32_x2",
             "Iop_PwAdd16x4",
             "Iop_PolynomialMull8x8",
             "Iop_Cnt8x8",
@@ -1474,5 +1509,41 @@ mod tests {
             parse_opcode("Iop_QNarrowBin16Sto8Sx8"),
             IROp::VQNarrowBin { .. }
         ));
+    }
+
+    #[test]
+    fn test_parse_vreverse_routing() {
+        // angr-tukg.4: Iop_Reverse{N}sIn{M}_x{K} variants route to VReverse
+        // with the expected (sub_width, elem, count) decomposition.
+        let cases: &[(&str, u8, IRType, u8)] = &[
+            ("Iop_Reverse8sIn16_x4", 8, IRType::I16, 4),
+            ("Iop_Reverse8sIn16_x8", 8, IRType::I16, 8),
+            ("Iop_Reverse8sIn32_x2", 8, IRType::I32, 2),
+            ("Iop_Reverse8sIn32_x4", 8, IRType::I32, 4),
+            ("Iop_Reverse8sIn64_x1", 8, IRType::I64, 1),
+            ("Iop_Reverse8sIn64_x2", 8, IRType::I64, 2),
+            ("Iop_Reverse16sIn32_x2", 16, IRType::I32, 2),
+            ("Iop_Reverse16sIn32_x4", 16, IRType::I32, 4),
+            ("Iop_Reverse16sIn64_x1", 16, IRType::I64, 1),
+            ("Iop_Reverse16sIn64_x2", 16, IRType::I64, 2),
+            ("Iop_Reverse32sIn64_x1", 32, IRType::I64, 1),
+            ("Iop_Reverse32sIn64_x2", 32, IRType::I64, 2),
+            ("Iop_Reverse1sIn8_x8", 1, IRType::I8, 8),
+            ("Iop_Reverse1sIn8_x16", 1, IRType::I8, 16),
+        ];
+        for (op_str, sw, e, c) in cases {
+            match parse_opcode(op_str) {
+                IROp::VReverse {
+                    sub_width,
+                    elem,
+                    count,
+                } => {
+                    assert_eq!(sub_width, *sw, "{}: sub_width", op_str);
+                    assert_eq!(elem, *e, "{}: elem", op_str);
+                    assert_eq!(count, *c, "{}: count", op_str);
+                }
+                other => panic!("{}: expected VReverse, got {:?}", op_str, other),
+            }
+        }
     }
 }
