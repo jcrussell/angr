@@ -22,10 +22,10 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::arch::{arch_from_name, default_cc_for_arch};
+use crate::arch::{ExtractionError, arch_from_name, default_cc_for_arch};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, rustbv_to_claripy};
-use crate::interpreter::{VEXInterpreter, DCAS_UNSUPPORTED_REASON, ExecutionStats};
+use crate::interpreter::{DCAS_UNSUPPORTED_REASON, ExecutionStats, VEXInterpreter};
 use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcedureError};
 use crate::solver::RustSolverContext;
@@ -867,7 +867,11 @@ impl RustExplorationManager {
     #[pyo3(signature = (state_id, n=256))]
     pub fn get_state_bbl_history_tail(&self, state_id: u64, n: usize) -> Option<Vec<u64>> {
         let hist = self.find_state(state_id)?.history();
-        let start = if n == 0 { 0 } else { hist.len().saturating_sub(n) };
+        let start = if n == 0 {
+            0
+        } else {
+            hist.len().saturating_sub(n)
+        };
         Some(hist[start..].to_vec())
     }
 

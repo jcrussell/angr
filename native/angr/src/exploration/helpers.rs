@@ -566,68 +566,78 @@ impl RustExplorationManager {
         raw_ast.getattr("value")?.extract::<usize>()
     }
 
-    /// Extract procedure arguments from state registers.
+    /// Extract procedure arguments from state registers (and stack, when
+    /// `num_args` exceeds the register portion of the calling convention).
+    ///
+    /// Returns an [`ExtractionError`] instead of silently zero-padding when
+    /// the stack pointer is symbolic or a stack slot cannot be read. Callers
+    /// (the native-procedure dispatchers in `stepping.rs` / `run_loop.rs`)
+    /// treat any error as a signal to skip the native fast path and fall
+    /// through to the Python SimProcedure callback rather than handing the
+    /// handler a fabricated `RustBV::zero` that would silently mask a real
+    /// stack-setup bug (mirror of the `angr-ydli` fix to the trait method).
     pub(crate) fn extract_procedure_args(
         &self,
         state: &RustSimState,
         num_args: usize,
-    ) -> Vec<RustBV> {
+    ) -> Result<Vec<RustBV>, ExtractionError> {
         let arg_regs = self.environment.calling_convention.arg_registers();
         let ptr_size = self.environment.calling_convention.pointer_size();
         let mut args = Vec::with_capacity(num_args);
 
         let ctx = state.solver().borrow();
 
-        // Extract from registers first
         for &offset in arg_regs.iter().take(num_args) {
-            let value = state.get_register_by_offset(offset, ptr_size);
-            args.push(value);
+            args.push(state.get_register_by_offset(offset, ptr_size));
         }
 
-        // If we need more args from stack, get them
         if args.len() < num_args {
-            if let Some(sp) = state.get_sp().as_u64() {
-                let stack_start = sp + self.environment.calling_convention.stack_arg_offset();
-                for i in 0..(num_args - args.len()) {
-                    let addr = stack_start + (i as u64 * ptr_size as u64);
-                    if let Ok(value) = state.memory_load(addr, ptr_size) {
-                        args.push(value);
-                    } else {
-                        // Can't read stack - push zero
-                        args.push(RustBV::zero(ptr_size * 8));
+            let sp = state.get_sp().as_u64().ok_or(ExtractionError::SpSymbolic)?;
+            let stack_start = sp + self.environment.calling_convention.stack_arg_offset();
+            let already = args.len();
+            for i in 0..(num_args - already) {
+                let addr = stack_start + (i as u64 * ptr_size as u64);
+                let value = state.memory_load(addr, ptr_size).map_err(|_| {
+                    ExtractionError::StackUnmapped {
+                        arg_index: already + i,
+                        addr,
                     }
-                }
+                })?;
+                args.push(value);
             }
         }
 
         drop(ctx);
-        args
+        Ok(args)
     }
 
     /// Extract syscall arguments from state registers.
     ///
     /// Uses the calling convention's `syscall_arg_registers()` rather than
     /// `arg_registers()`. On Linux amd64 these differ at the 4th argument
-    /// (R10 vs RCX). Syscalls do not pull args from the stack: if `num_args`
-    /// exceeds the available register count, the extra slots are zero —
-    /// callers should treat that as a misconfiguration.
+    /// (R10 vs RCX). Syscalls do not pull args from the stack: a request for
+    /// more arguments than the ABI exposes via registers returns
+    /// [`ExtractionError::RegisterOverflow`] so callers can fall through to
+    /// the Python syscall callback instead of running a native handler with
+    /// fabricated zero arguments.
     pub(crate) fn extract_syscall_args(
         &self,
         state: &RustSimState,
         num_args: usize,
-    ) -> Vec<RustBV> {
+    ) -> Result<Vec<RustBV>, ExtractionError> {
         let arg_regs = self.environment.calling_convention.syscall_arg_registers();
+        if num_args > arg_regs.len() {
+            return Err(ExtractionError::RegisterOverflow {
+                requested: num_args,
+                available: arg_regs.len(),
+            });
+        }
         let ptr_size = self.environment.calling_convention.pointer_size();
         let mut args = Vec::with_capacity(num_args);
-
         for &offset in arg_regs.iter().take(num_args) {
             args.push(state.get_register_by_offset(offset, ptr_size));
         }
-        for _ in args.len()..num_args {
-            args.push(RustBV::zero(ptr_size * 8));
-        }
-
-        args
+        Ok(args)
     }
 
     /// Get return address from stack.

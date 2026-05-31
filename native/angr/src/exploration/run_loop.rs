@@ -225,115 +225,136 @@ impl RustExplorationManager {
                     // Try native procedure first (only for external/library hooks)
                     if !is_in_binary {
                         if let Some(native_proc) = self.native_procedures.get(&name) {
-                            // Extract arguments from state registers and stack
-                            let args = self.extract_procedure_args(&state, num_args);
-
-                            // Try to execute native procedure
-                            match native_proc.call(&mut state, &args) {
-                                Ok(ret_val) => {
-                                    // Native execution succeeded
-                                    self.profiling.native_proc_stats.native_calls += 1;
+                            // Extract arguments from state registers (and stack
+                            // when num_args exceeds the register count). On
+                            // failure (symbolic SP, unmapped stack slot) skip
+                            // the native fast path and let the Python
+                            // SimProcedure callback below handle it — handing
+                            // the native handler fabricated zeros would mask
+                            // the underlying stack-setup bug.
+                            match self.extract_procedure_args(&state, num_args) {
+                                Err(e) => {
+                                    log::debug!(
+                                        "Skipping native procedure {} (arg extraction failed: {:?})",
+                                        name,
+                                        e
+                                    );
+                                    self.profiling.native_proc_stats.python_fallbacks += 1;
                                     *self
                                         .profiling
                                         .native_proc_stats
-                                        .call_counts
+                                        .other_fallbacks_by_name
                                         .entry(name.clone())
                                         .or_insert(0) += 1;
+                                }
+                                Ok(args) => match native_proc.call(&mut state, &args) {
+                                    Ok(ret_val) => {
+                                        // Native execution succeeded
+                                        self.profiling.native_proc_stats.native_calls += 1;
+                                        *self
+                                            .profiling
+                                            .native_proc_stats
+                                            .call_counts
+                                            .entry(name.clone())
+                                            .or_insert(0) += 1;
 
-                                    // For no-return procedures (exit/abort), skip
-                                    // the return-address dance and deadend directly.
-                                    // Setting PC to a stack-derived return address
-                                    // can produce a spurious successor (e.g. when
-                                    // exit is called from rejected() in fauxware,
-                                    // the post-call address happens to overlap
-                                    // main's start, causing infinite re-entry).
-                                    if no_return {
-                                        self.push_or_drop_terminal(STASH_DEADENDED, state);
-                                        continue;
-                                    }
-
-                                    // Set return value if present
-                                    if let Some(rv) = ret_val {
-                                        let ret_reg =
-                                            self.environment.calling_convention.return_register();
-                                        state.set_register_by_offset(ret_reg, rv);
-                                    }
-
-                                    // Get return address and set PC. Use the
-                                    // state's real register file so that LR/X30/$ra
-                                    // overrides see actual values; passing a blank
-                                    // RegisterFile here used to make ARM/ARM64/MIPS
-                                    // read LR=0 and set PC to 0.
-                                    let ctx = state.solver().borrow();
-                                    let ret_addr_opt = self
-                                        .environment
-                                        .calling_convention
-                                        .get_return_addr(state.registers(), None, &ctx);
-                                    let pops_return_addr =
-                                        self.environment.calling_convention.pops_return_addr();
-                                    drop(ctx);
-                                    if let Some(ret_addr) = ret_addr_opt {
-                                        // Only adjust SP for stack-based ABIs
-                                        // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
-                                        // in a register and leave SP untouched.
-                                        if pops_return_addr {
-                                            let sp = state.get_sp().as_u64().unwrap_or(0);
-                                            let ptr_size = state.arch().bytes() as u64;
-                                            state.set_sp(RustBV::concrete(
-                                                (sp + ptr_size) as u128,
-                                                state.arch().bits(),
-                                            ));
+                                        // For no-return procedures (exit/abort), skip
+                                        // the return-address dance and deadend directly.
+                                        // Setting PC to a stack-derived return address
+                                        // can produce a spurious successor (e.g. when
+                                        // exit is called from rejected() in fauxware,
+                                        // the post-call address happens to overlap
+                                        // main's start, causing infinite re-entry).
+                                        if no_return {
+                                            self.push_or_drop_terminal(STASH_DEADENDED, state);
+                                            continue;
                                         }
-                                        state.set_pc(ret_addr);
-                                    } else if pops_return_addr {
-                                        // Fallback: read ret addr from [sp] for
-                                        // stack-based ABIs (only useful when the
-                                        // calling convention's get_return_addr
-                                        // declined to read memory itself).
-                                        if let Some(sp) = state.get_sp().as_u64() {
-                                            if let Ok(ret_bv) =
-                                                state.memory_load(sp, state.arch().bytes())
-                                            {
-                                                if let Some(ret_addr) = ret_bv.as_u64() {
-                                                    let ptr_size = state.arch().bytes() as u64;
-                                                    state.set_sp(RustBV::concrete(
-                                                        (sp + ptr_size) as u128,
-                                                        state.arch().bits(),
-                                                    ));
-                                                    state.set_pc(ret_addr);
+
+                                        // Set return value if present
+                                        if let Some(rv) = ret_val {
+                                            let ret_reg = self
+                                                .environment
+                                                .calling_convention
+                                                .return_register();
+                                            state.set_register_by_offset(ret_reg, rv);
+                                        }
+
+                                        // Get return address and set PC. Use the
+                                        // state's real register file so that LR/X30/$ra
+                                        // overrides see actual values; passing a blank
+                                        // RegisterFile here used to make ARM/ARM64/MIPS
+                                        // read LR=0 and set PC to 0.
+                                        let ctx = state.solver().borrow();
+                                        let ret_addr_opt = self
+                                            .environment
+                                            .calling_convention
+                                            .get_return_addr(state.registers(), None, &ctx);
+                                        let pops_return_addr =
+                                            self.environment.calling_convention.pops_return_addr();
+                                        drop(ctx);
+                                        if let Some(ret_addr) = ret_addr_opt {
+                                            // Only adjust SP for stack-based ABIs
+                                            // (x86/AMD64). ARM/ARM64/MIPS keep ret addr
+                                            // in a register and leave SP untouched.
+                                            if pops_return_addr {
+                                                let sp = state.get_sp().as_u64().unwrap_or(0);
+                                                let ptr_size = state.arch().bytes() as u64;
+                                                state.set_sp(RustBV::concrete(
+                                                    (sp + ptr_size) as u128,
+                                                    state.arch().bits(),
+                                                ));
+                                            }
+                                            state.set_pc(ret_addr);
+                                        } else if pops_return_addr {
+                                            // Fallback: read ret addr from [sp] for
+                                            // stack-based ABIs (only useful when the
+                                            // calling convention's get_return_addr
+                                            // declined to read memory itself).
+                                            if let Some(sp) = state.get_sp().as_u64() {
+                                                if let Ok(ret_bv) =
+                                                    state.memory_load(sp, state.arch().bytes())
+                                                {
+                                                    if let Some(ret_addr) = ret_bv.as_u64() {
+                                                        let ptr_size = state.arch().bytes() as u64;
+                                                        state.set_sp(RustBV::concrete(
+                                                            (sp + ptr_size) as u128,
+                                                            state.arch().bits(),
+                                                        ));
+                                                        state.set_pc(ret_addr);
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
 
-                                    self.push_to_active_or_drop(state);
-                                    continue;
-                                }
-                                Err(e) => {
-                                    // Native execution failed, fall back to Python
-                                    self.profiling.native_proc_stats.python_fallbacks += 1;
-                                    let bucket = match e {
-                                        ProcedureError::SymbolicArgument(_) => {
-                                            &mut self
-                                                .profiling
-                                                .native_proc_stats
-                                                .symbolic_fallbacks_by_name
-                                        }
-                                        ProcedureError::NotImplemented => {
-                                            &mut self
-                                                .profiling
-                                                .native_proc_stats
-                                                .not_implemented_fallbacks_by_name
-                                        }
-                                        _ => {
-                                            &mut self
-                                                .profiling
-                                                .native_proc_stats
-                                                .other_fallbacks_by_name
-                                        }
-                                    };
-                                    *bucket.entry(name.clone()).or_insert(0) += 1;
-                                }
+                                        self.push_to_active_or_drop(state);
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        // Native execution failed, fall back to Python
+                                        self.profiling.native_proc_stats.python_fallbacks += 1;
+                                        let bucket = match e {
+                                            ProcedureError::SymbolicArgument(_) => {
+                                                &mut self
+                                                    .profiling
+                                                    .native_proc_stats
+                                                    .symbolic_fallbacks_by_name
+                                            }
+                                            ProcedureError::NotImplemented => {
+                                                &mut self
+                                                    .profiling
+                                                    .native_proc_stats
+                                                    .not_implemented_fallbacks_by_name
+                                            }
+                                            _ => {
+                                                &mut self
+                                                    .profiling
+                                                    .native_proc_stats
+                                                    .other_fallbacks_by_name
+                                            }
+                                        };
+                                        *bucket.entry(name.clone()).or_insert(0) += 1;
+                                    }
+                                },
                             }
                         }
                     } // if !is_in_binary

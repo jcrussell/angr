@@ -32,6 +32,12 @@ pub enum ExtractionError {
     /// zero-based position of the failing argument within the full
     /// `num_args` request; `addr` is the absolute address that failed.
     StackUnmapped { arg_index: usize, addr: u64 },
+    /// The caller requested more arguments than the ABI exposes via
+    /// registers, but the ABI has no stack path (e.g. syscalls on most
+    /// architectures). Indicates a SimProcedure / syscall-handler
+    /// misconfiguration declaring a higher `num_args` than the kernel
+    /// ABI supports.
+    RegisterOverflow { requested: usize, available: usize },
 }
 
 impl core::fmt::Display for ExtractionError {
@@ -48,6 +54,13 @@ impl core::fmt::Display for ExtractionError {
             Self::StackUnmapped { arg_index, addr } => write!(
                 f,
                 "extract_args: stack argument {arg_index} at address {addr:#x} is unmapped",
+            ),
+            Self::RegisterOverflow {
+                requested,
+                available,
+            } => write!(
+                f,
+                "extract_args: requested {requested} arguments but ABI exposes only {available} registers and no stack path",
             ),
         }
     }
@@ -142,12 +155,12 @@ pub trait CallingConvention: Send + Sync {
 
         for i in 0..remaining {
             let addr = stack_start + (i as u64 * ptr_size as u64);
-            let value = mem
-                .load_concrete_lazy(addr, ptr_size, ctx)
-                .map_err(|_| ExtractionError::StackUnmapped {
+            let value = mem.load_concrete_lazy(addr, ptr_size, ctx).map_err(|_| {
+                ExtractionError::StackUnmapped {
                     arg_index: already + i,
                     addr,
-                })?;
+                }
+            })?;
             args.push(value);
         }
 

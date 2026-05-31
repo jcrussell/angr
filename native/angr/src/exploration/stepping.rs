@@ -204,9 +204,39 @@ impl RustExplorationManager {
                 if let Some(handler) = native_handler {
                     let n_args = handler.num_args();
                     let args = if n_args == 0 {
-                        Vec::new()
+                        Ok(Vec::new())
                     } else {
                         self.extract_syscall_args(&state, n_args)
+                    };
+                    let Ok(args) = args else {
+                        // Arg extraction failed (RegisterOverflow on a
+                        // misconfigured handler). Skip the native fast path
+                        // — falling through to the Python syscall callback
+                        // below is safer than invoking the native handler
+                        // with fabricated zeros.
+                        log::debug!(
+                            "Skipping native syscall (arg extraction failed): {:?}",
+                            args.unwrap_err()
+                        );
+                        self.syscall_python_fallback_count += 1;
+                        let pre_callback_snapshot = if !deferred_forks.is_empty() {
+                            Some(state.fork())
+                        } else {
+                            None
+                        };
+                        let solver_ref = state.solver();
+                        let shared_ctx =
+                            RustSolverContext::from_shared_sym_context(solver_ref.clone());
+                        return Err(StepError::NeedCallback(PendingCallback::with_context(
+                            state,
+                            pre_callback_snapshot,
+                            CallbackReason::Syscall { num },
+                            "Ijk_Sys_syscall",
+                            Some(shared_ctx),
+                            deferred_forks,
+                            stored_conditions,
+                            fork_snapshots,
+                        )));
                     };
                     match handler.call(&mut state, &args) {
                         Ok(SyscallOutcome::Continue { ret }) => {
@@ -556,51 +586,74 @@ impl RustExplorationManager {
         let native_no_return: Option<bool> = if !is_in_binary {
             if let Some(native_proc) = self.native_procedures.get(&name) {
                 let proc_no_return = native_proc.no_return();
-                let args = self.extract_procedure_args(&state, num_args);
-                match native_proc.call(&mut state, &args) {
-                    Ok(ret_val) => {
-                        self.profiling.native_proc_stats.native_calls += 1;
+                match self.extract_procedure_args(&state, num_args) {
+                    Err(e) => {
+                        // SP symbolic / stack unmapped — silently zero-padding
+                        // here would hand the native handler fabricated zeros
+                        // and mask the underlying stack-setup bug. Skip the
+                        // native fast path; `None` falls through to the
+                        // Python SimProcedure callback at the bottom of this
+                        // function.
+                        log::debug!(
+                            "Skipping native procedure {} (arg extraction failed: {:?})",
+                            name,
+                            e
+                        );
+                        self.profiling.native_proc_stats.python_fallbacks += 1;
                         *self
                             .profiling
                             .native_proc_stats
-                            .call_counts
+                            .other_fallbacks_by_name
                             .entry(name.clone())
                             .or_insert(0) += 1;
-
-                        if !proc_no_return {
-                            if let Some(rv) = ret_val {
-                                let ret_reg = self.environment.calling_convention.return_register();
-                                state.set_register_by_offset(ret_reg, rv);
-                            }
-
-                            // Set PC to return address and pop stack
-                            state.set_pc(return_addr);
-                            let sp = state.get_sp().as_u64().unwrap_or(0);
-                            let ptr_size = state.arch().bytes() as u64;
-                            state.set_sp(RustBV::concrete(
-                                (sp + ptr_size) as u128,
-                                state.arch().bits(),
-                            ));
-                        }
-                        Some(proc_no_return)
-                    }
-                    Err(e) => {
-                        self.profiling.native_proc_stats.python_fallbacks += 1;
-                        let bucket = match e {
-                            ProcedureError::SymbolicArgument(_) => {
-                                &mut self.profiling.native_proc_stats.symbolic_fallbacks_by_name
-                            }
-                            ProcedureError::NotImplemented => {
-                                &mut self
-                                    .profiling
-                                    .native_proc_stats
-                                    .not_implemented_fallbacks_by_name
-                            }
-                            _ => &mut self.profiling.native_proc_stats.other_fallbacks_by_name,
-                        };
-                        *bucket.entry(name.clone()).or_insert(0) += 1;
                         None
                     }
+                    Ok(args) => match native_proc.call(&mut state, &args) {
+                        Ok(ret_val) => {
+                            self.profiling.native_proc_stats.native_calls += 1;
+                            *self
+                                .profiling
+                                .native_proc_stats
+                                .call_counts
+                                .entry(name.clone())
+                                .or_insert(0) += 1;
+
+                            if !proc_no_return {
+                                if let Some(rv) = ret_val {
+                                    let ret_reg =
+                                        self.environment.calling_convention.return_register();
+                                    state.set_register_by_offset(ret_reg, rv);
+                                }
+
+                                // Set PC to return address and pop stack
+                                state.set_pc(return_addr);
+                                let sp = state.get_sp().as_u64().unwrap_or(0);
+                                let ptr_size = state.arch().bytes() as u64;
+                                state.set_sp(RustBV::concrete(
+                                    (sp + ptr_size) as u128,
+                                    state.arch().bits(),
+                                ));
+                            }
+                            Some(proc_no_return)
+                        }
+                        Err(e) => {
+                            self.profiling.native_proc_stats.python_fallbacks += 1;
+                            let bucket = match e {
+                                ProcedureError::SymbolicArgument(_) => {
+                                    &mut self.profiling.native_proc_stats.symbolic_fallbacks_by_name
+                                }
+                                ProcedureError::NotImplemented => {
+                                    &mut self
+                                        .profiling
+                                        .native_proc_stats
+                                        .not_implemented_fallbacks_by_name
+                                }
+                                _ => &mut self.profiling.native_proc_stats.other_fallbacks_by_name,
+                            };
+                            *bucket.entry(name.clone()).or_insert(0) += 1;
+                            None
+                        }
+                    },
                 }
             } else {
                 None
