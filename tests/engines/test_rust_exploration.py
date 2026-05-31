@@ -11497,9 +11497,8 @@ class TestRustExecutionErrorHierarchy:
         """
         import json
         from angr.exploration import RustUnsupportedVexOpError
-        from angr.rustylib.vex_engine import RustVEXEngine
+        from angr.rustylib.vex_engine import execute_irsb_for_test
 
-        engine = RustVEXEngine("arm64")
         irsb = {
             "addr": 4096,
             "arch": "ARM64",
@@ -11521,7 +11520,7 @@ class TestRustExecutionErrorHierarchy:
             "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
         }
         with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_Cnt8x8.*arm64"):
-            engine.execute_irsb_json(json.dumps(irsb))
+            execute_irsb_for_test(json.dumps(irsb), "arm64")
 
     def test_raise_unmapped_op_via_execute_irsb(self):
         """The angr-tkbr.2 acceptance: an opcode string with NO entry in
@@ -11542,9 +11541,8 @@ class TestRustExecutionErrorHierarchy:
         """
         import json
         from angr.exploration import RustUnsupportedVexOpError
-        from angr.rustylib.vex_engine import RustVEXEngine
+        from angr.rustylib.vex_engine import execute_irsb_for_test
 
-        engine = RustVEXEngine("amd64")
         fake_op = "Iop_NotARealOp1234"
         irsb = {
             "addr": 4096,
@@ -11567,7 +11565,7 @@ class TestRustExecutionErrorHierarchy:
             "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
         }
         with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_NotARealOp1234.*amd64"):
-            engine.execute_irsb_json(json.dumps(irsb))
+            execute_irsb_for_test(json.dumps(irsb), "amd64")
 
     def test_unhandled_ccall_surfaces_error_not_concrete_zero(self):
         """The angr-ppgx acceptance: unhandled ``Iex_CCall`` in the legacy
@@ -11584,9 +11582,8 @@ class TestRustExecutionErrorHierarchy:
         """
         import json
         from angr.exploration import RustExecutionError
-        from angr.rustylib.vex_engine import RustVEXEngine
+        from angr.rustylib.vex_engine import execute_irsb_for_test
 
-        engine = RustVEXEngine("amd64")
         irsb = {
             "addr": 4096,
             "arch": "AMD64",
@@ -11609,7 +11606,7 @@ class TestRustExecutionErrorHierarchy:
             "tyenv": {"types": ["Ity_I64"]},
         }
         with pytest.raises(RustExecutionError, match=r"CCall.*amd64g_NotARealCCall"):
-            engine.execute_irsb_json(json.dumps(irsb))
+            execute_irsb_for_test(json.dumps(irsb), "amd64")
 
 
 if __name__ == "__main__":

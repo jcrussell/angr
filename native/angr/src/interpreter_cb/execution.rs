@@ -536,6 +536,22 @@ impl<'a> CallbackInterpreter<'a> {
         Ok(arc_irsb)
     }
 
+    /// Execute a single block using the given callbacks.
+    ///
+    /// Public entry point used by the [`crate::engine::execute_irsb_for_test`]
+    /// helper to drive the interpreter from unit tests without a full
+    /// `run_until_event` loop. The standard exploration path still goes
+    /// through [`Self::run_until_event`] which calls
+    /// `execute_block_with_callbacks` internally.
+    pub fn execute_block(
+        &mut self,
+        py: Python<'_>,
+        callbacks: &PythonCallbacks,
+        irsb: &IRSB,
+    ) -> Result<BlockResult, CbExecutionError> {
+        self.execute_block_with_callbacks(py, callbacks, irsb)
+    }
+
     /// Execute a block using Python callbacks for memory access.
     fn execute_block_with_callbacks(
         &mut self,
@@ -573,8 +589,7 @@ impl<'a> CallbackInterpreter<'a> {
         // state.inspect irsb event — fires `when='before'` at block entry,
         // before any statement runs. Bit 7 in the inspect-enabled bitmask.
         if callbacks.inspect_event_enabled(7) {
-            let _ =
-                callbacks.call_inspect_irsb(py, self.current_state_id, "before", irsb.addr);
+            let _ = callbacks.call_inspect_irsb(py, self.current_state_id, "before", irsb.addr);
         }
 
         // Execute statements
