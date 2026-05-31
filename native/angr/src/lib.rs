@@ -43,19 +43,18 @@ pub mod vex;
 
 use pyo3::prelude::*;
 
-fn import_submodule<'py>(
-    py: Python<'py>,
-    m: &Bound<'py, PyModule>,
-    package: &str,
+/// Build and register a submodule under the `angr.rustylib` package.
+fn import_submodule(
+    m: &Bound<'_, PyModule>,
     name: &str,
-    import_func: impl FnOnce(&Bound<'py, PyModule>) -> PyResult<()>,
+    import_func: impl FnOnce(&Bound<'_, PyModule>) -> PyResult<()>,
 ) -> PyResult<()> {
+    let py = m.py();
     let submodule = PyModule::new(py, name)?;
     import_func(&submodule)?;
 
-    // Add the submodule to sys.modules
     let sys_modules = PyModule::import(py, "sys")?.getattr("modules")?;
-    sys_modules.set_item(format!("{package}.{name}"), submodule.clone())?;
+    sys_modules.set_item(format!("angr.rustylib.{name}"), submodule.clone())?;
 
     m.add_submodule(&submodule)?;
     Ok(())
@@ -66,32 +65,20 @@ fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Fuzzer modules (optional)
     #[cfg(feature = "fuzzer")]
     {
-        import_submodule(m.py(), m, "angr.rustylib", "fuzzer", fuzzer::fuzzer)?;
-        import_submodule(m.py(), m, "angr.rustylib", "icicle", icicle::icicle)?;
+        import_submodule(m, "fuzzer", fuzzer::fuzzer)?;
+        import_submodule(m, "icicle", icicle::icicle)?;
     }
 
     // Segmentlist (always available)
-    import_submodule(
-        m.py(),
-        m,
-        "angr.rustylib",
-        "segmentlist",
-        segmentlist::segmentlist,
-    )?;
+    import_submodule(m, "segmentlist", segmentlist::segmentlist)?;
     #[cfg(feature = "automaton")]
-    import_submodule(
-        m.py(),
-        m,
-        "angr.rustylib",
-        "automaton",
-        automaton::automaton,
-    )?;
+    import_submodule(m, "automaton", automaton::automaton)?;
     m.add_class::<segmentlist::Segment>()?;
     m.add_class::<segmentlist::SegmentList>()?;
 
     // VEX Engine module (enabled by default)
     #[cfg(feature = "vex-engine")]
-    import_submodule(m.py(), m, "angr.rustylib", "vex_engine", engine::vex_engine)?;
+    import_submodule(m, "vex_engine", engine::vex_engine)?;
 
     Ok(())
 }
