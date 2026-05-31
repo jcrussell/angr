@@ -293,17 +293,6 @@ impl<'a> VEXInterpreter<'a> {
                             message: e.to_string(),
                             addr: self.pc,
                         },
-                        FallbackStrategy::Silent => {
-                            // Unreachable today: no CbExecutionError variant
-                            // is tagged Silent. If a future variant uses it,
-                            // the interpreter loop must define a sound default
-                            // *before* propagating Err here, so Silent
-                            // surfacing past the dispatcher is a bug.
-                            RunResult::Error {
-                                message: format!("silent strategy unreachable: {}", e),
-                                addr: self.pc,
-                            }
-                        }
                     };
                     return (result, blocks_executed, forks);
                 }

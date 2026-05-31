@@ -213,15 +213,6 @@ pub enum FallbackStrategy {
     /// genuine bugs (TypeMismatch, UnknownTemp, InvalidIR, lifter errors,
     /// callback-side failures).
     Panic,
-    /// Reserved: no current `CbExecutionError` variant uses this. The
-    /// interpreter does have *non-error* silent substitution paths (e.g.
-    /// the `or_else` fallbacks for unsupported binops in
-    /// `expressions.rs`); those return `Ok(...)` and never reach the
-    /// strategy dispatcher. This variant exists so future variants can
-    /// opt into a "log and synthesize a sound default" policy explicitly
-    /// instead of silently swallowing.
-    #[allow(dead_code)]
-    Silent,
 }
 
 /// Errors during callback-based VEX execution.
