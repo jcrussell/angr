@@ -3,16 +3,11 @@
 //! Handles read(fd, buf, count) for stdin (fd=0) by creating symbolic bytes.
 //! Other file descriptors fall back to Python.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 const MAX_READ_SIZE: u64 = 4096;
-
-/// Counter for unique stdin read variable names.
-static READ_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Native read implementation.
 ///
@@ -64,7 +59,7 @@ impl NativeSimProcedure for NativeRead {
         }
 
         // Create symbolic bytes and store to buffer
-        let read_id = READ_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let read_id = symbol_counter("read");
 
         // First, create all symbolic byte names + bitvectors (needs solver borrow)
         let names: Vec<String> = (0..count)

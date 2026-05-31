@@ -48,11 +48,31 @@ pub mod strtol;
 pub mod write;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::memory::MemoryError;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
+
+/// Per-prefix counters for minting unique symbolic-variable IDs across
+/// native procedures. Lazily initialized; entries are created on first use.
+static SYMBOL_COUNTERS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
+
+/// Returns a monotone-unique counter value for the given prefix.
+///
+/// Each prefix maintains its own counter starting at 0, so callers using
+/// different prefixes get independent monotone sequences. Replaces the
+/// per-procedure `static AtomicU64 *_COUNTER` pattern so all fresh-symbol
+/// counters are coordinated in one place and easy to audit. Symbol-name
+/// uniqueness still depends on the prefix the caller chooses.
+pub fn symbol_counter(prefix: &'static str) -> u64 {
+    let counters = SYMBOL_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = counters.lock().expect("symbol counter mutex poisoned");
+    let entry = guard.entry(prefix).or_insert(0);
+    let id = *entry;
+    *entry += 1;
+    id
+}
 
 /// Error during native procedure execution.
 ///

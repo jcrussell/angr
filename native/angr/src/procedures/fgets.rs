@@ -11,18 +11,11 @@
 //! - getchar: equivalent to fgetc(stdin)
 //! - Non-stdin FILE* streams fall back to Python
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 const MAX_FGETS_SIZE: u64 = 4096;
-
-/// Counter for unique stdin variable names across fgets/fgetc/getchar.
-static FGETS_COUNTER: AtomicU64 = AtomicU64::new(0);
-static FGETC_COUNTER: AtomicU64 = AtomicU64::new(0);
-static GETCHAR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Native fgets implementation.
 ///
@@ -67,7 +60,7 @@ impl NativeSimProcedure for NativeFgets {
         }
 
         let read_count = size - 1; // fgets reads at most size-1 bytes
-        let read_id = FGETS_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let read_id = symbol_counter("fgets");
 
         // Create symbolic bytes and record for stdin tracking
         let names: Vec<String> = (0..read_count)
@@ -132,7 +125,7 @@ impl NativeSimProcedure for NativeFgetc {
         // args[0] is FILE* stream — ignored (treated as stdin)
         let _ = &args[0];
 
-        let read_id = FGETC_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let read_id = symbol_counter("fgetc");
         let name = format!("stdin_fgetc_{}", read_id);
         let result = {
             let ctx = state.solver().borrow();
@@ -169,7 +162,7 @@ impl NativeSimProcedure for NativeGetchar {
         state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let read_id = GETCHAR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let read_id = symbol_counter("getchar");
         let name = format!("stdin_getchar_{}", read_id);
         let result = {
             let ctx = state.solver().borrow();

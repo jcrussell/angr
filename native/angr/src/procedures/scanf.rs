@@ -7,17 +7,12 @@
 //! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %ld, %lld, %lu, %lx, %%
 //! Falls back to Python for symbolic format strings or pointer arguments.
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 const MAX_FMT_LEN: usize = 4096;
 const MAX_SCANF_STR_LEN: u64 = 256;
-
-/// Counter for unique scanf symbolic variable names.
-static SCANF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Read a null-terminated concrete string from memory.
 fn read_format_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
@@ -190,7 +185,7 @@ fn do_scanf(
     let fmt = read_format_string(state, fmt_addr)?;
     let specs = parse_scanf_format(&fmt)?;
 
-    let scan_id = SCANF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let scan_id = symbol_counter("scanf");
     let mut arg_idx: usize = 0;
     let mut conversions: u64 = 0;
 

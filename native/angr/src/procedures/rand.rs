@@ -4,14 +4,9 @@
 //! this is modeled as an unconstrained 31-bit symbolic variable
 //! (zero-extended to 32 bits), matching angr's Python SimProcedure.
 
-use super::{NativeSimProcedure, ProcedureError};
+use super::{NativeSimProcedure, ProcedureError, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Counter for unique rand variable names.
-static RAND_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Native rand implementation.
 ///
@@ -37,7 +32,7 @@ impl NativeSimProcedure for NativeRand {
         state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let counter = RAND_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let counter = symbol_counter("rand");
         let name = format!("rand_{}", counter);
 
         // Create a 31-bit symbolic variable (matches angr's rand which uses 31 bits)
