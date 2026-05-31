@@ -42,6 +42,7 @@ pub mod strcat;
 pub mod strchr;
 pub mod strcmp;
 pub mod strcpy;
+pub mod strings;
 pub mod strlen;
 pub mod strstr;
 pub mod strtol;

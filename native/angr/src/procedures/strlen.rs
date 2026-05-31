@@ -17,31 +17,12 @@
 //! - Maximum string length is 4096 bytes (configurable).
 
 use super::ProcedureError;
+use super::strings::{ScanOutcome, build_strlen_chain, scan_for_null_symbolic};
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// Maximum string length before falling back to Python.
 const MAX_STRLEN: usize = 4096;
-
-/// Build the strlen ITE chain over collected (position, byte_8bit) loads.
-/// Chain is built right-to-left so earlier null positions take precedence.
-/// `default_len` is the value used past the scanned region (typically the
-/// upper bound: MAX_STRLEN for strlen, maxlen for strnlen).
-fn build_strlen_chain(
-    bytes: &[(u64, RustBV)],
-    arch_bits: u32,
-    default_len: u64,
-    ctx: &SymContext,
-) -> RustBV {
-    let zero_byte = RustBV::concrete(0u128, 8);
-    let mut result = RustBV::concrete(default_len as u128, arch_bits);
-    for (pos, byte) in bytes.iter().rev() {
-        let is_null = byte.eq(&zero_byte, ctx);
-        let len_bv = RustBV::concrete(*pos as u128, arch_bits);
-        result = is_null.ite(&len_bv, &result, ctx);
-    }
-    result
-}
 
 /// Shared scan for strlen / strnlen. `max_scan` is the upper bound on the
 /// number of positions inspected (MAX_STRLEN for strlen, min(maxlen, MAX) for
@@ -56,44 +37,22 @@ fn scan_for_null(
         return Ok(Some(RustBV::concrete(0u128, arch_bits)));
     }
 
-    let mut bytes: Vec<(u64, RustBV)> = Vec::new();
-    let mut symbolic_seen = false;
-
-    for i in 0..max_scan {
-        let byte_addr = addr.wrapping_add(i);
-        let byte_val = state
-            .memory_load(byte_addr, 1)
-            ?;
-
-        if !symbolic_seen {
-            if let Some(b) = byte_val.as_u64() {
-                if (b as u8) == 0 {
-                    return Ok(Some(RustBV::concrete(i as u128, arch_bits)));
-                }
-                continue;
+    match scan_for_null_symbolic(state, addr, max_scan)? {
+        ScanOutcome::AllConcrete { length } => {
+            // Hit a concrete null mid-scan → that's the length.
+            // Ran the full `max_scan` without finding null → for strnlen the
+            // natural answer is `max_scan`; for strlen we ran past MAX_STRLEN
+            // and should error out (preserves prior behavior).
+            if length == max_scan && max_scan >= MAX_STRLEN as u64 {
+                return Err(ProcedureError::MaxIterations(MAX_STRLEN));
             }
-            symbolic_seen = true;
+            Ok(Some(RustBV::concrete(length as u128, arch_bits)))
         }
-
-        let stop_scan = byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
-        bytes.push((i, byte_val));
-        if stop_scan {
-            break;
+        ScanOutcome::Symbolic { bytes } => {
+            let ctx = state.solver().borrow();
+            Ok(Some(build_strlen_chain(&bytes, arch_bits, max_scan, &ctx)))
         }
     }
-
-    if !symbolic_seen {
-        // All concrete and no null seen in max_scan bytes. For strnlen
-        // (max_scan < MAX_STRLEN) the natural answer is max_scan. For strlen
-        // we ran past MAX_STRLEN — keep prior behavior of erroring.
-        if max_scan >= MAX_STRLEN as u64 {
-            return Err(ProcedureError::MaxIterations(MAX_STRLEN));
-        }
-        return Ok(Some(RustBV::concrete(max_scan as u128, arch_bits)));
-    }
-
-    let ctx = state.solver().borrow();
-    Ok(Some(build_strlen_chain(&bytes, arch_bits, max_scan, &ctx)))
 }
 
 crate::declare_proc! {

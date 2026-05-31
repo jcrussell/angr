@@ -6,6 +6,7 @@
 //! - If any source byte is symbolic, falls back to Python
 //! - Maximum string length is 4096 bytes
 
+use super::strings::{scan_concrete_bounded, scan_concrete_until_null};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -36,29 +37,18 @@ impl NativeSimProcedure for NativeStrcpy {
         let dest = extract_concrete_arg(&args[0], "dest")?;
         let src = extract_concrete_arg(&args[1], "src")?;
 
-        // Read source string until null terminator
-        let mut buf = Vec::with_capacity(256);
-        for i in 0..MAX_STRLEN as u64 {
-            let byte_val = state
-                .memory_load(src.wrapping_add(i), 1)
-                ?;
-            let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
-            buf.push(byte);
-            if byte == 0 {
-                break;
-            }
-            if i == MAX_STRLEN as u64 - 1 {
-                return Err(ProcedureError::MaxIterations(MAX_STRLEN));
-            }
-        }
+        // Read source string up to (but not including) the null terminator.
+        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
 
-        // Write to destination byte-by-byte (including null terminator)
+        // Write to destination byte-by-byte, then the null terminator.
         for (i, &byte) in buf.iter().enumerate() {
-            let bv = RustBV::concrete(byte as u128, 8);
             state
-                .memory_store(dest.wrapping_add(i as u64), bv)
-                ?;
+                .memory_store(dest.wrapping_add(i as u64), RustBV::concrete(byte as u128, 8))?;
         }
+        state.memory_store(
+            dest.wrapping_add(buf.len() as u64),
+            RustBV::concrete(0u128, 8),
+        )?;
 
         Ok(Some(args[0].clone()))
     }
@@ -93,31 +83,17 @@ impl NativeSimProcedure for NativeStrncpy {
             return Err(ProcedureError::MaxIterations(n as usize));
         }
 
-        // Read up to n bytes from source, stopping at null
-        let mut buf = Vec::with_capacity(n as usize);
-        let mut null_found = false;
-        for i in 0..n {
-            if null_found {
-                buf.push(0);
-            } else {
-                let byte_val = state
-                    .memory_load(src.wrapping_add(i), 1)
-                    ?;
-                let byte =
-                    extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
-                buf.push(byte);
-                if byte == 0 {
-                    null_found = true;
-                }
-            }
+        // Read up to n bytes from source, stopping early at null. Pre-null
+        // bytes go in `buf` (null itself excluded); when null is found we
+        // pad the rest of the n-byte window with zeros.
+        let (mut buf, null_found) = scan_concrete_bounded(state, src, n as usize, "src")?;
+        if null_found {
+            buf.resize(n as usize, 0);
         }
 
-        // Write to destination byte-by-byte
         for (i, &byte) in buf.iter().enumerate() {
-            let bv = RustBV::concrete(byte as u128, 8);
             state
-                .memory_store(dest.wrapping_add(i as u64), bv)
-                ?;
+                .memory_store(dest.wrapping_add(i as u64), RustBV::concrete(byte as u128, 8))?;
         }
 
         Ok(Some(args[0].clone()))
@@ -150,32 +126,22 @@ impl NativeSimProcedure for NativeStrdup {
     ) -> Result<Option<RustBV>, ProcedureError> {
         let src = extract_concrete_arg(&args[0], "s")?;
 
-        // Read source string until null terminator
-        let mut buf = Vec::with_capacity(256);
-        for i in 0..MAX_STRLEN as u64 {
-            let byte_val = state
-                .memory_load(src.wrapping_add(i), 1)
-                ?;
-            let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
-            buf.push(byte);
-            if byte == 0 {
-                break;
-            }
-            if i == MAX_STRLEN as u64 - 1 {
-                return Err(ProcedureError::MaxIterations(MAX_STRLEN));
-            }
-        }
+        // Read source string up to (but not including) the null terminator.
+        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
 
-        // Allocate new buffer (strlen + 1 for null terminator)
-        let new_addr = state.heap_alloc(buf.len() as u64);
+        // Allocate new buffer (strlen + 1 for null terminator).
+        let new_addr = state.heap_alloc(buf.len() as u64 + 1);
 
-        // Copy bytes to new allocation
         for (i, &byte) in buf.iter().enumerate() {
-            let bv = RustBV::concrete(byte as u128, 8);
-            state
-                .memory_store(new_addr.wrapping_add(i as u64), bv)
-                ?;
+            state.memory_store(
+                new_addr.wrapping_add(i as u64),
+                RustBV::concrete(byte as u128, 8),
+            )?;
         }
+        state.memory_store(
+            new_addr.wrapping_add(buf.len() as u64),
+            RustBV::concrete(0u128, 8),
+        )?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(new_addr as u128, bits)))

@@ -4,6 +4,7 @@
 //!
 //! Symbolic arguments fall back to Python.
 
+use super::strings::scan_concrete_until_null;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -37,18 +38,7 @@ impl NativeSimProcedure for NativeStrstr {
 
         let bits = state.arch().bits();
 
-        // Read needle into a Vec
-        let mut needle = Vec::new();
-        for i in 0..MAX_SCAN as u64 {
-            let val = state
-                .memory_load(needle_addr.wrapping_add(i), 1)
-                ?;
-            let byte = extract_concrete_arg(&val, &format!("needle[{}]", i))? as u8;
-            if byte == 0 {
-                break;
-            }
-            needle.push(byte);
-        }
+        let needle = scan_concrete_until_null(state, needle_addr, MAX_SCAN, "needle")?;
 
         // Empty needle: return haystack
         if needle.is_empty() {

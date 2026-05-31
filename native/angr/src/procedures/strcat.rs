@@ -2,27 +2,12 @@
 //!
 //! Concrete string concatenation. Symbolic arguments fall back to Python.
 
+use super::strings::{find_null_addr, scan_concrete_bounded, scan_concrete_until_null};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_STRLEN: usize = 4096;
-
-/// Find null terminator position in concrete string.
-fn find_null(state: &mut RustSimState, addr: u64) -> Result<u64, ProcedureError> {
-    for i in 0..MAX_STRLEN as u64 {
-        let byte_addr = addr.wrapping_add(i);
-        let byte_val = state
-            .memory_load(byte_addr, 1)
-            ?;
-        let byte =
-            extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))? as u8;
-        if byte == 0 {
-            return Ok(byte_addr);
-        }
-    }
-    Err(ProcedureError::MaxIterations(MAX_STRLEN))
-}
 
 /// strcat: append src string to dest.
 pub struct NativeStrcat;
@@ -43,27 +28,19 @@ impl NativeSimProcedure for NativeStrcat {
         let dest = extract_concrete_arg(&args[0], "dest")?;
         let src = extract_concrete_arg(&args[1], "src")?;
 
-        // Find end of dest
-        let dest_end = find_null(state, dest)?;
+        let dest_end = find_null_addr(state, dest, MAX_STRLEN, "dest")?;
+        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
 
-        // Copy src to dest_end (including null terminator)
-        for i in 0..MAX_STRLEN as u64 {
-            let src_addr = src.wrapping_add(i);
-            let byte_val = state
-                .memory_load(src_addr, 1)
-                ?;
-            let byte =
-                extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
-
-            let dst_addr = dest_end.wrapping_add(i);
-            state
-                .memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
-                ?;
-
-            if byte == 0 {
-                break;
-            }
+        for (i, &byte) in buf.iter().enumerate() {
+            state.memory_store(
+                dest_end.wrapping_add(i as u64),
+                RustBV::concrete(byte as u128, 8),
+            )?;
         }
+        state.memory_store(
+            dest_end.wrapping_add(buf.len() as u64),
+            RustBV::concrete(0u128, 8),
+        )?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(dest as u128, bits)))
@@ -90,34 +67,24 @@ impl NativeSimProcedure for NativeStrncat {
         let src = extract_concrete_arg(&args[1], "src")?;
         let n = extract_concrete_arg(&args[2], "n")?;
 
-        let dest_end = find_null(state, dest)?;
+        let dest_end = find_null_addr(state, dest, MAX_STRLEN, "dest")?;
         let max_copy = n.min(MAX_STRLEN as u64);
 
-        let mut copied = 0u64;
-        for i in 0..max_copy {
-            let src_addr = src.wrapping_add(i);
-            let byte_val = state
-                .memory_load(src_addr, 1)
-                ?;
-            let byte =
-                extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
-
-            if byte == 0 {
-                break;
-            }
-
-            let dst_addr = dest_end.wrapping_add(i);
-            state
-                .memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
-                ?;
-            copied += 1;
+        // Copy at most `max_copy` non-null bytes from src.
+        let (buf, _null_found) =
+            scan_concrete_bounded(state, src, max_copy as usize, "src")?;
+        for (i, &byte) in buf.iter().enumerate() {
+            state.memory_store(
+                dest_end.wrapping_add(i as u64),
+                RustBV::concrete(byte as u128, 8),
+            )?;
         }
 
-        // Null-terminate
-        let null_addr = dest_end.wrapping_add(copied);
-        state
-            .memory_store(null_addr, RustBV::concrete(0u128, 8))
-            ?;
+        // Always null-terminate after the copied bytes.
+        state.memory_store(
+            dest_end.wrapping_add(buf.len() as u64),
+            RustBV::concrete(0u128, 8),
+        )?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(dest as u128, bits)))
