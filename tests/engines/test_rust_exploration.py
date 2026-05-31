@@ -1161,6 +1161,51 @@ class TestRustExplorationPython:
             f"got {stats['z3_ast_cache_miss']}"
         )
 
+    def test_fork_counters_exposed_and_non_summable(self, fauxware_project):
+        """angr-95up.2: `solver_fork_count` and `deferred_fork_count` are
+        exposed via `get_execution_stats()` as non-negative u64s AND they
+        measure distinct, non-summable concepts.
+
+        Semantics (mirrored from counter docstrings in
+        `native/angr/src/interpreter/mod.rs`):
+
+        - `deferred_fork_count` counts deferred forks PRESENTED to
+          post-block processing (input length of the `deferred_forks`
+          Vec, summed across all processing sites). Not every entry
+          produces a solver clone: callback-resume entries with no
+          stored/reconstructed condition are skipped, and stepping-path
+          entries missing a condition route through a conservative
+          `state.fork()` that is NOT tallied by `solver_fork_count`.
+        - `solver_fork_count` counts solver Z3-clone operations whose
+          cost is timed by `solver_fork_time_ns`. It includes a
+          pre-callback state-snapshot fork on the SimProcedure path that
+          is NOT a deferred fork, and excludes the conservative-fork
+          P15 fallback. There is no "total fork count" the two should
+          sum to.
+
+        Both counters are also profiling-gated at their increment sites
+        (they live inside the same `if let Some(start) = ..._fork_start`
+        block as their `*_fork_time_ns` siblings), so a run that did not
+        call `enable_profiling()` will leave the counters at zero even
+        when the underlying fork ops happen. Test runs with profiling
+        enabled and only requires structural well-formedness, not a
+        specific count (count is a property of the binary's symbolic
+        branch geometry, not the counter wiring).
+        """
+        from angr.exploration import RustExplorationManager
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.enable_profiling()
+        mgr.explore(find=0x4006ed, num_find=1)
+
+        exec_stats = mgr._rust_mgr.get_execution_stats()
+        for key in ("solver_fork_count", "deferred_fork_count",
+                    "solver_fork_time_ns", "deferred_fork_time_ns"):
+            assert key in exec_stats, f"missing key {key}"
+            assert isinstance(exec_stats[key], int), f"{key} not int"
+            assert exec_stats[key] >= 0, f"{key} negative: {exec_stats[key]}"
+
     def test_analyze_constraint_sharing(self, fauxware_project):
         """angr-zdho: `analyze_constraint_sharing()` reports pointer-vs-structural
         sharing across every state's assumed-constraint RustBV graph.

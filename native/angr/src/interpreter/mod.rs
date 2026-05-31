@@ -186,13 +186,34 @@ define_execution_stats! {
     prefetch_time_ns: sum,
     /// Number of statements executed.
     stmt_count: sum,
-    /// Number of deferred forks processed in exploration loop.
+    /// Number of deferred forks PRESENTED to the exploration loop's
+    /// post-block processing (input length of the `deferred_forks` Vec,
+    /// summed across all processing sites). NOT every entry produces a
+    /// solver clone: if a stored/reconstructed condition is unavailable
+    /// the entry is silently skipped in the run_loop callback-resume path
+    /// (run_loop.rs ~line 477), or routed through a no-condition
+    /// conservative `state.fork()` in the stepping paths (which DOES clone
+    /// the solver but is not tallied below). This counter is therefore
+    /// NOT directly comparable to `solver_fork_count` — they measure
+    /// orthogonal but overlapping concepts. See angr-95up.2.
     deferred_fork_count: sum,
     /// Time spent processing deferred forks (nanoseconds).
     deferred_fork_time_ns: sum,
     /// Time spent in solver fork/clone operations (nanoseconds).
     solver_fork_time_ns: sum,
-    /// Number of solver fork operations.
+    /// Number of solver fork operations whose Z3-clone cost is timed by
+    /// `solver_fork_time_ns`. Tallied at three sites: (1) pre-callback
+    /// state-snapshot fork in the SimProcedure path (stepping.rs ~line
+    /// 151, NOT a deferred fork); (2) per-deferred-fork creation in
+    /// `handle_block_end_or_max_blocks` when a condition is available
+    /// (stepping.rs ~line 493); (3) per-deferred-fork creation in the
+    /// callback-resume path when a condition is available (run_loop.rs
+    /// ~line 513). NOT incremented by the no-condition conservative-fork
+    /// fallback in `process_deferred_forks_into` (stepping.rs ~line 1200)
+    /// or the main stepping fallback (stepping.rs ~line 531). Because of
+    /// (1), this counter generally exceeds the deferred-fork-with-
+    /// condition subset of `deferred_fork_count`; because of the
+    /// fallbacks, the relationship is not a simple sum. See angr-95up.2.
     solver_fork_count: sum,
     /// Number of active states at end of run.
     active_states_count: snapshot,
