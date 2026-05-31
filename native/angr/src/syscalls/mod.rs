@@ -94,7 +94,7 @@ pub struct NativeSyscallRegistry {
 ///
 /// Wraps each handler in `Arc::new(...)` and inserts into the registry.
 /// Each row is `(num, expr)` where `expr` constructs a `NativeSyscall`
-/// (e.g. `read::NativeReadSyscall` or `exit::NativeExitSyscall { name: "exit" }`).
+/// (e.g. `read::NativeReadSyscall` or `exit::NativeExitSyscall`).
 ///
 /// Per-arch syscall numbers diverge across Linux ABIs, so each arch keeps
 /// its own table — the macro collapses the boilerplate (one `r.register(...)`
@@ -145,12 +145,12 @@ impl NativeSyscallRegistry {
             (11, munmap::NativeMunmapSyscall),
             (12, brk::NativeBrkSyscall),
             (13, sigaction::NativeRtSigactionSyscall),
-            (60, exit::NativeExitSyscall { name: "exit" }),
+            (60, exit::NativeExitSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
             (158, arch_prctl::NativeArchPrctlSyscall),
             (201, sim_time::NativeTimeSyscall),
             (228, sim_time::NativeClockGettimeSyscall),
-            (231, exit::NativeExitSyscall { name: "exit_group" }),
+            (231, exit::NativeExitSyscall),
         ]);
 
         // ===== Per-arch registrations (angr-7xms) =====
@@ -174,7 +174,7 @@ impl NativeSyscallRegistry {
         // form) and mmap2 (192, uses page-offset semantics — needs a distinct
         // handler).
         register_syscalls!(r, "X86", [
-            (1, exit::NativeExitSyscall { name: "exit" }),
+            (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
             (13, sim_time::NativeTimeSyscall),
@@ -183,14 +183,14 @@ impl NativeSyscallRegistry {
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
-            (252, exit::NativeExitSyscall { name: "exit_group" }),
+            (252, exit::NativeExitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
         ]);
 
         // Linux ARM EABI (arm/asm/unistd-eabi.h). Skipped: mmap (90, legacy
         // form) and mmap2 (192, page-offset semantics).
         register_syscalls!(r, "ARM", [
-            (1, exit::NativeExitSyscall { name: "exit" }),
+            (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
             (13, sim_time::NativeTimeSyscall),
@@ -199,7 +199,7 @@ impl NativeSyscallRegistry {
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
-            (248, exit::NativeExitSyscall { name: "exit_group" }),
+            (248, exit::NativeExitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
         ]);
 
@@ -209,8 +209,8 @@ impl NativeSyscallRegistry {
         register_syscalls!(r, "ARM64", [
             (63, read::NativeReadSyscall),
             (64, write::NativeWriteSyscall),
-            (93, exit::NativeExitSyscall { name: "exit" }),
-            (94, exit::NativeExitSyscall { name: "exit_group" }),
+            (93, exit::NativeExitSyscall),
+            (94, exit::NativeExitSyscall),
             (113, sim_time::NativeClockGettimeSyscall),
             (134, sigaction::NativeRtSigactionSyscall),
             (169, sim_time::NativeGettimeofdaySyscall),
@@ -225,7 +225,7 @@ impl NativeSyscallRegistry {
         // but O32 only passes 4 in registers ($a0-$a3); arg 5+ live on the
         // stack and our extract_syscall_args does not currently traverse it.
         register_syscalls!(r, "MIPS32", [
-            (4001, exit::NativeExitSyscall { name: "exit" }),
+            (4001, exit::NativeExitSyscall),
             (4003, read::NativeReadSyscall),
             (4004, write::NativeWriteSyscall),
             (4013, sim_time::NativeTimeSyscall),
@@ -234,7 +234,7 @@ impl NativeSyscallRegistry {
             (4091, munmap::NativeMunmapSyscall),
             (4125, mprotect::NativeMprotectSyscall),
             (4194, sigaction::NativeRtSigactionSyscall),
-            (4246, exit::NativeExitSyscall { name: "exit_group" }),
+            (4246, exit::NativeExitSyscall),
             (4263, sim_time::NativeClockGettimeSyscall),
         ]);
 
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn exit_handler_returns_exit_outcome() {
         use crate::state::RustSimState;
-        let h = exit::NativeExitSyscall { name: "exit" };
+        let h = exit::NativeExitSyscall;
         let mut state = RustSimState::new("amd64").expect("amd64 state");
         let outcome = h.call(&mut state, &[]).expect("exit handler succeeds");
         assert!(matches!(outcome, SyscallOutcome::Exit));

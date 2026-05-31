@@ -4,24 +4,30 @@
 //! deadend the state instead of advancing PC. The exit code (in rdi) is
 //! intentionally not extracted — angr's `libc.exit` SimProcedure ignores
 //! it for control flow as well, so we follow that contract.
+//!
+//! Unit struct: exit and exit_group share identical semantics here, so
+//! the registry keys both syscall numbers to the same handler instead of
+//! carrying a `name` field to distinguish them.
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-pub struct NativeExitSyscall {
-    pub name: &'static str,
-}
+pub struct NativeExitSyscall;
 
 impl NativeSyscall for NativeExitSyscall {
     fn name(&self) -> &'static str {
-        self.name
+        "exit"
     }
 
     fn num_args(&self) -> usize {
         0
     }
 
+    /// `_state` and `_args` are required by the trait but unused: this
+    /// handler signals deadend by returning `SyscallOutcome::Exit` without
+    /// inspecting any state or argument. `num_args() == 0` also guarantees
+    /// the dispatcher passes an empty `args` slice.
     fn call(
         &self,
         _state: &mut RustSimState,
@@ -43,7 +49,7 @@ mod tests {
     /// is ignored and the outcome is still Exit.
     #[test]
     fn symbolic_arg_is_unreachable_and_ignored() {
-        let h = NativeExitSyscall { name: "exit" };
+        let h = NativeExitSyscall;
         let mut state = RustSimState::new("amd64").expect("amd64 state");
         let ctx = SymContext::new();
         let sym = RustBV::symbolic(&ctx, "exit_status", 64);
