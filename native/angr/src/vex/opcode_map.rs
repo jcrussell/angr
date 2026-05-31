@@ -817,6 +817,24 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "64x2" => (I64, 2), "64x4" => (I64, 4),
     });
 
+    // NEON integer reciprocal estimate — Iop_RecipEst32Ux{2,4} (URECPE) and
+    // Iop_RSqrtEst32Ux{2,4} (URSQRTE). Fresh-symbolic per lane via VIRecipEst /
+    // VIRSqrtEst. Implemented in angr-tukg.5.
+    if let Some(rest) = op_str.strip_prefix("Iop_RecipEst") {
+        match rest {
+            "32Ux2" => return Some(IROp::VIRecipEst { count: 2 }),
+            "32Ux4" => return Some(IROp::VIRecipEst { count: 4 }),
+            _ => {}
+        }
+    }
+    if let Some(rest) = op_str.strip_prefix("Iop_RSqrtEst") {
+        match rest {
+            "32Ux2" => return Some(IROp::VIRSqrtEst { count: 2 }),
+            "32Ux4" => return Some(IROp::VIRSqrtEst { count: 4 }),
+            _ => {}
+        }
+    }
+
     // V128/V256 to/from conversions.
     cast_arms!(op_str; "Iop_" => Truncate    { "V128to64"   => (V128, I64) });
     cast_arms!(op_str; "Iop_" => ZeroExtend  { "64UtoV128"  => (I64, V128), "32UtoV128" => (I32, V128) });
@@ -904,11 +922,9 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // implemented in angr-iyon — routed through parse_float to
         // IROp::VFRecipEst{,S} / VFRecipStep / VFRSqrtEst{,S} / VFRSqrtStep.
 
-        // Reciprocal estimate (integer, NEON-only)
-        "Iop_RecipEst32Ux2" => "Iop_RecipEst32Ux2",
-        "Iop_RecipEst32Ux4" => "Iop_RecipEst32Ux4",
-        "Iop_RSqrtEst32Ux2" => "Iop_RSqrtEst32Ux2",
-        "Iop_RSqrtEst32Ux4" => "Iop_RSqrtEst32Ux4",
+        // NOTE: Iop_RecipEst32Ux{2,4} (URECPE) and Iop_RSqrtEst32Ux{2,4}
+        // (URSQRTE) implemented in angr-tukg.5 — routed through parse_vector
+        // to IROp::VIRecipEst / IROp::VIRSqrtEst (fresh-symbolic per lane).
 
         // NOTE: Iop_QAdd{N}{S/U}x{M} / Iop_QSub{N}{S/U}x{M} (NEON saturating
         // integer add/sub) implemented in angr-tukg.1 — routed through
@@ -1475,8 +1491,9 @@ mod tests {
         // original opcode string captured. Dispatch in VEXOps::unop/binop
         // panics on this variant — the scaffolding makes missing NEON
         // coverage visible immediately instead of silently producing a
-        // fresh-symbolic value.
-        for op in ["Iop_RecipEst32Ux4", "Iop_PwAdd32Fx2"] {
+        // fresh-symbolic value. After angr-tukg.5 the only remaining
+        // placeholder is Iop_PwAdd32Fx2 (FP pairwise add, parked).
+        for op in ["Iop_PwAdd32Fx2"] {
             match parse_opcode(op) {
                 IROp::NeonUnimplemented(name) => assert_eq!(name, op),
                 other => panic!("{} expected NeonUnimplemented, got {:?}", op, other),

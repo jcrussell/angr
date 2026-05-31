@@ -437,7 +437,9 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VFRSqrtEst { .. }
         | IROp::VFRSqrtStep { .. }
         | IROp::VFRecipEstS { .. }
-        | IROp::VFRSqrtEstS { .. } => VexOpFamily::Vec,
+        | IROp::VFRSqrtEstS { .. }
+        | IROp::VIRecipEst { .. }
+        | IROp::VIRSqrtEst { .. } => VexOpFamily::Vec,
 
         // x86-specific carry-less multiply / CRC32 — classified as Arith
         // (they're integer ops in the polynomial / checksum sense).
@@ -563,6 +565,18 @@ impl VEXOps {
             }
             IROp::VFRSqrtEst { elem, count } => {
                 Self::vec_float_fresh_per_lane(elem, count, "RSqrtEst", ctx)
+            }
+
+            // Packed integer reciprocal / reciprocal-sqrt estimate (ARM URECPE
+            // / URSQRTE, 32-bit lanes). Fresh-symbolic per lane: claripy has no
+            // generic handler for these integer ops, so any precision answer
+            // would be more faithful than angr Python and could diverge. See
+            // VFRecipEst for the same policy on FP variants.
+            IROp::VIRecipEst { count } => {
+                Self::vec_int_fresh_per_lane(32, count, "RecipEst", ctx)
+            }
+            IROp::VIRSqrtEst { count } => {
+                Self::vec_int_fresh_per_lane(32, count, "RSqrtEst", ctx)
             }
 
             // NEON broadcast scalar to vector
@@ -2864,6 +2878,24 @@ impl VEXOps {
             IRType::F64 => 64,
             _ => return Err(OpError::InvalidFloatType(elem)),
         };
+        let mut lanes: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            lanes.push(RustBV::symbolic(ctx, name, lane_bits));
+        }
+        Ok(Self::concat_le_elements(lanes, ctx))
+    }
+
+    /// Packed integer fresh-symbolic per lane. Used for `VIRecipEst` /
+    /// `VIRSqrtEst` (ARM URECPE / URSQRTE) where claripy has no generic
+    /// handler — emitting a fresh symbolic per lane keeps the Rust engine
+    /// from diverging from angr Python (which raises) while still letting
+    /// the binary's Newton-Raphson refinement loop converge.
+    fn vec_int_fresh_per_lane(
+        lane_bits: u32,
+        count: u8,
+        name: &str,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
         let mut lanes: Vec<RustBV> = Vec::with_capacity(count as usize);
         for _ in 0..count {
             lanes.push(RustBV::symbolic(ctx, name, lane_bits));
@@ -6622,6 +6654,69 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.width(), 128);
+    }
+
+    /// NEON Iop_RecipEst32Ux2 (D-reg URECPE, 2x u32 = 64-bit result). Fresh
+    /// symbolic per lane; shape is what matters here.
+    #[test]
+    fn test_virecip_est_packed_u32x2_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 64);
+        let result = VEXOps::unop(IROp::VIRecipEst { count: 2 }, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 64);
+        // Symbolic: should not be concrete because each lane was minted fresh.
+        assert!(result.as_u128().is_none());
+    }
+
+    /// NEON Iop_RecipEst32Ux4 (Q-reg URECPE, 4x u32 = 128-bit result).
+    #[test]
+    fn test_virecip_est_packed_u32x4_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 128);
+        let result = VEXOps::unop(IROp::VIRecipEst { count: 4 }, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 128);
+        assert!(result.as_u128().is_none());
+    }
+
+    /// NEON Iop_RSqrtEst32Ux2 (D-reg URSQRTE, 2x u32 = 64-bit result).
+    #[test]
+    fn test_virsqrt_est_packed_u32x2_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 64);
+        let result = VEXOps::unop(IROp::VIRSqrtEst { count: 2 }, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 64);
+        assert!(result.as_u128().is_none());
+    }
+
+    /// NEON Iop_RSqrtEst32Ux4 (Q-reg URSQRTE, 4x u32 = 128-bit result).
+    #[test]
+    fn test_virsqrt_est_packed_u32x4_shape() {
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::concrete(0u128, 128);
+        let result = VEXOps::unop(IROp::VIRSqrtEst { count: 4 }, arg, &ctx).unwrap();
+        assert_eq!(result.width(), 128);
+        assert!(result.as_u128().is_none());
+    }
+
+/// End-to-end opcode-string routing for the integer NEON RecipEst /
+    /// RSqrtEst ops — these resolve to the new VIRecipEst / VIRSqrtEst
+    /// variants instead of NeonUnimplemented. Catches regressions where
+    /// parse_vector and parse_neon_unimplemented fall out of sync.
+    #[test]
+    fn test_int_recip_rsqrt_opcode_routing() {
+        use crate::vex::opcode_map::parse_opcode;
+        for (name, count) in [("Iop_RecipEst32Ux2", 2u8), ("Iop_RecipEst32Ux4", 4)] {
+            match parse_opcode(name) {
+                IROp::VIRecipEst { count: c } => assert_eq!(c, count),
+                other => panic!("{}: expected VIRecipEst, got {:?}", name, other),
+            }
+        }
+        for (name, count) in [("Iop_RSqrtEst32Ux2", 2u8), ("Iop_RSqrtEst32Ux4", 4)] {
+            match parse_opcode(name) {
+                IROp::VIRSqrtEst { count: c } => assert_eq!(c, count),
+                other => panic!("{}: expected VIRSqrtEst, got {:?}", name, other),
+            }
+        }
     }
 
     /// End-to-end opcode-string routing: all 16 FP Recip/RSqrt opcodes

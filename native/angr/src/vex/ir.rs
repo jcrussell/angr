@@ -1002,6 +1002,26 @@ pub enum IROp {
         widen: bool,
     },
 
+    /// NEON integer reciprocal estimate — `Iop_RecipEst32Ux{2,4}` (ARM URECPE,
+    /// DDI 0487 C7.2.336). Per-32-bit-lane unsigned reciprocal seed for the
+    /// software Newton-Raphson refinement loop. Returns a fresh symbolic per
+    /// lane (matches the policy used for the FP variants `VFRecipEst`):
+    /// claripy raises `UnsupportedIROpError` on these integer ops, so any
+    /// precision result computed here would be more faithful than angr Python
+    /// and could cause cross-engine divergence. Binaries that use URECPE
+    /// typically follow with one or more refinement steps which converge to
+    /// the exact reciprocal regardless of the seed.
+    VIRecipEst {
+        count: u8,
+    },
+
+    /// NEON integer reciprocal-sqrt estimate — `Iop_RSqrtEst32Ux{2,4}` (ARM
+    /// URSQRTE, DDI 0487 C7.2.351). Fresh-symbolic per 32-bit lane; see
+    /// `VIRecipEst` for the policy rationale.
+    VIRSqrtEst {
+        count: u8,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1482,6 +1502,14 @@ impl IROp {
             | IROp::VFAbs { .. }
             | IROp::VFMin { .. }
             | IROp::VFMax { .. } => Some(IRType::V128),
+
+            // Integer reciprocal/rsqrt estimates (ARM URECPE / URSQRTE): 32-bit
+            // lanes, count=2 → I64 (D-reg) or count=4 → V128 (Q-reg).
+            IROp::VIRecipEst { count } | IROp::VIRSqrtEst { count } => match *count {
+                2 => Some(IRType::I64),
+                4 => Some(IRType::V128),
+                _ => None,
+            },
 
             // Newton-Raphson reciprocal/rsqrt families: result width = elem * count
             // (NEON D-reg variants are I64, Q-reg variants are V128).
