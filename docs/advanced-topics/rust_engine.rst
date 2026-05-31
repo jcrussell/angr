@@ -1430,26 +1430,76 @@ proxy.
 Workaround for unsupported events
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Drop back to the Python engine for analyses that rely on events outside
-the supported set:
+Registering a BP for an unsupported event raises
+``NotImplementedError`` from ``RustInspectProxy._check_event``
+(``angr/exploration/rust_state_proxy.py:1094-1098``). A
+``RustStateProxy`` constructed without a manager routes
+``state.inspect.b(...)`` to ``_NoOpInspectProxy``
+(``angr/exploration/rust_state_proxy.py:966-988``), which raises the
+same error on any registration attempt. The error message points at
+this document so callers can find these workarounds in order:
 
-.. code-block:: python
+1. **Reach the same goal through a supported event.** Memory,
+   register, instruction, irsb, and exit BPs all dispatch from the
+   Rust engine and cover most low-level observation use cases. For
+   example, "fire on every direct call" can be approximated with an
+   ``exit`` BP that filters on ``jumpkind == "Ijk_Call"``:
 
-   import angr
+   .. code-block:: python
 
-   proj = angr.Project("/path/to/binary", auto_load_libs=False)
-   state = proj.factory.entry_state()
+      def on_call(state):
+          if state.solver.eval(state.inspect.exit_jumpkind) == "Ijk_Call":
+              # Inspect the call target / caller PC here.
+              ...
 
-   # Python engine (default) — full state.inspect coverage
-   mgr = proj.factory.simulation_manager(state)
-   state.inspect.b("call", when=angr.BP_BEFORE, action=my_callback)
-   mgr.explore(find=0x401234)
+      mgr = RustExplorationManager(proj, [state])
+      state.inspect.b("exit", when=angr.BP_BEFORE, action=on_call)
 
-If only part of an exploration needs an unsupported event, run the
-Rust engine first to reach an interesting region and then continue
-with the Python engine from the resulting state(s) — ``mgr.found[i]``
-returns full ``SimState`` objects that can seed a Python
-``SimulationManager``.
+   The supported set is enumerated in the *Supported events* table
+   above; check it before falling back to the next workarounds.
+
+2. **Drop back to the Python engine** for analyses that fundamentally
+   depend on an unsupported event (``call``, ``fork``, ``return``,
+   ``syscall``, ``constraints``, ``simprocedure``, ``dirty``, …):
+
+   .. code-block:: python
+
+      import angr
+
+      proj = angr.Project("/path/to/binary", auto_load_libs=False)
+      state = proj.factory.entry_state()
+
+      # Python engine (default) — full state.inspect coverage
+      mgr = proj.factory.simulation_manager(state)
+      state.inspect.b("call", when=angr.BP_BEFORE, action=my_callback)
+      mgr.explore(find=0x401234)
+
+   If only part of an exploration needs the unsupported event, run
+   the Rust engine first to reach an interesting region and then
+   continue with the Python engine from the resulting state(s) —
+   ``mgr.found[i]`` returns full ``SimState`` objects that can seed a
+   Python ``SimulationManager``.
+
+3. **Use a coarser manager-level hook** when per-statement granularity
+   is not required. ``RustExplorationManager.set_progress_callback``
+   (``angr/exploration/rust_manager.py:3105``) fires every
+   ``interval_steps`` steps with stash counts and elapsed time, and
+   the post-exploration stashes (``mgr.found`` /
+   ``mgr.found_proxies()``) expose every result for inspection
+   without needing a Python-side BP at all:
+
+   .. code-block:: python
+
+      def progress(info):
+          print(f"step={info['step_count']} found={info['found_count']}")
+
+      mgr = RustExplorationManager(proj, [state])
+      mgr.set_progress_callback(progress, interval_steps=500)
+      mgr.run(max_steps=10000)
+
+      # Inspect each found state without any state.inspect BP.
+      for proxy in mgr.found_proxies():
+          print(hex(proxy.addr), proxy.solver.eval(stdin_var))
 
 Single source of truth
 ~~~~~~~~~~~~~~~~~~~~~~
