@@ -134,8 +134,6 @@ python tests/benchmarks/run_single.py fauxware --counters-json
 
 # Point at a custom angr-examples checkout (defaults to ~/repos/angr-examples)
 ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_regression.py
-
-# AVOID run_comparison_10.py on <16GB machines (OOM risk)
 ```
 
 ### Benchmark gates in CI
