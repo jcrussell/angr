@@ -566,17 +566,6 @@ impl RustBV {
         }
     }
 
-    /// Create a concrete bitvector from a u64.
-    #[inline]
-    pub fn from_u64(value: u64, width: u32) -> Self {
-        Self::concrete(value as u128, width)
-    }
-
-    /// Create a concrete bitvector from a u32.
-    pub fn from_u32(value: u32, width: u32) -> Self {
-        Self::concrete(value as u128, width)
-    }
-
     /// Create a zero bitvector.
     #[inline]
     pub fn zero(width: u32) -> Self {
