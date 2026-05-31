@@ -254,6 +254,22 @@ enum VecShiftKind {
     Sar,
 }
 
+/// Per-pair combiner kind for `vec_pairwise_binop` (the binary pairwise
+/// dispatch shared by `VPwAdd`, `VPwMin`, `VPwMax`).
+#[derive(Copy, Clone, Debug)]
+enum PwOp {
+    /// Pairwise add (Iop_PwAdd{N}x{M}).
+    Add,
+    /// Pairwise signed min (Iop_PwMin{N}Sx{M}).
+    MinS,
+    /// Pairwise unsigned min (Iop_PwMin{N}Ux{M}).
+    MinU,
+    /// Pairwise signed max (Iop_PwMax{N}Sx{M}).
+    MaxS,
+    /// Pairwise unsigned max (Iop_PwMax{N}Ux{M}).
+    MaxU,
+}
+
 /// Classify an `IROp` into a coarse-grained family for instrumentation
 /// (angr-2j5v). Counts roll up into `vex_op_<family>` counters via the
 /// `record_vex_*` recorder fns at the entry of the IRExpr dispatch in
@@ -386,6 +402,10 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VQAdd { .. }
         | IROp::VQSub { .. }
         | IROp::VQShlSat { .. }
+        | IROp::VPwAdd { .. }
+        | IROp::VPwAddL { .. }
+        | IROp::VPwMin { .. }
+        | IROp::VPwMax { .. }
         | IROp::VMin { .. }
         | IROp::VMax { .. }
         | IROp::VAbs { .. }
@@ -558,6 +578,13 @@ impl VEXOps {
                 count,
             } => Self::vec_reverse(arg, sub_width, elem, count, ctx),
 
+            // NEON pairwise widening add (unary). Iop_PwAddL{N}{S/U}x{M}.
+            IROp::VPwAddL {
+                elem,
+                count,
+                signed,
+            } => Self::vec_pairwise_add_long(arg, elem, count, signed, ctx),
+
             // NEON scaffolding: surface as a typed error rather than silently
             // falling back. interpreter::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
@@ -720,6 +747,35 @@ impl VEXOps {
                 count,
                 signed,
             } => Self::vec_qshl_sat(left, right, elem, count, signed, ctx),
+
+            // NEON pairwise integer add/min/max (binary).
+            IROp::VPwAdd { elem, count } => {
+                Self::vec_pairwise_binop(left, right, elem, count, PwOp::Add, ctx)
+            }
+            IROp::VPwMin {
+                elem,
+                count,
+                signed,
+            } => Self::vec_pairwise_binop(
+                left,
+                right,
+                elem,
+                count,
+                if signed { PwOp::MinS } else { PwOp::MinU },
+                ctx,
+            ),
+            IROp::VPwMax {
+                elem,
+                count,
+                signed,
+            } => Self::vec_pairwise_binop(
+                left,
+                right,
+                elem,
+                count,
+                if signed { PwOp::MaxS } else { PwOp::MaxU },
+                ctx,
+            ),
 
             // Vector compare operations
             IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
@@ -2956,6 +3012,114 @@ impl VEXOps {
             elements.push(cond.ite_into(l_elem, r_elem, ctx));
         }
         Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON pairwise widening add — `Iop_PwAddL{N}{S/U}x{M}`. Unary.
+    /// Output element i (width `2*elem`) = sext_or_zext(a[2i]) +
+    /// sext_or_zext(a[2i+1]). Output lane count = `count / 2`; output total
+    /// width = input total width.
+    fn vec_pairwise_add_long(
+        arg: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(arg.width(), total_width);
+        debug_assert!(count >= 2 && count % 2 == 0);
+        let out_pairs = count / 2;
+        let out_elem_width = elem_width * 2;
+
+        // Per-lane symbolic build — RustBV ops short-circuit when concrete.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(out_pairs as usize);
+        for i in 0..out_pairs {
+            let lo_a = (2 * i as u32) * elem_width;
+            let hi_a = lo_a + elem_width - 1;
+            let lo_b = (2 * i as u32 + 1) * elem_width;
+            let hi_b = lo_b + elem_width - 1;
+            let a_lane = arg.extract(hi_a, lo_a, ctx);
+            let b_lane = arg.extract(hi_b, lo_b, ctx);
+            let a_wide = if signed {
+                a_lane.sign_extend_into(out_elem_width, ctx)
+            } else {
+                a_lane.zero_extend_into(out_elem_width, ctx)
+            };
+            let b_wide = if signed {
+                b_lane.sign_extend_into(out_elem_width, ctx)
+            } else {
+                b_lane.zero_extend_into(out_elem_width, ctx)
+            };
+            elements.push(a_wide.add_into(b_wide, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON binary pairwise op — `Iop_PwAdd{N}x{M}` / `Iop_PwMin{N}{S/U}x{M}` /
+    /// `Iop_PwMax{N}{S/U}x{M}`. Output lane shape matches the inputs. Per-lane:
+    ///   * result[i]           = op(a[2i],   a[2i+1])              for i < count/2
+    ///   * result[count/2 + i] = op(b[2i],   b[2i+1])              for i < count/2
+    fn vec_pairwise_binop(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        op: PwOp,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(left.width(), total_width);
+        debug_assert_eq!(right.width(), total_width);
+        debug_assert!(count >= 2 && count % 2 == 0);
+        let half = count / 2;
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        // First half: pairs from `left`.
+        for i in 0..half {
+            let lo_a = (2 * i as u32) * elem_width;
+            let hi_a = lo_a + elem_width - 1;
+            let lo_b = (2 * i as u32 + 1) * elem_width;
+            let hi_b = lo_b + elem_width - 1;
+            let a = left.extract(hi_a, lo_a, ctx);
+            let b = left.extract(hi_b, lo_b, ctx);
+            elements.push(Self::pw_combine(a, b, op, ctx));
+        }
+        // Second half: pairs from `right`.
+        for i in 0..half {
+            let lo_a = (2 * i as u32) * elem_width;
+            let hi_a = lo_a + elem_width - 1;
+            let lo_b = (2 * i as u32 + 1) * elem_width;
+            let hi_b = lo_b + elem_width - 1;
+            let a = right.extract(hi_a, lo_a, ctx);
+            let b = right.extract(hi_b, lo_b, ctx);
+            elements.push(Self::pw_combine(a, b, op, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    #[inline]
+    fn pw_combine(a: RustBV, b: RustBV, op: PwOp, ctx: &SymContext) -> RustBV {
+        match op {
+            PwOp::Add => a.add_into(b, ctx),
+            PwOp::MinS => {
+                let cond = a.clone().sle_into(b.clone(), ctx);
+                cond.ite_into(a, b, ctx)
+            }
+            PwOp::MinU => {
+                let cond = a.clone().ule_into(b.clone(), ctx);
+                cond.ite_into(a, b, ctx)
+            }
+            PwOp::MaxS => {
+                let cond = a.clone().sge_into(b.clone(), ctx);
+                cond.ite_into(a, b, ctx)
+            }
+            PwOp::MaxU => {
+                let cond = a.clone().uge_into(b.clone(), ctx);
+                cond.ite_into(a, b, ctx)
+            }
+        }
     }
 
     /// NEON per-lane saturating integer add/sub —
@@ -7636,6 +7800,445 @@ mod tests {
                 }
                 other => panic!("{}: expected VQSub, got {:?}", op, other),
             }
+        }
+    }
+
+    // =========================================================================
+    // angr-tukg.2 — NEON pairwise add/min/max (VPwAdd / VPwAddL / VPwMin / VPwMax).
+    // =========================================================================
+
+    /// Iop_PwAdd16x4 — pairwise add over 4 lanes of 16 bits, two 64-bit
+    /// sources. Output[0..2] from `a`, output[2..4] from `b`. Tests both
+    /// halves and a sample of values.
+    #[test]
+    fn test_vpwadd_16x4_concrete() {
+        let ctx = SymContext::new_mock();
+        // a lanes (LSB→MSB): 1, 2, 3, 4 → pairs (1+2, 3+4) = 3, 7.
+        // b lanes:           10, 20, 100, 200 → pairs (30, 300).
+        // Output (LSB→MSB): 3, 7, 30, 300.
+        let a_lanes: [u16; 4] = [1, 2, 3, 4];
+        let b_lanes: [u16; 4] = [10, 20, 100, 200];
+        let e_lanes: [u16; 4] = [3, 7, 30, 300];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..4 {
+            a |= (a_lanes[i] as u128) << (i * 16);
+            b |= (b_lanes[i] as u128) << (i * 16);
+            e |= (e_lanes[i] as u128) << (i * 16);
+        }
+        let result = VEXOps::binop(
+            IROp::VPwAdd {
+                elem: IRType::I16,
+                count: 4,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_PwAdd8x16 — Q-reg variant: 16 lanes of 8 bits. Output[0..8] from
+    /// `a`, output[8..16] from `b`. Wrap-around per lane (e.g. 0xFF+0x01=0x00).
+    #[test]
+    fn test_vpwadd_8x16_concrete() {
+        let ctx = SymContext::new_mock();
+        // a: pairs (10+20, 30+40, ..., 70+80) → 30, 70, 110, ..., 0xFF+0x01=0x00.
+        // Use explicit lanes for clarity.
+        let a_lanes: [u8; 16] = [10, 20, 30, 40, 50, 60, 70, 80, 0xFF, 0x01, 0, 0, 0, 0, 0, 0];
+        let b_lanes: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0x80, 0x80, 0, 0, 0, 0];
+        // a-half output (8 lanes): (10+20, 30+40, 50+60, 70+80, 0xFF+0x01=0x00, 0, 0, 0)
+        //                       = (30, 70, 110, 150, 0, 0, 0, 0)
+        // b-half output (8 lanes): (1+2, 3+4, 5+6, 7+8, 9+10, 0x80+0x80=0x00, 0, 0)
+        //                       = (3, 7, 11, 15, 19, 0, 0, 0)
+        let e_lanes: [u8; 16] = [30, 70, 110, 150, 0, 0, 0, 0, 3, 7, 11, 15, 19, 0, 0, 0];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..16 {
+            a |= (a_lanes[i] as u128) << (i * 8);
+            b |= (b_lanes[i] as u128) << (i * 8);
+            e |= (e_lanes[i] as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VPwAdd {
+                elem: IRType::I8,
+                count: 16,
+            },
+            RustBV::concrete(a, 128),
+            RustBV::concrete(b, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_PwAddL8Sx8 — signed widening pairwise add. Input is 8 lanes × 8 bits;
+    /// output is 4 lanes × 16 bits. Negative sources must sign-extend before
+    /// adding so the sum doesn't lose its sign.
+    #[test]
+    fn test_vpwaddl_8sx8_concrete() {
+        let ctx = SymContext::new_mock();
+        // a lanes (signed i8): -100, -100, 100, 100, -1, -1, 1, 1
+        // Pairs: -200, 200, -2, 2 (as i16).
+        let a_lanes: [i8; 8] = [-100, -100, 100, 100, -1, -1, 1, 1];
+        let e_lanes: [i16; 4] = [-200, 200, -2, 2];
+        let mut a: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            a |= ((a_lanes[i] as u8) as u128) << (i * 8);
+        }
+        for i in 0..4 {
+            e |= ((e_lanes[i] as u16) as u128) << (i * 16);
+        }
+        let result = VEXOps::unop(
+            IROp::VPwAddL {
+                elem: IRType::I8,
+                count: 8,
+                signed: true,
+            },
+            RustBV::concrete(a, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_PwAddL8Ux16 — unsigned widening pairwise add, Q-reg. Verifies that
+    /// 0xFF + 0xFF widens to 0x01FE rather than overflowing in 8 bits.
+    #[test]
+    fn test_vpwaddl_8ux16_concrete() {
+        let ctx = SymContext::new_mock();
+        let a_lanes: [u8; 16] = [
+            0xFF, 0xFF, 0x80, 0x80, 0x01, 0x02, 0, 0, 100, 50, 200, 100, 0, 0, 0, 0,
+        ];
+        let e_lanes: [u16; 8] = [0x01FE, 0x0100, 0x0003, 0, 150, 300, 0, 0];
+        let mut a: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..16 {
+            a |= (a_lanes[i] as u128) << (i * 8);
+        }
+        for i in 0..8 {
+            e |= (e_lanes[i] as u128) << (i * 16);
+        }
+        let result = VEXOps::unop(
+            IROp::VPwAddL {
+                elem: IRType::I8,
+                count: 16,
+                signed: false,
+            },
+            RustBV::concrete(a, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_PwMin16Sx4 — pairwise signed min. Exercises mixed-sign pairs and
+    /// confirms output[2..4] comes from `b`.
+    #[test]
+    fn test_vpwmin_16sx4_concrete() {
+        let ctx = SymContext::new_mock();
+        // a: -100, 100, 200, -200 → pairs min(-100,100)=-100, min(200,-200)=-200
+        // b: 30000, -1, 0, 0       → pairs min=-1, min=0
+        let a_lanes: [i16; 4] = [-100, 100, 200, -200];
+        let b_lanes: [i16; 4] = [30000, -1, 0, 0];
+        let e_lanes: [i16; 4] = [-100, -200, -1, 0];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..4 {
+            a |= ((a_lanes[i] as u16) as u128) << (i * 16);
+            b |= ((b_lanes[i] as u16) as u128) << (i * 16);
+            e |= ((e_lanes[i] as u16) as u128) << (i * 16);
+        }
+        let result = VEXOps::binop(
+            IROp::VPwMin {
+                elem: IRType::I16,
+                count: 4,
+                signed: true,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_PwMax8Ux8 — pairwise unsigned max. Distinguishes 0x80 (signed -128)
+    /// from 0x01 to confirm unsigned compare.
+    #[test]
+    fn test_vpwmax_8ux8_concrete() {
+        let ctx = SymContext::new_mock();
+        // a: 0x80, 0x01, 0x10, 0x10, 0xFF, 0xFF, 0, 0
+        //   → unsigned max pairs: 0x80, 0x10, 0xFF, 0
+        // b: 0, 0, 0, 0, 50, 60, 70, 80
+        //   → max: 0, 0, 60, 80
+        let a_lanes: [u8; 8] = [0x80, 0x01, 0x10, 0x10, 0xFF, 0xFF, 0, 0];
+        let b_lanes: [u8; 8] = [0, 0, 0, 0, 50, 60, 70, 80];
+        let e_lanes: [u8; 8] = [0x80, 0x10, 0xFF, 0, 0, 0, 60, 80];
+        let mut a: u128 = 0;
+        let mut b: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..8 {
+            a |= (a_lanes[i] as u128) << (i * 8);
+            b |= (b_lanes[i] as u128) << (i * 8);
+            e |= (e_lanes[i] as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VPwMax {
+                elem: IRType::I8,
+                count: 8,
+                signed: false,
+            },
+            RustBV::concrete(a, 64),
+            RustBV::concrete(b, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Symbolic universality (spec-replay): Iop_PwAdd16x4 must produce the same
+    /// bits as a hand-built reference for any 64-bit input pair. Claripy has no
+    /// `_op_generic_PwAdd`, so we reference-build inline per `z3-spec-replay-test-template`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vpwadd_16x4_matches_spec_replay() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "vpwadd_a", 64);
+        let b = RustBV::symbolic(&ctx, "vpwadd_b", 64);
+        let got = VEXOps::binop(
+            IROp::VPwAdd {
+                elem: IRType::I16,
+                count: 4,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        // Reference: 2 pairs from a, then 2 pairs from b.
+        let mut lanes = Vec::with_capacity(4);
+        for src in [&a, &b] {
+            for i in 0..2u32 {
+                let lo0 = 2 * i * 16;
+                let lo1 = (2 * i + 1) * 16;
+                let l0 = src.extract(lo0 + 15, lo0, &ctx);
+                let l1 = src.extract(lo1 + 15, lo1, &ctx);
+                lanes.push(l0.add_into(l1, &ctx));
+            }
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VPwAdd 16x4 must match the spec-replay reference for all 64-bit inputs"
+        );
+        ctx.pop();
+    }
+
+    /// Symbolic universality (spec-replay): Iop_PwAddL16Sx4 widens each lane
+    /// before adding. Reference uses explicit sign-extend.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vpwaddl_16sx4_matches_spec_replay() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let arg = RustBV::symbolic(&ctx, "vpwaddl_a", 64);
+        let got = VEXOps::unop(
+            IROp::VPwAddL {
+                elem: IRType::I16,
+                count: 4,
+                signed: true,
+            },
+            arg.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        // Reference: 2 pairs, each pair sign-extended to 32 bits then added.
+        let mut lanes = Vec::with_capacity(2);
+        for i in 0..2u32 {
+            let lo0 = 2 * i * 16;
+            let lo1 = (2 * i + 1) * 16;
+            let l0 = arg.extract(lo0 + 15, lo0, &ctx).sign_extend_into(32, &ctx);
+            let l1 = arg.extract(lo1 + 15, lo1, &ctx).sign_extend_into(32, &ctx);
+            lanes.push(l0.add_into(l1, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VPwAddL 16Sx4 must match the spec-replay sign-extend reference"
+        );
+        ctx.pop();
+    }
+
+    /// Symbolic universality (spec-replay): Iop_PwMin16Sx4 — signed pairwise
+    /// min via SLE/ITE for each pair.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vpwmin_16sx4_matches_spec_replay() {
+        use z3::ast::Ast;
+
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "vpwmin_a", 64);
+        let b = RustBV::symbolic(&ctx, "vpwmin_b", 64);
+        let got = VEXOps::binop(
+            IROp::VPwMin {
+                elem: IRType::I16,
+                count: 4,
+                signed: true,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        let mut lanes = Vec::with_capacity(4);
+        for src in [&a, &b] {
+            for i in 0..2u32 {
+                let lo0 = 2 * i * 16;
+                let lo1 = (2 * i + 1) * 16;
+                let l0 = src.extract(lo0 + 15, lo0, &ctx);
+                let l1 = src.extract(lo1 + 15, lo1, &ctx);
+                let cond = l0.clone().sle_into(l1.clone(), &ctx);
+                lanes.push(cond.ite_into(l0, l1, &ctx));
+            }
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VPwMin 16Sx4 must match the spec-replay signed-min reference"
+        );
+        ctx.pop();
+    }
+
+    /// Parse routing: Iop_PwAdd / PwAddL / PwMin / PwMax variants land on
+    /// VPwAdd / VPwAddL / VPwMin / VPwMax with the expected decomposition.
+    /// Iop_PwAdd32Fx2 remains in NeonUnimplemented.
+    #[test]
+    fn test_parse_pairwise_routing() {
+        use crate::vex::opcode_map::parse_opcode;
+
+        let pwadd_cases: &[(&str, IRType, u8)] = &[
+            ("Iop_PwAdd8x8", IRType::I8, 8),
+            ("Iop_PwAdd16x4", IRType::I16, 4),
+            ("Iop_PwAdd32x2", IRType::I32, 2),
+            ("Iop_PwAdd8x16", IRType::I8, 16),
+            ("Iop_PwAdd16x8", IRType::I16, 8),
+            ("Iop_PwAdd32x4", IRType::I32, 4),
+        ];
+        for (op, e, c) in pwadd_cases {
+            match parse_opcode(op) {
+                IROp::VPwAdd { elem, count } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                }
+                other => panic!("{}: expected VPwAdd, got {:?}", op, other),
+            }
+        }
+
+        let pwaddl_cases: &[(&str, IRType, u8, bool)] = &[
+            ("Iop_PwAddL8Sx8", IRType::I8, 8, true),
+            ("Iop_PwAddL8Ux8", IRType::I8, 8, false),
+            ("Iop_PwAddL16Sx4", IRType::I16, 4, true),
+            ("Iop_PwAddL16Ux4", IRType::I16, 4, false),
+            ("Iop_PwAddL32Sx2", IRType::I32, 2, true),
+            ("Iop_PwAddL32Ux2", IRType::I32, 2, false),
+            ("Iop_PwAddL8Sx16", IRType::I8, 16, true),
+            ("Iop_PwAddL8Ux16", IRType::I8, 16, false),
+            ("Iop_PwAddL16Sx8", IRType::I16, 8, true),
+            ("Iop_PwAddL16Ux8", IRType::I16, 8, false),
+            ("Iop_PwAddL32Sx4", IRType::I32, 4, true),
+            ("Iop_PwAddL32Ux4", IRType::I32, 4, false),
+        ];
+        for (op, e, c, s) in pwaddl_cases {
+            match parse_opcode(op) {
+                IROp::VPwAddL {
+                    elem,
+                    count,
+                    signed,
+                } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                    assert_eq!(signed, *s, "{}: signed", op);
+                }
+                other => panic!("{}: expected VPwAddL, got {:?}", op, other),
+            }
+        }
+
+        let pwmin_cases: &[(&str, IRType, u8, bool)] = &[
+            ("Iop_PwMin8Sx8", IRType::I8, 8, true),
+            ("Iop_PwMin8Ux8", IRType::I8, 8, false),
+            ("Iop_PwMin16Sx4", IRType::I16, 4, true),
+            ("Iop_PwMin16Ux4", IRType::I16, 4, false),
+            ("Iop_PwMin32Sx2", IRType::I32, 2, true),
+            ("Iop_PwMin32Ux2", IRType::I32, 2, false),
+        ];
+        for (op, e, c, s) in pwmin_cases {
+            match parse_opcode(op) {
+                IROp::VPwMin {
+                    elem,
+                    count,
+                    signed,
+                } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                    assert_eq!(signed, *s, "{}: signed", op);
+                }
+                other => panic!("{}: expected VPwMin, got {:?}", op, other),
+            }
+        }
+
+        let pwmax_cases: &[(&str, IRType, u8, bool)] = &[
+            ("Iop_PwMax8Sx8", IRType::I8, 8, true),
+            ("Iop_PwMax8Ux8", IRType::I8, 8, false),
+            ("Iop_PwMax16Sx4", IRType::I16, 4, true),
+            ("Iop_PwMax16Ux4", IRType::I16, 4, false),
+            ("Iop_PwMax32Sx2", IRType::I32, 2, true),
+            ("Iop_PwMax32Ux2", IRType::I32, 2, false),
+        ];
+        for (op, e, c, s) in pwmax_cases {
+            match parse_opcode(op) {
+                IROp::VPwMax {
+                    elem,
+                    count,
+                    signed,
+                } => {
+                    assert_eq!(elem, *e, "{}: elem", op);
+                    assert_eq!(count, *c, "{}: count", op);
+                    assert_eq!(signed, *s, "{}: signed", op);
+                }
+                other => panic!("{}: expected VPwMax, got {:?}", op, other),
+            }
+        }
+
+        // Float pairwise add stays unimplemented.
+        match parse_opcode("Iop_PwAdd32Fx2") {
+            IROp::NeonUnimplemented(name) => assert_eq!(name, "Iop_PwAdd32Fx2"),
+            other => panic!("Iop_PwAdd32Fx2 expected NeonUnimplemented, got {:?}", other),
         }
     }
 

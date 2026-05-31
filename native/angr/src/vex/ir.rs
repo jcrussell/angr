@@ -907,6 +907,45 @@ pub enum IROp {
         signed: bool,
     },
 
+    /// NEON pairwise integer add — `Iop_PwAdd{N}x{M}`. Binary; output has the
+    /// same lane width and count as the inputs. Per-lane semantics:
+    ///   * result[i]            = a[2i]   + a[2i+1]            for i in 0..count/2
+    ///   * result[count/2 + i]  = b[2i]   + b[2i+1]            for i in 0..count/2
+    /// Maps to ARM VPADD (DDI 0487 C7.2.270) — `Iop_PwAdd32Fx2` (FP variant)
+    /// is NOT routed here and remains unimplemented.
+    VPwAdd {
+        elem: IRType,
+        count: u8,
+    },
+
+    /// NEON pairwise widening integer add — `Iop_PwAddL{N}{S/U}x{M}`. Unary;
+    /// output lane width is `2 * elem`, lane count is `count / 2`, total
+    /// width preserved. Per-lane semantics:
+    ///   * result[i] = sext_or_zext(a[2i]) + sext_or_zext(a[2i+1])
+    /// Maps to ARM SADDLP / UADDLP (DDI 0487 C7.2.348 / C7.2.418).
+    VPwAddL {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
+
+    /// NEON pairwise integer min — `Iop_PwMin{N}{S/U}x{M}`. Binary; same shape
+    /// rules as `VPwAdd` (interleave a-half then b-half). Maps to ARM VPMIN
+    /// (DDI 0487 C7.2.273).
+    VPwMin {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
+
+    /// NEON pairwise integer max — `Iop_PwMax{N}{S/U}x{M}`. Binary; same shape
+    /// rules as `VPwAdd`. Maps to ARM VPMAX (DDI 0487 C7.2.272).
+    VPwMax {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1301,6 +1340,29 @@ impl IROp {
 
             // Saturating shift by vector: width preserved.
             IROp::VQShlSat { elem, count, .. } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
+
+            // Pairwise add/min/max (non-widening): output width = elem * count.
+            IROp::VPwAdd { elem, count }
+            | IROp::VPwMin { elem, count, .. }
+            | IROp::VPwMax { elem, count, .. } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
+
+            // Pairwise widening add: output total = input total = elem * count
+            // (lane width doubles, lane count halves).
+            IROp::VPwAddL { elem, count, .. } => {
                 let total = elem.bits() * (*count as u32);
                 match total {
                     64 => Some(IRType::I64),

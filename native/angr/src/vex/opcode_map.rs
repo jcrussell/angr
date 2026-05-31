@@ -596,6 +596,39 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
             _ => {}
         }
     }
+    // NEON pairwise add — `Iop_PwAdd{N}x{M}` (no signedness, binary). Output
+    // has the same lane shape as the inputs; first half from a, second half
+    // from b. Iop_PwAdd32Fx2 is the float variant and is NOT routed here.
+    vec_arms!(op_str; "Iop_PwAdd" => VPwAdd {
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
+        "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4),
+    });
+
+    // NEON pairwise widening add — `Iop_PwAddL{N}{S/U}x{M}` (unary). Lane
+    // width doubles and count halves; total preserved.
+    vec_signed_arms!(op_str; "Iop_PwAddL" => VPwAddL {
+        "8Sx8"  => (I8, 8, true),  "8Ux8"  => (I8, 8, false),
+        "16Sx4" => (I16, 4, true), "16Ux4" => (I16, 4, false),
+        "32Sx2" => (I32, 2, true), "32Ux2" => (I32, 2, false),
+        "8Sx16" => (I8, 16, true), "8Ux16" => (I8, 16, false),
+        "16Sx8" => (I16, 8, true), "16Ux8" => (I16, 8, false),
+        "32Sx4" => (I32, 4, true), "32Ux4" => (I32, 4, false),
+    });
+
+    // NEON pairwise integer min/max — `Iop_PwMin{N}{S/U}x{M}` /
+    // `Iop_PwMax{N}{S/U}x{M}`. Same shape as VPwAdd; D-reg-only (no x16/x8/x4
+    // emitted by libVEX for these).
+    vec_signed_arms!(op_str; "Iop_PwMin" => VPwMin {
+        "8Sx8"  => (I8, 8, true),  "8Ux8"  => (I8, 8, false),
+        "16Sx4" => (I16, 4, true), "16Ux4" => (I16, 4, false),
+        "32Sx2" => (I32, 2, true), "32Ux2" => (I32, 2, false),
+    });
+    vec_signed_arms!(op_str; "Iop_PwMax" => VPwMax {
+        "8Sx8"  => (I8, 8, true),  "8Ux8"  => (I8, 8, false),
+        "16Sx4" => (I16, 4, true), "16Ux4" => (I16, 4, false),
+        "32Sx2" => (I32, 2, true), "32Ux2" => (I32, 2, false),
+    });
+
     // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON.
     vec_arms!(op_str; "Iop_Mul" => VMul {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
@@ -838,38 +871,12 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // within lane) implemented in angr-tukg.4 — routed through
         // parse_vreverse to IROp::VReverse.
 
-        // Pairwise add/min/max (NEON)
-        "Iop_PwAdd8x8" => "Iop_PwAdd8x8",
-        "Iop_PwAdd16x4" => "Iop_PwAdd16x4",
-        "Iop_PwAdd32x2" => "Iop_PwAdd32x2",
+        // NOTE: integer Iop_PwAdd{N}x{M}, Iop_PwAddL{N}{S/U}x{M},
+        // Iop_PwMin{N}{S/U}x{M}, Iop_PwMax{N}{S/U}x{M} implemented in
+        // angr-tukg.2 — routed through parse_vector to IROp::VPwAdd /
+        // VPwAddL / VPwMin / VPwMax. Iop_PwAdd32Fx2 (FP pairwise) is the
+        // only Pw* still unimplemented.
         "Iop_PwAdd32Fx2" => "Iop_PwAdd32Fx2",
-        "Iop_PwAdd8x16" => "Iop_PwAdd8x16",
-        "Iop_PwAdd16x8" => "Iop_PwAdd16x8",
-        "Iop_PwAdd32x4" => "Iop_PwAdd32x4",
-        "Iop_PwAddL8Sx8" => "Iop_PwAddL8Sx8",
-        "Iop_PwAddL8Ux8" => "Iop_PwAddL8Ux8",
-        "Iop_PwAddL16Sx4" => "Iop_PwAddL16Sx4",
-        "Iop_PwAddL16Ux4" => "Iop_PwAddL16Ux4",
-        "Iop_PwAddL32Sx2" => "Iop_PwAddL32Sx2",
-        "Iop_PwAddL32Ux2" => "Iop_PwAddL32Ux2",
-        "Iop_PwAddL8Sx16" => "Iop_PwAddL8Sx16",
-        "Iop_PwAddL8Ux16" => "Iop_PwAddL8Ux16",
-        "Iop_PwAddL16Sx8" => "Iop_PwAddL16Sx8",
-        "Iop_PwAddL16Ux8" => "Iop_PwAddL16Ux8",
-        "Iop_PwAddL32Sx4" => "Iop_PwAddL32Sx4",
-        "Iop_PwAddL32Ux4" => "Iop_PwAddL32Ux4",
-        "Iop_PwMin8Sx8" => "Iop_PwMin8Sx8",
-        "Iop_PwMin16Sx4" => "Iop_PwMin16Sx4",
-        "Iop_PwMin32Sx2" => "Iop_PwMin32Sx2",
-        "Iop_PwMin8Ux8" => "Iop_PwMin8Ux8",
-        "Iop_PwMin16Ux4" => "Iop_PwMin16Ux4",
-        "Iop_PwMin32Ux2" => "Iop_PwMin32Ux2",
-        "Iop_PwMax8Sx8" => "Iop_PwMax8Sx8",
-        "Iop_PwMax16Sx4" => "Iop_PwMax16Sx4",
-        "Iop_PwMax32Sx2" => "Iop_PwMax32Sx2",
-        "Iop_PwMax8Ux8" => "Iop_PwMax8Ux8",
-        "Iop_PwMax16Ux4" => "Iop_PwMax16Ux4",
-        "Iop_PwMax32Ux2" => "Iop_PwMax32Ux2",
 
         // Polynomial multiply (carry-less, NEON crypto-adjacent)
         "Iop_PolynomialMul8x8" => "Iop_PolynomialMul8x8",
@@ -1434,7 +1441,7 @@ mod tests {
         for op in [
             "Iop_RecipEst32Ux4",
             "Iop_Avg8Ux8",
-            "Iop_PwAdd16x4",
+            "Iop_PwAdd32Fx2",
             "Iop_PolynomialMull8x8",
             "Iop_Cnt8x8",
         ] {
