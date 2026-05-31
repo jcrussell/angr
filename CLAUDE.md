@@ -3,8 +3,8 @@
 ## Memory system
 
 Project memory lives in **bd**, not in Claude's per-project auto-memory
-markdown files. As of 2026-05-30 there are 977 project memories already
-in `bd remember`.
+markdown files. Run `bd memories | head -1` for the current count
+(987 as of 2026-05-31 and growing).
 
 - **Recall** a specific memory: `bd recall <key>` (keys are kebab-case, e.g.
   `core-goal-design-philosophy`, `constraint-export-no-pre-pin`).
@@ -110,7 +110,7 @@ pip install. Pass `--keep-cargo-cache` to skip `cargo clean` (faster), or
 ## Running Tests
 
 ```bash
-# Run RustExplorationManager tests (484/484 passing — see Current Status below)
+# Run RustExplorationManager tests (see Current Status below for live count)
 python -m pytest tests/engines/test_rust_exploration.py -v --tb=short
 
 # Run benchmark regression tests (7 fast-tier benchmarks)
@@ -273,32 +273,40 @@ period — do not run both simultaneously.
 
 ## Current Status
 
-**Tests:** 484/484 passing (`grep -c 'def test_' tests/engines/test_rust_exploration.py`; 492 after pytest parametrize expansion)
+**Tests:** 510 `def test_` functions, 521 after pytest parametrize expansion
+(`grep -c 'def test_' tests/engines/test_rust_exploration.py` for live count;
+`pytest --collect-only -q tests/engines/test_rust_exploration.py | tail -1`
+for the parametrize-expanded total).
 **Benchmarks:** 26 benchmarks tracked in `tests/benchmarks/baseline_timings.json` (22 angr-examples + 4 in-repo synthetics: ARM, MIPS32, MIPS64, AArch64)
-**Performance:** 17/22 faster than Python (≥1.0x; arm_le_branch, mips32_le_branch and aarch64_le_branch are synthetic rust_only smoke benchmarks)
+**Performance:** 15/22 faster than Python (≥1.0x; arm_le_branch, mips32_le_branch, mips64_le_branch and aarch64_le_branch are synthetic rust_only smoke benchmarks with no python_time)
+
+The table below is a curated snapshot — `baseline_timings.json` is the
+authoritative source for current numbers. Speedups are `python_time / rust_time`
+from that file. Refresh after any baseline bump; per-bench narrative columns
+should be preserved across refreshes.
 
 | Example | Speedup | Notes |
 |---------|---------|-------|
 | csaw_wyvern | 16.9x | Best case |
-| ekopartyctf2016_rev250 | 15.7x | |
+| ekopartyctf2016_rev250 | 15.6x | |
 | flareon2015_5 | 10.3x | |
-| defcamp_r100__dfs | 4.5x | DFS variant |
-| defcamp_r100 | 4.4x | |
-| ais3_crackme | 3.0x | |
-| whitehatvn2015_re400 | 2.6x | |
+| defcamp_r100__dfs | 3.2x | DFS variant |
+| defcamp_r100 | 3.1x | |
 | codegate_2017-angrybird | 2.4x | Was XFAIL, now passing |
-| strcpy_find | 2.3x | Was 0.2x, fixed CFG interception |
 | sym-write | 2.3x | |
+| ais3_crackme | 2.2x | |
+| whitehatvn2015_re400 | 2.1x | |
 | defcon2016quals_baby-re | 2.0x | |
+| strcpy_find | 1.9x | Was 0.2x, fixed CFG interception |
 | csgames2018 | 1.6x | |
-| google2016_unbreakable_0 | 1.5x | |
 | flareon2015_10 | 1.4x | Callable flow |
 | fauxware | 1.4x | Was 0.9x; flipped after NativeRead/NativeWrite enabled by default (angr-3tek.2) cut callbacks from 6 to 1 |
-| unmapped_analysis | 1.2x | |
-| flareon2015_2 | 1.1x | 32-bit x86 |
-| securityfest_fairlight | 1.0x | Rust interpreter parity for symbolic-heavy blocks |
-| hackcon2016_angry-reverser | 0.7x | angr-8t45 (2026-05-18) per-state lazy-zero cap; angr-tlvl (2026-05-19) fixed latent Reverse leaf-emission bug — Z3 shape now matches claripy but hackcon residual gap unchanged (5-sample median ~14.84s). See `docs/advanced-topics/rust_engine.rst`. |
-| mma_howtouse | 0.6x | 45 isolated `Callable` invocations; AST-cache hypothesis invalidated 2026-05-17 (claripy `clear_all_caches()` removed; Rust-side cache hook delivered 0%). Residual gap unattributed. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
+| google2016_unbreakable_0 | 1.2x | |
+| unmapped_analysis | 0.9x | |
+| flareon2015_2 | 0.8x | 32-bit x86 |
+| securityfest_fairlight | 0.7x | Rust interpreter parity for symbolic-heavy blocks |
+| mma_howtouse | 0.7x | 45 isolated `Callable` invocations; AST-cache hypothesis invalidated 2026-05-17 (claripy `clear_all_caches()` removed; Rust-side cache hook delivered 0%). Residual gap unattributed. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
+| hackcon2016_angry-reverser | 0.6x | angr-8t45 (2026-05-18) per-state lazy-zero cap; angr-tlvl (2026-05-19) fixed latent Reverse leaf-emission bug — Z3 shape now matches claripy but hackcon residual gap unchanged (5-sample median ~14.84s). See `docs/advanced-topics/rust_engine.rst`. |
 | google2016_unbreakable_1 | 0.5x | High variance; regressed from 3.3x |
 | ekopartyctf2016_sokohashv2 | 0.4x | Z3 nondeterminism dominates (~8.7s of ~10s in z3_check + site_eval_upto, 2026-05-23 counters dump). Transcendentals are hooked out of the symbolic path by the test driver; angr-9l1y closed. See [`docs/advanced-topics/rust_engine.rst`](docs/advanced-topics/rust_engine.rst) |
 
