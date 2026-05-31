@@ -73,9 +73,7 @@ impl NativeSyscall for NativeArchPrctlSyscall {
                 let value = state
                     .get_register(reg)
                     .ok_or_else(|| SyscallError::Other(format!("arch_prctl: {reg} unreadable")))?;
-                state
-                    .memory_store(addr, value)
-                    .map_err(|e| SyscallError::Other(format!("arch_prctl store: {e:?}")))?;
+                state.memory_store(addr, value)?;
                 Ok(SyscallOutcome::Continue { ret: 0 })
             }
             _ => Ok(SyscallOutcome::Continue { ret: EINVAL }),
@@ -239,7 +237,7 @@ mod tests {
                 ],
             )
             .expect_err("must fall back");
-        assert!(matches!(err, SyscallError::Other(_)));
+        assert!(matches!(err, SyscallError::Memory(_)));
     }
 
     #[test]

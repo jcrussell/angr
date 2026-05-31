@@ -90,10 +90,10 @@ pub(super) fn compare_bytes(
         let c2_addr = s2_addr.wrapping_add(i);
         let c1_val = state
             .memory_load(c1_addr, 1)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
         let c2_val = state
             .memory_load(c2_addr, 1)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
 
         if !symbolic_seen {
             match (c1_val.as_u64(), c2_val.as_u64()) {

@@ -91,13 +91,13 @@ impl NativeSimProcedure for NativeFgets {
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
             state
                 .memory_store(buf.wrapping_add(i as u64), sym_byte)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
         }
 
         // Store NUL terminator
         state
             .memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
 
         // Return buffer address
         let bits = state.arch().bits();

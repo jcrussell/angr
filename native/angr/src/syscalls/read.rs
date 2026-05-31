@@ -84,9 +84,7 @@ impl NativeSyscall for NativeReadSyscall {
         };
 
         for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state
-                .memory_store(buf.wrapping_add(i as u64), sym_byte)
-                .map_err(|e| SyscallError::Other(format!("memory_store: {e}")))?;
+            state.memory_store(buf.wrapping_add(i as u64), sym_byte)?;
         }
 
         Ok(SyscallOutcome::Continue { ret: count })

@@ -76,7 +76,7 @@ fn scan_for_byte(
             let byte_addr = addr.wrapping_add(i);
             let byte_val = state
                 .memory_load(byte_addr, 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             if !symbolic_seen {
                 if let Some(b) = byte_val.as_u64() {
                     let byte = b as u8;
@@ -127,7 +127,7 @@ fn scan_for_byte(
         let byte_addr = addr.wrapping_add(i);
         let byte_val = state
             .memory_load(byte_addr, 1)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
         let stop_scan = stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false);
         byte_loads.push((byte_addr, byte_val));
         if stop_scan {

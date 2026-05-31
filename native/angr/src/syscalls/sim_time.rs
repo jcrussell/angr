@@ -81,12 +81,8 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
             )
         };
         let stride = (bits / 8) as u64;
-        state
-            .memory_store(tv, tv_sec)
-            .map_err(|e| SyscallError::Other(format!("gettimeofday tv_sec store: {e:?}")))?;
-        state
-            .memory_store(tv + stride, tv_usec)
-            .map_err(|e| SyscallError::Other(format!("gettimeofday tv_usec store: {e:?}")))?;
+        state.memory_store(tv, tv_sec)?;
+        state.memory_store(tv + stride, tv_usec)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
@@ -140,9 +136,7 @@ impl NativeSyscall for NativeTimeSyscall {
         state.add_constraint(monotonic_constraint);
 
         if pointer != 0 {
-            state
-                .memory_store(pointer, sys_time.clone())
-                .map_err(|e| SyscallError::Other(format!("time *pointer store: {e:?}")))?;
+            state.memory_store(pointer, sys_time.clone())?;
         }
 
         state.set_last_time(sys_time.clone());
@@ -194,12 +188,8 @@ impl NativeSyscall for NativeClockGettimeSyscall {
             )
         };
         let stride = (bits / 8) as u64;
-        state
-            .memory_store(ts, tv_sec)
-            .map_err(|e| SyscallError::Other(format!("clock_gettime tv_sec store: {e:?}")))?;
-        state
-            .memory_store(ts + stride, tv_nsec)
-            .map_err(|e| SyscallError::Other(format!("clock_gettime tv_nsec store: {e:?}")))?;
+        state.memory_store(ts, tv_sec)?;
+        state.memory_store(ts + stride, tv_nsec)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
@@ -293,7 +283,7 @@ mod tests {
                 &[RustBV::concrete(0xDEAD_0000, 64), RustBV::concrete(0, 64)],
             )
             .expect_err("must fall back");
-        assert!(matches!(err, SyscallError::Other(_)));
+        assert!(matches!(err, SyscallError::Memory(_)));
     }
 
     // ---- clock_gettime ----------------------------------------------
@@ -474,6 +464,6 @@ mod tests {
         let err = h
             .call(&mut state, &[RustBV::concrete(0xDEAD_0000, 64)])
             .expect_err("must fall back");
-        assert!(matches!(err, SyscallError::Other(_)));
+        assert!(matches!(err, SyscallError::Memory(_)));
     }
 }

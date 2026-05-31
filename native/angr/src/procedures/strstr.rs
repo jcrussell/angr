@@ -42,7 +42,7 @@ impl NativeSimProcedure for NativeStrstr {
         for i in 0..MAX_SCAN as u64 {
             let val = state
                 .memory_load(needle_addr.wrapping_add(i), 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             let byte = extract_concrete_arg(&val, &format!("needle[{}]", i))? as u8;
             if byte == 0 {
                 break;
@@ -62,7 +62,7 @@ impl NativeSimProcedure for NativeStrstr {
             // Check first byte of haystack at this position
             let first_val = state
                 .memory_load(h_addr, 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             let first = extract_concrete_arg(&first_val, &format!("haystack[{}]", i))? as u8;
 
             // End of haystack
@@ -77,7 +77,7 @@ impl NativeSimProcedure for NativeStrstr {
                     let h_byte_addr = h_addr.wrapping_add(j as u64);
                     let val = state
                         .memory_load(h_byte_addr, 1)
-                        .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                        ?;
                     let byte =
                         extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))? as u8;
                     if byte != needle[j] {

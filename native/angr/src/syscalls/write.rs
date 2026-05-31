@@ -67,7 +67,7 @@ impl NativeSyscall for NativeWriteSyscall {
                     }
                 },
                 Err(e) => {
-                    return Err(SyscallError::Other(format!("memory_load: {e}")));
+                    return Err(e.into());
                 }
             }
         }

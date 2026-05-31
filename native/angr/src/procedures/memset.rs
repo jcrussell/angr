@@ -69,7 +69,7 @@ impl NativeSimProcedure for NativeMemset {
             let bv = RustBV::concrete(fill_8, 64);
             state
                 .memory_store(dest.wrapping_add(offset), bv)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             offset += 8;
         }
         // Handle remaining bytes
@@ -77,7 +77,7 @@ impl NativeSimProcedure for NativeMemset {
             let bv = RustBV::concrete(byte_val as u128, 8);
             state
                 .memory_store(dest.wrapping_add(offset), bv)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             offset += 1;
         }
 

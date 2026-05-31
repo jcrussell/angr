@@ -31,6 +31,7 @@ pub mod write;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::memory::MemoryError;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -42,6 +43,11 @@ use crate::symbolic::RustBV;
 pub enum SyscallError {
     #[error("symbolic argument: {0}")]
     SymbolicArgument(String),
+    /// Memory operation failed. Carries the structured `MemoryError`
+    /// so callers can pattern-match on the underlying cause
+    /// (unmapped page, permission violation, symbolic address, ...).
+    #[error("memory error: {0}")]
+    Memory(#[from] MemoryError),
     #[error("{0}")]
     Other(String),
 }

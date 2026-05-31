@@ -41,7 +41,7 @@ fn read_cstring(
     for i in 0..max_len {
         let bv = state
             .memory_load(addr.wrapping_add(i), 1)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
         let v = bv
             .as_u64()
             .ok_or_else(|| ProcedureError::SymbolicArgument(format!("symbolic byte in {name}")))?;
@@ -82,7 +82,7 @@ fn read_fileno(state: &RustSimState, file_ptr: u64) -> Result<i32, ProcedureErro
         .ok_or_else(|| ProcedureError::Other(format!("no _IO_FILE layout for arch {arch_name}")))?;
     let bv = state
         .memory_load(file_ptr.wrapping_add(fd_off), 4)
-        .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+        ?;
     let raw = bv
         .as_u64()
         .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
@@ -132,7 +132,7 @@ impl NativeSimProcedure for NativeOpen {
                         ));
                     }
                 }
-                Err(e) => return Err(ProcedureError::MemoryError(e.to_string())),
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -403,7 +403,7 @@ impl NativeSimProcedure for NativeFopen {
                 file_ptr.wrapping_add(fd_off),
                 RustBV::concrete(fd as u128, 32),
             )
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(file_ptr as u128, bits)))
@@ -462,7 +462,7 @@ impl NativeSimProcedure for NativeFdopen {
                 file_ptr.wrapping_add(fd_off),
                 RustBV::concrete(fd as u32 as u128, 32),
             )
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
 
         Ok(Some(RustBV::concrete(file_ptr as u128, bits)))
     }

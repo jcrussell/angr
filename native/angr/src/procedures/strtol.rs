@@ -29,7 +29,7 @@ fn read_bytes_until_null(
     for i in 0..max_len {
         let byte = state
             .memory_load(addr.wrapping_add(i as u64), 1)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
         if let Some(b) = byte.as_u64() {
             if (b as u8) == 0 {
                 break;
@@ -248,7 +248,7 @@ fn run_strtol(
                     let end_addr = addr.wrapping_add(prefix_end as u64);
                     state
                         .memory_store(end, RustBV::concrete(end_addr as u128, bits))
-                        .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                        ?;
                 }
             }
             return Ok(Some(RustBV::concrete(0, bits)));
@@ -280,7 +280,7 @@ fn run_strtol(
                 };
                 state
                     .memory_store(end, RustBV::concrete(end_addr as u128, bits))
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                    ?;
             }
         }
         return Ok(Some(RustBV::concrete(value as u128, bits)));
@@ -300,7 +300,7 @@ fn run_strtol(
             let end_addr = addr.wrapping_add(bytes.len() as u64);
             state
                 .memory_store(end, RustBV::concrete(end_addr as u128, bits))
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
         }
     }
 

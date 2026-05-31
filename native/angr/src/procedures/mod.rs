@@ -62,9 +62,11 @@ pub enum ProcedureError {
     /// Argument is symbolic, need Python for constraint handling.
     #[error("symbolic argument: {0}")]
     SymbolicArgument(String),
-    /// Memory operation failed.
+    /// Memory operation failed. Carries the structured `MemoryError`
+    /// so callers can pattern-match on the underlying cause
+    /// (unmapped page, permission violation, symbolic address, ...).
     #[error("memory error: {0}")]
-    MemoryError(String),
+    Memory(#[from] MemoryError),
     /// Procedure not implemented in Rust.
     #[error("procedure not implemented")]
     NotImplemented,
@@ -74,12 +76,6 @@ pub enum ProcedureError {
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
-}
-
-impl From<MemoryError> for ProcedureError {
-    fn from(e: MemoryError) -> Self {
-        ProcedureError::MemoryError(e.to_string())
-    }
 }
 
 /// Extract a concrete u64 value from a procedure argument, or return SymbolicArgument error.

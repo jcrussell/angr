@@ -72,7 +72,7 @@ impl NativeSimProcedure for NativeGetenv {
                             buf_addr.wrapping_add(i as u64),
                             RustBV::concrete(byte as u128, 8),
                         )
-                        .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                        ?;
                 }
                 // NUL terminator
                 state
@@ -80,7 +80,7 @@ impl NativeSimProcedure for NativeGetenv {
                         buf_addr.wrapping_add(value.len() as u64),
                         RustBV::concrete(0, 8),
                     )
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                    ?;
 
                 Ok(Some(RustBV::concrete(buf_addr as u128, bits)))
             }

@@ -71,7 +71,7 @@ impl NativeSimProcedure for NativeFwrite {
         })?;
         let fd_bv = state
             .memory_load(file_ptr.wrapping_add(fd_off), 4)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
         let fd_raw = fd_bv
             .as_u64()
             .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
@@ -99,7 +99,7 @@ impl NativeSimProcedure for NativeFwrite {
                         )));
                     }
                 },
-                Err(e) => return Err(ProcedureError::MemoryError(e.to_string())),
+                Err(e) => return Err(e.into()),
             }
         }
         state.write_fd(fd_signed as u32, &bytes);

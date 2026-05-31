@@ -41,7 +41,7 @@ impl NativeSimProcedure for NativeStrcpy {
         for i in 0..MAX_STRLEN as u64 {
             let byte_val = state
                 .memory_load(src.wrapping_add(i), 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
             buf.push(byte);
             if byte == 0 {
@@ -57,7 +57,7 @@ impl NativeSimProcedure for NativeStrcpy {
             let bv = RustBV::concrete(byte as u128, 8);
             state
                 .memory_store(dest.wrapping_add(i as u64), bv)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
         }
 
         Ok(Some(args[0].clone()))
@@ -102,7 +102,7 @@ impl NativeSimProcedure for NativeStrncpy {
             } else {
                 let byte_val = state
                     .memory_load(src.wrapping_add(i), 1)
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                    ?;
                 let byte =
                     extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
                 buf.push(byte);
@@ -117,7 +117,7 @@ impl NativeSimProcedure for NativeStrncpy {
             let bv = RustBV::concrete(byte as u128, 8);
             state
                 .memory_store(dest.wrapping_add(i as u64), bv)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
         }
 
         Ok(Some(args[0].clone()))
@@ -155,7 +155,7 @@ impl NativeSimProcedure for NativeStrdup {
         for i in 0..MAX_STRLEN as u64 {
             let byte_val = state
                 .memory_load(src.wrapping_add(i), 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             let byte = extract_concrete_arg(&byte_val, &format!("src byte at offset {}", i))? as u8;
             buf.push(byte);
             if byte == 0 {
@@ -174,7 +174,7 @@ impl NativeSimProcedure for NativeStrdup {
             let bv = RustBV::concrete(byte as u128, 8);
             state
                 .memory_store(new_addr.wrapping_add(i as u64), bv)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
         }
 
         let bits = state.arch().bits();

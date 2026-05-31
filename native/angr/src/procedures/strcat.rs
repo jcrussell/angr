@@ -14,7 +14,7 @@ fn find_null(state: &mut RustSimState, addr: u64) -> Result<u64, ProcedureError>
         let byte_addr = addr.wrapping_add(i);
         let byte_val = state
             .memory_load(byte_addr, 1)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
         let byte =
             extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", byte_addr))? as u8;
         if byte == 0 {
@@ -51,14 +51,14 @@ impl NativeSimProcedure for NativeStrcat {
             let src_addr = src.wrapping_add(i);
             let byte_val = state
                 .memory_load(src_addr, 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             let byte =
                 extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
 
             let dst_addr = dest_end.wrapping_add(i);
             state
                 .memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
 
             if byte == 0 {
                 break;
@@ -98,7 +98,7 @@ impl NativeSimProcedure for NativeStrncat {
             let src_addr = src.wrapping_add(i);
             let byte_val = state
                 .memory_load(src_addr, 1)
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             let byte =
                 extract_concrete_arg(&byte_val, &format!("memory byte at 0x{:x}", src_addr))? as u8;
 
@@ -109,7 +109,7 @@ impl NativeSimProcedure for NativeStrncat {
             let dst_addr = dest_end.wrapping_add(i);
             state
                 .memory_store(dst_addr, RustBV::concrete(byte as u128, 8))
-                .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                ?;
             copied += 1;
         }
 
@@ -117,7 +117,7 @@ impl NativeSimProcedure for NativeStrncat {
         let null_addr = dest_end.wrapping_add(copied);
         state
             .memory_store(null_addr, RustBV::concrete(0u128, 8))
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
 
         let bits = state.arch().bits();
         Ok(Some(RustBV::concrete(dest as u128, bits)))

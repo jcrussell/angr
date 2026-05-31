@@ -108,14 +108,14 @@ impl NativeSimProcedure for NativeCalloc {
                 let bv = RustBV::concrete(0, 64);
                 state
                     .memory_store(addr.wrapping_add(offset), bv)
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                    ?;
                 offset += 8;
             }
             while offset < total {
                 let bv = RustBV::concrete(0, 8);
                 state
                     .memory_store(addr.wrapping_add(offset), bv)
-                    .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+                    ?;
                 offset += 1;
             }
         }

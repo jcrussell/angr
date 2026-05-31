@@ -68,7 +68,7 @@ impl NativeSimProcedure for NativeWrite {
                     }
                 }
                 Err(e) => {
-                    return Err(ProcedureError::MemoryError(e.to_string()));
+                    return Err(e.into());
                 }
             }
         }

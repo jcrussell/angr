@@ -63,7 +63,7 @@ fn scan_for_null(
         let byte_addr = addr.wrapping_add(i);
         let byte_val = state
             .memory_load(byte_addr, 1)
-            .map_err(|e| ProcedureError::MemoryError(e.to_string()))?;
+            ?;
 
         if !symbolic_seen {
             if let Some(b) = byte_val.as_u64() {
