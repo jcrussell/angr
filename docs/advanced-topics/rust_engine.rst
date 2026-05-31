@@ -52,9 +52,7 @@ Construct a ``RustExplorationManager`` directly, or pass
    state = proj.factory.entry_state()
 
    mgr = RustExplorationManager(proj, [state])
-   mgr.set_find_addresses([0x401234])
-   mgr.set_avoid_addresses([0x401000])
-   mgr.run(max_steps=10000)
+   mgr.explore(find=0x401234, avoid=0x401000, max_steps=10000)
 
    for found in mgr.found:
        print(f"Found at {hex(found.addr)}")
