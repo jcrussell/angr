@@ -436,6 +436,57 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
+    /// Convert one batched-load result entry to a RustBV.
+    ///
+    /// Branches: missing index (fresh symbolic), concrete bytes, or symbolic AST
+    /// (delegates to `try_convert_symbolic_value`).
+    fn convert_load_result(
+        &self,
+        py: Python<'_>,
+        load_results: &[(Vec<u8>, bool, Option<Py<PyAny>>)],
+        i: usize,
+        width: u32,
+        fallback_name: impl Fn() -> String,
+    ) -> RustBV {
+        let Some((data, is_symbolic, symbolic_ast)) = load_results.get(i) else {
+            return RustBV::symbolic(self.ctx, fallback_name(), width);
+        };
+        if !*is_symbolic {
+            return bytes_to_bv(data, width);
+        }
+        self.try_convert_symbolic_value(py, symbolic_ast.as_ref(), width, fallback_name)
+    }
+
+    /// Convert an optional symbolic AST to RustBV, falling back to a fresh symbolic.
+    ///
+    /// Order: handle-table fast path, then claripy-AST conversion, then fresh symbolic.
+    fn try_convert_symbolic_value(
+        &self,
+        py: Python<'_>,
+        ast_obj: Option<&Py<PyAny>>,
+        width: u32,
+        fallback_name: impl FnOnce() -> String,
+    ) -> RustBV {
+        let Some(ast_obj) = ast_obj else {
+            return RustBV::symbolic(self.ctx, fallback_name(), width);
+        };
+        let ast = ast_obj.bind(py);
+
+        if let Some(ref table) = self.symbol_table {
+            if let Some(bv) = try_handle_to_rustbv(ast, table) {
+                return bv;
+            }
+        }
+
+        if is_claripy_ast(ast) {
+            if let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx) {
+                return bv;
+            }
+        }
+
+        RustBV::symbolic(self.ctx, fallback_name(), width)
+    }
+
     /// Build an ITE chain for symbolic memory load by loading each candidate address.
     ///
     /// This builds the ITE chain entirely in Rust instead of delegating to Python.
@@ -463,97 +514,33 @@ impl<'a> VEXInterpreter<'a> {
         let width = (size * 8) as u32;
         let addr_width = addr_expr.width();
 
-        // For a single address, just load it directly
         if addrs.len() == 1 {
             return self.load_from_callback(py, callbacks, addrs[0], size);
         }
 
-        // Batch load all addresses at once for efficiency
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
         let load_results = callbacks
             .call_memory_load_batch(py, &load_requests)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
-        // Build (condition, value) pairs for the ITE chain
         let mut pairs: Vec<(RustBV, RustBV)> = Vec::with_capacity(addrs.len());
 
         for (i, addr) in addrs.iter().enumerate() {
-            // Get the loaded value for this address
-            let value = if i < load_results.len() {
-                let (data, is_symbolic, symbolic_ast) = &load_results[i];
-                if *is_symbolic {
-                    // Try to convert to RustBV - check handle first (fast path), then claripy (slow path)
-                    if let Some(ast_obj) = symbolic_ast {
-                        let ast = ast_obj.bind(py);
+            let value = self.convert_load_result(py, &load_results, i, width, || {
+                format!("ite_load_{:x}_{}", addr, size)
+            });
 
-                        // Fast path: check for RustBVHandle first
-                        if let Some(ref table) = self.symbol_table {
-                            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
-                                bv
-                            } else if is_claripy_ast(&ast) {
-                                // Slow path: claripy AST conversion
-                                match claripy_to_rustbv(py, &ast, self.ctx) {
-                                    Ok(bv) => bv,
-                                    Err(_) => {
-                                        // Fallback to fresh symbolic
-                                        RustBV::symbolic(
-                                            self.ctx,
-                                            format!("ite_load_{:x}_{}", addr, size),
-                                            width,
-                                        )
-                                    }
-                                }
-                            } else {
-                                RustBV::symbolic(
-                                    self.ctx,
-                                    format!("ite_load_{:x}_{}", addr, size),
-                                    width,
-                                )
-                            }
-                        } else if is_claripy_ast(&ast) {
-                            match claripy_to_rustbv(py, &ast, self.ctx) {
-                                Ok(bv) => bv,
-                                Err(_) => {
-                                    // Fallback to fresh symbolic
-                                    RustBV::symbolic(
-                                        self.ctx,
-                                        format!("ite_load_{:x}_{}", addr, size),
-                                        width,
-                                    )
-                                }
-                            }
-                        } else {
-                            RustBV::symbolic(
-                                self.ctx,
-                                format!("ite_load_{:x}_{}", addr, size),
-                                width,
-                            )
-                        }
-                    } else {
-                        RustBV::symbolic(self.ctx, format!("ite_load_{:x}_{}", addr, size), width)
-                    }
-                } else {
-                    bytes_to_bv(data, width)
-                }
-            } else {
-                // Missing result - create symbolic placeholder
-                RustBV::symbolic(self.ctx, format!("ite_load_{:x}_{}", addr, size), width)
-            };
-
-            // Build condition: addr_expr == this address
             let addr_const = RustBV::concrete(*addr as u128, addr_width);
             let cond = addr_expr.eq(&addr_const, self.ctx);
 
             pairs.push((cond, value));
         }
 
-        // Use the last value as default (for robustness, though one condition should always match)
         let default_value = pairs
             .last()
             .map(|(_, v)| v.clone())
             .unwrap_or_else(|| RustBV::symbolic(self.ctx, "ite_default", width));
 
-        // Build balanced ITE tree for better solver performance
         Ok(build_balanced_ite(
             &pairs[..pairs.len() - 1],
             default_value,
@@ -581,80 +568,23 @@ impl<'a> VEXInterpreter<'a> {
 
         let size = (data_val.width() / 8) as usize;
         let addr_width = addr_expr.width();
+        let val_width = data_val.width();
 
-        // Batch load current values at all candidate addresses
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
         let load_results = callbacks
             .call_memory_load_batch(py, &load_requests)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
-        // For each candidate address, build ITE and store back
         for (i, &addr) in addrs.iter().enumerate() {
-            // Build condition: addr_expr == this address
             let addr_const = RustBV::concrete(addr as u128, addr_width);
             let cond = addr_expr.eq(&addr_const, self.ctx);
 
-            // Get current value at this address
-            let current = if i < load_results.len() {
-                let (data, is_symbolic, symbolic_ast) = &load_results[i];
-                if *is_symbolic {
-                    if let Some(ast_obj) = symbolic_ast {
-                        let ast = ast_obj.bind(py);
-                        if let Some(ref table) = self.symbol_table {
-                            if let Some(bv) = try_handle_to_rustbv(&ast, table) {
-                                bv
-                            } else if is_claripy_ast(&ast) {
-                                claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
-                                    RustBV::symbolic(
-                                        self.ctx,
-                                        format!("ite_store_cur_{:x}", addr),
-                                        data_val.width(),
-                                    )
-                                })
-                            } else {
-                                RustBV::symbolic(
-                                    self.ctx,
-                                    format!("ite_store_cur_{:x}", addr),
-                                    data_val.width(),
-                                )
-                            }
-                        } else if is_claripy_ast(&ast) {
-                            claripy_to_rustbv(py, &ast, self.ctx).unwrap_or_else(|_| {
-                                RustBV::symbolic(
-                                    self.ctx,
-                                    format!("ite_store_cur_{:x}", addr),
-                                    data_val.width(),
-                                )
-                            })
-                        } else {
-                            RustBV::symbolic(
-                                self.ctx,
-                                format!("ite_store_cur_{:x}", addr),
-                                data_val.width(),
-                            )
-                        }
-                    } else {
-                        RustBV::symbolic(
-                            self.ctx,
-                            format!("ite_store_cur_{:x}", addr),
-                            data_val.width(),
-                        )
-                    }
-                } else {
-                    bytes_to_bv(data, data_val.width())
-                }
-            } else {
-                RustBV::symbolic(
-                    self.ctx,
-                    format!("ite_store_cur_{:x}", addr),
-                    data_val.width(),
-                )
-            };
+            let current = self.convert_load_result(py, &load_results, i, val_width, || {
+                format!("ite_store_cur_{:x}", addr)
+            });
 
-            // Build ITE: if (addr == candidate) then new_data else current
             let ite_value = cond.ite(data_val, &current, self.ctx);
 
-            // Store via symbolic value callback
             callbacks
                 .call_memory_store_symbolic_value(py, addr, &ite_value)
                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
