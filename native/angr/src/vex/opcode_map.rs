@@ -564,6 +564,38 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
     });
+
+    // NEON saturating shift-left by vector — `Iop_QShl{N}x{M}` (unsigned) /
+    // `Iop_QSal{N}x{M}` (signed). Signedness is encoded in the prefix, not a
+    // S/U infix, so we can't use `vec_signed_arms!`; route the two prefixes
+    // independently to the same `VQShlSat { signed }` variant. Maps to ARM
+    // UQSHL / SQSHL.
+    if let Some(rest) = op_str.strip_prefix("Iop_QShl") {
+        match rest {
+            "8x8" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 8, signed: false }),
+            "16x4" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 4, signed: false }),
+            "32x2" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 2, signed: false }),
+            "64x1" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 1, signed: false }),
+            "8x16" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 16, signed: false }),
+            "16x8" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 8, signed: false }),
+            "32x4" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 4, signed: false }),
+            "64x2" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 2, signed: false }),
+            _ => {}
+        }
+    }
+    if let Some(rest) = op_str.strip_prefix("Iop_QSal") {
+        match rest {
+            "8x8" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 8, signed: true }),
+            "16x4" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 4, signed: true }),
+            "32x2" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 2, signed: true }),
+            "64x1" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 1, signed: true }),
+            "8x16" => return Some(IROp::VQShlSat { elem: IRType::I8, count: 16, signed: true }),
+            "16x8" => return Some(IROp::VQShlSat { elem: IRType::I16, count: 8, signed: true }),
+            "32x4" => return Some(IROp::VQShlSat { elem: IRType::I32, count: 4, signed: true }),
+            "64x2" => return Some(IROp::VQShlSat { elem: IRType::I64, count: 2, signed: true }),
+            _ => {}
+        }
+    }
     // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON.
     vec_arms!(op_str; "Iop_Mul" => VMul {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
@@ -863,23 +895,9 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
         // Vector shift by *vector* (Shl/Shr/Sar/Sal{N}x{M}) routed to
         // parse_vector → IROp::VShl / VShr / VSar (Sal → VShl) in angr-tukg.7.
 
-        // Saturating shifts (NEON QShl/QSal/QShlN)
-        "Iop_QShl8x8" => "Iop_QShl8x8",
-        "Iop_QShl16x4" => "Iop_QShl16x4",
-        "Iop_QShl32x2" => "Iop_QShl32x2",
-        "Iop_QShl64x1" => "Iop_QShl64x1",
-        "Iop_QShl8x16" => "Iop_QShl8x16",
-        "Iop_QShl16x8" => "Iop_QShl16x8",
-        "Iop_QShl32x4" => "Iop_QShl32x4",
-        "Iop_QShl64x2" => "Iop_QShl64x2",
-        "Iop_QSal8x8" => "Iop_QSal8x8",
-        "Iop_QSal16x4" => "Iop_QSal16x4",
-        "Iop_QSal32x2" => "Iop_QSal32x2",
-        "Iop_QSal64x1" => "Iop_QSal64x1",
-        "Iop_QSal8x16" => "Iop_QSal8x16",
-        "Iop_QSal16x8" => "Iop_QSal16x8",
-        "Iop_QSal32x4" => "Iop_QSal32x4",
-        "Iop_QSal64x2" => "Iop_QSal64x2",
+        // NOTE: Iop_QShl{N}x{M} / Iop_QSal{N}x{M} (NEON saturating shift-left
+        // by vector) implemented in angr-tukg.8 — routed through parse_vector
+        // to IROp::VQShlSat. QShlN (shift-by-immediate) is still unimplemented.
 
         _ => return None,
     };
@@ -1419,7 +1437,6 @@ mod tests {
             "Iop_PwAdd16x4",
             "Iop_PolynomialMull8x8",
             "Iop_Cnt8x8",
-            "Iop_QShl8x16",
         ] {
             match parse_opcode(op) {
                 IROp::NeonUnimplemented(name) => assert_eq!(name, op),

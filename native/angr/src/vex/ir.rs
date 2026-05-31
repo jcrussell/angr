@@ -886,6 +886,27 @@ pub enum IROp {
         signed: bool,
     },
 
+    /// NEON saturating shift-left by vector — `Iop_QShl{N}x{M}` (unsigned,
+    /// `signed=false`) / `Iop_QSal{N}x{M}` (signed, `signed=true`). Unlike
+    /// `VQAdd`/`VQSub` the signedness is encoded in the *prefix* (Shl vs Sal),
+    /// not a `S`/`U` infix in the suffix. Per-lane semantics:
+    ///   * Cast the shift-amount lane as a signed `elem`-bit integer.
+    ///   * If `amt >= 0`: shift left by `amt`; saturate the result to
+    ///     `[0, 2^N-1]` (unsigned) or `[-2^(N-1), 2^(N-1)-1]` (signed).
+    ///     Shifts ≥ lane width force the saturation boundary based on the
+    ///     sign of the operand.
+    ///   * If `amt < 0`: shift right (logical for unsigned, arithmetic for
+    ///     signed) by `-amt`; OOR right shifts collapse to 0 (unsigned) or
+    ///     sign-fill (signed).
+    /// Maps to ARM UQSHL / SQSHL (DDI 0487 C7.2.327 / C7.2.298). Derived from
+    /// libVEX `host_generic_simd64/simd128.c` h_generic_calc_QShl* helpers;
+    /// no `_op_generic_QShl` exists in claripy.
+    VQShlSat {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
+
     // =========================================================================
     // Packed integer min/max/abs
     // =========================================================================
@@ -1270,6 +1291,16 @@ impl IROp {
 
             // Saturating add/sub: width preserved.
             IROp::VQAdd { elem, count, .. } | IROp::VQSub { elem, count, .. } => {
+                let total = elem.bits() * (*count as u32);
+                match total {
+                    64 => Some(IRType::I64),
+                    128 => Some(IRType::V128),
+                    _ => None,
+                }
+            }
+
+            // Saturating shift by vector: width preserved.
+            IROp::VQShlSat { elem, count, .. } => {
                 let total = elem.bits() * (*count as u32);
                 match total {
                     64 => Some(IRType::I64),

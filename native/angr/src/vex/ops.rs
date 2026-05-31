@@ -385,6 +385,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VReverse { .. }
         | IROp::VQAdd { .. }
         | IROp::VQSub { .. }
+        | IROp::VQShlSat { .. }
         | IROp::VMin { .. }
         | IROp::VMax { .. }
         | IROp::VAbs { .. }
@@ -712,6 +713,13 @@ impl VEXOps {
             } => Self::vec_int_saturating(
                 left, right, elem, count, signed, /*is_sub=*/ true, ctx,
             ),
+
+            // NEON saturating shift-left by vector (Iop_QShl* / Iop_QSal*).
+            IROp::VQShlSat {
+                elem,
+                count,
+                signed,
+            } => Self::vec_qshl_sat(left, right, elem, count, signed, ctx),
 
             // Vector compare operations
             IROp::VCmpEQ { elem, count } => Self::vec_cmp(left, right, elem, count, "eq", ctx),
@@ -3110,6 +3118,203 @@ impl VEXOps {
                 let cap_cond = res.ult(&a, ctx);
                 cap_cond.ite(&umax_bv, &res, ctx)
             };
+
+            elements.push(lane);
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// NEON saturating shift-left by vector — `Iop_QShl{N}x{M}` (unsigned,
+    /// `signed=false`) / `Iop_QSal{N}x{M}` (signed, `signed=true`). Maps to
+    /// ARM UQSHL / SQSHL (DDI 0487 C7.2.327 / C7.2.298). Per-lane semantics
+    /// (`amt` = shift-amount lane, sign-extended; `a` = data lane):
+    ///   * `amt >= 0`: left shift by `amt`; saturate to UMAX (unsigned) or
+    ///     SMAX/SMIN (signed, based on sign of `a`). Counts ≥ lane width
+    ///     saturate unless `a == 0`.
+    ///   * `amt < 0`: right shift by `-amt`; logical (unsigned) or arithmetic
+    ///     (signed). Counts ≥ lane width collapse to 0 / sign-fill.
+    /// Derived from libVEX `host_generic_simd*` h_generic_calc_QShl* helpers;
+    /// claripy has no `_op_generic_QShl` / `_op_generic_QSal` reference.
+    fn vec_qshl_sat(
+        vec: RustBV,
+        amts: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        debug_assert_eq!(vec.width(), total_width);
+        debug_assert_eq!(amts.width(), total_width);
+
+        // Concrete fast path: both operands fit in u128 (covers every NEON
+        // shape we route here — 64- and 128-bit vectors).
+        if total_width <= 128 {
+            if let (Some(v), Some(s)) = (vec.as_u128(), amts.as_u128()) {
+                let mut result: u128 = 0;
+                let elem_mask: u128 = if elem_width == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << elem_width) - 1
+                };
+                let sign_bit: u128 = 1u128 << (elem_width - 1);
+                let smax: u128 = sign_bit - 1; // 0x7F...
+                let smin: u128 = sign_bit; // 0x80...
+                let umax: u128 = elem_mask;
+
+                for i in 0..count {
+                    let lo = (i as u32) * elem_width;
+                    let a = (v >> lo) & elem_mask;
+                    let amt_raw = (s >> lo) & elem_mask;
+                    // Sign-extend the amt lane: ARM SQSHL/UQSHL treat the
+                    // shift-amount lane as signed (negative → right shift).
+                    let amt_signed: i128 = if amt_raw & sign_bit != 0 {
+                        (amt_raw | !elem_mask) as i128
+                    } else {
+                        amt_raw as i128
+                    };
+
+                    let sat = if amt_signed >= 0 {
+                        let shift_amt = amt_signed as u32;
+                        if signed {
+                            // Sal: signed left shift with overflow → SMAX/SMIN.
+                            let a_signed = if a & sign_bit != 0 {
+                                (a | !elem_mask) as i128
+                            } else {
+                                a as i128
+                            };
+                            let smax_i = smax as i128;
+                            let smin_i = -(sign_bit as i128);
+                            if shift_amt >= elem_width {
+                                // Out-of-range left shift: any nonzero a → saturate.
+                                if a_signed > 0 {
+                                    smax
+                                } else if a_signed < 0 {
+                                    smin
+                                } else {
+                                    0
+                                }
+                            } else {
+                                // i128 shift never overflows for our widths
+                                // (max elem_width = 64, shift_amt < 64, so
+                                // |a_signed| < 2^63 → |raw| < 2^127).
+                                let raw = a_signed << shift_amt;
+                                if raw > smax_i {
+                                    smax
+                                } else if raw < smin_i {
+                                    smin
+                                } else {
+                                    (raw as u128) & elem_mask
+                                }
+                            }
+                        } else {
+                            // Shl: unsigned left shift with overflow → UMAX.
+                            if shift_amt >= elem_width {
+                                if a != 0 {
+                                    umax
+                                } else {
+                                    0
+                                }
+                            } else {
+                                // a < 2^elem_width and shift_amt < elem_width,
+                                // so raw fits in u128 (elem_width ≤ 64).
+                                let raw = a << shift_amt;
+                                if (raw & !elem_mask) != 0 {
+                                    umax
+                                } else {
+                                    raw & elem_mask
+                                }
+                            }
+                        }
+                    } else {
+                        // amt < 0 → right shift by -amt.
+                        let r_amt = (-amt_signed) as u32;
+                        if signed {
+                            // Ashr: out-of-range → sign-fill.
+                            let neg = a & sign_bit != 0;
+                            if r_amt >= elem_width {
+                                if neg { elem_mask } else { 0 }
+                            } else if neg {
+                                let shifted_val = a >> r_amt;
+                                let fill_mask =
+                                    (elem_mask << (elem_width as u128 - r_amt as u128))
+                                        & elem_mask;
+                                (shifted_val | fill_mask) & elem_mask
+                            } else {
+                                a >> r_amt
+                            }
+                        } else {
+                            // Lshr: out-of-range → 0.
+                            if r_amt >= elem_width {
+                                0
+                            } else {
+                                a >> r_amt
+                            }
+                        }
+                    };
+
+                    result |= (sat & elem_mask) << lo;
+                }
+                return Ok(RustBV::concrete(result, total_width));
+            }
+        }
+
+        // Symbolic per-lane fallback. The Z3 bvshl/bvlshr/bvashr semantics
+        // (count ≥ width → 0 or sign-fill) match the "out of range" branches
+        // of QShl/QSal, so no explicit width guards are needed; overflow is
+        // detected by the `(shl >> amt) != a` round-trip check.
+        let smax_bv = RustBV::concrete(
+            ((1u128 << (elem_width - 1)) - 1) & ((!0u128) >> (128 - elem_width)),
+            elem_width,
+        );
+        let smin_bv = RustBV::concrete(
+            (1u128 << (elem_width - 1)) & ((!0u128) >> (128 - elem_width)),
+            elem_width,
+        );
+        let umax_bv = RustBV::concrete((!0u128) >> (128 - elem_width), elem_width);
+        let zero_bv = RustBV::concrete(0, elem_width);
+        let bit_one = RustBV::concrete(1, 1);
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let lo = (i as u32) * elem_width;
+            let hi = lo + elem_width - 1;
+            let a = vec.extract(hi, lo, ctx);
+            let b = amts.extract(hi, lo, ctx);
+
+            // Left-shift branch (amt ≥ 0). Both signed and unsigned saturate
+            // when the round-trip `(a << amt) >> amt` differs from `a`.
+            let shl_res = a.clone().shl_into(b.clone(), ctx);
+
+            let left_result = if signed {
+                // Ashr round-trip detects signed overflow (and OOR shifts).
+                let recovered = shl_res.clone().ashr_into(b.clone(), ctx);
+                let no_overflow = recovered.eq(&a, ctx);
+                let a_top = a.extract(elem_width - 1, elem_width - 1, ctx);
+                let a_is_neg = a_top.eq(&bit_one, ctx);
+                let cap = a_is_neg.ite(&smin_bv, &smax_bv, ctx);
+                no_overflow.ite(&shl_res, &cap, ctx)
+            } else {
+                // Lshr round-trip detects unsigned overflow.
+                let recovered = shl_res.clone().lshr_into(b.clone(), ctx);
+                let no_overflow = recovered.eq(&a, ctx);
+                no_overflow.ite(&shl_res, &umax_bv, ctx)
+            };
+
+            // Right-shift branch (amt < 0). Use -b as the count; Z3 handles
+            // OOR (count ≥ width → 0 or sign-fill) natively.
+            let neg_amt = zero_bv.clone().sub_into(b.clone(), ctx);
+            let right_result = if signed {
+                a.clone().ashr_into(neg_amt, ctx)
+            } else {
+                a.clone().lshr_into(neg_amt, ctx)
+            };
+
+            // Dispatch on the sign of amt (top bit).
+            let amt_top = b.extract(elem_width - 1, elem_width - 1, ctx);
+            let amt_is_neg = amt_top.eq(&bit_one, ctx);
+            let lane = amt_is_neg.ite(&right_result, &left_result, ctx);
 
             elements.push(lane);
         }
@@ -7770,5 +7975,297 @@ mod tests {
                 other => panic!("{}: expected VSar, got {:?}", op, other),
             }
         }
+    }
+
+    // =========================================================================
+    // angr-tukg.8 — NEON saturating vector shifts (VQShlSat).
+    // =========================================================================
+
+    /// Iop_QShl8x8 — unsigned saturating left shift by vector (D-reg).
+    /// Covers in-range left shift, OOR left shift (amt ≥ width → UMAX if
+    /// `a != 0` else 0), overflow saturation to UMAX, and the negative-amt
+    /// branch (right shift via logical shift, with OOR → 0).
+    #[test]
+    fn test_vqshl_8x8_concrete_unsigned() {
+        let ctx = SymContext::new_mock();
+        // amt is sign-extended as i8: 0xFF = -1, 0xFC = -4, 0xF8 = -8.
+        let lanes_v: [u8; 8] = [0x01, 0x01, 0x01, 0x80, 0x40, 0xFF, 0x10, 0x80];
+        let lanes_s: [u8; 8] = [0, 7, 8, 1, 1, 0xFF, 0xFC, 0xF8];
+        // 0x01<<0  = 0x01.    0x01<<7  = 0x80.   0x01<<8 OOR, a!=0 → 0xFF.
+        // 0x80<<1  overflow → 0xFF.              0x40<<1  = 0x80 (no overflow).
+        // 0xFF >> 1 (amt=-1) = 0x7F (lshr).      0x10>>4 (amt=-4) = 0x01.
+        // 0x80>>8 OOR → 0 (lshr).
+        let lanes_e: [u8; 8] = [0x01, 0x80, 0xFF, 0xFF, 0x80, 0x7F, 0x01, 0x00];
+        let (mut v, mut s, mut e) = (0u128, 0u128, 0u128);
+        for i in 0..8 {
+            v |= (lanes_v[i] as u128) << (i * 8);
+            s |= (lanes_s[i] as u128) << (i * 8);
+            e |= (lanes_e[i] as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VQShlSat {
+                elem: IRType::I8,
+                count: 8,
+                signed: false,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_QSal16x4 — signed saturating left shift by vector (D-reg).
+    /// Covers positive overflow → SMAX, negative overflow → SMIN, in-range
+    /// shift, and the negative-amt branch (right shift via ashr, sign-fill).
+    #[test]
+    fn test_vqsal_16x4_concrete_signed() {
+        let ctx = SymContext::new_mock();
+        // i16: SMAX=0x7FFF, SMIN=0x8000, -1=0xFFFF.
+        // lane 0: 0x1000 (positive) << 3 = 0x8000 (negative when truncated) →
+        //   overflow → SMAX = 0x7FFF.
+        // lane 1: 0xF000 (= -4096) << 1 = 0xE000 (= -8192); ashr(0xE000,1)
+        //   = 0xF000 == a → no overflow → 0xE000.
+        // lane 2: 0xFFFF (= -1) with amt = -1 (0xFFFF sign-extended): ashr
+        //   by 1 → 0xFFFF (sign-fill).
+        // lane 3: 0x0040 (positive) with amt = 16 (OOR): a > 0 → SMAX.
+        let lanes_v: [u16; 4] = [0x1000, 0xF000, 0xFFFF, 0x0040];
+        let lanes_s: [u16; 4] = [3, 1, 0xFFFF, 16];
+        let lanes_e: [u16; 4] = [0x7FFF, 0xE000, 0xFFFF, 0x7FFF];
+        let (mut v, mut s, mut e) = (0u128, 0u128, 0u128);
+        for i in 0..4 {
+            v |= (lanes_v[i] as u128) << (i * 16);
+            s |= (lanes_s[i] as u128) << (i * 16);
+            e |= (lanes_e[i] as u128) << (i * 16);
+        }
+        let result = VEXOps::binop(
+            IROp::VQShlSat {
+                elem: IRType::I16,
+                count: 4,
+                signed: true,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_QSal8x16 — signed saturating left shift over 16x i8 lanes
+    /// (Q-reg/128-bit). Covers OOR-with-negative-input → SMIN saturation
+    /// (a < 0 with amt > width).
+    #[test]
+    fn test_vqsal_8x16_concrete_smin_saturation() {
+        let ctx = SymContext::new_mock();
+        // Build a 16-lane vector: alternating positive overflow (a=1, amt=8 OOR)
+        // and negative overflow (a=0xFF=-1, amt=8 OOR).
+        // amt=8 for all lanes. Positive a=1 (>0) → SMAX=0x7F.
+        //                     Negative a=0xFF (<0) → SMIN=0x80.
+        let mut v: u128 = 0;
+        let mut s: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..16 {
+            let (a, expected) = if i % 2 == 0 { (1u8, 0x7Fu8) } else { (0xFFu8, 0x80u8) };
+            v |= (a as u128) << (i * 8);
+            s |= 8u128 << (i * 8);
+            e |= (expected as u128) << (i * 8);
+        }
+        let result = VEXOps::binop(
+            IROp::VQShlSat {
+                elem: IRType::I8,
+                count: 16,
+                signed: true,
+            },
+            RustBV::concrete(v, 128),
+            RustBV::concrete(s, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), e);
+    }
+
+    /// Iop_QShl64x1 — width=64 edge case (single-lane D-reg). Exercises the
+    /// elem_width = 64 boundary of the concrete fast path (elem_mask uses
+    /// the full u64 range; sign-extension via the |!elem_mask| branch).
+    #[test]
+    fn test_vqshl_64x1_concrete_width_boundary() {
+        let ctx = SymContext::new_mock();
+        // Unsigned: 0x0000_0000_0000_0001 << 63 = 0x8000_0000_0000_0000.
+        // Round-trip: (0x8000... >> 63) = 1 == a. No overflow. Result OK.
+        let v = 1u128;
+        let s = 63u128;
+        let e = 0x8000_0000_0000_0000u128;
+        let result = VEXOps::binop(
+            IROp::VQShlSat {
+                elem: IRType::I64,
+                count: 1,
+                signed: false,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.as_u128().unwrap(), e);
+
+        // Same input, signed: a=1 (positive), shift left by 63 → 0x8000...
+        // which is SMIN as signed. Overflow → SMAX = 0x7FFF_FFFF_FFFF_FFFF.
+        let result_s = VEXOps::binop(
+            IROp::VQShlSat {
+                elem: IRType::I64,
+                count: 1,
+                signed: true,
+            },
+            RustBV::concrete(v, 64),
+            RustBV::concrete(s, 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result_s.as_u128().unwrap(), 0x7FFF_FFFF_FFFF_FFFFu128);
+    }
+
+    /// Parse routing for all 16 saturating-shift opcodes: Iop_QShl{N}x{M}
+    /// (signed=false) and Iop_QSal{N}x{M} (signed=true), 8 shapes each.
+    #[test]
+    fn test_parse_vqshlsat_routing() {
+        use crate::vex::opcode_map::parse_opcode;
+        let shapes: &[(&str, IRType, u8)] = &[
+            ("8x8", IRType::I8, 8),
+            ("16x4", IRType::I16, 4),
+            ("32x2", IRType::I32, 2),
+            ("64x1", IRType::I64, 1),
+            ("8x16", IRType::I8, 16),
+            ("16x8", IRType::I16, 8),
+            ("32x4", IRType::I32, 4),
+            ("64x2", IRType::I64, 2),
+        ];
+        for (sfx, elem_e, count_e) in shapes {
+            for (prefix, want_signed) in [("Iop_QShl", false), ("Iop_QSal", true)] {
+                let name = format!("{}{}", prefix, sfx);
+                match parse_opcode(&name) {
+                    IROp::VQShlSat { elem, count, signed } => {
+                        assert_eq!(elem, *elem_e, "{}: elem", name);
+                        assert_eq!(count, *count_e, "{}: count", name);
+                        assert_eq!(signed, want_signed, "{}: signed", name);
+                    }
+                    other => panic!("{}: expected VQShlSat, got {:?}", name, other),
+                }
+            }
+        }
+    }
+
+    /// Symbolic parity: the saturating shift behaves identically to a hand-
+    /// rolled per-lane ITE chain over Z3 bvshl/bvlshr/bvashr + round-trip
+    /// overflow detection. There is no `_op_generic_QShl` in claripy, so the
+    /// reference is the same algorithm encoded straight from the spec. This
+    /// catches encoding mistakes (wrong cap, swapped then/else, sign-bit
+    /// extraction errors) without depending on a Python reference.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vqshl_16x4_symbolic_universal_unsigned() {
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "qshl_a_16x4", 64);
+        let b = RustBV::symbolic(&ctx, "qshl_b_16x4", 64);
+        let got = VEXOps::binop(
+            IROp::VQShlSat {
+                elem: IRType::I16,
+                count: 4,
+                signed: false,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+        // Reference: per-lane spec replay with the same primitives as the
+        // helper. Any encoding drift will surface as a SAT counter-example.
+        let umax = RustBV::concrete(0xFFFFu128, 16);
+        let zero16 = RustBV::concrete(0, 16);
+        let bit_one = RustBV::concrete(1, 1);
+        let mut lanes: Vec<RustBV> = Vec::with_capacity(4);
+        for i in 0..4 {
+            let lo = i * 16;
+            let hi = lo + 15;
+            let al = a.extract(hi, lo, &ctx);
+            let bl = b.extract(hi, lo, &ctx);
+            let shl_v = al.clone().shl_into(bl.clone(), &ctx);
+            let recovered = shl_v.clone().lshr_into(bl.clone(), &ctx);
+            let no_overflow = recovered.eq(&al, &ctx);
+            let left_branch = no_overflow.ite(&shl_v, &umax, &ctx);
+            let neg_amt = zero16.clone().sub_into(bl.clone(), &ctx);
+            let right_branch = al.clone().lshr_into(neg_amt, &ctx);
+            let amt_top = bl.extract(15, 15, &ctx);
+            let amt_is_neg = amt_top.eq(&bit_one, &ctx);
+            lanes.push(amt_is_neg.ite(&right_branch, &left_branch, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        let universal = !ctx.is_sat();
+        ctx.pop();
+        assert!(
+            universal,
+            "VQShlSat 16x4 (unsigned) must match the per-lane spec for all 64-bit inputs"
+        );
+    }
+
+    /// Same parity check for the signed (QSal) branch — verifies the SMAX/
+    /// SMIN cap selection from the data-sign bit.
+    #[cfg(feature = "vex-engine-z3")]
+    #[test]
+    fn test_vqsal_16x4_symbolic_universal_signed() {
+        use z3::ast::Ast;
+        let ctx = SymContext::new_mock();
+        let a = RustBV::symbolic(&ctx, "qsal_a_16x4", 64);
+        let b = RustBV::symbolic(&ctx, "qsal_b_16x4", 64);
+        let got = VEXOps::binop(
+            IROp::VQShlSat {
+                elem: IRType::I16,
+                count: 4,
+                signed: true,
+            },
+            a.clone(),
+            b.clone(),
+            &ctx,
+        )
+        .unwrap();
+        let smax = RustBV::concrete(0x7FFFu128, 16);
+        let smin = RustBV::concrete(0x8000u128, 16);
+        let zero16 = RustBV::concrete(0, 16);
+        let bit_one = RustBV::concrete(1, 1);
+        let mut lanes: Vec<RustBV> = Vec::with_capacity(4);
+        for i in 0..4 {
+            let lo = i * 16;
+            let hi = lo + 15;
+            let al = a.extract(hi, lo, &ctx);
+            let bl = b.extract(hi, lo, &ctx);
+            let shl_v = al.clone().shl_into(bl.clone(), &ctx);
+            let recovered = shl_v.clone().ashr_into(bl.clone(), &ctx);
+            let no_overflow = recovered.eq(&al, &ctx);
+            let a_top = al.extract(15, 15, &ctx);
+            let a_is_neg = a_top.eq(&bit_one, &ctx);
+            let cap = a_is_neg.ite(&smin, &smax, &ctx);
+            let left_branch = no_overflow.ite(&shl_v, &cap, &ctx);
+            let neg_amt = zero16.clone().sub_into(bl.clone(), &ctx);
+            let right_branch = al.clone().ashr_into(neg_amt, &ctx);
+            let amt_top = bl.extract(15, 15, &ctx);
+            let amt_is_neg = amt_top.eq(&bit_one, &ctx);
+            lanes.push(amt_is_neg.ite(&right_branch, &left_branch, &ctx));
+        }
+        let py = VEXOps::concat_le_elements(lanes, &ctx);
+        ctx.push();
+        ctx.add_constraint(got.to_z3_ast()._eq(&py.to_z3_ast()).not());
+        let universal = !ctx.is_sat();
+        ctx.pop();
+        assert!(
+            universal,
+            "VQShlSat 16x4 (signed) must match the per-lane spec for all 64-bit inputs"
+        );
     }
 }
