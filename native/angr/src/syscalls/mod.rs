@@ -90,6 +90,23 @@ pub struct NativeSyscallRegistry {
     enabled: bool,
 }
 
+/// Register a batch of `(syscall_number, handler)` rows for one arch.
+///
+/// Wraps each handler in `Arc::new(...)` and inserts into the registry.
+/// Each row is `(num, expr)` where `expr` constructs a `NativeSyscall`
+/// (e.g. `read::NativeReadSyscall` or `exit::NativeExitSyscall { name: "exit" }`).
+///
+/// Per-arch syscall numbers diverge across Linux ABIs, so each arch keeps
+/// its own table — the macro collapses the boilerplate (one `r.register(...)`
+/// + `Arc::new(...)` line) but does not merge tables.
+macro_rules! register_syscalls {
+    ($r:expr, $arch:literal, [ $( ($num:expr, $handler:expr) ),* $(,)? ]) => {
+        $(
+            $r.register($arch, $num, Arc::new($handler));
+        )*
+    };
+}
+
 impl Default for NativeSyscallRegistry {
     fn default() -> Self {
         Self::new()
@@ -102,51 +119,47 @@ impl NativeSyscallRegistry {
             handlers: HashMap::new(),
             enabled: true,
         };
-        // amd64: read (0) — stdin (fd=0) only; symbolic bytes mirror NativeRead.
-        r.register("AMD64", 0, Arc::new(read::NativeReadSyscall));
-        // amd64: write (1) — stdout (fd=1) and stderr (fd=2); concrete bytes only.
-        r.register("AMD64", 1, Arc::new(write::NativeWriteSyscall));
-        // amd64: exit (60), exit_group (231) -> deadend.
-        r.register(
-            "AMD64",
-            60,
-            Arc::new(exit::NativeExitSyscall { name: "exit" }),
-        );
-        r.register(
-            "AMD64",
-            231,
-            Arc::new(exit::NativeExitSyscall { name: "exit_group" }),
-        );
-        // amd64: mprotect (10) — set page perms; -1 on misalign / unmapped.
-        r.register("AMD64", 10, Arc::new(mprotect::NativeMprotectSyscall));
-        // amd64: brk (12) — grow/query the program break.
-        r.register("AMD64", 12, Arc::new(brk::NativeBrkSyscall));
-        // amd64: munmap (11) — Python implementation is a no-op return 0.
-        r.register("AMD64", 11, Arc::new(munmap::NativeMunmapSyscall));
-        // amd64: mmap (9) — anonymous concrete-args fast path; falls back
-        // to Python for symbolic / file-backed / collision cases.
-        r.register("AMD64", 9, Arc::new(mmap::NativeMmapSyscall));
-        // amd64: rt_sigaction (13) — Python is essentially a no-op return 0
-        // (with -EINVAL for signum 33).
-        r.register("AMD64", 13, Arc::new(sigaction::NativeRtSigactionSyscall));
-        // amd64: gettimeofday (96) — writes fresh symbolic timeval; -1 on null.
-        r.register("AMD64", 96, Arc::new(sim_time::NativeGettimeofdaySyscall));
-        // amd64: arch_prctl (158) — fs_const/gs_const set/get.
-        r.register("AMD64", 158, Arc::new(arch_prctl::NativeArchPrctlSyscall));
-        // amd64: time (201) — fresh symbolic time_t in rax; monotonic via
-        // state.last_time; stores at *pointer if non-null.
-        r.register("AMD64", 201, Arc::new(sim_time::NativeTimeSyscall));
-        // amd64: clock_gettime (228) — CLOCK_REALTIME-only; -1 on null;
-        // other clocks fall back to Python's SimProcedureError path.
-        r.register("AMD64", 228, Arc::new(sim_time::NativeClockGettimeSyscall));
+
+        // ===== amd64 (asm/unistd_64.h) =====
+        // read (0): stdin (fd=0) only; symbolic bytes mirror NativeRead.
+        // write (1): stdout (fd=1) and stderr (fd=2); concrete bytes only.
+        // exit (60), exit_group (231): deadend.
+        // mprotect (10): set page perms; -1 on misalign / unmapped.
+        // brk (12): grow/query the program break.
+        // munmap (11): Python implementation is a no-op return 0.
+        // mmap (9): anonymous concrete-args fast path; falls back to Python
+        //   for symbolic / file-backed / collision cases.
+        // rt_sigaction (13): Python is essentially a no-op return 0 (with
+        //   -EINVAL for signum 33).
+        // gettimeofday (96): writes fresh symbolic timeval; -1 on null.
+        // arch_prctl (158): fs_const/gs_const set/get (amd64-only).
+        // time (201): fresh symbolic time_t in rax; monotonic via
+        //   state.last_time; stores at *pointer if non-null.
+        // clock_gettime (228): CLOCK_REALTIME-only; -1 on null; other clocks
+        //   fall back to Python's SimProcedureError path.
+        register_syscalls!(r, "AMD64", [
+            (0, read::NativeReadSyscall),
+            (1, write::NativeWriteSyscall),
+            (9, mmap::NativeMmapSyscall),
+            (10, mprotect::NativeMprotectSyscall),
+            (11, munmap::NativeMunmapSyscall),
+            (12, brk::NativeBrkSyscall),
+            (13, sigaction::NativeRtSigactionSyscall),
+            (60, exit::NativeExitSyscall { name: "exit" }),
+            (96, sim_time::NativeGettimeofdaySyscall),
+            (158, arch_prctl::NativeArchPrctlSyscall),
+            (201, sim_time::NativeTimeSyscall),
+            (228, sim_time::NativeClockGettimeSyscall),
+            (231, exit::NativeExitSyscall { name: "exit_group" }),
+        ]);
 
         // ===== Per-arch registrations (angr-7xms) =====
         //
         // Handlers themselves are arch-agnostic (they take RustBV args from
         // the dispatcher, which uses each arch's CallingConvention to extract
         // the right registers). The only per-arch knob is the syscall number,
-        // so the table below maps syscall numbers from <asm/unistd_*.h> for
-        // each Linux ABI to the same set of handlers.
+        // so the tables below map numbers from <asm/unistd_*.h> for each
+        // Linux ABI to the same set of handlers.
         //
         // Notes on what is *not* registered here:
         //  - x86/ARM/MIPS32 mmap is the legacy struct-arg form (Iop_mmap on
@@ -156,10 +169,75 @@ impl NativeSyscallRegistry {
         //  - arch_prctl is amd64-only (no equivalent on other Linux arches).
         //  - On x86/ARM, EAX/R0 also hold the return value, so the
         //    Cdecl/ARMEABI return_register matches the kernel ABI.
-        register_x86(&mut r);
-        register_arm(&mut r);
-        register_arm64(&mut r);
-        register_mips32(&mut r);
+
+        // Linux i386 (asm/unistd_32.h). Skipped: mmap (90, legacy struct-arg
+        // form) and mmap2 (192, uses page-offset semantics — needs a distinct
+        // handler).
+        register_syscalls!(r, "X86", [
+            (1, exit::NativeExitSyscall { name: "exit" }),
+            (3, read::NativeReadSyscall),
+            (4, write::NativeWriteSyscall),
+            (13, sim_time::NativeTimeSyscall),
+            (45, brk::NativeBrkSyscall),
+            (78, sim_time::NativeGettimeofdaySyscall),
+            (91, munmap::NativeMunmapSyscall),
+            (125, mprotect::NativeMprotectSyscall),
+            (174, sigaction::NativeRtSigactionSyscall),
+            (252, exit::NativeExitSyscall { name: "exit_group" }),
+            (265, sim_time::NativeClockGettimeSyscall),
+        ]);
+
+        // Linux ARM EABI (arm/asm/unistd-eabi.h). Skipped: mmap (90, legacy
+        // form) and mmap2 (192, page-offset semantics).
+        register_syscalls!(r, "ARM", [
+            (1, exit::NativeExitSyscall { name: "exit" }),
+            (3, read::NativeReadSyscall),
+            (4, write::NativeWriteSyscall),
+            (13, sim_time::NativeTimeSyscall),
+            (45, brk::NativeBrkSyscall),
+            (78, sim_time::NativeGettimeofdaySyscall),
+            (91, munmap::NativeMunmapSyscall),
+            (125, mprotect::NativeMprotectSyscall),
+            (174, sigaction::NativeRtSigactionSyscall),
+            (248, exit::NativeExitSyscall { name: "exit_group" }),
+            (263, sim_time::NativeClockGettimeSyscall),
+        ]);
+
+        // Linux AArch64 (asm-generic/unistd.h). Uses the asm-generic ABI:
+        // mmap takes the modern 6-register form with byte offset, so the
+        // existing NativeMmapSyscall works as-is.
+        register_syscalls!(r, "ARM64", [
+            (63, read::NativeReadSyscall),
+            (64, write::NativeWriteSyscall),
+            (93, exit::NativeExitSyscall { name: "exit" }),
+            (94, exit::NativeExitSyscall { name: "exit_group" }),
+            (113, sim_time::NativeClockGettimeSyscall),
+            (134, sigaction::NativeRtSigactionSyscall),
+            (169, sim_time::NativeGettimeofdaySyscall),
+            (214, brk::NativeBrkSyscall),
+            (215, munmap::NativeMunmapSyscall),
+            (222, mmap::NativeMmapSyscall),
+            (226, mprotect::NativeMprotectSyscall),
+        ]);
+
+        // Linux MIPS32 O32 (asm/unistd_o32.h). Numbers start at 4000.
+        // mmap (4090, legacy) and mmap2 (4210) skipped — mmap2 takes 6 args
+        // but O32 only passes 4 in registers ($a0-$a3); arg 5+ live on the
+        // stack and our extract_syscall_args does not currently traverse it.
+        register_syscalls!(r, "MIPS32", [
+            (4001, exit::NativeExitSyscall { name: "exit" }),
+            (4003, read::NativeReadSyscall),
+            (4004, write::NativeWriteSyscall),
+            (4013, sim_time::NativeTimeSyscall),
+            (4045, brk::NativeBrkSyscall),
+            (4078, sim_time::NativeGettimeofdaySyscall),
+            (4091, munmap::NativeMunmapSyscall),
+            (4125, mprotect::NativeMprotectSyscall),
+            (4194, sigaction::NativeRtSigactionSyscall),
+            (4246, exit::NativeExitSyscall { name: "exit_group" }),
+            (4263, sim_time::NativeClockGettimeSyscall),
+        ]);
+
         r
     }
 
@@ -206,119 +284,6 @@ impl NativeSyscallRegistry {
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty()
     }
-}
-
-/// Register Linux i386 syscall numbers (asm/unistd_32.h).
-///
-/// Skipped: mmap (90, legacy struct-arg form) and mmap2 (192, uses
-/// page-offset semantics — needs a distinct handler).
-fn register_x86(r: &mut NativeSyscallRegistry) {
-    r.register("X86", 1, Arc::new(exit::NativeExitSyscall { name: "exit" }));
-    r.register("X86", 3, Arc::new(read::NativeReadSyscall));
-    r.register("X86", 4, Arc::new(write::NativeWriteSyscall));
-    r.register("X86", 13, Arc::new(sim_time::NativeTimeSyscall));
-    r.register("X86", 45, Arc::new(brk::NativeBrkSyscall));
-    r.register("X86", 78, Arc::new(sim_time::NativeGettimeofdaySyscall));
-    r.register("X86", 91, Arc::new(munmap::NativeMunmapSyscall));
-    r.register("X86", 125, Arc::new(mprotect::NativeMprotectSyscall));
-    r.register("X86", 174, Arc::new(sigaction::NativeRtSigactionSyscall));
-    r.register(
-        "X86",
-        252,
-        Arc::new(exit::NativeExitSyscall {
-            name: "exit_group",
-        }),
-    );
-    r.register("X86", 265, Arc::new(sim_time::NativeClockGettimeSyscall));
-}
-
-/// Register Linux ARM EABI syscall numbers (arm/asm/unistd-eabi.h).
-///
-/// Skipped: mmap (90, legacy form) and mmap2 (192, page-offset semantics).
-fn register_arm(r: &mut NativeSyscallRegistry) {
-    r.register("ARM", 1, Arc::new(exit::NativeExitSyscall { name: "exit" }));
-    r.register("ARM", 3, Arc::new(read::NativeReadSyscall));
-    r.register("ARM", 4, Arc::new(write::NativeWriteSyscall));
-    r.register("ARM", 13, Arc::new(sim_time::NativeTimeSyscall));
-    r.register("ARM", 45, Arc::new(brk::NativeBrkSyscall));
-    r.register("ARM", 78, Arc::new(sim_time::NativeGettimeofdaySyscall));
-    r.register("ARM", 91, Arc::new(munmap::NativeMunmapSyscall));
-    r.register("ARM", 125, Arc::new(mprotect::NativeMprotectSyscall));
-    r.register("ARM", 174, Arc::new(sigaction::NativeRtSigactionSyscall));
-    r.register(
-        "ARM",
-        248,
-        Arc::new(exit::NativeExitSyscall {
-            name: "exit_group",
-        }),
-    );
-    r.register("ARM", 263, Arc::new(sim_time::NativeClockGettimeSyscall));
-}
-
-/// Register Linux AArch64 syscall numbers (asm-generic/unistd.h).
-///
-/// AArch64 uses the asm-generic ABI: mmap takes the modern 6-register
-/// form with byte offset, so the existing NativeMmapSyscall works as-is.
-fn register_arm64(r: &mut NativeSyscallRegistry) {
-    r.register("ARM64", 63, Arc::new(read::NativeReadSyscall));
-    r.register("ARM64", 64, Arc::new(write::NativeWriteSyscall));
-    r.register(
-        "ARM64",
-        93,
-        Arc::new(exit::NativeExitSyscall { name: "exit" }),
-    );
-    r.register(
-        "ARM64",
-        94,
-        Arc::new(exit::NativeExitSyscall {
-            name: "exit_group",
-        }),
-    );
-    r.register("ARM64", 113, Arc::new(sim_time::NativeClockGettimeSyscall));
-    r.register("ARM64", 134, Arc::new(sigaction::NativeRtSigactionSyscall));
-    r.register("ARM64", 169, Arc::new(sim_time::NativeGettimeofdaySyscall));
-    r.register("ARM64", 214, Arc::new(brk::NativeBrkSyscall));
-    r.register("ARM64", 215, Arc::new(munmap::NativeMunmapSyscall));
-    r.register("ARM64", 222, Arc::new(mmap::NativeMmapSyscall));
-    r.register("ARM64", 226, Arc::new(mprotect::NativeMprotectSyscall));
-}
-
-/// Register Linux MIPS32 O32 syscall numbers (asm/unistd_o32.h).
-///
-/// O32 syscall numbers start at 4000. mmap (4090, legacy) and mmap2
-/// (4210) skipped — mmap2 takes 6 args but O32 only passes 4 in registers
-/// ($a0-$a3); arg 5+ live on the stack and our extract_syscall_args does
-/// not currently traverse the stack.
-fn register_mips32(r: &mut NativeSyscallRegistry) {
-    r.register(
-        "MIPS32",
-        4001,
-        Arc::new(exit::NativeExitSyscall { name: "exit" }),
-    );
-    r.register("MIPS32", 4003, Arc::new(read::NativeReadSyscall));
-    r.register("MIPS32", 4004, Arc::new(write::NativeWriteSyscall));
-    r.register("MIPS32", 4013, Arc::new(sim_time::NativeTimeSyscall));
-    r.register("MIPS32", 4045, Arc::new(brk::NativeBrkSyscall));
-    r.register("MIPS32", 4078, Arc::new(sim_time::NativeGettimeofdaySyscall));
-    r.register("MIPS32", 4091, Arc::new(munmap::NativeMunmapSyscall));
-    r.register("MIPS32", 4125, Arc::new(mprotect::NativeMprotectSyscall));
-    r.register(
-        "MIPS32",
-        4194,
-        Arc::new(sigaction::NativeRtSigactionSyscall),
-    );
-    r.register(
-        "MIPS32",
-        4246,
-        Arc::new(exit::NativeExitSyscall {
-            name: "exit_group",
-        }),
-    );
-    r.register(
-        "MIPS32",
-        4263,
-        Arc::new(sim_time::NativeClockGettimeSyscall),
-    );
 }
 
 #[cfg(test)]
