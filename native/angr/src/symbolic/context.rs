@@ -249,6 +249,7 @@ static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Every Nth assertion runs Z3 simplify() for measurement.  Driven by a
 /// shared atomic counter across all three assert sites.  N=64 gives ~1.5%
 /// overhead with a single simplify call per sample.
+#[cfg(feature = "vex-engine-z3")]
 const SIMPLIFY_SAMPLE_STRIDE: u64 = 64;
 static SIMPLIFY_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
 // (c) full-list assertion-dedup: how often the incoming Z3_ast ptr ALREADY
@@ -645,18 +646,21 @@ pub fn record_mem_ite_depth(depth: u32) {
 }
 
 /// Increment Z3 AST build counter (called from value.rs).
+#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub fn record_z3_ast_build() {
     Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment per-call to_z3_ast_cached cache-hit counter (angr-zdho).
+#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub fn record_z3_ast_cache_hit() {
     Z3_AST_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment per-call to_z3_ast_cached cache-miss counter (angr-zdho).
+#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub fn record_z3_ast_cache_miss() {
     Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1186,6 +1190,7 @@ pub struct SymContext {
     #[cfg(feature = "vex-engine-z3")]
     push_local_cache_lengths: Mutex<PushStack>,
     /// Local assumed_constraints length at each push level (for rollback truncation).
+    #[cfg(feature = "vex-engine-z3")]
     push_assumed_local_lengths: Mutex<PushStack>,
     /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). The shared prefix is an
@@ -1335,7 +1340,6 @@ impl SymContext {
             symbol_table: Arc::new(HashMap::new()),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
-            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
             local_constraints: Mutex::new(LocalConstraints::new()),
         }
@@ -3805,7 +3809,6 @@ impl SymContext {
             symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
             push_constraint_counts: Mutex::new(PushStack::new()),
-            push_assumed_local_lengths: Mutex::new(PushStack::new()),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             local_constraints: Mutex::new(LocalConstraints::new()),
         }
