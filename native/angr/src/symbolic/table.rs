@@ -16,6 +16,43 @@ use parking_lot::RwLock;
 use super::handle::RustBVHandle;
 use super::{RustBV, SymContext};
 
+/// Generate `op_$name(a_id, b_id, ctx)` methods that delegate to
+/// `RustBV::$method(b, ctx)` after a single read-lock fetch.
+///
+/// See the `Op method generators` section in `impl RustSymbolTable` for
+/// the rationale and how to add a new entry.
+macro_rules! op_binary {
+    ( $( ($name:ident, $method:ident, $doc:expr) ),+ $(,)? ) => {
+        $(
+            #[doc = $doc]
+            pub fn $name(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
+                let symbols = self.symbols.read();
+                let a = symbols.get(&a_id)?;
+                let b = symbols.get(&b_id)?;
+                let result = a.$method(b, ctx);
+                drop(symbols); // Release read lock before acquiring write lock
+                Some(self.insert(result))
+            }
+        )+
+    };
+}
+
+/// Same as [`op_binary!`] but for single-operand methods on `RustBV`.
+macro_rules! op_unary {
+    ( $( ($name:ident, $method:ident, $doc:expr) ),+ $(,)? ) => {
+        $(
+            #[doc = $doc]
+            pub fn $name(&self, a_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
+                let symbols = self.symbols.read();
+                let a = symbols.get(&a_id)?;
+                let result = a.$method(ctx);
+                drop(symbols);
+                Some(self.insert(result))
+            }
+        )+
+    };
+}
+
 /// Global symbol table for storing RustBV values.
 ///
 /// Each solver context has its own symbol table, allowing different
@@ -115,287 +152,52 @@ impl RustSymbolTable {
     }
 
     // =========================================================================
-    // Arithmetic Operations (return new handles)
+    // Op method generators
     // =========================================================================
+    //
+    // The 27 single-operand and two-operand op_* methods all share the same
+    // shape: read-lock the table, fetch operand(s), call a same-named RustBV
+    // method, drop the read lock, then insert the result. These two macros
+    // generate them from a table of `(method_name, RustBV-method)` rows.
+    //
+    // To add a new operation, append one row to the appropriate macro call
+    // below and implement the matching RustBV method.
 
-    /// Add two values and return a handle to the result.
-    pub fn op_add(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.add(b, ctx);
-        drop(symbols); // Release read lock before acquiring write lock
-        Some(self.insert(result))
+    op_binary! {
+        // Arithmetic
+        (op_add,  add,  "Add two values and return a handle to the result."),
+        (op_sub,  sub,  "Subtract two values and return a handle to the result."),
+        (op_mul,  mul,  "Multiply two values and return a handle to the result."),
+        (op_udiv, udiv, "Unsigned division of two values."),
+        (op_sdiv, sdiv, "Signed division of two values."),
+        (op_urem, urem, "Unsigned remainder of two values."),
+        (op_srem, srem, "Signed remainder of two values."),
+        // Bitwise
+        (op_and,  and,  "Bitwise AND of two values."),
+        (op_or,   or,   "Bitwise OR of two values."),
+        (op_xor,  xor,  "Bitwise XOR of two values."),
+        // Shifts
+        (op_shl,  shl,  "Left shift."),
+        (op_lshr, lshr, "Logical right shift."),
+        (op_ashr, ashr, "Arithmetic right shift."),
+        (op_rotl, rotl, "Rotate left."),
+        (op_rotr, rotr, "Rotate right."),
+        // Comparisons (return 1-bit handles)
+        (op_eq,   eq,   "Equality comparison."),
+        (op_ne,   ne,   "Inequality comparison."),
+        (op_ult,  ult,  "Unsigned less than."),
+        (op_ule,  ule,  "Unsigned less than or equal."),
+        (op_ugt,  ugt,  "Unsigned greater than."),
+        (op_uge,  uge,  "Unsigned greater than or equal."),
+        (op_slt,  slt,  "Signed less than."),
+        (op_sle,  sle,  "Signed less than or equal."),
+        (op_sgt,  sgt,  "Signed greater than."),
+        (op_sge,  sge,  "Signed greater than or equal."),
     }
 
-    /// Subtract two values and return a handle to the result.
-    pub fn op_sub(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.sub(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Multiply two values and return a handle to the result.
-    pub fn op_mul(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.mul(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Unsigned division of two values.
-    pub fn op_udiv(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.udiv(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Signed division of two values.
-    pub fn op_sdiv(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.sdiv(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Unsigned remainder of two values.
-    pub fn op_urem(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.urem(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Signed remainder of two values.
-    pub fn op_srem(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.srem(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Negation of a value.
-    pub fn op_neg(&self, a_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let result = a.neg(ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    // =========================================================================
-    // Bitwise Operations
-    // =========================================================================
-
-    /// Bitwise AND of two values.
-    pub fn op_and(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.and(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Bitwise OR of two values.
-    pub fn op_or(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.or(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Bitwise XOR of two values.
-    pub fn op_xor(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.xor(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Bitwise NOT of a value.
-    pub fn op_not(&self, a_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let result = a.not(ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    // =========================================================================
-    // Shift Operations
-    // =========================================================================
-
-    /// Left shift.
-    pub fn op_shl(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.shl(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Logical right shift.
-    pub fn op_lshr(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.lshr(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Arithmetic right shift.
-    pub fn op_ashr(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.ashr(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Rotate left.
-    pub fn op_rotl(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.rotl(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Rotate right.
-    pub fn op_rotr(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.rotr(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    // =========================================================================
-    // Comparison Operations (return 1-bit handles)
-    // =========================================================================
-
-    /// Equality comparison.
-    pub fn op_eq(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.eq(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Inequality comparison.
-    pub fn op_ne(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.ne(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Unsigned less than.
-    pub fn op_ult(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.ult(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Unsigned less than or equal.
-    pub fn op_ule(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.ule(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Unsigned greater than.
-    pub fn op_ugt(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.ugt(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Unsigned greater than or equal.
-    pub fn op_uge(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.uge(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Signed less than.
-    pub fn op_slt(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.slt(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Signed less than or equal.
-    pub fn op_sle(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.sle(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Signed greater than.
-    pub fn op_sgt(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.sgt(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
-    }
-
-    /// Signed greater than or equal.
-    pub fn op_sge(&self, a_id: u64, b_id: u64, ctx: &SymContext) -> Option<RustBVHandle> {
-        let symbols = self.symbols.read();
-        let a = symbols.get(&a_id)?;
-        let b = symbols.get(&b_id)?;
-        let result = a.sge(b, ctx);
-        drop(symbols);
-        Some(self.insert(result))
+    op_unary! {
+        (op_neg, neg, "Negation of a value."),
+        (op_not, not, "Bitwise NOT of a value."),
     }
 
     // =========================================================================
