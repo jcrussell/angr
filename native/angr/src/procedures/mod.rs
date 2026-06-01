@@ -46,6 +46,7 @@ pub mod strcpy;
 pub mod strings;
 pub mod strlen;
 pub mod strstr;
+pub mod strtod;
 pub mod strtol;
 pub mod write;
 
@@ -220,8 +221,12 @@ impl NativeProcedureRegistry {
         // String-to-integer conversion
         registry.register(Arc::new(strtol::NativeStrtol));
         registry.register(Arc::new(strtol::NativeStrtoul));
+        registry.register(Arc::new(strtol::NativeStrtoll));
+        registry.register(Arc::new(strtol::NativeStrtoull));
         registry.register(Arc::new(strtol::NativeAtoi));
         registry.register(Arc::new(strtol::NativeAtol));
+        // String-to-float conversion (amd64 only; xmm0 return register)
+        registry.register(Arc::new(strtod::NativeStrtod));
         // String concatenation
         registry.register(Arc::new(strcat::NativeStrcat));
         registry.register(Arc::new(strcat::NativeStrncat));

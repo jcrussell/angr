@@ -348,6 +348,39 @@ crate::declare_proc! {
     }
 }
 
+crate::declare_proc! {
+    /// Native strtoll: `long long strtoll(const char *nptr, char **endptr, int base)`.
+    /// On the LP64 targets we support (amd64 / aarch64), `long long` is 64 bits
+    /// — the same width as `long` — so the shared `run_strtol` engine produces
+    /// the correct result. On ILP32 (x86 / arm32), the dispatch return-register
+    /// width is 32 bits while `long long` is 64 bits; we leave that combination
+    /// to the Python fallback rather than try to plumb a wide return through
+    /// the integer return register (caller usually uses split eax:edx).
+    name = "strtoll",
+    struct = NativeStrtoll,
+    args = [nptr: concrete, endptr: concrete, base: concrete],
+    call |state| {
+        if state.arch().bits() < 64 {
+            return Err(ProcedureError::NotImplemented);
+        }
+        run_strtol(state, nptr, Some(endptr), base as i64)
+    }
+}
+
+crate::declare_proc! {
+    /// Native strtoull: unsigned sibling of strtoll. Same width caveat —
+    /// fall back on ILP32.
+    name = "strtoull",
+    struct = NativeStrtoull,
+    args = [nptr: concrete, endptr: concrete, base: concrete],
+    call |state| {
+        if state.arch().bits() < 64 {
+            return Err(ProcedureError::NotImplemented);
+        }
+        run_strtol(state, nptr, Some(endptr), base as i64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,6 +631,104 @@ mod tests {
         // Result is 64-bit; -42 in two's complement = 0xffffffffffffffd6.
         assert_eq!(ctx.min(&result, false), Some((-42i64) as u64 as u128));
         assert_eq!(ctx.max(&result, false), Some((-42i64) as u64 as u128));
+    }
+
+    #[test]
+    fn test_strtoll_concrete_64bit_value() {
+        // strtoll must accept values that exceed 32-bit range — pick a value
+        // that would overflow i32 but fits in i64.
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, b"9223372036854775806"); // i64::MAX - 1
+        let p = NativeStrtoll;
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(10, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(9223372036854775806u64));
+    }
+
+    #[test]
+    fn test_strtoull_concrete_above_i64_max() {
+        // strtoull must accept the full u64 range (above i64::MAX).
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, b"18446744073709551614"); // u64::MAX - 1
+        let p = NativeStrtoull;
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(10, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(u64::MAX - 1));
+    }
+
+    #[test]
+    fn test_strtoll_negative_hex() {
+        // strtoll with base 16 and a negative sign.
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, b"-0xff");
+        let p = NativeStrtoll;
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(16, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some((-255i64) as u64));
+    }
+
+    #[test]
+    fn test_strtoll_symbolic_digits_constrained() {
+        // Symbolic digits in a buffer constrained to "456" → 456 via strtoll.
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"XXX\x00", Permission::RWX);
+        let s0 = place_symbolic_byte(&mut state, 0x1000, "lld0");
+        let s1 = place_symbolic_byte(&mut state, 0x1001, "lld1");
+        let s2 = place_symbolic_byte(&mut state, 0x1002, "lld2");
+        let ctx = state.solver().borrow();
+        let four = RustBV::concrete(b'4' as u128, 8);
+        let five = RustBV::concrete(b'5' as u128, 8);
+        let six = RustBV::concrete(b'6' as u128, 8);
+        let c0 = s0.eq(&four, &ctx);
+        let c1 = s1.eq(&five, &ctx);
+        let c2 = s2.eq(&six, &ctx);
+        drop(ctx);
+
+        let p = NativeStrtoll;
+        let result = p
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0x1000, 64),
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(10, 64),
+                ],
+            )
+            .unwrap()
+            .unwrap();
+        state.add_constraint(c0);
+        state.add_constraint(c1);
+        state.add_constraint(c2);
+        let ctx = state.solver().borrow();
+        assert_eq!(ctx.min(&result, false), Some(456));
+        assert_eq!(ctx.max(&result, false), Some(456));
     }
 
     #[test]

@@ -10375,6 +10375,177 @@ class TestNativeMemoryAlignedAllocators:
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
+class TestNativeStringToNumericProcedures:
+    """Integration tests for NativeStrtoll / NativeStrtoull / NativeStrtod
+    (angr-f16h.3).
+
+    angr has no Python SimProcedure for these three — they are declared in
+    `procedures/definitions/common/glibc.json` but no Python file backs them.
+    The native registry is the only path that handles these calls.
+
+    Same in-binary non-executable hook-addr + stub-class pattern as
+    TestNativeMemoryAlignedAllocators (see that class docstring for the
+    rationale of using a fake hook in fauxware's `.ctors`).
+    """
+
+    HOOK_ADDR = 0x600e30   # in fauxware's .ctors (non-executable, in-binary)
+    DEAD_ADDR = 0x4008b0
+    STRING_ADDR = 0x601100  # past .bss, lazy-mapped
+    ENDPTR_ADDR = 0x601200  # storage for *endptr
+
+    @staticmethod
+    def _make_stub(proc_name: str, num_args: int):
+        runs = {
+            1: lambda self, a0: 0,             # noqa: ARG005
+            2: lambda self, a0, a1: 0,         # noqa: ARG005
+            3: lambda self, a0, a1, a2: 0,     # noqa: ARG005
+        }
+        return type(
+            proc_name,
+            (angr.SimProcedure,),
+            {"num_args": num_args, "run": runs[num_args]},
+        )
+
+    def _setup_state(self, proj, string_bytes: bytes, *, set_endptr: bool = False):
+        import claripy
+        state = proj.factory.blank_state(
+            addr=self.HOOK_ADDR,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        buf = string_bytes + b"\x00"
+        for i, b in enumerate(buf):
+            state.memory.store(self.STRING_ADDR + i, claripy.BVV(b, 8))
+        state.memory.store(state.regs.rsp,
+                           claripy.BVV(self.DEAD_ADDR, 64),
+                           endness="Iend_LE")
+        return state
+
+    def _first_state_id(self, mgr):
+        for stash in ("active", "deadended", "errored", "unconstrained"):
+            ids = mgr._rust_mgr.get_state_ids(stash)
+            if ids:
+                return ids[0]
+        return None
+
+    def test_strtoll_64bit_concrete_value(self, fauxware_project):
+        """strtoll on a value beyond i32 range must produce the i64 result
+        in rax via native dispatch."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("strtoll", 3)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, b"9223372036854775000")
+            state.regs.rdi = self.STRING_ADDR  # nptr
+            state.regs.rsi = 0                  # endptr (NULL)
+            state.regs.rdx = 10                 # base
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("strtoll", 0) == 1, (
+                f"expected native strtoll dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None, f"no state: {mgr.stash_counts()}"
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 9223372036854775000, f"rax={rax:#x}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strtoull_value_above_i64_max(self, fauxware_project):
+        """strtoull must accept values above i64::MAX (interpreted as u64)."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("strtoull", 3)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, b"18446744073709551000")
+            state.regs.rdi = self.STRING_ADDR
+            state.regs.rsi = 0
+            state.regs.rdx = 10
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("strtoull", 0) == 1, (
+                f"expected native strtoull dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 18446744073709551000, f"rax={rax:#x}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strtoll_writes_endptr_past_parsed_prefix(self, fauxware_project):
+        """strtoll with a non-null endptr must store nptr + consumed bytes."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("strtoll", 3)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, b"123abc")
+            state.regs.rdi = self.STRING_ADDR
+            state.regs.rsi = self.ENDPTR_ADDR
+            state.regs.rdx = 10
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            rax = mgr._rust_mgr.get_state_register(sid, "rax")
+            assert rax == 123
+            stored = mgr._rust_mgr.get_state_memory(sid, self.ENDPTR_ADDR, 8)
+            stored_addr = int.from_bytes(stored, "little")
+            assert stored_addr == self.STRING_ADDR + 3, (
+                f"endptr={stored_addr:#x} expected {self.STRING_ADDR + 3:#x}"
+            )
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_strtod_writes_xmm0_concrete_double(self, fauxware_project):
+        """strtod must dispatch natively, write the IEEE-754 bit pattern of
+        the parsed double to xmm0's low 64 bits, and leave rax untouched."""
+        from angr.exploration import RustExplorationManager
+        proj = fauxware_project
+
+        stub_cls = self._make_stub("strtod", 2)
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = self._setup_state(proj, b"3.141592653589793")
+            state.regs.rdi = self.STRING_ADDR
+            state.regs.rsi = 0
+
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("strtod", 0) == 1, (
+                f"expected native strtod dispatch, got stats={stats}"
+            )
+            sid = self._first_state_id(mgr)
+            assert sid is not None
+            xmm0 = mgr._rust_mgr.get_state_register(sid, "xmm0")
+            # xmm0 is 128 bits; low 64 carry the scalar double return.
+            low64 = xmm0 & ((1 << 64) - 1)
+            import struct
+            parsed = struct.unpack("<d", low64.to_bytes(8, "little"))[0]
+            assert parsed == 3.141592653589793, f"xmm0 low64 → {parsed!r}"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
+@pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestNativeReadCacheSync:
     """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
     requires the cached Python SimState to be invalidate-and-replayed per
