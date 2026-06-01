@@ -14,13 +14,11 @@
 //! `read=0x4, write=0x2, execute=0x1` (reversed). We translate the
 //! Linux bits explicitly here rather than going through `from_bits`.
 
+use super::page::{PAGE_MASK, PAGE_SIZE};
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const PAGE_SIZE: u64 = 4096;
-const PAGE_MASK: u64 = PAGE_SIZE - 1;
 
 pub struct NativeMprotectSyscall;
 

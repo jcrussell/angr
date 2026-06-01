@@ -28,6 +28,7 @@ pub mod memory_extras;
 pub mod mmap;
 pub mod mprotect;
 pub mod munmap;
+pub(crate) mod page;
 pub mod read;
 pub mod rlimit;
 pub mod sigaction;

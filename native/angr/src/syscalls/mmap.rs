@@ -38,13 +38,11 @@
 //! interleave with successful native calls; future cross-engine sync
 //! work (see angr-0z34 / state-cache sync) should address both.
 
+use super::page::{PAGE_MASK, PAGE_SIZE};
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const PAGE_SIZE: u64 = 4096;
-const PAGE_MASK: u64 = PAGE_SIZE - 1;
 
 const MAP_SHARED: u64 = 0x01;
 const MAP_PRIVATE: u64 = 0x02;
