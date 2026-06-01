@@ -1144,9 +1144,9 @@ impl VEXOps {
             // Raw opcode — try concrete x87 transcendental fast path first
             // (Iop_SinF64, Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_RecpExp*).
             // These arrive as Binop(rm, x); `left` carries rm, `right` the value.
-            // For Iop_2xm1F64 with symbolic input, try the concretize-and-pin
-            // fallback (angr-i5lj.1). All other symbolic transcendentals fall
-            // through to the existing fresh-symbolic fallback.
+            // For symbolic inputs to Iop_{Sin,Cos,Tan,2xm1}F64, try the
+            // concretize-and-pin fallback (angr-i5lj.1, angr-i5lj.2).
+            // Iop_RecpExp* has a closed-form path and never needs concretize.
             IROp::Raw(code) => {
                 if let Some(result) = transcendentals::try_concrete_binop_rm(code, &left, &right) {
                     Ok(result)
@@ -1283,9 +1283,9 @@ impl VEXOps {
             IROp::Raw(code) => {
                 // x87 Triop transcendentals: Iop_AtanF64, Iop_Yl2xF64,
                 // Iop_Yl2xp1F64, Iop_ScaleF64. Try concrete libm path first;
-                // for Iop_Yl2xF64 with symbolic input, fall back to the
-                // concretize-and-pin path (angr-i5lj.1). Other symbolic
-                // triops fall through to the fresh-symbolic fallback in
+                // for symbolic inputs, fall back to the concretize-and-pin
+                // path (angr-i5lj.1, angr-i5lj.2). Out-of-scope triops fall
+                // through to the fresh-symbolic fallback in
                 // expressions.rs::IRExpr::Triop.
                 if let Some(result) =
                     transcendentals::try_concrete_triop_rm(code, &rm, &left, &right)
