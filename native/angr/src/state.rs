@@ -78,6 +78,67 @@
 //!   need_callback resume path. Earlier code only checked Python
 //!   predicate flags and infinite-looped when `find=int` was combined
 //!   with a non-predicate technique like DFS.
+//!
+//! # State metadata + fork invariants
+//!
+//! The invariants below cross the FFI boundary in addition to (or instead
+//! of) I1–I8 above. Each refers to a bd memory key with the full rationale
+//! and history; enforcement-site comments below cross-reference back to
+//! this header rather than duplicating the prose.
+//!
+//! - **`state-id-never-reused`** — `NEXT_STATE_ID` is a monotonic atomic
+//!   counter. Once a state ID is absent from every Rust stash
+//!   (active|found|avoid|deadended|errored|unconstrained|pruned), it is
+//!   unreachable forever. This is the contract that makes it safe for the
+//!   Python `_cleanup_state_cache` to drop shadow mappings keyed by
+//!   `state_id` (`_state_roots`, `_predicate_matched_ids`,
+//!   `_py_state_options`, `_py_state_globals`). Future shadow structures
+//!   keyed by `state_id` must prune against `any_stash`, not invent
+//!   per-structure LRU caps. Enforced at `next_state_id()` below; the
+//!   `debug_assert!` in `fork()` confirms the child ID is fresh.
+//! - **`state-metadata-dataclass`** — Per-state Python AST metadata
+//!   (`symbolic_pages`, `hook_symbolic_memory`, `addr_to_ast`) is owned by
+//!   `RustSimState` on the Rust side; the Python `RustStateCacheMixin`
+//!   keeps a parallel `StateMetadata` dataclass (replacing three earlier
+//!   per-state dicts) at `angr/exploration/_state_metadata.py`. Eviction
+//!   on the Python side drops the dataclass entry; eviction on the Rust
+//!   side runs `RustSimState::Drop`, which decrements the Py-refcounts in
+//!   the maps below. The two sides do not have to agree on contents at
+//!   every callback boundary — Python may have a stale dataclass entry
+//!   while Rust has already mutated, and vice versa; what they MUST agree
+//!   on is the set of *live* state IDs (`state-id-never-reused`).
+//! - **`arc-make-mut-cow`** — Fields that are read on every fork but
+//!   mutated rarely are wrapped in `Arc<T>` and use `Arc::make_mut` for
+//!   copy-on-write. Mutators must peek the read path first to skip the
+//!   CoW clone when the operation would be a no-op (e.g. closing an
+//!   already-closed fd, clearing an empty hook set). `Arc`-wrapping a
+//!   field mutated on every fork (e.g. `RegisterFile.symbolic`) is a net
+//!   loss — the `make_mut` churn offsets the savings. See `FileSystem`
+//!   methods, `clear_hooks`, and `set_env_var` for the pattern.
+//! - **`arc-collection-iter`** — `Arc<HashSet<u64>>` and `Arc<Vec<T>>` do
+//!   NOT implement `IntoIterator` for `&Self`. After `Arc`-wrapping
+//!   `hooks` / `environment` / `fs.fds`, `for x in &self.field` becomes
+//!   `for x in self.field.iter()`. Compiler errors are obvious (E0277
+//!   "is not an iterator") but easy to miss in review.
+//! - **`apply-state-metadata-strips-options`** — `RustExplorationManager.
+//!   _apply_state_metadata` (Python) copies ONLY `LAZY_SOLVES` and
+//!   `STRICT_PAGE_ACCESS` from the source state to a cached/disk-loaded
+//!   init state. The boolean SimOption mirrors held below
+//!   (`no_ip_concretization`, `no_symbolic_jump_resolution`,
+//!   `keep_ip_symbolic`) are NOT in the allow-list, so any code that
+//!   reads `angr_state.options` from inside `_add_rust_state` on a
+//!   cached-init path may not see options the user originally set. Set
+//!   these flags from `__init__` on the user-supplied state BEFORE
+//!   `_run_python_init_if_needed` runs — not in `_add_rust_state` on the
+//!   post-init state.
+//! - **`arc-make-mut-fresh-context`** — On a freshly constructed
+//!   `SymContext` (no other Arc refs yet), `Arc::make_mut(&mut field)`
+//!   returns a unique `&mut` without cloning (refcount==1). `merge()`
+//!   exploits this to write into the merged context's `Arc<HashMap>`
+//!   while keeping Arc-wrapping for `fork()`. Site lives in
+//!   `symbolic/context.rs` (Z3 and mock paths); cited here because
+//!   `RustSimState::merge` builds the merged solver before any other
+//!   handle is taken.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -684,8 +745,19 @@ impl HistoryEntry {
 }
 
 /// Unique identifier for states.
+///
+/// Monotonic atomic counter — see the module-level `state-id-never-reused`
+/// invariant. The Python shadow maps (`_state_roots`,
+/// `_predicate_matched_ids`, `_py_state_options`, `_py_state_globals`) all
+/// depend on the no-reuse contract for safe eviction.
 static NEXT_STATE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Allocate a fresh, never-before-issued state ID.
+///
+/// Returns a `u64` strictly greater than every previously returned value
+/// (modulo wraparound at 2^64, which is unreachable in practice). See the
+/// module-level `state-id-never-reused` invariant for why every Python-
+/// side shadow structure depends on this property.
 fn next_state_id() -> u64 {
     NEXT_STATE_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
@@ -792,6 +864,11 @@ pub struct RustSimState {
     /// Hook addresses. Wrapped in Arc for cheap fork — copy-on-write
     /// via Arc::make_mut on add/remove/clear. Mutated only at config time
     /// in typical workloads, so most forks pay no clone cost here.
+    ///
+    /// See module-level `arc-make-mut-cow` (the read-first peek pattern
+    /// in `clear_hooks`) and `arc-collection-iter` (iterate via
+    /// `self.hooks.iter()`, not `for x in &self.hooks` — `Arc<HashSet>`
+    /// does not implement `IntoIterator` for `&Self`).
     hooks: Arc<HashSet<u64>>,
     /// Address concretization config.
     concretizer: AddressConcretizer,
@@ -833,6 +910,8 @@ pub struct RustSimState {
     /// Keys and values are byte vectors (no NUL terminator in storage).
     /// Wrapped in Arc for cheap fork — copy-on-write via Arc::make_mut on setenv.
     /// Most paths only read env vars, so the deep clone is rare.
+    ///
+    /// See module-level `arc-make-mut-cow` and `arc-collection-iter`.
     environment: Arc<HashMap<Vec<u8>, Vec<u8>>>,
     /// Per-state symbolic page metadata: `addr -> claripy AST`. Holds whole-page
     /// symbolic ASTs preserved across Python fallback so Rust can re-establish
@@ -840,14 +919,21 @@ pub struct RustSimState {
     /// owned alongside the rest of the state. Each PyObject is a strong ref to
     /// a claripy AST; cleared automatically when the state is dropped.
     /// Cloned on fork (Py refcounts incremented; cheap for a few entries).
+    ///
+    /// See module-level `state-metadata-dataclass`: the Python side keeps a
+    /// parallel `StateMetadata` dataclass; Rust drops decrement Py-refcounts.
     symbolic_pages: HashMap<u64, Py<PyAny>>,
     /// Per-state hook symbolic memory: `addr -> (claripy AST, byte size)`.
     /// Tracks symbolic writes performed inside Python hooks so Rust can replay
     /// them on resume. Cloned on fork.
+    ///
+    /// See module-level `state-metadata-dataclass`.
     hook_symbolic_memory: HashMap<u64, (Py<PyAny>, u32)>,
     /// Per-state addr -> (AST, byte size) recorded by handle registration so
     /// state export can recover the original symbol instead of a fresh BVS.
     /// Cloned on fork.
+    ///
+    /// See module-level `state-metadata-dataclass`.
     addr_to_ast: HashMap<u64, (Py<PyAny>, u32)>,
     /// Most recent symbolic value returned by the time(2) syscall — mirrors
     /// `state.globals['sys_last_time']` in Python's
@@ -859,6 +945,12 @@ pub struct RustSimState {
     /// jump targets are NOT enumerated via solver — the state routes to the
     /// unconstrained stash without warning. See engines/successors.py:292-296.
     /// Cloned on fork.
+    ///
+    /// See module-level `apply-state-metadata-strips-options`: this field is
+    /// NOT in the `_apply_state_metadata` allow-list, so it must be set on
+    /// the user-supplied state in Python `__init__` BEFORE the init pipeline
+    /// hits the disk cache — otherwise the cached-init path will silently
+    /// reset it to the default on a cache hit.
     no_ip_concretization: bool,
     /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION SimOption. When true, any
     /// symbolic jump target routes the state to the unconstrained stash
@@ -867,6 +959,9 @@ pub struct RustSimState {
     /// (both short-circuit `eval_next_addr_concretized` for symbolic IPs);
     /// they are separate flags to preserve Python option semantics. Cloned
     /// on fork.
+    ///
+    /// See module-level `apply-state-metadata-strips-options` — same caveat
+    /// as `no_ip_concretization`.
     no_symbolic_jump_resolution: bool,
     /// Mirrors angr's KEEP_IP_SYMBOLIC SimOption. When true, after a symbolic
     /// jump target is concretized to one-or-more concrete pc values, the IP
@@ -875,6 +970,9 @@ pub struct RustSimState {
     /// added per fork. The engine still uses the concrete `pc` value to drive
     /// the next block lift. See engines/successors.py:297-307,326-331.
     /// Cloned on fork.
+    ///
+    /// See module-level `apply-state-metadata-strips-options` — same caveat
+    /// as `no_ip_concretization`.
     keep_ip_symbolic: bool,
 }
 
@@ -1787,11 +1885,29 @@ impl RustSimState {
     /// Creates a new state that shares memory pages via CoW.
     /// The solver context is forked to preserve constraints.
     ///
+    /// See module-level `state-id-never-reused` (child gets a fresh
+    /// monotonic ID, parent's ID is preserved on the parent),
+    /// `arc-make-mut-cow` (registers/memory/hooks/environment/fs share Arc
+    /// or persistent backing with the parent), and `state-metadata-dataclass`
+    /// (the three `Py<PyAny>` metadata maps are cloned under the GIL).
+    ///
     /// # Returns
     /// A new state with the same register/memory/constraint state.
     pub fn fork(&self) -> Self {
         let forked_solver = Rc::new(RefCell::new(self.solver.borrow().fork()));
         let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
+
+        let child_id = next_state_id();
+        // `state-id-never-reused`: monotonic counter must produce a value
+        // strictly greater than the parent's ID. Tautological today; this
+        // assert fires if a future refactor reorders the allocation or
+        // (worse) introduces ID recycling.
+        debug_assert!(
+            child_id > self.state_id,
+            "next_state_id() must monotonically increase; got child={} parent={}",
+            child_id,
+            self.state_id,
+        );
 
         RustSimState {
             arch: self.arch.clone(),
@@ -1800,7 +1916,7 @@ impl RustSimState {
             memory: self.memory.fork(),
             solver: forked_solver,
             pc: self.pc,
-            state_id: next_state_id(),
+            state_id: child_id,
             parent_id: Some(self.state_id),
             history: self.history.clone(),
             detailed_history: self.detailed_history.clone(),

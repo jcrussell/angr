@@ -12,6 +12,27 @@
 //! `helpers.rs` / `stepping.rs` / `run_loop.rs` / `resume.rs` /
 //! `pending_api.rs` / `state_api.rs` extension-impl pattern used elsewhere in
 //! `exploration/`.
+//!
+//! # Cross-cutting invariants enforced here
+//!
+//! - **`state-id-never-reused`** — every state added or merged into a stash
+//!   gets a fresh monotonic ID from `next_state_id()` (allocated inside
+//!   `RustSimState::fork`/`new`/`merge`). This is what makes it safe for
+//!   `_cleanup_state_cache` (Python) to drop shadow mappings keyed by
+//!   `state_id` against `any_stash` membership. See `state.rs`
+//!   module-level header.
+//! - **`state-lifecycle-stats-api`** — the bodies for `create_state` /
+//!   `add_state` / `merge_states` / `move_states` / `move_state` /
+//!   `reset_for_stage` all live in THIS file (Rust core), with thin PyO3
+//!   wrappers in `mod.rs`. Python-side dispatcher is
+//!   `angr/exploration/rust_manager.py`. When extending lifecycle, edit
+//!   here first; the wrapper in `mod.rs` should remain a single-line
+//!   `self._method_name(...)`.
+//! - **`state-cache-pinning`** (Python-side) — `_cleanup_state_cache` must
+//!   pin `_state_roots`, `_current_callback_state_id`, and
+//!   `_current_stepping_state_id`. Rust participates only by owning the
+//!   per-state `RustSimState` (Drop on eviction) and by maintaining
+//!   `state_roots`/`state_index` in `StashManager` — see `stash.rs`.
 
 use super::*;
 
@@ -50,6 +71,17 @@ impl RustExplorationManager {
         // Fork the state to get our own copy
         let mut forked = state.inner().fork();
         let state_id = forked.state_id();
+        // `state-id-never-reused`: the fork must have allocated a fresh ID
+        // distinct from the source PyRustSimState's ID. Tautological today
+        // (fork() always calls next_state_id()); the assert catches a
+        // future refactor that tried to "reuse" the source ID to avoid
+        // breaking a Python-side mapping.
+        debug_assert_ne!(
+            state_id,
+            state.inner().state_id(),
+            "fork() must mint a fresh state_id, got duplicate {}",
+            state_id,
+        );
 
         // Propagate memory options
         if self.memory_config.zero_fill_unconstrained {
@@ -67,7 +99,10 @@ impl RustExplorationManager {
         // Propagate per-state history cap
         forked.set_max_history(self.environment.max_history);
 
-        // Track this state as its own root (it was added via Python)
+        // Track this state as its own root (it was added via Python).
+        // See `state-id-never-reused`: the root entry is keyed by the
+        // monotonic ID, so it survives every subsequent fork descendant
+        // (which inherit via `index_state` calls during the run loop).
         self.sm.set_root(state_id, state_id);
 
         self.index_state(state_id, stash);
