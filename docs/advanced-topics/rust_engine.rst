@@ -189,7 +189,7 @@ below "Supported" as experimental.
      - Supported
    * - ARM (32-bit)
      - 2
-     - 2 (validate, native-proc)
+     - 3 (LE validate, LE native-proc, BE blob)
      - 1 (arm_le_branch synthetic)
      - ARMEABI
      - Supported
@@ -227,8 +227,9 @@ Status meanings:
 Wired-up but not fully verified:
 
 * Register offsets for all six arches in ``native/angr/src/arch/*.rs``.
-* Endianness flag (MIPS32 BE+LE end-to-end via ELF + blob; MIPS64 LE
-  end-to-end; ARM/ARM64/MIPS64 BE untested).
+* Endianness flag (ARM BE blob test added via ``armeb`` arch, see
+  ``test_armeb_explore_blob``; MIPS32 BE+LE end-to-end via ELF + blob;
+  MIPS64 LE end-to-end; ARM64 / MIPS64 BE untested).
 * ARMEABI / AArch64 / MipsO32 / MipsN64 calling conventions defined in
   ``calling_conventions.rs``.
 

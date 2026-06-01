@@ -5823,6 +5823,76 @@ class TestMultiArchSupport:
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
 
+    def test_armeb_explore_blob(self, tmp_path):
+        """End-to-end ARM Big-Endian (ARMEB) exploration on a hand-assembled blob.
+
+        ARMEL (little-endian) has both a real-binary integration test
+        (``test_arm32_explore_real_binary``) and the ``arm_le_branch``
+        benchmark, but ARMEB had only state-creation coverage —
+        Skeleton in the arch matrix. archinfo's ``armeb`` maps to
+        ``ARMEL`` with ``memory_endness=Iend_BE`` and
+        ``instruction_endness=Iend_BE`` (BE32 model), so this test
+        ships the same code words as ``arm_le_branch`` packed
+        big-endian and routes them through the Rust engine.
+
+        Confirms instruction fetch, register sync, comparison, branch
+        resolution, and solver evaluation all work on a BE memory
+        layout. Promotes ARMEB from Skeleton to Experimental in the
+        support matrix; same risk class as the latent Cdecl x86 bug
+        (5329d8222) — without an end-to-end BE test, byte-order
+        regressions in instruction-fetch or register handling hide
+        silently.
+        """
+        import struct
+        import claripy
+        from angr.exploration import RustExplorationManager
+
+        # ARM (AL condition = 0xE), packed big-endian for ARMEB BE32:
+        #   0x00: ADD  r0, r0, r0      0xE0800000  ; r0 = 2*r0
+        #   0x04: ADD  r0, r0, #16     0xE2800010  ; r0 = 2*r0 + 16
+        #   0x08: MOV  r1, #100        0xE3A01064
+        #   0x0c: CMP  r0, r1          0xE1500001
+        #   0x10: BEQ  +0  -> 0x18     0x0A000000
+        #   0x14: B    +4  -> 0x20     0xEA000001
+        #   0x18: NOP  (found)         0xE1A00000
+        #   0x1c: NOP                  0xE1A00000
+        #   0x20: NOP  (avoid)         0xE1A00000
+        code = struct.pack(
+            ">IIIIIIIII",
+            0xE0800000, 0xE2800010, 0xE3A01064, 0xE1500001,
+            0x0A000000, 0xEA000001,
+            0xE1A00000, 0xE1A00000, 0xE1A00000,
+        )
+        blob_path = tmp_path / "armeb_branch.bin"
+        blob_path.write_bytes(code)
+
+        proj = angr.Project(
+            str(blob_path),
+            main_opts={"backend": "blob", "arch": "armeb", "base_addr": 0x10000},
+            auto_load_libs=False,
+        )
+        assert proj.arch.name == "ARMEL"
+        assert proj.arch.memory_endness == "Iend_BE"
+        assert proj.arch.instruction_endness == "Iend_BE"
+
+        state = proj.factory.blank_state(addr=0x10000)
+        r0 = claripy.BVS("r0", 32)
+        state.regs.r0 = r0
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=0x10018, avoid=0x10020, num_find=1, max_steps=100)
+
+        assert len(mgr.found) >= 1, (
+            f"ARMEB exploration did not reach 0x10018; "
+            f"counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), "found state's solver became unsat"
+        # 2*r0 + 16 == 100 ⇒ r0 == 42.
+        assert found.solver.eval(r0) == 42, (
+            f"Expected r0==42 to reach found, got {found.solver.eval(r0)}"
+        )
+
     def test_aarch64_explore_blob(self, tmp_path):
         """End-to-end AArch64 exploration on a hand-assembled blob.
 
