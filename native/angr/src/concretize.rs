@@ -17,7 +17,12 @@
 
 use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concretize_write};
 
-/// Whether a concretization is for a read or write operation.
+/// Minimum range limit when `APPROXIMATE_MEMORY_INDICES` is enabled.
+///
+/// When the SimOption is on, both `read_range_limit` and `write_range_limit`
+/// are bumped to at least 4 KiB so a single page-sized buffer can be
+/// enumerated without falling back to the Any/Max strategies.
+const APPROXIMATE_MIN_RANGE: u64 = 4096;
 /// This determines which strategy chain to use (different limits and fallbacks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConcretizationMode {
@@ -230,9 +235,9 @@ impl AddressConcretizer {
             self.max_range = limit;
         }
         // When approximate is enabled, we can be more aggressive with range
-        if use_approximate && self.read_range_limit < 4096 {
-            self.read_range_limit = 4096;
-            self.max_range = 4096;
+        if use_approximate && self.read_range_limit < APPROXIMATE_MIN_RANGE {
+            self.read_range_limit = APPROXIMATE_MIN_RANGE;
+            self.max_range = APPROXIMATE_MIN_RANGE;
         }
     }
 
@@ -263,12 +268,12 @@ impl AddressConcretizer {
 
         // When approximate is enabled, be more aggressive with range limits
         if use_approximate {
-            if self.read_range_limit < 4096 {
-                self.read_range_limit = 4096;
-                self.max_range = 4096;
+            if self.read_range_limit < APPROXIMATE_MIN_RANGE {
+                self.read_range_limit = APPROXIMATE_MIN_RANGE;
+                self.max_range = APPROXIMATE_MIN_RANGE;
             }
-            if self.write_range_limit < 4096 {
-                self.write_range_limit = 4096;
+            if self.write_range_limit < APPROXIMATE_MIN_RANGE {
+                self.write_range_limit = APPROXIMATE_MIN_RANGE;
             }
         }
     }

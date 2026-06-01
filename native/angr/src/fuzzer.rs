@@ -39,6 +39,12 @@ pub(crate) type MT = CallbackMonitor;
 pub(crate) type EM = SimpleEventManager<I, MT, S>;
 pub(crate) type O = OwnedMapObserver<u8>;
 pub(crate) type OT = tuple_list_type!(O);
+
+/// Size in bytes of the edge-coverage hitmap shared with the LibAFL observer.
+///
+/// 64 KiB matches AFL's default `MAP_SIZE` (1 << 16). Each byte tracks hit
+/// frequency for one edge (Python plugin `SimStateEdgeHitmap`).
+const EDGE_HITMAP_SIZE: usize = 65536;
 pub(crate) type Z = StdFuzzer<
     QueueScheduler,
     MaxMapFeedback<O, O>,
@@ -89,7 +95,7 @@ impl Fuzzer {
             base_state.call_method1("register_plugin", ("edge_hitmap", edge_hitmap_plugin))?;
         }
 
-        let observer = OwnedMapObserver::new("", vec![0u8; 65536]);
+        let observer = OwnedMapObserver::new("", vec![0u8; EDGE_HITMAP_SIZE]);
         let mut feedback = MaxMapFeedback::with_name("edges", &observer);
         let mut objective = CrashFeedback::default();
 
