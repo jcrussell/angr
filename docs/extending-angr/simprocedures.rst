@@ -833,10 +833,13 @@ through ``stepping.rs::RunResult::Syscall`` to Python's
      - 0 / 7
      - angr-0hif.2 (open)
    * - Process identity (angr-0hif.3)
-     - ``getpid``, ``getppid``, ``gettid``, ``getuid``, ``getgid``,
-       ``setuid``, ``setgid``
-     - 0 / 7
-     - angr-0hif.3 (open)
+     - ``getpid``, ``getppid``, ``gettid``, ``getuid``, ``geteuid``,
+       ``getgid``, ``getegid``, ``setuid``, ``setgid``
+     - 7 / 9
+     - ``identity.rs`` — angr defaults (pid=1337, ppid=1336,
+       uid/gid=1000). ``setuid``/``setgid`` intentionally fall through
+       to Python (no Python ``SimProcedure``, so the unhandled-syscall
+       path returns a fresh symbolic value)
    * - Memory extras (angr-0hif.4)
      - ``madvise``, ``mremap``, ``msync``, ``mlock``, ``munlock``
      - 0 / 5

@@ -20,6 +20,7 @@
 pub mod arch_prctl;
 pub mod brk;
 pub mod exit;
+pub mod identity;
 pub mod mmap;
 pub mod mprotect;
 pub mod munmap;
@@ -137,6 +138,14 @@ impl NativeSyscallRegistry {
         //   state.last_time; stores at *pointer if non-null.
         // clock_gettime (228): CLOCK_REALTIME-only; -1 on null; other clocks
         //   fall back to Python's SimProcedureError path.
+        // getpid (39), getppid (110), gettid (186): identity getters
+        //   returning angr's posix defaults (pid=1337, ppid=1336).
+        // getuid (102), geteuid (107), getgid (104), getegid (108): return
+        //   1000 (matches angr Python proc default).
+        // setuid / setgid intentionally NOT registered: angr has no Python
+        //   SimProcedure for them, so the unhandled-syscall path returns a
+        //   fresh symbolic value — a constant-success native return would
+        //   diverge.
         register_syscalls!(r, "AMD64", [
             (0, read::NativeReadSyscall),
             (1, write::NativeWriteSyscall),
@@ -145,9 +154,16 @@ impl NativeSyscallRegistry {
             (11, munmap::NativeMunmapSyscall),
             (12, brk::NativeBrkSyscall),
             (13, sigaction::NativeRtSigactionSyscall),
+            (39, identity::NativeGetpidSyscall),
             (60, exit::NativeExitSyscall),
             (96, sim_time::NativeGettimeofdaySyscall),
+            (102, identity::NativeGetuidSyscall),
+            (104, identity::NativeGetgidSyscall),
+            (107, identity::NativeGeteuidSyscall),
+            (108, identity::NativeGetegidSyscall),
+            (110, identity::NativeGetppidSyscall),
             (158, arch_prctl::NativeArchPrctlSyscall),
+            (186, identity::NativeGettidSyscall),
             (201, sim_time::NativeTimeSyscall),
             (228, sim_time::NativeClockGettimeSyscall),
             (231, exit::NativeExitSyscall),
@@ -173,32 +189,60 @@ impl NativeSyscallRegistry {
         // Linux i386 (asm/unistd_32.h). Skipped: mmap (90, legacy struct-arg
         // form) and mmap2 (192, uses page-offset semantics — needs a distinct
         // handler).
+        //
+        // Identity getters: i386 has both the legacy 16-bit-uid_t variants
+        // (numbers 20/24/47/49/50/64) and the LFS 32-bit-uid_t variants
+        // (199-202). Both alias to the same handler since angr returns the
+        // same constant 1000 for both forms.
         register_syscalls!(r, "X86", [
             (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
             (13, sim_time::NativeTimeSyscall),
+            (20, identity::NativeGetpidSyscall),
+            (24, identity::NativeGetuidSyscall),
             (45, brk::NativeBrkSyscall),
+            (47, identity::NativeGetgidSyscall),
+            (49, identity::NativeGeteuidSyscall),
+            (50, identity::NativeGetegidSyscall),
+            (64, identity::NativeGetppidSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
+            (199, identity::NativeGetuidSyscall),
+            (200, identity::NativeGetgidSyscall),
+            (201, identity::NativeGeteuidSyscall),
+            (202, identity::NativeGetegidSyscall),
+            (224, identity::NativeGettidSyscall),
             (252, exit::NativeExitSyscall),
             (265, sim_time::NativeClockGettimeSyscall),
         ]);
 
         // Linux ARM EABI (arm/asm/unistd-eabi.h). Skipped: mmap (90, legacy
-        // form) and mmap2 (192, page-offset semantics).
+        // form) and mmap2 (192, page-offset semantics). Identity getters
+        // share numbering with i386 (both legacy 16-bit and 32-bit variants).
         register_syscalls!(r, "ARM", [
             (1, exit::NativeExitSyscall),
             (3, read::NativeReadSyscall),
             (4, write::NativeWriteSyscall),
             (13, sim_time::NativeTimeSyscall),
+            (20, identity::NativeGetpidSyscall),
+            (24, identity::NativeGetuidSyscall),
             (45, brk::NativeBrkSyscall),
+            (47, identity::NativeGetgidSyscall),
+            (49, identity::NativeGeteuidSyscall),
+            (50, identity::NativeGetegidSyscall),
+            (64, identity::NativeGetppidSyscall),
             (78, sim_time::NativeGettimeofdaySyscall),
             (91, munmap::NativeMunmapSyscall),
             (125, mprotect::NativeMprotectSyscall),
             (174, sigaction::NativeRtSigactionSyscall),
+            (199, identity::NativeGetuidSyscall),
+            (200, identity::NativeGetgidSyscall),
+            (201, identity::NativeGeteuidSyscall),
+            (202, identity::NativeGetegidSyscall),
+            (224, identity::NativeGettidSyscall),
             (248, exit::NativeExitSyscall),
             (263, sim_time::NativeClockGettimeSyscall),
         ]);
@@ -214,6 +258,13 @@ impl NativeSyscallRegistry {
             (113, sim_time::NativeClockGettimeSyscall),
             (134, sigaction::NativeRtSigactionSyscall),
             (169, sim_time::NativeGettimeofdaySyscall),
+            (172, identity::NativeGetpidSyscall),
+            (173, identity::NativeGetppidSyscall),
+            (174, identity::NativeGetuidSyscall),
+            (175, identity::NativeGeteuidSyscall),
+            (176, identity::NativeGetgidSyscall),
+            (177, identity::NativeGetegidSyscall),
+            (178, identity::NativeGettidSyscall),
             (214, brk::NativeBrkSyscall),
             (215, munmap::NativeMunmapSyscall),
             (222, mmap::NativeMmapSyscall),
@@ -229,11 +280,18 @@ impl NativeSyscallRegistry {
             (4003, read::NativeReadSyscall),
             (4004, write::NativeWriteSyscall),
             (4013, sim_time::NativeTimeSyscall),
+            (4020, identity::NativeGetpidSyscall),
+            (4024, identity::NativeGetuidSyscall),
             (4045, brk::NativeBrkSyscall),
+            (4047, identity::NativeGetgidSyscall),
+            (4049, identity::NativeGeteuidSyscall),
+            (4050, identity::NativeGetegidSyscall),
+            (4064, identity::NativeGetppidSyscall),
             (4078, sim_time::NativeGettimeofdaySyscall),
             (4091, munmap::NativeMunmapSyscall),
             (4125, mprotect::NativeMprotectSyscall),
             (4194, sigaction::NativeRtSigactionSyscall),
+            (4222, identity::NativeGettidSyscall),
             (4246, exit::NativeExitSyscall),
             (4263, sim_time::NativeClockGettimeSyscall),
         ]);
@@ -392,11 +450,22 @@ mod tests {
             (3, "read"),
             (4, "write"),
             (13, "time"),
+            (20, "getpid"),
+            (24, "getuid"),
             (45, "brk"),
+            (47, "getgid"),
+            (49, "geteuid"),
+            (50, "getegid"),
+            (64, "getppid"),
             (78, "gettimeofday"),
             (91, "munmap"),
             (125, "mprotect"),
             (174, "rt_sigaction"),
+            (199, "getuid32"),
+            (200, "getgid32"),
+            (201, "geteuid32"),
+            (202, "getegid32"),
+            (224, "gettid"),
             (252, "exit_group"),
             (265, "clock_gettime"),
         ] {
@@ -418,11 +487,22 @@ mod tests {
             (3, "read"),
             (4, "write"),
             (13, "time"),
+            (20, "getpid"),
+            (24, "getuid"),
             (45, "brk"),
+            (47, "getgid"),
+            (49, "geteuid"),
+            (50, "getegid"),
+            (64, "getppid"),
             (78, "gettimeofday"),
             (91, "munmap"),
             (125, "mprotect"),
             (174, "rt_sigaction"),
+            (199, "getuid32"),
+            (200, "getgid32"),
+            (201, "geteuid32"),
+            (202, "getegid32"),
+            (224, "gettid"),
             (248, "exit_group"),
             (263, "clock_gettime"),
         ] {
@@ -445,6 +525,13 @@ mod tests {
             (113, "clock_gettime"),
             (134, "rt_sigaction"),
             (169, "gettimeofday"),
+            (172, "getpid"),
+            (173, "getppid"),
+            (174, "getuid"),
+            (175, "geteuid"),
+            (176, "getgid"),
+            (177, "getegid"),
+            (178, "gettid"),
             (214, "brk"),
             (215, "munmap"),
             (222, "mmap"),
@@ -465,11 +552,18 @@ mod tests {
             (4003, "read"),
             (4004, "write"),
             (4013, "time"),
+            (4020, "getpid"),
+            (4024, "getuid"),
             (4045, "brk"),
+            (4047, "getgid"),
+            (4049, "geteuid"),
+            (4050, "getegid"),
+            (4064, "getppid"),
             (4078, "gettimeofday"),
             (4091, "munmap"),
             (4125, "mprotect"),
             (4194, "rt_sigaction"),
+            (4222, "gettid"),
             (4246, "exit_group"),
             (4263, "clock_gettime"),
         ] {
@@ -498,6 +592,66 @@ mod tests {
         // 4001 = MIPS32 exit. Other arches should not see it.
         assert!(r.get("AMD64", 4001).is_none(), "AMD64 has no syscall 4001");
         assert!(r.get("X86", 4001).is_none(), "X86 has no syscall 4001");
+    }
+
+    #[test]
+    fn identity_syscalls_registered_on_all_arches() {
+        // angr-0hif.3: getpid / getppid / gettid / getuid / geteuid /
+        // getgid / getegid should be hookable on every supported arch.
+        // arch → (getpid, getppid, gettid, getuid, geteuid, getgid, getegid)
+        let r = NativeSyscallRegistry::new();
+        for (arch, nums) in [
+            ("AMD64", (39, 110, 186, 102, 107, 104, 108)),
+            ("X86", (20, 64, 224, 24, 49, 47, 50)),
+            ("ARM", (20, 64, 224, 24, 49, 47, 50)),
+            ("ARM64", (172, 173, 178, 174, 175, 176, 177)),
+            ("MIPS32", (4020, 4064, 4222, 4024, 4049, 4047, 4050)),
+        ] {
+            let (pid, ppid, tid, uid, euid, gid, egid) = nums;
+            for (num, label) in [
+                (pid, "getpid"),
+                (ppid, "getppid"),
+                (tid, "gettid"),
+                (uid, "getuid"),
+                (euid, "geteuid"),
+                (gid, "getgid"),
+                (egid, "getegid"),
+            ] {
+                let h = r.get(arch, num).unwrap_or_else(|| {
+                    panic!("{arch} {label} ({num}) handler missing")
+                });
+                assert_eq!(
+                    h.name(),
+                    label,
+                    "{arch} syscall {num} should be {label}"
+                );
+                assert_eq!(h.num_args(), 0, "{arch} {label} takes 0 args");
+            }
+        }
+    }
+
+    #[test]
+    fn setuid_setgid_intentionally_absent() {
+        // angr has no Python SimProcedure for setuid / setgid — the
+        // unhandled-syscall path returns a fresh symbolic value, so
+        // registering a constant-success native handler would diverge.
+        // Document the intentional gap on the arches that have explicit
+        // setuid/setgid numbers.
+        let r = NativeSyscallRegistry::new();
+        // AMD64: setuid=105, setgid=106.
+        assert!(r.get("AMD64", 105).is_none(), "AMD64 setuid intentionally absent");
+        assert!(r.get("AMD64", 106).is_none(), "AMD64 setgid intentionally absent");
+        // X86/ARM: setuid=23, setgid=46 (legacy); setuid32=213, setgid32=214.
+        assert!(r.get("X86", 23).is_none(), "X86 setuid intentionally absent");
+        assert!(r.get("X86", 46).is_none(), "X86 setgid intentionally absent");
+        assert!(r.get("ARM", 23).is_none(), "ARM setuid intentionally absent");
+        assert!(r.get("ARM", 46).is_none(), "ARM setgid intentionally absent");
+        // ARM64: setuid=146, setgid=144.
+        assert!(r.get("ARM64", 146).is_none(), "ARM64 setuid intentionally absent");
+        assert!(r.get("ARM64", 144).is_none(), "ARM64 setgid intentionally absent");
+        // MIPS-O32: setuid=4023, setgid=4046.
+        assert!(r.get("MIPS32", 4023).is_none(), "MIPS32 setuid intentionally absent");
+        assert!(r.get("MIPS32", 4046).is_none(), "MIPS32 setgid intentionally absent");
     }
 
     #[test]
