@@ -5913,6 +5913,51 @@ class TestMultiArchSupport:
         state.set_register("fs", 0xFFFF)
         assert state.get_register("fs") == 0xFFFF
 
+    def test_x86_segment_bases_dispatch(self):
+        """x86 (32-bit) segment-base entries round-trip via the standard
+        register dispatch.
+
+        Covers angr-5spy.2: the four segment-base slots — ``fs_const``
+        (320, 4B placeholder), ``gs_const`` (324, 4B placeholder),
+        ``ldt`` (304, 8B per archinfo), and ``gdt`` (312, 8B per
+        archinfo) — are reachable through
+        ``set_register``/``get_register`` after wiring them into
+        ``arch/x86.rs::ALIASES``. ``fs_const``/``gs_const`` are
+        Rust-only placeholders (archinfo does not define them for
+        x86, so Python-side parity is not applicable); ``ldt``/``gdt``
+        exist on both sides of the FFI boundary.
+
+        A wrong-offset bug would surface as cross-talk between
+        neighbouring slots (writing ``fs_const`` would corrupt
+        ``gs_const`` or vice versa).
+        """
+        state = RustSimState("x86")
+
+        # Distinct values at each slot so a misaligned offset surfaces
+        # as a cross-talk failure on the assertion side.
+        state.set_register("fs_const", 0xCAFE_BABE)
+        state.set_register("gs_const", 0xDEAD_BEEF)
+        state.set_register("ldt", 0x1122334455667788)
+        state.set_register("gdt", 0xAABBCCDDEEFF0011)
+
+        assert state.get_register("fs_const") == 0xCAFE_BABE
+        assert state.get_register("gs_const") == 0xDEAD_BEEF
+        assert state.get_register("ldt") == 0x1122334455667788
+        assert state.get_register("gdt") == 0xAABBCCDDEEFF0011
+
+        # Rewriting fs_const must not disturb gs_const (or vice versa),
+        # since the two slots are adjacent (320/324, both 4B) and a
+        # wrong-width write would bleed across the boundary.
+        state.set_register("fs_const", 0x1234_5678)
+        assert state.get_register("fs_const") == 0x1234_5678
+        assert state.get_register("gs_const") == 0xDEAD_BEEF
+
+        # ldt/gdt are 8B and adjacent (304/312); writing one must not
+        # bleed into the other.
+        state.set_register("ldt", 0x0)
+        assert state.get_register("ldt") == 0x0
+        assert state.get_register("gdt") == 0xAABBCCDDEEFF0011
+
     def test_unsupported_arch_raises(self):
         """Unknown architecture raises an error."""
         with pytest.raises(Exception):

@@ -182,11 +182,11 @@ below "Supported" as experimental.
      - SystemV, MS x64
      - Supported
    * - x86 (32-bit)
-     - 3
+     - 4
      - 1 (Cdecl ret reg)
      - 8 (3 FAST + 5 MEDIUM)
      - Cdecl
-     - Supported (selectors: CS/DS/ES/FS/GS/SS)
+     - Supported (selectors: CS/DS/ES/FS/GS/SS; bases: LDT/GDT + FS_CONST/GS_CONST placeholders)
    * - ARM (32-bit)
      - 2
      - 3 (LE validate, LE native-proc, BE blob)
